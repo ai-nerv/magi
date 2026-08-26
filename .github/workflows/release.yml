@@ -1,0 +1,37 @@
+name: release
+
+on:
+  release:
+    types: [created]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: release ${{ matrix.artifact }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: "axum-linux-amd64"
+          - os: ubuntu-24.04-arm
+            artifact: "axum-linux-arm64"
+          - os: macos-15-intel
+            artifact: "axum-macos-amd64"
+          - os: macos-14
+            artifact: "axum-macos-arm64"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build
+        run: cargo build --release --example main
+      - name: Package
+        run: tar -czf "${{ matrix.artifact }}.tar.gz" "target/release/examples/main"
+      - name: Upload artifact
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.artifact }}.tar.gz
+

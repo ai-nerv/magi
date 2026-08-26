@@ -1,0 +1,52 @@
+# Written by wing. It records which template generated this project and what each
+# file looked like at the time, so `wing template update` can tell a file you edited
+# from one the template changed. Commit it.
+
+template = "rust"
+name = "axum"
+generated_at = "2026-08-26T22:05:09Z"
+
+[[files]]
+path = ".env.lua"
+hash = "840557f93709e4632d9a962be1d94fd6"
+
+[[files]]
+path = ".github/workflows/release.yml"
+hash = "1f32a977a45e01ed06633c89a9f3b3c7"
+
+[[files]]
+path = ".github/workflows/tests.yml"
+hash = "927278f544005e809480b4ef63410301"
+
+[[files]]
+path = ".gitignore"
+hash = "95814d559fcbfb1740273db66eb3f5f8"
+
+[[files]]
+path = ".make.lua"
+hash = "e48e83882fc9a1d2343bbe64546b45b7"
+
+[[files]]
+path = "Cargo.toml"
+hash = "9bba24a11c3010fc0d588e57bb10b6c9"
+
+[[files]]
+path = "PROJECT"
+hash = "ff2ba5d208d001618a5a8c9010302a4c"
+
+[[files]]
+path = "README.md"
+hash = "cb359f817059dd2b45c8ac601f709745"
+
+[[files]]
+path = "examples/main.rs"
+hash = "2bc2b3d2beba634b6e34c59233bbdadd"
+
+[[files]]
+path = "flake.nix"
+hash = "f04bb73c6c7928de0dfdad39b2d09ce1"
+
+[[files]]
+path = "src/lib.rs"
+hash = "3ef04c80fc499ce4d318a0d9c4ca7b79"
+

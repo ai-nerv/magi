@@ -1,0 +1,34 @@
+name: tests
+
+on:
+  push:
+    branches: [ "develop", "main" ]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+      - name: Verify
+        run: |
+          cargo fmt --all -- --check
+          cargo check --all-targets --all-features
+          cargo clippy --all-targets --all-features -- -Dwarnings
+          cargo test --all-targets --all-features
+
