@@ -41,23 +41,11 @@ impl Cursor {
 }
 
 /// Why an assistant turn stopped.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StopReason {
-    /// The model finished normally.
-    EndTurn,
-    /// The model asked for tools; the turn continues after they run.
-    ToolUse,
-    /// The output hit the token limit mid-generation.
-    ///
-    /// Pi's lesson: every tool call in this turn must be failed, because truncated JSON can
-    /// still pass schema validation.
-    Length,
-    /// The user interrupted.
-    Aborted,
-    /// The turn failed; the accompanying error carries the detail.
-    Error,
-}
+///
+/// Re-exported from `axum-model` rather than declared again. The two were identical, and a
+/// second copy is the shape of bug where a field is added to one and the other silently keeps
+/// answering the old question.
+pub use axum_model::StopReason;
 
 /// What the agent is doing, for the status line.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

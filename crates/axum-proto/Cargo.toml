@@ -6,6 +6,7 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
+axum-model.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 

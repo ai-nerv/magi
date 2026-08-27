@@ -9,12 +9,14 @@
 
 pub mod paths;
 pub mod session;
+pub mod turn;
 
 use axum_ipc::{FrameReader, FrameWriter, IpcError, PeerCred};
 use axum_journal::JournalError;
 use axum_proto::{
     AgentStatus, Cursor, Entry, ErrorClass, HarnessEvent, MessageId, StopReason, UiCommand,
 };
+use axum_provider::client::Client;
 use session::Session;
 use std::path::Path;
 use std::sync::Arc;
@@ -42,8 +44,15 @@ pub enum HostError {
 /// Every connection gets its own task; the session is shared behind a mutex because the log is
 /// the one thing that must serialize. That is Tau's "commit chokepoint" without Tau's daemon:
 /// the lock is held for a journal append and released, never across a provider call.
-pub async fn serve(listener: UnixListener, session: Session) -> Result<(), HostError> {
+pub async fn serve(
+    listener: UnixListener,
+    session: Session,
+    backend: Option<turn::Backend>,
+) -> Result<(), HostError> {
     let session = Arc::new(Mutex::new(session));
+    // One client for the daemon rather than one per connection: it pools, and a turn belongs
+    // to the session anyway, not to whichever UI happened to ask for it.
+    let shared = Arc::new((backend, Client::new()));
     loop {
         let (stream, _) = listener.accept().await?;
         // The daemon serves one user. A connection from any other uid is refused rather than
@@ -53,14 +62,20 @@ pub async fn serve(listener: UnixListener, session: Session) -> Result<(), HostE
             _ => continue,
         }
         let session = Arc::clone(&session);
+        let shared = Arc::clone(&shared);
         tokio::spawn(async move {
-            let _ = connection(stream, session).await;
+            let _ = connection(stream, session, &shared.0, &shared.1).await;
         });
     }
 }
 
 /// One attached UI.
-async fn connection(stream: UnixStream, session: Arc<Mutex<Session>>) -> Result<(), HostError> {
+async fn connection(
+    stream: UnixStream,
+    session: Arc<Mutex<Session>>,
+    backend: &Option<turn::Backend>,
+    client: &Client,
+) -> Result<(), HostError> {
     let (read_half, write_half) = stream.into_split();
     let mut reader = FrameReader::new(read_half);
     let mut writer = FrameWriter::new(write_half);
@@ -103,7 +118,9 @@ async fn connection(stream: UnixStream, session: Arc<Mutex<Session>>) -> Result<
         tokio::select! {
             command = incoming.recv() => {
                 match command {
-                    Some(UiCommand::SubmitPrompt { text }) => submit(&session, text).await?,
+                    Some(UiCommand::SubmitPrompt { text }) => {
+                        submit(&session, text, backend.as_ref(), client).await?;
+                    }
                     Some(UiCommand::Interrupt) => {
                         session.lock().await.set_status(AgentStatus::Idle);
                     }
@@ -130,26 +147,42 @@ async fn connection(stream: UnixStream, session: Arc<Mutex<Session>>) -> Result<
     Ok(())
 }
 
-/// Accept a prompt.
+/// Accept a prompt and run a turn.
 ///
-/// M1 has no provider, so the turn is the user's message and an honest refusal. M2 replaces
-/// the second half; the journalling and publication either side of it do not change.
-async fn submit(session: &Arc<Mutex<Session>>, text: String) -> Result<(), HostError> {
-    let mut session = session.lock().await;
+/// The prompt is journalled before the provider is called, so an interrupted turn still shows
+/// what was asked. Without a backend the refusal is a well-formed assistant entry rather than
+/// an error out of band — the transcript stays uniform and the UI needs no second path.
+async fn submit(
+    session: &Arc<Mutex<Session>>,
+    text: String,
+    backend: Option<&turn::Backend>,
+    client: &Client,
+) -> Result<(), HostError> {
+    {
+        let mut held = session.lock().await;
+        let id = MessageId::new(format!("u{}", held.cursor().next().0));
+        held.commit(Entry::User { id, text })?;
+    }
 
-    let user_id = MessageId::new(format!("u{}", session.cursor().next().0));
-    session.commit(Entry::User { id: user_id, text })?;
+    let Some(backend) = backend else {
+        let mut held = session.lock().await;
+        let id = MessageId::new(format!("a{}", held.cursor().next().0));
+        held.commit(Entry::Assistant {
+            id,
+            text: String::new(),
+            thinking: String::new(),
+            stop_reason: Some(StopReason::Error),
+            error: Some(
+                "no model is configured. Set a provider key, or choose one with `axum.model` \
+                 in your config; `axum models` lists what is available."
+                    .into(),
+            ),
+        })?;
+        held.set_status(AgentStatus::Idle);
+        return Ok(());
+    };
 
-    let reply_id = MessageId::new(format!("a{}", session.cursor().next().0));
-    session.commit(Entry::Assistant {
-        id: reply_id,
-        text: String::new(),
-        thinking: String::new(),
-        stop_reason: Some(StopReason::Error),
-        error: Some("no provider is configured yet — that lands in M2".into()),
-    })?;
-    session.set_status(AgentStatus::Idle);
-    Ok(())
+    turn::run(session, backend, client).await
 }
 
 /// Publish an error to whoever is attached.

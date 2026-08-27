@@ -71,7 +71,7 @@ pub(crate) enum Block {
 }
 
 /// A wire protocol axum can speak.
-pub trait Adapter {
+pub trait Adapter: Send + Sync {
     /// The URL to post to.
     fn endpoint(&self, base_url: &str, model: &Model) -> String;
 

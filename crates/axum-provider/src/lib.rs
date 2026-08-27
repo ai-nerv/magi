@@ -1,4 +1,5 @@
 pub mod api;
+pub mod client;
 pub mod compat;
 pub mod model;
 pub mod provider;

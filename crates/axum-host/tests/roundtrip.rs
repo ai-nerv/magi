@@ -22,7 +22,7 @@ async fn start(name: &str) -> (PathBuf, PathBuf) {
     let (dir, socket) = temp(name);
     let session = open_session(&dir, "/tmp", 1).expect("session");
     let listener = axum_ipc::bind(&socket).await.expect("bind");
-    tokio::spawn(async move { serve(listener, session).await });
+    tokio::spawn(async move { serve(listener, session, None).await });
     (dir, socket)
 }
 

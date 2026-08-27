@@ -72,6 +72,46 @@ pub fn builtin() -> Result<Vec<Provider>, LuaError> {
     Ok(collect(engine.config())?.providers)
 }
 
+/// Find the model the config chose, and the provider offering it.
+///
+/// `provider/model`, as `axum models` prints it. A bare model id is matched too, because a
+/// person who has one provider configured should not have to say which — but an ambiguous bare
+/// id resolves to the first declared, which is why the qualified form is what gets printed.
+#[must_use]
+pub fn resolve<'a>(
+    providers: &'a [Provider],
+    name: &str,
+) -> Option<(&'a Provider, &'a axum_provider::model::Model)> {
+    if let Some((provider_id, model_id)) = name.split_once('/') {
+        // Split at the first slash only: several catalogs use slashes inside a model id, so
+        // `openrouter/anthropic/claude-sonnet-4.5` is one provider and one model.
+        if let Some(provider) = providers.iter().find(|p| p.id == provider_id)
+            && let Some(model) = provider.model(model_id)
+        {
+            return Some((provider, model));
+        }
+    }
+    providers.iter().find_map(|p| p.model(name).map(|m| (p, m)))
+}
+
+/// The backend a daemon should run turns against, if one is both chosen and usable.
+///
+/// A model that is configured but has no credential yields `None` rather than an error: the
+/// daemon still starts, and the refusal it journals names what to set. A daemon that would not
+/// start because a key was missing is a worse answer than a session that says so.
+#[must_use]
+pub fn backend(loaded: &Loaded) -> Option<axum_host::turn::Backend> {
+    let name = loaded.config.string("model")?;
+    let (provider, model) = resolve(&loaded.providers, name)?;
+    if !provider.is_configured() {
+        return None;
+    }
+    Some(axum_host::turn::Backend {
+        provider: provider.clone(),
+        model: model.clone(),
+        options: axum_provider::api::Options::default(),
+    })
+}
 #[cfg(test)]
 mod tests {
     use super::*;

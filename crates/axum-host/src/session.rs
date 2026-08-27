@@ -105,6 +105,19 @@ impl Session {
         Ok(cursor)
     }
 
+    /// Replace the last entry and republish it.
+    ///
+    /// A streaming message grows in place: the entry was committed before its first delta so
+    /// a UI attaching mid-turn has something to extend, and each amendment is the same entry
+    /// further along rather than a new one.
+    pub fn amend(&mut self, entry: Entry) -> Result<Cursor, JournalError> {
+        let cursor = self.journal.amend(entry.clone())?;
+        for event in events_for(cursor, &entry) {
+            let _ = self.events.send(event);
+        }
+        Ok(cursor)
+    }
+
     /// Change what the agent is doing and tell everyone.
     ///
     /// Status is not journalled: it describes the daemon right now, and a session restored

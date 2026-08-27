@@ -78,14 +78,14 @@ impl Adapter for Anthropic {
         }
         // Thinking is requested by budget, and a budget must leave room for a response: asking
         // for the whole of `max_tokens` as reasoning yields a turn with nothing in it.
-        if let Some(level) = options.thinking {
-            if let Some(tokens) = budget(level) {
-                let cap = model.max_tokens.saturating_sub(1024).max(1024);
-                body.insert(
-                    "thinking".into(),
-                    json!({ "type": "enabled", "budget_tokens": tokens.min(cap) }),
-                );
-            }
+        if let Some(level) = options.thinking
+            && let Some(tokens) = budget(level)
+        {
+            let cap = model.max_tokens.saturating_sub(1024).max(1024);
+            body.insert(
+                "thinking".into(),
+                json!({ "type": "enabled", "budget_tokens": tokens.min(cap) }),
+            );
         }
         Value::Object(body)
     }

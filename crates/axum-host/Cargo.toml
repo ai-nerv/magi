@@ -8,7 +8,10 @@ version.workspace = true
 [dependencies]
 axum-ipc.workspace = true
 axum-journal.workspace = true
+axum-core.workspace = true
+axum-model.workspace = true
 axum-proto.workspace = true
+axum-provider.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 

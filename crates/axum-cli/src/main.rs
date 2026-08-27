@@ -80,8 +80,14 @@ async fn main() -> Result<()> {
                 session.id(),
                 socket.display()
             );
+            let backend = crate::config::load()
+                .ok()
+                .and_then(|l| crate::config::backend(&l));
+            if backend.is_none() {
+                eprintln!("axum host: no model configured; prompts will say so");
+            }
             let listener = axum_ipc::bind(&socket).await?;
-            axum_host::serve(listener, session).await?;
+            axum_host::serve(listener, session, backend).await?;
             Ok(())
         }
         Some(Command::FakeHost { replay, pace_ms }) => {

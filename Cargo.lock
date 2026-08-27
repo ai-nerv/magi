@@ -100,9 +100,12 @@ dependencies = [
 name = "axum-host"
 version = "0.1.0"
 dependencies = [
+ "axum-core",
  "axum-ipc",
  "axum-journal",
+ "axum-model",
  "axum-proto",
+ "axum-provider",
  "thiserror 2.0.20",
  "tokio",
 ]
@@ -151,6 +154,7 @@ dependencies = [
 name = "axum-proto"
 version = "0.1.0"
 dependencies = [
+ "axum-model",
  "serde",
  "thiserror 2.0.20",
 ]
