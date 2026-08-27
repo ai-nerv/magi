@@ -1,0 +1,22 @@
+# A recorded session. One JSON event per line; cursors must ascend.
+{"event":"user_message","cursor":1,"id":"m1","text":"add a test for the torn-tail case in axum-journal"}
+{"event":"status_changed","cursor":2,"status":{"kind":"working","label":"Thinking"}}
+{"event":"assistant_started","cursor":3,"id":"a1"}
+{"event":"assistant_delta","cursor":4,"id":"a1","text":"","thinking":"The journal appends "}
+{"event":"assistant_delta","cursor":5,"id":"a1","text":"","thinking":"one record per line, so a torn tail is a final line without a newline."}
+{"event":"assistant_delta","cursor":6,"id":"a1","text":"I'll look at the ","thinking":""}
+{"event":"assistant_delta","cursor":7,"id":"a1","text":"append path first.\n","thinking":""}
+{"event":"tool_call_started","cursor":8,"id":"t1","name":"read","args":"{\"path\": \"crates/axum-journal/src/lib.rs\"}"}
+{"event":"tool_call_ended","cursor":9,"id":"t1","result":{"output":"pub fn append(&mut self, record: &Record) -> Result<()> {\n    let line = serde_json::to_string(record)?;\n    self.file.write_all(line.as_bytes())?;\n    self.file.write_all(b\"\\n\")?;\n    Ok(())\n}","is_error":false}}
+{"event":"assistant_started","cursor":10,"id":"a2"}
+{"event":"assistant_delta","cursor":11,"id":"a2","text":"The newline is written **after** the record, so a crash between the two writes\nleaves a complete JSON object with no terminator. The read path must:\n\n","thinking":""}
+{"event":"assistant_delta","cursor":12,"id":"a2","text":"- truncate a trailing line that has no newline\n- refuse a line that *does* end in a newline but fails to parse\n\n","thinking":""}
+{"event":"assistant_delta","cursor":13,"id":"a2","text":"That second rule is the one worth a test — a complete-but-invalid record is\ncorruption, not a torn tail, and repairing it would silently drop history.\n","thinking":""}
+{"event":"tool_call_started","cursor":14,"id":"t2","name":"edit","args":"{\"path\": \"crates/axum-journal/src/lib.rs\", \"tests\": 2}"}
+{"event":"tool_call_ended","cursor":15,"id":"t2","result":{"output":"+    #[test]\n+    fn a_torn_tail_is_truncated() {\n+        let journal = Journal::parse(\"{\\\"seq\\\":1}\\n{\\\"seq\\\":2}\");\n+        assert_eq!(journal.records().len(), 1);\n+    }\n+\n+    #[test]\n+    fn a_complete_but_invalid_record_fails_the_load() {\n+        assert!(Journal::parse(\"{\\\"nope\\\":1}\\n\").is_err());\n+    }","is_error":false}}
+{"event":"tool_call_started","cursor":16,"id":"t3","name":"bash","args":"{\"command\": \"cargo test -p axum-journal\"}"}
+{"event":"tool_call_ended","cursor":17,"id":"t3","result":{"output":"running 2 tests\ntest tests::a_torn_tail_is_truncated ... ok\ntest tests::a_complete_but_invalid_record_fails_the_load ... ok\n\ntest result: ok. 2 passed; 0 failed","is_error":false}}
+{"event":"assistant_started","cursor":18,"id":"a3"}
+{"event":"assistant_delta","cursor":19,"id":"a3","text":"Both pass. The distinction now has a test behind it: a torn tail truncates,\nand a complete-but-invalid record fails the load rather than being repaired.\n","thinking":""}
+{"event":"assistant_ended","cursor":20,"id":"a3","stop_reason":"end_turn","error":null}
+{"event":"status_changed","cursor":21,"status":{"kind":"idle"}}

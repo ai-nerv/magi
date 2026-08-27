@@ -1,0 +1,17 @@
+[package]
+name = "axum-ipc"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+axum-proto.workspace = true
+ciborium.workspace = true
+rustix.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
