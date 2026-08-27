@@ -47,7 +47,7 @@ pub fn run(socket: &Path, all: bool) -> Result<()> {
 }
 
 /// What happened to one daemon.
-enum Stopped {
+pub(crate) enum Stopped {
     /// It is gone.
     Yes,
     /// There was nothing there, which is not a failure.
@@ -57,7 +57,7 @@ enum Stopped {
 }
 
 /// Ask one daemon to stop, and wait for its socket to close.
-fn stop_one(pid_file: &Path) -> Stopped {
+pub(crate) fn stop_one(pid_file: &Path) -> Stopped {
     let Some(pid) = std::fs::read_to_string(pid_file)
         .ok()
         .and_then(|text| text.trim().parse::<u32>().ok())

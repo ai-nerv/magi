@@ -36,6 +36,7 @@ pub async fn run(
     mode: Mode,
     prompt: Option<String>,
     sessions: Option<std::path::PathBuf>,
+    started_the_daemon: bool,
 ) -> Result<()> {
     let theme = Theme::default();
     let mut app = App::new();
@@ -66,11 +67,15 @@ pub async fn run(
     // event, so a UI watching only for events cannot tell "nothing is happening" from
     // "nothing can happen".
     let attached = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // Set by whichever path spawns a daemon, including the reconnect loop: a daemon this UI
+    // restarted after a crash is as much ours to stop as the one it started with.
+    let owns_daemon = Arc::new(std::sync::atomic::AtomicBool::new(started_the_daemon));
     tokio::spawn(connection_loop(
         socket.to_path_buf(),
         event_tx,
         command_rx,
         sessions,
+        Arc::clone(&owns_daemon),
         app.cursor(),
         Arc::clone(&attached),
     ));
@@ -226,6 +231,25 @@ pub async fn run(
         }
     }
 
+    // The daemon this UI started goes with it.
+    //
+    // A UI quitting was a detach and the daemon was left running, which is the right shape for
+    // a long turn you want to walk away from and the wrong one for everything else: a week of
+    // work left a process per project, each holding the socket, the tool set and the
+    // environment of whichever shell happened to start it. That last one cost three sessions —
+    // a daemon started before a key was exported can never see it, and nothing said so.
+    //
+    // Only one we started. Attaching to somebody else's daemon and killing it on the way out
+    // would end their session. A second UI on the same socket survives this: its own reconnect
+    // loop starts a replacement and resumes, because the session is on disk rather than in the
+    // process.
+    //
+    // Unconditional for now. The flag and the `axum.daemon` setting that decide it are worth
+    // having and are not worth guessing at before somebody wants the other behaviour.
+    if owns_daemon.load(Ordering::Relaxed) {
+        crate::stop::stop_one(&crate::daemon::pid_path(socket));
+    }
+
     Ok(())
 }
 
@@ -275,6 +299,7 @@ async fn connection_loop(
     events: mpsc::Sender<HarnessEvent>,
     mut commands: mpsc::Receiver<UiCommand>,
     sessions: Option<std::path::PathBuf>,
+    owns_daemon: Arc<std::sync::atomic::AtomicBool>,
     mut from_cursor: Cursor,
     attached: Arc<std::sync::atomic::AtomicBool>,
 ) {
@@ -292,9 +317,16 @@ async fn connection_loop(
             // the UI came back to a greeting, which is a worse failure than the hang this
             // replaced. The session being resumed is this directory's most recent, which is
             // precisely the one that just died.
-            if let Err(error) = crate::daemon::ensure(&socket, sessions.as_deref(), true).await {
-                debug_log(format_args!("restart failed: {error}"));
-                tokio::time::sleep(RECONNECT_DELAY).await;
+            match crate::daemon::ensure(&socket, sessions.as_deref(), true).await {
+                Ok(spawned) => {
+                    if spawned {
+                        owns_daemon.store(true, Ordering::Relaxed);
+                    }
+                }
+                Err(error) => {
+                    debug_log(format_args!("restart failed: {error}"));
+                    tokio::time::sleep(RECONNECT_DELAY).await;
+                }
             }
             continue;
         };

@@ -29,11 +29,15 @@ const SUN_LEN: usize = 108;
 
 /// Connect to the daemon for `socket`, starting one if nothing answers.
 ///
+/// Answers **whether this call started it**. The UI stops a daemon it started when it exits, so
+/// it has to know which of the two happened: attaching to somebody else's daemon and then
+/// killing it on the way out would end their session.
+///
 /// A socket that exists but refuses is a daemon that died; `bind` clears the stale file, so
 /// starting one is the right response to both cases and they need no distinguishing here.
-pub async fn ensure(socket: &Path, sessions: Option<&Path>, resume: bool) -> Result<()> {
+pub async fn ensure(socket: &Path, sessions: Option<&Path>, resume: bool) -> Result<bool> {
     if axum_ipc::connect(socket).await.is_ok() {
-        return Ok(());
+        return Ok(false);
     }
     // Before anything is spawned, because the failure is certain and the daemon's own report
     // of it lands on a stderr nobody is reading.
@@ -50,7 +54,7 @@ pub async fn ensure(socket: &Path, sessions: Option<&Path>, resume: bool) -> Res
     let deadline = Instant::now() + STARTUP_TIMEOUT;
     while Instant::now() < deadline {
         if axum_ipc::connect(socket).await.is_ok() {
-            return Ok(());
+            return Ok(true);
         }
         // A daemon that has already exited is not going to answer, and waiting the rest of
         // the twenty seconds to say so turns a one-line error into a hang.
@@ -218,5 +222,39 @@ mod startup_tests {
         let socket = std::env::temp_dir().join("axum-no-log-at-all.sock");
         let _ = std::fs::remove_file(log_path(&socket));
         assert_eq!(said(&socket), "");
+    }
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn attaching_to_a_live_daemon_claims_nothing() {
+        // The UI stops a daemon it started. Attaching to somebody else's and then killing it on
+        // the way out would end their session, so `ensure` has to say which of the two happened.
+        let dir = std::env::temp_dir().join(format!("axum-own-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("live.sock");
+        let _listener = axum_ipc::bind(&path).await.expect("bind");
+
+        let spawned = tokio::time::timeout(Duration::from_secs(1), ensure(&path, None, false))
+            .await
+            .expect("no spawn was attempted")
+            .expect("connected");
+        assert!(
+            !spawned,
+            "this call did not start it, so it does not own it"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_refusal_claims_nothing_either() {
+        // A path that cannot bind starts nothing, so there is nothing to stop afterwards.
+        let long = std::env::temp_dir()
+            .join("z".repeat(SUN_LEN))
+            .join("a.sock");
+        assert!(ensure(&long, None, false).await.is_err());
     }
 }
