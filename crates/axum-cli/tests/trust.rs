@@ -228,3 +228,46 @@ axum.tool("ours", {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn no_two_shipped_tool_files_claim_the_same_tool() {
+    // Registration is keyed, so two files declaring `bash` means the later one wins and the
+    // earlier one silently does not exist. A sandboxed-bash *example* was shipped in
+    // `config/tools/` describing itself as "not registered by default"; it was installed with
+    // everything else, won the key, and pointed the shell at `/home/you/project`. The next
+    // command anyone ran answered "bwrap: Can't find source path".
+    //
+    // Anything under `config/` is live configuration. This is the check that says so.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/tools");
+    let mut claimed: std::collections::BTreeMap<String, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for entry in std::fs::read_dir(&dir).expect("config/tools").flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|e| e != "lua") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).expect("a tool file");
+        let file = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        for line in source.lines() {
+            if let Some(rest) = line.trim().strip_prefix("axum.tool(\"")
+                && let Some(name) = rest.split('"').next()
+            {
+                claimed
+                    .entry(name.to_owned())
+                    .or_default()
+                    .push(file.clone());
+            }
+        }
+    }
+    assert!(!claimed.is_empty(), "the shipped tools were not found");
+    for (tool, files) in &claimed {
+        assert_eq!(
+            files.len(),
+            1,
+            "{tool} is declared by {files:?}; the last one installed wins and the rest vanish"
+        );
+    }
+}

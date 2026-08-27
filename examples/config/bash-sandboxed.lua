@@ -1,4 +1,14 @@
--- `bash`, CONFINED. An example, not registered by default.
+-- `bash`, CONFINED. An example — and it lives here, outside `config/`, because of what that
+-- distinction cost.
+--
+-- It was in `config/tools/`, described as "not registered by default", which was simply false:
+-- everything in `config/tools/` is installed by `make configs`, and every installed tool file
+-- is live. Registration is keyed, so this file quietly replaced the real `bash` with one
+-- pointing at a path that does not exist, and the next shell command answered
+-- `bwrap: Can't find source path /home/you/project`. Anything that must not run does not
+-- belong in `config/`.
+--
+-- TO USE IT: copy it over `~/.config/axum/tools/bash.lua` and change the two marked paths.
 --
 -- This is the answer to "does axum need namespace sandboxing", and the answer is that it
 -- already has it: a process tool names the command that starts its peer, so putting a sandbox
@@ -10,9 +20,8 @@
 -- where every other tool decision is expressed, and a machine without `bwrap` simply uses the
 -- file next to this one.
 --
--- TO USE IT: copy over `tools/bash.lua`, and replace the two paths marked below with the
--- directory you want writable. Both must be absolute — a peer is started in the session
--- directory, but bwrap resolves its arguments before that means anything.
+-- Both paths must be absolute: a peer is started in the session directory, but bwrap resolves
+-- its arguments before that means anything.
 --
 -- WHAT THIS BUYS, and what it does not:
 --
