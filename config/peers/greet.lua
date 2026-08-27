@@ -7,10 +7,15 @@
 --     axum.tool("greet", {
 --       transport = {
 --         kind = "process",
---         command = "axum",
+--         command = axum.self,
 --         args = { "ext", "lua", "/absolute/path/to/greet.lua" },
 --       },
 --     })
+--
+-- `axum.self` and not `"axum"`: this example said the latter for a milestone, which is the
+-- exact bug M4 spent a live session finding. Naming the binary and trusting `PATH` finds
+-- whichever copy the shell sees, and an older one that does not know `ext` fails as a broken
+-- pipe with nothing to read -- a failure that looks like the peer, not like the path.
 --
 -- Note what that declaration does NOT contain: a description or a schema. This file is the
 -- only description of the tool, and a peer declares itself when it connects. Writing them in

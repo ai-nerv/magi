@@ -41,7 +41,7 @@ local M = { _NAME = "hexe", _VERSION = 1 }
 -- Every global this family answers to. The file is copied between siblings, so a lookup that knew
 -- only its own name would send discovery down the `io.popen` path on exactly the hosts that refuse
 -- it -- which reads as "nothing is running".
-local HOSTS = { "hexe", "oslo" }
+local HOSTS = { "hexe", "oslo", "axum" }
 
 -- ---------------------------------------------------------------- JSON, in Lua
 

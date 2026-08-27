@@ -39,6 +39,21 @@ pub async fn run(
 ) -> Result<()> {
     let theme = Theme::default();
     let mut app = App::new();
+    // Before anything else, because the answer to "why is my new tool not there" has to arrive
+    // before the model is asked to use it. The daemon holds the tool set it was built with, and
+    // a session that outlived a config edit reports the tool as unregistered -- which reads as a
+    // broken tool rather than a stale daemon.
+    let edited = crate::config::edited_since_start(socket);
+    if !edited.is_empty() {
+        let names: Vec<String> = edited
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect();
+        app.notice_after_attach(format!(
+            "This session started before {} changed. Run `axum stop` to pick it up.",
+            names.join(", ")
+        ));
+    }
     let base_footer = local_footer(mode);
 
     let mut session = Session::open(mode, ui::initial_height(terminal_size().1))?;

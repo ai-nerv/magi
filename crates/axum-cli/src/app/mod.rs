@@ -61,6 +61,12 @@ pub struct App {
     pub connected: bool,
     /// When the current turn started, for the elapsed clock.
     working_since: Option<std::time::Instant>,
+    /// A notice to show once the session's own entries have arrived.
+    ///
+    /// Not shown immediately: attaching replaces `entries` wholesale with what the daemon has,
+    /// so anything appended before the first snapshot is discarded by it. This is for things
+    /// the UI knows at startup and the daemon does not.
+    pending_notice: Option<String>,
     /// Commands submitted but not yet handed to a daemon.
     ///
     /// Set by the driver from the command channel: a prompt sent while the daemon is away
@@ -119,6 +125,7 @@ impl App {
             picker: None,
             picking: None,
             detail: axum_tui::transcript::Detail::Preview,
+            pending_notice: None,
             queued: 0,
             working_since: None,
             tick: 0,
@@ -265,6 +272,11 @@ impl App {
                 let empty = entries.is_empty();
                 self.entries = entries;
                 self.set_status(status);
+                // Now that the daemon's entries have replaced ours, anything the UI knew at
+                // startup can be added without the snapshot eating it.
+                if let Some(text) = self.pending_notice.take() {
+                    self.show_notice(text);
+                }
                 // Said once, on a session that has not started yet. A fresh install points at
                 // a model whose key nobody has set, and the whole of what it told you was
                 // `no-model` in a corner of the footer — true, and no help at all.
@@ -417,6 +429,11 @@ impl App {
     /// a future session should replay, and the daemon never authored it.
     pub fn show_notice(&mut self, text: String) {
         self.entries.push(Entry::Notice { text });
+    }
+
+    /// Hold a notice until the first snapshot has landed.
+    pub fn notice_after_attach(&mut self, text: String) {
+        self.pending_notice = Some(text);
     }
 
     /// Append the keybinding reference.

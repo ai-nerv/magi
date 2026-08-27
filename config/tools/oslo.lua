@@ -18,27 +18,13 @@ local function client()
 end
 
 
--- Find the sibling's newest control socket.
---
--- Done here rather than left to the stub. A stub looks for the family's globals to find a host
--- that can list a directory, and its list names the siblings that existed when it was written --
--- inside axum it finds neither `_G.hexe` nor `_G.oslo` and falls through to shelling out, which
--- a config cannot do. Handing over a path sidesteps a question it should not have to answer.
-local function socket(name)
-  local runtime = os.getenv("XDG_RUNTIME_DIR") or "/tmp"
-  local dir = runtime .. "/" .. name
-  local newest, when = nil, -1
-  for _, entry in ipairs(axum.fs.ls(dir) or {}) do
-    if entry.name:sub(1, 4) == "api@" and entry.name:sub(-5) == ".sock" then
-      -- Newest first: a socket left by a frontend that was killed looks exactly like a live
-      -- one until something connects to it.
-      if (entry.mtime or 0) > when then
-        newest, when = dir .. "/" .. entry.name, entry.mtime or 0
-      end
-    end
-  end
-  return newest
-end
+-- Discovery is the stub's. It was hand-rolled here because the stub could not list a directory
+-- from inside axum -- its list of hosts to ask named `oslo` and `hexe` and not the one it was
+-- running in -- and the workaround guessed a layout: `$XDG_RUNTIME_DIR/oslo/api@*.sock`, which is
+-- hexe's shape, not oslo's. oslo puts its sockets in `$XDG_RUNTIME_DIR/onix/oslo/<id>.sock`, so
+-- this tool had never once connected. `axum` is in the stub's host list now, so the stub's own
+-- discovery works here, and it knows where oslo keeps its sockets because it is oslo's file.
+
 
 axum.tool("oslo", {
   description = [[
@@ -62,8 +48,7 @@ Reads only. To run a command, use `bash`.]],
     local oslo, why = client()
     if not oslo then return { content = tostring(why), is_error = true } end
 
-    local where = socket("oslo")
-    local shell, refused = oslo.connect(where and { path = where } or nil)
+    local shell, refused = oslo.connect()
     if not shell then
       return { content = "no oslo session is running (" .. tostring(refused) .. ")" }
     end

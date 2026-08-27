@@ -33,7 +33,7 @@ local M = { _NAME = "oslo", _VERSION = 1 }
 
 -- Every global this family answers to. The file is copied between siblings, so a lookup that knew
 -- only its own name would fail on exactly the hosts it is meant to run in.
-local FAMILY = { "oslo", "hexe" }
+local FAMILY = { "oslo", "hexe", "axum" }
 
 -- ---------------------------------------------------------------- JSON, in Lua
 
@@ -298,6 +298,25 @@ end
 
 -- ---------------------------------------------------------------- connecting
 
+
+-- Candidates from two sources, in order, without repeats.
+--
+-- The env var is one guess and the directory is the rest; a path that appears in both should be
+-- tried once, because each attempt costs a connect timeout.
+local function append(first, rest)
+  local seen = {}
+  local out = {}
+  for _, list in ipairs({ first or {}, rest or {} }) do
+    for _, candidate in ipairs(list) do
+      if not seen[candidate.path] then
+        seen[candidate.path] = true
+        out[#out + 1] = candidate
+      end
+    end
+  end
+  return out
+end
+
 --- Where a shell's socket is, given what little the caller said.
 ---
 --- `$OSLO_SOCK` first, because a process the shell started inherits it and means *that* shell. A
@@ -310,14 +329,20 @@ local function find(where)
   if type(where) == "table" and where.path then return { { path = where.path } } end
   local named = type(where) == "string" and where or nil
 
-  local env = os.getenv("OSLO_SOCK")
-  if not named and env and env ~= "" then return { { path = env } } end
-
   local runtime = os.getenv("XDG_RUNTIME_DIR")
   local dir = (runtime and runtime ~= "")
     and (runtime .. "/onix/oslo")
     or ("/tmp/onix-" .. (os.getenv("UID") or "0") .. "/oslo")
   if named then return { { path = dir .. "/" .. named .. ".sock" } } end
+
+  -- `$OSLO_SOCK` goes first and does not go alone. A process the shell started inherits it and
+  -- means *that* shell, which is why it wins -- but it is inherited through every child of every
+  -- process the shell ever started, so a long-lived one carries the path of a shell that exited
+  -- hours ago. Returned as the only candidate it made discovery fail outright whenever it was
+  -- stale, which is the case it exists to be right about.
+  local candidates = {}
+  local env = os.getenv("OSLO_SOCK")
+  if env and env ~= "" then candidates[1] = { path = env } end
 
   -- No id and no env var: the newest socket in the directory. Plain Lua cannot list one, so this
   -- asks the host two ways and gives up rather than guessing.
@@ -343,7 +368,7 @@ local function find(where)
       end
     end
     table.sort(found, function(a, b) return a.when > b.when end)
-    return found
+    return append(candidates, found)
   end
 
   local ok, found = pcall(function()
@@ -354,7 +379,7 @@ local function find(where)
     ls:close()
     return out
   end)
-  return ok and found or nil
+  return append(candidates, ok and found or nil)
 end
 
 --- Open a connection to a running oslo.

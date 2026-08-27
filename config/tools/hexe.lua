@@ -20,27 +20,11 @@ local function client()
 end
 
 
--- Find the sibling's newest control socket.
---
--- Done here rather than left to the stub. A stub looks for the family's globals to find a host
--- that can list a directory, and its list names the siblings that existed when it was written --
--- inside axum it finds neither `_G.hexe` nor `_G.oslo` and falls through to shelling out, which
--- a config cannot do. Handing over a path sidesteps a question it should not have to answer.
-local function socket(name)
-  local runtime = os.getenv("XDG_RUNTIME_DIR") or "/tmp"
-  local dir = runtime .. "/" .. name
-  local newest, when = nil, -1
-  for _, entry in ipairs(axum.fs.ls(dir) or {}) do
-    if entry.name:sub(1, 4) == "api@" and entry.name:sub(-5) == ".sock" then
-      -- Newest first: a socket left by a frontend that was killed looks exactly like a live
-      -- one until something connects to it.
-      if (entry.mtime or 0) > when then
-        newest, when = dir .. "/" .. entry.name, entry.mtime or 0
-      end
-    end
-  end
-  return newest
-end
+-- Discovery is the stub's, for the same reason it is oslo's: `axum` is in the stub's host list
+-- now, so it can list the socket directory from in here rather than shelling out to a VM that
+-- refuses. What was hand-rolled here happened to match hexe's layout and so happened to work --
+-- the identical code in the oslo tool guessed hexe's shape for oslo and never connected once.
+
 
 axum.tool("hexe", {
   description = [[
@@ -66,8 +50,7 @@ Use it to find out what the user is looking at. It reads; it does not rearrange 
     local hexe, why = client()
     if not hexe then return { content = tostring(why), is_error = true } end
 
-    local where = socket("hexe")
-    local mux, refused = hexe.connect(where and { path = where } or nil)
+    local mux, refused = hexe.connect()
     if not mux then
       -- Not an error the model should work around: there is simply no mux here.
       return { content = "no hexe session is running (" .. tostring(refused) .. ")" }

@@ -331,6 +331,50 @@ pub fn backend(loaded: &Loaded) -> Option<axum_host::turn::Backend> {
         system: system(loaded),
     })
 }
+
+/// Configuration files edited since the daemon on `socket` started.
+///
+/// The daemon holds the tool set it was built with. Nothing said so, and the two disagreed in
+/// the worst direction: `axum tools` reads the configuration and lists a tool you just added,
+/// the running session was never told about it, and the model reports that the tool is not
+/// registered -- which reads as a broken tool rather than a stale daemon. Same shape as "I ran
+/// `make configs` and still nothing".
+///
+/// The pid file is written when the daemon is spawned, so its mtime is when the session began.
+/// No protocol change and nothing to keep in sync: a file newer than that was not read.
+#[must_use]
+pub fn edited_since_start(socket: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(started) = std::fs::metadata(crate::daemon::pid_path(socket)).and_then(|m| m.modified())
+    else {
+        return Vec::new();
+    };
+    let mut watched = installed_files();
+    if let Ok(cwd) = std::env::current_dir() {
+        watched.push(cwd.join(".axum.lua"));
+    }
+    newer_than(&watched, started)
+}
+
+/// Which of `files` were modified after `started`.
+///
+/// Split out so it can be tested: the caller's half depends on a config directory and a live
+/// daemon, and neither is something a test should have to stand up to check an mtime compare.
+#[must_use]
+fn newer_than(
+    files: &[std::path::PathBuf],
+    started: std::time::SystemTime,
+) -> Vec<std::path::PathBuf> {
+    files
+        .iter()
+        .filter(|path| {
+            std::fs::metadata(path)
+                .and_then(|m| m.modified())
+                .is_ok_and(|edited| edited > started)
+        })
+        .cloned()
+        .collect()
+}
+
 /// Files the installed config directory contributes, in the order they are applied.
 ///
 /// Protocols first, then the catalog, then the user's own file — because a provider names a
@@ -677,5 +721,73 @@ mod tests {
     fn a_malformed_declaration_says_what_is_wrong() {
         let error = declare("x", &serde_json::json!({ "api": "nonsense" })).expect_err("must fail");
         assert!(!error.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod staleness_tests {
+    use super::*;
+    use std::time::{Duration, SystemTime};
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("axum-stale-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        dir
+    }
+
+    #[test]
+    fn a_file_edited_after_the_session_started_is_reported() {
+        // The whole point: `axum tools` lists the tool you just added, the running daemon was
+        // never told, and the model reports it as unregistered.
+        let dir = scratch("edited");
+        let file = dir.join("greet.lua");
+        std::fs::write(&file, "x").expect("write");
+        let started = SystemTime::now() - Duration::from_secs(3600);
+        assert_eq!(newer_than(&[file.clone()], started), vec![file]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_older_than_the_session_is_not() {
+        let dir = scratch("older");
+        let file = dir.join("greet.lua");
+        std::fs::write(&file, "x").expect("write");
+        let started = SystemTime::now() + Duration::from_secs(3600);
+        assert!(newer_than(&[file], started).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_that_does_not_exist_is_not_a_change() {
+        // `installed_files` names what a config *could* have; most installs have some of it.
+        let dir = scratch("absent");
+        let started = SystemTime::now() - Duration::from_secs(3600);
+        assert!(newer_than(&[dir.join("nothing.lua")], started).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_pid_file_is_no_claim_either_way() {
+        // Nothing is running, so nothing is out of date. Warning here would fire on every
+        // first start in a directory.
+        let dir = scratch("nopid");
+        assert!(edited_since_start(&dir.join("a.sock")).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_the_changed_files_are_named() {
+        let dir = scratch("some");
+        let old = dir.join("old.lua");
+        let new = dir.join("new.lua");
+        std::fs::write(&old, "x").expect("write");
+        std::fs::write(&new, "x").expect("write");
+        // `old` predates the mark, `new` follows it.
+        let started = SystemTime::now();
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&new, "y").expect("rewrite");
+        assert_eq!(newer_than(&[old, new.clone()], started), vec![new]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
