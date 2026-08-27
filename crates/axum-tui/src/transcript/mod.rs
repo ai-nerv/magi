@@ -48,9 +48,17 @@ pub fn entry_lines(entry: &Entry, width: u16, theme: &Theme, detail: Detail) -> 
             width,
             theme,
         ),
-        Entry::Branch { keeps, .. } => {
-            marker(&format!(" rewound to message {keeps} "), width, theme)
-        }
+        // `keeps` is a journal index, and printing it says nothing a reader can act on. What
+        // matters is that everything above the rule is still on the screen and no longer sent.
+        Entry::Branch { keeps, .. } => marker(
+            &if *keeps == 0 {
+                " rewound — nothing above is sent from here ".to_owned()
+            } else {
+                format!(" rewound — only the first {keeps} messages are sent from here ")
+            },
+            width,
+            theme,
+        ),
     }
 }
 
@@ -526,5 +534,60 @@ mod stop_tests {
             lines.iter().any(|l| l.contains("daemon went away")),
             "{lines:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod branch_tests {
+    use super::tests::text_of;
+    use super::*;
+    use axum_proto::MessageId;
+
+    fn rewound(keeps: usize) -> Entry {
+        Entry::Branch {
+            id: MessageId::new("b"),
+            keeps,
+        }
+    }
+
+    #[test]
+    fn a_rewind_says_what_it_did_rather_than_where_it_landed() {
+        // "rewound to message 0" is a journal index. Nobody has one of those in mind.
+        let lines = text_of(&entry_lines(
+            &rewound(0),
+            80,
+            &Theme::default(),
+            Detail::Preview,
+        ));
+        let joined = lines.join(" ");
+        assert!(joined.contains("nothing above is sent"), "{joined}");
+        assert!(!joined.contains("message 0"), "{joined}");
+    }
+
+    #[test]
+    fn a_partial_rewind_says_how_much_it_kept() {
+        let lines = text_of(&entry_lines(
+            &rewound(4),
+            80,
+            &Theme::default(),
+            Detail::Preview,
+        ));
+        assert!(lines.join(" ").contains("first 4"), "{lines:?}");
+    }
+
+    #[test]
+    fn the_rule_still_spans_the_width() {
+        let lines = entry_lines(&rewound(2), 60, &Theme::default(), Detail::Preview);
+        let widest = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.chars().count())
+                    .sum::<usize>()
+            })
+            .max()
+            .unwrap_or(0);
+        assert_eq!(widest, 60);
     }
 }
