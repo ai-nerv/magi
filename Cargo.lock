@@ -88,6 +88,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "axum-core"
+version = "0.1.0"
+dependencies = [
+ "axum-model",
+ "axum-provider",
+ "serde_json",
+]
+
+[[package]]
 name = "axum-host"
 version = "0.1.0"
 dependencies = [

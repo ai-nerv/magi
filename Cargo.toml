@@ -9,6 +9,7 @@ members = [
   "crates/axum-model",
   "crates/axum-tui",
   "crates/axum-cli",
+  "crates/axum-core",
   "crates/axum-testkit",
 ]
 resolver = "3"
@@ -30,6 +31,7 @@ unwrap_used = "deny"
 
 [workspace.dependencies]
 axum-host = { path = "crates/axum-host" }
+axum-core = { path = "crates/axum-core" }
 axum-ipc = { path = "crates/axum-ipc" }
 axum-journal = { path = "crates/axum-journal" }
 axum-lua = { path = "crates/axum-lua" }
