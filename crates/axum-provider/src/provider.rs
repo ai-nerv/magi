@@ -62,8 +62,12 @@ impl Auth {
         match self {
             Self::ApiKey { vars } => format!("set {}", vars.join(" or ")),
             Self::OAuth { service, .. } => format!("sign in to {service}"),
-            Self::AwsSigV4 => "configure AWS credentials".to_owned(),
-            Self::GoogleAdc => "configure Google application default credentials".to_owned(),
+            // What is true, not what would be true if these were implemented. `resolve`
+            // returns `None` for both whatever the machine holds, so a person who followed
+            // "configure AWS credentials" would find nothing had changed and go looking for
+            // the mistake in their own setup.
+            Self::AwsSigV4 => "not yet: signing requests with AWS credentials".to_owned(),
+            Self::GoogleAdc => "not yet: reading Google application default credentials".to_owned(),
             Self::None => String::new(),
         }
     }
@@ -88,7 +92,9 @@ impl Auth {
             // signed in, which a stale token still answers yes to; renewing it is the job of
             // `bearer`, which can wait on a network round trip and this cannot.
             Self::OAuth { .. } => None,
-            // Talking to a credential chain, which these two need, is a later milestone.
+            // A credential chain is a signing implementation, not a lookup: SigV4 signs each
+            // request and ADC mints a short-lived token. Neither is written, and `requirement`
+            // says so rather than implying a variable would do it.
             Self::AwsSigV4 | Self::GoogleAdc | Self::None => None,
         }
     }
@@ -285,7 +291,12 @@ mod tests {
         };
         assert_eq!(oauth.requirement(), "sign in to ChatGPT");
         assert!(oauth.vars().is_empty(), "there is nothing to export");
-        assert_eq!(Auth::AwsSigV4.requirement(), "configure AWS credentials");
+        // "Not yet", not "configure them": `resolve` answers `None` whatever the machine
+        // holds, so telling somebody to configure credentials sends them to fix a setup that
+        // was never the problem.
+        assert!(Auth::AwsSigV4.requirement().starts_with("not yet"));
+        assert!(Auth::AwsSigV4.resolve().is_none());
+        assert!(Auth::GoogleAdc.requirement().starts_with("not yet"));
     }
 
     #[test]

@@ -384,3 +384,74 @@ fn the_shipped_config_names_the_binary_that_is_running() {
         "bash.lua must not rely on PATH"
     );
 }
+
+#[test]
+fn a_peer_can_be_confined_by_configuration_alone() {
+    // Open question 5, settled: axum needs no sandboxing subsystem because a process tool
+    // names the command that starts its peer. Putting `bwrap` in front of that command is a
+    // config change. Tau made namespaces mandatory and fail-closed and was punished for it on
+    // every platform that has none; here it is the user's choice, and a machine without
+    // `bwrap` uses the peer directly.
+    let Ok(bwrap) = which("bwrap") else {
+        eprintln!("no bwrap; the confinement check did not run");
+        return;
+    };
+    let (mut registry, ops, dir) = session_raw("confined");
+    registry.register(Box::new(axum_tools::process::ProcessTool::new(
+        "bash",
+        "A confined shell.",
+        serde_json::json!({ "type": "object" }),
+        &bwrap,
+        vec![
+            "--ro-bind".into(),
+            "/".into(),
+            "/".into(),
+            "--dev".into(),
+            "/dev".into(),
+            "--proc".into(),
+            "/proc".into(),
+            "--bind".into(),
+            dir.display().to_string(),
+            dir.display().to_string(),
+            env!("CARGO_BIN_EXE_axum").to_owned(),
+            "ext".into(),
+            "shell".into(),
+        ],
+    )));
+
+    let outside = registry.call(
+        "bash",
+        &serde_json::json!({ "command": "touch /etc/axum-should-not-exist" }),
+        &ops,
+        &Uncancelled,
+    );
+    assert!(
+        outside.content.contains("Read-only") || outside.is_error,
+        "writing outside the session directory is refused: {}",
+        outside.content
+    );
+    assert!(
+        !std::path::Path::new("/etc/axum-should-not-exist").exists(),
+        "and really did not happen"
+    );
+
+    let inside = registry.call(
+        "bash",
+        &serde_json::json!({ "command": "touch ./allowed && echo ok" }),
+        &ops,
+        &Uncancelled,
+    );
+    assert!(!inside.is_error, "{}", inside.content);
+    assert_eq!(inside.content.trim(), "ok", "the session directory works");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Find a program on `PATH`, or say there is none.
+fn which(program: &str) -> Result<String, ()> {
+    let path = std::env::var_os("PATH").ok_or(())?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(program))
+        .find(|candidate| candidate.is_file())
+        .map(|found| found.display().to_string())
+        .ok_or(())
+}
