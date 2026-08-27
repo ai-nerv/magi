@@ -130,7 +130,7 @@ async fn a_turn_streams_into_the_journal() {
         &session,
         &backend,
         &adapter,
-        &Client::new(),
+        &Client::with_base_delay(std::time::Duration::from_millis(1)),
         &registry,
         &ops,
     )
@@ -167,7 +167,11 @@ async fn a_turn_streams_into_the_journal() {
 async fn a_provider_error_becomes_a_well_formed_entry() {
     // Errors are values: the transcript stays uniform and the UI needs no error branch.
     let (session, dir) = session("err");
-    let backend = backend(serve_once("529 Overloaded", "{\"error\":\"overloaded\"}"));
+    // Every attempt, not one: with retries a one-shot server answers the first and refuses
+    // the connection for the rest, so the failure reported would be a transport error rather
+    // than the 529 this is about.
+    let (url, _seen) = serve_flaky(usize::MAX, "529 Overloaded", STREAM);
+    let backend = backend(url);
 
     let adapter = LuaAdapter::new(
         engine_with_builtins().expect("builtins"),
@@ -180,7 +184,7 @@ async fn a_provider_error_becomes_a_well_formed_entry() {
         &session,
         &backend,
         &adapter,
-        &Client::new(),
+        &Client::with_base_delay(std::time::Duration::from_millis(1)),
         &registry,
         &ops,
     )
@@ -221,7 +225,7 @@ async fn the_turn_ends_idle_whatever_happened() {
         &session,
         &backend,
         &adapter,
-        &Client::new(),
+        &Client::with_base_delay(std::time::Duration::from_millis(1)),
         &registry,
         &ops,
     )
@@ -273,7 +277,7 @@ async fn an_interrupt_stops_a_turn_the_model_has_not_finished() {
             &session,
             &backend,
             &adapter,
-            &Client::new(),
+            &Client::with_base_delay(std::time::Duration::from_millis(1)),
             &registry,
             &ops,
         ),
@@ -367,7 +371,7 @@ async fn an_overflow_is_compacted_and_the_turn_carries_on() {
         &session,
         &backend,
         &adapter,
-        &Client::new(),
+        &Client::with_base_delay(std::time::Duration::from_millis(1)),
         &registry,
         &ops,
     )
@@ -444,5 +448,185 @@ async fn a_compacted_session_sends_the_summary_and_not_the_history() {
         "the kept tail survives: {sent}"
     );
     drop(held);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Fail the first `failures` requests with `status`, then behave.
+///
+/// Returns the endpoint and a count of how many requests it was sent. Counted rather than
+/// timed, because these tests pause the clock and a paused clock auto-advances whenever the
+/// runtime has nothing to run — which, while a real socket is in flight, is most of the time.
+/// Elapsed virtual time therefore says nothing about whether anything waited.
+fn serve_flaky(
+    failures: usize,
+    status: &'static str,
+    body: &'static str,
+) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = std::sync::Arc::clone(&seen);
+    std::thread::spawn(move || {
+        for (served, socket) in listener.incoming().enumerate() {
+            let Ok(mut socket) = socket else { return };
+            let counter = std::sync::Arc::clone(&counter);
+            std::thread::spawn(move || {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let mut reader = BufReader::new(socket.try_clone().expect("clone"));
+                let mut line = String::new();
+                while reader.read_line(&mut line).unwrap_or(0) > 0 {
+                    if line == "\r\n" {
+                        break;
+                    }
+                    line.clear();
+                }
+                let (status, payload) = if served < failures {
+                    (status, "{\"error\":\"overloaded\"}")
+                } else {
+                    ("200 OK", body)
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: text/event-stream\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{payload}",
+                    payload.len()
+                );
+                let _ = socket.write_all(response.as_bytes());
+            });
+        }
+    });
+    (format!("http://127.0.0.1:{port}"), seen)
+}
+
+#[tokio::test]
+async fn a_provider_having_a_bad_moment_is_waited_out() {
+    // `retry.rs` has had classification, exponential backoff, per-request jitter and a full
+    // test suite since M2, and nothing called any of it: a 529 — routine from a busy provider
+    // — killed the turn outright while the code that would have survived it sat one module
+    // away. The client is given a one-millisecond base delay, so the policy runs in full and
+    // the test does not spend a minute proving arithmetic that has its own tests.
+    let (session, dir) = session("flaky");
+    let (url, seen) = serve_flaky(2, "529 Overloaded", STREAM);
+    let backend = backend(url);
+
+    let adapter = LuaAdapter::new(
+        engine_with_builtins().expect("builtins"),
+        "anthropic-messages",
+    )
+    .expect("the protocol is registered");
+    let registry = axum_tools::Registry::new();
+    let ops = axum_tools::ops::Real::new(std::env::temp_dir());
+    run(
+        &session,
+        &backend,
+        &adapter,
+        &Client::with_base_delay(std::time::Duration::from_millis(1)),
+        &registry,
+        &ops,
+    )
+    .await
+    .expect("the turn runs");
+
+    let held = session.lock().await;
+    let Entry::Assistant { text, error, .. } = &held.entries()[0] else {
+        panic!("expected an assistant entry");
+    };
+    assert_eq!(text, "The journal is append-only.", "it got through");
+    assert!(error.is_none(), "{error:?}");
+    assert_eq!(
+        seen.load(std::sync::atomic::Ordering::SeqCst),
+        3,
+        "two refusals and the one that worked"
+    );
+    drop(held);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_failure_that_retrying_cannot_fix_is_not_retried() {
+    // A 401 is not a bad moment. Waiting it out four times wastes a minute to arrive at the
+    // same answer, and the answer is one only a person can act on.
+    let (session, dir) = session("auth");
+    let (url, seen) = serve_flaky(usize::MAX, "401 Unauthorized", STREAM);
+    let backend = backend(url);
+
+    let adapter = LuaAdapter::new(
+        engine_with_builtins().expect("builtins"),
+        "anthropic-messages",
+    )
+    .expect("the protocol is registered");
+    let registry = axum_tools::Registry::new();
+    let ops = axum_tools::ops::Real::new(std::env::temp_dir());
+    run(
+        &session,
+        &backend,
+        &adapter,
+        &Client::with_base_delay(std::time::Duration::from_millis(1)),
+        &registry,
+        &ops,
+    )
+    .await
+    .expect("the turn returns");
+
+    assert_eq!(
+        seen.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "asked once and took the answer"
+    );
+    let held = session.lock().await;
+    let Entry::Assistant { error, .. } = &held.entries()[0] else {
+        panic!("expected an assistant entry");
+    };
+    assert!(
+        error.as_deref().unwrap_or_default().contains("401"),
+        "{error:?}"
+    );
+    drop(held);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn the_wait_is_announced_while_it_is_happening() {
+    // The UI has had a `Retrying` display since M0 that nothing ever set. Saying so afterwards
+    // is no use: the point is to tell a person watching a spinner that it is a wait.
+    let (session, dir) = session("announced");
+    let (url, _seen) = serve_flaky(1, "529 Overloaded", STREAM);
+    let backend = backend(url);
+    let mut live = session.lock().await.subscribe();
+
+    let adapter = LuaAdapter::new(
+        engine_with_builtins().expect("builtins"),
+        "anthropic-messages",
+    )
+    .expect("the protocol is registered");
+    let registry = axum_tools::Registry::new();
+    let ops = axum_tools::ops::Real::new(std::env::temp_dir());
+    run(
+        &session,
+        &backend,
+        &adapter,
+        &Client::with_base_delay(std::time::Duration::from_millis(1)),
+        &registry,
+        &ops,
+    )
+    .await
+    .expect("the turn runs");
+
+    let mut announced = None;
+    while let Ok(event) = live.try_recv() {
+        if let axum_proto::HarnessEvent::StatusChanged {
+            status:
+                axum_proto::AgentStatus::Retrying {
+                    attempt, delay_ms, ..
+                },
+            ..
+        } = event
+        {
+            announced = Some((attempt, delay_ms));
+        }
+    }
+    let (attempt, delay_ms) = announced.expect("the wait was published");
+    assert_eq!(attempt, 1, "the first try is the one that failed");
+    assert!(delay_ms > 0, "and it says how long");
+    drop(live);
     let _ = std::fs::remove_dir_all(&dir);
 }

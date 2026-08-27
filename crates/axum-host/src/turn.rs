@@ -74,11 +74,13 @@ async fn compact(
     let mut deltas = Vec::new();
     let outcome = client
         .stream(
-            adapter,
-            &backend.provider,
-            &backend.model,
-            &asked,
-            &backend.options,
+            &axum_provider::client::Call {
+                adapter,
+                provider: &backend.provider,
+                model: &backend.model,
+                context: &asked,
+                options: &backend.options,
+            },
             |delta| deltas.push(delta),
         )
         .await;
@@ -130,20 +132,47 @@ async fn one_turn(
     session.lock().await.commit(assistant(&id, &turn))?;
 
     let mut deltas = Vec::new();
-    // The provider call is raced against the interrupt rather than polled after it: a model
-    // mid-answer holds this future for as long as it keeps talking, and a flag checked when it
-    // returns is a stop that arrives once the work it was stopping is already paid for.
-    let outcome = tokio::select! {
-        biased;
-        () = cancel.requested() => Ok(()),
-        outcome = client.stream(
+    // A channel rather than a collected list, because the whole value of saying "retrying" is
+    // saying it *during* the wait. A person watching a spinner for forty seconds needs to know
+    // it is a wait and not a hang, and afterwards is too late to be the answer.
+    let (retries, mut retried) = tokio::sync::mpsc::unbounded_channel();
+    let outcome = {
+        // The provider call is raced against the interrupt rather than polled after it: a model
+        // mid-answer holds this future for as long as it keeps talking, and a flag checked when
+        // it returns is a stop that arrives once the work it was stopping is already paid for.
+        let call = axum_provider::client::Call {
             adapter,
-            &backend.provider,
-            &backend.model,
-            &context,
-            &backend.options,
+            provider: &backend.provider,
+            model: &backend.model,
+            context: &context,
+            options: &backend.options,
+        };
+        let streaming = client.stream_reporting(
+            &call,
             |delta| deltas.push(delta),
-        ) => outcome,
+            |retry| {
+                // A closed receiver means the turn is over; there is nobody to tell.
+                let _ = retries.send(retry);
+            },
+        );
+        let mut streaming = std::pin::pin!(streaming);
+        loop {
+            tokio::select! {
+                biased;
+                () = cancel.requested() => break Ok(()),
+                Some(retry) = retried.recv() => {
+                    // The UI has had a display for this since M0 that nothing ever set: during
+                    // an overload a person saw "Thinking" for a minute with no sign that
+                    // anything had gone wrong or that it was going to be tried again.
+                    session.lock().await.set_status(AgentStatus::Retrying {
+                        attempt: retry.attempt,
+                        max_attempts: retry.max_attempts,
+                        delay_ms: u64::try_from(retry.delay.as_millis()).unwrap_or(u64::MAX),
+                    });
+                }
+                outcome = &mut streaming => break outcome,
+            }
+        }
     };
 
     for delta in deltas {

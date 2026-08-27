@@ -88,7 +88,7 @@ fn mentions_length(message: &str) -> bool {
 }
 
 /// The first delay, before any growth.
-const BASE: Duration = Duration::from_secs(10);
+pub(crate) const BASE: Duration = Duration::from_secs(10);
 
 /// The most any single wait will be.
 const CEILING: Duration = Duration::from_secs(600);
@@ -100,13 +100,23 @@ const CEILING: Duration = Duration::from_secs(600);
 /// difference between a backoff you can assert on and one you can only observe.
 #[must_use]
 pub fn backoff(attempt: u32, seed: u64) -> Duration {
+    backoff_from(BASE, attempt, seed)
+}
+
+/// The same, from a stated first delay.
+///
+/// The base is a parameter so a caller can hold the policy rather than inherit it. Tests are
+/// the caller that needs this: four attempts at the real base is a minute of a test suite
+/// spent proving arithmetic that has its own tests already.
+#[must_use]
+pub fn backoff_from(base_delay: Duration, attempt: u32, seed: u64) -> Duration {
     // 1, 2, 3, 5, 8 — from (1, 2) rather than (1, 1), so consecutive attempts never share a
     // multiplier and each wait is strictly longer than the last.
     let (mut a, mut b) = (1_u64, 2_u64);
     for _ in 1..attempt.max(1) {
         (a, b) = (b, a.saturating_add(b));
     }
-    let base = BASE.saturating_mul(u32::try_from(a).unwrap_or(u32::MAX));
+    let base = base_delay.saturating_mul(u32::try_from(a).unwrap_or(u32::MAX));
     let capped = base.min(CEILING);
 
     // Jitter spreads a thundering herd across the last sixth of the window; the ceiling stays

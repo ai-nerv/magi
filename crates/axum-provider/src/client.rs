@@ -8,6 +8,43 @@ use crate::api::{Adapter, Delta, Options};
 use crate::model::Model;
 use crate::provider::{Auth, Provider};
 use crate::retry::RetryClass;
+
+/// How many times a request is made before the failure is the answer.
+///
+/// Four, because the delays grow: a fifth would have the caller waiting minutes for something
+/// that is plainly not coming back.
+const MAX_ATTEMPTS: u32 = 4;
+
+/// Everything one request is made of.
+///
+/// Gathered because the five travel together everywhere and always have: a signature that
+/// lists them beside two callbacks is one nobody reads, and one where the callbacks are easy
+/// to transpose.
+pub struct Call<'a> {
+    /// The protocol description that shapes the request and reads the stream.
+    pub adapter: &'a dyn Adapter,
+    /// Who is being asked.
+    pub provider: &'a Provider,
+    /// Which of their models.
+    pub model: &'a Model,
+    /// The conversation so far.
+    pub context: &'a Context,
+    /// What to ask for beyond it.
+    pub options: &'a Options,
+}
+
+/// A failure that is being waited out rather than reported.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Retrying {
+    /// Which try just failed, counting from one.
+    pub attempt: u32,
+    /// How many will be made in total.
+    pub max_attempts: u32,
+    /// How long before the next one.
+    pub delay: std::time::Duration,
+    /// What went wrong, for the person watching.
+    pub why: String,
+}
 use crate::sse;
 use axum_model::Context;
 use futures_util::StreamExt;
@@ -39,6 +76,12 @@ impl ProviderError {
 /// Streams turns from providers.
 pub struct Client {
     http: reqwest::Client,
+    /// The first backoff delay; each later one grows from it.
+    ///
+    /// Held rather than read from a constant, because the retry policy is this client's and
+    /// not the module's. A test that needs four attempts should not have to spend a minute of
+    /// real time proving arithmetic that has tests of its own.
+    base_delay: std::time::Duration,
 }
 
 impl Default for Client {
@@ -48,6 +91,17 @@ impl Default for Client {
 }
 
 impl Client {
+    /// The same, waiting `base_delay` before the first retry.
+    ///
+    /// For tests, and for anyone who knows their endpoint recovers faster than a public one.
+    #[must_use]
+    pub fn with_base_delay(base_delay: std::time::Duration) -> Self {
+        Self {
+            base_delay,
+            ..Self::new()
+        }
+    }
+
     /// A client with axum's defaults.
     #[must_use]
     pub fn new() -> Self {
@@ -58,6 +112,7 @@ impl Client {
                 .connect_timeout(std::time::Duration::from_secs(15))
                 .build()
                 .unwrap_or_default(),
+            base_delay: crate::retry::BASE,
         }
     }
 
@@ -67,13 +122,81 @@ impl Client {
     /// arrives and folds it into a turn, and both want to happen before the next one is read.
     pub async fn stream(
         &self,
-        adapter: &dyn Adapter,
-        provider: &Provider,
-        model: &Model,
-        context: &Context,
-        options: &Options,
+        call: &Call<'_>,
+        on_delta: impl FnMut(Delta),
+    ) -> Result<(), ProviderError> {
+        self.stream_reporting(call, on_delta, |_| {}).await
+    }
+
+    /// The same, saying when it is about to wait and try again.
+    ///
+    /// A 529 from a busy provider is routine, and so is a network blip. Both are survivable by
+    /// waiting, and `retry.rs` has had the policy — classification, exponential backoff,
+    /// per-request jitter, tests — since M2 with nothing calling it. A turn died on the first
+    /// hiccup while the code that would have saved it sat one module away.
+    ///
+    /// The report is a callback rather than a return value because it happens *during*: a
+    /// person watching a spinner for forty seconds needs to be told it is a wait and not a
+    /// hang, and afterwards is too late to say so.
+    pub async fn stream_reporting(
+        &self,
+        call: &Call<'_>,
+        mut on_delta: impl FnMut(Delta),
+        mut on_retry: impl FnMut(Retrying),
+    ) -> Result<(), ProviderError> {
+        let mut attempt = 1;
+        loop {
+            // Deltas from an attempt that then failed must not reach the caller: a turn that
+            // folded half a message and then retried would show it twice.
+            let mut collected = Vec::new();
+            let outcome = self
+                .attempt(call, |delta| {
+                    collected.push(delta);
+                })
+                .await;
+            match outcome {
+                Ok(()) => {
+                    for delta in collected {
+                        on_delta(delta);
+                    }
+                    return Ok(());
+                }
+                Err(why) if why.class.is_retryable() && attempt < MAX_ATTEMPTS => {
+                    let wait = crate::retry::backoff_from(
+                        self.base_delay,
+                        attempt,
+                        crate::retry::seed(
+                            &format!("{}/{}", call.provider.id, call.model.id),
+                            attempt,
+                        ),
+                    );
+                    on_retry(Retrying {
+                        attempt,
+                        max_attempts: MAX_ATTEMPTS,
+                        delay: wait,
+                        why: why.message.clone(),
+                    });
+                    tokio::time::sleep(wait).await;
+                    attempt += 1;
+                }
+                Err(why) => return Err(why),
+            }
+        }
+    }
+
+    /// One try, with no policy about what to do if it fails.
+    async fn attempt(
+        &self,
+        call: &Call<'_>,
         mut on_delta: impl FnMut(Delta),
     ) -> Result<(), ProviderError> {
+        let Call {
+            adapter,
+            provider,
+            model,
+            context,
+            options,
+        } = call;
         let Some(base_url) = provider.base_url.as_deref() else {
             return Err(ProviderError::new(
                 RetryClass::Invalid,
