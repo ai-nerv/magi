@@ -78,14 +78,19 @@ fn serve_recording(body: String, seen: Arc<Mutex<Vec<String>>>) -> String {
     format!("http://127.0.0.1:{port}")
 }
 
-/// A directory holding a project config that points at the fake provider.
+/// A working directory, and a machine config pointing at the fake provider.
+///
+/// The provider goes in the machine's own configuration rather than a project `.axum.lua`,
+/// because a project file is not allowed to declare one — see `trust.rs`. That is also where a
+/// real provider lives, so this is the arrangement being tested rather than a way around it.
 fn workspace(name: &str, base_url: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("axum-one-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("run")).expect("mkdir");
     std::fs::create_dir_all(dir.join("sessions")).expect("mkdir");
+    std::fs::create_dir_all(dir.join("config/axum")).expect("mkdir");
     std::fs::write(
-        dir.join(".axum.lua"),
+        dir.join("config/axum/providers.lua"),
         format!(
             "axum.provider(\"fake\", {{\n\
              \x20 name = \"Fake\",\n\
@@ -93,11 +98,17 @@ fn workspace(name: &str, base_url: &str) -> PathBuf {
              \x20 base_url = \"{base_url}\",\n\
              \x20 auth = {{ kind = \"none\" }},\n\
              \x20 models = {{ {{ id = \"m\", name = \"M\", context_window = 200000, max_tokens = 4096 }} }},\n\
-             }})\n\
-             axum.model = \"fake/m\"\n"
+             }})\n"
         ),
     )
-    .expect("write config");
+    .expect("write providers");
+    // A setting, not a declaration: choosing among what exists carries no authority, so this
+    // could equally have gone in the project file.
+    std::fs::write(
+        dir.join("config/axum/init.lua"),
+        "axum.model = \"fake/m\"\n",
+    )
+    .expect("write init");
     dir
 }
 
@@ -106,7 +117,7 @@ fn axum(dir: &Path, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_axum"))
         .current_dir(dir)
         .env("XDG_RUNTIME_DIR", dir.join("run"))
-        .env("XDG_CONFIG_HOME", dir.join("no-such-config"))
+        .env("XDG_CONFIG_HOME", dir.join("config"))
         .arg("--socket")
         .arg(dir.join("run/host.sock"))
         .args(args)
@@ -274,7 +285,7 @@ fn two_directories_do_not_share_a_session() {
     let a = Command::new(env!("CARGO_BIN_EXE_axum"))
         .current_dir(&one)
         .env("XDG_RUNTIME_DIR", one.join("run"))
-        .env("XDG_CONFIG_HOME", one.join("no-such-config"))
+        .env("XDG_CONFIG_HOME", one.join("config"))
         .args(["--sessions", "sessions", "-p", "hello"])
         .output()
         .expect("run");
@@ -325,7 +336,7 @@ fn a_daemon_killed_mid_turn_leaves_a_journal_that_still_loads() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_axum"))
         .current_dir(&dir)
         .env("XDG_RUNTIME_DIR", dir.join("run"))
-        .env("XDG_CONFIG_HOME", dir.join("no-such-config"))
+        .env("XDG_CONFIG_HOME", dir.join("config"))
         .arg("--socket")
         .arg(dir.join("run/host.sock"))
         .args(["--sessions", "sessions", "-p", "a question with no answer"])

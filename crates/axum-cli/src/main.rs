@@ -8,6 +8,7 @@ mod app;
 mod config;
 mod daemon;
 mod driver;
+mod ext_lua;
 mod external_editor;
 mod keys;
 mod models;
@@ -95,6 +96,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Some(Command::Ext(Ext::Shell)) => shell::run(),
+        Some(Command::Ext(Ext::Lua { file })) => ext_lua::run(&file),
         Some(Command::Tools) => {
             tools::print()?;
             Ok(())
@@ -200,4 +202,12 @@ fn unix_seconds() -> u64 {
 enum Ext {
     /// A persistent shell, spoken to over the tool protocol.
     Shell,
+    /// Tools written in Lua, served from their own process.
+    ///
+    /// The second implementation of the protocol, and the one that proves it is a protocol:
+    /// it is a different language, a different lifecycle, and it cannot answer a `Cancel`.
+    Lua {
+        /// The file to load. Nothing is discovered; the config names it.
+        file: PathBuf,
+    },
 }

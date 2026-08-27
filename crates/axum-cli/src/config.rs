@@ -10,6 +10,7 @@
 
 use axum_lua::{Config, Engine, LuaError};
 use axum_provider::provider::Provider;
+use std::collections::BTreeSet;
 
 /// The catalog axum ships, as Lua.
 const BUILTIN: &str = include_str!("../../../config/providers.lua");
@@ -82,31 +83,46 @@ pub fn load() -> Result<Loaded, LuaError> {
     // registration is keyed.
     for path in installed_files() {
         engine.run_file(&path)?;
-        // An installed protocol replaces its compiled-in namesake in what the worker is given,
-        // so the daemon speaks the file the user edited.
-        if path.parent().is_some_and(|p| p.ends_with("apis"))
-            && let Ok(source) = std::fs::read_to_string(&path)
-        {
-            {
-                let name = path
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                match apis.iter().position(|(n, _)| *n == name) {
-                    Some(at) => apis[at] = (name, source),
-                    None => apis.push((name, source)),
-                }
-            }
+        // An installed file replaces its compiled-in namesake in what the worker is given, so
+        // the daemon speaks the protocol and offers the tool the user actually edited.
+        // Without this, `make configs` installs files that are read once and then ignored.
+        let Ok(source) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let name = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if path.parent().is_some_and(|p| p.ends_with("apis")) {
+            layer(&mut apis, name, source);
+        } else if path.parent().is_some_and(|p| p.ends_with("tools")) {
+            layer(&mut tools, name, source);
         }
     }
-    // Then the project, last, so a repository can override a machine.
+
+    // The line between the two kinds of configuration. Above it is the machine's own, which
+    // the user wrote. Below it is a file that arrived with a checkout.
+    let machine = Trusted::snapshot(&mut engine);
+
+    // Then the project, last, so a repository can choose among what the machine offers.
     for path in axum_lua::search_paths() {
         if path.exists() && path.file_name().is_some_and(|n| n == ".axum.lua") {
             engine.run_file(&path)?;
         }
     }
     engine.harvest();
-    collect(engine.config(), apis, tools, stubs)
+    for refused in machine.refusals(&mut engine) {
+        eprintln!("axum: {refused}");
+    }
+    collect(engine.config(), apis, tools, stubs, &machine)
+}
+
+/// Replace a compiled-in file with the installed one of the same name, or add it.
+fn layer(files: &mut Vec<(String, String)>, name: String, source: String) {
+    match files.iter().position(|(n, _)| *n == name) {
+        Some(at) => files[at] = (name, source),
+        None => files.push((name, source)),
+    }
 }
 
 /// Turn what the registrar collected into providers.
@@ -115,9 +131,15 @@ fn collect(
     apis: Vec<(String, String)>,
     tools: Vec<(String, String)>,
     stubs: Vec<(String, String)>,
+    machine: &Trusted,
 ) -> Result<Loaded, LuaError> {
     let mut providers = Vec::new();
     for (id, spec) in config.all("provider") {
+        // Refused rather than declared: `refusals` has already said why on stderr, and a
+        // provider that is never built is one no model can be resolved against.
+        if !machine.allows(id) {
+            continue;
+        }
         providers.push(declare(id, spec).map_err(|message| LuaError::Shape {
             what: format!("axum.provider({id:?})"),
             message,
@@ -150,7 +172,15 @@ pub fn builtin() -> Result<Vec<Provider>, LuaError> {
     let mut engine = Engine::new();
     engine.run(BUILTIN, "providers.lua")?;
     engine.harvest();
-    Ok(collect(engine.config(), Vec::new(), Vec::new(), Vec::new())?.providers)
+    let everything = Trusted::snapshot(&mut engine);
+    Ok(collect(
+        engine.config(),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        &everything,
+    )?
+    .providers)
 }
 
 /// Find the model the config chose, and the provider offering it.
@@ -211,15 +241,10 @@ fn installed_files() -> Vec<std::path::PathBuf> {
     };
     let mut out = Vec::new();
 
-    // Every protocol in `apis/`, sorted so the order is the same on every machine.
-    if let Ok(entries) = std::fs::read_dir(dir.join("apis")) {
-        let mut apis: Vec<std::path::PathBuf> = entries
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|e| e == "lua"))
-            .collect();
-        apis.sort();
-        out.extend(apis);
+    // Every protocol and every tool. `tools/` is here because `make configs` installs those
+    // files so they can be edited, and for the whole of M3 nothing read them back.
+    for kind in ["apis", "tools"] {
+        out.extend(lua_files(&dir.join(kind)));
     }
 
     for name in ["providers.lua", "init.lua"] {
@@ -231,6 +256,20 @@ fn installed_files() -> Vec<std::path::PathBuf> {
     out
 }
 
+/// The `.lua` files in one directory, in a stable order.
+fn lua_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "lua"))
+        .collect();
+    out.sort();
+    out
+}
+
 /// Where an installed configuration lives.
 #[must_use]
 pub fn config_dir() -> Option<std::path::PathBuf> {
@@ -238,6 +277,67 @@ pub fn config_dir() -> Option<std::path::PathBuf> {
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
         .map(|base| base.join("axum"))
+}
+
+/// What the machine's own configuration had declared, before any project file ran.
+///
+/// A `.axum.lua` arrives with a checkout: cloning a repository and running `axum` in it must
+/// not be enough to add a tool or a provider. A tool because a process tool names a command to
+/// run, and a provider because one names a URL the whole conversation is sent to — which is the
+/// worse of the two, and the one that looks harmless.
+///
+/// A project file can still *choose*: `axum.model` picks among providers the machine already
+/// has. That is the useful half, and it carries no authority.
+pub struct Trusted {
+    providers: BTreeSet<String>,
+    tools: BTreeSet<String>,
+}
+
+impl Trusted {
+    /// Record what has been declared so far.
+    fn snapshot(engine: &mut Engine) -> Self {
+        Self {
+            providers: engine
+                .config()
+                .all("provider")
+                .into_iter()
+                .map(|(id, _)| id.to_owned())
+                .collect(),
+            tools: engine.tools().into_iter().map(|(name, _)| name).collect(),
+        }
+    }
+
+    /// Whether a provider was declared by the machine rather than by a project file.
+    fn allows(&self, id: &str) -> bool {
+        self.providers.contains(id)
+    }
+
+    /// One message per declaration a project file made that will not be honoured.
+    ///
+    /// Reported rather than silently dropped: a config author who wrote something that does
+    /// nothing needs to know, and a repository trying it is worth seeing.
+    fn refusals(&self, engine: &mut Engine) -> Vec<String> {
+        let mut out = Vec::new();
+        for (id, _) in engine.config().all("provider") {
+            if !self.allows(id) {
+                out.push(format!(
+                    "the provider {id:?} was declared by a project file and will not be used; \
+                     a provider names a URL your conversation is sent to, so only your own \
+                     configuration can add one"
+                ));
+            }
+        }
+        for (name, _) in engine.tools() {
+            if !self.tools.contains(&name) {
+                out.push(format!(
+                    "the tool {name:?} was declared by a project file and will not be offered; \
+                     a tool can name a command to run, so only your own configuration can add \
+                     one"
+                ));
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -345,9 +445,18 @@ mod tests {
         engine.run(BUILTIN, "providers.lua").expect("builtin");
         engine.run(extra, "user.lua").expect("user config");
         engine.harvest();
-        collect(engine.config(), Vec::new(), Vec::new(), Vec::new())
-            .expect("collect")
-            .providers
+        // Snapshotted after the extra chunk: these tests are about what a *machine* config can
+        // declare, so everything they run counts as the machine's own.
+        let everything = Trusted::snapshot(&mut engine);
+        collect(
+            engine.config(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            &everything,
+        )
+        .expect("collect")
+        .providers
     }
 
     #[test]
