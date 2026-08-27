@@ -287,7 +287,12 @@ async fn connection_loop(
             // machine slept. The socket is removed on the way out, so there is nothing left to
             // dial and the UI spun on "Reconnecting" for as long as it was left open. Starting
             // one is what a detached UI is for.
-            if let Err(error) = crate::daemon::ensure(&socket, sessions.as_deref(), false).await {
+            // `resume`, not a fresh session. The daemon owns the conversation and a restart is
+            // meant to be invisible; starting a new one instead threw the transcript away and
+            // the UI came back to a greeting, which is a worse failure than the hang this
+            // replaced. The session being resumed is this directory's most recent, which is
+            // precisely the one that just died.
+            if let Err(error) = crate::daemon::ensure(&socket, sessions.as_deref(), true).await {
                 debug_log(format_args!("restart failed: {error}"));
                 tokio::time::sleep(RECONNECT_DELAY).await;
             }
