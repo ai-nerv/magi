@@ -11,6 +11,8 @@ version.workspace = true
 #
 # Stackless, pure Rust, tracing collector. No C, so the static musl build needs no C toolchain.
 luna.workspace = true
+axum-model.workspace = true
+axum-provider.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

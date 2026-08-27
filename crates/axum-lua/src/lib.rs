@@ -37,9 +37,11 @@
 //! not escape. That keeps the lifetime out of the twelve crates that have nothing to do with
 //! Lua.
 
+pub mod adapter;
 mod convert;
 mod engine;
 mod fs;
+mod json;
 pub mod peer;
 mod stream;
 pub mod stub;

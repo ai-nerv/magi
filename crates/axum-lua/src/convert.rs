@@ -86,3 +86,40 @@ impl<T: serde::de::DeserializeOwned> FromLua for T {
         serde_json::from_value(value).map_err(|e| e.to_string())
     }
 }
+
+/// A JSON value as Lua.
+///
+/// The inverse of [`json_from_lua`], and the direction an adapter needs: a model, a context and
+/// a set of options are Rust values that a Lua function has to be handed.
+///
+/// An empty array and an empty object both become an empty table, because Lua has one table
+/// type. Adapters must not distinguish them — and none of the ten protocols does.
+pub fn lua_from_json<'gc>(ctx: luna::Context<'gc>, value: &serde_json::Value) -> Value<'gc> {
+    match value {
+        serde_json::Value::Null => Value::Nil,
+        serde_json::Value::Bool(b) => Value::Boolean(*b),
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .map_or_else(|| Value::Number(n.as_f64().unwrap_or(0.0)), Value::Integer),
+        serde_json::Value::String(s) => Value::String(luna::String::from_slice(&ctx, s.as_bytes())),
+        serde_json::Value::Array(items) => {
+            let table = Table::new(&ctx);
+            for (index, item) in items.iter().enumerate() {
+                // Lua arrays are 1-based, and an adapter written against 0 would silently read
+                // one element short of the conversation.
+                table
+                    .set(ctx, index as i64 + 1, lua_from_json(ctx, item))
+                    .ok();
+            }
+            Value::Table(table)
+        }
+        serde_json::Value::Object(fields) => {
+            let table = Table::new(&ctx);
+            for (key, item) in fields {
+                let key = luna::String::from_slice(&ctx, key.as_bytes());
+                table.set(ctx, key, lua_from_json(ctx, item)).ok();
+            }
+            Value::Table(table)
+        }
+    }
+}

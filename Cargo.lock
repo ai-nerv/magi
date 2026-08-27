@@ -103,6 +103,7 @@ dependencies = [
  "axum-core",
  "axum-ipc",
  "axum-journal",
+ "axum-lua",
  "axum-model",
  "axum-proto",
  "axum-provider",
@@ -136,6 +137,8 @@ dependencies = [
 name = "axum-lua"
 version = "0.1.0"
 dependencies = [
+ "axum-model",
+ "axum-provider",
  "luna",
  "serde",
  "serde_json",

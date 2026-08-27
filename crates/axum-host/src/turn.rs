@@ -13,6 +13,10 @@ use axum_provider::model::Model;
 use axum_provider::provider::Provider;
 
 /// What the daemon needs to reach a model.
+///
+/// Plain data, and sendable: the protocol it names is built on the worker's own thread, because
+/// a Lua VM is neither `Send` nor `Sync` and cannot be handed over after the fact.
+#[derive(Debug, Clone)]
 pub struct Backend {
     /// The provider offering the model.
     pub provider: Provider,
@@ -30,6 +34,7 @@ pub struct Backend {
 pub async fn run(
     session: &tokio::sync::Mutex<Session>,
     backend: &Backend,
+    adapter: &dyn axum_provider::api::Adapter,
     client: &Client,
 ) -> Result<(), crate::HostError> {
     let context = context_of(&*session.lock().await);
@@ -51,6 +56,7 @@ pub async fn run(
     let mut deltas = Vec::new();
     let outcome = client
         .stream(
+            adapter,
             &backend.provider,
             &backend.model,
             &context,

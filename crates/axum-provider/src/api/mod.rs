@@ -9,8 +9,6 @@
 //! stream's state — no HTTP, no sockets, no clock. That is what lets every one of them be
 //! tested against recorded bytes instead of a live account.
 
-pub mod anthropic;
-
 use crate::model::Model;
 use axum_model::{Context, StopReason, ThinkingLevel, Usage};
 use serde::{Deserialize, Serialize};
@@ -57,21 +55,22 @@ pub enum Delta {
 /// What an adapter carries between events of one response.
 #[derive(Debug, Default)]
 pub struct StreamState {
-    /// The kind of block currently open, so a delta knows what it is extending.
-    block: Option<Block>,
-    /// Tokens seen so far.
-    usage: Usage,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Block {
-    Text,
-    Thinking,
-    ToolCall,
+    /// Whatever the adapter is keeping between events, as it chooses to shape it.
+    ///
+    /// Opaque here: the protocol decides what it needs to remember, and this crate would only
+    /// be guessing. Anthropic tracks which content block is open; Completions tracks partial
+    /// tool-call indices; neither is this module's business.
+    pub scratch: serde_json::Value,
+    /// Tokens seen so far, which every protocol reports differently and all report.
+    pub usage: Usage,
 }
 
 /// A wire protocol axum can speak.
-pub trait Adapter: Send + Sync {
+///
+/// Implemented in Lua, never here. This crate owns the contract and the transport; a protocol
+/// is described in `lua/apis/*.lua` and read through it. `Send + Sync` is deliberately not
+/// required: a Lua VM is neither, and demanding it would rule out the only implementer.
+pub trait Adapter {
     /// The URL to post to.
     fn endpoint(&self, base_url: &str, model: &Model) -> String;
 
@@ -101,7 +100,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_stream_has_no_open_block() {
-        assert!(StreamState::default().block.is_none());
+    fn a_fresh_stream_remembers_nothing() {
+        assert!(StreamState::default().scratch.is_null());
     }
 }

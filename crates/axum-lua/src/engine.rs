@@ -176,7 +176,30 @@ impl Engine {
             // is not offered alongside it.
             let fs = crate::fs::table(ctx);
             axum.set(ctx, "fs", fs).ok();
+            // Every protocol description reads JSON payloads; lending one parser beats each
+            // of them carrying its own.
+            let json = crate::json::table(ctx);
+            axum.set(ctx, "json", json).ok();
             ctx.set_global("__stream", stream);
+
+            // Protocols are registered differently from everything else: what they carry is
+            // functions, and a function cannot be described as data. The VM keeps them under
+            // `__axum_apis` and Rust keeps only their names.
+            let apis = Table::new(&ctx);
+            ctx.set_global(APIS, apis);
+            let api = Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
+                let (name, spec): (Value, Value) = stack.consume(ctx)?;
+                let (Value::String(name), Value::Table(_)) = (name, spec) else {
+                    return Err(raise(ctx, "axum.api(name, spec): a name and a table"));
+                };
+                if let Value::Table(apis) = ctx.get_global_value(APIS) {
+                    apis.set(ctx, name, spec).ok();
+                }
+                stack.replace(ctx, ());
+                Ok(CallbackReturn::Return)
+            });
+            axum.set(ctx, "api", api).ok();
+
             ctx.set_global("axum", axum);
         });
     }
@@ -217,4 +240,62 @@ fn raise<'gc>(ctx: luna::Context<'gc>, message: &str) -> luna::Error<'gc> {
         &ctx,
         message.as_bytes(),
     )))
+}
+
+/// Where registered protocol descriptions live inside the VM.
+///
+/// A Lua table rather than a Rust map, because what is registered is *functions*, and a
+/// function cannot cross the boundary. The VM keeps them; Rust keeps only their names.
+const APIS: &str = "__axum_apis";
+
+impl Engine {
+    /// The protocols a config registered.
+    #[must_use]
+    pub fn apis(&mut self) -> Vec<String> {
+        let mut out = Vec::new();
+        self.lua.enter(|ctx| {
+            if let Value::Table(apis) = ctx.get_global_value(APIS) {
+                for (key, _) in apis.iter(ctx) {
+                    if let Value::String(name) = key {
+                        out.push(String::from_utf8_lossy(name.as_bytes()).into_owned());
+                    }
+                }
+            }
+        });
+        out.sort();
+        out
+    }
+
+    /// Call one function of a registered protocol.
+    ///
+    /// Arguments go in as JSON and the answer comes back as JSON, so the collector lifetime
+    /// never leaves this crate. `None` means the protocol, the function, or the call itself did
+    /// not produce a value — all of which the caller treats the same way: the protocol cannot
+    /// answer, so the turn fails rather than proceeding on a guess.
+    pub fn call_api(
+        &mut self,
+        api: &str,
+        method: &str,
+        args: &[serde_json::Value],
+    ) -> Option<serde_json::Value> {
+        let args = serde_json::Value::Array(args.to_vec());
+        self.lua.enter(|ctx| {
+            let value = crate::convert::lua_from_json(ctx, &args);
+            ctx.set_global("__axum_args", value);
+        });
+
+        let source = format!(
+            "local api = {APIS} and {APIS}[{api:?}]\n\
+             local fn = api and api[{method:?}]\n\
+             if fn then __axum_result = fn(table.unpack(__axum_args)) \
+             else __axum_result = nil end"
+        );
+        self.run(&source, "api.lua").ok()?;
+
+        let mut out = None;
+        self.lua.enter(|ctx| {
+            out = crate::convert::json_from_lua(ctx, ctx.get_global_value("__axum_result"), 0);
+        });
+        out.filter(|value| !value.is_null())
+    }
 }

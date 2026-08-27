@@ -6,6 +6,7 @@
 
 use axum_host::session::Session;
 use axum_host::turn::{Backend, run};
+use axum_lua::adapter::{LuaAdapter, engine_with_builtins};
 use axum_proto::{Entry, SessionId, StopReason};
 use axum_provider::api::Options;
 use axum_provider::client::Client;
@@ -113,7 +114,12 @@ async fn a_turn_streams_into_the_journal() {
     let (session, dir) = session("ok");
     let backend = backend(serve_once("200 OK", STREAM));
 
-    run(&session, &backend, &Client::new())
+    let adapter = LuaAdapter::new(
+        engine_with_builtins().expect("builtins"),
+        "anthropic-messages",
+    )
+    .expect("the protocol is registered");
+    run(&session, &backend, &adapter, &Client::new())
         .await
         .expect("the turn runs");
 
@@ -149,7 +155,12 @@ async fn a_provider_error_becomes_a_well_formed_entry() {
     let (session, dir) = session("err");
     let backend = backend(serve_once("529 Overloaded", "{\"error\":\"overloaded\"}"));
 
-    run(&session, &backend, &Client::new())
+    let adapter = LuaAdapter::new(
+        engine_with_builtins().expect("builtins"),
+        "anthropic-messages",
+    )
+    .expect("the protocol is registered");
+    run(&session, &backend, &adapter, &Client::new())
         .await
         .expect("the turn returns");
 
@@ -176,7 +187,12 @@ async fn the_turn_ends_idle_whatever_happened() {
     let (session, dir) = session("idle");
     let backend = backend(serve_once("500 Server Error", "boom"));
 
-    run(&session, &backend, &Client::new())
+    let adapter = LuaAdapter::new(
+        engine_with_builtins().expect("builtins"),
+        "anthropic-messages",
+    )
+    .expect("the protocol is registered");
+    run(&session, &backend, &adapter, &Client::new())
         .await
         .expect("the turn returns");
 

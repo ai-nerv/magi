@@ -10,13 +10,14 @@
 pub mod paths;
 pub mod session;
 pub mod turn;
+pub mod worker;
 
 use axum_ipc::{FrameReader, FrameWriter, IpcError, PeerCred};
 use axum_journal::JournalError;
 use axum_proto::{
     AgentStatus, Cursor, Entry, ErrorClass, HarnessEvent, MessageId, StopReason, UiCommand,
 };
-use axum_provider::client::Client;
+
 use session::Session;
 use std::path::Path;
 use std::sync::Arc;
@@ -50,9 +51,9 @@ pub async fn serve(
     backend: Option<turn::Backend>,
 ) -> Result<(), HostError> {
     let session = Arc::new(Mutex::new(session));
-    // One client for the daemon rather than one per connection: it pools, and a turn belongs
-    // to the session anyway, not to whichever UI happened to ask for it.
-    let shared = Arc::new((backend, Client::new()));
+    // Turns run on the worker's own thread because a protocol lives in a Lua VM. A daemon
+    // with no backend has no worker, and says so when a prompt arrives.
+    let worker = backend.map(worker::Worker::start).map(Arc::new);
     loop {
         let (stream, _) = listener.accept().await?;
         // The daemon serves one user. A connection from any other uid is refused rather than
@@ -62,9 +63,9 @@ pub async fn serve(
             _ => continue,
         }
         let session = Arc::clone(&session);
-        let shared = Arc::clone(&shared);
+        let worker = worker.clone();
         tokio::spawn(async move {
-            let _ = connection(stream, session, &shared.0, &shared.1).await;
+            let _ = connection(stream, session, worker.as_deref()).await;
         });
     }
 }
@@ -73,8 +74,7 @@ pub async fn serve(
 async fn connection(
     stream: UnixStream,
     session: Arc<Mutex<Session>>,
-    backend: &Option<turn::Backend>,
-    client: &Client,
+    worker: Option<&worker::Worker>,
 ) -> Result<(), HostError> {
     let (read_half, write_half) = stream.into_split();
     let mut reader = FrameReader::new(read_half);
@@ -119,7 +119,7 @@ async fn connection(
             command = incoming.recv() => {
                 match command {
                     Some(UiCommand::SubmitPrompt { text }) => {
-                        submit(&session, text, backend.as_ref(), client).await?;
+                        submit(&session, text, worker).await?;
                     }
                     Some(UiCommand::Interrupt) => {
                         session.lock().await.set_status(AgentStatus::Idle);
@@ -155,8 +155,7 @@ async fn connection(
 async fn submit(
     session: &Arc<Mutex<Session>>,
     text: String,
-    backend: Option<&turn::Backend>,
-    client: &Client,
+    worker: Option<&worker::Worker>,
 ) -> Result<(), HostError> {
     {
         let mut held = session.lock().await;
@@ -164,7 +163,7 @@ async fn submit(
         held.commit(Entry::User { id, text })?;
     }
 
-    let Some(backend) = backend else {
+    let Some(worker) = worker else {
         let mut held = session.lock().await;
         let id = MessageId::new(format!("a{}", held.cursor().next().0));
         held.commit(Entry::Assistant {
@@ -182,7 +181,8 @@ async fn submit(
         return Ok(());
     };
 
-    turn::run(session, backend, client).await
+    worker.run(Arc::clone(session)).await;
+    Ok(())
 }
 
 /// Publish an error to whoever is attached.
