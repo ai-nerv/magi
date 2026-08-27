@@ -358,6 +358,22 @@ make.recipe{
       assert(checked.ok, "the installed configuration does not load")
       print(dim("   it loads"))
     end
+
+    -- Configuration on its own does nothing for a stale binary, and the two are installed by
+    -- separate commands. Somebody who ran `make configs` and found nothing had changed spent
+    -- an evening on a build from a milestone ago; saying so here costs a line.
+    local installed = PREFIX .. "/bin/" .. BIN
+    local there = oslo.fs.stat(installed)
+    if not there then
+      print(dim("   nothing is installed yet — run `make install`"))
+    else
+      local newer = oslo.run{ "sh", "-c",
+        ("test %q -nt %q"):format(binary_path(), installed) }
+      if newer.ok then
+        print(oslo.ui.style("!  ", { fg = "yellow" }) ..
+              ("%s is older than what you have built — run `make install`"):format(installed))
+      end
+    end
   end,
 }
 
