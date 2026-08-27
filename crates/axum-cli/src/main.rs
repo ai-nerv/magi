@@ -158,7 +158,7 @@ async fn main() -> Result<()> {
         }
         None => {
             daemon::ensure(&socket, cli.sessions.as_deref(), cli.resume).await?;
-            driver::run(&socket, mode, cli.prompt).await
+            driver::run(&socket, mode, cli.prompt, cli.sessions).await
         }
     }
 }

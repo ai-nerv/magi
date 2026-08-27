@@ -80,6 +80,23 @@ pub fn working(
     }
 }
 
+/// The note shown while the daemon is away and work is waiting for it.
+///
+/// A prompt submitted while disconnected is not lost -- it sits in the command channel and
+/// goes out on reconnect -- but the box emptied and nothing appeared, so there was no way to
+/// tell a queued message from a swallowed one.
+#[must_use]
+pub fn queued(count: usize, theme: &Theme) -> Vec<Span<'static>> {
+    if count == 0 {
+        return Vec::new();
+    }
+    let what = if count == 1 { "message" } else { "messages" };
+    vec![Span::styled(
+        format!("  {count} {what} waiting to send"),
+        Style::default().fg(theme.dim),
+    )]
+}
+
 /// The note shown when the reader has scrolled away from the newest output.
 ///
 /// Appended to the status line rather than given a row of its own: it matters exactly as much
@@ -302,5 +319,31 @@ mod elapsed_tests {
         let text = text_of(&line);
         assert!(text.contains("in 4s"), "{text}");
         assert!(!text.contains("30s"), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod queued_tests {
+    use super::*;
+
+    fn text(spans: &[Span<'_>]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn nothing_waiting_is_nothing_said() {
+        assert!(queued(0, &crate::theme::DARK).is_empty());
+    }
+
+    #[test]
+    fn one_waiting_message_is_singular() {
+        // An emptied prompt box with nothing on screen gave no way to tell a queued message
+        // from a swallowed one.
+        assert!(text(&queued(1, &crate::theme::DARK)).contains("1 message waiting"));
+    }
+
+    #[test]
+    fn several_are_plural() {
+        assert!(text(&queued(3, &crate::theme::DARK)).contains("3 messages waiting"));
     }
 }

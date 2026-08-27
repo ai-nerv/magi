@@ -19,6 +19,14 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(20);
 /// How often to retry the connection while waiting.
 const POLL: Duration = Duration::from_millis(25);
 
+/// The longest a Unix socket path may be.
+///
+/// `sockaddr_un.sun_path` is 108 bytes on Linux, NUL included. Nothing checked, so a long path
+/// produced a daemon that announced the session it was about to serve, failed to bind with
+/// `path must be shorter than SUN_LEN`, and exited -- while the UI waited twenty seconds and
+/// then blamed it for not answering.
+const SUN_LEN: usize = 108;
+
 /// Connect to the daemon for `socket`, starting one if nothing answers.
 ///
 /// A socket that exists but refuses is a daemon that died; `bind` clears the stale file, so
@@ -27,20 +35,55 @@ pub async fn ensure(socket: &Path, sessions: Option<&Path>, resume: bool) -> Res
     if axum_ipc::connect(socket).await.is_ok() {
         return Ok(());
     }
-    spawn(socket, sessions, resume)?;
+    // Before anything is spawned, because the failure is certain and the daemon's own report
+    // of it lands on a stderr nobody is reading.
+    let length = socket.as_os_str().len();
+    if length >= SUN_LEN {
+        bail!(
+            "the socket path is {length} bytes and a Unix socket may be at most {}: {}",
+            SUN_LEN - 1,
+            socket.display()
+        );
+    }
+    let mut child = spawn(socket, sessions, resume)?;
 
     let deadline = Instant::now() + STARTUP_TIMEOUT;
     while Instant::now() < deadline {
         if axum_ipc::connect(socket).await.is_ok() {
             return Ok(());
         }
+        // A daemon that has already exited is not going to answer, and waiting the rest of
+        // the twenty seconds to say so turns a one-line error into a hang.
+        if let Ok(Some(status)) = child.try_wait() {
+            let _ = std::fs::remove_file(pid_path(socket));
+            bail!("the daemon exited ({status}){}", said(socket));
+        }
         tokio::time::sleep(POLL).await;
     }
     bail!(
-        "no daemon answered on {} within {}s",
+        "no daemon answered on {} within {}s{}",
         socket.display(),
-        STARTUP_TIMEOUT.as_secs()
+        STARTUP_TIMEOUT.as_secs(),
+        said(socket)
     )
+}
+
+/// What the daemon wrote on its way out, if anything.
+///
+/// Its stderr goes to a file rather than to the terminal, which the UI is drawing on -- so on
+/// a failed start there is something to quote instead of a guess.
+fn said(socket: &Path) -> String {
+    let Ok(text) = std::fs::read_to_string(log_path(socket)) else {
+        return String::new();
+    };
+    let last = text.lines().rev().find(|l| !l.trim().is_empty());
+    last.map_or_else(String::new, |line| format!(": {line}"))
+}
+
+/// Where the daemon's own output is kept, beside its socket.
+#[must_use]
+pub fn log_path(socket: &Path) -> PathBuf {
+    socket.with_extension("log")
 }
 
 /// Start `axum host` in the background.
@@ -48,7 +91,7 @@ pub async fn ensure(socket: &Path, sessions: Option<&Path>, resume: bool) -> Res
 /// The child is left running on purpose: it owns the session, and a UI that quits should be a
 /// detach rather than an end of the conversation. Its output goes nowhere because both callers
 /// own the terminal — a UI is drawing on it and a `-p` run is writing the answer to it.
-fn spawn(socket: &Path, sessions: Option<&Path>, resume: bool) -> Result<()> {
+fn spawn(socket: &Path, sessions: Option<&Path>, resume: bool) -> Result<std::process::Child> {
     let exe = std::env::current_exe().context("finding the axum binary")?;
     let mut command = std::process::Command::new(exe);
     command.arg("--socket").arg(socket).arg("host");
@@ -58,22 +101,25 @@ fn spawn(socket: &Path, sessions: Option<&Path>, resume: bool) -> Result<()> {
     if resume {
         command.arg("--resume");
     }
-    let child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .with_context(|| format!("starting a daemon on {}", socket.display()))?;
-    // The directory is created here rather than left to the daemon: it makes it on its way to
-    // binding, which is after this write, so without this the pid file lands nowhere on the
-    // very first run in a directory and the daemon becomes unfindable.
+    // The directory is created before the spawn now, because the log file lands in it too and
+    // a daemon that cannot open its log is a daemon whose failure is unreadable.
     if let Some(parent) = socket.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    // Best effort otherwise: a daemon that runs without its pid recorded is still a working
-    // daemon, and failing the run over a file nothing has read yet would be the worse outcome.
+    // To a file rather than to the terminal, which a UI is drawing on and a `-p` run is
+    // writing the answer to; and to a file rather than a pipe, because a pipe nobody drains
+    // eventually blocks the daemon on its own logging.
+    let log = std::fs::File::create(log_path(socket)).map_or_else(|_| Stdio::null(), Stdio::from);
+    let child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(log)
+        .spawn()
+        .with_context(|| format!("starting a daemon on {}", socket.display()))?;
+    // Best effort: a daemon that runs without its pid recorded is still a working daemon, and
+    // failing the run over a file nothing has read yet would be the worse outcome.
     let _ = std::fs::write(pid_path(socket), child.id().to_string());
-    Ok(())
+    Ok(child)
 }
 
 /// Where the daemon's process id is recorded, beside its socket.
@@ -115,5 +161,62 @@ mod tests {
         let path = socket("named");
         assert_eq!(pid_path(&path), path.with_extension("pid"));
         assert_eq!(pid_path(&path).parent(), path.parent());
+    }
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_socket_path_too_long_is_refused_before_anything_is_started() {
+        // The daemon announced the session it was about to serve, failed to bind, and exited.
+        // The UI waited twenty seconds and then blamed it for not answering.
+        let long = std::env::temp_dir()
+            .join("x".repeat(SUN_LEN))
+            .join("a.sock");
+        let error = ensure(&long, None, false)
+            .await
+            .expect_err("a path that cannot bind is not a wait");
+        let text = error.to_string();
+        assert!(text.contains("at most"), "{text}");
+        assert!(text.contains("107"), "it names the limit: {text}");
+    }
+
+    #[tokio::test]
+    async fn a_refusal_is_immediate_rather_than_a_twenty_second_wait() {
+        let long = std::env::temp_dir()
+            .join("y".repeat(SUN_LEN))
+            .join("a.sock");
+        let started = Instant::now();
+        let _ = ensure(&long, None, false).await;
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "it did not wait"
+        );
+    }
+
+    #[test]
+    fn the_log_sits_beside_the_socket() {
+        let path = std::env::temp_dir().join("axum-log-test.sock");
+        assert_eq!(log_path(&path), path.with_extension("log"));
+        assert_ne!(log_path(&path), pid_path(&path));
+    }
+
+    #[test]
+    fn what_the_daemon_said_is_its_last_real_line() {
+        let dir = std::env::temp_dir().join(format!("axum-said-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let socket = dir.join("a.sock");
+        std::fs::write(log_path(&socket), "starting\nError: it broke\n\n").expect("write");
+        assert_eq!(said(&socket), ": Error: it broke");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn no_log_is_no_quote_rather_than_an_empty_one() {
+        let socket = std::env::temp_dir().join("axum-no-log-at-all.sock");
+        let _ = std::fs::remove_file(log_path(&socket));
+        assert_eq!(said(&socket), "");
     }
 }

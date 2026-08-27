@@ -31,7 +31,12 @@ const RECONNECT_DELAY: Duration = Duration::from_millis(500);
 /// `prompt` is the positional argument: `axum "…"` opens the UI with the question already
 /// asked, so the first thing on screen is the answer arriving rather than an empty box the
 /// user has to retype into.
-pub async fn run(socket: &Path, mode: Mode, prompt: Option<String>) -> Result<()> {
+pub async fn run(
+    socket: &Path,
+    mode: Mode,
+    prompt: Option<String>,
+    sessions: Option<std::path::PathBuf>,
+) -> Result<()> {
     let theme = Theme::default();
     let mut app = App::new();
     let base_footer = local_footer(mode);
@@ -50,6 +55,7 @@ pub async fn run(socket: &Path, mode: Mode, prompt: Option<String>) -> Result<()
         socket.to_path_buf(),
         event_tx,
         command_rx,
+        sessions,
         app.cursor(),
         Arc::clone(&attached),
     ));
@@ -82,6 +88,7 @@ pub async fn run(socket: &Path, mode: Mode, prompt: Option<String>) -> Result<()
             let mode = session.mode;
             session.terminal.draw(|frame| {
                 let footer = footer_data(&base_footer, &app);
+                app.queued = command_tx.max_capacity() - command_tx.capacity();
                 ui::draw(frame, &mut app, &footer, &theme, mode);
             })?;
             dirty = false;
@@ -252,6 +259,7 @@ async fn connection_loop(
     socket: std::path::PathBuf,
     events: mpsc::Sender<HarnessEvent>,
     mut commands: mpsc::Receiver<UiCommand>,
+    sessions: Option<std::path::PathBuf>,
     mut from_cursor: Cursor,
     attached: Arc<std::sync::atomic::AtomicBool>,
 ) {
@@ -259,10 +267,17 @@ async fn connection_loop(
         attached.store(false, Ordering::Relaxed);
         let Ok(stream) = axum_ipc::connect(&socket).await else {
             debug_log(format_args!("connect failed"));
-            tokio::time::sleep(RECONNECT_DELAY).await;
+            // Redialling alone only works when the daemon is slow, not when it is gone -- and
+            // it is gone in every case that matters: it crashed, `axum stop` ended it, the
+            // machine slept. The socket is removed on the way out, so there is nothing left to
+            // dial and the UI spun on "Reconnecting" for as long as it was left open. Starting
+            // one is what a detached UI is for.
+            if let Err(error) = crate::daemon::ensure(&socket, sessions.as_deref(), false).await {
+                debug_log(format_args!("restart failed: {error}"));
+                tokio::time::sleep(RECONNECT_DELAY).await;
+            }
             continue;
         };
-        debug_log(format_args!("connected, attaching from {from_cursor:?}"));
 
         let (read_half, write_half) = stream.into_split();
         let mut reader = FrameReader::new(read_half);

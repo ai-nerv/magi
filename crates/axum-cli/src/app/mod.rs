@@ -61,6 +61,12 @@ pub struct App {
     pub connected: bool,
     /// When the current turn started, for the elapsed clock.
     working_since: Option<std::time::Instant>,
+    /// Commands submitted but not yet handed to a daemon.
+    ///
+    /// Set by the driver from the command channel: a prompt sent while the daemon is away
+    /// waits in it rather than being lost, and an emptied prompt box with nothing on screen
+    /// gave no way to tell those two apart.
+    pub queued: usize,
     /// Spinner phase.
     pub tick: usize,
     /// Which model is answering, as the daemon reported it.
@@ -113,6 +119,7 @@ impl App {
             picker: None,
             picking: None,
             detail: axum_tui::transcript::Detail::Preview,
+            queued: 0,
             working_since: None,
             tick: 0,
         }

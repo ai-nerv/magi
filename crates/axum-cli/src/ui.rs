@@ -146,6 +146,9 @@ pub fn draw(
             .spans
             .extend(status::scrolled(hidden_below, theme));
     }
+    if !app.connected {
+        status_line.spans.extend(status::queued(app.queued, theme));
+    }
     frame.render_widget(Paragraph::new(status_line), status_area);
     frame.render_widget(Paragraph::new(prompt_lines), prompt_area);
 
