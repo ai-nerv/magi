@@ -8,17 +8,22 @@ streaming, an editor-grade prompt.
 
 ## Status
 
-**M0 — the UI.** The interface is built and driven by a recorded event stream; there is no
-model, no agent loop, and no tools yet. See `PLAN.md` for the milestone plan.
+A real agent: a model answers, tools run in their own processes, and the session is journalled
+and resumable. See `PLAN.md` for how it was built.
 
 ```sh
+make run          # axum, for real, in the current directory
+make install      # the static binary into $PREFIX/bin, so `axum` works anywhere
 make configs      # install config/ into ~/.config/axum, ready to edit
-make run          # the UI, against a replayed session (alt screen)
-make run --inline # the same, letting the terminal keep the history
 make build        # the release binary, static where the toolchain allows it
-make install      # into $PREFIX/bin
 make verify       # fmt, check, test, clippy, gates, docs
 ```
+
+**Both are needed.** `make configs` installs configuration; it does nothing for a binary you
+have not installed. `make configs` says so when the two are out of step.
+
+With no API keys set, `make run` says as much and `/model` lists every model axum knows with
+what each would need — so the first thing you do is choose one rather than read a config file.
 
 Two backends, one renderer. `alt` takes the alternate screen and owns the transcript, which is
 what transcript search and selection will need; `inline` keeps a live region at the bottom of
@@ -26,10 +31,14 @@ the normal screen and lets the terminal keep the history, so native scroll, sear
 keep working. Both draw from the same components and answer the same keys, and the footer names
 whichever is active.
 
-`make run` starts a replay host and attaches the UI to it over a Unix socket — two processes,
-as the architecture intends, even for a demo. To drive them separately:
+`make run` starts a daemon for the working directory and attaches the UI to it over a Unix
+socket — two processes, as the architecture intends. Quitting the UI detaches; the turn keeps
+running, and `axum stop` ends the daemon.
+
+For working on the interface without a model, `make demo` replays a recorded session:
 
 ```sh
+make demo         # the UI against a canned recording — no model, no tools
 make host         # a replay host alone
 make ui           # the UI alone, attaching to it
 ```

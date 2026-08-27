@@ -225,8 +225,8 @@ make.recipe{
 }
 
 make.recipe{
-  name = "run",
-  desc = "the UI, against a replayed session (--alt is the default, --inline opts out)",
+  name = "demo",
+  desc = "the UI against a canned recording — no model, no daemon, no tools",
   params = {
     { "--alt", desc = "alt screen; axum owns the buffer and the history", flag = true },
     { "--inline", desc = "inline viewport; the terminal keeps the history", flag = true },
@@ -253,6 +253,27 @@ make.recipe{
   end,
 }
 make.alias("r", "run")
+
+-- What somebody means by "run it". The daemon is not started here: axum starts its own, for
+-- this directory, and stops being our business the moment it exists.
+--
+-- `demo` used to be called this, which cost an evening: it replays a recording, so the model
+-- is a fiction, `/model` has nothing to offer and no prompt reaches anything. A name that
+-- promises the product and delivers a fixture is worse than no recipe at all.
+make.recipe{
+  name = "run",
+  desc = "axum, for real, in the current directory",
+  params = {
+    { "--alt", desc = "alt screen; axum owns the buffer and the history", flag = true },
+    { "--inline", desc = "inline viewport; the terminal keeps the history", flag = true },
+    { "--prompt", desc = "submit this on start, as `axum \"...\"` does" },
+  },
+  run = function(a)
+    build_binary(false)
+    local prompt = a.prompt and (" " .. string.format("%q", a.prompt)) or ""
+    sh.sh("-c", ("%s --tui %s%s"):format(binary_path(), tui_mode(a), prompt))
+  end,
+}
 
 make.recipe{
   name = "ui",
