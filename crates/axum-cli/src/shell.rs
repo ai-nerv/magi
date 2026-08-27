@@ -54,12 +54,21 @@ pub fn run() -> anyhow::Result<()> {
     writer.write_blocking(&ToolReport::Declare {
         name: "bash".to_owned(),
         description: "Run a shell command. The working directory and environment persist \
-                      between calls."
+                      between calls.\n\n\
+                      Long output is truncated in the middle and the whole of it is written to \
+                      a file the result names."
             .to_owned(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
                 "command": { "type": "string", "description": "The command line to run." },
+                "timeout": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600,
+                    "description": "Seconds to allow before giving up. Defaults to 600. \
+                                    Use a short one for something that may hang.",
+                },
             },
             "required": ["command"],
         }),

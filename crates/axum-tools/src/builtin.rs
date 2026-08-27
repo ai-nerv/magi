@@ -11,6 +11,13 @@ use std::path::Path;
 /// Lines of a file shown when no range is asked for.
 const PREVIEW_LINES: usize = 2000;
 
+/// Bytes of a file shown, whichever limit is reached first.
+///
+/// A minified bundle, a lockfile or a generated single-line JSON is one line and megabytes, so
+/// a line count alone is not a bound. The chokepoint in [`crate::bound`] would catch it, but
+/// catching it here means the model is told to *page* rather than handed a middle-cut blob.
+const PREVIEW_BYTES: usize = 50_000;
+
 /// Register the floor.
 pub fn install(registry: &mut crate::Registry) {
     registry.register(Box::new(Read));
@@ -25,6 +32,13 @@ fn arg<'a>(arguments: &'a Value, name: &str) -> Result<&'a str, Output> {
         .ok_or_else(|| Output::error(format!("{name} is required and must be a string")))
 }
 
+/// An optional non-negative integer argument.
+fn count(arguments: &Value, name: &str) -> Option<usize> {
+    arguments[name]
+        .as_u64()
+        .and_then(|n| usize::try_from(n).ok())
+}
+
 /// Read a file.
 pub struct Read;
 
@@ -35,7 +49,9 @@ impl Tool for Read {
 
     fn description(&self) -> &str {
         "Read a file from the session's directory. Returns the contents with line numbers, \
-         which is what `edit` matches against."
+         which is what `edit` matches against.\n\n\
+         Long files are truncated. Pass `offset` to continue from where the last read stopped, \
+         and keep going until you have what you need."
     }
 
     fn parameters(&self) -> Value {
@@ -43,6 +59,16 @@ impl Tool for Read {
             "type": "object",
             "properties": {
                 "path": { "type": "string", "description": "Path, relative to the session." },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "First line to show, 1-based. Defaults to the start.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "How many lines at most. Defaults to as many as fit.",
+                },
             },
             "required": ["path"],
         })
@@ -57,17 +83,36 @@ impl Tool for Read {
             Err(why) => Output::error(why),
             Ok(contents) => {
                 let lines: Vec<&str> = contents.lines().collect();
-                let shown = lines.len().min(PREVIEW_LINES);
-                // Numbered because `edit` matches on content and a model that can count lines
-                // makes better patches than one guessing at them.
-                let mut out = String::new();
-                for (index, line) in lines[..shown].iter().enumerate() {
-                    out.push_str(&format!("{:>6}\t{line}\n", index + 1));
+                // 1-based on the wire because that is what the numbers in the output say, and a
+                // model asked to continue from line 2001 should be able to type 2001.
+                let start = count(arguments, "offset").unwrap_or(1).max(1) - 1;
+                if start >= lines.len() && !lines.is_empty() {
+                    return Output::error(format!(
+                        "offset {} is past the end; the file has {} lines",
+                        start + 1,
+                        lines.len()
+                    ));
                 }
-                if lines.len() > shown {
+                let budget = count(arguments, "limit").unwrap_or(PREVIEW_LINES);
+
+                let mut out = String::new();
+                let mut shown = 0usize;
+                for (index, line) in lines[start..].iter().enumerate() {
+                    if shown >= budget || out.len() + line.len() > PREVIEW_BYTES {
+                        break;
+                    }
+                    // Numbered because `edit` matches on content and a model that can count
+                    // lines makes better patches than one guessing at them.
+                    out.push_str(&format!("{:>6}\t{line}\n", start + index + 1));
+                    shown += 1;
+                }
+
+                let next = start + shown;
+                if next < lines.len() {
                     out.push_str(&format!(
-                        "… {} more lines; ask for them with a shell command if you need them\n",
-                        lines.len() - shown
+                        "… {} more lines. Continue with offset={}\n",
+                        lines.len() - next,
+                        next + 1
                     ));
                 }
                 Output::ok(out)
@@ -371,6 +416,117 @@ mod tests {
             read.content.contains("50 more lines"),
             "truncation is stated"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod paging_tests {
+    use super::*;
+    use crate::cancel::Uncancelled;
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("axum-read-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        dir
+    }
+
+    fn read_with(dir: &std::path::Path, args: Value) -> Output {
+        Read.run(
+            &args,
+            &crate::ops::Real::new(dir.to_path_buf()),
+            &Uncancelled,
+        )
+    }
+
+    #[test]
+    fn a_long_file_says_where_to_continue_from() {
+        // It used to say "ask for them with a shell command", which is the unbounded path this
+        // milestone exists to close.
+        let dir = scratch("long");
+        let body: String = (1..=5_000).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(dir.join("big.txt"), body).expect("write");
+        let out = read_with(&dir, json!({ "path": "big.txt" }));
+        assert!(
+            out.content.contains("Continue with offset=2001"),
+            "{:.300}",
+            out.content
+        );
+        assert!(
+            !out.content.contains("shell command"),
+            "no longer sends you to bash"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn continuing_from_an_offset_resumes_where_it_stopped() {
+        let dir = scratch("resume");
+        let body: String = (1..=5_000).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(dir.join("big.txt"), body).expect("write");
+        let out = read_with(&dir, json!({ "path": "big.txt", "offset": 2001 }));
+        assert!(
+            out.content.contains("  2001\tline 2001"),
+            "{:.200}",
+            out.content
+        );
+        assert!(!out.content.contains("\t line 2000"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_numbers_shown_are_the_numbers_you_pass_back() {
+        // `edit` matches on content and the model counts from these; an offset that meant
+        // something different from the printed number would be a trap.
+        let dir = scratch("numbers");
+        std::fs::write(dir.join("a.txt"), "a\nb\nc\nd\n").expect("write");
+        let out = read_with(&dir, json!({ "path": "a.txt", "offset": 3 }));
+        assert!(out.content.starts_with("     3\tc"), "{:?}", out.content);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_limit_is_honoured() {
+        let dir = scratch("limit");
+        let body: String = (1..=100).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(dir.join("a.txt"), body).expect("write");
+        let out = read_with(&dir, json!({ "path": "a.txt", "limit": 5 }));
+        assert_eq!(out.content.lines().count(), 6, "five lines and the note");
+        assert!(out.content.contains("Continue with offset=6"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn one_enormous_line_is_bounded_by_bytes() {
+        // A minified bundle is one line and megabytes. A line count alone is not a bound.
+        let dir = scratch("minified");
+        std::fs::write(dir.join("bundle.js"), "x".repeat(PREVIEW_BYTES * 3)).expect("write");
+        let out = read_with(&dir, json!({ "path": "bundle.js" }));
+        assert!(
+            out.content.len() < PREVIEW_BYTES * 2,
+            "{} bytes",
+            out.content.len()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_offset_past_the_end_says_so_rather_than_returning_nothing() {
+        let dir = scratch("past");
+        std::fs::write(dir.join("a.txt"), "a\nb\n").expect("write");
+        let out = read_with(&dir, json!({ "path": "a.txt", "offset": 99 }));
+        assert!(out.is_error, "{:?}", out.content);
+        assert!(out.content.contains("has 2 lines"), "{}", out.content);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_short_file_gets_no_continuation_note() {
+        let dir = scratch("short");
+        std::fs::write(dir.join("a.txt"), "a\nb\n").expect("write");
+        let out = read_with(&dir, json!({ "path": "a.txt" }));
+        assert!(!out.content.contains("Continue"), "{}", out.content);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

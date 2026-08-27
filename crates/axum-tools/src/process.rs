@@ -29,6 +29,24 @@ use std::time::{Duration, Instant};
 /// wedged peer holding a turn open forever, not to bound useful work.
 const CALL_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// How long this call may take.
+///
+/// A `timeout` in the arguments, clamped to [`CALL_TIMEOUT`] as a ceiling. Enforced by the host
+/// rather than left to the peer: the peer is the thing that might be wedged, and a deadline it
+/// enforces itself is one it can fail to. The argument is passed on regardless, so a peer that
+/// wants to stop early can.
+///
+/// The ceiling is not negotiable. A tool that could ask for an hour could hold a turn open for
+/// an hour, which is what this constant exists to prevent.
+fn allowed(arguments: &serde_json::Value) -> Duration {
+    arguments
+        .get("timeout")
+        .and_then(serde_json::Value::as_u64)
+        .map_or(CALL_TIMEOUT, |seconds| {
+            Duration::from_secs(seconds.max(1)).min(CALL_TIMEOUT)
+        })
+}
+
 /// How long a peer has to acknowledge a cancellation before it is killed.
 ///
 /// Short, because the peer is being asked to stop and the user is waiting. A peer that answers
@@ -279,7 +297,7 @@ impl ProcessTool {
             return Ended::Lost(e.to_string());
         }
 
-        let mut deadline = Instant::now() + CALL_TIMEOUT;
+        let mut deadline = Instant::now() + allowed(arguments);
         let mut progress = String::new();
         let mut asked_to_stop = false;
 
@@ -381,5 +399,51 @@ impl Tool for ProcessTool {
 impl Drop for ProcessTool {
     fn drop(&mut self) {
         self.drop_peer();
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+
+    #[test]
+    fn no_timeout_asked_for_is_the_ceiling() {
+        assert_eq!(allowed(&serde_json::json!({})), CALL_TIMEOUT);
+    }
+
+    #[test]
+    fn a_short_timeout_is_honoured() {
+        // The point: `bash` with something that may hang should not hold the turn for ten
+        // minutes before anyone finds out.
+        assert_eq!(
+            allowed(&serde_json::json!({ "timeout": 5 })),
+            Duration::from_secs(5)
+        );
+    }
+
+    #[test]
+    fn the_ceiling_is_not_negotiable() {
+        // A tool that could ask for an hour could hold a turn open for an hour.
+        assert_eq!(
+            allowed(&serde_json::json!({ "timeout": 86_400 })),
+            CALL_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn zero_is_not_an_instant_failure() {
+        // A model that sends 0 means "be quick", not "give up before starting".
+        assert_eq!(
+            allowed(&serde_json::json!({ "timeout": 0 })),
+            Duration::from_secs(1)
+        );
+    }
+
+    #[test]
+    fn a_timeout_that_is_not_a_number_is_ignored() {
+        assert_eq!(
+            allowed(&serde_json::json!({ "timeout": "soon" })),
+            CALL_TIMEOUT
+        );
     }
 }

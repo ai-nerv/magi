@@ -106,6 +106,10 @@ impl Registry {
     ///
     /// An unknown tool is an [`Output::error`] rather than a hole: the model asked for
     /// something that does not exist and needs to be told, not left waiting.
+    ///
+    /// Every result is bounded here. This is the only point every transport passes through, and
+    /// a tool cannot be trusted to cap itself: a peer is another program, and a Lua tool has no
+    /// way to write the spill file that makes a cap survivable. See [`crate::bound`].
     #[must_use]
     pub fn call(
         &self,
@@ -115,7 +119,13 @@ impl Registry {
         cancel: &dyn Cancel,
     ) -> Output {
         match self.get(name) {
-            Some(tool) => tool.run(arguments, ops, cancel),
+            Some(tool) => {
+                let output = tool.run(arguments, ops, cancel);
+                Output {
+                    content: crate::bound::apply(name, output.content),
+                    is_error: output.is_error,
+                }
+            }
             None => {
                 let known: Vec<&str> = self.tools.keys().map(String::as_str).collect();
                 Output::error(format!(
@@ -199,5 +209,102 @@ mod tests {
     #[test]
     fn an_empty_registry_says_so() {
         assert!(Registry::new().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod bound_tests {
+    use super::*;
+    use crate::cancel::Uncancelled;
+
+    struct Flood;
+
+    impl Tool for Flood {
+        fn name(&self) -> &str {
+            "flood"
+        }
+        fn description(&self) -> &str {
+            "returns more than anyone asked for"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object" })
+        }
+        fn run(&self, _: &serde_json::Value, _: &dyn Ops, _: &dyn Cancel) -> Output {
+            Output::ok(
+                (1..=50_000)
+                    .map(|i| format!("line {i}\n"))
+                    .collect::<String>(),
+            )
+        }
+    }
+
+    #[test]
+    fn a_flood_is_capped_before_it_reaches_the_caller() {
+        // The cap is here and not in the tool, because a peer is another program and a Lua tool
+        // cannot write a spill file. One `cat` of a lockfile used to be permanent: journalled,
+        // replayed on every request, inside the tail compaction keeps verbatim, and then fed to
+        // the summariser.
+        let mut registry = Registry::new();
+        registry.register(Box::new(Flood));
+        let ops = crate::ops::Real::new(std::env::temp_dir());
+        let out = registry.call("flood", &serde_json::Value::Null, &ops, &Uncancelled);
+        assert!(out.content.len() < 200_000, "{} bytes", out.content.len());
+        assert!(
+            out.content.contains("cut from the middle"),
+            "and it says so"
+        );
+    }
+
+    #[test]
+    fn a_small_result_is_passed_through_unchanged() {
+        struct Quiet;
+        impl Tool for Quiet {
+            fn name(&self) -> &str {
+                "quiet"
+            }
+            fn description(&self) -> &str {
+                ""
+            }
+            fn parameters(&self) -> serde_json::Value {
+                serde_json::json!({ "type": "object" })
+            }
+            fn run(&self, _: &serde_json::Value, _: &dyn Ops, _: &dyn Cancel) -> Output {
+                Output::ok("ok")
+            }
+        }
+        let mut registry = Registry::new();
+        registry.register(Box::new(Quiet));
+        let ops = crate::ops::Real::new(std::env::temp_dir());
+        let out = registry.call("quiet", &serde_json::Value::Null, &ops, &Uncancelled);
+        assert_eq!(out.content, "ok");
+    }
+
+    #[test]
+    fn an_error_result_is_still_bounded_and_still_an_error() {
+        struct Loud;
+        impl Tool for Loud {
+            fn name(&self) -> &str {
+                "loud"
+            }
+            fn description(&self) -> &str {
+                ""
+            }
+            fn parameters(&self) -> serde_json::Value {
+                serde_json::json!({ "type": "object" })
+            }
+            fn run(&self, _: &serde_json::Value, _: &dyn Ops, _: &dyn Cancel) -> Output {
+                Output::error(
+                    (1..=50_000)
+                        .map(|i| format!("bad {i}\n"))
+                        .collect::<String>(),
+                )
+            }
+        }
+        let mut registry = Registry::new();
+        registry.register(Box::new(Loud));
+        let ops = crate::ops::Real::new(std::env::temp_dir());
+        let out = registry.call("loud", &serde_json::Value::Null, &ops, &Uncancelled);
+        assert!(out.is_error, "a failure that is long is still a failure");
+        assert!(out.content.len() < 200_000);
     }
 }

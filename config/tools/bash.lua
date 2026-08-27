@@ -30,6 +30,10 @@ carry over. Output is returned as it is produced.]],
     type = "object",
     properties = {
       command = { type = "string", description = "The command line to run." },
+      timeout = {
+        type = "integer", minimum = 1, maximum = 600,
+        description = "Seconds to allow before giving up. Defaults to 600.",
+      },
     },
     required = { "command" },
   },
