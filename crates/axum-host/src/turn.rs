@@ -40,6 +40,65 @@ pub struct Backend {
     pub options: Options,
 }
 
+/// Summarise the earlier part of the conversation and journal the result.
+///
+/// Returns whether anything was compacted. A failure is not fatal: the turn goes ahead with
+/// the context it has and either fits or is refused by the provider, which is no worse than
+/// not having tried. Losing the conversation because the summariser had a bad minute would be.
+async fn compact(
+    session: &tokio::sync::Mutex<Session>,
+    backend: &Backend,
+    adapter: &dyn axum_provider::api::Adapter,
+    client: &Client,
+) -> bool {
+    let (context, entries) = {
+        let held = session.lock().await;
+        (context_of(&held), held.entries().len())
+    };
+    let Some(covered) = crate::compact::covers(entries) else {
+        return false;
+    };
+
+    {
+        let mut held = session.lock().await;
+        held.set_status(AgentStatus::Working {
+            label: "Compacting".into(),
+        });
+    }
+
+    // Everything before the kept tail, in messages rather than entries: one entry can be
+    // several messages, so the summariser is given what the provider would have been given.
+    let through = context.messages.len().saturating_sub(crate::compact::KEEP);
+    let asked = crate::compact::request(&context, through);
+    let mut turn = axum_core::Turn::new();
+    let mut deltas = Vec::new();
+    let outcome = client
+        .stream(
+            adapter,
+            &backend.provider,
+            &backend.model,
+            &asked,
+            &backend.options,
+            |delta| deltas.push(delta),
+        )
+        .await;
+    for delta in deltas {
+        turn.apply(delta);
+    }
+    if outcome.is_err() || turn.text().trim().is_empty() {
+        return false;
+    }
+
+    let mut held = session.lock().await;
+    let id = MessageId::new(format!("k{}", held.cursor().next().0));
+    let committed = held.commit(Entry::Compaction {
+        id,
+        summary: turn.text().trim().to_owned(),
+        replaces: covered,
+    });
+    committed.is_ok()
+}
+
 /// Run one turn and journal what it produced.
 ///
 /// Deltas are published as they arrive and the entry is amended as it grows, so a UI attaching
@@ -52,7 +111,7 @@ async fn one_turn(
     client: &Client,
     tools: Vec<axum_model::Tool>,
     cancel: &crate::cancel::Cancel,
-) -> Result<Turn, crate::HostError> {
+) -> Result<Round, crate::HostError> {
     let mut context = context_of(&*session.lock().await);
     context.tools = tools;
 
@@ -108,12 +167,13 @@ async fn one_turn(
             },
         })?;
         held.set_status(AgentStatus::Idle);
-        return Ok(turn);
+        return Ok(Round { turn, failed: None });
     }
 
     if let Err(error) = outcome {
         // An error is a value, not an exception: the transcript stays well-formed and the UI
         // needs no error branch. Pi's discipline, and the reason its renderer has none.
+        let class = error.class;
         turn.abort(StopReason::Error);
         let mut held = session.lock().await;
         held.amend(Entry::Assistant {
@@ -125,14 +185,28 @@ async fn one_turn(
             signatures: axum_proto::Signatures::default(),
         })?;
         held.set_status(AgentStatus::Idle);
-        return Ok(turn);
+        return Ok(Round {
+            turn,
+            failed: Some(class),
+        });
     }
 
     let mut held = session.lock().await;
 
     held.amend(assistant(&id, &turn))?;
     held.set_status(AgentStatus::Idle);
-    Ok(turn)
+    Ok(Round { turn, failed: None })
+}
+
+/// What one round produced.
+///
+/// The turn on its own cannot say *why* it stopped: a failure becomes an error entry and a
+/// sentence, and by then the class that would tell the loop whether to act is gone. This
+/// carries it back, so an overflow can be answered by compacting instead of by giving up.
+struct Round {
+    turn: Turn,
+    /// Set when the provider refused, and the class it refused with.
+    failed: Option<axum_provider::retry::RetryClass>,
 }
 
 /// The assistant entry for a turn in its current state.
@@ -161,15 +235,39 @@ fn assistant(id: &MessageId, turn: &Turn) -> Entry {
 /// results, and an assistant entry that failed is dropped — replaying an error as if the model
 /// had said it teaches it to produce more of them.
 pub fn context_of(session: &Session) -> Context {
+    let entries = session.entries();
+    // The last compaction is where the conversation starts as far as the provider is
+    // concerned. The entries before it are still in the journal and still on screen; what
+    // changed is what fits in the window.
+    let from = entries
+        .iter()
+        .rposition(|e| matches!(e, Entry::Compaction { .. }))
+        .map_or(0, |at| at + 1);
+    let summary = entries.get(from.wrapping_sub(1)).and_then(|e| match e {
+        Entry::Compaction { summary, .. } => Some(summary.clone()),
+        _ => None,
+    });
+
     let mut messages: Vec<Message> = Vec::new();
+    if let Some(summary) = summary {
+        // As a user message, because it is context the model is being given rather than
+        // something it said. A model shown its own words as a summary tends to continue them.
+        messages.push(Message::user(format!(
+            "Here is a summary of the earlier part of this conversation:\n\n{summary}"
+        )));
+    }
     // Where the assistant message currently being rebuilt lives, so the tool entries that
     // follow it can put their calls back into it. The journal stores a call as its own record
     // -- it is committed before the registry is consulted, which is what makes an unrouted
     // call auditable -- but a provider needs it inside the message that made it.
     let mut open: Option<usize> = None;
 
-    for entry in session.entries() {
+    for entry in entries.iter().skip(from) {
         match entry {
+            // A compaction inside the replayed range cannot happen: `from` is past the last
+            // one. Ignored rather than handled, so adding a second kind of marker later is a
+            // new arm and not a change to this one.
+            Entry::Compaction { .. } => {}
             Entry::User { text, .. } => {
                 open = None;
                 messages.push(Message::user(text.clone()));
@@ -276,8 +374,24 @@ pub async fn run(
     // visible through it without going back to the session for a fresh one.
     let cancel = session.lock().await.cancel();
 
+    // Before the first round, not before every one: a turn adds at most a few messages, and
+    // compacting between rounds of one prompt would summarise a conversation the model is
+    // still in the middle of.
+    let over = {
+        let held = session.lock().await;
+        crate::compact::needed(&context_of(&held), &backend.model)
+    };
+    if over {
+        compact(session, backend, adapter, client).await;
+    }
+
+    // One reactive compaction per prompt. A second overflow after summarising is not a
+    // conversation that is too long -- it is one whose kept tail alone will not fit, and
+    // compacting again would summarise the summary and still fail.
+    let mut compacted = false;
+
     for _ in 0..MAX_ROUNDS {
-        let turn = one_turn(
+        let round = one_turn(
             session,
             backend,
             adapter,
@@ -286,6 +400,17 @@ pub async fn run(
             &cancel,
         )
         .await?;
+
+        // The estimate above is deliberately rough; this is the provider's own answer. The
+        // failed round stays in the transcript, because a reader who notices the model
+        // forgetting something deserves to see that this is why.
+        if round.failed == Some(axum_provider::retry::RetryClass::Overflow) && !compacted {
+            compacted = true;
+            if compact(session, backend, adapter, client).await {
+                continue;
+            }
+        }
+        let turn = round.turn;
 
         // An interrupted turn has already been journalled as aborted; continuing would call the
         // provider again with the stop still pending and abort that one too.

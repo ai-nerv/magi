@@ -297,3 +297,146 @@ async fn an_interrupt_stops_a_turn_the_model_has_not_finished() {
     drop(held);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Refuse the first request the way a provider refuses an over-long one, then behave.
+///
+/// A 400 with the reason in the body, which is how every one of them says it: the status alone
+/// cannot tell "too long" from "malformed", and only one of those is worth compacting for.
+fn serve_overflow_then(body: &'static str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        for (served, socket) in listener.incoming().enumerate() {
+            let Ok(mut socket) = socket else { return };
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(socket.try_clone().expect("clone"));
+                let mut line = String::new();
+                while reader.read_line(&mut line).unwrap_or(0) > 0 {
+                    if line == "\r\n" {
+                        break;
+                    }
+                    line.clear();
+                }
+                let (status, payload) = if served == 0 {
+                    (
+                        "400 Bad Request",
+                        "{\"error\":\"prompt is too long: 300000 tokens > 200000 maximum\"}",
+                    )
+                } else {
+                    ("200 OK", body)
+                };
+                let response = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: text/event-stream\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{payload}",
+                    payload.len()
+                );
+                let _ = socket.write_all(response.as_bytes());
+            });
+        }
+    });
+    format!("http://127.0.0.1:{port}")
+}
+
+#[tokio::test]
+async fn an_overflow_is_compacted_and_the_turn_carries_on() {
+    // The failure that ends a long session. `Overflow` was a class nothing ever produced,
+    // because the window arriving as a plain 400 made it indistinguishable from a bug.
+    let (session, dir) = session("overflow");
+    let backend = backend(serve_overflow_then(STREAM));
+
+    // Long enough to have something to summarise; `covers` declines below that.
+    {
+        let mut held = session.lock().await;
+        for i in 0..12 {
+            held.commit(Entry::User {
+                id: axum_proto::MessageId::new(format!("u{i}")),
+                text: format!("message number {i}"),
+            })
+            .expect("commit");
+        }
+    }
+
+    let adapter = LuaAdapter::new(
+        engine_with_builtins().expect("builtins"),
+        "anthropic-messages",
+    )
+    .expect("the protocol is registered");
+    let registry = axum_tools::Registry::new();
+    let ops = axum_tools::ops::Real::new(std::env::temp_dir());
+    run(
+        &session,
+        &backend,
+        &adapter,
+        &Client::new(),
+        &registry,
+        &ops,
+    )
+    .await
+    .expect("the turn runs");
+
+    let held = session.lock().await;
+    let entries = held.entries();
+    assert!(
+        entries
+            .iter()
+            .any(|e| matches!(e, Entry::Compaction { .. })),
+        "the conversation was compacted: {entries:?}"
+    );
+    let last = entries.last().expect("an entry");
+    let Entry::Assistant { text, .. } = last else {
+        panic!("expected the retried answer, got {last:?}");
+    };
+    assert_eq!(text, "The journal is append-only.");
+
+    // The refusal stays in the transcript. A reader noticing the model forget something needs
+    // to be able to see that this is why.
+    assert!(
+        entries.iter().any(|e| matches!(
+            e,
+            Entry::Assistant { error: Some(why), .. } if why.contains("too long")
+        )),
+        "{entries:?}"
+    );
+    drop(held);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn a_compacted_session_sends_the_summary_and_not_the_history() {
+    // What compaction is for. The point is not that a record exists; it is that the next
+    // request is smaller and still says what the task was.
+    let (session, dir) = session("compacted-context");
+    {
+        let mut held = session.lock().await;
+        for i in 0..12 {
+            held.commit(Entry::User {
+                id: axum_proto::MessageId::new(format!("u{i}")),
+                text: format!("forgotten message {i}"),
+            })
+            .expect("commit");
+        }
+        held.commit(Entry::Compaction {
+            id: axum_proto::MessageId::new("k1"),
+            summary: "The user is porting a journal to Rust.".into(),
+            replaces: 10,
+        })
+        .expect("commit");
+        held.commit(Entry::User {
+            id: axum_proto::MessageId::new("u99"),
+            text: "carry on".into(),
+        })
+        .expect("commit");
+    }
+
+    let held = session.lock().await;
+    let context = axum_host::turn::context_of(&held);
+    let sent = format!("{:?}", context.messages);
+    assert!(sent.contains("porting a journal"), "the summary is sent");
+    assert!(sent.contains("carry on"), "and what followed it");
+    assert!(
+        !sent.contains("forgotten message 0"),
+        "but not what it replaced: {sent}"
+    );
+    drop(held);
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -174,6 +174,16 @@ fn fold(mut entries: Vec<Entry>, events: &[HarnessEvent]) -> Vec<Entry> {
                     *err = error;
                 }
             }
+            HarnessEvent::Compacted {
+                id,
+                summary,
+                replaces,
+                ..
+            } => entries.push(Entry::Compaction {
+                id,
+                summary,
+                replaces,
+            }),
             HarnessEvent::ToolCallStarted { id, name, args, .. } => entries.push(Entry::Tool {
                 id,
                 name,

@@ -248,6 +248,16 @@ fn events_for(cursor: Cursor, entry: &Entry) -> Vec<HarnessEvent> {
             }
             out
         }
+        Entry::Compaction {
+            id,
+            summary,
+            replaces,
+        } => vec![HarnessEvent::Compacted {
+            cursor,
+            id: id.clone(),
+            summary: summary.clone(),
+            replaces: *replaces,
+        }],
         Entry::Tool {
             id,
             name,

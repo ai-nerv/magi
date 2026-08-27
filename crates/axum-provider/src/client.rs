@@ -102,10 +102,12 @@ impl Client {
 
         let status = response.status();
         if !status.is_success() {
-            // Classified from the status, never from the body's prose: a provider is free to
-            // reword its errors and a classifier that reads them breaks when it does.
-            let class = RetryClass::of_status(status.as_u16());
+            // Classified from the status and, for one case, the body. A provider is free to
+            // reword its errors, so reading prose is a last resort — but a context-window
+            // overflow arrives as an ordinary 400 and nothing else distinguishes it from a
+            // malformed request. One is worth compacting for; the other never will be.
             let detail = response.text().await.unwrap_or_default();
+            let class = RetryClass::of(status.as_u16(), &detail);
             return Err(ProviderError::new(
                 class,
                 format!("{} returned {status}: {}", provider.id, first_line(&detail)),

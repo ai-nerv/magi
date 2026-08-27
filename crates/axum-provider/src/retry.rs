@@ -44,11 +44,47 @@ impl RetryClass {
         }
     }
 
+    /// The class of a failure, from its status *and* what the provider said about it.
+    ///
+    /// The message is not decoration here. A context-window overflow arrives as an ordinary
+    /// 400: the status says only that the request was rejected, and nothing but the body
+    /// distinguishes "your request is malformed" — which retrying cannot fix — from "your
+    /// request was too long", which compacting can. Classified on status alone, `Overflow` is
+    /// a variant nothing ever produces and the conversation simply stops.
+    ///
+    /// Matched on phrases rather than on a per-vendor error code because the codes disagree
+    /// and the phrases do not: every one of them says the length was the problem.
+    #[must_use]
+    pub fn of(status: u16, message: &str) -> Self {
+        let class = Self::of_status(status);
+        if matches!(class, Self::Invalid | Self::Unknown) && mentions_length(message) {
+            return Self::Overflow;
+        }
+        class
+    }
+
     /// Whether retrying this can succeed.
     #[must_use]
     pub const fn is_retryable(self) -> bool {
         matches!(self, Self::Transport | Self::Overload | Self::Throttle)
     }
+}
+
+/// Whether a provider's complaint is about how much was sent.
+fn mentions_length(message: &str) -> bool {
+    const PHRASES: &[&str] = &[
+        "context length",
+        "context_length_exceeded",
+        "maximum context",
+        "context window",
+        "too many tokens",
+        "prompt is too long",
+        "input is too long",
+        "reduce the length",
+        "exceeds the maximum",
+    ];
+    let message = message.to_ascii_lowercase();
+    PHRASES.iter().any(|phrase| message.contains(phrase))
 }
 
 /// The first delay, before any growth.
@@ -112,6 +148,41 @@ mod tests {
         assert!(!RetryClass::Auth.is_retryable());
         assert!(!RetryClass::Invalid.is_retryable());
         assert!(!RetryClass::Overflow.is_retryable());
+    }
+
+    #[test]
+    fn a_four_hundred_about_length_is_an_overflow() {
+        // The whole reason `Overflow` was a variant nothing produced: providers send an
+        // ordinary 400 and put the actual problem in the body.
+        for said in [
+            "This model's maximum context length is 8192 tokens",
+            "context_length_exceeded",
+            "prompt is too long: 250000 tokens > 200000 maximum",
+            "Please reduce the length of the messages",
+        ] {
+            assert_eq!(RetryClass::of(400, said), RetryClass::Overflow, "{said}");
+        }
+    }
+
+    #[test]
+    fn an_ordinary_four_hundred_is_still_invalid() {
+        // Compacting would not help, and retrying a malformed request forever is worse than
+        // reporting it.
+        assert_eq!(
+            RetryClass::of(400, "unknown field `temperatur`"),
+            RetryClass::Invalid
+        );
+    }
+
+    #[test]
+    fn a_status_that_speaks_for_itself_is_not_second_guessed() {
+        // A 401 mentioning a context length is still an auth failure; compacting a request
+        // nobody is allowed to make achieves nothing.
+        assert_eq!(
+            RetryClass::of(401, "context length exceeded"),
+            RetryClass::Auth
+        );
+        assert_eq!(RetryClass::of(429, "too many tokens"), RetryClass::Throttle);
     }
 
     #[test]

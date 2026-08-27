@@ -153,6 +153,24 @@ pub enum Entry {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         thought_signature: Option<String>,
     },
+    /// Everything before this, standing in for itself.
+    ///
+    /// A conversation outgrows the window long before it stops being useful, and the usual fix
+    /// is to drop the beginning — which loses exactly the part that said what the task was.
+    /// This replaces it with a summary instead, and only for the provider: the entries it
+    /// covers stay in the journal and stay on screen. Sessions are append-only and
+    /// delete-never, so compacting adds a record rather than removing any.
+    Compaction {
+        /// Stable identity for this record.
+        id: MessageId,
+        /// What stands in for the entries before it.
+        summary: String,
+        /// How many entries from the start of the session this covers.
+        ///
+        /// A count rather than a cursor because it is an index into the transcript, and the
+        /// transcript is what has to be rebuilt from it.
+        replaces: usize,
+    },
 }
 
 /// Opaque provider state that has to be handed back exactly as it arrived.
@@ -269,6 +287,17 @@ pub enum HarnessEvent {
         /// The new state.
         status: AgentStatus,
     },
+    /// The conversation was summarised to fit the window.
+    Compacted {
+        /// Position of this event.
+        cursor: Cursor,
+        /// Stable identity for the record.
+        id: MessageId,
+        /// What stands in for the entries before it.
+        summary: String,
+        /// How many entries from the start of the session it covers.
+        replaces: usize,
+    },
     /// Something went wrong outside a turn.
     Error {
         /// Position of this event.
@@ -296,6 +325,7 @@ impl HarnessEvent {
             | Self::ToolCallStarted { cursor, .. }
             | Self::ToolCallEnded { cursor, .. }
             | Self::StatusChanged { cursor, .. }
+            | Self::Compacted { cursor, .. }
             | Self::Error { cursor, .. } => *cursor,
         }
     }

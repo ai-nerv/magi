@@ -8,6 +8,7 @@
 //! registry is a lookup rather than a protocol change.
 
 pub mod cancel;
+pub mod compact;
 pub mod paths;
 pub mod session;
 pub mod turn;

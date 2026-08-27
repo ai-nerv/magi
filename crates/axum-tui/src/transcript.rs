@@ -41,7 +41,30 @@ pub fn entry_lines(entry: &Entry, width: u16, theme: &Theme) -> Vec<Line<'static
         Entry::Tool {
             name, args, result, ..
         } => tool(name, args, result.as_ref(), width, theme),
+        Entry::Compaction { replaces, .. } => compaction(*replaces, width, theme),
     }
+}
+
+/// A rule saying the conversation was summarised, and how much of it.
+///
+/// Shown rather than hidden: the transcript above it is still there and still true, but what
+/// the model can see of it has changed, and a reader wondering why it forgot something needs
+/// this line to be the answer.
+fn compaction(replaces: usize, width: u16, theme: &Theme) -> Vec<Line<'static>> {
+    let label = format!(" {replaces} earlier messages summarised ");
+    let rule = usize::from(width).saturating_sub(label.chars().count());
+    Line::default();
+    vec![
+        Line::default(),
+        Line::from(vec![
+            Span::styled("─".repeat(rule / 2), Style::default().fg(theme.md_quote)),
+            Span::styled(label, Style::default().fg(theme.dim)),
+            Span::styled(
+                "─".repeat(rule.saturating_sub(rule / 2)),
+                Style::default().fg(theme.md_quote),
+            ),
+        ]),
+    ]
 }
 
 /// A full-width box on `userMessageBg`, padded one cell on every side.

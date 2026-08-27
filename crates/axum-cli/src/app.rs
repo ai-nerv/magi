@@ -183,6 +183,16 @@ impl App {
                     *err = error;
                 }
             }
+            HarnessEvent::Compacted {
+                id,
+                summary,
+                replaces,
+                ..
+            } => self.entries.push(Entry::Compaction {
+                id,
+                summary,
+                replaces,
+            }),
             HarnessEvent::ToolCallStarted { id, name, args, .. } => {
                 self.entries.push(Entry::Tool {
                     id,
