@@ -114,6 +114,14 @@ pub fn load() -> Result<Loaded, LuaError> {
     for path in axum_lua::search_paths() {
         if path.exists() && path.file_name().is_some_and(|n| n == ".axum.lua") {
             engine.run_file(&path)?;
+            // A vouched directory's file is as good as the machine's own, so a tool it declares
+            // has to reach the daemon and not just this VM. Without this, vouching for a
+            // directory would honour its providers and silently drop its tools.
+            if machine.is_none()
+                && let Ok(source) = std::fs::read_to_string(&path)
+            {
+                layer(&mut tools, path.display().to_string(), source);
+            }
         }
     }
     engine.harvest();

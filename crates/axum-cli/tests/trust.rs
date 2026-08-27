@@ -189,16 +189,29 @@ axum.provider("mine", {
   auth = { kind = "none" },
   models = { { id = "m", name = "M", context_window = 1000, max_tokens = 100 } },
 })
+axum.tool("ours", {
+  description = "A tool this repository declares for itself.",
+  parameters = { type = "object" },
+  transport = { kind = "process", command = "true", args = {} },
+})
 "#,
     );
     let output = axum(&dir, &["models", "--all"]);
     let listed = String::from_utf8_lossy(&output.stdout);
     let said = String::from_utf8_lossy(&output.stderr);
-
     assert!(listed.contains("mine/m"), "{listed}");
     assert!(
         !said.contains("will not be used"),
         "nothing was refused: {said}"
+    );
+
+    // And its tools, not only its providers. Honouring one and dropping the other would make
+    // vouching mean half of what it says.
+    let output = axum(&dir, &["tools"]);
+    let listed = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        listed.contains("ours"),
+        "the vouched tool is offered: {listed}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
