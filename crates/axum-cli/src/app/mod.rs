@@ -313,7 +313,19 @@ impl App {
                     *cost = usage;
                 }
             }
-            HarnessEvent::ModelChanged { model, .. } => self.model = model,
+            // Said in the transcript, once the conversation has started. Which model answered
+            // is part of the record, and a switch that changes only two dim words in the
+            // footer leaves no mark on the place a reader actually reads.
+            HarnessEvent::ModelChanged { model, .. } => {
+                let before = self.model.as_ref().map(|m| m.name.clone());
+                let after = model.as_ref().map(|m| m.name.clone());
+                if self.started() && before != after {
+                    if let Some(name) = after {
+                        self.show_notice(format!("Model is now `{name}`."));
+                    }
+                }
+                self.model = model;
+            }
             // Not a transcript entry: the request was understood and declined, which is a
             // fact about what the UI asked rather than about the conversation.
             HarnessEvent::Refused { message, .. } => self.show_notice(message),
