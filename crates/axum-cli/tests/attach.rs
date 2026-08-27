@@ -149,6 +149,7 @@ fn fold(mut entries: Vec<Entry>, events: &[HarnessEvent]) -> Vec<Entry> {
                 stop_reason: None,
                 error: None,
                 signatures: axum_proto::Signatures::default(),
+                usage: axum_proto::Usage::default(),
             }),
             HarnessEvent::AssistantDelta { text, thinking, .. } => {
                 if let Some(Entry::Assistant {

@@ -15,6 +15,12 @@ const BROADCAST_CAPACITY: usize = 1024;
 /// A live session.
 pub struct Session {
     cancel: crate::cancel::Cancel,
+    /// Which model answers here, when one is configured.
+    ///
+    /// Held by the session rather than looked up by the UI: a UI that read the configuration
+    /// for itself would report whatever is configured *now*, which after an edit is not what
+    /// the daemon is actually talking to.
+    model: Option<axum_proto::ModelInfo>,
     journal: Journal,
     status: AgentStatus,
     events: broadcast::Sender<HarnessEvent>,
@@ -29,6 +35,7 @@ impl Session {
             journal,
             status: AgentStatus::Idle,
             cancel: crate::cancel::Cancel::default(),
+            model: None,
             events,
         })
     }
@@ -40,6 +47,30 @@ impl Session {
     #[must_use]
     pub fn cancel(&self) -> crate::cancel::Cancel {
         self.cancel.clone()
+    }
+
+    /// Say which model this session talks to.
+    pub fn set_model(&mut self, model: Option<axum_proto::ModelInfo>) {
+        self.model = model;
+    }
+
+    /// Every token this session has spent.
+    ///
+    /// Summed from the journal rather than counted as it goes, so a resumed session reports
+    /// what it actually accrued instead of starting again from zero.
+    #[must_use]
+    pub fn usage(&self) -> axum_proto::Usage {
+        self.entries()
+            .iter()
+            .fold(axum_proto::Usage::default(), |total, entry| match entry {
+                Entry::Assistant { usage, .. } => axum_proto::Usage {
+                    input: total.input + usage.input,
+                    output: total.output + usage.output,
+                    cache_read: total.cache_read + usage.cache_read,
+                    cache_write: total.cache_write + usage.cache_write,
+                },
+                _ => total,
+            })
     }
 
     /// Subscribe to everything published from now on.
@@ -85,6 +116,7 @@ impl Session {
             session: self.id().clone(),
             entries: self.entries().iter().take(kept).cloned().collect(),
             status: self.status.clone(),
+            model: self.model.clone(),
         }
     }
 
@@ -163,6 +195,7 @@ fn amendment_events(cursor: Cursor, previous: Option<&Entry>, entry: &Entry) -> 
                 thinking,
                 stop_reason,
                 error,
+                usage,
                 ..
             },
         ) => {
@@ -183,6 +216,7 @@ fn amendment_events(cursor: Cursor, previous: Option<&Entry>, entry: &Entry) -> 
                     id: id.clone(),
                     stop_reason: *stop_reason,
                     error: error.clone(),
+                    usage: *usage,
                 });
             }
             out
@@ -224,6 +258,7 @@ fn events_for(cursor: Cursor, entry: &Entry) -> Vec<HarnessEvent> {
             thinking,
             stop_reason,
             error,
+            usage,
             ..
         } => {
             let mut out = vec![
@@ -244,6 +279,7 @@ fn events_for(cursor: Cursor, entry: &Entry) -> Vec<HarnessEvent> {
                     id: id.clone(),
                     stop_reason: *stop_reason,
                     error: error.clone(),
+                    usage: *usage,
                 });
             }
             out
@@ -360,6 +396,7 @@ mod tests {
             stop_reason: None,
             error: None,
             signatures: axum_proto::Signatures::default(),
+            usage: axum_proto::Usage::default(),
         })
         .expect("commit");
         let events = s.replay(Cursor::ZERO);
@@ -381,6 +418,7 @@ mod tests {
             stop_reason: Some(StopReason::EndTurn),
             error: None,
             signatures: axum_proto::Signatures::default(),
+            usage: axum_proto::Usage::default(),
         })
         .expect("commit");
         assert_eq!(s.replay(Cursor::ZERO).len(), 3);

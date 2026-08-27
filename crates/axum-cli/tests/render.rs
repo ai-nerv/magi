@@ -57,6 +57,7 @@ fn a_conversation_renders_the_way_pi_lays_it_out() {
             stop_reason: Some(StopReason::ToolUse),
             error: None,
             signatures: axum_proto::Signatures::default(),
+            usage: axum_proto::Usage::default(),
         },
         Entry::Tool {
             id: ToolCallId::new("t1"),
@@ -115,6 +116,7 @@ fn thinking_renders_above_the_response() {
         stop_reason: Some(StopReason::EndTurn),
         error: None,
         signatures: axum_proto::Signatures::default(),
+        usage: axum_proto::Usage::default(),
     }];
     let rendered = render_entries(&entries, 40);
     let thinking = rendered
@@ -171,6 +173,7 @@ fn the_recorded_sample_replays_into_a_transcript() {
                 stop_reason: None,
                 error: None,
                 signatures: axum_proto::Signatures::default(),
+                usage: axum_proto::Usage::default(),
             }),
             HarnessEvent::AssistantDelta { text, thinking, .. } => {
                 if let Some(Entry::Assistant {
@@ -256,6 +259,7 @@ fn visual() {
                 stop_reason: None,
                 error: None,
                 signatures: axum_proto::Signatures::default(),
+                usage: axum_proto::Usage::default(),
             }),
             HarnessEvent::AssistantDelta { text, thinking, .. } => {
                 if let Some(Entry::Assistant {

@@ -165,6 +165,7 @@ async fn one_turn(
                 text: None,
                 thinking: turn.signature().map(str::to_owned),
             },
+            usage: axum_proto::Usage::default(),
         })?;
         held.set_status(AgentStatus::Idle);
         return Ok(Round { turn, failed: None });
@@ -183,6 +184,7 @@ async fn one_turn(
             stop_reason: Some(StopReason::Error),
             error: Some(error.message),
             signatures: axum_proto::Signatures::default(),
+            usage: axum_proto::Usage::default(),
         })?;
         held.set_status(AgentStatus::Idle);
         return Ok(Round {
@@ -226,6 +228,7 @@ fn assistant(id: &MessageId, turn: &Turn) -> Entry {
             text: None,
             thinking: turn.signature().map(str::to_owned),
         },
+        usage: turn.usage(),
         stop_reason: match turn.state() {
             axum_core::TurnState::Finished(reason) => Some(reason),
             // A message that asked for tools is finished as a message: the model said its
@@ -394,6 +397,7 @@ pub async fn run(
             "stopped after {MAX_ROUNDS} rounds of tool use without finishing"
         )),
         signatures: axum_proto::Signatures::default(),
+        usage: axum_proto::Usage::default(),
     })?;
     held.set_status(AgentStatus::Idle);
     Ok(())

@@ -36,6 +36,19 @@ pub enum Flush {
     Upto(usize),
 }
 
+/// Add two token counts.
+///
+/// Written out because `Usage` is four independent counters, and summing three while
+/// forgetting the fourth shows up as a footer that quietly reads low.
+fn add(total: axum_proto::Usage, next: axum_proto::Usage) -> axum_proto::Usage {
+    axum_proto::Usage {
+        input: total.input + next.input,
+        output: total.output + next.output,
+        cache_read: total.cache_read + next.cache_read,
+        cache_write: total.cache_write + next.cache_write,
+    }
+}
+
 /// Everything the UI knows.
 pub struct App {
     /// Transcript in order. Entries before `flushed` are already in scrollback.
@@ -59,6 +72,12 @@ pub struct App {
     pub connected: bool,
     /// Spinner phase.
     pub tick: usize,
+    /// Which model is answering, as the daemon reported it.
+    ///
+    /// From the daemon rather than read from the configuration here: a UI reading the config
+    /// for itself would name whatever is configured *now*, which after an edit is not what the
+    /// daemon on the other end of the socket is actually talking to.
+    pub model: Option<axum_proto::ModelInfo>,
 }
 
 impl Default for App {
@@ -80,6 +99,7 @@ impl App {
             scrollback: Scrollback::new(),
             completion: None,
             connected: false,
+            model: None,
             tick: 0,
         }
     }
@@ -88,6 +108,43 @@ impl App {
     #[must_use]
     pub fn entries(&self) -> &[Entry] {
         &self.entries
+    }
+
+    /// Every token this session has spent.
+    ///
+    /// Derived from the transcript rather than accumulated as events arrive. A running total
+    /// has to be right in two places — the snapshot on attach, and each event after it — and a
+    /// reattach replays events the snapshot already counted, so the two disagree by however
+    /// much was replayed. Folding the entries cannot double count, because there is only one
+    /// of each.
+    #[must_use]
+    pub fn usage(&self) -> axum_proto::Usage {
+        self.entries
+            .iter()
+            .fold(axum_proto::Usage::default(), |total, entry| match entry {
+                Entry::Assistant { usage, .. } => add(total, *usage),
+                _ => total,
+            })
+    }
+
+    /// Tokens the most recent request actually sent.
+    ///
+    /// How full the window is, which is not the same question as what the session has spent:
+    /// the window holds one conversation, and an afternoon that used ten windows' worth is not
+    /// ten times full. Zero until a turn has reported any, and after a compaction it drops —
+    /// which is the point of compacting.
+    #[must_use]
+    pub fn last_prompt_tokens(&self) -> u64 {
+        self.entries
+            .iter()
+            .rev()
+            .find_map(|entry| match entry {
+                Entry::Assistant { usage, .. } if usage.prompt_tokens() > 0 => {
+                    Some(usage.prompt_tokens())
+                }
+                _ => None,
+            })
+            .unwrap_or(0)
     }
 
     /// Entries that have not yet reached scrollback.
@@ -122,6 +179,7 @@ impl App {
                 cursor,
                 entries,
                 status,
+                model,
                 ..
             } => {
                 // A snapshot describes the session as of the cursor the UI asked to resume
@@ -138,6 +196,7 @@ impl App {
                 } else {
                     0
                 };
+                self.model = model;
                 self.entries = entries;
                 self.status = status;
             }
@@ -152,6 +211,7 @@ impl App {
                     stop_reason: None,
                     error: None,
                     signatures: axum_proto::Signatures::default(),
+                    usage: axum_proto::Usage::default(),
                 });
             }
             HarnessEvent::AssistantDelta {
@@ -171,16 +231,19 @@ impl App {
                 id,
                 stop_reason,
                 error,
+                usage,
                 ..
             } => {
                 if let Some(Entry::Assistant {
                     stop_reason: stop,
                     error: err,
+                    usage: cost,
                     ..
                 }) = self.assistant_mut(&id)
                 {
                     *stop = Some(stop_reason);
                     *err = error;
+                    *cost = usage;
                 }
             }
             HarnessEvent::Branched { id, keeps, .. } => {
@@ -219,6 +282,7 @@ impl App {
                     stop_reason: Some(axum_proto::StopReason::Error),
                     error: Some(format!("{class:?}: {message}")),
                     signatures: axum_proto::Signatures::default(),
+                    usage: axum_proto::Usage::default(),
                 });
             }
         }
@@ -264,6 +328,7 @@ impl App {
             stop_reason: Some(axum_proto::StopReason::EndTurn),
             error: None,
             signatures: axum_proto::Signatures::default(),
+            usage: axum_proto::Usage::default(),
         });
     }
 
@@ -436,9 +501,11 @@ mod tests {
                     stop_reason: None,
                     error: None,
                     signatures: axum_proto::Signatures::default(),
+                    usage: axum_proto::Usage::default(),
                 },
             ],
             status: AgentStatus::Idle,
+            model: None,
         });
         assert_eq!(
             app.live().len(),
@@ -459,6 +526,7 @@ mod tests {
                 text: "restored".into(),
             }],
             status: AgentStatus::Idle,
+            model: None,
         });
         assert_eq!(app.live().len(), 1, "a cold snapshot is entirely unflushed");
     }
@@ -529,5 +597,117 @@ mod tests {
             }
             other => panic!("expected an assistant entry, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+    use axum_proto::{ModelInfo, SessionId, StopReason, Usage};
+
+    fn ended(id: &str, cursor: u64, usage: Usage) -> HarnessEvent {
+        HarnessEvent::AssistantEnded {
+            cursor: Cursor(cursor),
+            id: MessageId::new(id),
+            stop_reason: StopReason::EndTurn,
+            error: None,
+            usage,
+        }
+    }
+
+    fn spent(input: u64, output: u64) -> Usage {
+        Usage {
+            input,
+            output,
+            cache_read: 0,
+            cache_write: 0,
+        }
+    }
+
+    #[test]
+    fn a_turn_reports_what_it_cost() {
+        let mut app = App::new();
+        app.apply(HarnessEvent::AssistantStarted {
+            cursor: Cursor(1),
+            id: MessageId::new("a1"),
+        });
+        app.apply(ended("a1", 1, spent(100, 20)));
+        assert_eq!(app.usage().input, 100);
+        assert_eq!(app.usage().output, 20);
+    }
+
+    #[test]
+    fn a_reattach_does_not_count_the_same_turn_twice() {
+        // The reason this is derived rather than accumulated. A snapshot carries entries that
+        // already include their cost, and the replay after it re-sends the events that
+        // produced them: a running total adds both and reads high by however much was replayed.
+        let mut app = App::new();
+        app.apply(HarnessEvent::AssistantStarted {
+            cursor: Cursor(1),
+            id: MessageId::new("a1"),
+        });
+        app.apply(ended("a1", 1, spent(100, 20)));
+        let entries = app.entries().to_vec();
+
+        let mut rejoined = App::new();
+        rejoined.apply(HarnessEvent::SessionSnapshot {
+            cursor: Cursor(1),
+            session: SessionId::new("s"),
+            entries,
+            status: AgentStatus::Idle,
+            model: None,
+        });
+        rejoined.apply(ended("a1", 1, spent(100, 20)));
+        assert_eq!(rejoined.usage().input, 100, "counted once, not twice");
+    }
+
+    #[test]
+    fn window_fullness_is_the_last_prompt_not_the_running_total() {
+        // An afternoon that spent ten windows' worth is not ten times full.
+        let mut app = App::new();
+        for (n, cost) in [(1, spent(1000, 10)), (2, spent(1200, 10))] {
+            app.apply(HarnessEvent::AssistantStarted {
+                cursor: Cursor(n),
+                id: MessageId::new(format!("a{n}")),
+            });
+            app.apply(ended(&format!("a{n}"), n, cost));
+        }
+        assert_eq!(app.usage().input, 2200, "the session spent both");
+        assert_eq!(app.last_prompt_tokens(), 1200, "the window holds the last");
+    }
+
+    #[test]
+    fn a_turn_that_reported_nothing_does_not_reset_the_gauge() {
+        // A refusal costs nothing and is journalled with a zero. Reading it as "the window is
+        // empty now" would make the gauge flicker to zero on every error.
+        let mut app = App::new();
+        app.apply(HarnessEvent::AssistantStarted {
+            cursor: Cursor(1),
+            id: MessageId::new("a1"),
+        });
+        app.apply(ended("a1", 1, spent(900, 10)));
+        app.apply(HarnessEvent::AssistantStarted {
+            cursor: Cursor(2),
+            id: MessageId::new("a2"),
+        });
+        app.apply(ended("a2", 2, Usage::default()));
+        assert_eq!(app.last_prompt_tokens(), 900);
+    }
+
+    #[test]
+    fn the_model_comes_from_the_daemon() {
+        let mut app = App::new();
+        assert!(app.model.is_none(), "nothing is assumed before it says");
+        app.apply(HarnessEvent::SessionSnapshot {
+            cursor: Cursor::ZERO,
+            session: SessionId::new("s"),
+            entries: Vec::new(),
+            status: AgentStatus::Idle,
+            model: Some(ModelInfo {
+                name: "p/m".into(),
+                context_window: 1000,
+            }),
+        });
+        assert_eq!(app.model.expect("a model").name, "p/m");
     }
 }

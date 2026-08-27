@@ -47,6 +47,26 @@ impl Cursor {
 /// answering the old question.
 pub use axum_model::StopReason;
 
+/// Tokens a turn consumed.
+///
+/// Re-exported for the same reason [`StopReason`] is: the provider layer already has exactly
+/// this, and a second copy is where a field gets added to one and the other keeps answering
+/// the old question.
+pub use axum_model::Usage;
+
+/// Which model is answering, and how much room it has.
+///
+/// Sent with the snapshot rather than assumed by the UI. A UI that guessed would be wrong the
+/// moment a session was resumed against a different configuration, and "which model am I
+/// talking to" is the question a footer exists to answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelInfo {
+    /// Qualified name, as `axum models` prints it.
+    pub name: String,
+    /// Tokens the model accepts, so a UI can show how full the conversation is.
+    pub context_window: u64,
+}
+
 /// What the agent is doing, for the status line.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
@@ -137,6 +157,12 @@ pub enum Entry {
         /// What the provider needs back to continue this reasoning.
         #[serde(default, skip_serializing_if = "Signatures::is_empty")]
         signatures: Signatures,
+        /// What this turn cost.
+        ///
+        /// Journalled rather than counted live, so a resumed session shows the totals it
+        /// actually accrued instead of starting again from zero.
+        #[serde(default, skip_serializing_if = "is_free")]
+        usage: Usage,
     },
     /// A tool invocation and its outcome.
     Tool {
@@ -218,6 +244,14 @@ impl Signatures {
     }
 }
 
+/// Whether a turn cost nothing, so it can be left out of the journal entirely.
+///
+/// A refusal and a message still streaming both cost nothing yet, and a transcript full of
+/// zeroes is harder to read than one that mentions cost only where there was some.
+fn is_free(usage: &Usage) -> bool {
+    *usage == Usage::default()
+}
+
 /// Daemon → UI.
 ///
 /// Nine variants. If this grows past fifteen before M1 ships, capabilities are being added
@@ -235,6 +269,9 @@ pub enum HarnessEvent {
         entries: Vec<Entry>,
         /// What the agent is doing right now.
         status: AgentStatus,
+        /// Which model is answering, when one is configured.
+        #[serde(default)]
+        model: Option<ModelInfo>,
     },
     /// A user message was accepted into the transcript.
     UserMessage {
@@ -273,6 +310,9 @@ pub enum HarnessEvent {
         stop_reason: StopReason,
         /// Populated when `stop_reason` is `Error`.
         error: Option<String>,
+        /// What the turn cost.
+        #[serde(default)]
+        usage: Usage,
     },
     /// A tool call began.
     ToolCallStarted {

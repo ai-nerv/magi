@@ -34,7 +34,7 @@ const RECONNECT_DELAY: Duration = Duration::from_millis(500);
 pub async fn run(socket: &Path, mode: Mode, prompt: Option<String>) -> Result<()> {
     let theme = Theme::default();
     let mut app = App::new();
-    let footer_data = footer_data(mode);
+    let base_footer = local_footer(mode);
 
     let mut session = Session::open(mode, ui::initial_height(terminal_size().1))?;
     let mut terminal_events = EventStream::new();
@@ -67,9 +67,10 @@ pub async fn run(socket: &Path, mode: Mode, prompt: Option<String>) -> Result<()
             flush_settled(&mut session, &mut app, &theme)?;
             let _ = session.terminal.autoresize();
             let mode = session.mode;
-            session
-                .terminal
-                .draw(|frame| ui::draw(frame, &mut app, &footer_data, &theme, mode))?;
+            session.terminal.draw(|frame| {
+                let footer = footer_data(&base_footer, &app);
+                ui::draw(frame, &mut app, &footer, &theme, mode);
+            })?;
             dirty = false;
         }
 
@@ -280,11 +281,12 @@ fn terminal_size() -> (u16, u16) {
     crossterm::terminal::size().unwrap_or((80, 24))
 }
 
-/// Footer content available before a daemon exists.
+/// What the footer can say without asking anyone.
 ///
-/// M1 replaces this with values the daemon reports; until then the UI states what it can see
-/// for itself rather than inventing token counts.
-fn footer_data(mode: Mode) -> FooterData {
+/// The working directory and the branch are facts about this process. Everything else — which
+/// model, how many tokens, how full the window is — belongs to the daemon, and is filled in by
+/// [`footer_data`] once it has told us.
+fn local_footer(mode: Mode) -> FooterData {
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
@@ -295,6 +297,35 @@ fn footer_data(mode: Mode) -> FooterData {
         model: "no-model".into(),
         mode: mode.label(),
         ..FooterData::default()
+    }
+}
+
+/// The footer as of now.
+///
+/// Rebuilt each frame from what the daemon has reported rather than kept in step by hand: the
+/// numbers change on every delta, and a copy updated at each of the places that could change
+/// them is a copy that misses one.
+fn footer_data(base: &FooterData, app: &App) -> FooterData {
+    let window = app.model.as_ref().map_or(0, |m| m.context_window);
+    FooterData {
+        cwd: base.cwd.clone(),
+        branch: base.branch.clone(),
+        mode: base.mode,
+        model: app
+            .model
+            .as_ref()
+            .map_or_else(|| "no-model".to_owned(), |m| m.name.clone()),
+        input_tokens: app.usage().prompt_tokens(),
+        output_tokens: app.usage().output,
+        context_window: window,
+        // Against the last turn's prompt, not the running total: the window holds one
+        // conversation, and a session that has spent ten windows over an afternoon is not
+        // ten times full. `None` until a model says how big its window is, which is what the
+        // footer's question mark means.
+        context_percent: (window > 0).then(|| {
+            let used = app.last_prompt_tokens();
+            (used as f64 / window as f64) * 100.0
+        }),
     }
 }
 

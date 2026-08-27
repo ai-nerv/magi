@@ -378,6 +378,7 @@ async fn an_amended_entry_is_not_announced_as_a_new_one() {
             stop_reason: None,
             error: None,
             signatures: axum_proto::Signatures::default(),
+            usage: axum_proto::Usage::default(),
         })
         .expect("commit");
         held.amend(Entry::Assistant {
@@ -387,6 +388,7 @@ async fn an_amended_entry_is_not_announced_as_a_new_one() {
             stop_reason: Some(axum_proto::StopReason::EndTurn),
             error: None,
             signatures: axum_proto::Signatures::default(),
+            usage: axum_proto::Usage::default(),
         })
         .expect("amend");
     }
@@ -405,6 +407,67 @@ async fn an_amended_entry_is_not_announced_as_a_new_one() {
     );
     assert!(live.try_recv().is_err(), "nothing else was published");
 
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&socket);
+}
+
+#[tokio::test]
+async fn what_a_turn_cost_reaches_the_ui() {
+    // The footer read zero against a real model while the journal held the real numbers. A
+    // finished turn is published by `amendment_events` — the entry is committed empty and
+    // amended once it has streamed — and that path was sending a default. `events_for`, which
+    // only a cold replay uses, had the right one, so nothing that replayed noticed.
+    use axum_proto::{Entry, MessageId, Signatures, StopReason, Usage};
+
+    let (dir, socket) = temp("usage");
+    let session = open_session(&dir, "/tmp", 1).expect("session");
+    let session = std::sync::Arc::new(tokio::sync::Mutex::new(session));
+    let mut live = session.lock().await.subscribe();
+
+    let spent = Usage {
+        input: 124,
+        output: 9,
+        cache_read: 768,
+        cache_write: 0,
+    };
+    {
+        let mut held = session.lock().await;
+        held.commit(Entry::Assistant {
+            id: MessageId::new("a1"),
+            text: String::new(),
+            thinking: String::new(),
+            stop_reason: None,
+            error: None,
+            signatures: Signatures::default(),
+            usage: Usage::default(),
+        })
+        .expect("commit");
+        held.amend(Entry::Assistant {
+            id: MessageId::new("a1"),
+            text: "done".into(),
+            thinking: String::new(),
+            stop_reason: Some(StopReason::EndTurn),
+            error: None,
+            signatures: Signatures::default(),
+            usage: spent,
+        })
+        .expect("amend");
+    }
+
+    let mut reported = None;
+    while let Ok(event) = live.try_recv() {
+        if let HarnessEvent::AssistantEnded { usage, .. } = event {
+            reported = Some(usage);
+        }
+    }
+    assert_eq!(
+        reported,
+        Some(spent),
+        "the cost is published, not defaulted"
+    );
+
+    // And the session's own total agrees, which is what a resumed footer reads.
+    assert_eq!(session.lock().await.usage(), spent);
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_file(&socket);
 }

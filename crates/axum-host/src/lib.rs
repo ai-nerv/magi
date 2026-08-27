@@ -50,9 +50,16 @@ pub enum HostError {
 /// the lock is held for a journal append and released, never across a provider call.
 pub async fn serve(
     listener: UnixListener,
-    session: Session,
+    mut session: Session,
     backend: Option<turn::Backend>,
 ) -> Result<(), HostError> {
+    // Told once, here, because this is the only place that knows both. A UI asking the
+    // configuration for itself would report whatever is configured now rather than what this
+    // daemon is actually talking to.
+    session.set_model(backend.as_ref().map(|backend| axum_proto::ModelInfo {
+        name: backend.model.qualified(),
+        context_window: backend.model.context_window,
+    }));
     let session = Arc::new(Mutex::new(session));
     // Turns run on the worker's own thread because a protocol lives in a Lua VM. A daemon
     // with no backend has no worker, and says so when a prompt arrives.
@@ -199,6 +206,7 @@ async fn submit(
                     .into(),
             ),
             signatures: axum_proto::Signatures::default(),
+            usage: axum_proto::Usage::default(),
         })?;
         held.set_status(AgentStatus::Idle);
         return Ok(());

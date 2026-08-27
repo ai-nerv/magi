@@ -315,6 +315,7 @@ mod tests {
                 stop_reason: None,
                 error: None,
                 signatures: axum_proto::Signatures::default(),
+                usage: axum_proto::Usage::default(),
             })
             .expect("append");
         journal
@@ -325,6 +326,7 @@ mod tests {
                 stop_reason: Some(StopReason::EndTurn),
                 error: None,
                 signatures: axum_proto::Signatures::default(),
+                usage: axum_proto::Usage::default(),
             })
             .expect("amend");
         drop(journal);

@@ -199,6 +199,7 @@ mod context_tests {
                 text: None,
                 thinking: Some("sig-thinking".into()),
             },
+            usage: axum_proto::Usage::default(),
         })?;
         session.commit(Entry::Tool {
             id: ToolCallId::new("c1"),
@@ -321,6 +322,7 @@ mod context_tests {
                 stop_reason: Some(StopReason::ToolUse),
                 error: None,
                 signatures: Signatures::default(),
+                usage: axum_proto::Usage::default(),
             })
             .expect("journal");
         session
@@ -361,6 +363,7 @@ mod context_tests {
                 stop_reason: None,
                 error: None,
                 signatures: Signatures::default(),
+                usage: axum_proto::Usage::default(),
             })
             .expect("journal");
         assert!(of(&session).messages.is_empty());
@@ -396,6 +399,7 @@ mod branch_tests {
                 stop_reason: Some(StopReason::EndTurn),
                 error: None,
                 signatures: Signatures::default(),
+                usage: axum_proto::Usage::default(),
             })
             .expect("commit");
     }

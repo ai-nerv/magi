@@ -71,6 +71,7 @@ impl Recording {
                     stop_reason: None,
                     error: None,
                     signatures: axum_proto::Signatures::default(),
+                    usage: axum_proto::Usage::default(),
                 }),
                 HarnessEvent::AssistantDelta {
                     id, text, thinking, ..
@@ -207,6 +208,7 @@ impl FakeHarness {
                 session: SessionId::new("replay"),
                 entries,
                 status,
+                model: None,
             })
             .await?;
 

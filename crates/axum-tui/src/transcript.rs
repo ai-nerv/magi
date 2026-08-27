@@ -325,6 +325,7 @@ mod tests {
             stop_reason: Some(StopReason::EndTurn),
             error: None,
             signatures: axum_proto::Signatures::default(),
+            usage: axum_proto::Usage::default(),
         };
         let rendered = text_of(&entry_lines(&entry, 20, &Theme::default()));
         assert_eq!(rendered, vec!["", " sure"]);
@@ -376,6 +377,7 @@ mod tests {
             stop_reason: Some(StopReason::Length),
             error: None,
             signatures: axum_proto::Signatures::default(),
+            usage: axum_proto::Usage::default(),
         };
         let rendered = text_of(&entry_lines(&entry, 40, &Theme::default()));
         assert!(
@@ -393,6 +395,7 @@ mod tests {
             stop_reason: Some(StopReason::Error),
             error: Some("overloaded".into()),
             signatures: axum_proto::Signatures::default(),
+            usage: axum_proto::Usage::default(),
         };
         let rendered = text_of(&entry_lines(&entry, 40, &Theme::default()));
         assert!(
@@ -518,6 +521,7 @@ mod tab_tests {
             stop_reason: None,
             error: None,
             signatures: axum_proto::Signatures::default(),
+            usage: axum_proto::Usage::default(),
         };
         let rendered = cells(&entry_lines(&entry, 60, &Theme::default()));
         assert!(!rendered.contains('\t'), "{rendered:?}");
