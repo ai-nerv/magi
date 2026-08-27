@@ -5,14 +5,21 @@
     nixpkgs.url = "github:NixOS/nixpkgs?rev=4c1018dae018162ec878d42fec712642d214fdfa";
     flake-utils.url = "github:numtide/flake-utils";
     nixgl.url = "github:nix-community/nixGL";
+    # A toolchain with targets we can choose. nixpkgs' `rustc` ships the host target and
+    # nothing else, so `--target x86_64-unknown-linux-musl` fails on a missing `core` — which
+    # made `make build` fall back to glibc and quietly stop producing the static binary it
+    # exists to produce.
+    rust-overlay.url = "github:oxalica/rust-overlay";
+    rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   outputs =
-    { nixpkgs, flake-utils, nixgl, ... }:
+    { nixpkgs, flake-utils, nixgl, rust-overlay, ... }:
     flake-utils.lib.eachDefaultSystem (
       system:
       let
         overlays = [
+          (import rust-overlay)
           (final: prev: {
             xorg = prev.xorg // {
               libX11 = final.libx11;
@@ -28,6 +35,14 @@
             allowUnfree = true;
             nvidia.acceptLicense = true;
           };
+        };
+
+        # Pinned to the version the shell already had, so this change adds a target and
+        # nothing else: a newer rustc brings newer clippy lints, and `make verify` denies
+        # warnings. Raise it deliberately, not as a side effect of wanting musl.
+        rustToolchain = pkgs.rust-bin.stable."1.94.0".default.override {
+          extensions = [ "rust-src" "rust-analyzer" "clippy" "rustfmt" ];
+          targets = [ "x86_64-unknown-linux-musl" ];
         };
 
         nvidiaVersion = builtins.getEnv "NVIDIA_VERSION";
@@ -73,11 +88,7 @@
       {
         devShells.default = pkgs.mkShell {
           packages = [
-            pkgs.rustc
-            pkgs.cargo
-            pkgs.rustfmt
-            pkgs.clippy
-            pkgs.rust-analyzer
+            rustToolchain
             pkgs.git-cliff
             pkgs.clang
             pkgs.mold
