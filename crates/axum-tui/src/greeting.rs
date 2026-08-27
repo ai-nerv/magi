@@ -43,7 +43,10 @@ pub fn render(model: &str, cwd: &str, width: u16, theme: &Theme) -> Vec<Line<'st
     // The sentinel is not a name. Printing `no-model` here reads as a model called that, and
     // the notice below already says what to do about it.
     if !model.is_empty() && model != crate::footer::NO_MODEL {
-        out.push(Line::from(Span::styled(model.to_owned(), muted)));
+        out.push(Line::from(Span::styled(
+            crate::footer::fit_path(model, usize::from(width)),
+            muted,
+        )));
     }
     if !cwd.is_empty() {
         out.push(Line::from(Span::styled(
@@ -53,13 +56,22 @@ pub fn render(model: &str, cwd: &str, width: u16, theme: &Theme) -> Vec<Line<'st
     }
     out.push(Line::from(""));
 
-    let mut hints = Vec::new();
+    // Whole pairs only. A line cut mid-hint drops `^c quit` without saying it did, and the
+    // key a stuck reader most needs is the one at the end.
+    let mut hints: Vec<Span<'static>> = Vec::new();
+    let mut used = 0usize;
     for (key, what) in HINTS {
-        if !hints.is_empty() {
+        let sep = if hints.is_empty() { 0 } else { 3 };
+        let pair = key.chars().count() + 1 + what.chars().count();
+        if used + sep + pair > usize::from(width) {
+            break;
+        }
+        if sep > 0 {
             hints.push(Span::styled("   ", dim));
         }
         hints.push(Span::styled((*key).to_owned(), muted));
         hints.push(Span::styled(format!(" {what}"), dim));
+        used += sep + pair;
     }
     out.push(Line::from(hints));
     out
@@ -125,5 +137,45 @@ mod tests {
         let out = render("", "/w", 80, &crate::theme::DARK);
         let text = text_of(&out);
         assert!(!text.contains("\n\n\n"), "{text}");
+    }
+}
+
+#[cfg(test)]
+mod narrow_tests {
+    use super::*;
+
+    fn hints_row(width: u16) -> String {
+        let out = render("m", "/w", width, &crate::theme::DARK);
+        out.last()
+            .expect("a line")
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn hints_are_dropped_whole_rather_than_cut() {
+        // A line cut mid-hint drops `^c quit` without saying it did.
+        let row = hints_row(30);
+        assert!(row.chars().count() <= 30, "{row:?}");
+        for fragment in ["quit", "send", "a file"] {
+            if row.contains(fragment) {
+                continue;
+            }
+            assert!(!row.ends_with(&fragment[..2]), "half a hint: {row:?}");
+        }
+    }
+
+    #[test]
+    fn the_first_hint_is_the_one_that_survives() {
+        // `/` is the key that finds everything else.
+        let row = hints_row(14);
+        assert!(row.contains("/ commands"), "{row:?}");
+    }
+
+    #[test]
+    fn a_wide_terminal_keeps_them_all() {
+        assert!(hints_row(80).contains("quit"));
     }
 }

@@ -28,8 +28,21 @@ pub fn visible_rows(rows: u16) -> usize {
 /// from a screen that has hung, and no way to find the command list without being told.
 const PLACEHOLDER: &str = "ask anything, or / for commands";
 
+/// The same, for a terminal too narrow to hold it.
+///
+/// Shortened rather than cut: `ask anything, or / for comman` is a rendering bug on the
+/// screen, and the half it loses is the half that says what to press.
+const PLACEHOLDER_SHORT: &str = "/ for commands";
+
 /// The blank prompt: the cursor, then the hint, dimmed.
-fn placeholder_line(theme: &Theme) -> Line<'static> {
+fn placeholder_line(width: u16, theme: &Theme) -> Line<'static> {
+    let hint = if PLACEHOLDER.chars().count() < usize::from(width) {
+        PLACEHOLDER
+    } else if PLACEHOLDER_SHORT.chars().count() < usize::from(width) {
+        PLACEHOLDER_SHORT
+    } else {
+        ""
+    };
     Line::from(vec![
         Span::styled(
             " ",
@@ -37,7 +50,7 @@ fn placeholder_line(theme: &Theme) -> Line<'static> {
                 .fg(theme.text)
                 .add_modifier(Modifier::REVERSED),
         ),
-        Span::styled(PLACEHOLDER, Style::default().fg(theme.dim)),
+        Span::styled(hint, Style::default().fg(theme.dim)),
     ])
 }
 
@@ -63,7 +76,7 @@ pub fn render(editor: &Editor, width: u16, rows: u16, theme: &Theme) -> Vec<Line
     if total == 1 && editor.lines()[0].is_empty() {
         return vec![
             scroll_rule(Direction::Up, 0, width, rule),
-            placeholder_line(theme),
+            placeholder_line(width, theme),
             scroll_rule(Direction::Down, 0, width, rule),
         ];
     }
@@ -247,5 +260,38 @@ mod tests {
     #[test]
     fn a_short_terminal_still_shows_five_rows() {
         assert_eq!(visible_rows(10), MIN_VISIBLE);
+    }
+}
+
+#[cfg(test)]
+mod narrow_tests {
+    use super::*;
+
+    fn row(width: u16) -> String {
+        render(&Editor::new(), width, 24, &Theme::default())[1]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn a_narrow_prompt_shortens_the_hint_rather_than_cutting_it() {
+        // `ask anything, or / for comman` is a rendering bug on the screen, and the half it
+        // loses is the half that says what to press.
+        let line = row(20);
+        assert!(line.chars().count() <= 20, "{line:?}");
+        assert!(line.contains("/ for commands"), "{line:?}");
+    }
+
+    #[test]
+    fn a_prompt_with_no_room_at_all_says_nothing() {
+        let line = row(6);
+        assert!(line.chars().count() <= 6, "{line:?}");
+    }
+
+    #[test]
+    fn a_wide_prompt_keeps_the_full_hint() {
+        assert!(row(80).contains("ask anything"), "{:?}", row(80));
     }
 }

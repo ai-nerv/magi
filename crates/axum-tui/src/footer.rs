@@ -69,8 +69,14 @@ pub fn format_cwd(cwd: &str, home: Option<&str>) -> String {
 /// Leading components are the ones a reader can infer.
 #[must_use]
 pub fn fit_path(path: &str, width: usize) -> String {
-    if path.chars().count() <= width || width == 0 {
+    if path.chars().count() <= width {
         return path.to_owned();
+    }
+    // No room at all is not a licence to overflow: a caller with nothing left to give gets
+    // nothing back. Returning the original here is how the footer once printed a sixty-column
+    // model name onto a twenty-column terminal.
+    if width == 0 {
+        return String::new();
     }
     // Whole components while any fit, so the result is still a path and not a cut word.
     let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
@@ -131,7 +137,6 @@ pub fn render(data: &FooterData, width: u16, theme: &Theme) -> Vec<Line<'static>
     let left = stats.join(" ");
     let left_width = left.chars().count();
     let context_width = context.chars().count();
-    let right_width = data.model.chars().count();
 
     let head = match (left.is_empty(), context.is_empty()) {
         (true, true) => 0,
@@ -139,6 +144,14 @@ pub fn render(data: &FooterData, width: u16, theme: &Theme) -> Vec<Line<'static>
         (false, true) => left_width,
         (false, false) => left_width + 1 + context_width,
     };
+    // The model is right-aligned, so the terminal cuts its tail -- which on `provider/family/
+    // model` is the only part that says which model. Fitted from the left instead, the way the
+    // path above is: the provider prefix is the half a reader can infer.
+    let model = fit_path(
+        &data.model,
+        usize::from(width).saturating_sub(head + MIN_GAP),
+    );
+    let right_width = model.chars().count();
     let gap = usize::from(width)
         .saturating_sub(head + right_width)
         .max(MIN_GAP);
@@ -154,12 +167,37 @@ pub fn render(data: &FooterData, width: u16, theme: &Theme) -> Vec<Line<'static>
         spans.push(Span::styled(context, Style::default().fg(context_color)));
     }
     spans.push(Span::styled(" ".repeat(gap), dim));
-    spans.push(Span::styled(data.model.clone(), dim));
+    spans.push(Span::styled(model, dim));
 
     vec![
         Line::from(Span::styled(clip(&location, usize::from(width)), dim)),
-        Line::from(spans),
+        Line::from(clip_spans(spans, usize::from(width))),
     ]
+}
+
+/// Trim a styled line to `width`, dropping whole spans and then characters.
+///
+/// The last guard on the stats line. Every part of it is fitted on its own, but a terminal
+/// narrow enough that the token counts alone overflow leaves nothing to fit -- and a line that
+/// overflows wraps, which costs the footer a row it was not given.
+fn clip_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
+    let mut out = Vec::with_capacity(spans.len());
+    let mut used = 0usize;
+    for span in spans {
+        let len = span.content.chars().count();
+        if used + len <= width {
+            used += len;
+            out.push(span);
+            continue;
+        }
+        let room = width.saturating_sub(used);
+        if room > 0 {
+            let kept: String = span.content.chars().take(room).collect();
+            out.push(Span::styled(kept, span.style));
+        }
+        break;
+    }
+    out
 }
 
 fn clip(text: &str, width: usize) -> String {
@@ -316,5 +354,61 @@ mod fit_tests {
             line_text(&out, 1).contains(NO_MODEL),
             "the model still shows"
         );
+    }
+}
+
+#[cfg(test)]
+mod model_fit_tests {
+    use super::*;
+
+    fn stats_row(data: &FooterData, width: u16) -> String {
+        render(data, width, &crate::theme::DARK)[1]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn a_long_model_keeps_the_part_that_names_it() {
+        // Right-aligned text is cut on the left by the terminal and on the right by us; either
+        // way `openrouter/deepseek/deepseek-v3.2` must not become `openrouter/deepseek`.
+        let data = FooterData {
+            model: "openrouter/deepseek/deepseek-v3.2".into(),
+            context_window: 164_000,
+            context_percent: Some(0.0),
+            ..FooterData::default()
+        };
+        let row = stats_row(&data, 30);
+        assert!(row.contains("deepseek-v3.2"), "{row}");
+        assert!(row.chars().count() <= 30, "{row}");
+    }
+
+    #[test]
+    fn a_model_that_fits_is_left_alone() {
+        let data = FooterData {
+            model: "ollama/llama3.3".into(),
+            ..FooterData::default()
+        };
+        assert!(stats_row(&data, 80).contains("ollama/llama3.3"));
+    }
+
+    #[test]
+    fn the_line_never_outgrows_the_terminal() {
+        let data = FooterData {
+            model: "a-very-long-provider/a-very-long-family/a-very-long-model-name".into(),
+            input_tokens: 123_456,
+            output_tokens: 654_321,
+            context_window: 200_000,
+            context_percent: Some(88.8),
+            ..FooterData::default()
+        };
+        for width in [20u16, 30, 40, 60, 100] {
+            let row = stats_row(&data, width);
+            assert!(
+                row.chars().count() <= usize::from(width),
+                "width {width}: {row}"
+            );
+        }
     }
 }
