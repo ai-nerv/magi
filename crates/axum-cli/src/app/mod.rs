@@ -329,8 +329,13 @@ impl App {
             // Not a transcript entry: the request was understood and declined, which is a
             // fact about what the UI asked rather than about the conversation.
             HarnessEvent::Refused { message, .. } => self.show_notice(message),
+            // A rule marks the boundary between what is still sent and what is not. On a view
+            // with nothing above it there is no boundary to mark, only a line saying nothing
+            // is sent from here -- which is every empty session.
             HarnessEvent::Branched { id, keeps, .. } => {
-                self.entries.push(Entry::Branch { id, keeps });
+                if self.started() {
+                    self.entries.push(Entry::Branch { id, keeps });
+                }
             }
             HarnessEvent::Compacted {
                 id,

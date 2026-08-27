@@ -597,3 +597,55 @@ mod model_switch {
         assert_eq!(said(&app).len(), after_first);
     }
 }
+
+mod clearing {
+    use super::super::*;
+
+    fn with_a_conversation() -> App {
+        let mut app = App::new();
+        app.apply(HarnessEvent::UserMessage {
+            cursor: Cursor(1),
+            id: MessageId::new("u1"),
+            text: "hello".into(),
+        });
+        app
+    }
+
+    #[test]
+    fn a_branch_marks_a_boundary_only_when_there_is_one() {
+        // On a just-cleared view the rule says "nothing above is sent from here" with nothing
+        // above it, which describes every empty session.
+        let mut app = App::new();
+        app.apply(HarnessEvent::Branched {
+            cursor: Cursor(1),
+            id: MessageId::new("b1"),
+            keeps: 0,
+        });
+        assert!(app.entries().is_empty(), "{:?}", app.entries());
+    }
+
+    #[test]
+    fn a_branch_in_a_real_conversation_still_draws_its_rule() {
+        let mut app = with_a_conversation();
+        app.apply(HarnessEvent::Branched {
+            cursor: Cursor(2),
+            id: MessageId::new("b1"),
+            keeps: 0,
+        });
+        assert!(
+            app.entries()
+                .iter()
+                .any(|e| matches!(e, Entry::Branch { .. })),
+            "{:?}",
+            app.entries()
+        );
+    }
+
+    #[test]
+    fn clearing_the_view_leaves_a_session_that_has_not_started() {
+        let mut app = with_a_conversation();
+        assert!(app.started());
+        app.clear_view();
+        assert!(!app.started());
+    }
+}

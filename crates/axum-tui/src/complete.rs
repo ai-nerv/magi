@@ -82,7 +82,7 @@ impl Completion {
 pub fn commands() -> Vec<Candidate> {
     [
         ("/help", "show keybindings and commands"),
-        ("/clear", "clear the transcript"),
+        ("/clear", "start a fresh conversation"),
         ("/model", "the model, or /model <name> to switch"),
         ("/rewind", "undo the last exchange, or /rewind N"),
         ("/think", "how much reasoning to ask for"),

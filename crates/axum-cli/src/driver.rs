@@ -409,9 +409,13 @@ enum Control {
 fn run_command(input: &str, app: &mut App) -> Control {
     match input.split_whitespace().next().unwrap_or_default() {
         "/quit" => Control::Quit,
+        // Both halves, because the name promises both. Clearing only the view left the model
+        // remembering everything while the footer reported an empty context -- the screen and
+        // the token count both lying, in the same direction, at the same time. The branch is
+        // journalled, so the record of what was said survives what the model is shown.
         "/clear" => {
             app.clear_view();
-            Control::Continue
+            Control::Send(UiCommand::Branch { keeps: Some(0) })
         }
         "/help" => {
             app.show_help();
