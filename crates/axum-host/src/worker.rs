@@ -43,13 +43,37 @@ impl Worker {
             // The VM is built here, not handed over: it cannot cross a thread boundary, and
             // building it where it lives is also where a broken protocol description should
             // surface.
-            let built = (|| {
-                let mut engine = axum_lua::Engine::new();
-                for (name, source) in &backend.apis {
-                    engine.run(source, name).map_err(|e| e.to_string())?;
+            // One VM for the thread: the protocol reads it and every Lua tool runs in it. Built
+            // here because it cannot cross a thread boundary, and this is also where a broken
+            // description should surface.
+            let mut engine = axum_lua::Engine::new();
+            engine.install_stubs(&backend.stubs);
+            let mut broken = None;
+            for (name, source) in &backend.apis {
+                if let Err(why) = engine.run(source, name) {
+                    broken = Some(why.to_string());
                 }
-                axum_lua::adapter::LuaAdapter::new(engine, backend.model.api.as_str())
-            })();
+            }
+            for (name, source) in &backend.tools {
+                if let Err(why) = engine.run(source, name) {
+                    broken = Some(why.to_string());
+                }
+            }
+            if let Some(why) = broken {
+                eprintln!("axum host: {why}");
+                return;
+            }
+
+            let engine = std::rc::Rc::new(std::cell::RefCell::new(engine));
+            let mut registry = axum_tools::Registry::new();
+            axum_tools::builtin::install(&mut registry);
+            axum_lua::tool::install(std::rc::Rc::clone(&engine), &mut registry);
+            let ops = axum_tools::ops::Real::new(backend.cwd.clone());
+
+            let built = axum_lua::adapter::LuaAdapter::from_shared(
+                std::rc::Rc::clone(&engine),
+                backend.model.api.as_str(),
+            );
             let adapter = match built {
                 Ok(adapter) => adapter,
                 Err(why) => {
@@ -62,7 +86,8 @@ impl Worker {
                 while let Some(job) = queue.recv().await {
                     // A failed turn is already journalled as an error entry by `turn::run`;
                     // there is nothing further to report and nothing to abort the daemon for.
-                    let _ = turn::run(&job.session, &backend, &adapter, &client).await;
+                    let _ =
+                        turn::run(&job.session, &backend, &adapter, &client, &registry, &ops).await;
                     let _ = job.done.send(());
                 }
             });

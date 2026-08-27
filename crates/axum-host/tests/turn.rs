@@ -89,6 +89,9 @@ fn backend(base_url: String) -> Backend {
     Backend {
         // Empty: this test builds its own adapter directly, and a worker is not involved.
         apis: Vec::new(),
+        tools: Vec::new(),
+        stubs: Vec::new(),
+        cwd: std::env::temp_dir(),
         provider: Provider {
             id: "fake".into(),
             name: "Fake".into(),
@@ -121,9 +124,18 @@ async fn a_turn_streams_into_the_journal() {
         "anthropic-messages",
     )
     .expect("the protocol is registered");
-    run(&session, &backend, &adapter, &Client::new())
-        .await
-        .expect("the turn runs");
+    let registry = axum_tools::Registry::new();
+    let ops = axum_tools::ops::Real::new(std::env::temp_dir());
+    run(
+        &session,
+        &backend,
+        &adapter,
+        &Client::new(),
+        &registry,
+        &ops,
+    )
+    .await
+    .expect("the turn runs");
 
     let held = session.lock().await;
     let entries = held.entries();
@@ -162,9 +174,18 @@ async fn a_provider_error_becomes_a_well_formed_entry() {
         "anthropic-messages",
     )
     .expect("the protocol is registered");
-    run(&session, &backend, &adapter, &Client::new())
-        .await
-        .expect("the turn returns");
+    let registry = axum_tools::Registry::new();
+    let ops = axum_tools::ops::Real::new(std::env::temp_dir());
+    run(
+        &session,
+        &backend,
+        &adapter,
+        &Client::new(),
+        &registry,
+        &ops,
+    )
+    .await
+    .expect("the turn returns");
 
     let held = session.lock().await;
     let Entry::Assistant {
@@ -194,9 +215,18 @@ async fn the_turn_ends_idle_whatever_happened() {
         "anthropic-messages",
     )
     .expect("the protocol is registered");
-    run(&session, &backend, &adapter, &Client::new())
-        .await
-        .expect("the turn returns");
+    let registry = axum_tools::Registry::new();
+    let ops = axum_tools::ops::Real::new(std::env::temp_dir());
+    run(
+        &session,
+        &backend,
+        &adapter,
+        &Client::new(),
+        &registry,
+        &ops,
+    )
+    .await
+    .expect("the turn returns");
 
     assert_eq!(
         *session.lock().await.status(),

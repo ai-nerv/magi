@@ -12,6 +12,7 @@ mod keys;
 mod models;
 mod paths;
 mod terminal;
+mod tools;
 mod ui;
 
 use anyhow::Result;
@@ -37,6 +38,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// List the tools the model can call, and how each is reached.
+    Tools,
     /// List the providers and models axum knows about.
     Models {
         /// Include providers with no credential set.
@@ -67,6 +70,10 @@ async fn main() -> Result<()> {
     let mode = cli.tui;
 
     match cli.command {
+        Some(Command::Tools) => {
+            tools::print()?;
+            Ok(())
+        }
         Some(Command::Models { all }) => {
             models::print(all);
             Ok(())

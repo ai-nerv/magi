@@ -6,11 +6,12 @@
 use crate::session::Session;
 use axum_core::{Step, Turn};
 use axum_model::{Content, Context, Message, Role, StopReason};
-use axum_proto::{AgentStatus, Entry, MessageId};
+use axum_proto::{AgentStatus, Entry, MessageId, ToolCallId};
 use axum_provider::api::Options;
 use axum_provider::client::Client;
 use axum_provider::model::Model;
 use axum_provider::provider::Provider;
+use axum_tools::{Ops, Registry};
 
 /// What the daemon needs to reach a model.
 ///
@@ -18,6 +19,12 @@ use axum_provider::provider::Provider;
 /// a Lua VM is neither `Send` nor `Sync` and cannot be handed over after the fact.
 #[derive(Debug, Clone)]
 pub struct Backend {
+    /// Tool descriptions to run in the VM, as `(name, source)`.
+    pub tools: Vec<(String, String)>,
+    /// The family's client stubs, so a Lua tool can talk to a sibling.
+    pub stubs: Vec<(String, String)>,
+    /// Where the session is rooted, which is what tools resolve paths against.
+    pub cwd: std::path::PathBuf,
     /// The protocol descriptions to build the VM from, as `(name, source)`.
     ///
     /// Carried as text rather than as a built VM because a VM cannot cross a thread boundary,
@@ -38,13 +45,15 @@ pub struct Backend {
 /// Deltas are published as they arrive and the entry is amended as it grows, so a UI attaching
 /// mid-turn sees the same partial message a UI that was there all along sees. A crash leaves
 /// the partial message rather than nothing, which is why the entry is written before it ends.
-pub async fn run(
+async fn one_turn(
     session: &tokio::sync::Mutex<Session>,
     backend: &Backend,
     adapter: &dyn axum_provider::api::Adapter,
     client: &Client,
-) -> Result<(), crate::HostError> {
-    let context = context_of(&*session.lock().await);
+    tools: Vec<axum_model::Tool>,
+) -> Result<Turn, crate::HostError> {
+    let mut context = context_of(&*session.lock().await);
+    context.tools = tools;
 
     {
         let mut held = session.lock().await;
@@ -89,29 +98,14 @@ pub async fn run(
             error: Some(error.message),
         })?;
         held.set_status(AgentStatus::Idle);
-        return Ok(());
+        return Ok(turn);
     }
 
     let mut held = session.lock().await;
-    held.amend(assistant(&id, &turn))?;
 
-    // Tools are M3. A turn that asked for them is reported as such rather than left pending,
-    // because a status that never changes is indistinguishable from a hang.
-    if let Step::RunTools(calls) = turn.step() {
-        let names: Vec<&str> = calls.iter().map(|c| c.name.as_str()).collect();
-        held.commit(Entry::Assistant {
-            id: MessageId::new("tools-pending"),
-            text: String::new(),
-            thinking: String::new(),
-            stop_reason: Some(StopReason::Error),
-            error: Some(format!(
-                "the model asked for {} — tools land in M3",
-                names.join(", ")
-            )),
-        })?;
-    }
+    held.amend(assistant(&id, &turn))?;
     held.set_status(AgentStatus::Idle);
-    Ok(())
+    Ok(turn)
 }
 
 /// The assistant entry for a turn in its current state.
@@ -194,5 +188,110 @@ pub fn context_of(session: &Session) -> Context {
     Context {
         messages,
         ..Context::default()
+    }
+}
+
+/// Rounds of tool use one prompt may take before the loop gives up.
+///
+/// A model that keeps asking for tools without finishing is not making progress, and an
+/// unbounded loop spends money proving it. High enough that real work never reaches it.
+const MAX_ROUNDS: usize = 24;
+
+/// Run a prompt to completion: provider, tools, provider, until the turn ends.
+///
+/// Tools run between turns rather than during one, because a provider's answer is what says
+/// which tools to run. Every result is journalled as its own entry, so the transcript shows
+/// what was asked and what came back rather than only the conclusion.
+pub async fn run(
+    session: &tokio::sync::Mutex<Session>,
+    backend: &Backend,
+    adapter: &dyn axum_provider::api::Adapter,
+    client: &Client,
+    registry: &Registry,
+    ops: &dyn Ops,
+) -> Result<(), crate::HostError> {
+    for _ in 0..MAX_ROUNDS {
+        let turn = one_turn(session, backend, adapter, client, registry.declarations()).await?;
+
+        // A truncated turn poisons its own calls: `length` can land mid-arguments, and
+        // truncated JSON can still parse into something schema-valid.
+        let poisoned = turn.poisoned_results();
+        if !poisoned.is_empty() {
+            let mut held = session.lock().await;
+            for (call, _) in turn_calls(&turn).into_iter().zip(poisoned) {
+                held.commit(Entry::Tool {
+                    id: ToolCallId::new(call.id.clone()),
+                    name: call.name.clone(),
+                    args: call.arguments.clone(),
+                    result: Some(axum_proto::ToolResult {
+                        output: "The response was truncated before this call was complete. \
+                                 Re-issue it with complete arguments."
+                            .to_owned(),
+                        is_error: true,
+                    }),
+                })?;
+            }
+            held.set_status(AgentStatus::Idle);
+            return Ok(());
+        }
+
+        let calls = turn_calls(&turn);
+        if calls.is_empty() {
+            return Ok(());
+        }
+
+        {
+            let mut held = session.lock().await;
+            held.set_status(AgentStatus::Working {
+                label: "Running tools".into(),
+            });
+            for call in &calls {
+                // Journalled before it is run, and before the registry is consulted: a call
+                // that went nowhere is still something the transcript can account for. Tau
+                // calls this commit-before-route and it is its best idea.
+                held.commit(Entry::Tool {
+                    id: ToolCallId::new(call.id.clone()),
+                    name: call.name.clone(),
+                    args: call.arguments.clone(),
+                    result: None,
+                })?;
+            }
+        }
+
+        for call in &calls {
+            let arguments = call.parsed().unwrap_or(serde_json::Value::Null);
+            let output = registry.call(&call.name, &arguments, ops);
+            let mut held = session.lock().await;
+            held.amend(Entry::Tool {
+                id: ToolCallId::new(call.id.clone()),
+                name: call.name.clone(),
+                args: call.arguments.clone(),
+                result: Some(axum_proto::ToolResult {
+                    output: output.content,
+                    is_error: output.is_error,
+                }),
+            })?;
+        }
+    }
+
+    let mut held = session.lock().await;
+    held.commit(Entry::Assistant {
+        id: MessageId::new("rounds"),
+        text: String::new(),
+        thinking: String::new(),
+        stop_reason: Some(StopReason::Error),
+        error: Some(format!(
+            "stopped after {MAX_ROUNDS} rounds of tool use without finishing"
+        )),
+    })?;
+    held.set_status(AgentStatus::Idle);
+    Ok(())
+}
+
+/// The calls a finished turn is waiting on, if any.
+fn turn_calls(turn: &Turn) -> Vec<axum_core::PendingCall> {
+    match turn.step() {
+        Step::RunTools(calls) => calls,
+        _ => Vec::new(),
     }
 }

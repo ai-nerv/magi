@@ -16,6 +16,7 @@ axum-proto.workspace = true
 axum-host.workspace = true
 axum-lua.workspace = true
 axum-provider.workspace = true
+axum-tools.workspace = true
 axum-testkit.workspace = true
 axum-tui.workspace = true
 clap.workspace = true

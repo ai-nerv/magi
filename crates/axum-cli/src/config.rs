@@ -14,10 +14,31 @@ use axum_provider::provider::Provider;
 /// The catalog axum ships, as Lua.
 const BUILTIN: &str = include_str!("../../../config/providers.lua");
 
+/// The tools axum ships, as Lua.
+///
+/// `bash` among them, declared as a process tool. Shipped rather than built in so that what a
+/// fresh install can do is written down in a file you can read and replace.
+const BUILTIN_TOOLS: &[(&str, &str)] = &[
+    ("bash", include_str!("../../../config/tools/bash.lua")),
+    ("hexe", include_str!("../../../config/tools/hexe.lua")),
+    ("oslo", include_str!("../../../config/tools/oslo.lua")),
+];
+
+/// The family's client stubs, so a Lua tool can talk to a sibling without opening a file.
+const BUILTIN_STUBS: &[(&str, &str)] = &[
+    ("axum", include_str!("../../../config/stubs/axum.lua")),
+    ("hexe", include_str!("../../../config/stubs/hexe.lua")),
+    ("oslo", include_str!("../../../config/stubs/oslo.lua")),
+];
+
 /// Everything the config files said, in one value.
 pub struct Loaded {
     /// Settings and registrations, as the config left them.
     pub config: Config,
+    /// Every tool description that was run, as `(name, source)`.
+    pub tools: Vec<(String, String)>,
+    /// The family's client stubs, as `(name, source)`.
+    pub stubs: Vec<(String, String)>,
     /// Every protocol description that was run, in order, as `(name, source)`.
     ///
     /// Kept so the daemon's worker can build its VM from exactly what the catalog was read
@@ -37,11 +58,25 @@ pub fn load() -> Result<Loaded, LuaError> {
     let mut engine = Engine::new();
     // The compiled-in copies first, so a binary with no config directory still works.
     let mut apis: Vec<(String, String)> = Vec::new();
+    let mut tools: Vec<(String, String)> = Vec::new();
+    let mut stubs: Vec<(String, String)> = Vec::new();
     for (name, source) in axum_lua::adapter::BUILTIN {
         engine.run(source, name)?;
         apis.push(((*name).to_owned(), (*source).to_owned()));
     }
     engine.run(BUILTIN, "providers.lua")?;
+    // Tool and stub descriptions ship the same way the catalog does, so a fresh install has
+    // the same tools an installed configuration would give it.
+    for (name, source) in BUILTIN_TOOLS {
+        tools.push(((*name).to_owned(), (*source).to_owned()));
+    }
+    for (name, source) in BUILTIN_STUBS {
+        stubs.push(((*name).to_owned(), (*source).to_owned()));
+    }
+    engine.install_stubs(&stubs);
+    for (name, source) in &tools {
+        engine.run(source, name)?;
+    }
 
     // Then whatever is installed, which overrides any of it by the ordinary rule that
     // registration is keyed.
@@ -71,11 +106,16 @@ pub fn load() -> Result<Loaded, LuaError> {
         }
     }
     engine.harvest();
-    collect(engine.config(), apis)
+    collect(engine.config(), apis, tools, stubs)
 }
 
 /// Turn what the registrar collected into providers.
-fn collect(config: Config, apis: Vec<(String, String)>) -> Result<Loaded, LuaError> {
+fn collect(
+    config: Config,
+    apis: Vec<(String, String)>,
+    tools: Vec<(String, String)>,
+    stubs: Vec<(String, String)>,
+) -> Result<Loaded, LuaError> {
     let mut providers = Vec::new();
     for (id, spec) in config.all("provider") {
         providers.push(declare(id, spec).map_err(|message| LuaError::Shape {
@@ -86,6 +126,8 @@ fn collect(config: Config, apis: Vec<(String, String)>) -> Result<Loaded, LuaErr
     Ok(Loaded {
         config,
         apis,
+        tools,
+        stubs,
         providers,
     })
 }
@@ -108,7 +150,7 @@ pub fn builtin() -> Result<Vec<Provider>, LuaError> {
     let mut engine = Engine::new();
     engine.run(BUILTIN, "providers.lua")?;
     engine.harvest();
-    Ok(collect(engine.config(), Vec::new())?.providers)
+    Ok(collect(engine.config(), Vec::new(), Vec::new(), Vec::new())?.providers)
 }
 
 /// Find the model the config chose, and the provider offering it.
@@ -147,6 +189,9 @@ pub fn backend(loaded: &Loaded) -> Option<axum_host::turn::Backend> {
     }
     Some(axum_host::turn::Backend {
         apis: loaded.apis.clone(),
+        tools: loaded.tools.clone(),
+        stubs: loaded.stubs.clone(),
+        cwd: std::env::current_dir().unwrap_or_default(),
         provider: provider.clone(),
         model: model.clone(),
         options: axum_provider::api::Options::default(),
@@ -300,7 +345,7 @@ mod tests {
         engine.run(BUILTIN, "providers.lua").expect("builtin");
         engine.run(extra, "user.lua").expect("user config");
         engine.harvest();
-        collect(engine.config(), Vec::new())
+        collect(engine.config(), Vec::new(), Vec::new(), Vec::new())
             .expect("collect")
             .providers
     }
@@ -399,6 +444,8 @@ mod tests {
         let loaded = Loaded {
             config: Config::default(),
             apis: vec![("openai-completions".to_owned(), "-- edited".to_owned())],
+            tools: Vec::new(),
+            stubs: Vec::new(),
             providers: Vec::new(),
         };
         assert_eq!(

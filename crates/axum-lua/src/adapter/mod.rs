@@ -16,13 +16,41 @@ use std::cell::RefCell;
 
 /// One registered protocol, driven through the VM.
 pub struct LuaAdapter {
-    /// The VM holding the description. Borrowed mutably per call, so it is not shared.
-    engine: RefCell<Engine>,
+    /// The VM holding the description.
+    ///
+    /// Shared with the tools that run in it: one thread, one VM, and a protocol and a tool
+    /// that disagreed about which one they were in would be a bug nobody could see.
+    engine: std::rc::Rc<RefCell<Engine>>,
     /// Which protocol, by the name it registered under.
     name: String,
 }
 
 impl LuaAdapter {
+    /// Take ownership of an engine and speak `name` through it.
+    ///
+    /// # Errors
+    /// When nothing registered under that name.
+    pub fn from_shared(
+        engine: std::rc::Rc<std::cell::RefCell<Engine>>,
+        name: &str,
+    ) -> Result<Self, String> {
+        let known = engine.borrow_mut().apis();
+        if !known.iter().any(|a| a == name) {
+            return Err(format!(
+                "no protocol named {name:?} is registered; axum knows {}",
+                if known.is_empty() {
+                    "none".to_owned()
+                } else {
+                    known.join(", ")
+                }
+            ));
+        }
+        Ok(Self {
+            engine,
+            name: name.to_owned(),
+        })
+    }
+
     /// Take ownership of an engine and speak `name` through it.
     ///
     /// # Errors
@@ -40,7 +68,7 @@ impl LuaAdapter {
             ));
         }
         Ok(Self {
-            engine: RefCell::new(engine),
+            engine: std::rc::Rc::new(RefCell::new(engine)),
             name: name.to_owned(),
         })
     }
