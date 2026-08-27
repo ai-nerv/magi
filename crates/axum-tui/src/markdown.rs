@@ -4,6 +4,7 @@
 //! lists, block quotes, and rules. Pi's renderer is 1,015 lines and also does tables, links
 //! with URL dimming, and LaTeX; those wait until a transcript needs them.
 
+use crate::table;
 use crate::theme::Theme;
 use crate::wrap;
 use ratatui::style::{Modifier, Style};
@@ -19,27 +20,59 @@ pub fn render(source: &str, width: u16, theme: &Theme, base: Style) -> Vec<Line<
     // Consecutive prose lines are one paragraph and reflow together; a hard break in the
     // source is an artifact of how the model emitted it, not something the reader asked for.
     let mut paragraph: Vec<&str> = Vec::new();
+    // A table is the one construct that needs several lines in hand before anything can be
+    // decided about it, so its rows are held until the block ends.
+    let mut table: Vec<String> = Vec::new();
 
-    for raw in source.lines() {
+    let lines: Vec<&str> = source.lines().collect();
+    for (index, raw) in lines.iter().enumerate() {
         let trimmed = raw.trim_end();
+
+        if !table.is_empty() {
+            if table::is_row(trimmed) {
+                table.push(trimmed.to_owned());
+                continue;
+            }
+            out.extend(table::render(&table, width, theme));
+            table.clear();
+        }
 
         if let Some(rest) = fence_marker(trimmed) {
             flush_paragraph(&mut paragraph, &mut out, width, theme, base);
             in_fence = !in_fence;
-            if in_fence && !rest.is_empty() {
+            if in_fence {
+                out.push(fence_head(rest, width, theme));
+            } else {
+                // Closed, so the eye has something to land on. An opening bar with no closing
+                // one leaves the block looking like it ran off the end of the message.
                 out.push(Line::from(Span::styled(
-                    rest.to_owned(),
-                    Style::default().fg(theme.muted),
+                    "└".to_owned(),
+                    Style::default().fg(theme.border_muted),
                 )));
             }
             continue;
         }
 
         if in_fence {
-            out.push(Line::from(Span::styled(
-                crate::wrap::expand_tabs(trimmed),
-                Style::default().fg(theme.md_code_block),
-            )));
+            out.push(Line::from(vec![
+                Span::styled(GUTTER, Style::default().fg(theme.border_muted)),
+                Span::styled(
+                    crate::wrap::expand_tabs(trimmed),
+                    Style::default().fg(theme.md_code_block),
+                ),
+            ]));
+            continue;
+        }
+
+        // A header alone is a line with pipes in it. What makes it a table is the `|---|`
+        // under it, so nothing commits until that has been seen.
+        if table::is_row(trimmed)
+            && lines
+                .get(index + 1)
+                .is_some_and(|next| table::is_separator(next))
+        {
+            flush_paragraph(&mut paragraph, &mut out, width, theme, base);
+            table.push(trimmed.to_owned());
             continue;
         }
 
@@ -53,7 +86,31 @@ pub fn render(source: &str, width: u16, theme: &Theme, base: Style) -> Vec<Line<
     }
 
     flush_paragraph(&mut paragraph, &mut out, width, theme, base);
+    if !table.is_empty() {
+        out.extend(table::render(&table, width, theme));
+    }
     out
+}
+
+/// The bar drawn down the left of a fenced block.
+///
+/// Without it a code block is prose in a different colour, and the language tag above it reads
+/// as a stray word rather than a label on anything.
+const GUTTER: &str = "│ ";
+
+/// The opening line of a fenced block: the bar, and the language if one was named.
+fn fence_head(language: &str, width: u16, theme: &Theme) -> Line<'static> {
+    let bar = Style::default().fg(theme.border_muted);
+    if language.is_empty() {
+        return Line::from(Span::styled("┌".to_owned(), bar));
+    }
+    let label = format!("┌─ {language} ");
+    let used = label.chars().count();
+    let rest = usize::from(width).saturating_sub(used).min(8);
+    Line::from(vec![
+        Span::styled(label, bar),
+        Span::styled("─".repeat(rest), bar),
+    ])
 }
 
 /// Whether a line is ordinary paragraph text rather than a block of its own.
@@ -297,11 +354,11 @@ mod tests {
     }
 
     #[test]
-    fn fenced_code_keeps_indentation_and_drops_the_fence() {
-        assert_eq!(
-            lines_of("```rust\n    let x = 1;\n```"),
-            vec!["rust", "    let x = 1;"]
-        );
+    fn fenced_code_keeps_indentation_inside_its_bar() {
+        // The indentation is the code's; the bar is ours and sits outside it.
+        let out = lines_of("```rust\n    let x = 1;\n```");
+        assert!(out[0].contains("rust"), "{out:?}");
+        assert_eq!(out[1], "│     let x = 1;", "{out:?}");
     }
 
     #[test]
@@ -366,5 +423,97 @@ mod emphasis_tests {
             rendered("which is not configured: set ANT_LING_API_KEY"),
             "which is not configured: set ANT_LING_API_KEY"
         );
+    }
+}
+
+#[cfg(test)]
+mod block_tests {
+    use super::*;
+
+    fn rows(source: &str) -> Vec<String> {
+        render(source, 60, &Theme::default(), Style::default())
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn a_table_is_drawn_rather_than_reflowed() {
+        // Three source lines used to arrive as one paragraph of pipes wrapped across the
+        // width, which is every table a model has ever emitted.
+        let out = rows("| a | b |\n|---|---|\n| 1 | 2 |");
+        assert!(out.iter().any(|l| l.contains('┌')), "{out:?}");
+        assert!(!out.iter().any(|l| l.contains("|---|")), "{out:?}");
+    }
+
+    #[test]
+    fn pipes_without_a_separator_are_still_prose() {
+        // A sentence with a pipe in it is not a table, and committing on the header alone
+        // would eat one.
+        let out = rows("run `a | b` to pipe them");
+        assert!(!out.iter().any(|l| l.contains('┌')), "{out:?}");
+    }
+
+    #[test]
+    fn a_table_at_the_very_end_is_not_lost() {
+        // Nothing follows it to trigger the flush.
+        let out = rows("intro\n\n| a | b |\n|---|---|\n| 1 | 2 |");
+        assert!(out.iter().any(|l| l.contains('└')), "{out:?}");
+    }
+
+    #[test]
+    fn prose_after_a_table_starts_again() {
+        let out = rows("| a |\n|---|\n| 1 |\nafter");
+        assert!(out.iter().any(|l| l.trim() == "after"), "{out:?}");
+        assert!(out.iter().any(|l| l.contains('└')), "{out:?}");
+    }
+
+    #[test]
+    fn a_fenced_block_is_enclosed_rather_than_recoloured() {
+        // Without a bar a code block is prose in a different colour, and the language tag
+        // above it reads as a stray word rather than a label on anything.
+        let out = rows("```rust\nfn main() {}\n```");
+        assert!(out[0].contains("rust"), "{out:?}");
+        assert!(out[0].starts_with('┌'), "{out:?}");
+        assert!(out[1].starts_with('│'), "{out:?}");
+    }
+
+    #[test]
+    fn a_fence_with_no_language_still_gets_its_bar() {
+        let out = rows("```\nplain\n```");
+        assert!(out[1].starts_with('│'), "{out:?}");
+    }
+
+    #[test]
+    fn a_table_inside_a_fence_is_left_alone() {
+        // Inside a fence everything is text, pipes included.
+        let out = rows("```\n| a | b |\n|---|---|\n```");
+        assert!(!out.iter().any(|l| l.contains('┬')), "{out:?}");
+    }
+}
+
+#[cfg(test)]
+mod fence_close_tests {
+    use super::*;
+
+    fn rows(source: &str) -> Vec<String> {
+        render(source, 60, &Theme::default(), Style::default())
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn a_closed_fence_is_closed_on_the_screen_too() {
+        // An opening bar with no closing one leaves the block looking like it ran off the end.
+        let out = rows("```rust\nfn main() {}\n```");
+        assert!(out.last().expect("a line").starts_with('└'), "{out:?}");
+    }
+
+    #[test]
+    fn an_unclosed_fence_gets_no_closing_bar() {
+        // A block still streaming has not ended, and drawing an end would say it had.
+        let out = rows("```rust\nfn main() {");
+        assert!(!out.iter().any(|l| l.starts_with('└')), "{out:?}");
     }
 }

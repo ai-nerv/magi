@@ -19,6 +19,7 @@ pub mod picker;
 pub mod prompt;
 pub mod scrollback;
 pub mod status;
+pub mod table;
 pub mod theme;
 pub mod transcript;
 pub mod wrap;
