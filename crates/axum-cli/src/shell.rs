@@ -217,7 +217,15 @@ impl Session {
         // shell's own diagnostics being redirected for the rest of its life.
         self.seq += 1;
         let marker = marker(&self.nonce, self.seq);
-        let script = format!("{{ {command} ; }} 2>&1\nprintf '%s%s\\n' \"{marker}\" \"$?\"\n");
+        // `< /dev/null` on the command group, because the shell's stdin IS this protocol's
+        // control channel: the marker below is written into the same pipe. A command that
+        // reads stdin therefore eats its own end-of-command marker. `cat` echoes it back and
+        // the marker lands in the tool result with a meaningless exit status; `sort`, `sudo`,
+        // `ssh` and `read` swallow it and the call hangs for the whole of CALL_TIMEOUT, taking
+        // the persistent shell's state with it when the peer is killed. Nothing legitimate
+        // reads stdin here -- the peer never feeds a command input.
+        let script =
+            format!("{{ {command} ; }} < /dev/null 2>&1\nprintf '%s%s\\n' \"{marker}\" \"$?\"\n");
         if writeln!(self.stdin, "{script}").is_err() || self.stdin.flush().is_err() {
             return ("the shell is not accepting input".to_owned(), true);
         }
@@ -357,5 +365,47 @@ mod tests {
         shell.restart().expect("restart");
         let (output, _) = shell.run("pwd");
         assert_ne!(output.trim(), "/tmp", "state is lost, which is the cost");
+    }
+}
+
+#[cfg(test)]
+mod stdin_tests {
+    use super::*;
+
+    #[test]
+    fn a_command_that_reads_stdin_does_not_eat_its_own_marker() {
+        // The shell's stdin is this protocol's control channel. `sort` reads to EOF and never
+        // echoes, so before the redirect it swallowed the end-of-command marker and the call
+        // hung for the whole of CALL_TIMEOUT, taking the persistent shell with it.
+        let mut shell = Session::start().expect("a shell");
+        let (output, is_error) = shell.run("sort");
+        assert!(!is_error, "{output}");
+        assert!(
+            output.trim().is_empty(),
+            "sort of nothing is nothing: {output:?}"
+        );
+    }
+
+    #[test]
+    fn a_command_that_echoes_stdin_does_not_leak_the_marker() {
+        // `cat` echoed the marker back, so it landed in the tool result and the exit status
+        // reported was the one printed by the leaked line rather than the command's.
+        let mut shell = Session::start().expect("a shell");
+        let (output, _) = shell.run("cat");
+        assert!(
+            !output.contains("axum-"),
+            "the marker must not reach the model: {output:?}"
+        );
+        assert!(output.trim().is_empty(), "{output:?}");
+    }
+
+    #[test]
+    fn the_shell_still_works_after_one_of_those() {
+        // The point of the persistent shell: a stdin-reading command used to end it.
+        let mut shell = Session::start().expect("a shell");
+        let _ = shell.run("sort");
+        let (output, is_error) = shell.run("echo alive");
+        assert!(!is_error, "{output}");
+        assert_eq!(output.trim(), "alive");
     }
 }
