@@ -1,16 +1,65 @@
-[package]
-name = "axum"
-version = "0.1.0"
+[workspace]
+members = [
+  "crates/axum-proto",
+  "crates/axum-provider",
+  "crates/axum-host",
+  "crates/axum-ipc",
+  "crates/axum-journal",
+  "crates/axum-lua",
+  "crates/axum-model",
+  "crates/axum-tui",
+  "crates/axum-cli",
+  "crates/axum-testkit",
+]
+resolver = "3"
+
+[workspace.package]
 edition = "2024"
-description = "axum"
 license = "MIT"
-readme = "README.md"
 publish = false
+version = "0.1.0"
 
-[lib]
-path = "src/lib.rs"
+[workspace.lints.rust]
+unsafe_code = "deny"
+unused = { level = "deny", priority = -1 }
 
-[dependencies]
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unwrap_used = "deny"
 
-[dev-dependencies]
+[workspace.dependencies]
+axum-host = { path = "crates/axum-host" }
+axum-ipc = { path = "crates/axum-ipc" }
+axum-journal = { path = "crates/axum-journal" }
+axum-lua = { path = "crates/axum-lua" }
+axum-model = { path = "crates/axum-model" }
+axum-proto = { path = "crates/axum-proto" }
+axum-provider = { path = "crates/axum-provider" }
+axum-testkit = { path = "crates/axum-testkit" }
+axum-tui = { path = "crates/axum-tui" }
 
+anyhow = "1.0"
+ciborium = "0.2"
+clap = { version = "4.5", features = ["derive", "std", "help", "usage", "error-context"], default-features = false }
+bytes = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+ignore = "0.4"
+luna = { git = "https://github.com/onix-os/luna", tag = "v0.5.0" }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "gzip"] }
+crossterm = { version = "0.28", default-features = false, features = ["bracketed-paste", "events", "event-stream"] }
+ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }
+rustix = { version = "0.38", features = ["process"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tokio-stream = "0.1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "time", "sync", "signal"] }
+
+# Asserted rather than left to defaults, the way Tau pins its release profile: a build that
+# silently switches to fat LTO and one codegen unit turns a 10-second link into minutes.
+[profile.release]
+codegen-units = 16
+lto = "thin"
+panic = "abort"
+strip = "symbols"

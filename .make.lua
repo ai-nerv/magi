@@ -122,47 +122,199 @@ make.recipe{
 
 ---------------------------------------------------------------------------- rust
 
-local EXAMPLE = os.getenv("EXAMPLE") or "main"
+-- The workspace ships one binary, `axum`, and every crate is a library behind it. Recipes name
+-- the binary rather than the library: `--lib` builds artifacts nobody runs.
+local BIN = "axum"
+local RECORDING = os.getenv("RECORDING") or "examples/recordings/hello.jsonl"
 
-make.recipe{ name = "build", desc = "the library",
-             run = function()
-               sh.cargo("build", "--lib")
-               report_found("target", "*.rlib")
-             end }
+-- Where a demo host listens. Under `$XDG_RUNTIME_DIR` because a Unix socket path must stay
+-- shorter than SUN_LEN, and a scratch directory path does not.
+local function demo_socket()
+  local dir = os.getenv("XDG_RUNTIME_DIR") or "/tmp"
+  return dir .. "/axum-demo.sock"
+end
+
+local function target_path(release)
+  return ("target/%s/%s"):format(release and "release" or "debug", BIN)
+end
+
+-- The one target that produces something worth shipping. musl rather than glibc because a
+-- glibc "static" build still carries an INTERP and dies on a machine whose loader disagrees;
+-- `report` reads the ELF rather than trusting the flag.
+local MUSL_TARGET = "x86_64-unknown-linux-musl"
+
+local function dist_path()
+  return ("target/%s/release/%s"):format(MUSL_TARGET, BIN)
+end
+
+-- Whether this toolchain can actually build for musl.
+--
+-- `rustc --print target-libdir` answers for a target it has never heard of, so the directory
+-- has to be looked at. nixpkgs' plain `rustc` ships one target and no more; a rustup toolchain
+-- has whatever was added to it. Asking avoids handing the user forty screens of "can't find
+-- crate for `core`" when the honest answer is one line.
+local function has_musl_std()
+  local dir = oslo.run{ "rustc", "--print", "target-libdir",
+                        "--target", MUSL_TARGET, capture = true }
+  if not dir.ok then return false end
+  local path = (dir.out or ""):match("^%s*(.-)%s*$")
+  if path == "" then return false end
+  return oslo.run{ "sh", "-c", ("ls %q/libcore-*.rlib >/dev/null 2>&1"):format(path) }.ok
+end
+
+-- Where `build` leaves its artifact. Every recipe that needs a binary asks for this one, so
+-- `make build` followed by `make run` is a cache hit rather than a second full compile against
+-- a different profile.
+local function binary_path()
+  if has_musl_std() then return dist_path() end
+  return ("target/release/%s"):format(BIN)
+end
+
+-- Which backend the UI should draw with.
+--
+-- `--alt` is the default because a buffer we own is the only one a future feature can search,
+-- select in, or jump through; `--inline` opts back into letting the terminal keep the history.
+-- Passing both is a contradiction rather than a precedence puzzle, so it is refused.
+local function tui_mode(a)
+  assert(not (a.alt and a.inline), "pass --alt or --inline, not both")
+  if a.inline then return "inline" end
+  return "alt"
+end
+
+-- Build it, quietly enough to be a dependency of the recipes that just want to run it.
+local function build_binary(announce)
+  if not has_musl_std() then
+    if announce then
+      print(oslo.ui.style("musl target not installed; building against glibc instead",
+                          { fg = "yellow" }))
+      print(dim("   for a static binary: rustup target add " .. MUSL_TARGET))
+    end
+    sh.cargo("build", "--release")
+    return
+  end
+
+  local args = { "cargo", "build", "--release", "--target", MUSL_TARGET }
+  -- The flake hands musl over as a path, not a package, so its headers stay off the default
+  -- search path and an ordinary build cannot pick them up by accident. Only this recipe is
+  -- given it, and only if a C dependency ever needs it -- today nothing here compiles C.
+  local musl_cc = os.getenv("MUSL_CC")
+  if musl_cc then
+    table.insert(args, 1, ("CC_x86_64_unknown_linux_musl=%s/bin/cc"):format(musl_cc))
+    table.insert(args, 1, "env")
+  end
+  assert(oslo.run(args).ok, "the static build failed")
+end
+
+make.recipe{
+  name = "build",
+  desc = "the binary: release, static where the toolchain allows it",
+  run = function()
+    build_binary(true)
+    report(binary_path())
+  end,
+}
 make.alias("b", "build")
 
 make.recipe{
+  name = "debug",
+  desc = "an unoptimized build, for iterating",
+  run = function()
+    sh.cargo("build")
+    report(target_path(false))
+  end,
+}
+
+make.recipe{
   name = "run",
-  desc = "run a development example: --example NAME",
-  params = { { "--example", desc = "which example to run", default = EXAMPLE } },
-  run = function(a) sh.cargo("run", "--example", a.example or EXAMPLE) end,
+  desc = "the UI, against a replayed session (--alt is the default, --inline opts out)",
+  params = {
+    { "--alt", desc = "alt screen; axum owns the buffer and the history", flag = true },
+    { "--inline", desc = "inline viewport; the terminal keeps the history", flag = true },
+    { "--recording", desc = "JSONL session to replay", default = RECORDING },
+    { "--pace", desc = "milliseconds between events", default = "40" },
+  },
+  run = function(a)
+    build_binary(false)
+    local mode = tui_mode(a)
+    -- Two processes, as the architecture intends: the UI is a socket peer even in a demo.
+    -- The host is killed on exit so a second `make run` is not refused a stale socket.
+    local script = ([[
+      set -e
+      socket=%s
+      rm -f "$socket"
+      %s --socket "$socket" fake-host --replay %s --pace-ms %s >/dev/null 2>&1 &
+      host=$!
+      trap 'kill $host 2>/dev/null || true; rm -f "$socket"' EXIT INT TERM
+      until [ -S "$socket" ]; do sleep 0.05; done
+      %s --socket "$socket" --tui %s
+    ]]):format(demo_socket(), binary_path(), a.recording or RECORDING,
+               a.pace or "40", binary_path(), mode)
+    assert(oslo.run{ "sh", "-c", script }.ok, "the UI exited with an error")
+  end,
 }
 make.alias("r", "run")
+
+make.recipe{
+  name = "ui",
+  desc = "the UI alone, against an already-running host",
+  params = {
+    { "--alt", desc = "alt screen; axum owns the buffer and the history", flag = true },
+    { "--inline", desc = "inline viewport; the terminal keeps the history", flag = true },
+    { "--socket", desc = "socket to attach to", default = demo_socket() },
+  },
+  run = function(a)
+    build_binary(false)
+    sh.sh("-c", ("%s --socket %s --tui %s"):format(
+      binary_path(), a.socket or demo_socket(), tui_mode(a)))
+  end,
+}
+
+make.recipe{
+  name = "host",
+  desc = "a replay host alone, for a UI to attach to",
+  params = {
+    { "--recording", desc = "JSONL session to replay", default = RECORDING },
+    { "--socket", desc = "socket to bind", default = demo_socket() },
+  },
+  run = function(a)
+    build_binary(false)
+    local socket = a.socket or demo_socket()
+    oslo.run{ "rm", "-f", socket }
+    sh.sh("-c", ("%s --socket %s fake-host --replay %s"):format(
+      binary_path(), socket, a.recording or RECORDING))
+  end,
+}
+
+make.recipe{
+  name = "install",
+  desc = ("install the static binary to %s/bin"):format(PREFIX),
+  deps = { "build" },
+  run = function()
+    local bin = PREFIX .. "/bin"
+    assert(oslo.run{ "mkdir", "-p", bin }.ok, "could not create " .. bin)
+    assert(oslo.run{ "install", "-m", "755", binary_path(), bin .. "/" .. BIN }.ok,
+           "could not install to " .. bin)
+    print(("installed %s"):format(bin .. "/" .. BIN))
+  end,
+}
 
 make.recipe{ name = "test", desc = "the suite",
              run = function() sh.cargo("test", "--all-targets") end }
 make.alias("t", "test")
 
-make.recipe{ name = "test-all", desc = "the suite, with every feature on",
-             run = function() sh.cargo("test", "--all-targets", "--all-features") end }
-
 make.recipe{ name = "check", desc = "type-check every target",
              run = function() sh.cargo("check", "--all-targets") end }
 
-make.recipe{ name = "check-all", desc = "type-check every target, every feature",
-             run = function() sh.cargo("check", "--all-targets", "--all-features") end }
-
 make.recipe{ name = "clippy", desc = "clippy, with warnings denied",
              run = function()
-               sh.cargo("clippy", "--all-targets", "--all-features", "--", "-Dwarnings")
+               sh.cargo("clippy", "--all-targets", "--", "-Dwarnings")
              end }
 
 make.recipe{
   name = "rustdoc",
   desc = "build the docs, with warnings denied",
   run = function()
-    local built = oslo.run{ "env", "RUSTDOCFLAGS=-Dwarnings",
-                            "cargo", "doc", "--all-features", "--no-deps" }
+    local built = oslo.run{ "env", "RUSTDOCFLAGS=-Dwarnings", "cargo", "doc", "--no-deps" }
     assert(built.ok, "rustdoc failed")
   end,
 }
@@ -173,6 +325,29 @@ make.recipe{ name = "fmt", desc = "format the workspace",
 make.recipe{ name = "fmt-check", desc = "fail if anything is unformatted",
              run = function() sh.cargo("fmt", "--all", "--", "--check") end }
 
+-- The architectural gates from PLAN.md §6. Not advisory: each one exists because Pi or Tau
+-- shipped the thing it forbids, one reasonable commit at a time.
+make.recipe{
+  name = "gates",
+  desc = "the architectural gates",
+  run = function()
+    local names = { "gate-file-size", "gate-proto-size", "gate-reachable" }
+    local failed = {}
+    for _, name in ipairs(names) do
+      local result = oslo.run{ "sh", "scripts/" .. name .. ".sh", capture = true }
+      local mark = result.ok and oslo.ui.style("✓", { fg = "green" })
+                             or oslo.ui.style("✗", { fg = "red" })
+      print(("%s  %s"):format(mark, name))
+      if not result.ok then
+        failed[#failed + 1] = name
+        print(dim("   " .. ((result.out or "") .. (result.err or "")):gsub("\n", "\n   ")))
+      end
+    end
+    assert(#failed == 0, ("%d gate(s) failed"):format(#failed))
+  end,
+}
+make.alias("g", "gates")
+
 make.recipe{ name = "clean", desc = "remove every build output",
              run = function() sh.cargo("clean") end }
 
@@ -182,6 +357,6 @@ make.alias("c", "compile")
 make.recipe{
   name = "verify",
   desc = "the whole local gate",
-  deps = { "fmt-check", "check", "test", "check-all", "test-all", "clippy", "rustdoc" },
+  deps = { "fmt-check", "check", "test", "clippy", "gates", "rustdoc" },
 }
 make.alias("v", "verify")
