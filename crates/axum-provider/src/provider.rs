@@ -1,0 +1,296 @@
+//! A provider: an identity, a base URL, a credential, and a catalog.
+//!
+//! Deliberately thin. Pi's `groq.ts` is fifteen lines â id, name, base URL, env var, models,
+//! api â and ours is a struct literal of the same six fields. That thinness is the whole
+//! argument for keeping providers in-process: at fifteen lines each, forty of them cost less
+//! than one process boundary.
+
+use crate::model::{Api, Model};
+use serde::{Deserialize, Serialize};
+
+/// Where a credential comes from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", tag = "kind")]
+pub enum Auth {
+    /// An API key read from the first environment variable that is set.
+    ///
+    /// Several names because vendors rename them and users have old ones exported; taking the
+    /// first that is set is kinder than demanding the current spelling.
+    ApiKey {
+        /// Variables to try, in order.
+        vars: Vec<String>,
+    },
+    /// An OAuth flow against a subscription account.
+    ///
+    /// Distinct from an API key because there is nothing a person can export to satisfy it:
+    /// the answer to "how do I enable this" is a command, not a variable.
+    #[serde(rename = "oauth")]
+    OAuth {
+        /// What a person signs in to.
+        service: String,
+    },
+    /// AWS SigV4, from the usual credential chain.
+    AwsSigV4,
+    /// Google Application Default Credentials.
+    GoogleAdc,
+    /// No credential; a local endpoint.
+    None,
+}
+
+impl Auth {
+    /// What a person would have to do to enable this.
+    #[must_use]
+    pub fn requirement(&self) -> String {
+        match self {
+            Self::ApiKey { vars } => format!("set {}", vars.join(" or ")),
+            Self::OAuth { service } => format!("sign in to {service}"),
+            Self::AwsSigV4 => "configure AWS credentials".to_owned(),
+            Self::GoogleAdc => "configure Google application default credentials".to_owned(),
+            Self::None => String::new(),
+        }
+    }
+
+    /// An API key from any of these variables.
+    #[must_use]
+    pub fn env(vars: &[&str]) -> Self {
+        Self::ApiKey {
+            vars: vars.iter().map(|v| (*v).to_owned()).collect(),
+        }
+    }
+
+    /// Read the credential, if one is set.
+    #[must_use]
+    pub fn resolve(&self) -> Option<String> {
+        match self {
+            Self::ApiKey { vars } => vars
+                .iter()
+                .filter_map(|v| std::env::var(v).ok())
+                .find(|value| !value.trim().is_empty()),
+            // Resolving these means talking to a credential chain or a browser, which is a
+            // later milestone; reporting them as unset is honest until then.
+            Self::OAuth { .. } | Self::AwsSigV4 | Self::GoogleAdc | Self::None => None,
+        }
+    }
+
+    /// The variables a person would have to set.
+    #[must_use]
+    pub fn vars(&self) -> &[String] {
+        match self {
+            Self::ApiKey { vars } => vars,
+            Self::OAuth { .. } | Self::AwsSigV4 | Self::GoogleAdc | Self::None => &[],
+        }
+    }
+}
+
+/// One vendor.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(from = "ProviderDecl")]
+pub struct Provider {
+    /// Id used in configuration and in a qualified model name.
+    pub id: String,
+    /// Name shown to a person.
+    pub name: String,
+    /// Where its API lives, when that is fixed.
+    ///
+    /// `None` for the endpoints derived from configuration — a Bedrock region, an Azure
+    /// resource, a Vertex project, a Cloudflare account. Detection has nothing to read until
+    /// those are set, so such a provider carries an explicit `compat` instead of relying on it.
+    pub base_url: Option<String>,
+    /// Which protocol it speaks.
+    pub api: Api,
+    /// How to authenticate.
+    pub auth: Auth,
+    /// Protocol overrides applied to every model this provider offers.
+    ///
+    /// Where a provider has no fixed `base_url`, detection has no host to read and this is
+    /// the only way its dialect can be stated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compat: Option<crate::compat::Compat>,
+    /// What it offers.
+    pub models: Vec<Model>,
+}
+
+impl Provider {
+    /// Whether a credential for this provider is present.
+    #[must_use]
+    pub fn is_configured(&self) -> bool {
+        matches!(self.auth, Auth::None) || self.auth.resolve().is_some()
+    }
+
+    /// One of its models by id.
+    #[must_use]
+    pub fn model(&self, id: &str) -> Option<&Model> {
+        self.models.iter().find(|m| m.id == id)
+    }
+}
+
+/// A provider exactly as a catalog file declares it.
+///
+/// Separate from [`Provider`] so the stamping below happens once, on the way in, rather than
+/// being a rule every reader has to remember: a model always knows its own provider and api.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct ProviderDecl {
+    id: String,
+    name: String,
+    #[serde(default)]
+    base_url: Option<String>,
+    api: Api,
+    auth: Auth,
+    #[serde(default)]
+    compat: Option<crate::compat::Compat>,
+    #[serde(default)]
+    models: Vec<Model>,
+}
+
+impl From<ProviderDecl> for Provider {
+    fn from(decl: ProviderDecl) -> Self {
+        let ProviderDecl {
+            id,
+            name,
+            base_url,
+            api,
+            auth,
+            compat,
+            mut models,
+        } = decl;
+        for model in &mut models {
+            model.provider.clone_from(&id);
+            model.api = api;
+            // A provider-level override is the floor: a model may still state its own, which
+            // is the case detection got wrong twice.
+            model.compat = model.compat.or(compat);
+        }
+        Self {
+            id,
+            name,
+            base_url,
+            api,
+            auth,
+            compat,
+            models,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A provider as a config would declare it.
+    ///
+    /// JSON rather than a config file: this crate holds the schema, and the thing that turns a
+    /// Lua table into one of these lives in the binary. Testing the schema through a file
+    /// format would tie it to a loader it does not depend on.
+    fn declared(json: serde_json::Value) -> Provider {
+        serde_json::from_value(json).expect("a provider")
+    }
+
+    fn groq() -> serde_json::Value {
+        serde_json::json!({
+            "id": "groq",
+            "name": "Groq",
+            "api": "openai-completions",
+            "base_url": "https://api.groq.com/openai/v1",
+            "auth": { "kind": "api-key", "vars": ["GROQ_API_KEY"] },
+            "models": [
+                { "id": "a", "name": "A", "context_window": 131072, "max_tokens": 8192 },
+                { "id": "b", "name": "B", "context_window": 131072, "max_tokens": 8192,
+                  "reasoning": true },
+            ]
+        })
+    }
+
+    #[test]
+    fn a_declaration_stamps_the_provider_and_api_onto_every_model() {
+        let p = declared(groq());
+        assert_eq!(p.models.len(), 2);
+        assert!(p.models.iter().all(|m| m.provider == "groq"));
+        assert!(p.models.iter().all(|m| m.api == Api::OpenAiCompletions));
+    }
+
+    #[test]
+    fn omitted_model_fields_take_their_defaults() {
+        let p = declared(groq());
+        let a = p.model("a").expect("model a");
+        assert!(!a.reasoning, "reasoning defaults off");
+        assert_eq!(a.input, vec![crate::model::Modality::Text]);
+        assert_eq!(a.cost.input, 0.0);
+    }
+
+    #[test]
+    fn a_provider_with_no_auth_is_always_configured() {
+        let p = declared(serde_json::json!({
+            "id": "local", "name": "Local", "api": "openai-completions",
+            "base_url": "http://localhost:11434/v1",
+            "auth": { "kind": "none" },
+            "models": [{ "id": "m", "name": "M", "context_window": 8192, "max_tokens": 4096 }]
+        }));
+        assert!(p.is_configured());
+        assert!(p.auth.requirement().is_empty());
+    }
+
+    #[test]
+    fn a_provider_without_its_variable_set_is_not_configured() {
+        let p = declared(serde_json::json!({
+            "id": "x", "name": "X", "api": "openai-completions",
+            "base_url": "https://example.com/v1",
+            "auth": { "kind": "api-key", "vars": ["AXUM_TEST_KEY_DEFINITELY_UNSET"] },
+            "models": [{ "id": "m", "name": "M", "context_window": 8192, "max_tokens": 4096 }]
+        }));
+        assert!(!p.is_configured());
+        assert_eq!(p.auth.requirement(), "set AXUM_TEST_KEY_DEFINITELY_UNSET");
+    }
+
+    #[test]
+    fn a_credential_that_is_not_a_variable_says_what_to_do_instead() {
+        let oauth = Auth::OAuth {
+            service: "ChatGPT".into(),
+        };
+        assert_eq!(oauth.requirement(), "sign in to ChatGPT");
+        assert!(oauth.vars().is_empty(), "there is nothing to export");
+        assert_eq!(Auth::AwsSigV4.requirement(), "configure AWS credentials");
+    }
+
+    #[test]
+    fn a_provider_level_compat_reaches_every_model() {
+        let p = declared(serde_json::json!({
+            "id": "cf", "name": "Cloudflare", "api": "openai-completions",
+            "auth": { "kind": "none" },
+            "compat": { "supports_finish_reason": false },
+            "models": [{ "id": "m", "name": "M", "context_window": 8192, "max_tokens": 4096 }]
+        }));
+        let compat = p.model("m").expect("model").compat.expect("compat");
+        assert_eq!(compat.supports_finish_reason, Some(false));
+    }
+
+    #[test]
+    fn a_model_may_override_its_providers_compat() {
+        let p = declared(serde_json::json!({
+            "id": "x", "name": "X", "api": "openai-completions",
+            "auth": { "kind": "none" },
+            "compat": { "supports_finish_reason": false },
+            "models": [{ "id": "m", "name": "M", "context_window": 8192, "max_tokens": 4096,
+                         "compat": { "supports_store": true } }]
+        }));
+        let compat = p.model("m").expect("model").compat.expect("compat");
+        assert_eq!(compat.supports_store, Some(true), "the model's own wins");
+    }
+
+    #[test]
+    fn a_provider_may_have_no_fixed_base_url() {
+        let p = declared(serde_json::json!({
+            "id": "bedrock", "name": "Bedrock", "api": "bedrock-converse-stream",
+            "auth": { "kind": "aws-sig-v4" },
+            "models": [{ "id": "m", "name": "M", "context_window": 8192, "max_tokens": 4096 }]
+        }));
+        assert!(
+            p.base_url.is_none(),
+            "the endpoint comes from configuration"
+        );
+    }
+
+    #[test]
+    fn an_unknown_model_is_absent_rather_than_a_panic() {
+        assert!(declared(groq()).model("nope").is_none());
+    }
+}
