@@ -252,6 +252,7 @@ async fn start_with_backend(name: &str, base_url: String) -> (PathBuf, PathBuf) 
         },
         model,
         options: axum_provider::api::Options::default(),
+        system: Some("You are axum.".to_owned()),
     };
     let listener = axum_ipc::bind(&socket).await.expect("bind");
     tokio::spawn(async move { serve(listener, session, Some(backend)).await });
@@ -523,6 +524,7 @@ fn two_models() -> axum_host::catalog::Catalog {
         cwd: std::env::temp_dir(),
         providers,
         options: axum_provider::api::Options::default(),
+        system: None,
     }
 }
 
@@ -638,6 +640,58 @@ async fn a_refused_switch_leaves_the_session_answering_with_what_it_had() {
     // do is change which model answers, and that is a question with a direct answer.
     let model = Client::model_of(&socket).await.expect("still a model");
     assert_eq!(model.name, "local/a", "the switch was refused, not applied");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&socket);
+}
+
+/// A provider that keeps the request body it was sent, and then goes quiet.
+fn serve_recording() -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+    use std::io::Read;
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    let kept = std::sync::Arc::clone(&seen);
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for socket in listener.incoming() {
+            let Ok(mut socket) = socket else { continue };
+            let mut buf = vec![0u8; 65_536];
+            if let Ok(n) = socket.read(&mut buf) {
+                kept.lock()
+                    .expect("lock")
+                    .push(String::from_utf8_lossy(&buf[..n]).into_owned());
+            }
+            held.push(socket);
+        }
+    });
+    (format!("http://127.0.0.1:{port}"), seen)
+}
+
+#[tokio::test]
+async fn the_model_is_told_what_it_is_before_the_conversation() {
+    // Every adapter reads `ctx.system` and has since the first milestone. Nothing ever set it,
+    // so six milestones of turns went out with tool schemas and no idea what the model was,
+    // where it was, or what machine it was on. Five hundred tests passed throughout.
+    let (base_url, seen) = serve_recording();
+    let (dir, socket) = start_with_backend("system-prompt", base_url).await;
+    let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
+    client.submit("hello").await;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let body = loop {
+        if let Some(request) = seen.lock().expect("lock").first().cloned() {
+            break request;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the provider was never called"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    };
+    assert!(
+        body.contains("You are axum."),
+        "the system prompt has to reach the wire, not just the struct: {body}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_file(&socket);
 }

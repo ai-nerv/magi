@@ -28,6 +28,8 @@ pub struct Catalog {
     pub providers: Vec<Provider>,
     /// What to ask for beyond the conversation.
     pub options: axum_provider::api::Options,
+    /// What the model is told it is.
+    pub system: Option<String>,
 }
 
 impl Catalog {
@@ -44,6 +46,7 @@ impl Catalog {
             cwd: std::path::PathBuf::new(),
             providers: Vec::new(),
             options: axum_provider::api::Options::default(),
+            system: None,
         }
     }
 
@@ -63,6 +66,7 @@ impl Catalog {
             provider: provider.clone(),
             model: model.clone(),
             options: self.options.clone(),
+            system: self.system.clone(),
         })
     }
 
@@ -186,6 +190,7 @@ mod tests {
             cwd: std::env::temp_dir(),
             providers,
             options: axum_provider::api::Options::default(),
+            system: None,
         }
     }
 

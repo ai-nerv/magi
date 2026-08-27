@@ -15,6 +15,12 @@ use std::collections::BTreeSet;
 /// The catalog axum ships, as Lua.
 const BUILTIN: &str = include_str!("../../../config/providers.lua");
 
+/// What axum tells the model it is, as Lua.
+///
+/// Shipped as a file for the same reason the catalog is: a fresh binary has one, and the copy
+/// you can edit is the copy it uses.
+const BUILTIN_SYSTEM: &str = include_str!("../../../config/system.lua");
+
 /// The tools axum ships, as Lua.
 ///
 /// `bash` among them, declared as a process tool. Shipped rather than built in so that what a
@@ -65,6 +71,7 @@ pub fn load() -> Result<Loaded, LuaError> {
         engine.run(source, name)?;
         apis.push(((*name).to_owned(), (*source).to_owned()));
     }
+    engine.run(BUILTIN_SYSTEM, "system.lua")?;
     engine.run(BUILTIN, "providers.lua")?;
     // Tool and stub descriptions ship the same way the catalog does, so a fresh install has
     // the same tools an installed configuration would give it.
@@ -249,7 +256,38 @@ pub fn catalog(loaded: &Loaded) -> axum_host::catalog::Catalog {
         cwd: std::env::current_dir().unwrap_or_default(),
         providers: loaded.providers.clone(),
         options: options(loaded),
+        system: system(loaded),
     }
+}
+
+/// What the model is told it is, for this session.
+///
+/// Assembled here because this is where the configuration and the working directory are both
+/// in hand. Every milestone before this one sent nothing: the model got tool schemas and no
+/// idea what it was, where it was, or what machine it was on.
+#[must_use]
+fn system(loaded: &Loaded) -> Option<String> {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    axum_host::system::assemble(loaded.config.string("system"), &cwd, &today())
+}
+
+/// Today, as the model should read it.
+fn today() -> String {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    // Civil from days, so a date needs no calendar crate. The model wants to know roughly
+    // when it is, not to do arithmetic with it.
+    let days = i64::try_from(seconds / 86_400).unwrap_or(0) + 719_468;
+    let era = days.div_euclid(146_097);
+    let doe = days.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = era * 400 + yoe + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
 }
 
 /// What to ask for beyond the conversation.
@@ -290,6 +328,7 @@ pub fn backend(loaded: &Loaded) -> Option<axum_host::turn::Backend> {
         provider: provider.clone(),
         model: model.clone(),
         options: options(loaded),
+        system: system(loaded),
     })
 }
 /// Files the installed config directory contributes, in the order they are applied.
@@ -312,7 +351,7 @@ fn installed_files() -> Vec<std::path::PathBuf> {
         out.extend(lua_files(&dir.join(kind)));
     }
 
-    for name in ["providers.lua", "init.lua"] {
+    for name in ["system.lua", "providers.lua", "init.lua"] {
         let path = dir.join(name);
         if path.exists() {
             out.push(path);

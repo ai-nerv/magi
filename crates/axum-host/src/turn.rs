@@ -38,6 +38,12 @@ pub struct Backend {
     pub model: Model,
     /// What to ask for beyond the conversation.
     pub options: Options,
+    /// What the model is told it is, before the conversation starts.
+    ///
+    /// Assembled once, when the daemon starts. Rebuilding it per turn would let a project file
+    /// change what the model was told between one message and the next, with nothing in the
+    /// transcript to say so.
+    pub system: Option<String>,
 }
 
 /// Summarise the earlier part of the conversation and journal the result.
@@ -116,6 +122,7 @@ async fn one_turn(
 ) -> Result<Round, crate::HostError> {
     let mut context = crate::context::of(&*session.lock().await);
     context.tools = tools;
+    context.system.clone_from(&backend.system);
 
     {
         let mut held = session.lock().await;

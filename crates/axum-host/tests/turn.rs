@@ -103,6 +103,7 @@ fn backend(base_url: String) -> Backend {
         },
         model,
         options: Options::default(),
+        system: None,
     }
 }
 
