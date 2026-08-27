@@ -36,6 +36,8 @@ pub enum Scroll {
 pub enum Action {
     /// The buffer changed; redraw.
     Redraw,
+    /// A completion was taken, and the popup must stay closed until the next keystroke.
+    Accepted,
     /// Send this prompt.
     Submit(String),
     /// Run this slash command.
@@ -105,7 +107,11 @@ pub fn handle(
                     editor.replace_token(start, &value);
                 }
                 *completion = None;
-                return Action::Redraw;
+                // Not `Redraw`: the popup is recomputed from the prompt after every key, and
+                // what was just accepted still matches what offered it. Saying so keeps the
+                // caller from reopening the menu the user has this moment chosen from, which
+                // left every exact-match command -- `/help`, `/quit` -- impossible to submit.
+                return Action::Accepted;
             }
             _ => {}
         }
@@ -489,5 +495,40 @@ mod tests {
         );
         assert!(popup.is_none());
         assert_eq!(editor.text(), "/qu", "the buffer is untouched");
+    }
+}
+
+#[cfg(test)]
+mod accept_tests {
+    use super::*;
+    use axum_tui::complete::Completion;
+
+    fn press(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn taking_a_completion_says_so_rather_than_asking_for_a_redraw() {
+        // The driver recomputes the popup after every key. Told only "redraw", it reopens the
+        // menu on the thing just chosen from it -- and `/help`, whose name is exactly what
+        // offered it, can then never be submitted at all.
+        let mut editor = Editor::new();
+        editor.insert_str("/hel");
+        let mut completion = axum_tui::complete::resolve("/hel", 4, &|_| Vec::new());
+        assert!(completion.is_some(), "the popup is open");
+
+        let action = handle(press(KeyCode::Enter), &mut editor, &mut completion, false);
+        assert_eq!(action, Action::Accepted);
+        assert!(completion.is_none(), "and closed");
+        assert_eq!(editor.text(), "/help");
+    }
+
+    #[test]
+    fn a_second_enter_submits_what_was_taken() {
+        let mut editor = Editor::new();
+        editor.insert_str("/help");
+        let mut none: Option<Completion> = None;
+        let action = handle(press(KeyCode::Enter), &mut editor, &mut none, false);
+        assert_eq!(action, Action::Command("/help".to_owned()));
     }
 }

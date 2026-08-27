@@ -86,6 +86,9 @@ pub async fn run(socket: &Path, mode: Mode, prompt: Option<String>) -> Result<()
                         let busy = app.is_busy();
                         let action =
                             keys::handle(key, &mut app.editor, &mut app.completion, busy);
+                        // Noted before the match consumes it: a taken completion must not be
+                        // recomputed, and the arms move the action's payload out.
+                        let accepted = action == Action::Accepted;
                         match action {
                             Action::Quit => break,
                             Action::Submit(text) => {
@@ -128,12 +131,15 @@ pub async fn run(socket: &Path, mode: Mode, prompt: Option<String>) -> Result<()
                                     dirty = true;
                                 }
                             }
-                            Action::Redraw => dirty = true,
+                            Action::Redraw | Action::Accepted => dirty = true,
                             Action::Ignore => {}
                         }
                         // The popup is derived from the prompt, so it is recomputed after
-                        // every key rather than mutated alongside the buffer.
-                        app.refresh_completion(&list_paths);
+                        // every key rather than mutated alongside the buffer -- except the
+                        // key that just accepted one, which still matches what offered it.
+                        if !accepted {
+                            app.refresh_completion(&list_paths);
+                        }
                     }
                     Event::Paste(text) => {
                         app.editor.insert_str(&text);
