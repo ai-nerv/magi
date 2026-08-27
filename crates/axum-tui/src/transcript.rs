@@ -225,8 +225,10 @@ fn summarize(args: &str) -> String {
 }
 
 fn clip(text: &str, width: usize) -> String {
+    // Expanded before it is measured, because a tab is one character and several columns.
+    let text = crate::wrap::expand_tabs(text);
     if text.chars().count() <= width {
-        return text.to_owned();
+        return text;
     }
     text.chars()
         .take(width.saturating_sub(1))
@@ -434,5 +436,53 @@ mod diff_tests {
         let lines = entry_lines(&entry, 40, &theme);
         assert_eq!(colour_of(&lines, "-was"), Some(theme.error));
         assert_eq!(colour_of(&lines, "+now"), Some(theme.error));
+    }
+}
+
+#[cfg(test)]
+mod tab_tests {
+    use super::*;
+    use axum_proto::{ToolCallId, ToolResult};
+
+    /// Every character the renderer would put in a cell.
+    fn cells(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect()
+    }
+
+    #[test]
+    fn no_tab_reaches_the_buffer_from_tool_output() {
+        // Found against a real model, not in any test: `read` numbers lines with a tab, the
+        // buffer counted it as one column, the terminal moved the cursor to the next tab stop,
+        // and a character from the previous frame was left on screen at the gap.
+        let entry = Entry::Tool {
+            id: ToolCallId::new("t1"),
+            name: "read".into(),
+            args: "{}".into(),
+            result: Some(ToolResult {
+                output: "     1\tfn main() {\n     3\t}\n".into(),
+                is_error: false,
+            }),
+        };
+        let rendered = cells(&entry_lines(&entry, 60, &Theme::default()));
+        assert!(!rendered.contains('\t'), "{rendered:?}");
+        assert!(rendered.contains("     3  }"), "{rendered:?}");
+    }
+
+    #[test]
+    fn no_tab_reaches_the_buffer_from_a_fenced_code_block() {
+        // A model quoting a Makefile or Go, which are indented with tabs.
+        let entry = Entry::Assistant {
+            id: axum_proto::MessageId::new("a1"),
+            text: "```\nbuild:\n\tcargo build\n```".into(),
+            thinking: String::new(),
+            stop_reason: None,
+            error: None,
+        };
+        let rendered = cells(&entry_lines(&entry, 60, &Theme::default()));
+        assert!(!rendered.contains('\t'), "{rendered:?}");
+        assert!(rendered.contains("    cargo build"), "{rendered:?}");
     }
 }

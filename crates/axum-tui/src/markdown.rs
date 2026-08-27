@@ -37,7 +37,7 @@ pub fn render(source: &str, width: u16, theme: &Theme, base: Style) -> Vec<Line<
 
         if in_fence {
             out.push(Line::from(Span::styled(
-                trimmed.to_owned(),
+                crate::wrap::expand_tabs(trimmed),
                 Style::default().fg(theme.md_code_block),
             )));
             continue;

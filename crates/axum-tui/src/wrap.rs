@@ -190,3 +190,67 @@ mod tests {
         assert!(has_bold && has_plain);
     }
 }
+
+/// Columns a tab advances to. Four, because tool output is mostly code and eight wastes a
+/// terminal that is already sharing its width with a padded block.
+const TAB: usize = 4;
+
+/// Replace tabs with the spaces they stand for.
+///
+/// A `\t` written into a cell breaks the renderer's arithmetic: the buffer counts it as one
+/// column and the terminal advances the cursor to the next tab stop, so everything after it on
+/// the line lands somewhere the differ does not believe it is — and the leftovers from the
+/// previous frame stay on screen. Tool output is full of tabs (`read` numbers lines with one,
+/// Makefiles and Go are indented with them), so this is not an edge case.
+///
+/// Expanded here rather than in the tools: the journal should hold what the tool actually
+/// said, and only the thing painting cells needs the columns to line up.
+#[must_use]
+pub fn expand_tabs(text: &str) -> String {
+    if !text.contains('\t') {
+        return text.to_owned();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut column = 0;
+    for c in text.chars() {
+        if c == '\t' {
+            let stop = TAB - (column % TAB);
+            out.extend(std::iter::repeat_n(' ', stop));
+            column += stop;
+        } else {
+            out.push(c);
+            column += 1;
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tab_tests {
+    use super::*;
+
+    #[test]
+    fn a_tab_becomes_spaces_to_the_next_stop() {
+        assert_eq!(expand_tabs("a\tb"), "a   b");
+        assert_eq!(expand_tabs("abc\td"), "abc d");
+    }
+
+    #[test]
+    fn a_tab_on_a_stop_still_advances() {
+        // Otherwise two adjacent columns collapse and the text after them shifts left.
+        assert_eq!(expand_tabs("abcd\te"), "abcd    e");
+    }
+
+    #[test]
+    fn text_without_tabs_is_returned_as_it_was() {
+        assert_eq!(expand_tabs("     3}"), "     3}");
+    }
+
+    #[test]
+    fn the_line_read_actually_produces_expands() {
+        // `read` numbers with a tab, which is what put a stray character on screen against a
+        // real model: the buffer counted one column and the terminal moved eight.
+        assert_eq!(expand_tabs("     3\t}"), "     3  }");
+        assert!(!expand_tabs("     3\t}").contains('\t'));
+    }
+}
