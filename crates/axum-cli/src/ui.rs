@@ -102,11 +102,19 @@ pub fn draw(
         // Alt: there is no terminal history to defer to, so the whole transcript is ours and
         // the reader's scroll position decides what shows.
         Mode::Alt => {
-            let all = if app.entries().is_empty() {
-                greeting::render(&footer_data.model, &footer_data.cwd, area.width, theme)
+            // The greeting is a header on an unstarted session, not a substitute for it: a
+            // notice arriving before the first message used to take the whole screen with it.
+            let mut all = if app.started() {
+                Vec::new()
             } else {
-                transcript::render(app.entries(), area.width, theme, app.detail)
+                greeting::render(&footer_data.model, &footer_data.cwd, area.width, theme)
             };
+            all.extend(transcript::render(
+                app.entries(),
+                area.width,
+                theme,
+                app.detail,
+            ));
             app.scrollback.set_lines(all);
             let view = app.scrollback.view(live_area.height).to_vec();
             // Bottom-aligned: a transcript grows towards the prompt, so a short one sits above

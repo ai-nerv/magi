@@ -145,18 +145,21 @@ fn assistant(
     // A truncated response is surfaced here even when tool calls follow, because a length stop
     // can land before a call's arguments are complete and the tool block would show nothing.
     match stop_reason {
+        // A limit, not a fault: the model did what it could within the budget it was given.
         Some(StopReason::Length) => {
             out.push(Line::default());
             out.push(indent(Line::from(Span::styled(
-                "Response was truncated before completion.",
-                Style::default().fg(theme.error),
+                "Response hit the length limit and stopped here.",
+                Style::default().fg(theme.warning),
             ))));
         }
+        // Not an error. You pressed escape and it obeyed; saying so in red claims something
+        // went wrong, and "Operation aborted" is a machine's word for a key you just pressed.
         Some(StopReason::Aborted) => {
             out.push(Line::default());
             out.push(indent(Line::from(Span::styled(
-                error.unwrap_or("Operation aborted").to_owned(),
-                Style::default().fg(theme.error),
+                error.map_or_else(|| "Interrupted.".to_owned(), ToOwned::to_owned),
+                Style::default().fg(theme.dim),
             ))));
         }
         Some(StopReason::Error) => {
@@ -215,7 +218,7 @@ mod tests {
     use super::*;
     use axum_proto::{MessageId, ToolCallId, ToolResult};
 
-    fn text_of(lines: &[Line<'_>]) -> Vec<String> {
+    pub(super) fn text_of(lines: &[Line<'_>]) -> Vec<String> {
         lines
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
@@ -300,7 +303,7 @@ mod tests {
         };
         let rendered = text_of(&entry_lines(&entry, 40, &Theme::default(), Detail::Preview));
         assert!(
-            rendered.iter().any(|l| l.contains("truncated")),
+            rendered.iter().any(|l| l.contains("length limit")),
             "{rendered:?}"
         );
     }
@@ -428,5 +431,100 @@ mod notice_tests {
             "the markers are rendered away: {rendered:?}"
         );
         assert!(rendered.iter().any(|l: &String| l.contains('•')));
+    }
+}
+
+#[cfg(test)]
+mod stop_tests {
+    use super::tests::text_of;
+    use super::*;
+    use axum_proto::MessageId;
+
+    fn stopped(reason: StopReason, error: Option<&str>) -> Entry {
+        Entry::Assistant {
+            id: MessageId::new("s"),
+            text: "half an answer".into(),
+            thinking: String::new(),
+            stop_reason: Some(reason),
+            error: error.map(ToOwned::to_owned),
+            signatures: axum_proto::Signatures::default(),
+            usage: axum_proto::Usage::default(),
+        }
+    }
+
+    #[test]
+    fn an_interrupt_reads_as_one() {
+        // "Operation aborted" is a machine's word for a key the reader just pressed.
+        let lines = text_of(&entry_lines(
+            &stopped(StopReason::Aborted, None),
+            40,
+            &Theme::default(),
+            Detail::Preview,
+        ));
+        assert!(lines.iter().any(|l| l.contains("Interrupted")), "{lines:?}");
+        assert!(!lines.iter().any(|l| l.contains("aborted")), "{lines:?}");
+    }
+
+    #[test]
+    fn an_interrupt_is_not_coloured_as_a_failure() {
+        // Red claims something went wrong; the reader asked for this.
+        let theme = Theme::default();
+        let rendered = entry_lines(
+            &stopped(StopReason::Aborted, None),
+            40,
+            &theme,
+            Detail::Preview,
+        );
+        let note = rendered
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .find(|s| s.content.contains("Interrupted"))
+            .expect("the note");
+        assert_ne!(note.style.fg, Some(theme.error));
+    }
+
+    #[test]
+    fn what_arrived_before_the_interrupt_is_kept() {
+        let lines = text_of(&entry_lines(
+            &stopped(StopReason::Aborted, None),
+            40,
+            &Theme::default(),
+            Detail::Preview,
+        ));
+        assert!(
+            lines.iter().any(|l| l.contains("half an answer")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_real_failure_is_still_red() {
+        let theme = Theme::default();
+        let rendered = entry_lines(
+            &stopped(StopReason::Error, Some("no route")),
+            40,
+            &theme,
+            Detail::Preview,
+        );
+        let note = rendered
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .find(|s| s.content.contains("no route"))
+            .expect("the note");
+        assert_eq!(note.style.fg, Some(theme.error));
+    }
+
+    #[test]
+    fn an_abort_that_came_with_a_reason_says_the_reason() {
+        let lines = text_of(&entry_lines(
+            &stopped(StopReason::Aborted, Some("the daemon went away")),
+            40,
+            &Theme::default(),
+            Detail::Preview,
+        ));
+        assert!(
+            lines.iter().any(|l| l.contains("daemon went away")),
+            "{lines:?}"
+        );
     }
 }

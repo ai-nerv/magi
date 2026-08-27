@@ -347,7 +347,7 @@ fn local_footer(mode: Mode) -> FooterData {
     FooterData {
         cwd: axum_tui::footer::format_cwd(&cwd, home.as_deref()),
         branch: git_branch(),
-        model: "no-model".into(),
+        model: axum_tui::footer::NO_MODEL.into(),
         mode: mode.label(),
         ..FooterData::default()
     }
@@ -367,7 +367,7 @@ fn footer_data(base: &FooterData, app: &App) -> FooterData {
         model: app
             .model
             .as_ref()
-            .map_or_else(|| "no-model".to_owned(), |m| m.name.clone()),
+            .map_or_else(|| axum_tui::footer::NO_MODEL.to_owned(), |m| m.name.clone()),
         input_tokens: app.usage().prompt_tokens(),
         output_tokens: app.usage().output,
         context_window: window,

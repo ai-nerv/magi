@@ -13,7 +13,7 @@ const KEYS: &str = "\
 
 - `enter` submit — `shift+enter` newline
 - `esc` interrupt a running turn
-- `tab` accept a completion — `↑/↓` move through it
+- `tab` complete — `enter` runs the command — `↑/↓` move through the list
 - `pgup`/`pgdn` scroll — `shift+↑/↓` by a line — `shift+home/end` to the ends
 - `ctrl+o` show tool output in full, again to fold it back
 - `ctrl+x` edit the prompt in `$EDITOR`

@@ -195,6 +195,18 @@ impl App {
         self.working_since.map(|t| t.elapsed())
     }
 
+    /// Whether this session has said anything yet.
+    ///
+    /// Notices do not count. A fresh install opens with "no model is configured", which is a
+    /// message from axum about itself rather than the beginning of a conversation -- and
+    /// treating it as one replaced the whole first screen with a single line.
+    #[must_use]
+    pub fn started(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|e| !matches!(e, Entry::Notice { .. }))
+    }
+
     /// What the agent is doing.
     #[must_use]
     pub fn status(&self) -> &AgentStatus {

@@ -7,6 +7,12 @@ use crate::theme::Theme;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
+/// What the footer shows when no model has been chosen.
+///
+/// Named because three places compare against it, and a string literal repeated three times
+/// is a rename waiting to go wrong.
+pub const NO_MODEL: &str = "no-model";
+
 /// Minimum gap between the stats and the right-aligned model name.
 const MIN_GAP: usize = 2;
 
@@ -105,9 +111,15 @@ pub fn render(data: &FooterData, width: u16, theme: &Theme) -> Vec<Line<'static>
         stats.push(format!("↓{}", format_tokens(data.output_tokens)));
     }
 
-    let context = match data.context_percent {
-        Some(pct) => format!("{pct:.1}%/{}", format_tokens(data.context_window)),
-        None => format!("?/{}", format_tokens(data.context_window)),
+    // Nothing to say about a context window nobody has: `?/0` is three characters of noise on
+    // exactly the screen a new person is trying to read.
+    let context = if data.context_window == 0 {
+        String::new()
+    } else {
+        match data.context_percent {
+            Some(pct) => format!("{pct:.1}%/{}", format_tokens(data.context_window)),
+            None => format!("?/{}", format_tokens(data.context_window)),
+        }
     };
     // Context pressure is the one thing in the footer worth breaking the dim palette for.
     let context_color = match data.context_percent {
@@ -121,10 +133,11 @@ pub fn render(data: &FooterData, width: u16, theme: &Theme) -> Vec<Line<'static>
     let context_width = context.chars().count();
     let right_width = data.model.chars().count();
 
-    let head = if left.is_empty() {
-        context_width
-    } else {
-        left_width + 1 + context_width
+    let head = match (left.is_empty(), context.is_empty()) {
+        (true, true) => 0,
+        (true, false) => context_width,
+        (false, true) => left_width,
+        (false, false) => left_width + 1 + context_width,
     };
     let gap = usize::from(width)
         .saturating_sub(head + right_width)
@@ -132,9 +145,14 @@ pub fn render(data: &FooterData, width: u16, theme: &Theme) -> Vec<Line<'static>
 
     let mut spans = Vec::new();
     if !left.is_empty() {
-        spans.push(Span::styled(format!("{left} "), dim));
+        spans.push(Span::styled(left.clone(), dim));
+        if !context.is_empty() {
+            spans.push(Span::styled(" ".to_owned(), dim));
+        }
     }
-    spans.push(Span::styled(context, Style::default().fg(context_color)));
+    if !context.is_empty() {
+        spans.push(Span::styled(context, Style::default().fg(context_color)));
+    }
     spans.push(Span::styled(" ".repeat(gap), dim));
     spans.push(Span::styled(data.model.clone(), dim));
 
@@ -224,5 +242,79 @@ mod tests {
         };
         let rendered = text_of(&render(&data, 40, &Theme::default()));
         assert!(rendered[1].contains("?/200k"), "{:?}", rendered[1]);
+    }
+}
+
+#[cfg(test)]
+mod fit_tests {
+    use super::*;
+
+    fn line_text(lines: &[Line<'_>], row: usize) -> String {
+        lines[row]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn a_long_path_keeps_the_end_that_says_where_you_are() {
+        // The old clip took the head: `/home/you/work/deep/nested/thing` became
+        // `/home/you/work/dee…`, which names every directory except the one you are in.
+        let fitted = fit_path("/home/you/work/deep/nested/thing", 20);
+        assert!(fitted.ends_with("thing"), "{fitted}");
+        assert!(fitted.chars().count() <= 20, "{fitted}");
+    }
+
+    #[test]
+    fn a_path_that_fits_is_left_alone() {
+        assert_eq!(fit_path("~/work", 40), "~/work");
+    }
+
+    #[test]
+    fn whole_components_survive_rather_than_half_a_word() {
+        let fitted = fit_path("/aaa/bbb/ccc/ddd", 12);
+        assert!(fitted.starts_with("…/"), "{fitted}");
+        assert!(!fitted.contains("…/bb"), "no half components: {fitted}");
+    }
+
+    #[test]
+    fn one_enormous_component_keeps_its_tail() {
+        let fitted = fit_path("/x/abcdefghijklmnop", 8);
+        assert!(fitted.ends_with("mnop"), "{fitted}");
+        assert!(fitted.chars().count() <= 8, "{fitted}");
+    }
+
+    #[test]
+    fn the_branch_survives_a_path_too_long_to_fit() {
+        // Fitting the whole line cut the branch off with it, and the branch is the half that
+        // changes.
+        let data = FooterData {
+            cwd: "/home/you/a/very/long/path/that/will/not/fit/at/all".into(),
+            branch: Some("develop".into()),
+            model: "m".into(),
+            ..FooterData::default()
+        };
+        let out = render(&data, 40, &crate::theme::DARK);
+        assert!(
+            line_text(&out, 0).contains("(develop)"),
+            "{}",
+            line_text(&out, 0)
+        );
+    }
+
+    #[test]
+    fn no_context_window_is_no_context_group() {
+        // `?/0` is three characters of noise on exactly the screen a new person is reading.
+        let data = FooterData {
+            model: NO_MODEL.into(),
+            ..FooterData::default()
+        };
+        let out = render(&data, 40, &crate::theme::DARK);
+        assert!(!line_text(&out, 1).contains("?/"), "{}", line_text(&out, 1));
+        assert!(
+            line_text(&out, 1).contains(NO_MODEL),
+            "the model still shows"
+        );
     }
 }
