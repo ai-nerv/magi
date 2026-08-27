@@ -437,6 +437,12 @@ async fn a_compacted_session_sends_the_summary_and_not_the_history() {
         !sent.contains("forgotten message 0"),
         "but not what it replaced: {sent}"
     );
+    // And the tail it deliberately kept. Starting from the compaction record rather than from
+    // `replaces` threw this away — the recent turns are the whole reason the tail is kept.
+    assert!(
+        sent.contains("forgotten message 10") && sent.contains("forgotten message 11"),
+        "the kept tail survives: {sent}"
+    );
     drop(held);
     let _ = std::fs::remove_dir_all(&dir);
 }

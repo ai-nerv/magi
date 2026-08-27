@@ -236,17 +236,22 @@ fn assistant(id: &MessageId, turn: &Turn) -> Entry {
 /// had said it teaches it to produce more of them.
 pub fn context_of(session: &Session) -> Context {
     let entries = session.entries();
-    // The last compaction is where the conversation starts as far as the provider is
-    // concerned. The entries before it are still in the journal and still on screen; what
-    // changed is what fits in the window.
-    let from = entries
+    // Where the conversation starts as far as the provider is concerned. The entries before it
+    // are still in the journal and still on screen; what changed is what fits in the window.
+    //
+    // `replaces`, not the position of the record. A compaction is appended after the entries
+    // it keeps, so starting from the record itself would skip the recent tail — the part it
+    // went to the trouble of not summarising.
+    let (from, summary) = entries
         .iter()
-        .rposition(|e| matches!(e, Entry::Compaction { .. }))
-        .map_or(0, |at| at + 1);
-    let summary = entries.get(from.wrapping_sub(1)).and_then(|e| match e {
-        Entry::Compaction { summary, .. } => Some(summary.clone()),
-        _ => None,
-    });
+        .rev()
+        .find_map(|e| match e {
+            Entry::Compaction {
+                summary, replaces, ..
+            } => Some((*replaces, Some(summary.clone()))),
+            _ => None,
+        })
+        .unwrap_or((0, None));
 
     let mut messages: Vec<Message> = Vec::new();
     if let Some(summary) = summary {
