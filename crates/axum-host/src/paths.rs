@@ -38,6 +38,34 @@ pub fn latest(dir: &std::path::Path) -> Option<PathBuf> {
     journals.pop()
 }
 
+/// The newest journal in `dir` that was recorded for `cwd`.
+///
+/// Journals are flat and global, so "the last session" on its own means the last session
+/// anywhere -- which is the wrong one to resume as soon as two projects are open. The meta
+/// line is the first line, so this reads one line per journal rather than parsing any of them.
+#[must_use]
+pub fn latest_for(dir: &std::path::Path, cwd: &str) -> Option<PathBuf> {
+    let mut journals: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "jsonl"))
+        .filter(|p| recorded_cwd(p).as_deref() == Some(cwd))
+        .collect();
+    journals.sort();
+    journals.pop()
+}
+
+/// The directory a journal says it was started in.
+fn recorded_cwd(path: &std::path::Path) -> Option<String> {
+    use std::io::BufRead;
+    let file = std::fs::File::open(path).ok()?;
+    let mut first = String::new();
+    std::io::BufReader::new(file).read_line(&mut first).ok()?;
+    let meta: serde_json::Value = serde_json::from_str(&first).ok()?;
+    meta.get("cwd")?.as_str().map(str::to_owned)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,6 +104,55 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("mkdir");
         assert!(latest(&dir).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod resume_tests {
+    use super::*;
+    use axum_proto::SessionId;
+
+    /// Two sessions in one directory and one in another, so "the latest" and "the latest here"
+    /// are different journals.
+    fn fixture(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("axum-resume-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        for (id, cwd) in [(1_u64, "/work/a"), (2, "/work/a"), (3, "/work/b")] {
+            let path = dir.join(format!("{}.jsonl", session_id(id)));
+            axum_journal::Journal::open(&path, SessionId::new(session_id(id)), cwd, id)
+                .expect("journal");
+        }
+        dir
+    }
+
+    #[test]
+    fn resuming_finds_the_newest_session_for_this_directory() {
+        let dir = fixture("scoped");
+        let found = latest_for(&dir, "/work/a").expect("a journal");
+        assert!(
+            found.to_string_lossy().contains(&session_id(2)),
+            "{found:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_newer_session_elsewhere_is_not_resumed_here() {
+        // The bare `latest` would return the /work/b journal, which is the bug this avoids.
+        let dir = fixture("elsewhere");
+        let newest = latest(&dir).expect("a journal");
+        assert!(newest.to_string_lossy().contains(&session_id(3)));
+        let found = latest_for(&dir, "/work/a").expect("a journal");
+        assert_ne!(found, newest);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_directory_with_no_history_has_nothing_to_resume() {
+        let dir = fixture("fresh");
+        assert!(latest_for(&dir, "/work/never-seen").is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -27,7 +27,11 @@ use tokio_stream::StreamExt;
 const RECONNECT_DELAY: Duration = Duration::from_millis(500);
 
 /// Run the UI until the user quits.
-pub async fn run(socket: &Path, mode: Mode) -> Result<()> {
+///
+/// `prompt` is the positional argument: `axum "…"` opens the UI with the question already
+/// asked, so the first thing on screen is the answer arriving rather than an empty box the
+/// user has to retype into.
+pub async fn run(socket: &Path, mode: Mode, prompt: Option<String>) -> Result<()> {
     let theme = Theme::default();
     let mut app = App::new();
     let footer_data = footer_data(mode);
@@ -50,6 +54,12 @@ pub async fn run(socket: &Path, mode: Mode) -> Result<()> {
             .map(|cwd| crate::paths::list(&cwd, query))
             .unwrap_or_default()
     };
+
+    // Sent once the connection task exists, not before: the channel buffers it, and it reaches
+    // the daemon after the attach that the connection loop opens with.
+    if let Some(text) = prompt {
+        let _ = command_tx.send(UiCommand::SubmitPrompt { text }).await;
+    }
 
     let mut dirty = true;
     loop {
