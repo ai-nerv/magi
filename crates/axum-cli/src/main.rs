@@ -5,6 +5,7 @@
 //! a single artifact.
 
 mod app;
+mod auth;
 mod config;
 mod daemon;
 mod driver;
@@ -66,6 +67,9 @@ enum Command {
     /// so `command = "axum"` in a declaration needs nothing else installed.
     #[command(subcommand)]
     Ext(Ext),
+    /// Sign in to a provider that uses a subscription rather than a key.
+    #[command(subcommand)]
+    Auth(AuthCommand),
     /// List the tools the model can call, and how each is reached.
     Tools,
     /// List the providers and models axum knows about.
@@ -97,6 +101,9 @@ async fn main() -> Result<()> {
     match cli.command {
         Some(Command::Ext(Ext::Shell)) => shell::run(),
         Some(Command::Ext(Ext::Lua { file })) => ext_lua::run(&file),
+        Some(Command::Auth(AuthCommand::Login { provider })) => auth::login(&provider).await,
+        Some(Command::Auth(AuthCommand::Logout { provider })) => auth::logout(&provider),
+        Some(Command::Auth(AuthCommand::Status)) => auth::status(),
         Some(Command::Tools) => {
             tools::print()?;
             Ok(())
@@ -195,6 +202,23 @@ fn unix_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+/// What `axum auth` can do.
+#[derive(Subcommand)]
+enum AuthCommand {
+    /// Sign in, through your browser.
+    Login {
+        /// The provider, as `axum models` names it.
+        provider: String,
+    },
+    /// Forget a provider's credentials.
+    Logout {
+        /// The provider to forget.
+        provider: String,
+    },
+    /// Show which providers are signed in.
+    Status,
 }
 
 /// The peers axum ships.

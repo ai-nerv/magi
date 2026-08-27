@@ -6,7 +6,7 @@
 
 use crate::api::{Adapter, Delta, Options};
 use crate::model::Model;
-use crate::provider::Provider;
+use crate::provider::{Auth, Provider};
 use crate::retry::RetryClass;
 use crate::sse;
 use axum_model::Context;
@@ -80,7 +80,12 @@ impl Client {
                 format!("{} has no endpoint configured", provider.id),
             ));
         };
-        let key = provider.auth.resolve();
+        // Resolved here rather than at catalog load, because an OAuth token has a lifetime
+        // and the only moment its freshness matters is the moment it is used.
+        let key = match credential(&self.http, provider).await {
+            Ok(key) => key,
+            Err(why) => return Err(ProviderError::new(RetryClass::Auth, why.to_string())),
+        };
         if key.is_none() && !matches!(provider.auth, crate::provider::Auth::None) {
             return Err(ProviderError::new(
                 RetryClass::Auth,
@@ -146,6 +151,54 @@ fn first_line(text: &str) -> String {
         .chars()
         .take(300)
         .collect()
+}
+
+/// The credential to send, renewed if it was about to expire.
+///
+/// A refresh is one round trip and happens at most once an hour; a stale token is a 401 that
+/// costs the turn. The exchange is not retried: if the provider will not renew, signing in
+/// again is the only thing that helps, and telling the person that is more use than trying.
+async fn credential(
+    http: &reqwest::Client,
+    provider: &Provider,
+) -> Result<Option<String>, crate::oauth::Error> {
+    let Auth::OAuth {
+        token_url: Some(token_url),
+        client_id: Some(client_id),
+        ..
+    } = &provider.auth
+    else {
+        return Ok(provider.auth.resolve());
+    };
+
+    let mut store = crate::oauth::Store::load()?;
+    let tokens = store
+        .get(&provider.id)
+        .ok_or_else(|| crate::oauth::Error::NotSignedIn(provider.id.clone()))?;
+    if !tokens.is_stale(crate::oauth::now()) {
+        return Ok(Some(tokens.access.clone()));
+    }
+    let refresh = tokens
+        .refresh
+        .clone()
+        .ok_or_else(|| crate::oauth::Error::Expired(provider.id.clone()))?;
+
+    let renewed = crate::oauth::exchange(
+        http,
+        token_url,
+        &[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", &refresh),
+            ("client_id", client_id),
+        ],
+    )
+    .await?;
+    let access = renewed.access.clone();
+    store.put(&provider.id, renewed);
+    // Best effort: a token that works but could not be written costs a refresh next time,
+    // which is a great deal better than refusing to use it.
+    let _ = store.save();
+    Ok(Some(access))
 }
 
 #[cfg(test)]

@@ -26,8 +26,26 @@ pub enum Auth {
     /// the answer to "how do I enable this" is a command, not a variable.
     #[serde(rename = "oauth")]
     OAuth {
-        /// What a person signs in to.
+        /// What a person signs in to, for the message that tells them to.
         service: String,
+        /// Where the browser is sent.
+        ///
+        /// Optional, with the rest of them, because a provider can be in the catalog before
+        /// this build knows how to sign in to it: the endpoints and the client id are things
+        /// a vendor issues, and inventing plausible ones would turn "not supported yet" into
+        /// a sign-in that fails for a reason nobody can act on. Absent, `axum auth login`
+        /// says exactly what is missing.
+        #[serde(default)]
+        authorize_url: Option<String>,
+        /// Where a code, or a refresh token, is exchanged.
+        #[serde(default)]
+        token_url: Option<String>,
+        /// The public client this build identifies as.
+        #[serde(default)]
+        client_id: Option<String>,
+        /// What is asked for.
+        #[serde(default)]
+        scopes: Vec<String>,
     },
     /// AWS SigV4, from the usual credential chain.
     AwsSigV4,
@@ -43,7 +61,7 @@ impl Auth {
     pub fn requirement(&self) -> String {
         match self {
             Self::ApiKey { vars } => format!("set {}", vars.join(" or ")),
-            Self::OAuth { service } => format!("sign in to {service}"),
+            Self::OAuth { service, .. } => format!("sign in to {service}"),
             Self::AwsSigV4 => "configure AWS credentials".to_owned(),
             Self::GoogleAdc => "configure Google application default credentials".to_owned(),
             Self::None => String::new(),
@@ -66,9 +84,12 @@ impl Auth {
                 .iter()
                 .filter_map(|v| std::env::var(v).ok())
                 .find(|value| !value.trim().is_empty()),
-            // Resolving these means talking to a credential chain or a browser, which is a
-            // later milestone; reporting them as unset is honest until then.
-            Self::OAuth { .. } | Self::AwsSigV4 | Self::GoogleAdc | Self::None => None,
+            // Whatever was stored, fresh or not. `is_configured` asks whether a person has
+            // signed in, which a stale token still answers yes to; renewing it is the job of
+            // `bearer`, which can wait on a network round trip and this cannot.
+            Self::OAuth { .. } => None,
+            // Talking to a credential chain, which these two need, is a later milestone.
+            Self::AwsSigV4 | Self::GoogleAdc | Self::None => None,
         }
     }
 
@@ -112,9 +133,20 @@ pub struct Provider {
 
 impl Provider {
     /// Whether a credential for this provider is present.
+    ///
+    /// For an OAuth provider that means "has this person signed in", which a token that has
+    /// since gone stale still answers yes to: it is renewable, and renewing is what happens on
+    /// the way to the next request. Answering no would list a provider as unavailable for the
+    /// hour between an expiry and its use.
     #[must_use]
     pub fn is_configured(&self) -> bool {
-        matches!(self.auth, Auth::None) || self.auth.resolve().is_some()
+        match &self.auth {
+            Auth::None => true,
+            Auth::OAuth { .. } => {
+                crate::oauth::Store::load().is_ok_and(|store| store.get(&self.id).is_some())
+            }
+            _ => self.auth.resolve().is_some(),
+        }
     }
 
     /// One of its models by id.
@@ -246,6 +278,10 @@ mod tests {
     fn a_credential_that_is_not_a_variable_says_what_to_do_instead() {
         let oauth = Auth::OAuth {
             service: "ChatGPT".into(),
+            authorize_url: Some("https://example.test/authorize".into()),
+            token_url: Some("https://example.test/token".into()),
+            client_id: Some("c".into()),
+            scopes: Vec::new(),
         };
         assert_eq!(oauth.requirement(), "sign in to ChatGPT");
         assert!(oauth.vars().is_empty(), "there is nothing to export");
