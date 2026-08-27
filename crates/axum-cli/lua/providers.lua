@@ -172,10 +172,13 @@ axum.provider("amazon-bedrock", {
   },
 })
 
+-- Mistral serves an OpenAI-compatible endpoint alongside its own Conversations API, so it
+-- needs no protocol of its own. Pi wrote a separate adapter for the richer one; this takes the
+-- dialect twenty other vendors already speak, and works today rather than eventually.
 axum.provider("mistral", {
   name = "Mistral",
-  api = "mistral-conversations",
-  base_url = "https://api.mistral.ai",
+  api = "openai-completions",
+  base_url = "https://api.mistral.ai/v1",
   auth = { kind = "api-key", vars = { "MISTRAL_API_KEY" } },
   models = {
     { id = "mistral-large-latest", name = "Mistral Large", context_window = 131072, max_tokens = 32768, cost = { input = 2.0, output = 6.0 } },

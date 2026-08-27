@@ -34,8 +34,6 @@ pub enum Api {
     GoogleVertex,
     /// Amazon Bedrock's Converse streaming API.
     BedrockConverseStream,
-    /// Mistral's Conversations API.
-    MistralConversations,
     /// Pi's own protocol, for a pi-compatible endpoint.
     PiMessages,
 }
@@ -53,14 +51,13 @@ impl Api {
             Self::GoogleGenerativeAi => "google-generative-ai",
             Self::GoogleVertex => "google-vertex",
             Self::BedrockConverseStream => "bedrock-converse-stream",
-            Self::MistralConversations => "mistral-conversations",
             Self::PiMessages => "pi-messages",
         }
     }
 
     /// Every protocol axum knows.
     #[must_use]
-    pub const fn all() -> [Self; 10] {
+    pub const fn all() -> [Self; 9] {
         [
             Self::AnthropicMessages,
             Self::OpenAiCompletions,
@@ -70,7 +67,6 @@ impl Api {
             Self::GoogleGenerativeAi,
             Self::GoogleVertex,
             Self::BedrockConverseStream,
-            Self::MistralConversations,
             Self::PiMessages,
         ]
     }

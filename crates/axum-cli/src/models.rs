@@ -37,7 +37,11 @@ pub fn print(all: bool) {
 }
 
 fn print_provider(provider: &Provider, default: Option<&str>) {
-    let status = if provider.is_configured() {
+    // A protocol axum cannot speak matters more than a missing key: no amount of configuring
+    // will help, and finding that out after setting one is a waste of the reader's time.
+    let status = if let Some(why) = axum_lua::adapter::why_unspoken(provider.api.as_str()) {
+        format!("  (not yet spoken: {})", first_sentence(why))
+    } else if provider.is_configured() {
         String::new()
     } else {
         format!("  ({})", provider.auth.requirement())
@@ -72,6 +76,12 @@ fn thousands(n: u64) -> String {
         10_000..=999_999 => format!("{}k", n / 1000),
         _ => format!("{:.1}M", n as f64 / 1_000_000.0),
     }
+}
+
+/// The first sentence of an explanation, for a line that has to fit on a terminal.
+fn first_sentence(text: &str) -> String {
+    text.split_once(". ")
+        .map_or_else(|| text.to_owned(), |(first, _)| format!("{first}."))
 }
 
 #[cfg(test)]
