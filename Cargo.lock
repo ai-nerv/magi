@@ -85,6 +85,7 @@ dependencies = [
  "ignore",
  "ratatui",
  "reqwest",
+ "rustix",
  "serde_json",
  "tokio",
  "tokio-stream",

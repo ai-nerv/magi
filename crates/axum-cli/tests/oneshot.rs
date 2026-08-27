@@ -474,3 +474,54 @@ fn print_mode_waits_for_the_answer_after_a_tool_runs() {
     );
     teardown(&dir);
 }
+
+#[test]
+fn stop_ends_the_daemon_and_takes_its_files_with_it() {
+    // Quitting the UI is a detach on purpose, so nothing else ever ends a daemon. Without
+    // this, a week of work leaves a process per project and `ps | grep` is the interface.
+    let dir = workspace("stop", &serve(stream("hello")));
+    assert!(
+        axum(&dir, &["--sessions", "sessions", "-p", "hi"])
+            .status
+            .success()
+    );
+    let socket = dir.join("run/host.sock");
+    assert!(
+        std::os::unix::net::UnixStream::connect(&socket).is_ok(),
+        "a daemon is running"
+    );
+
+    let output = axum(&dir, &["stop"]);
+    assert!(output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("Stopped 1"),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    assert!(
+        std::os::unix::net::UnixStream::connect(&socket).is_err(),
+        "and is gone"
+    );
+    // A socket file nobody is listening on is indistinguishable from a busy daemon, and the
+    // next run waits out its whole startup timeout on one.
+    assert!(!socket.exists(), "the socket file went with it");
+    assert!(
+        !dir.join("run/host.pid").exists(),
+        "and so did the pid file"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn stopping_when_nothing_runs_says_so_rather_than_failing() {
+    let dir = workspace("stop-nothing", &serve(stream("unused")));
+    let output = axum(&dir, &["stop"]);
+    assert!(output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("No daemon"),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

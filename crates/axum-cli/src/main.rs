@@ -16,6 +16,7 @@ mod models;
 mod paths;
 mod print;
 mod shell;
+mod stop;
 mod terminal;
 mod tools;
 mod ui;
@@ -70,6 +71,15 @@ enum Command {
     /// Sign in to a provider that uses a subscription rather than a key.
     #[command(subcommand)]
     Auth(AuthCommand),
+    /// Stop the daemon for this directory.
+    ///
+    /// Quitting the UI is a detach on purpose — the turn keeps running — so nothing otherwise
+    /// ever ends one, and a week of work leaves a process per project.
+    Stop {
+        /// Stop every daemon, not just this directory's.
+        #[arg(long)]
+        all: bool,
+    },
     /// List the tools the model can call, and how each is reached.
     Tools,
     /// List the providers and models axum knows about.
@@ -104,6 +114,7 @@ async fn main() -> Result<()> {
         Some(Command::Auth(AuthCommand::Login { provider })) => auth::login(&provider).await,
         Some(Command::Auth(AuthCommand::Logout { provider })) => auth::logout(&provider),
         Some(Command::Auth(AuthCommand::Status)) => auth::status(),
+        Some(Command::Stop { all }) => stop::run(&socket, all),
         Some(Command::Tools) => {
             tools::print()?;
             Ok(())
@@ -190,8 +201,38 @@ async fn host(
         eprintln!("axum host: no model configured; prompts will say so");
     }
     let listener = axum_ipc::bind(socket).await?;
-    axum_host::serve(listener, session, backend).await?;
+
+    // Raced against the signals that mean "stop", so the daemon takes its socket and pid file
+    // with it. Left behind, a socket nobody is listening on is indistinguishable from a daemon
+    // that is merely busy, and the next run waits out its whole startup timeout on it.
+    tokio::select! {
+        result = axum_host::serve(listener, session, backend) => result?,
+        () = shutdown() => eprintln!("axum host: stopping"),
+    }
+    let _ = tokio::fs::remove_file(socket).await;
+    let _ = tokio::fs::remove_file(daemon::pid_path(socket)).await;
     Ok(())
+}
+
+/// Resolve when the daemon is asked to stop.
+///
+/// Both signals, because `axum stop` sends one and a person with the daemon in the foreground
+/// sends the other, and neither should leave files behind.
+async fn shutdown() {
+    let mut term = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+        Ok(term) => term,
+        // Nothing can be installed, so nothing can be waited on. Never resolving is right: the
+        // other arm of the race is the daemon doing its job.
+        Err(_) => return std::future::pending().await,
+    };
+    tokio::select! {
+        _ = term.recv() => {}
+        result = tokio::signal::ctrl_c() => {
+            if result.is_err() {
+                std::future::pending::<()>().await;
+            }
+        }
+    }
 }
 
 /// Seconds since the epoch, for naming a session.
