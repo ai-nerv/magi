@@ -66,6 +66,11 @@ pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
     let mut stop_reason = None;
     let mut error = None;
     let mut started = false;
+    // A tool-using turn stops between rounds: the provider says "tool_use", the daemon runs
+    // them, and the session is briefly idle before the next round begins. Treating that idle
+    // as the end returns whatever the model had said before it reached for a tool, which for
+    // most tool-using prompts is nothing at all.
+    let mut awaiting_tools = false;
 
     while let Ok(event) = reader.read::<HarnessEvent>().await {
         match event {
@@ -74,6 +79,7 @@ pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
                 // the intermediate messages in a tool-using turn are working, not the answer.
                 text.clear();
                 started = true;
+                awaiting_tools = false;
             }
             HarnessEvent::AssistantDelta { text: chunk, .. } => text.push_str(&chunk),
             HarnessEvent::AssistantEnded {
@@ -87,6 +93,7 @@ pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
                 if reason != StopReason::ToolUse {
                     break;
                 }
+                awaiting_tools = true;
             }
             HarnessEvent::ToolCallStarted { name, .. } => eprintln!("· {name}"),
             HarnessEvent::Error { message, .. } => {
@@ -98,7 +105,7 @@ pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
             HarnessEvent::StatusChanged {
                 status: AgentStatus::Idle,
                 ..
-            } if started => break,
+            } if started && !awaiting_tools => break,
             _ => {}
         }
     }

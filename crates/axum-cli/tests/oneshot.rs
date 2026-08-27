@@ -388,3 +388,89 @@ fn a_daemon_killed_mid_turn_leaves_a_journal_that_still_loads() {
     );
     teardown(&dir);
 }
+
+/// A provider that asks for a tool once, then answers.
+///
+/// The shape every real tool-using prompt has, and the one no single-round fake can produce.
+fn serve_tool_then(answer: &'static str) -> String {
+    const HEAD: &str = "event: message_start\n\
+        data: {\"message\":{\"usage\":{\"input_tokens\":4,\"output_tokens\":0}}}\n\n";
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        for (served, socket) in listener.incoming().enumerate() {
+            let Ok(mut socket) = socket else { return };
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(socket.try_clone().expect("clone"));
+                let mut line = String::new();
+                let mut length = 0usize;
+                while reader.read_line(&mut line).unwrap_or(0) > 0 {
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = v.trim().parse().unwrap_or(0);
+                    }
+                    line.clear();
+                }
+                let mut sink = vec![0u8; length];
+                let _ = std::io::Read::read_exact(&mut reader, &mut sink);
+
+                let body = if served == 0 {
+                    format!(
+                        "{HEAD}event: content_block_start\n\
+                         data: {{\"index\":0,\"content_block\":{{\"type\":\"tool_use\",\
+                         \"id\":\"c1\",\"name\":\"read\",\"input\":{{}}}}}}\n\n\
+                         event: content_block_delta\n\
+                         data: {{\"index\":0,\"delta\":{{\"type\":\"input_json_delta\",\
+                         \"partial_json\":\"{{\\\"path\\\":\\\"note.txt\\\"}}\"}}}}\n\n\
+                         event: message_delta\n\
+                         data: {{\"delta\":{{\"stop_reason\":\"tool_use\"}},\
+                         \"usage\":{{\"output_tokens\":5}}}}\n\n"
+                    )
+                } else {
+                    format!(
+                        "{HEAD}event: content_block_start\n\
+                         data: {{\"index\":0,\"content_block\":{{\"type\":\"text\"}}}}\n\n\
+                         event: content_block_delta\n\
+                         data: {{\"index\":0,\"delta\":{{\"type\":\"text_delta\",\
+                         \"text\":\"{answer}\"}}}}\n\n\
+                         event: message_delta\n\
+                         data: {{\"delta\":{{\"stop_reason\":\"end_turn\"}},\
+                         \"usage\":{{\"output_tokens\":5}}}}\n\n"
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes());
+            });
+        }
+    });
+    format!("http://127.0.0.1:{port}")
+}
+
+#[test]
+fn print_mode_waits_for_the_answer_after_a_tool_runs() {
+    // Found against a real model. A tool-using turn goes idle between rounds — the provider
+    // says "tool_use", the tools run, the next round begins — and print mode took that idle
+    // for the end. It exited zero, having printed the empty message the model sent before it
+    // reached for the tool, which for most tool-using prompts is nothing at all.
+    let dir = workspace("tooling", &serve_tool_then("two lines"));
+    std::fs::write(dir.join("note.txt"), "alpha\nbeta\n").expect("write");
+    let output = axum(&dir, &["--sessions", "sessions", "-p", "count the lines"]);
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "two lines",
+        "the answer after the tool, not the silence before it"
+    );
+    teardown(&dir);
+}

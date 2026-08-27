@@ -194,7 +194,12 @@ async fn one_turn(
     let mut held = session.lock().await;
 
     held.amend(assistant(&id, &turn))?;
-    held.set_status(AgentStatus::Idle);
+    // Idle only when the turn is actually over. A round that stopped for tools is followed by
+    // the tools running and another round; saying "idle" in between is a flicker that reads as
+    // the end to anything watching the status rather than the transcript.
+    if !matches!(turn.state(), axum_core::TurnState::ToolsPending) {
+        held.set_status(AgentStatus::Idle);
+    }
     Ok(Round { turn, failed: None })
 }
 
@@ -223,6 +228,11 @@ fn assistant(id: &MessageId, turn: &Turn) -> Entry {
         },
         stop_reason: match turn.state() {
             axum_core::TurnState::Finished(reason) => Some(reason),
+            // A message that asked for tools is finished as a message: the model said its
+            // piece and stopped. Reporting `None` marked it as still streaming, so no
+            // `AssistantEnded` was ever published for it -- and anything waiting for a turn to
+            // end had only the idle flicker between rounds to go on, which is not the end.
+            axum_core::TurnState::ToolsPending => Some(StopReason::ToolUse),
             _ => None,
         },
         error: None,
