@@ -56,6 +56,7 @@ fn a_conversation_renders_the_way_pi_lays_it_out() {
             thinking: String::new(),
             stop_reason: Some(StopReason::ToolUse),
             error: None,
+            signatures: axum_proto::Signatures::default(),
         },
         Entry::Tool {
             id: ToolCallId::new("t1"),
@@ -65,6 +66,7 @@ fn a_conversation_renders_the_way_pi_lays_it_out() {
                 output: "test result: ok. 42 passed".into(),
                 is_error: false,
             }),
+            thought_signature: None,
         },
     ];
 
@@ -95,6 +97,7 @@ fn a_failed_tool_still_shows_its_output() {
             output: "error: could not compile".into(),
             is_error: true,
         }),
+        thought_signature: None,
     }];
     let rendered = render_entries(&entries, 40);
     assert!(
@@ -111,6 +114,7 @@ fn thinking_renders_above_the_response() {
         thinking: "Let me consider this.".into(),
         stop_reason: Some(StopReason::EndTurn),
         error: None,
+        signatures: axum_proto::Signatures::default(),
     }];
     let rendered = render_entries(&entries, 40);
     let thinking = rendered
@@ -166,6 +170,7 @@ fn the_recorded_sample_replays_into_a_transcript() {
                 thinking: String::new(),
                 stop_reason: None,
                 error: None,
+                signatures: axum_proto::Signatures::default(),
             }),
             HarnessEvent::AssistantDelta { text, thinking, .. } => {
                 if let Some(Entry::Assistant {
@@ -183,6 +188,7 @@ fn the_recorded_sample_replays_into_a_transcript() {
                 name,
                 args,
                 result: None,
+                thought_signature: None,
             }),
             HarnessEvent::ToolCallEnded { result, .. } => {
                 if let Some(Entry::Tool { result: slot, .. }) = entries.last_mut() {
@@ -249,6 +255,7 @@ fn visual() {
                 thinking: String::new(),
                 stop_reason: None,
                 error: None,
+                signatures: axum_proto::Signatures::default(),
             }),
             HarnessEvent::AssistantDelta { text, thinking, .. } => {
                 if let Some(Entry::Assistant {
@@ -266,6 +273,7 @@ fn visual() {
                 name,
                 args,
                 result: None,
+                thought_signature: None,
             }),
             HarnessEvent::ToolCallEnded { result, .. } => {
                 if let Some(Entry::Tool { result: slot, .. }) = entries.last_mut() {

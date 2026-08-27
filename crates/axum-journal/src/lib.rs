@@ -314,6 +314,7 @@ mod tests {
                 thinking: String::new(),
                 stop_reason: None,
                 error: None,
+                signatures: axum_proto::Signatures::default(),
             })
             .expect("append");
         journal
@@ -323,6 +324,7 @@ mod tests {
                 thinking: String::new(),
                 stop_reason: Some(StopReason::EndTurn),
                 error: None,
+                signatures: axum_proto::Signatures::default(),
             })
             .expect("amend");
         drop(journal);

@@ -134,6 +134,9 @@ pub enum Entry {
         stop_reason: Option<StopReason>,
         /// Populated when `stop_reason` is `Error`.
         error: Option<String>,
+        /// What the provider needs back to continue this reasoning.
+        #[serde(default, skip_serializing_if = "Signatures::is_empty")]
+        signatures: Signatures,
     },
     /// A tool invocation and its outcome.
     Tool {
@@ -145,7 +148,42 @@ pub enum Entry {
         args: String,
         /// `None` while the tool is running.
         result: Option<ToolResult>,
+        /// The third carrier. Google issues one per call rather than per message, which is why
+        /// it rides here and not with the message that asked for the call.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thought_signature: Option<String>,
     },
+}
+
+/// Opaque provider state that has to be handed back exactly as it arrived.
+///
+/// A reasoning model does not send its reasoning back to you in a form you can re-send. It
+/// sends a *signature*: a token standing for the thinking it did, which the next request must
+/// carry verbatim or the provider rejects it. Anthropic's extended thinking with tools is the
+/// case that makes this mandatory rather than nice — the second round trip of a tool-using
+/// turn is a 400 without it.
+///
+/// Never parsed, never generated, never shown. Stored and returned, which is the whole
+/// contract, and the reason these are `String` and not a type that invites inspection.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Signatures {
+    /// Carrier for the response body.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// Carrier for the reasoning block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+}
+
+impl Signatures {
+    /// Whether there is nothing to carry.
+    ///
+    /// Used to keep them out of the journal entirely when a provider issues none, so a
+    /// transcript from a non-reasoning model reads exactly as it did before they existed.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.text.is_none() && self.thinking.is_none()
+    }
 }
 
 /// Daemon → UI.

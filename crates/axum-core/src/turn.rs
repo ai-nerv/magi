@@ -97,6 +97,15 @@ impl Turn {
         &self.text
     }
 
+    /// The opaque state the provider issued for this turn's reasoning.
+    ///
+    /// Handed straight back on the next request. A provider that checks — Anthropic, for
+    /// extended thinking with tools — rejects a turn that continues without it.
+    #[must_use]
+    pub fn signature(&self) -> Option<&str> {
+        self.signature.as_deref()
+    }
+
     /// Reasoning so far.
     #[must_use]
     pub fn thinking(&self) -> &str {

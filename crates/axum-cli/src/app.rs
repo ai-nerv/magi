@@ -151,6 +151,7 @@ impl App {
                     thinking: String::new(),
                     stop_reason: None,
                     error: None,
+                    signatures: axum_proto::Signatures::default(),
                 });
             }
             HarnessEvent::AssistantDelta {
@@ -188,6 +189,7 @@ impl App {
                     name,
                     args,
                     result: None,
+                    thought_signature: None,
                 });
             }
             HarnessEvent::ToolCallEnded { id, result, .. } => {
@@ -203,6 +205,7 @@ impl App {
                     thinking: String::new(),
                     stop_reason: Some(axum_proto::StopReason::Error),
                     error: Some(format!("{class:?}: {message}")),
+                    signatures: axum_proto::Signatures::default(),
                 });
             }
         }
@@ -247,6 +250,7 @@ impl App {
             thinking: String::new(),
             stop_reason: Some(axum_proto::StopReason::EndTurn),
             error: None,
+            signatures: axum_proto::Signatures::default(),
         });
     }
 
@@ -418,6 +422,7 @@ mod tests {
                     thinking: String::new(),
                     stop_reason: None,
                     error: None,
+                    signatures: axum_proto::Signatures::default(),
                 },
             ],
             status: AgentStatus::Idle,

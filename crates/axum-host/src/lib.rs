@@ -185,6 +185,7 @@ async fn submit(
                  in your config; `axum models` lists what is available."
                     .into(),
             ),
+            signatures: axum_proto::Signatures::default(),
         })?;
         held.set_status(AgentStatus::Idle);
         return Ok(());

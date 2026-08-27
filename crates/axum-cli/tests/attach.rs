@@ -148,6 +148,7 @@ fn fold(mut entries: Vec<Entry>, events: &[HarnessEvent]) -> Vec<Entry> {
                 thinking: String::new(),
                 stop_reason: None,
                 error: None,
+                signatures: axum_proto::Signatures::default(),
             }),
             HarnessEvent::AssistantDelta { text, thinking, .. } => {
                 if let Some(Entry::Assistant {
@@ -178,6 +179,7 @@ fn fold(mut entries: Vec<Entry>, events: &[HarnessEvent]) -> Vec<Entry> {
                 name,
                 args,
                 result: None,
+                thought_signature: None,
             }),
             HarnessEvent::ToolCallEnded { result, .. } => {
                 if let Some(Entry::Tool { result: slot, .. }) = entries.last_mut() {

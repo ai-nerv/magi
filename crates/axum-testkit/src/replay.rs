@@ -70,6 +70,7 @@ impl Recording {
                     thinking: String::new(),
                     stop_reason: None,
                     error: None,
+                    signatures: axum_proto::Signatures::default(),
                 }),
                 HarnessEvent::AssistantDelta {
                     id, text, thinking, ..
@@ -106,6 +107,7 @@ impl Recording {
                         name,
                         args,
                         result: None,
+                        thought_signature: None,
                     });
                 }
                 HarnessEvent::ToolCallEnded { id, result, .. } => {

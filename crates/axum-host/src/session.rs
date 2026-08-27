@@ -163,6 +163,7 @@ fn amendment_events(cursor: Cursor, previous: Option<&Entry>, entry: &Entry) -> 
                 thinking,
                 stop_reason,
                 error,
+                ..
             },
         ) => {
             let mut out = Vec::new();
@@ -223,6 +224,7 @@ fn events_for(cursor: Cursor, entry: &Entry) -> Vec<HarnessEvent> {
             thinking,
             stop_reason,
             error,
+            ..
         } => {
             let mut out = vec![
                 HarnessEvent::AssistantStarted {
@@ -251,6 +253,7 @@ fn events_for(cursor: Cursor, entry: &Entry) -> Vec<HarnessEvent> {
             name,
             args,
             result,
+            ..
         } => {
             let mut out = vec![HarnessEvent::ToolCallStarted {
                 cursor,
@@ -341,6 +344,7 @@ mod tests {
             thinking: String::new(),
             stop_reason: None,
             error: None,
+            signatures: axum_proto::Signatures::default(),
         })
         .expect("commit");
         let events = s.replay(Cursor::ZERO);
@@ -361,6 +365,7 @@ mod tests {
             thinking: String::new(),
             stop_reason: Some(StopReason::EndTurn),
             error: None,
+            signatures: axum_proto::Signatures::default(),
         })
         .expect("commit");
         assert_eq!(s.replay(Cursor::ZERO).len(), 3);

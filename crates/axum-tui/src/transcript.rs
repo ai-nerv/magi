@@ -295,6 +295,7 @@ mod tests {
             thinking: String::new(),
             stop_reason: Some(StopReason::EndTurn),
             error: None,
+            signatures: axum_proto::Signatures::default(),
         };
         let rendered = text_of(&entry_lines(&entry, 20, &Theme::default()));
         assert_eq!(rendered, vec!["", " sure"]);
@@ -307,6 +308,7 @@ mod tests {
             name: "read".into(),
             args: r#"{"path": "a.rs"}"#.into(),
             result: None,
+            thought_signature: None,
         };
         let rendered = text_of(&entry_lines(&entry, 40, &Theme::default()));
         assert!(rendered[1].contains("read"), "{:?}", rendered[1]);
@@ -327,6 +329,7 @@ mod tests {
                 output,
                 is_error: false,
             }),
+            thought_signature: None,
         };
         let rendered = text_of(&entry_lines(&entry, 40, &Theme::default()));
         assert!(
@@ -343,6 +346,7 @@ mod tests {
             thinking: String::new(),
             stop_reason: Some(StopReason::Length),
             error: None,
+            signatures: axum_proto::Signatures::default(),
         };
         let rendered = text_of(&entry_lines(&entry, 40, &Theme::default()));
         assert!(
@@ -359,6 +363,7 @@ mod tests {
             thinking: String::new(),
             stop_reason: Some(StopReason::Error),
             error: Some("overloaded".into()),
+            signatures: axum_proto::Signatures::default(),
         };
         let rendered = text_of(&entry_lines(&entry, 40, &Theme::default()));
         assert!(
@@ -382,6 +387,7 @@ mod diff_tests {
                 output: output.to_owned(),
                 is_error: false,
             }),
+            thought_signature: None,
         }
     }
 
@@ -432,6 +438,7 @@ mod diff_tests {
                 output: "-was\n+now\n".into(),
                 is_error: true,
             }),
+            thought_signature: None,
         };
         let lines = entry_lines(&entry, 40, &theme);
         assert_eq!(colour_of(&lines, "-was"), Some(theme.error));
@@ -465,6 +472,7 @@ mod tab_tests {
                 output: "     1\tfn main() {\n     3\t}\n".into(),
                 is_error: false,
             }),
+            thought_signature: None,
         };
         let rendered = cells(&entry_lines(&entry, 60, &Theme::default()));
         assert!(!rendered.contains('\t'), "{rendered:?}");
@@ -480,6 +488,7 @@ mod tab_tests {
             thinking: String::new(),
             stop_reason: None,
             error: None,
+            signatures: axum_proto::Signatures::default(),
         };
         let rendered = cells(&entry_lines(&entry, 60, &Theme::default()));
         assert!(!rendered.contains('\t'), "{rendered:?}");

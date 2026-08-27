@@ -336,6 +336,7 @@ async fn an_amended_entry_is_not_announced_as_a_new_one() {
             name: "edit".into(),
             args: "{}".into(),
             result: None,
+            thought_signature: None,
         })
         .expect("commit");
         held.amend(Entry::Tool {
@@ -346,6 +347,7 @@ async fn an_amended_entry_is_not_announced_as_a_new_one() {
                 output: "done".into(),
                 is_error: false,
             }),
+            thought_signature: None,
         })
         .expect("amend");
     }
@@ -375,6 +377,7 @@ async fn an_amended_entry_is_not_announced_as_a_new_one() {
             thinking: String::new(),
             stop_reason: None,
             error: None,
+            signatures: axum_proto::Signatures::default(),
         })
         .expect("commit");
         held.amend(Entry::Assistant {
@@ -383,6 +386,7 @@ async fn an_amended_entry_is_not_announced_as_a_new_one() {
             thinking: String::new(),
             stop_reason: Some(axum_proto::StopReason::EndTurn),
             error: None,
+            signatures: axum_proto::Signatures::default(),
         })
         .expect("amend");
     }
