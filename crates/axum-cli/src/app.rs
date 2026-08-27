@@ -7,38 +7,6 @@ use axum_proto::{AgentStatus, Cursor, Entry, HarnessEvent, MessageId, ToolCallId
 use axum_tui::Editor;
 use axum_tui::scrollback::Scrollback;
 
-/// The keys `/help` lists.
-///
-/// Written out because a key binding is a `match` arm and a match cannot describe itself. The
-/// commands below are *not* written out — see [`help`].
-const KEYS: &str = "\
-**Keys**
-
-- `enter` submit — `shift+enter` newline
-- `esc` interrupt a running turn
-- `tab` accept a completion — `↑/↓` move through it
-- `pgup`/`pgdn` scroll — `shift+↑/↓` by a line — `shift+home/end` to the ends
-- `ctrl+o` show tool output in full, again to fold it back
-- `ctrl+x` edit the prompt in `$EDITOR`
-- `ctrl+c` clear the prompt, again to quit — `ctrl+d` quit
-- `ctrl+a/e` line start/end — `ctrl+k/u` kill — `ctrl+y` yank
-- `alt+←/→` word motion — `↑/↓` prompt history";
-
-/// What `/help` prints.
-///
-/// The command list is built from the same one the completion popup offers, rather than
-/// written out beside it. Two lists drift the moment either is edited, and this pair already
-/// had: `/model` and `/rewind` were both offered by the popup and absent from the help of the
-/// commit that added them.
-fn help() -> String {
-    let commands = axum_tui::complete::commands()
-        .iter()
-        .map(|c| format!("- `{}` {}", c.value, c.detail))
-        .collect::<Vec<_>>()
-        .join("\n");
-    format!("{KEYS}\n\n**Commands**\n\n{commands}\n\nType `@` to complete a path.")
-}
-
 /// Whether the transcript above the live region is up to date.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Flush {
@@ -90,6 +58,10 @@ pub struct App {
     /// for itself would name whatever is configured *now*, which after an edit is not what the
     /// daemon on the other end of the socket is actually talking to.
     pub model: Option<axum_proto::ModelInfo>,
+    /// Everything the daemon says this session could switch to.
+    pub choices: Vec<axum_proto::ModelChoice>,
+    /// The open selection list, if any.
+    pub picker: Option<axum_tui::picker::Picker>,
     /// How much of each tool result to show.
     pub detail: axum_tui::transcript::Detail,
 }
@@ -114,6 +86,8 @@ impl App {
             completion: None,
             connected: false,
             model: None,
+            choices: Vec::new(),
+            picker: None,
             detail: axum_tui::transcript::Detail::Preview,
             tick: 0,
         }
@@ -195,6 +169,7 @@ impl App {
                 entries,
                 status,
                 model,
+                choices,
                 ..
             } => {
                 // A snapshot describes the session as of the cursor the UI asked to resume
@@ -212,6 +187,7 @@ impl App {
                     0
                 };
                 self.model = model;
+                self.choices = choices;
                 self.entries = entries;
                 self.status = status;
             }
@@ -345,7 +321,37 @@ impl App {
 
     /// Append the keybinding reference.
     pub fn show_help(&mut self) {
-        self.show_notice(help());
+        self.show_notice(crate::help::text());
+    }
+
+    /// Open the model list.
+    ///
+    /// Every model, not only the reachable ones: somebody asking this question has usually
+    /// configured nothing, and a list narrowed to what already works would be empty exactly
+    /// when they most need it to name a variable.
+    pub fn open_model_picker(&mut self) {
+        let choices = self
+            .choices
+            .iter()
+            .map(|choice| axum_tui::picker::Choice {
+                value: choice.name.clone(),
+                detail: if choice.requirement.is_empty() {
+                    axum_tui::footer::format_tokens(choice.context_window)
+                } else {
+                    choice.requirement.clone()
+                },
+                ready: choice.requirement.is_empty(),
+            })
+            .collect();
+        let current = self.model.as_ref().map(|m| m.name.clone());
+        let picker = axum_tui::picker::Picker::new("Model", choices, current.as_deref());
+        if picker.is_empty() {
+            self.show_notice(
+                "No providers are declared. `axum models --all` lists what axum ships.".to_owned(),
+            );
+            return;
+        }
+        self.picker = Some(picker);
     }
 
     /// Show every line of each tool result, or go back to the preview.
@@ -530,6 +536,7 @@ mod tests {
             ],
             status: AgentStatus::Idle,
             model: None,
+            choices: Vec::new(),
         });
         assert_eq!(
             app.live().len(),
@@ -551,6 +558,7 @@ mod tests {
             }],
             status: AgentStatus::Idle,
             model: None,
+            choices: Vec::new(),
         });
         assert_eq!(app.live().len(), 1, "a cold snapshot is entirely unflushed");
     }
@@ -680,6 +688,7 @@ mod usage_tests {
             entries,
             status: AgentStatus::Idle,
             model: None,
+            choices: Vec::new(),
         });
         rejoined.apply(ended("a1", 1, spent(100, 20)));
         assert_eq!(rejoined.usage().input, 100, "counted once, not twice");
@@ -731,41 +740,8 @@ mod usage_tests {
                 name: "p/m".into(),
                 context_window: 1000,
             }),
+            choices: Vec::new(),
         });
         assert_eq!(app.model.expect("a model").name, "p/m");
-    }
-}
-
-#[cfg(test)]
-mod help_tests {
-    use super::*;
-
-    #[test]
-    fn every_command_the_popup_offers_is_in_the_help() {
-        // The pair had already drifted: `/model` and `/rewind` were both offered and both
-        // missing from the help of the commit that added them.
-        let text = help();
-        for candidate in axum_tui::complete::commands() {
-            assert!(
-                text.contains(&candidate.value),
-                "{} is missing",
-                candidate.value
-            );
-        }
-    }
-
-    #[test]
-    fn the_help_says_how_to_scroll() {
-        // Six bindings that existed since M0 and were documented nowhere.
-        for key in ["pgup", "shift+↑/↓", "shift+home/end"] {
-            assert!(help().contains(key), "{key}");
-        }
-    }
-
-    #[test]
-    fn the_help_is_markdown_the_transcript_can_render() {
-        let text = help();
-        assert!(text.contains("**Keys**") && text.contains("**Commands**"));
-        assert!(text.ends_with("Type `@` to complete a path."));
     }
 }

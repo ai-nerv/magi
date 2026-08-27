@@ -12,6 +12,9 @@ pub mod editor;
 pub mod footer;
 pub mod fuzzy;
 pub mod markdown;
+pub(crate) use complete::fit;
+
+pub mod picker;
 pub mod prompt;
 pub mod scrollback;
 pub mod status;

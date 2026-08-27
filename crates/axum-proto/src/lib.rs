@@ -54,6 +54,22 @@ pub use axum_model::StopReason;
 /// the old question.
 pub use axum_model::Usage;
 
+/// One model a session could switch to.
+///
+/// Carries why it cannot be used rather than being left out when it cannot. A list filtered to
+/// what already works is empty for somebody who has set no keys, and an empty list teaches
+/// nothing: the question they are asking is precisely "what could I use, and what would it
+/// take" — which is the moment they most need an answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelChoice {
+    /// Qualified name, as `axum models` prints it.
+    pub name: String,
+    /// Tokens it accepts.
+    pub context_window: u64,
+    /// Empty when it is ready; otherwise what to do about it.
+    pub requirement: String,
+}
+
 /// Which model is answering, and how much room it has.
 ///
 /// Sent with the snapshot rather than assumed by the UI. A UI that guessed would be wrong the
@@ -286,6 +302,9 @@ pub enum HarnessEvent {
         /// Which model is answering, when one is configured.
         #[serde(default)]
         model: Option<ModelInfo>,
+        /// Everything this session could switch to.
+        #[serde(default)]
+        choices: Vec<ModelChoice>,
     },
     /// A user message was accepted into the transcript.
     UserMessage {

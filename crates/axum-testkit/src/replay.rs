@@ -212,6 +212,7 @@ impl FakeHarness {
                 entries,
                 status,
                 model: None,
+                choices: Vec::new(),
             })
             .await?;
 

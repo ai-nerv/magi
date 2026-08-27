@@ -40,6 +40,8 @@ pub enum Action {
     Accepted,
     /// Show tool results in full, or fold them back.
     ToggleDetail,
+    /// A row was taken from an open selection list.
+    Chose(String),
     /// Send this prompt.
     Submit(String),
     /// Run this slash command.
@@ -60,15 +62,42 @@ pub enum Action {
 ///
 /// `busy` gates submission: a prompt sent mid-turn would be a steering message, which is an
 /// M2 concern, so for now Enter during a turn does nothing.
+/// A selection list, when one is open, outranks the popup and the prompt for the navigation
+/// keys — for the same reason the popup outranks the prompt: while it is open it is what the
+/// arrows are about.
 pub fn handle(
     key: KeyEvent,
     editor: &mut Editor,
     completion: &mut Option<Completion>,
+    picker: &mut Option<axum_tui::picker::Picker>,
     busy: bool,
 ) -> Action {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+    if let Some(open) = picker.as_mut() {
+        match key.code {
+            KeyCode::Esc => {
+                *picker = None;
+                return Action::Accepted;
+            }
+            KeyCode::Up => {
+                open.previous();
+                return Action::Accepted;
+            }
+            KeyCode::Down => {
+                open.next();
+                return Action::Accepted;
+            }
+            KeyCode::Enter | KeyCode::Tab => {
+                let chosen = open.current().map(|c| c.value.clone());
+                *picker = None;
+                return chosen.map_or(Action::Accepted, Action::Chose);
+            }
+            _ => {}
+        }
+    }
 
     // Quit and interrupt outrank the popup: a user reaching for them wants out, not a
     // dismissed menu they then have to escape from a second time.
@@ -227,7 +256,7 @@ mod tests {
     }
 
     fn act(key: KeyEvent, editor: &mut Editor, busy: bool) -> Action {
-        handle(key, editor, &mut None, busy)
+        handle(key, editor, &mut None, &mut None, busy)
     }
 
     /// An editor holding `text`, with the completion popup its content would open.
@@ -442,6 +471,7 @@ mod tests {
             press(KeyCode::Tab, KeyModifiers::NONE),
             &mut editor,
             &mut popup,
+            &mut None,
             false,
         );
         assert_eq!(editor.text(), "/quit");
@@ -455,6 +485,7 @@ mod tests {
             press(KeyCode::Enter, KeyModifiers::NONE),
             &mut editor,
             &mut popup,
+            &mut None,
             false,
         );
         assert_eq!(action, Action::Accepted, "the prompt is not submitted");
@@ -468,6 +499,7 @@ mod tests {
             press(KeyCode::Down, KeyModifiers::NONE),
             &mut editor,
             &mut popup,
+            &mut None,
             false,
         );
         assert_eq!(popup.as_ref().map(|p| p.selected), Some(1));
@@ -481,6 +513,7 @@ mod tests {
             press(KeyCode::Esc, KeyModifiers::NONE),
             &mut editor,
             &mut popup,
+            &mut None,
             true,
         );
         assert_eq!(action, Action::Redraw);
@@ -494,6 +527,7 @@ mod tests {
             press(KeyCode::Char('c'), KeyModifiers::CONTROL),
             &mut editor,
             &mut popup,
+            &mut None,
             false,
         );
         assert!(popup.is_none());
@@ -520,7 +554,13 @@ mod accept_tests {
         let mut completion = axum_tui::complete::resolve("/hel", 4, &|_| Vec::new());
         assert!(completion.is_some(), "the popup is open");
 
-        let action = handle(press(KeyCode::Enter), &mut editor, &mut completion, false);
+        let action = handle(
+            press(KeyCode::Enter),
+            &mut editor,
+            &mut completion,
+            &mut None,
+            false,
+        );
         assert_eq!(action, Action::Accepted);
         assert!(completion.is_none(), "and closed");
         assert_eq!(editor.text(), "/help");
@@ -531,7 +571,13 @@ mod accept_tests {
         let mut editor = Editor::new();
         editor.insert_str("/help");
         let mut none: Option<Completion> = None;
-        let action = handle(press(KeyCode::Enter), &mut editor, &mut none, false);
+        let action = handle(
+            press(KeyCode::Enter),
+            &mut editor,
+            &mut none,
+            &mut None,
+            false,
+        );
         assert_eq!(action, Action::Command("/help".to_owned()));
     }
 }

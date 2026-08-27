@@ -173,49 +173,80 @@ fn list_marker(line: &str) -> Option<(String, &str)> {
 
 /// Emphasis and inline code within one line.
 fn inline(text: &str, theme: &Theme, base: Style) -> Vec<Span<'static>> {
+    let chars: Vec<char> = text.chars().collect();
     let mut spans = Vec::new();
     let mut buf = String::new();
-    let mut chars = text.chars().peekable();
+    let mut i = 0;
 
-    while let Some(c) = chars.next() {
+    while i < chars.len() {
+        let c = chars[i];
+        // Looked up rather than tried and rolled back: a delimiter with no partner is ordinary
+        // text, and deciding that after the fact means putting back everything consumed while
+        // finding out — which is where the text before it went missing.
+        let closes = |from: usize, delim: char, run: usize| -> Option<usize> {
+            let mut j = from;
+            while j + run <= chars.len() {
+                if chars[j] == delim && (run == 1 || chars.get(j + 1) == Some(&delim)) {
+                    // `_` is a word character as far as a name is concerned, so a closer that
+                    // runs straight into one is not closing anything.
+                    let inside_word =
+                        delim == '_' && chars.get(j + run).is_some_and(|n| n.is_alphanumeric());
+                    if !inside_word {
+                        return Some(j);
+                    }
+                }
+                j += 1;
+            }
+            None
+        };
+
         match c {
             '`' => {
-                flush(&mut buf, &mut spans, base);
-                let mut code = String::new();
-                for c in chars.by_ref() {
-                    if c == '`' {
-                        break;
-                    }
-                    code.push(c);
+                if let Some(end) = chars[i + 1..].iter().position(|&n| n == '`') {
+                    flush(&mut buf, &mut spans, base);
+                    let code: String = chars[i + 1..i + 1 + end].iter().collect();
+                    spans.push(Span::styled(code, Style::default().fg(theme.md_code)));
+                    i += end + 2;
+                    continue;
                 }
-                spans.push(Span::styled(code, Style::default().fg(theme.md_code)));
+                buf.push(c);
+                i += 1;
             }
-            '*' if chars.peek() == Some(&'*') => {
-                chars.next();
-                flush(&mut buf, &mut spans, base);
-                let mut bold = String::new();
-                while let Some(c) = chars.next() {
-                    if c == '*' && chars.peek() == Some(&'*') {
-                        chars.next();
-                        break;
-                    }
-                    bold.push(c);
+            '*' if chars.get(i + 1) == Some(&'*') => {
+                if let Some(end) = closes(i + 2, '*', 2) {
+                    flush(&mut buf, &mut spans, base);
+                    let bold: String = chars[i + 2..end].iter().collect();
+                    spans.push(Span::styled(bold, base.add_modifier(Modifier::BOLD)));
+                    i = end + 2;
+                    continue;
                 }
-                spans.push(Span::styled(bold, base.add_modifier(Modifier::BOLD)));
+                buf.push(c);
+                i += 1;
+            }
+            // An underscore inside a word is part of the word. `ANT_LING_API_KEY` is a variable
+            // name, not `ANT` and an italic `LING` and `API_KEY` — and it is the name somebody
+            // has just been told to set, so eating half of it is worse than rendering no
+            // emphasis at all. CommonMark draws the same line for the same reason: `*` marks
+            // emphasis mid-word, `_` does not.
+            '_' if i > 0 && chars[i - 1].is_alphanumeric() => {
+                buf.push(c);
+                i += 1;
             }
             '*' | '_' => {
-                let delim = c;
-                flush(&mut buf, &mut spans, base);
-                let mut italic = String::new();
-                for c in chars.by_ref() {
-                    if c == delim {
-                        break;
-                    }
-                    italic.push(c);
+                if let Some(end) = closes(i + 1, c, 1) {
+                    flush(&mut buf, &mut spans, base);
+                    let italic: String = chars[i + 1..end].iter().collect();
+                    spans.push(Span::styled(italic, base.add_modifier(Modifier::ITALIC)));
+                    i = end + 1;
+                    continue;
                 }
-                spans.push(Span::styled(italic, base.add_modifier(Modifier::ITALIC)));
+                buf.push(c);
+                i += 1;
             }
-            _ => buf.push(c),
+            _ => {
+                buf.push(c);
+                i += 1;
+            }
         }
     }
 
@@ -281,5 +312,59 @@ mod tests {
     #[test]
     fn quotes_get_a_bar() {
         assert_eq!(lines_of("> quoted"), vec!["│ quoted"]);
+    }
+}
+
+#[cfg(test)]
+mod emphasis_tests {
+    use super::*;
+
+    fn rendered(source: &str) -> String {
+        render(source, 80, &Theme::default(), Style::default())
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn an_underscore_inside_a_word_is_part_of_the_word() {
+        // Found on screen: axum told somebody to `set ANT_LING_API_KEY` and rendered
+        // `ANTLINGAPIKEY`. The name it ate was the whole point of the message.
+        assert_eq!(rendered("set ANT_LING_API_KEY"), "set ANT_LING_API_KEY");
+        assert_eq!(rendered("OPENROUTER_API_KEY"), "OPENROUTER_API_KEY");
+        assert_eq!(rendered("a_b_c_d"), "a_b_c_d");
+    }
+
+    #[test]
+    fn an_underscore_that_never_closes_stays_where_it_was() {
+        // Otherwise one stray underscore italicises the remainder of the line and vanishes.
+        assert_eq!(rendered("_unclosed emphasis"), "_unclosed emphasis");
+        assert_eq!(rendered("a * b"), "a * b");
+    }
+
+    #[test]
+    fn ordinary_emphasis_still_works() {
+        assert_eq!(rendered("_stressed_ and *also*"), "stressed and also");
+        assert_eq!(rendered("**bold** stays"), "bold stays");
+    }
+
+    #[test]
+    fn a_closing_underscore_must_not_be_inside_a_word_either() {
+        // `_FOO_BAR` is not an italic `FOO` with a stray `BAR`.
+        assert_eq!(rendered("_FOO_BAR"), "_FOO_BAR");
+    }
+
+    #[test]
+    fn a_variable_name_inside_a_sentence_survives() {
+        assert_eq!(
+            rendered("which is not configured: set ANT_LING_API_KEY"),
+            "which is not configured: set ANT_LING_API_KEY"
+        );
     }
 }

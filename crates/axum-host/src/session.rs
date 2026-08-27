@@ -15,6 +15,8 @@ const BROADCAST_CAPACITY: usize = 1024;
 /// A live session.
 pub struct Session {
     cancel: crate::cancel::Cancel,
+    /// Everything this session could switch to, for the picker.
+    choices: Vec<axum_proto::ModelChoice>,
     /// Which model answers here, when one is configured.
     ///
     /// Held by the session rather than looked up by the UI: a UI that read the configuration
@@ -36,6 +38,7 @@ impl Session {
             status: AgentStatus::Idle,
             cancel: crate::cancel::Cancel::default(),
             model: None,
+            choices: Vec::new(),
             events,
         })
     }
@@ -52,6 +55,11 @@ impl Session {
     /// Say which model this session talks to.
     pub fn set_model(&mut self, model: Option<axum_proto::ModelInfo>) {
         self.model = model;
+    }
+
+    /// Say what it could switch to.
+    pub fn set_choices(&mut self, choices: Vec<axum_proto::ModelChoice>) {
+        self.choices = choices;
     }
 
     /// Every token this session has spent.
@@ -117,6 +125,7 @@ impl Session {
             entries: self.entries().iter().take(kept).cloned().collect(),
             status: self.status.clone(),
             model: self.model.clone(),
+            choices: self.choices.clone(),
         }
     }
 

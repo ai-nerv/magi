@@ -207,7 +207,7 @@ pub fn render(completion: &Completion, width: u16, theme: &Theme) -> Vec<Line<'s
 /// command name could be long, and a popup can be narrower than either — and a row wider than
 /// the popup does not wrap, it pushes the layout sideways for every other row that was drawn
 /// from the width they all agreed on.
-fn fit(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
+pub(crate) fn fit(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
     let mut out = Vec::with_capacity(spans.len() + 1);
     let mut used = 0;
     for span in spans {

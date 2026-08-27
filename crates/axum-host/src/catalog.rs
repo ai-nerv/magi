@@ -76,11 +76,49 @@ impl Catalog {
         let (provider, _) = self.find(name)?;
         (!provider.is_configured()).then(|| {
             format!(
-                "{name} is offered by {} , which is not configured: {}",
+                "{name} is offered by {}, which is not configured: {}",
                 provider.name,
                 provider.auth.requirement()
             )
         })
+    }
+
+    /// Every model in the catalog, ready or not, with what it would take.
+    ///
+    /// All of them, because the person asking has usually configured nothing: a list of the
+    /// two local providers they do not run teaches less than a list of forty with "set
+    /// ANTHROPIC_API_KEY" beside the one they wanted.
+    #[must_use]
+    pub fn choices(&self) -> Vec<axum_proto::ModelChoice> {
+        let mut out: Vec<axum_proto::ModelChoice> = self
+            .providers
+            .iter()
+            .flat_map(|provider| {
+                let requirement = if provider.is_configured() {
+                    String::new()
+                } else {
+                    provider.auth.requirement()
+                };
+                provider
+                    .models
+                    .iter()
+                    .map(move |model| axum_proto::ModelChoice {
+                        name: model.qualified(),
+                        context_window: model.context_window,
+                        requirement: requirement.clone(),
+                    })
+            })
+            .collect();
+        // Ready ones first, then by name: the list is for choosing from, and what you can
+        // choose right now belongs at the top of it.
+        out.sort_by(|a, b| {
+            a.requirement
+                .is_empty()
+                .cmp(&b.requirement.is_empty())
+                .reverse()
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        out
     }
 
     /// Every model that could be switched to right now, qualified and sorted.

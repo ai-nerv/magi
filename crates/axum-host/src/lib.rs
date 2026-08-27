@@ -71,6 +71,7 @@ pub async fn serve_catalog(
     // Told once, here, because this is the only place that knows both. A UI asking the
     // configuration for itself would report whatever is configured now rather than what this
     // daemon is actually talking to.
+    session.set_choices(catalog.choices());
     session.set_model(backend.as_ref().map(|backend| axum_proto::ModelInfo {
         name: backend.model.qualified(),
         context_window: backend.model.context_window,

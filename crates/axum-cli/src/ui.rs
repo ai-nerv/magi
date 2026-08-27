@@ -63,10 +63,19 @@ pub fn draw(
     let prompt_rows = (prompt_lines.len() as u16)
         .min(rows.saturating_sub(FOOTER_ROWS + STATUS_ROWS + 1))
         .max(1);
+    // One overlay slot. The two never open together — a list is opened by a command, and
+    // running a command closes the popup that offered it.
     let popup_rows = app
-        .completion
+        .picker
         .as_ref()
-        .map_or(0, complete::Completion::height)
+        .map_or_else(
+            || {
+                app.completion
+                    .as_ref()
+                    .map_or(0, complete::Completion::height)
+            },
+            axum_tui::picker::Picker::height,
+        )
         .min(rows.saturating_sub(FOOTER_ROWS + STATUS_ROWS + prompt_rows + 1));
 
     let [live_area, status_area, prompt_area, popup_area, footer_area] = Layout::vertical([
@@ -119,7 +128,12 @@ pub fn draw(
     );
     frame.render_widget(Paragraph::new(prompt_lines), prompt_area);
 
-    if let Some(popup) = &app.completion {
+    if let Some(picker) = &app.picker {
+        frame.render_widget(
+            Paragraph::new(axum_tui::picker::render(picker, area.width, theme)),
+            popup_area,
+        );
+    } else if let Some(popup) = &app.completion {
         frame.render_widget(
             Paragraph::new(complete::render(popup, area.width, theme)),
             popup_area,

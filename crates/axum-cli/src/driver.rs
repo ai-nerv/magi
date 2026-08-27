@@ -97,7 +97,13 @@ pub async fn run(socket: &Path, mode: Mode, prompt: Option<String>) -> Result<()
                     Event::Key(key) if key.kind == crossterm::event::KeyEventKind::Press => {
                         let busy = app.is_busy();
                         let action =
-                            keys::handle(key, &mut app.editor, &mut app.completion, busy);
+                            keys::handle(
+                                key,
+                                &mut app.editor,
+                                &mut app.completion,
+                                &mut app.picker,
+                                busy,
+                            );
                         // Noted before the match consumes it: a taken completion must not be
                         // recomputed, and the arms move the action's payload out.
                         let accepted = action == Action::Accepted;
@@ -119,6 +125,12 @@ pub async fn run(socket: &Path, mode: Mode, prompt: Option<String>) -> Result<()
                             }
                             Action::Interrupt => {
                                 let _ = command_tx.send(UiCommand::Interrupt).await;
+                                dirty = true;
+                            }
+                            Action::Chose(name) => {
+                                let _ = command_tx
+                                    .send(UiCommand::SetModel { name })
+                                    .await;
                                 dirty = true;
                             }
                             Action::ToggleDetail => {
@@ -160,7 +172,9 @@ pub async fn run(socket: &Path, mode: Mode, prompt: Option<String>) -> Result<()
                         // The popup is derived from the prompt, so it is recomputed after
                         // every key rather than mutated alongside the buffer -- except the
                         // key that just accepted one, which still matches what offered it.
-                        if !accepted {
+                        // Not while a list is open: the popup is derived from the prompt, and
+                        // the prompt is not what the arrows are about right now.
+                        if !accepted && app.picker.is_none() {
                             app.refresh_completion(&list_paths);
                         }
                     }
@@ -405,17 +419,11 @@ fn run_command(input: &str, app: &mut App) -> Control {
             Some(name) => Control::Send(UiCommand::SetModel {
                 name: name.to_owned(),
             }),
+            // A list rather than a sentence. Somebody asking this has usually configured
+            // nothing, and being told "no model is configured" answers the question they did
+            // not ask while leaving the one they did.
             None => {
-                let said = app.model.as_ref().map_or_else(
-                    || "No model is configured. `axum models` lists what is available.".to_owned(),
-                    |model| {
-                        format!(
-                            "{} — {} tokens. `/model <name>` switches.",
-                            model.name, model.context_window
-                        )
-                    },
-                );
-                app.show_notice(said);
+                app.open_model_picker();
                 Control::Continue
             }
         },
