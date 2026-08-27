@@ -63,6 +63,9 @@ impl Picker {
     pub fn new(title: impl Into<String>, choices: Vec<Choice>, current: Option<&str>) -> Self {
         let selected = current
             .and_then(|name| choices.iter().position(|c| c.value == name))
+            // Failing that, the first row that can actually be taken. Row zero is where the
+            // unusable ones tend to sort, and opening on one makes the list look inert.
+            .or_else(|| choices.iter().position(|c| c.ready))
             .unwrap_or(0);
         Self {
             title: title.into(),
@@ -126,10 +129,15 @@ impl Picker {
                 .into_iter()
                 .filter_map(|value| self.all.iter().find(|c| &c.value == value).cloned())
                 .collect();
+            // Readiness outranks the match score. Typing `gpt` used to put five rows needing
+            // a key you have not set above the one you can actually run, and the highlight
+            // landed on the first of them -- a list that answers a keystroke with a refusal.
+            // Stable, so the fuzzy order survives within each group.
+            self.choices.sort_by_key(|c| !c.ready);
         }
-        // Back to the top: the previous highlight was a position in a different list, and
-        // keeping the index would land on whatever happens to be there now.
-        self.selected = 0;
+        // Onto something usable, and back to the top otherwise: the previous highlight was a
+        // position in a different list, and keeping the index lands on whatever is there now.
+        self.selected = self.choices.iter().position(|c| c.ready).unwrap_or(0);
     }
 
     /// Whether there is anything to choose right now.
@@ -573,5 +581,98 @@ mod take_tests {
             .map(|s| s.content.as_ref())
             .collect();
         assert!(!heading.contains("TWO_KEY"), "{heading}");
+    }
+}
+
+#[cfg(test)]
+mod readiness_tests {
+    use super::*;
+
+    fn mixed() -> Vec<Choice> {
+        vec![
+            Choice {
+                value: "openai/gpt-5".into(),
+                detail: "set OPENAI_API_KEY".into(),
+                ready: false,
+            },
+            Choice {
+                value: "openai/gpt-5.1".into(),
+                detail: "set OPENAI_API_KEY".into(),
+                ready: false,
+            },
+            Choice {
+                value: "openrouter/openai/gpt-5.1".into(),
+                detail: "400k".into(),
+                ready: true,
+            },
+            Choice {
+                value: "local/llama".into(),
+                detail: "131k".into(),
+                ready: true,
+            },
+        ]
+    }
+
+    #[test]
+    fn a_filter_puts_what_you_can_run_first() {
+        // Typing `gpt` used to rank five rows needing an unset key above the one usable match.
+        let mut picker = Picker::new("Model", mixed(), None);
+        for c in "gpt".chars() {
+            picker.push(c);
+        }
+        assert!(
+            picker.current().expect("a row").ready,
+            "the top row is usable"
+        );
+        assert_eq!(
+            picker.current().expect("a row").value,
+            "openrouter/openai/gpt-5.1"
+        );
+    }
+
+    #[test]
+    fn the_highlight_lands_somewhere_enter_will_work() {
+        let mut picker = Picker::new("Model", mixed(), None);
+        for c in "gpt".chars() {
+            picker.push(c);
+        }
+        assert_eq!(picker.take(), Some("openrouter/openai/gpt-5.1".to_owned()));
+    }
+
+    #[test]
+    fn opening_with_no_current_value_skips_the_unusable() {
+        let picker = Picker::new("Model", mixed(), None);
+        assert!(
+            picker.current().expect("a row").ready,
+            "not opened on a refusal"
+        );
+    }
+
+    #[test]
+    fn a_current_value_still_wins_over_readiness() {
+        // Where you already are outranks the rule: you opened the list to move from it.
+        let picker = Picker::new("Model", mixed(), Some("openai/gpt-5.1"));
+        assert_eq!(picker.current().expect("a row").value, "openai/gpt-5.1");
+    }
+
+    #[test]
+    fn a_filter_matching_nothing_usable_still_shows_the_reasons() {
+        let none_ready = vec![
+            Choice {
+                value: "openai/gpt-5".into(),
+                detail: "set OPENAI_API_KEY".into(),
+                ready: false,
+            },
+            Choice {
+                value: "azure/gpt-5".into(),
+                detail: "set AZURE_OPENAI_API_KEY".into(),
+                ready: false,
+            },
+        ];
+        let mut picker = Picker::new("Model", none_ready, None);
+        picker.push('g');
+        assert!(!picker.is_empty(), "the rows are still listed");
+        assert!(picker.take().is_none(), "and taking one says why instead");
+        assert!(picker.notice.is_some());
     }
 }

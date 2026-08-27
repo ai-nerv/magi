@@ -11,6 +11,7 @@ pub mod complete;
 pub mod editor;
 pub mod footer;
 pub mod fuzzy;
+pub mod greeting;
 pub mod markdown;
 pub(crate) use complete::fit;
 

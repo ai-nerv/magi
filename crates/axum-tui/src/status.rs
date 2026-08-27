@@ -20,15 +20,10 @@ pub const FRAME_MS: u64 = 80;
 /// function of state.
 #[must_use]
 pub fn render(status: &AgentStatus, tick: usize, theme: &Theme) -> Line<'static> {
-    connected(status, tick, theme, true)
+    working(status, tick, theme, true, None)
 }
 
 /// The same, saying so when the daemon cannot be reached.
-///
-/// A UI that has lost its socket looks exactly like an idle one: the prompt accepts text, the
-/// transcript sits there, and a submitted turn goes into a channel nobody is reading. The
-/// session is not lost — the daemon owns it and the UI redials — but a person typing into
-/// silence deserves to be told which silence it is.
 #[must_use]
 pub fn connected(
     status: &AgentStatus,
@@ -36,17 +31,40 @@ pub fn connected(
     theme: &Theme,
     connected: bool,
 ) -> Line<'static> {
+    working(status, tick, theme, connected, None)
+}
+
+/// The status line, with how long the turn has been running.
+///
+/// A spinner alone says something is happening and nothing about whether to keep waiting. Ten
+/// seconds and thirty seconds look identical, which is how a hung turn passes for a slow one.
+///
+/// A UI that has lost its socket looks exactly like an idle one: the prompt accepts text, the
+/// transcript sits there, and a submitted turn goes into a channel nobody is reading. The
+/// session is not lost -- the daemon owns it and the UI redials -- but a person typing into
+/// silence deserves to be told which silence it is.
+#[must_use]
+pub fn working(
+    status: &AgentStatus,
+    tick: usize,
+    theme: &Theme,
+    connected: bool,
+    elapsed: Option<std::time::Duration>,
+) -> Line<'static> {
     if !connected {
         return spinner(
             "Reconnecting to the daemon...".to_owned(),
             tick,
             theme.warning,
             theme,
+            None,
         );
     }
     match status {
         AgentStatus::Idle => Line::default(),
-        AgentStatus::Working { label } => spinner(label.clone(), tick, theme.accent, theme),
+        AgentStatus::Working { label } => {
+            spinner(label.clone(), tick, theme.accent, theme, elapsed)
+        }
         AgentStatus::Retrying {
             attempt,
             max_attempts,
@@ -55,9 +73,21 @@ pub fn connected(
             let seconds = delay_ms.div_ceil(1000);
             let label =
                 format!("Retrying ({attempt}/{max_attempts}) in {seconds}s... (esc to cancel)");
-            spinner(label, tick, theme.warning, theme)
+            // No elapsed clock: the countdown already says how long, and two numbers that
+            // both look like seconds and mean different things is worse than one.
+            spinner(label, tick, theme.warning, theme, None)
         }
     }
+}
+
+/// How long something has been running, at the precision a person reads at.
+#[must_use]
+pub fn format_elapsed(elapsed: std::time::Duration) -> String {
+    let seconds = elapsed.as_secs();
+    if seconds < 60 {
+        return format!("{seconds}s");
+    }
+    format!("{}m{:02}s", seconds / 60, seconds % 60)
 }
 
 fn spinner(
@@ -65,14 +95,28 @@ fn spinner(
     tick: usize,
     spinner_color: ratatui::style::Color,
     theme: &Theme,
+    elapsed: Option<std::time::Duration>,
 ) -> Line<'static> {
     let frame = FRAMES[tick % FRAMES.len()];
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled(" ", Style::default()),
         Span::styled(frame.to_owned(), Style::default().fg(spinner_color)),
         Span::styled(" ", Style::default()),
         Span::styled(label, Style::default().fg(theme.muted)),
-    ])
+    ];
+    // Only once there is something to say. A clock that appears reading `0s` on every turn is
+    // noise for the nine turns in ten that finish before anyone looks at it.
+    if let Some(elapsed) = elapsed.filter(|e| e.as_secs() >= 1) {
+        spans.push(Span::styled(
+            format!("  {}", format_elapsed(elapsed)),
+            Style::default().fg(theme.dim),
+        ));
+        spans.push(Span::styled(
+            "  esc to interrupt",
+            Style::default().fg(theme.dim),
+        ));
+    }
+    Line::from(spans)
 }
 
 #[cfg(test)]
@@ -155,5 +199,89 @@ mod connection_tests {
         // Two lines while idle so the layout does not jump; the words are the exception.
         let line = connected(&AgentStatus::Idle, 0, &Theme::default(), true);
         assert_eq!(text(&line), "");
+    }
+}
+
+#[cfg(test)]
+mod elapsed_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn text_of(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn a_running_turn_says_how_long_it_has_been_running() {
+        // A spinner alone makes ten seconds and thirty look the same, which is how a hung
+        // turn passes for a slow one.
+        let status = AgentStatus::Working {
+            label: "Thinking".into(),
+        };
+        let line = working(
+            &status,
+            0,
+            &crate::theme::DARK,
+            true,
+            Some(Duration::from_secs(12)),
+        );
+        assert!(text_of(&line).contains("12s"), "{}", text_of(&line));
+    }
+
+    #[test]
+    fn the_first_second_is_not_worth_a_clock() {
+        let status = AgentStatus::Working {
+            label: "Thinking".into(),
+        };
+        let line = working(
+            &status,
+            0,
+            &crate::theme::DARK,
+            true,
+            Some(Duration::from_millis(200)),
+        );
+        assert!(!text_of(&line).contains("0s"), "{}", text_of(&line));
+    }
+
+    #[test]
+    fn a_long_turn_reads_in_minutes() {
+        assert_eq!(format_elapsed(Duration::from_secs(90)), "1m30s");
+        assert_eq!(format_elapsed(Duration::from_secs(59)), "59s");
+        assert_eq!(format_elapsed(Duration::from_secs(3605)), "60m05s");
+    }
+
+    #[test]
+    fn a_waiting_turn_is_told_how_to_stop_it() {
+        let status = AgentStatus::Working {
+            label: "Thinking".into(),
+        };
+        let line = working(
+            &status,
+            0,
+            &crate::theme::DARK,
+            true,
+            Some(Duration::from_secs(3)),
+        );
+        assert!(text_of(&line).contains("esc"), "{}", text_of(&line));
+    }
+
+    #[test]
+    fn a_retry_keeps_its_own_countdown_and_no_second_clock() {
+        // Two numbers that both look like seconds and mean different things is worse than one.
+        let status = AgentStatus::Retrying {
+            attempt: 2,
+            max_attempts: 5,
+            delay_ms: 4000,
+        };
+        let line = working(
+            &status,
+            0,
+            &crate::theme::DARK,
+            true,
+            Some(Duration::from_secs(30)),
+        );
+        let text = text_of(&line);
+        assert!(text.contains("in 4s"), "{text}");
+        assert!(!text.contains("30s"), "{text}");
     }
 }

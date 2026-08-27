@@ -56,19 +56,47 @@ pub fn format_cwd(cwd: &str, home: Option<&str>) -> String {
         .map_or_else(|| cwd.to_owned(), |rest| format!("~/{rest}"))
 }
 
+/// Fit a path into `width`, dropping leading components rather than trailing ones.
+///
+/// The old `clip` took the head and cut the tail, which on a long path hides the only part
+/// that says where you are: `/home/you/work/deep/nested/thing` became `/home/you/work/dee…`.
+/// Leading components are the ones a reader can infer.
+#[must_use]
+pub fn fit_path(path: &str, width: usize) -> String {
+    if path.chars().count() <= width || width == 0 {
+        return path.to_owned();
+    }
+    // Whole components while any fit, so the result is still a path and not a cut word.
+    let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
+    for skip in 1..parts.len() {
+        let tail = format!("…/{}", parts[skip..].join("/"));
+        if tail.chars().count() <= width {
+            return tail;
+        }
+    }
+    // The last component alone is too long: keep its end, which is the distinctive part.
+    let last = parts.last().copied().unwrap_or(path);
+    let keep = width.saturating_sub(1);
+    let start = last.chars().count().saturating_sub(keep);
+    format!("…{}", last.chars().skip(start).collect::<String>())
+}
+
 /// Render the footer.
 #[must_use]
 pub fn render(data: &FooterData, width: u16, theme: &Theme) -> Vec<Line<'static>> {
     let dim = Style::default().fg(theme.dim);
 
-    let mut location = data.cwd.clone();
+    // The branch and the mode are short and are what changes; the path is long and is what
+    // gets cut. Build the suffix first so the path is fitted to what is actually left.
+    let mut suffix = String::new();
     if let Some(branch) = &data.branch {
-        location.push_str(&format!(" ({branch})"));
+        suffix.push_str(&format!(" ({branch})"));
     }
     if !data.mode.is_empty() {
-        location.push_str(&format!(" · {}", data.mode));
+        suffix.push_str(&format!(" · {}", data.mode));
     }
-
+    let room = usize::from(width).saturating_sub(suffix.chars().count());
+    let location = format!("{}{suffix}", fit_path(&data.cwd, room));
     let mut stats = Vec::new();
     if data.input_tokens > 0 {
         stats.push(format!("↑{}", format_tokens(data.input_tokens)));

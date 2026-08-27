@@ -22,6 +22,25 @@ pub fn visible_rows(rows: u16) -> usize {
     ((f32::from(rows) * VISIBLE_FRACTION) as usize).max(MIN_VISIBLE)
 }
 
+/// What an empty prompt says instead of nothing.
+///
+/// An empty box between two rules gives a reader no way to tell a prompt waiting for input
+/// from a screen that has hung, and no way to find the command list without being told.
+const PLACEHOLDER: &str = "ask anything, or / for commands";
+
+/// The blank prompt: the cursor, then the hint, dimmed.
+fn placeholder_line(theme: &Theme) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            " ",
+            Style::default()
+                .fg(theme.text)
+                .add_modifier(Modifier::REVERSED),
+        ),
+        Span::styled(PLACEHOLDER, Style::default().fg(theme.dim)),
+    ])
+}
+
 /// Render the prompt: rule, text, rule.
 ///
 /// `rows` is the terminal height, which sets how much of a long prompt is shown before the
@@ -40,6 +59,14 @@ pub fn render(editor: &Editor, width: u16, rows: u16, theme: &Theme) -> Vec<Line
     let end = (offset + max_visible).min(total);
 
     let mut out = Vec::with_capacity(end - offset + 2);
+    // A blank prompt is the one case where there is nothing to draw and something to say.
+    if total == 1 && editor.lines()[0].is_empty() {
+        return vec![
+            scroll_rule(Direction::Up, 0, width, rule),
+            placeholder_line(theme),
+            scroll_rule(Direction::Down, 0, width, rule),
+        ];
+    }
     out.push(scroll_rule(Direction::Up, offset, width, rule));
 
     for (index, text) in editor.lines()[offset..end].iter().enumerate() {
@@ -128,9 +155,19 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_prompt_is_a_rule_a_cursor_and_a_rule() {
-        let rendered = rows_of(&render(&Editor::new(), 10, 24, &Theme::default()));
-        assert_eq!(rendered, vec!["──────────", " ", "──────────"]);
+    fn an_empty_prompt_says_what_to_do_with_it() {
+        // An empty box between two rules gives no way to tell a prompt waiting for input from
+        // a screen that has hung, and no way to find the command list without being told.
+        let rendered = rows_of(&render(&Editor::new(), 40, 24, &Theme::default()));
+        assert_eq!(rendered.len(), 3, "still rule, text, rule");
+        assert!(rendered[1].contains("/ for commands"), "{:?}", rendered[1]);
+    }
+
+    #[test]
+    fn one_keystroke_replaces_the_hint_with_the_text() {
+        let rendered = rows_of(&render(&editor_with("h"), 40, 24, &Theme::default()));
+        assert!(!rendered[1].contains("commands"), "{:?}", rendered[1]);
+        assert!(rendered[1].starts_with('h'), "{:?}", rendered[1]);
     }
 
     #[test]

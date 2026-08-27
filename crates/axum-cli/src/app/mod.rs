@@ -59,6 +59,8 @@ pub struct App {
     pub completion: Option<axum_tui::complete::Completion>,
     /// Whether the socket is currently up.
     pub connected: bool,
+    /// When the current turn started, for the elapsed clock.
+    working_since: Option<std::time::Instant>,
     /// Spinner phase.
     pub tick: usize,
     /// Which model is answering, as the daemon reported it.
@@ -111,6 +113,7 @@ impl App {
             picker: None,
             picking: None,
             detail: axum_tui::transcript::Detail::Preview,
+            working_since: None,
             tick: 0,
         }
     }
@@ -170,6 +173,28 @@ impl App {
         self.cursor
     }
 
+    /// Record what the agent is doing, and when it started doing it.
+    ///
+    /// The clock is kept here rather than derived from the spinner tick: the tick runs
+    /// whether or not a turn is in flight, so it says how long the UI has been open and not
+    /// how long you have been waiting.
+    fn set_status(&mut self, status: AgentStatus) {
+        let was_idle = matches!(self.status, AgentStatus::Idle);
+        let now_idle = matches!(status, AgentStatus::Idle);
+        if now_idle {
+            self.working_since = None;
+        } else if was_idle {
+            self.working_since = Some(std::time::Instant::now());
+        }
+        self.status = status;
+    }
+
+    /// How long the current turn has been running.
+    #[must_use]
+    pub fn elapsed(&self) -> Option<std::time::Duration> {
+        self.working_since.map(|t| t.elapsed())
+    }
+
     /// What the agent is doing.
     #[must_use]
     pub fn status(&self) -> &AgentStatus {
@@ -220,7 +245,7 @@ impl App {
                 self.choices = choices;
                 let empty = entries.is_empty();
                 self.entries = entries;
-                self.status = status;
+                self.set_status(status);
                 // Said once, on a session that has not started yet. A fresh install points at
                 // a model whose key nobody has set, and the whole of what it told you was
                 // `no-model` in a corner of the footer — true, and no help at all.
@@ -307,7 +332,7 @@ impl App {
                     *slot = Some(result);
                 }
             }
-            HarnessEvent::StatusChanged { status, .. } => self.status = status,
+            HarnessEvent::StatusChanged { status, .. } => self.set_status(status),
             HarnessEvent::Error { class, message, .. } => {
                 self.entries.push(Entry::Assistant {
                     id: MessageId::new("error"),

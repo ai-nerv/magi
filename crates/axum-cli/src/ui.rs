@@ -15,7 +15,7 @@
 use crate::app::App;
 use crate::terminal::Mode;
 use axum_tui::footer::{self, FooterData};
-use axum_tui::{Theme, complete, prompt, status, transcript};
+use axum_tui::{Theme, complete, greeting, prompt, status, transcript};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::Paragraph;
@@ -102,7 +102,11 @@ pub fn draw(
         // Alt: there is no terminal history to defer to, so the whole transcript is ours and
         // the reader's scroll position decides what shows.
         Mode::Alt => {
-            let all = transcript::render(app.entries(), area.width, theme, app.detail);
+            let all = if app.entries().is_empty() {
+                greeting::render(&footer_data.model, &footer_data.cwd, area.width, theme)
+            } else {
+                transcript::render(app.entries(), area.width, theme, app.detail)
+            };
             app.scrollback.set_lines(all);
             let view = app.scrollback.view(live_area.height).to_vec();
             // Bottom-aligned: a transcript grows towards the prompt, so a short one sits above
@@ -118,11 +122,12 @@ pub fn draw(
     }
 
     frame.render_widget(
-        Paragraph::new(status::connected(
+        Paragraph::new(status::working(
             app.status(),
             app.tick,
             theme,
             app.connected,
+            app.elapsed(),
         )),
         status_area,
     );

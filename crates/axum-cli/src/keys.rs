@@ -7,7 +7,7 @@
 //! Enter, and Escape mean "the popup" rather than "the prompt".
 
 use axum_tui::Editor;
-use axum_tui::complete::Completion;
+use axum_tui::complete::{Completion, Kind};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// A movement of the transcript view.
@@ -154,18 +154,32 @@ pub fn handle(
                 open.next();
                 return Action::Redraw;
             }
-            KeyCode::Tab | KeyCode::Enter => {
-                if let Some(candidate) = open.current() {
-                    let value = candidate.value.clone();
-                    let start = open.token_start;
-                    editor.replace_token(start, &value);
-                }
+            KeyCode::Tab => {
+                accept(open, editor);
                 *completion = None;
                 // Not `Redraw`: the popup is recomputed from the prompt after every key, and
                 // what was just accepted still matches what offered it. Saying so keeps the
                 // caller from reopening the menu the user has this moment chosen from, which
                 // left every exact-match command -- `/help`, `/quit` -- impossible to submit.
                 return Action::Accepted;
+            }
+            KeyCode::Enter => {
+                // Tab completes; Enter runs. A palette where enter only fills the box asks
+                // for the key twice to reach one command, and reads as a menu that does
+                // nothing -- which is what `/model` looked like for as long as this was
+                // shared with Tab. A path completion is not a command, so there enter still
+                // only completes: the line it belongs to is not finished yet.
+                let command = open.kind == Kind::Command;
+                accept(open, editor);
+                *completion = None;
+                if !command || busy {
+                    return Action::Accepted;
+                }
+                return match editor.submit() {
+                    Some(text) if text.starts_with('/') => Action::Command(text),
+                    Some(text) => Action::Submit(text),
+                    None => Action::Accepted,
+                };
             }
             _ => {}
         }
@@ -264,6 +278,14 @@ pub fn handle(
     }
 }
 
+/// Put the highlighted candidate into the prompt, replacing the token that offered it.
+fn accept(open: &Completion, editor: &mut Editor) {
+    if let Some(candidate) = open.current() {
+        let value = candidate.value.clone();
+        let start = open.token_start;
+        editor.replace_token(start, &value);
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,7 +523,9 @@ mod tests {
     }
 
     #[test]
-    fn enter_accepts_a_completion_rather_than_submitting() {
+    fn enter_runs_the_command_the_palette_offered() {
+        // Two presses to reach one command reads as a palette that does nothing, which is
+        // what `/model` looked like for as long as enter merely filled the box.
         let (mut editor, mut popup) = with_popup("/qu");
         let action = handle(
             press(KeyCode::Enter, KeyModifiers::NONE),
@@ -510,8 +534,30 @@ mod tests {
             &mut None,
             false,
         );
-        assert_eq!(action, Action::Accepted, "the prompt is not submitted");
-        assert_eq!(editor.text(), "/quit");
+        assert_eq!(action, Action::Command("/quit".into()));
+        assert_eq!(editor.text(), "", "and the prompt is spent");
+    }
+
+    #[test]
+    fn enter_on_a_path_completion_only_completes() {
+        // A path is part of a sentence, not the whole of one: the line it belongs to is not
+        // finished, so submitting it would send half a thought.
+        let mut editor = Editor::new();
+        editor.insert_str("look at @Car");
+        let (_, col) = editor.cursor();
+        let line = editor.lines()[0].clone();
+        let mut popup = complete::resolve(&line, col, &no_paths);
+        if popup.is_none() {
+            return;
+        }
+        let action = handle(
+            press(KeyCode::Enter, KeyModifiers::NONE),
+            &mut editor,
+            &mut popup,
+            &mut None,
+            false,
+        );
+        assert_eq!(action, Action::Accepted, "completed, not submitted");
     }
 
     #[test]
@@ -567,7 +613,7 @@ mod accept_tests {
     }
 
     #[test]
-    fn taking_a_completion_says_so_rather_than_asking_for_a_redraw() {
+    fn tab_taking_a_completion_says_so_rather_than_asking_for_a_redraw() {
         // The driver recomputes the popup after every key. Told only "redraw", it reopens the
         // menu on the thing just chosen from it -- and `/help`, whose name is exactly what
         // offered it, can then never be submitted at all.
@@ -577,7 +623,7 @@ mod accept_tests {
         assert!(completion.is_some(), "the popup is open");
 
         let action = handle(
-            press(KeyCode::Enter),
+            press(KeyCode::Tab),
             &mut editor,
             &mut completion,
             &mut None,
@@ -589,7 +635,7 @@ mod accept_tests {
     }
 
     #[test]
-    fn a_second_enter_submits_what_was_taken() {
+    fn enter_after_a_tab_submits_what_was_taken() {
         let mut editor = Editor::new();
         editor.insert_str("/help");
         let mut none: Option<Completion> = None;
