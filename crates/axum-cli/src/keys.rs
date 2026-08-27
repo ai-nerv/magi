@@ -454,7 +454,7 @@ mod tests {
             &mut popup,
             false,
         );
-        assert_eq!(action, Action::Redraw, "the prompt is not submitted");
+        assert_eq!(action, Action::Accepted, "the prompt is not submitted");
         assert_eq!(editor.text(), "/quit");
     }
 
