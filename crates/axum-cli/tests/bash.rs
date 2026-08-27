@@ -36,6 +36,7 @@ fn a_command_runs_in_another_process_and_comes_back() {
         "bash",
         &serde_json::json!({ "command": "echo hello" }),
         &ops,
+        &axum_tools::Uncancelled,
     );
     assert!(!output.is_error, "{}", output.content);
     assert_eq!(output.content.trim(), "hello");
@@ -45,7 +46,12 @@ fn a_command_runs_in_another_process_and_comes_back() {
 #[test]
 fn the_peer_starts_in_the_session_directory() {
     let (registry, ops, dir) = session("cwd");
-    let output = registry.call("bash", &serde_json::json!({ "command": "pwd" }), &ops);
+    let output = registry.call(
+        "bash",
+        &serde_json::json!({ "command": "pwd" }),
+        &ops,
+        &axum_tools::Uncancelled,
+    );
     assert!(output.content.contains("axum-bash-"), "{}", output.content);
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -58,11 +64,13 @@ fn state_survives_between_calls_because_the_peer_does() {
         "bash",
         &serde_json::json!({ "command": "export CARRIED=yes" }),
         &ops,
+        &axum_tools::Uncancelled,
     );
     let output = registry.call(
         "bash",
         &serde_json::json!({ "command": "echo $CARRIED" }),
         &ops,
+        &axum_tools::Uncancelled,
     );
     assert_eq!(output.content.trim(), "yes");
     let _ = std::fs::remove_dir_all(&dir);
@@ -75,6 +83,7 @@ fn a_failing_command_is_a_result_the_model_can_read() {
         "bash",
         &serde_json::json!({ "command": "echo attempted; false" }),
         &ops,
+        &axum_tools::Uncancelled,
     );
     assert!(output.is_error);
     assert!(output.content.contains("attempted"), "{}", output.content);
@@ -89,6 +98,7 @@ fn the_builtins_and_the_peer_share_one_directory() {
         "write",
         &serde_json::json!({ "path": "note.txt", "contents": "from a builtin\n" }),
         &ops,
+        &axum_tools::Uncancelled,
     );
     assert!(!written.is_error, "{}", written.content);
 
@@ -96,6 +106,7 @@ fn the_builtins_and_the_peer_share_one_directory() {
         "bash",
         &serde_json::json!({ "command": "cat note.txt" }),
         &ops,
+        &axum_tools::Uncancelled,
     );
     assert_eq!(output.content.trim(), "from a builtin");
     let _ = std::fs::remove_dir_all(&dir);
@@ -104,13 +115,19 @@ fn the_builtins_and_the_peer_share_one_directory() {
 #[test]
 fn a_peer_that_dies_is_restarted_on_the_next_call() {
     let (registry, ops, dir) = session("restart");
-    let killed = registry.call("bash", &serde_json::json!({ "command": "exit 1" }), &ops);
+    let killed = registry.call(
+        "bash",
+        &serde_json::json!({ "command": "exit 1" }),
+        &ops,
+        &axum_tools::Uncancelled,
+    );
     assert!(killed.is_error);
 
     let output = registry.call(
         "bash",
         &serde_json::json!({ "command": "echo alive" }),
         &ops,
+        &axum_tools::Uncancelled,
     );
     assert!(!output.is_error, "{}", output.content);
     assert_eq!(output.content.trim(), "alive");
@@ -125,6 +142,7 @@ fn nothing_downstream_knows_which_transport_it_used() {
         "write",
         &serde_json::json!({ "path": "a", "contents": "x" }),
         &ops,
+        &axum_tools::Uncancelled,
     );
     for name in ["read", "bash"] {
         let args = if name == "read" {
@@ -132,9 +150,100 @@ fn nothing_downstream_knows_which_transport_it_used() {
         } else {
             serde_json::json!({ "command": "cat a" })
         };
-        let output = registry.call(name, &args, &ops);
+        let output = registry.call(name, &args, &ops, &axum_tools::Uncancelled);
         assert!(!output.is_error, "{name}: {}", output.content);
         assert!(output.content.contains('x'), "{name}: {}", output.content);
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An interrupt the host has already decided on.
+struct Stopped;
+impl axum_tools::Cancel for Stopped {
+    fn is_cancelled(&self) -> bool {
+        true
+    }
+}
+
+/// An interrupt that arrives partway through, as `esc` does.
+struct After(std::time::Instant);
+impl axum_tools::Cancel for After {
+    fn is_cancelled(&self) -> bool {
+        std::time::Instant::now() >= self.0
+    }
+}
+
+#[test]
+fn a_running_command_is_interrupted_rather_than_waited_out() {
+    // The point of the boundary. `sleep 60` is running in another process, and the message
+    // asking it to stop has to reach a peer that is inside the command it is being asked to
+    // abandon. Nothing here waits sixty seconds.
+    let (registry, ops, dir) = session("cancel");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+
+    let started = std::time::Instant::now();
+    let output = registry.call(
+        "bash",
+        &serde_json::json!({ "command": "sleep 60" }),
+        &ops,
+        &After(deadline),
+    );
+    let took = started.elapsed();
+
+    assert!(
+        took < std::time::Duration::from_secs(20),
+        "the call returned in {took:?}, so it waited the command out"
+    );
+    assert!(output.is_error, "{}", output.content);
+    assert!(
+        output.content.contains("interrupted"),
+        "the result says what happened: {}",
+        output.content
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_peer_is_usable_again_after_an_interrupt() {
+    // The shell is killed to interrupt it, so the next call has to get a fresh one rather than
+    // an error about a process that is no longer there.
+    let (registry, ops, dir) = session("after-cancel");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+    let _ = registry.call(
+        "bash",
+        &serde_json::json!({ "command": "sleep 60" }),
+        &ops,
+        &After(deadline),
+    );
+
+    let output = registry.call(
+        "bash",
+        &serde_json::json!({ "command": "echo recovered" }),
+        &ops,
+        &axum_tools::Uncancelled,
+    );
+    assert!(!output.is_error, "{}", output.content);
+    assert_eq!(output.content.trim(), "recovered");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_call_made_under_an_interrupt_does_not_run_forever() {
+    // Cancelled before it began. The peer is told at the first opportunity rather than after
+    // the poll interval decides the call is worth starting.
+    let (registry, ops, dir) = session("pre-cancel");
+    let started = std::time::Instant::now();
+    let output = registry.call(
+        "bash",
+        &serde_json::json!({ "command": "sleep 60" }),
+        &ops,
+        &Stopped,
+    );
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(20),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(output.is_error, "{}", output.content);
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -50,6 +50,16 @@ impl Cancel {
     }
 }
 
+/// A running tool asks the same question the turn loop does.
+///
+/// The daemon owns the interrupt and `axum-tools` owns the tools, so the two meet at a trait
+/// with one method. A tool can find out that it should stop, and can do nothing else with it.
+impl axum_tools::Cancel for Cancel {
+    fn is_cancelled(&self) -> bool {
+        self.is_requested()
+    }
+}
+
 impl std::fmt::Debug for Cancel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Cancel")

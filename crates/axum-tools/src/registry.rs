@@ -1,6 +1,6 @@
 //! The one registry every tool lands in.
 
-use crate::{Ops, Output};
+use crate::{Cancel, Ops, Output};
 use std::collections::BTreeMap;
 
 /// Something the model can call.
@@ -26,7 +26,7 @@ pub trait Tool {
     /// Infallible on purpose: every failure a tool can have is something the model should read,
     /// so it comes back as [`Output::error`] rather than as an error the turn loop has to
     /// invent a message for.
-    fn run(&self, arguments: &serde_json::Value, ops: &dyn Ops) -> Output;
+    fn run(&self, arguments: &serde_json::Value, ops: &dyn Ops, cancel: &dyn Cancel) -> Output;
 }
 
 /// Every tool the session can reach.
@@ -90,9 +90,15 @@ impl Registry {
     /// An unknown tool is an [`Output::error`] rather than a hole: the model asked for
     /// something that does not exist and needs to be told, not left waiting.
     #[must_use]
-    pub fn call(&self, name: &str, arguments: &serde_json::Value, ops: &dyn Ops) -> Output {
+    pub fn call(
+        &self,
+        name: &str,
+        arguments: &serde_json::Value,
+        ops: &dyn Ops,
+        cancel: &dyn Cancel,
+    ) -> Output {
         match self.get(name) {
-            Some(tool) => tool.run(arguments, ops),
+            Some(tool) => tool.run(arguments, ops, cancel),
             None => {
                 let known: Vec<&str> = self.tools.keys().map(String::as_str).collect();
                 Output::error(format!(
@@ -121,7 +127,12 @@ mod tests {
         fn parameters(&self) -> serde_json::Value {
             serde_json::json!({ "type": "object" })
         }
-        fn run(&self, _arguments: &serde_json::Value, _ops: &dyn Ops) -> Output {
+        fn run(
+            &self,
+            _arguments: &serde_json::Value,
+            _ops: &dyn Ops,
+            _cancel: &dyn Cancel,
+        ) -> Output {
             Output::ok(self.0)
         }
     }
@@ -134,7 +145,7 @@ mod tests {
     fn a_registered_tool_can_be_called() {
         let mut registry = Registry::new();
         registry.register(Box::new(Fake("read")));
-        let output = registry.call("read", &serde_json::json!({}), &ops());
+        let output = registry.call("read", &serde_json::json!({}), &ops(), &crate::Uncancelled);
         assert_eq!(output.content, "read");
         assert!(!output.is_error);
     }
@@ -152,7 +163,7 @@ mod tests {
     fn an_unknown_tool_is_told_so_and_shown_what_exists() {
         let mut registry = Registry::new();
         registry.register(Box::new(Fake("read")));
-        let output = registry.call("nope", &serde_json::json!({}), &ops());
+        let output = registry.call("nope", &serde_json::json!({}), &ops(), &crate::Uncancelled);
         assert!(output.is_error);
         assert!(output.content.contains("nope"), "{}", output.content);
         assert!(output.content.contains("read"), "{}", output.content);

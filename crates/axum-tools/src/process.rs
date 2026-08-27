@@ -8,18 +8,37 @@
 //! `cd build` then `make` has to work, which means one process holding its own cwd and
 //! environment across calls. Started on first use so a declared tool nobody calls costs
 //! nothing, and restarted on the next call if it dies.
+//!
+//! **Reads on its own thread.** A blocking read cannot be given a deadline, so a caller that
+//! reads inline can neither time out nor notice an interrupt: it is inside `read` until the
+//! peer chooses to answer, and a peer that never answers holds the turn open forever. The
+//! thread turns the pipe into a channel, and a channel can be waited on for a bounded time.
 
-use crate::{Ops, Output, Tool};
+use crate::{Cancel, Ops, Output, Tool};
 use axum_ipc::blocking::{FrameReader, FrameWriter};
 use axum_proto::{ToolCallId, ToolReport, ToolRequest};
 use std::cell::RefCell;
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::time::{Duration, Instant};
 
 /// How long to wait for a peer to answer one call.
 ///
 /// A shell command may legitimately take minutes, so this is generous; it exists to stop a
 /// wedged peer holding a turn open forever, not to bound useful work.
-const CALL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+const CALL_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// How long a peer has to acknowledge a cancellation before it is killed.
+///
+/// Short, because the peer is being asked to stop and the user is waiting. A peer that answers
+/// keeps its state; one that does not is not in a position to be trusted with it.
+const CANCEL_GRACE: Duration = Duration::from_secs(5);
+
+/// How often a waiting call looks up to see whether it is still wanted.
+///
+/// The interrupt is a flag, not a channel, so it has to be polled. Short enough that `esc`
+/// feels immediate, long enough that a running tool costs nothing to wait on.
+const CANCEL_POLL: Duration = Duration::from_millis(50);
 
 /// A tool reached by talking to a process.
 pub struct ProcessTool {
@@ -36,8 +55,17 @@ pub struct ProcessTool {
 
 struct Peer {
     child: Child,
-    reader: FrameReader<std::process::ChildStdout>,
+    /// Reports as they arrive, or the error that ended the stream.
+    reports: Receiver<Result<ToolReport, String>>,
     writer: FrameWriter<std::process::ChildStdin>,
+}
+
+/// How a call ended.
+enum Ended {
+    /// The peer answered.
+    Answered(Output),
+    /// The peer is not usable and should be replaced.
+    Lost(String),
 }
 
 impl ProcessTool {
@@ -81,9 +109,25 @@ impl ProcessTool {
 
         let stdin = child.stdin.take().ok_or("the peer has no stdin")?;
         let stdout = child.stdout.take().ok_or("the peer has no stdout")?;
+
+        let (reports, incoming) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut reader = FrameReader::new(stdout);
+            loop {
+                let message = reader
+                    .read_blocking::<ToolReport>()
+                    .map_err(|e| e.to_string());
+                let failed = message.is_err();
+                // A closed receiver means the tool was dropped; there is nobody to tell.
+                if reports.send(message).is_err() || failed {
+                    return;
+                }
+            }
+        });
+
         *self.peer.borrow_mut() = Some(Peer {
             child,
-            reader: FrameReader::new(stdout),
+            reports: incoming,
             writer: FrameWriter::new(stdin),
         });
         Ok(())
@@ -97,45 +141,79 @@ impl ProcessTool {
         }
     }
 
-    /// Send one call and read until it answers.
-    fn exchange(&self, id: &ToolCallId, arguments: &serde_json::Value) -> Result<Output, String> {
+    /// Send one call and wait for the peer to answer it.
+    ///
+    /// Bounded three ways, because a peer is another program and none of them can be assumed:
+    /// the call has a deadline, an interrupt is passed on and then enforced, and a peer whose
+    /// stream ends is reported rather than waited on.
+    fn exchange(
+        &self,
+        id: &ToolCallId,
+        arguments: &serde_json::Value,
+        cancel: &dyn Cancel,
+    ) -> Ended {
         let mut held = self.peer.borrow_mut();
-        let peer = held.as_mut().ok_or("the peer is not running")?;
+        let Some(peer) = held.as_mut() else {
+            return Ended::Lost("the peer is not running".to_owned());
+        };
 
-        peer.writer
-            .write_blocking(&ToolRequest::Call {
-                id: id.clone(),
-                name: self.name.clone(),
-                arguments: arguments.clone(),
-            })
-            .map_err(|e| e.to_string())?;
+        if let Err(e) = peer.writer.write_blocking(&ToolRequest::Call {
+            id: id.clone(),
+            name: self.name.clone(),
+            arguments: arguments.clone(),
+        }) {
+            return Ended::Lost(e.to_string());
+        }
 
-        let deadline = std::time::Instant::now() + CALL_TIMEOUT;
+        let mut deadline = Instant::now() + CALL_TIMEOUT;
         let mut progress = String::new();
+        let mut asked_to_stop = false;
+
         loop {
-            if std::time::Instant::now() > deadline {
-                return Err(format!(
-                    "{} did not answer within the call timeout",
-                    self.name
-                ));
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Ended::Lost(if asked_to_stop {
+                    "did not acknowledge the interrupt".to_owned()
+                } else {
+                    "did not answer within the call timeout".to_owned()
+                });
             }
-            match peer.reader.read_blocking::<ToolReport>() {
-                Ok(ToolReport::Progress { id: got, chunk }) if got == *id => {
+
+            match peer.reports.recv_timeout(remaining.min(CANCEL_POLL)) {
+                Ok(Ok(ToolReport::Progress { id: got, chunk })) if got == *id => {
                     progress.push_str(&chunk);
                 }
-                Ok(ToolReport::Result {
+                Ok(Ok(ToolReport::Result {
                     id: got,
                     output,
                     is_error,
-                }) if got == *id => {
+                })) if got == *id => {
                     let mut content = progress;
                     content.push_str(&output);
-                    return Ok(Output { content, is_error });
+                    return Ended::Answered(Output { content, is_error });
                 }
                 // A report for a call that is not this one, or a declaration arriving late.
                 // Skipped rather than treated as an answer: the peer may serve several tools.
-                Ok(_) => {}
-                Err(e) => return Err(e.to_string()),
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => return Ended::Lost(e),
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Ended::Lost("stopped answering".to_owned());
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    // Sent once, then enforced. Asking twice would tell a peer that is already
+                    // winding down to start again, and asking forever would never end.
+                    if !asked_to_stop && cancel.is_cancelled() {
+                        asked_to_stop = true;
+                        deadline = Instant::now() + CANCEL_GRACE;
+                        if peer
+                            .writer
+                            .write_blocking(&ToolRequest::Cancel { id: id.clone() })
+                            .is_err()
+                        {
+                            return Ended::Lost("could not be told to stop".to_owned());
+                        }
+                    }
+                }
             }
         }
     }
@@ -154,18 +232,18 @@ impl Tool for ProcessTool {
         self.parameters.clone()
     }
 
-    fn run(&self, arguments: &serde_json::Value, ops: &dyn Ops) -> Output {
+    fn run(&self, arguments: &serde_json::Value, ops: &dyn Ops, cancel: &dyn Cancel) -> Output {
         if let Err(why) = self.ensure(ops) {
             return Output::error(why);
         }
         let id = ToolCallId::new(format!("c{}", self.next.get()));
         self.next.set(self.next.get() + 1);
 
-        match self.exchange(&id, arguments) {
-            Ok(output) => output,
-            Err(why) => {
-                // A peer that died takes its state with it, so the next call starts fresh
-                // rather than talking to a socket nobody is reading.
+        match self.exchange(&id, arguments, cancel) {
+            Ended::Answered(output) => output,
+            Ended::Lost(why) => {
+                // A peer that died, wedged or ignored an interrupt takes its state with it, so
+                // the next call starts fresh rather than writing into a pipe nobody reads.
                 self.drop_peer();
                 Output::error(format!("{}: {why}", self.name))
             }

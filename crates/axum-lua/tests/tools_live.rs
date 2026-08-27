@@ -38,7 +38,12 @@ fn the_hexe_tool_answers_when_a_mux_is_running() {
     assert!(registry.get("hexe").is_some(), "the tool registered");
 
     let ops = axum_tools::ops::Real::new(std::env::temp_dir());
-    let output = registry.call("hexe", &serde_json::json!({ "what": "verbs" }), &ops);
+    let output = registry.call(
+        "hexe",
+        &serde_json::json!({ "what": "verbs" }),
+        &ops,
+        &axum_tools::Uncancelled,
+    );
 
     if !is_live("hexe") {
         // No mux: the tool must say so plainly rather than fail. A tool that errors when the
@@ -78,7 +83,12 @@ fn a_lua_tool_reports_an_absent_sibling_as_information_not_a_failure() {
     axum_lua::tool::install(Rc::clone(&engine), &mut registry);
 
     let ops = axum_tools::ops::Real::new(std::env::temp_dir());
-    let output = registry.call("hexe", &serde_json::json!({}), &ops);
+    let output = registry.call(
+        "hexe",
+        &serde_json::json!({}),
+        &ops,
+        &axum_tools::Uncancelled,
+    );
     assert!(output.is_error, "a missing stub is a real problem");
     assert!(
         output.content.contains("make configs"),

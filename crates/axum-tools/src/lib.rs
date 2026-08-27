@@ -11,10 +11,12 @@
 //! declared as one in `config/tools/`.
 
 pub mod builtin;
+pub mod cancel;
 pub mod ops;
 pub mod process;
 pub mod registry;
 
+pub use cancel::{Cancel, Uncancelled};
 pub use ops::{Ops, Shell};
 pub use registry::{Registry, Tool};
 

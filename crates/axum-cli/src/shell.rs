@@ -7,11 +7,22 @@
 //! One `sh` runs for the life of the peer, so `cd build` and `export FOO=1` carry over to the
 //! next call. That is the whole reason this is a process: a per-call spawn would make the
 //! boundary pure cost and a shell that forgets where it is is not a shell.
+//!
+//! **Three threads, because a peer that can only be interrupted between calls cannot be
+//! interrupted at all.** One reads requests from the host, one reads the shell's output, and
+//! the main thread runs commands. Nothing here ever blocks on a read it cannot abandon.
 
 use axum_ipc::blocking::{FrameReader, FrameWriter};
 use axum_proto::{ToolCallId, ToolReport, ToolRequest};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::time::Duration;
+
+/// How often a running command looks up to see whether it is still wanted.
+const INTERRUPT_POLL: Duration = Duration::from_millis(25);
 
 /// Written after every command so the reader knows where its output ended.
 ///
@@ -29,9 +40,13 @@ fn marker(nonce: &str, seq: u64) -> String {
 }
 
 /// Run the peer until its input closes.
+///
+/// The request reader is a thread of its own because this one is inside the command an
+/// interrupt is asking it to abandon. A peer that reads only between calls leaves
+/// `ToolRequest::Cancel` sitting unread in a pipe until the thing it was meant to stop has
+/// finished on its own, which is the same as not implementing it.
 pub fn run() -> anyhow::Result<()> {
     let mut shell = Session::start()?;
-    let mut reader = FrameReader::new(std::io::stdin());
     let mut writer = FrameWriter::new(std::io::stdout());
 
     // Declared on connect rather than configured by the host: the peer is the only thing that
@@ -50,42 +65,52 @@ pub fn run() -> anyhow::Result<()> {
         }),
     })?;
 
-    loop {
-        let request = match reader.read_blocking::<ToolRequest>() {
-            Ok(request) => request,
-            // The host went away. Nothing to report to, so leave quietly.
-            Err(_) => return Ok(()),
-        };
-        match request {
-            ToolRequest::Call { id, arguments, .. } => {
-                let command = arguments["command"].as_str().unwrap_or_default();
-                let (output, is_error) = shell.run(command);
-                writer.write_blocking(&ToolReport::Result {
-                    id,
-                    output,
-                    is_error,
-                })?;
-            }
-            // A command already running cannot be interrupted through the same pipe it is
-            // occupying, so cancellation kills the shell and starts a fresh one. State is lost,
-            // which is the honest cost of interrupting something that was mid-flight.
-            ToolRequest::Cancel { id } => {
-                shell.restart()?;
-                writer.write_blocking(&ToolReport::Result {
-                    id: ToolCallId::new(id.to_string()),
-                    output: "interrupted; the shell was restarted".to_owned(),
-                    is_error: true,
-                })?;
+    let (calls, incoming) = std::sync::mpsc::channel::<(ToolCallId, String)>();
+    let interrupted = Arc::clone(&shell.interrupted);
+    std::thread::spawn(move || {
+        let mut reader = FrameReader::new(std::io::stdin());
+        loop {
+            match reader.read_blocking::<ToolRequest>() {
+                Ok(ToolRequest::Call { id, arguments, .. }) => {
+                    let command = arguments["command"].as_str().unwrap_or_default().to_owned();
+                    if calls.send((id, command)).is_err() {
+                        return;
+                    }
+                }
+                // Raising a flag is the whole of it. Acting on it belongs to the thread that
+                // is waiting on the command, because that is the thread that knows what it is
+                // waiting for and the only one that can stop.
+                Ok(ToolRequest::Cancel { .. }) => interrupted.store(true, Ordering::SeqCst),
+                // The host went away. Nothing to report to, so leave quietly.
+                Err(_) => return,
             }
         }
+    });
+
+    while let Ok((id, command)) = incoming.recv() {
+        let (output, is_error) = shell.run(&command);
+        writer.write_blocking(&ToolReport::Result {
+            id,
+            output,
+            is_error,
+        })?;
     }
+    Ok(())
 }
 
 /// One long-lived `sh`.
 struct Session {
     child: Child,
     stdin: ChildStdin,
-    stdout: BufReader<std::process::ChildStdout>,
+    /// The shell's output, a line at a time.
+    ///
+    /// A channel rather than the pipe itself, because a pipe cannot be read with a deadline
+    /// and an interrupt that has to wait for the next line is not an interrupt. Killing the
+    /// shell does not help: a command that spawned anything leaves that child holding the
+    /// same pipe open, so the read blocks on for as long as the thing being interrupted runs.
+    lines: Receiver<String>,
+    /// Raised by the request reader when the host asks for a stop.
+    interrupted: Arc<AtomicBool>,
     /// Unguessable per-session half of the end-of-command marker.
     nonce: String,
     /// Commands run so far, which is the other half.
@@ -98,53 +123,96 @@ struct Session {
     dead: bool,
 }
 
+/// A per-shell value a command cannot guess.
+fn nonce() -> String {
+    format!(
+        "{:x}{:x}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos())
+    )
+}
+
+/// Spawn one shell, and a thread turning its output into lines.
+fn spawn_shell() -> anyhow::Result<(Child, ChildStdin, Receiver<String>)> {
+    let mut child = Command::new("sh")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        // Merged into stdout rather than read separately: two pipes cannot be interleaved
+        // faithfully, and a build's errors belong where they happened in its output.
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("no stdin"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("no stdout"))?;
+
+    let (lines, incoming) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => return,
+                // A closed receiver means this shell was abandoned. The thread outlives it
+                // only until whatever still holds the pipe lets go, which is exactly as long
+                // as the interrupted command keeps running.
+                Ok(_) => {
+                    if lines.send(std::mem::take(&mut line)).is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    });
+    Ok((child, stdin, incoming))
+}
+
 impl Session {
     fn start() -> anyhow::Result<Self> {
-        let mut child = Command::new("sh")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            // Merged into stdout rather than read separately: two pipes cannot be interleaved
-            // faithfully, and a build's errors belong where they happened in its output.
-            .stderr(Stdio::piped())
-            .spawn()?;
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("no stdin"))?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("no stdout"))?;
-        let nonce = format!(
-            "{:x}{:x}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.subsec_nanos())
-        );
+        let (child, stdin, lines) = spawn_shell()?;
         Ok(Self {
             child,
             stdin,
-            stdout: BufReader::new(stdout),
-            nonce,
+            lines,
+            interrupted: Arc::new(AtomicBool::new(false)),
+            nonce: nonce(),
             seq: 0,
             dead: false,
         })
     }
 
+    /// Replace the shell, keeping the interrupt flag the reader thread already holds.
     fn restart(&mut self) -> anyhow::Result<()> {
+        let (child, stdin, lines) = spawn_shell()?;
         let _ = self.child.kill();
         let _ = self.child.wait();
-        *self = Self::start()?;
+        self.child = child;
+        self.stdin = stdin;
+        self.lines = lines;
+        // A fresh marker, because a line from the abandoned shell arriving late must not be
+        // able to end a command in this one.
+        self.nonce = nonce();
+        self.seq = 0;
         self.dead = false;
         Ok(())
     }
 
-    /// Run one command and read until its sentinel.
+    /// Run one command and read until its marker, or until the host calls it off.
     fn run(&mut self, command: &str) -> (String, bool) {
         if self.dead && self.restart().is_err() {
             return ("the shell could not be restarted".to_owned(), true);
         }
+        // A stop raised while nothing was running belongs to nothing, and left set it would
+        // cancel the next command instead.
+        self.interrupted.store(false, Ordering::SeqCst);
+
         // stderr is folded into stdout for this command only, so ordering survives without the
         // shell's own diagnostics being redirected for the rest of its life.
         self.seq += 1;
@@ -155,30 +223,37 @@ impl Session {
         }
 
         let mut output = String::new();
-        let mut line = String::new();
         loop {
-            line.clear();
-            match self.stdout.read_line(&mut line) {
-                Ok(0) => {
-                    // The shell ended without a sentinel: the command took it with it.
+            if self.interrupted.swap(false, Ordering::SeqCst) {
+                // Abandoned rather than waited out. The shell is killed and a fresh one starts
+                // on the next call; anything the command had spawned may outlive it, which is
+                // the honest cost of interrupting something mid-flight.
+                self.dead = true;
+                output.push_str("\n(interrupted; a fresh shell starts on the next call)");
+                return (output, true);
+            }
+            match self.lines.recv_timeout(INTERRUPT_POLL) {
+                Ok(line) => {
+                    if let Some(at) = line.find(&marker) {
+                        // Anything before the marker is output that did not end in a newline.
+                        output.push_str(&line[..at]);
+                        let code = line[at + marker.len()..].trim_end();
+                        let failed = code != "0";
+                        if failed {
+                            output.push_str(&format!("\n(exit {code})"));
+                        }
+                        return (output, failed);
+                    }
+                    output.push_str(&line);
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    // The shell ended without a marker: the command took it with it.
                     self.dead = true;
                     output.push_str("\n(the shell exited; a fresh one starts on the next call)");
                     return (output, true);
                 }
-                Ok(_) => {}
-                Err(e) => return (format!("{output}\n{e}"), true),
             }
-            if let Some(at) = line.find(&marker) {
-                // Anything before the marker is output that did not end in a newline.
-                output.push_str(&line[..at]);
-                let code = line[at + marker.len()..].trim_end();
-                let failed = code != "0";
-                if failed {
-                    output.push_str(&format!("\n(exit {code})"));
-                }
-                return (output, failed);
-            }
-            output.push_str(&line);
         }
     }
 }

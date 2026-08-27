@@ -305,7 +305,7 @@ pub async fn run(
                 axum_tools::Output::error("cancelled before this tool ran")
             } else {
                 let arguments = call.parsed().unwrap_or(serde_json::Value::Null);
-                registry.call(&call.name, &arguments, ops)
+                registry.call(&call.name, &arguments, ops, &cancel)
             };
             let mut held = session.lock().await;
             held.amend(Entry::Tool {

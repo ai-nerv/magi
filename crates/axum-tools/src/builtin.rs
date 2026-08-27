@@ -4,7 +4,7 @@
 //! that wants isolation, a language of its own, or a life longer than one call is a declared
 //! tool in `config/tools/` — which is where `bash` lives.
 
-use crate::{Ops, Output, Tool};
+use crate::{Cancel, Ops, Output, Tool};
 use serde_json::{Value, json};
 use std::path::Path;
 
@@ -48,7 +48,7 @@ impl Tool for Read {
         })
     }
 
-    fn run(&self, arguments: &Value, ops: &dyn Ops) -> Output {
+    fn run(&self, arguments: &Value, ops: &dyn Ops, _cancel: &dyn Cancel) -> Output {
         let path = match arg(arguments, "path") {
             Ok(path) => path,
             Err(output) => return output,
@@ -100,7 +100,7 @@ impl Tool for Write {
         })
     }
 
-    fn run(&self, arguments: &Value, ops: &dyn Ops) -> Output {
+    fn run(&self, arguments: &Value, ops: &dyn Ops, _cancel: &dyn Cancel) -> Output {
         let (path, contents) = match (arg(arguments, "path"), arg(arguments, "contents")) {
             (Ok(path), Ok(contents)) => (path, contents),
             (Err(output), _) | (_, Err(output)) => return output,
@@ -137,7 +137,7 @@ impl Tool for Edit {
         })
     }
 
-    fn run(&self, arguments: &Value, ops: &dyn Ops) -> Output {
+    fn run(&self, arguments: &Value, ops: &dyn Ops, _cancel: &dyn Cancel) -> Output {
         let (path, old, new) = match (
             arg(arguments, "path"),
             arg(arguments, "old"),
@@ -211,7 +211,7 @@ mod tests {
     }
 
     fn call(registry: &Registry, ops: &Real, name: &str, args: Value) -> Output {
-        registry.call(name, &args, ops)
+        registry.call(name, &args, ops, &crate::Uncancelled)
     }
 
     #[test]

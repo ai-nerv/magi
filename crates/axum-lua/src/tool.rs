@@ -21,7 +21,7 @@
 //! the turn loop cannot tell them apart.
 
 use crate::Engine;
-use axum_tools::{Ops, Output, Tool};
+use axum_tools::{Cancel, Ops, Output, Tool};
 use serde::Deserialize;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -100,7 +100,10 @@ impl Tool for LuaTool {
         self.parameters.clone()
     }
 
-    fn run(&self, arguments: &serde_json::Value, _ops: &dyn Ops) -> Output {
+    // A Lua body runs to completion inside the VM, so there is no point between entering it
+    // and leaving it at which an interrupt could be noticed. Honesty about that is better than
+    // a check that could never fire.
+    fn run(&self, arguments: &serde_json::Value, _ops: &dyn Ops, _cancel: &dyn Cancel) -> Output {
         let answer = self.engine.borrow_mut().call_tool(&self.name, arguments);
         match answer {
             Some(value) => Output {
@@ -215,7 +218,12 @@ mod tests {
     #[test]
     fn a_lua_tool_runs_in_the_vm() {
         let (registry, _) = built(LUA_TOOL);
-        let output = registry.call("echo", &serde_json::json!({ "text": "hi" }), &ops());
+        let output = registry.call(
+            "echo",
+            &serde_json::json!({ "text": "hi" }),
+            &ops(),
+            &axum_tools::Uncancelled,
+        );
         assert_eq!(output.content, "you said hi");
         assert!(!output.is_error);
     }
@@ -226,7 +234,12 @@ mod tests {
         let (registry, _) = built(LUA_TOOL);
         assert!(
             !registry
-                .call("echo", &serde_json::json!({}), &ops())
+                .call(
+                    "echo",
+                    &serde_json::json!({}),
+                    &ops(),
+                    &axum_tools::Uncancelled
+                )
                 .is_error
         );
     }
@@ -242,7 +255,12 @@ mod tests {
             })
             "#,
         );
-        let output = registry.call("boom", &serde_json::json!({}), &ops());
+        let output = registry.call(
+            "boom",
+            &serde_json::json!({}),
+            &ops(),
+            &axum_tools::Uncancelled,
+        );
         assert!(output.is_error);
         assert!(output.content.contains("deliberate"), "{}", output.content);
     }
@@ -257,7 +275,12 @@ mod tests {
             })
             "#,
         );
-        let output = registry.call("nope", &serde_json::json!({}), &ops());
+        let output = registry.call(
+            "nope",
+            &serde_json::json!({}),
+            &ops(),
+            &axum_tools::Uncancelled,
+        );
         assert!(output.is_error);
         assert_eq!(output.content, "no such thing");
     }
@@ -293,7 +316,12 @@ mod tests {
         assert_eq!(registry.len(), 3, "replaced, not added");
         assert_eq!(
             registry
-                .call("read", &serde_json::json!({}), &ops())
+                .call(
+                    "read",
+                    &serde_json::json!({}),
+                    &ops(),
+                    &axum_tools::Uncancelled
+                )
                 .content,
             "mine"
         );
