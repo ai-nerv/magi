@@ -80,6 +80,25 @@ pub fn working(
     }
 }
 
+/// The note shown when the reader has scrolled away from the newest output.
+///
+/// Appended to the status line rather than given a row of its own: it matters exactly as much
+/// as the spinner does, and the two are never in conflict -- one says work is happening, the
+/// other says you are not looking at where it lands.
+#[must_use]
+pub fn scrolled(hidden: usize, theme: &Theme) -> Vec<Span<'static>> {
+    if hidden == 0 {
+        return Vec::new();
+    }
+    vec![
+        Span::styled("  ↓ ", Style::default().fg(theme.warning)),
+        Span::styled(
+            format!("{hidden} more below · shift+end to follow"),
+            Style::default().fg(theme.dim),
+        ),
+    ]
+}
+
 /// How long something has been running, at the precision a person reads at.
 #[must_use]
 pub fn format_elapsed(elapsed: std::time::Duration) -> String {

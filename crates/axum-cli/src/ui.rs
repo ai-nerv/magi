@@ -57,6 +57,7 @@ pub fn draw(
     mode: Mode,
 ) {
     let area = frame.area();
+    let mut hidden_below = 0usize;
     let rows = area.height;
 
     let prompt_lines = prompt::render(&app.editor, area.width, rows, theme);
@@ -125,20 +126,21 @@ pub fn draw(
                 height: used.min(live_area.height),
                 ..live_area
             };
+            hidden_below = app.scrollback.hidden_below(live_area.height);
             frame.render_widget(Paragraph::new(view), anchored);
         }
     }
 
-    frame.render_widget(
-        Paragraph::new(status::working(
-            app.status(),
-            app.tick,
-            theme,
-            app.connected,
-            app.elapsed(),
-        )),
-        status_area,
-    );
+    // Composed rather than passed in: the scroll note is a fact about where the reader is
+    // looking, which the status line has no business knowing how to compute.
+    let mut status_line =
+        status::working(app.status(), app.tick, theme, app.connected, app.elapsed());
+    if matches!(mode, Mode::Alt) {
+        status_line
+            .spans
+            .extend(status::scrolled(hidden_below, theme));
+    }
+    frame.render_widget(Paragraph::new(status_line), status_area);
     frame.render_widget(Paragraph::new(prompt_lines), prompt_area);
 
     if let Some(picker) = &app.picker {

@@ -60,6 +60,17 @@ impl Scrollback {
         self.follow
     }
 
+    /// How many lines sit below the current view.
+    ///
+    /// Zero while following. A reader who has scrolled up sees a screen that looks exactly
+    /// like the bottom of the transcript, and output arriving below it makes no sound.
+    #[must_use]
+    pub fn hidden_below(&self, height: u16) -> usize {
+        self.lines
+            .len()
+            .saturating_sub(self.offset + usize::from(height))
+    }
+
     /// The slice visible in a viewport `height` rows tall.
     pub fn view(&mut self, height: u16) -> &[Line<'static>] {
         let height = usize::from(height);
@@ -212,5 +223,71 @@ mod tests {
         let mut buffer = Scrollback::new();
         assert!(buffer.view(10).is_empty());
         assert!(buffer.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod hidden_tests {
+    use super::*;
+    use ratatui::text::Line;
+
+    fn filled(n: usize) -> Scrollback {
+        let mut s = Scrollback::new();
+        s.set_lines((0..n).map(|i| Line::from(i.to_string())).collect());
+        s
+    }
+
+    #[test]
+    fn following_the_tail_hides_nothing() {
+        let mut s = filled(100);
+        let _ = s.view(10);
+        assert_eq!(s.hidden_below(10), 0);
+    }
+
+    #[test]
+    fn scrolling_up_counts_what_is_below() {
+        // A scrolled screen looks exactly like the bottom of the transcript, and output
+        // arriving below it makes no sound.
+        let mut s = filled(100);
+        let _ = s.view(10);
+        s.scroll_up(30);
+        let _ = s.view(10);
+        assert_eq!(s.hidden_below(10), 30);
+    }
+
+    #[test]
+    fn coming_back_to_the_bottom_clears_it() {
+        let mut s = filled(100);
+        let _ = s.view(10);
+        s.scroll_up(30);
+        let _ = s.view(10);
+        s.to_bottom();
+        let _ = s.view(10);
+        assert_eq!(s.hidden_below(10), 0);
+    }
+
+    #[test]
+    fn a_transcript_shorter_than_the_screen_hides_nothing() {
+        let mut s = filled(3);
+        let _ = s.view(10);
+        assert_eq!(s.hidden_below(10), 0);
+    }
+}
+
+#[cfg(test)]
+mod note_tests {
+    use crate::status;
+
+    #[test]
+    fn nothing_below_is_nothing_said() {
+        assert!(status::scrolled(0, &crate::theme::DARK).is_empty());
+    }
+
+    #[test]
+    fn the_note_says_how_much_and_how_to_get_back() {
+        let spans = status::scrolled(42, &crate::theme::DARK);
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("42"), "{text}");
+        assert!(text.contains("shift+end"), "{text}");
     }
 }
