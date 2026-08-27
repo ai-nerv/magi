@@ -11,6 +11,7 @@ mod external_editor;
 mod keys;
 mod models;
 mod paths;
+mod shell;
 mod terminal;
 mod tools;
 mod ui;
@@ -38,6 +39,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Run a tool peer. Not for people: axum spawns these itself.
+    ///
+    /// The multi-call shape Tau uses — out-of-process tools with single-artifact deployment,
+    /// so `command = "axum"` in a declaration needs nothing else installed.
+    #[command(subcommand)]
+    Ext(Ext),
     /// List the tools the model can call, and how each is reached.
     Tools,
     /// List the providers and models axum knows about.
@@ -70,6 +77,7 @@ async fn main() -> Result<()> {
     let mode = cli.tui;
 
     match cli.command {
+        Some(Command::Ext(Ext::Shell)) => shell::run(),
         Some(Command::Tools) => {
             tools::print()?;
             Ok(())
@@ -123,4 +131,11 @@ fn unix_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+/// The peers axum ships.
+#[derive(Subcommand)]
+enum Ext {
+    /// A persistent shell, spoken to over the tool protocol.
+    Shell,
 }
