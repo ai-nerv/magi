@@ -236,21 +236,48 @@ fn change_colour(line: &str, theme: &Theme) -> Color {
     }
 }
 
+/// How much of the line the arguments may take between them.
+///
+/// A budget rather than a cap on each, shared out by how many there are. One argument is the
+/// thing being done — a command, a path — and cutting it at a fixed width to leave room for
+/// arguments that do not exist helps nobody. Three arguments are an `edit`, where the header
+/// answers "which call is this" and the diff two lines below answers what it did.
+const SUMMARY: usize = 72;
+
+/// The least any one argument gets, however many there are.
+const ARGUMENT_FLOOR: usize = 12;
+
 /// A one-line summary of a tool's arguments for the block header.
 ///
-/// The full JSON belongs in an expanded view; the header shows the values, which is what
-/// identifies the call at a glance.
+/// The values, not the JSON. The keys are implied by the tool's name — `read` takes a path,
+/// `bash` takes a command — and what is left after removing them is what a person is scanning
+/// for. The escaping goes too: `"old": "println!(\"one\");"` is three kinds of punctuation
+/// around one short string.
+///
+/// Falls back to the raw text for arguments that are not an object, because a tool may take
+/// anything and a header that renders nothing is worse than one that renders awkwardly.
 fn summarize(args: &str) -> String {
-    let flat: String = args
-        .split_whitespace()
+    let Ok(serde_json::Value::Object(fields)) = serde_json::from_str::<serde_json::Value>(args)
+    else {
+        return flatten(args);
+    };
+    let share = (SUMMARY / fields.len().max(1)).max(ARGUMENT_FLOOR);
+    fields
+        .values()
+        .map(|value| match value {
+            // Rendered rather than serialised: a string argument is text a person reads, and
+            // the quotes around it are the encoding rather than the value.
+            serde_json::Value::String(text) => clip(&flatten(text), share),
+            other => clip(&flatten(&other.to_string()), share),
+        })
+        .filter(|shown| !shown.is_empty())
         .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(120)
-        .collect();
-    flat.trim_matches(|c| c == '{' || c == '}')
-        .trim()
-        .to_owned()
+        .join(", ")
+}
+
+/// Collapse whitespace, so a multi-line argument stays on one line.
+fn flatten(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn clip(text: &str, width: usize) -> String {
@@ -526,5 +553,100 @@ mod tab_tests {
         let rendered = cells(&entry_lines(&entry, 60, &Theme::default()));
         assert!(!rendered.contains('\t'), "{rendered:?}");
         assert!(rendered.contains("    cargo build"), "{rendered:?}");
+    }
+}
+
+#[cfg(test)]
+mod summary_tests {
+    use super::*;
+
+    #[test]
+    fn a_header_shows_the_value_and_not_the_key() {
+        // `read "path": "a.rs"` is three kinds of punctuation around the one thing being read.
+        assert_eq!(summarize(r#"{"path": "a.rs"}"#), "a.rs");
+        assert_eq!(summarize(r#"{"command": "ls -la"}"#), "ls -la");
+    }
+
+    #[test]
+    fn a_string_argument_loses_its_escaping() {
+        // The quotes are the encoding, not the value: `"println!(\"one\");"` is a short line
+        // of code wearing a costume.
+        assert_eq!(
+            summarize(r#"{"old": "println!(\"one\");"}"#),
+            "println!(\"one\");"
+        );
+    }
+
+    #[test]
+    fn a_long_argument_is_elided_rather_than_shown_whole() {
+        // An `edit` header that repeats both sides in full is a diff written twice, once badly
+        // — and the real one is two lines below it.
+        let summary = summarize(&format!(r#"{{"new": "{}"}}"#, "x".repeat(200)));
+        assert!(summary.chars().count() <= SUMMARY, "{summary}");
+        assert!(summary.ends_with('…'), "{summary}");
+    }
+
+    #[test]
+    fn one_argument_gets_the_whole_budget() {
+        // A `bash` command is the thing being done. Cutting it at a third of the line to
+        // leave room for two arguments that do not exist helps nobody.
+        let command = "ls -la && cat main.rs 2>&1 | head";
+        assert_eq!(
+            summarize(&format!(r#"{{"command": "{command}"}}"#)),
+            command
+        );
+    }
+
+    #[test]
+    fn three_arguments_share_it() {
+        // An `edit`, where the diff two lines below says what actually changed.
+        let long = "y".repeat(100);
+        let summary = summarize(&format!(
+            r#"{{"a": "{long}", "b": "{long}", "c": "{long}"}}"#
+        ));
+        assert!(summary.chars().count() <= SUMMARY + 4, "{summary}");
+        assert_eq!(summary.matches('…').count(), 3, "each was cut: {summary}");
+    }
+
+    #[test]
+    fn several_arguments_are_separated_plainly() {
+        let summary = summarize(r#"{"a": "one", "b": "two"}"#);
+        assert_eq!(summary, "one, two");
+    }
+
+    #[test]
+    fn a_multi_line_argument_stays_on_one_line() {
+        // A heredoc in a `bash` call would otherwise push the whole block sideways.
+        let summary = summarize("{\"command\": \"echo a\\necho b\"}");
+        assert!(!summary.contains('\n'), "{summary}");
+        assert_eq!(summary, "echo a echo b");
+    }
+
+    #[test]
+    fn a_non_string_argument_is_still_shown() {
+        assert_eq!(summarize(r#"{"lines": 42, "all": true}"#), "42, true");
+    }
+
+    #[test]
+    fn arguments_keep_the_order_the_model_sent_them_in() {
+        // Sorted by key, an `edit` header reads `new, old, path` — the thing being edited
+        // last, after both sides of a change the diff below is about to show properly.
+        assert_eq!(
+            summarize(r#"{"path": "a.rs", "old": "x", "new": "y"}"#),
+            "a.rs, x, y"
+        );
+    }
+
+    #[test]
+    fn arguments_that_are_not_an_object_fall_back_rather_than_vanishing() {
+        // A tool may take anything, and a header that renders nothing is worse than one that
+        // renders awkwardly.
+        assert_eq!(summarize("not json at all"), "not json at all");
+        assert_eq!(summarize("[1, 2]"), "[1, 2]");
+    }
+
+    #[test]
+    fn a_call_with_no_arguments_summarises_to_nothing() {
+        assert_eq!(summarize("{}"), "");
     }
 }

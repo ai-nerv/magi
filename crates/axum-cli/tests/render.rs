@@ -81,7 +81,7 @@ fn a_conversation_renders_the_way_pi_lays_it_out() {
             "",                                 // assistant: leading blank
             " Running them now.",               // assistant: body, indented
             "",                                 // tool box: top padding
-            r#" bash "command": "cargo test""#, // tool box: header
+            " bash cargo test", // tool box: header, values without their keys
             " test result: ok. 42 passed",      // tool box: output
             "",                                 // tool box: bottom padding
         ]

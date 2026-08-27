@@ -6,6 +6,7 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
+serde_json.workspace = true
 axum-proto.workspace = true
 ratatui.workspace = true
 
