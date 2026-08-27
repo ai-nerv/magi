@@ -90,7 +90,13 @@ pub struct Compat {
 }
 
 /// A `Compat` with every question answered.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Serialisable because this, not the sparse `Compat`, is what a protocol description is
+/// handed. A description that had to write `compat.thinking_format or "openai"` would be
+/// keeping a second copy of the defaults, in another language, for the two of them to disagree
+/// about later.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub struct Resolved {
     /// Whether `store` is accepted.
     pub supports_store: bool,
@@ -167,6 +173,41 @@ impl Compat {
                 .requires_thinking_as_text
                 .unwrap_or(d.requires_thinking_as_text),
             thinking_format: self.thinking_format.unwrap_or(d.thinking_format),
+        }
+    }
+}
+
+impl Compat {
+    /// Layer these overrides on top of `base`, field by field.
+    ///
+    /// Per field, not per struct. A provider says what its whole endpoint does and a model
+    /// states the one thing it does differently; taking the model's table wholesale would
+    /// throw away everything the provider said, so a model that corrects one flag would
+    /// silently un-correct the rest. That is a bug you find as a 400 from one model on a
+    /// provider whose other models work.
+    #[must_use]
+    pub fn over(self, base: Option<Self>) -> Self {
+        let Some(base) = base else { return self };
+        Self {
+            supports_store: self.supports_store.or(base.supports_store),
+            supports_developer_role: self
+                .supports_developer_role
+                .or(base.supports_developer_role),
+            supports_reasoning_effort: self
+                .supports_reasoning_effort
+                .or(base.supports_reasoning_effort),
+            supports_usage_in_streaming: self
+                .supports_usage_in_streaming
+                .or(base.supports_usage_in_streaming),
+            supports_finish_reason: self.supports_finish_reason.or(base.supports_finish_reason),
+            max_tokens_field: self.max_tokens_field.or(base.max_tokens_field),
+            requires_tool_result_name: self
+                .requires_tool_result_name
+                .or(base.requires_tool_result_name),
+            requires_thinking_as_text: self
+                .requires_thinking_as_text
+                .or(base.requires_thinking_as_text),
+            thinking_format: self.thinking_format.or(base.thinking_format),
         }
     }
 }

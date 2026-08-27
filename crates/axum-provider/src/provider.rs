@@ -156,9 +156,10 @@ impl From<ProviderDecl> for Provider {
         for model in &mut models {
             model.provider.clone_from(&id);
             model.api = api;
-            // A provider-level override is the floor: a model may still state its own, which
-            // is the case detection got wrong twice.
-            model.compat = model.compat.or(compat);
+            // A provider-level override is the floor a model builds on, field by field. It
+            // was `.or()` -- take the model's whole table if it has one -- which meant a
+            // model correcting one flag threw away every other thing the provider had said.
+            model.compat = Some(model.compat.unwrap_or_default().over(compat));
         }
         Self {
             id,
@@ -292,5 +293,77 @@ mod tests {
     #[test]
     fn an_unknown_model_is_absent_rather_than_a_panic() {
         assert!(declared(groq()).model("nope").is_none());
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+
+    /// A provider stating its dialect, and one model correcting one flag.
+    fn provider() -> Provider {
+        serde_json::from_value(serde_json::json!({
+            "id": "p", "name": "P", "api": "openai-completions", "auth": { "kind": "none" },
+            "compat": {
+                "supports_finish_reason": false,
+                "max_tokens_field": "max_completion_tokens",
+                "requires_tool_result_name": true
+            },
+            "models": [
+                { "id": "plain", "name": "Plain", "context_window": 1000, "max_tokens": 100 },
+                { "id": "odd", "name": "Odd", "context_window": 1000, "max_tokens": 100,
+                  "compat": { "supports_store": true } }
+            ]
+        }))
+        .expect("provider")
+    }
+
+    #[test]
+    fn a_model_correcting_one_flag_keeps_the_rest_of_its_providers() {
+        // This was `.or()`: the model's whole table replaced the provider's, so declaring one
+        // exception silently un-declared everything else. It presents as a 400 from one model
+        // on a provider whose other models work, which is a long way from the cause.
+        let compat = provider()
+            .model("odd")
+            .expect("model")
+            .compat
+            .expect("compat");
+        assert_eq!(compat.supports_store, Some(true), "the model's own wins");
+        assert_eq!(
+            compat.supports_finish_reason,
+            Some(false),
+            "the provider's survives"
+        );
+        assert_eq!(
+            compat.max_tokens_field,
+            Some(crate::compat::MaxTokensField::MaxCompletionTokens),
+            "and so does this one"
+        );
+        assert_eq!(compat.requires_tool_result_name, Some(true));
+    }
+
+    #[test]
+    fn a_model_stating_nothing_gets_all_of_its_providers() {
+        let compat = provider()
+            .model("plain")
+            .expect("model")
+            .compat
+            .expect("compat");
+        assert_eq!(compat.supports_finish_reason, Some(false));
+        assert_eq!(compat.requires_tool_result_name, Some(true));
+    }
+
+    #[test]
+    fn a_model_may_still_contradict_its_provider() {
+        // Overriding must remain possible; the fix is about the fields nobody mentioned.
+        let p: Provider = serde_json::from_value(serde_json::json!({
+            "id": "p", "name": "P", "api": "openai-completions", "auth": { "kind": "none" },
+            "compat": { "supports_finish_reason": false },
+            "models": [{ "id": "m", "name": "M", "context_window": 1000, "max_tokens": 100,
+                         "compat": { "supports_finish_reason": true } }]
+        }))
+        .expect("provider");
+        let compat = p.model("m").expect("model").compat.expect("compat");
+        assert_eq!(compat.supports_finish_reason, Some(true));
     }
 }

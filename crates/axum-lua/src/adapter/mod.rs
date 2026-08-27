@@ -78,13 +78,31 @@ impl LuaAdapter {
     }
 }
 
+/// The model as a protocol description should see it.
+///
+/// Its `compat` is replaced by the fully resolved dialect, so a description reads
+/// `compat.thinking_format` and never `compat.thinking_format or "openai"`. Every default
+/// lives in `axum_provider::compat::Resolved` and nowhere else — ten descriptions each
+/// carrying their own copy is ten places for one of them to fall behind.
+fn described(model: &Model) -> serde_json::Value {
+    let mut value = serde_json::to_value(model).unwrap_or_default();
+    if let Some(object) = value.as_object_mut() {
+        let resolved = axum_provider::compat::resolve(model.compat);
+        object.insert(
+            "compat".to_owned(),
+            serde_json::to_value(resolved).unwrap_or_default(),
+        );
+    }
+    value
+}
+
 impl Adapter for LuaAdapter {
     fn endpoint(&self, base_url: &str, model: &Model) -> String {
         self.call(
             "endpoint",
             &[
                 serde_json::json!(base_url.trim_end_matches('/')),
-                serde_json::to_value(model).unwrap_or_default(),
+                described(model),
             ],
         )
         .and_then(|v| v.as_str().map(str::to_owned))
@@ -113,7 +131,7 @@ impl Adapter for LuaAdapter {
         self.call(
             "request",
             &[
-                serde_json::to_value(model).unwrap_or_default(),
+                described(model),
                 serde_json::to_value(context).unwrap_or_default(),
                 serde_json::to_value(options).unwrap_or_default(),
             ],

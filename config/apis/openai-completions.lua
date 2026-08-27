@@ -65,7 +65,10 @@ local function convert(m, out, compat)
 end
 
 function M.request(model, ctx, opts)
-  local compat = model.compat or {}
+  -- Every field is answered before this file sees it: the host resolves the catalog's sparse
+  -- `compat` against the conservative defaults. So `compat.x` is safe and `compat.x or <a
+  -- default>` would be a second copy of a decision that already has a home.
+  local compat = model.compat
   local messages = {}
 
   if ctx.system then
@@ -80,12 +83,12 @@ function M.request(model, ctx, opts)
   local body = { model = model.id, stream = true, messages = messages }
 
   -- Which field caps the response is the single most common way these dialects differ.
-  local field = compat.max_tokens_field or "max_tokens"
+  local field = compat.max_tokens_field
   body[field] = math.min(opts.max_tokens or model.max_tokens, model.max_tokens)
 
   if compat.supports_store then body.store = false end
   -- Usage is not reported while streaming unless asked for, and some dialects cannot.
-  if compat.supports_usage_in_streaming ~= false then
+  if compat.supports_usage_in_streaming then
     body.stream_options = { include_usage = true }
   end
 
@@ -103,7 +106,7 @@ function M.request(model, ctx, opts)
   -- Five vendors, five ways to ask for reasoning. The dialect is declared in the catalog.
   local level = opts.thinking
   if level and level ~= "off" then
-    local format = compat.thinking_format or "openai"
+    local format = compat.thinking_format
     if format == "openrouter" then
       body.reasoning = { effort = level }
     elseif format == "deepseek" then
