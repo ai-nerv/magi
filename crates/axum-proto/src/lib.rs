@@ -68,6 +68,15 @@ pub struct ModelChoice {
     pub context_window: u64,
     /// Empty when it is ready; otherwise what to do about it.
     pub requirement: String,
+    /// Environment variables that would make it ready, if that is what it needs.
+    ///
+    /// Carried structurally rather than parsed back out of `requirement`, because the UI has to
+    /// answer a question the daemon cannot: whether *this* process can see a variable the
+    /// daemon could not. A daemon outlives the shell that started it, so a key exported
+    /// afterwards never reaches it, and "set OPENROUTER_API_KEY" is then a lie told to somebody
+    /// who has already set it.
+    #[serde(default)]
+    pub wants_vars: Vec<String>,
     /// Whether it can reason, so a thinking level can be offered or refused.
     #[serde(default)]
     pub reasoning: bool,

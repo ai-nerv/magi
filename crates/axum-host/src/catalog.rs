@@ -109,6 +109,11 @@ impl Catalog {
                 } else {
                     provider.auth.requirement()
                 };
+                let wants: Vec<String> = if provider.is_configured() {
+                    Vec::new()
+                } else {
+                    provider.auth.vars().to_vec()
+                };
                 provider
                     .models
                     .iter()
@@ -116,6 +121,7 @@ impl Catalog {
                         name: model.qualified(),
                         context_window: model.context_window,
                         requirement: requirement.clone(),
+                        wants_vars: wants.clone(),
                         reasoning: model.reasoning,
                     })
             })

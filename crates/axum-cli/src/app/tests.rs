@@ -377,6 +377,7 @@ mod onboarding_tests {
                 name: "p/m".into(),
                 context_window: 1000,
                 requirement: "set P_KEY".into(),
+                wants_vars: Vec::new(),
                 reasoning: false,
             }],
             thinking: String::new(),
@@ -451,6 +452,7 @@ mod picking {
                 name: "p/m".into(),
                 context_window: 1000,
                 requirement: String::new(),
+                wants_vars: Vec::new(),
                 reasoning: true,
             }],
             thinking: "off".into(),
@@ -499,6 +501,7 @@ mod picking {
                 name: "p/plain".into(),
                 context_window: 1000,
                 requirement: String::new(),
+                wants_vars: Vec::new(),
                 reasoning: false,
             }],
             thinking: "off".into(),
@@ -647,5 +650,100 @@ mod clearing {
         assert!(app.started());
         app.clear_view();
         assert!(!app.started());
+    }
+}
+
+mod stale_daemon {
+    use super::super::*;
+
+    fn choice(name: &str, requirement: &str, wants: &[&str]) -> axum_proto::ModelChoice {
+        axum_proto::ModelChoice {
+            name: name.to_owned(),
+            context_window: 100_000,
+            requirement: requirement.to_owned(),
+            wants_vars: wants.iter().map(|v| (*v).to_owned()).collect(),
+            reasoning: false,
+        }
+    }
+
+    fn notices(app: &App) -> Vec<String> {
+        app.entries()
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Notice { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_key_this_process_can_see_is_not_a_key_to_go_and_set() {
+        // The daemon captures its environment at start and outlives the shell that started it,
+        // so "set OPENROUTER_API_KEY" is a lie told to somebody who set it an hour ago. Only
+        // this process can tell the two apart.
+        //
+        // `HOME` stands in for the key: the workspace denies `unsafe`, so a test cannot set an
+        // environment variable, and what is being checked is "a variable this process has"
+        // rather than anything about that particular name.
+        let mut app = App::new();
+        app.choices = vec![choice("openrouter/m", "set HOME", &["HOME"])];
+        app.open_model_picker();
+        let row = app
+            .picker
+            .as_ref()
+            .expect("a list")
+            .current()
+            .expect("a row");
+        assert!(row.detail.contains("daemon predates it"), "{}", row.detail);
+        assert!(
+            notices(&app).iter().any(|n| n.contains("axum stop")),
+            "and it names the way out: {:?}",
+            notices(&app)
+        );
+    }
+
+    #[test]
+    fn a_key_nobody_has_set_still_says_to_set_it() {
+        let mut app = App::new();
+        app.choices = vec![choice(
+            "anthropic/m",
+            "set AXUM_NO_SUCH_KEY_ANYWHERE",
+            &["AXUM_NO_SUCH_KEY_ANYWHERE"],
+        )];
+        app.open_model_picker();
+        let row = app
+            .picker
+            .as_ref()
+            .expect("a list")
+            .current()
+            .expect("a row");
+        assert_eq!(row.detail, "set AXUM_NO_SUCH_KEY_ANYWHERE");
+        assert!(notices(&app).is_empty(), "{:?}", notices(&app));
+    }
+
+    #[test]
+    fn a_ready_model_says_its_size_as_before() {
+        let mut app = App::new();
+        app.choices = vec![choice("local/m", "", &[])];
+        app.open_model_picker();
+        let row = app
+            .picker
+            .as_ref()
+            .expect("a list")
+            .current()
+            .expect("a row");
+        assert!(row.ready);
+        assert_eq!(row.detail, "100k");
+    }
+
+    #[test]
+    fn one_notice_however_many_models_the_provider_offers() {
+        // A provider with six models must not produce six identical warnings.
+        let mut app = App::new();
+        app.choices = (0..6)
+            .map(|i| choice(&format!("openrouter/m{i}"), "set HOME", &["HOME"]))
+            .collect();
+        app.open_model_picker();
+        assert_eq!(notices(&app).len(), 1, "{:?}", notices(&app));
     }
 }

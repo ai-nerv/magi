@@ -447,17 +447,35 @@ impl App {
     /// configured nothing, and a list narrowed to what already works would be empty exactly
     /// when they most need it to name a variable.
     pub fn open_model_picker(&mut self) {
-        let choices = self
+        let mut daemon_is_behind = false;
+        let choices: Vec<axum_tui::picker::Choice> = self
             .choices
             .iter()
-            .map(|choice| axum_tui::picker::Choice {
-                value: choice.name.clone(),
-                detail: if choice.requirement.is_empty() {
-                    axum_tui::footer::format_tokens(choice.context_window)
-                } else {
-                    choice.requirement.clone()
-                },
-                ready: choice.requirement.is_empty(),
+            .map(|choice| {
+                // The daemon says "set OPENROUTER_API_KEY". That is a lie to somebody who has
+                // already set it — a daemon captures its environment when it starts and
+                // outlives the shell that started it, so a key exported afterwards never
+                // reaches it. Only this process can tell the two apart, because only this
+                // process is the one you just typed in.
+                let stale = !choice.wants_vars.is_empty()
+                    && choice
+                        .wants_vars
+                        .iter()
+                        .any(|var| std::env::var_os(var).is_some_and(|v| !v.is_empty()));
+                if stale {
+                    daemon_is_behind = true;
+                }
+                axum_tui::picker::Choice {
+                    value: choice.name.clone(),
+                    detail: if choice.requirement.is_empty() {
+                        axum_tui::footer::format_tokens(choice.context_window)
+                    } else if stale {
+                        "you have this key — the daemon predates it".to_owned()
+                    } else {
+                        choice.requirement.clone()
+                    },
+                    ready: choice.requirement.is_empty(),
+                }
             })
             .collect();
         let current = self.model.as_ref().map(|m| m.name.clone());
@@ -467,6 +485,13 @@ impl App {
                 "No providers are declared. `axum models --all` lists what axum ships.".to_owned(),
             );
             return;
+        }
+        if daemon_is_behind {
+            self.show_notice(
+                "A key you have set is not visible to the daemon serving this directory — it was \
+                 started before you set it. Run `axum stop`, then start again."
+                    .to_owned(),
+            );
         }
         self.picker = Some(picker);
         self.picking = Some(Picking::Model);
