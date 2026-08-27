@@ -146,22 +146,35 @@ fn an_installed_tool_file_replaces_the_one_that_ships() {
     // `make configs` writes these files so they can be edited. An edit that changes nothing is
     // the bug this pins: for the whole of M3 they were installed and never read.
     let dir = workspace("override");
+    // The transport, not the description: since M4 a peer declares its own description and
+    // that wins, so asserting on one tests which binary happens to be on PATH rather than
+    // which file was read. This test passed for a year of afternoons because the `axum` it
+    // found had no `ext` subcommand, the peer never started, and the config's claim stood.
     machine(
         &dir,
         "tools/bash.lua",
         r#"
 axum.tool("bash", {
-  description = "EDITED BY THE USER.",
+  description = "A shell that is not a peer at all.",
   parameters = { type = "object" },
-  transport = { kind = "process", command = "axum", args = { "ext", "shell" } },
+  transport = { kind = "lua" },
+  run = function() return "not a peer" end,
 })
 "#,
     );
     let output = axum(&dir, &["tools"]);
     let listed = String::from_utf8_lossy(&output.stdout);
+    let bash = listed
+        .lines()
+        .find(|line| line.starts_with("bash"))
+        .expect("bash is offered");
     assert!(
-        listed.contains("EDITED BY THE USER"),
-        "the installed file is what is used: {listed}"
+        bash.contains("lua"),
+        "the installed file replaced the shipped process tool: {bash}"
+    );
+    assert!(
+        bash.contains("not a peer"),
+        "and its description is the installed one: {bash}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
