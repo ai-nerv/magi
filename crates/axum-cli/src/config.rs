@@ -12,12 +12,18 @@ use axum_lua::{Config, Engine, LuaError};
 use axum_provider::provider::Provider;
 
 /// The catalog axum ships, as Lua.
-const BUILTIN: &str = include_str!("../lua/providers.lua");
+const BUILTIN: &str = include_str!("../../../config/providers.lua");
 
 /// Everything the config files said, in one value.
 pub struct Loaded {
     /// Settings and registrations, as the config left them.
     pub config: Config,
+    /// Every protocol description that was run, in order, as `(name, source)`.
+    ///
+    /// Kept so the daemon's worker can build its VM from exactly what the catalog was read
+    /// with. Rebuilding from the compiled-in copies would mean an edited protocol changed what
+    /// `axum models` printed and nothing the daemon actually did.
+    pub apis: Vec<(String, String)>,
     /// Every provider declared, built-ins first and user files layered over them.
     pub providers: Vec<Provider>,
 }
@@ -29,18 +35,47 @@ pub struct Loaded {
 /// fatal, because it expressed an intention that has not been carried out.
 pub fn load() -> Result<Loaded, LuaError> {
     let mut engine = Engine::new();
+    // The compiled-in copies first, so a binary with no config directory still works.
+    let mut apis: Vec<(String, String)> = Vec::new();
+    for (name, source) in axum_lua::adapter::BUILTIN {
+        engine.run(source, name)?;
+        apis.push(((*name).to_owned(), (*source).to_owned()));
+    }
     engine.run(BUILTIN, "providers.lua")?;
+
+    // Then whatever is installed, which overrides any of it by the ordinary rule that
+    // registration is keyed.
+    for path in installed_files() {
+        engine.run_file(&path)?;
+        // An installed protocol replaces its compiled-in namesake in what the worker is given,
+        // so the daemon speaks the file the user edited.
+        if path.parent().is_some_and(|p| p.ends_with("apis"))
+            && let Ok(source) = std::fs::read_to_string(&path)
+        {
+            {
+                let name = path
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                match apis.iter().position(|(n, _)| *n == name) {
+                    Some(at) => apis[at] = (name, source),
+                    None => apis.push((name, source)),
+                }
+            }
+        }
+    }
+    // Then the project, last, so a repository can override a machine.
     for path in axum_lua::search_paths() {
-        if path.exists() {
+        if path.exists() && path.file_name().is_some_and(|n| n == ".axum.lua") {
             engine.run_file(&path)?;
         }
     }
     engine.harvest();
-    collect(engine.config())
+    collect(engine.config(), apis)
 }
 
 /// Turn what the registrar collected into providers.
-fn collect(config: Config) -> Result<Loaded, LuaError> {
+fn collect(config: Config, apis: Vec<(String, String)>) -> Result<Loaded, LuaError> {
     let mut providers = Vec::new();
     for (id, spec) in config.all("provider") {
         providers.push(declare(id, spec).map_err(|message| LuaError::Shape {
@@ -48,7 +83,11 @@ fn collect(config: Config) -> Result<Loaded, LuaError> {
             message,
         })?);
     }
-    Ok(Loaded { config, providers })
+    Ok(Loaded {
+        config,
+        apis,
+        providers,
+    })
 }
 
 /// Build a provider from what the config handed the registrar.
@@ -69,7 +108,7 @@ pub fn builtin() -> Result<Vec<Provider>, LuaError> {
     let mut engine = Engine::new();
     engine.run(BUILTIN, "providers.lua")?;
     engine.harvest();
-    Ok(collect(engine.config())?.providers)
+    Ok(collect(engine.config(), Vec::new())?.providers)
 }
 
 /// Find the model the config chose, and the provider offering it.
@@ -107,11 +146,55 @@ pub fn backend(loaded: &Loaded) -> Option<axum_host::turn::Backend> {
         return None;
     }
     Some(axum_host::turn::Backend {
+        apis: loaded.apis.clone(),
         provider: provider.clone(),
         model: model.clone(),
         options: axum_provider::api::Options::default(),
     })
 }
+/// Files the installed config directory contributes, in the order they are applied.
+///
+/// Protocols first, then the catalog, then the user's own file — because a provider names a
+/// protocol and a setting names a model, so each layer needs the one under it to already exist.
+///
+/// The compiled-in copies run before any of this, so a fresh binary with no config directory
+/// still speaks and still has a catalog. Installing one with `make configs` gives you the same
+/// files to edit; it does not turn anything on that was off.
+fn installed_files() -> Vec<std::path::PathBuf> {
+    let Some(dir) = config_dir() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+
+    // Every protocol in `apis/`, sorted so the order is the same on every machine.
+    if let Ok(entries) = std::fs::read_dir(dir.join("apis")) {
+        let mut apis: Vec<std::path::PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "lua"))
+            .collect();
+        apis.sort();
+        out.extend(apis);
+    }
+
+    for name in ["providers.lua", "init.lua"] {
+        let path = dir.join(name);
+        if path.exists() {
+            out.push(path);
+        }
+    }
+    out
+}
+
+/// Where an installed configuration lives.
+#[must_use]
+pub fn config_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
+        .map(|base| base.join("axum"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,7 +300,9 @@ mod tests {
         engine.run(BUILTIN, "providers.lua").expect("builtin");
         engine.run(extra, "user.lua").expect("user config");
         engine.harvest();
-        collect(engine.config()).expect("collect").providers
+        collect(engine.config(), Vec::new())
+            .expect("collect")
+            .providers
     }
 
     #[test]
@@ -304,6 +389,35 @@ mod tests {
         )
         .expect("a provider");
         assert_eq!(p.id, "real", "the registrar decides the name");
+    }
+
+    #[test]
+    fn an_installed_protocol_reaches_the_backend_not_just_the_listing() {
+        // The bug this pins: an edited `apis/*.lua` changed what `axum models` printed and
+        // nothing the daemon actually did, because the worker rebuilt its VM from the
+        // compiled-in copies.
+        let loaded = Loaded {
+            config: Config::default(),
+            apis: vec![("openai-completions".to_owned(), "-- edited".to_owned())],
+            providers: Vec::new(),
+        };
+        assert_eq!(
+            loaded.apis.first().map(|(_, source)| source.as_str()),
+            Some("-- edited"),
+            "what was loaded is what the worker is handed"
+        );
+    }
+
+    #[test]
+    fn the_compiled_in_protocols_are_carried_as_a_starting_point() {
+        let loaded = load().expect("the built-in configuration must load");
+        assert!(
+            loaded
+                .apis
+                .iter()
+                .any(|(name, _)| name == "openai-completions"),
+            "a fresh install must still speak"
+        );
     }
 
     #[test]

@@ -18,6 +18,13 @@ use axum_provider::provider::Provider;
 /// a Lua VM is neither `Send` nor `Sync` and cannot be handed over after the fact.
 #[derive(Debug, Clone)]
 pub struct Backend {
+    /// The protocol descriptions to build the VM from, as `(name, source)`.
+    ///
+    /// Carried as text rather than as a built VM because a VM cannot cross a thread boundary,
+    /// and read from the same place the catalog was so that a protocol the user edited is the
+    /// one the daemon speaks. Building from the compiled-in copies instead was a bug: an
+    /// edited `apis/*.lua` changed what `axum models` reported and nothing else.
+    pub apis: Vec<(String, String)>,
     /// The provider offering the model.
     pub provider: Provider,
     /// The model to call.

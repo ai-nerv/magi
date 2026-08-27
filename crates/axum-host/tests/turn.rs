@@ -87,6 +87,8 @@ fn backend(base_url: String) -> Backend {
         compat: None,
     };
     Backend {
+        // Empty: this test builds its own adapter directly, and a worker is not involved.
+        apis: Vec::new(),
         provider: Provider {
             id: "fake".into(),
             name: "Fake".into(),

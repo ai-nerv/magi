@@ -80,9 +80,11 @@ async fn main() -> Result<()> {
                 session.id(),
                 socket.display()
             );
-            let backend = crate::config::load()
-                .ok()
-                .and_then(|l| crate::config::backend(&l));
+            // Fatal rather than defaulted: a config that will not run has expressed an
+            // intention that has not been carried out, and a daemon that quietly ignores it
+            // answers every prompt with the wrong model for as long as nobody notices.
+            let loaded = crate::config::load()?;
+            let backend = crate::config::backend(&loaded);
             if backend.is_none() {
                 eprintln!("axum host: no model configured; prompts will say so");
             }

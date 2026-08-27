@@ -12,6 +12,7 @@ streaming, an editor-grade prompt.
 model, no agent loop, and no tools yet. See `PLAN.md` for the milestone plan.
 
 ```sh
+make configs      # install config/ into ~/.config/axum, ready to edit
 make run          # the UI, against a replayed session (alt screen)
 make run --inline # the same, letting the terminal keep the history
 make build        # the release binary, static where the toolchain allows it
@@ -85,3 +86,27 @@ statically linked anyway.
 The release profile is pinned rather than left to defaults — `lto = "thin"`,
 `codegen-units = 16` — because a build that silently switches to fat LTO and one codegen unit
 turns a ten-second link into minutes.
+
+## Configuration
+
+Everything axum knows about the outside world is Lua, and it all lives in `config/`:
+
+| | |
+|---|---|
+| `config/apis/*.lua` | the wire protocols — how to talk to an endpoint |
+| `config/providers.lua` | the catalog — which endpoints exist and what they offer |
+| `config/init.lua` | your settings, and anything you want to add |
+
+`make configs` copies them to `$XDG_CONFIG_HOME/axum/`, where axum reads them. The binary also
+carries a copy, so a fresh install already speaks and already has a catalog — installing gives
+you the real files to edit, it does not turn anything on that was off.
+
+Layered, later winning by registration id:
+
+```
+compiled-in defaults  →  ~/.config/axum/apis/*.lua  →  providers.lua  →  init.lua  →  ./.axum.lua
+```
+
+A provider or a protocol declared twice replaces rather than appends, which is what makes both
+an override and a loop over a directory of machines safe to re-run. A file that exists and does
+not load is fatal: it expressed an intention that has not been carried out.

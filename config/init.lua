@@ -1,0 +1,32 @@
+-- axum's configuration.
+--
+-- A program, not a data file: it can probe the machine it runs on, loop over a directory of
+-- endpoints, and branch on what answers. Settings are assigned, descriptions are handed to a
+-- registrar, and the file returns nothing.
+--
+-- Everything beside this file is loaded before it, so you can override any of it here:
+--
+--   apis/*.lua      the wire protocols — how to talk to an endpoint
+--   providers.lua   the catalog — which endpoints exist and what they offer
+--
+-- Edit those directly, or leave them alone and add what you need here. `make configs` copies
+-- this directory over the top again, so keep your own additions in a file of your own if you
+-- expect to re-run it.
+
+-- Which model to use, as `axum models` prints it.
+axum.model = "anthropic/claude-sonnet-4-5"
+
+-- An endpoint of your own needs no protocol of its own if it speaks a dialect axum knows:
+--
+-- axum.provider("my-box", {
+--   name = "My GPU box",
+--   api = "openai-completions",
+--   base_url = "http://10.0.0.7:8000/v1",
+--   auth = { kind = "none" },
+--   models = {
+--     { id = "qwen3-coder", name = "Qwen3 Coder", context_window = 262144, max_tokens = 32768 },
+--   },
+-- })
+--
+-- Registration is keyed, so declaring the same id twice replaces rather than appends — which
+-- is what makes a loop over a directory of machines safe to re-run.

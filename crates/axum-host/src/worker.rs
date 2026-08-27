@@ -43,11 +43,14 @@ impl Worker {
             // The VM is built here, not handed over: it cannot cross a thread boundary, and
             // building it where it lives is also where a broken protocol description should
             // surface.
-            let adapter = match axum_lua::adapter::engine_with_builtins()
-                .map_err(|e| e.to_string())
-                .and_then(|engine| {
-                    axum_lua::adapter::LuaAdapter::new(engine, backend.model.api.as_str())
-                }) {
+            let built = (|| {
+                let mut engine = axum_lua::Engine::new();
+                for (name, source) in &backend.apis {
+                    engine.run(source, name).map_err(|e| e.to_string())?;
+                }
+                axum_lua::adapter::LuaAdapter::new(engine, backend.model.api.as_str())
+            })();
+            let adapter = match built {
                 Ok(adapter) => adapter,
                 Err(why) => {
                     eprintln!("axum host: {why}");

@@ -298,6 +298,69 @@ make.recipe{
   end,
 }
 
+
+---------------------------------------------------------------- configuration
+
+-- axum's own configuration lives in `config/`, and this installs it: `config/*` becomes
+-- `~/.config/axum/*`. The binary carries a copy of the same files, so a fresh install already
+-- speaks and already has a catalog; this is how you get the real ones to edit.
+--
+-- The same shape as hexe's and oslo's `configs` recipe, deliberately: three tools that install
+-- their configuration three different ways is three things to remember.
+make.recipe{
+  name = "configs",
+  desc = "install config/ into $XDG_CONFIG_HOME/axum",
+  params = { { "--dest", desc = "somewhere other than the config directory" } },
+  run = function(a)
+    assert(oslo.run{ "sh", "-c", "command -v rsync", capture = true }.ok,
+           "rsync is not installed; install it first")
+    -- Asked of git rather than assumed from the working directory, so this works from anywhere
+    -- in the tree. Outside a repository, where the command was run is the best answer there is.
+    local top = oslo.run{ "git", "rev-parse", "--show-toplevel", capture = true }
+    local root = top.ok and (top.out or ""):match("^%s*(.-)%s*$") or ""
+    if root == "" then root = oslo.sys.pwd() end
+    local source = root .. "/config"
+    assert(oslo.fs.stat(source .. "/"), "there is no config/ directory in " .. root)
+
+    local dest = a.dest
+    if not dest then
+      local config = os.getenv("XDG_CONFIG_HOME")
+      if not config or config == "" then config = os.getenv("HOME") .. "/.config" end
+      dest = config .. "/" .. NAME
+    end
+    sh.mkdir("-p", dest)
+
+    -- One entry at a time, each mirrored with --delete, rather than one --delete over the whole
+    -- tree: the destination is where anything else you keep beside init.lua lives, and a
+    -- tree-wide mirror would take it with it.
+    local synced = 0
+    for _, path in ipairs(oslo.fs.glob(source .. "/*")) do
+      local name = oslo.path.name(path)
+      if oslo.fs.stat(path .. "/") then
+        sh.mkdir("-p", dest .. "/" .. name)
+        sh.rsync("-a", "--delete", path .. "/", dest .. "/" .. name .. "/")
+      else
+        sh.rsync("-a", path, dest .. "/" .. name)
+      end
+      synced = synced + 1
+    end
+    print(oslo.ui.style("✓ ", { fg = "green" }) ..
+          ("%d entr%s -> %s"):format(synced, synced == 1 and "y" or "ies", dest))
+
+    -- Installed, then read back. axum loads its own configuration, so a file that will not run
+    -- is worth knowing about now rather than the next time a daemon starts and quietly falls
+    -- back to what it was compiled with.
+    local binary = binary_path()
+    if oslo.fs.stat(binary) then
+      local home = dest:gsub("/" .. NAME .. "$", "")
+      local checked = oslo.run{ "sh", "-c",
+        ("XDG_CONFIG_HOME=%q %q models --all >/dev/null"):format(home, binary) }
+      assert(checked.ok, "the installed configuration does not load")
+      print(dim("   it loads"))
+    end
+  end,
+}
+
 make.recipe{ name = "test", desc = "the suite",
              run = function() sh.cargo("test", "--all-targets") end }
 make.alias("t", "test")

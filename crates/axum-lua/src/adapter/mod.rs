@@ -158,20 +158,20 @@ fn delta_from_json(value: &serde_json::Value) -> Option<Delta> {
 pub const BUILTIN: &[(&str, &str)] = &[
     (
         "anthropic-messages",
-        include_str!("../../lua/apis/anthropic-messages.lua"),
+        include_str!("../../../../config/apis/anthropic-messages.lua"),
     ),
     (
         "openai-completions",
-        include_str!("../../lua/apis/openai-completions.lua"),
+        include_str!("../../../../config/apis/openai-completions.lua"),
     ),
     (
         "openai-responses",
-        include_str!("../../lua/apis/openai-responses.lua"),
+        include_str!("../../../../config/apis/openai-responses.lua"),
     ),
-    ("google", include_str!("../../lua/apis/google.lua")),
+    ("google", include_str!("../../../../config/apis/google.lua")),
     (
         "pi-messages",
-        include_str!("../../lua/apis/pi-messages.lua"),
+        include_str!("../../../../config/apis/pi-messages.lua"),
     ),
 ];
 
