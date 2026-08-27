@@ -99,6 +99,8 @@ local function need(tool, why)
   assert(oslo.run{ "sh", "-c", "command -v " .. tool, capture = true }.ok, why)
 end
 
+
+
 make.recipe{
   name = "release",
   desc = "cut a version: --type patch | minor | major | M.m.p",
@@ -170,6 +172,28 @@ local function binary_path()
   return ("target/release/%s"):format(BIN)
 end
 
+-- Say when what is on PATH is older than what was just built.
+--
+-- The recurring trap, and it has cost two evenings. `make build` writes into `target/`, `axum`
+-- runs whatever is on PATH, and nothing connected the two: you fix a bug, rebuild, run `axum`,
+-- and watch the bug you just fixed happen again. Both `build` and `configs` say so now, because
+-- each is a moment somebody is about to go and try the thing.
+--
+-- Below `binary_path` on purpose: it needs `BIN` and `binary_path`, and a `local` declared later
+-- in the file is a different variable from the global this would otherwise read.
+local function warn_if_install_is_behind()
+  local installed = PREFIX .. "/bin/" .. BIN
+  if not oslo.fs.stat(installed) then
+    print(dim("   nothing is installed yet — run `make install`"))
+    return
+  end
+  local newer = oslo.run{ "sh", "-c", ("test %q -nt %q"):format(binary_path(), installed) }
+  if newer.ok then
+    print(oslo.ui.style("!  ", { fg = "yellow" }) ..
+          ("%s is older than what you have built — run `make install`"):format(installed))
+  end
+end
+
 -- Which backend the UI should draw with.
 --
 -- `--alt` is the default because a buffer we own is the only one a future feature can search,
@@ -211,6 +235,7 @@ make.recipe{
   run = function()
     build_binary(true)
     report(binary_path())
+    warn_if_install_is_behind()
   end,
 }
 make.alias("b", "build")
@@ -381,20 +406,8 @@ make.recipe{
     end
 
     -- Configuration on its own does nothing for a stale binary, and the two are installed by
-    -- separate commands. Somebody who ran `make configs` and found nothing had changed spent
-    -- an evening on a build from a milestone ago; saying so here costs a line.
-    local installed = PREFIX .. "/bin/" .. BIN
-    local there = oslo.fs.stat(installed)
-    if not there then
-      print(dim("   nothing is installed yet — run `make install`"))
-    else
-      local newer = oslo.run{ "sh", "-c",
-        ("test %q -nt %q"):format(binary_path(), installed) }
-      if newer.ok then
-        print(oslo.ui.style("!  ", { fg = "yellow" }) ..
-              ("%s is older than what you have built — run `make install`"):format(installed))
-      end
-    end
+    -- separate commands.
+    warn_if_install_is_behind()
   end,
 }
 
