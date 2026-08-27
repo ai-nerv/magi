@@ -11,6 +11,7 @@ members = [
   "crates/axum-cli",
   "crates/axum-core",
   "crates/axum-testkit",
+  "crates/axum-tools",
 ]
 resolver = "3"
 
@@ -39,6 +40,7 @@ axum-model = { path = "crates/axum-model" }
 axum-proto = { path = "crates/axum-proto" }
 axum-provider = { path = "crates/axum-provider" }
 axum-testkit = { path = "crates/axum-testkit" }
+axum-tools = { path = "crates/axum-tools" }
 axum-tui = { path = "crates/axum-tui" }
 
 anyhow = "1.0"
@@ -47,6 +49,7 @@ clap = { version = "4.5", features = ["derive", "std", "help", "usage", "error-c
 bytes = "1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 ignore = "0.4"
+similar = "2"
 luna = { git = "https://github.com/onix-os/luna", tag = "v0.5.0" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "gzip"] }
 crossterm = { version = "0.28", default-features = false, features = ["bracketed-paste", "events", "event-stream"] }
