@@ -225,7 +225,7 @@ fn a_footer_row_is_exactly_the_terminal_width() {
         mode: "inline",
     };
     let lines = axum_tui::footer::render(&data, 70, &Theme::default());
-    let stats: usize = lines[1]
+    let stats: usize = lines[0]
         .spans
         .iter()
         .map(|s| s.content.chars().count())

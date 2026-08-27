@@ -77,6 +77,18 @@ fn score_exact(query: &str, text: &str) -> Option<Match> {
     if query_index < query_chars.len() {
         return None;
     }
+    // A row that literally contains what you typed beats one that merely has those letters in
+    // order. Pi's weights are tuned for file paths, where a query is usually a prefix and the
+    // position penalty is the right tiebreak; a model list is the other shape — the word you
+    // want is buried at the end of `openrouter/anthropic/claude-opus-5`, so that penalty put
+    // `openrouter/deepseek/deepseek-v3.2` above it for the query `opus` (11.20 against 44.80).
+    // Big enough to outrank the penalty outright, because "contains the word" is a different
+    // kind of match rather than a slightly better one.
+    if let Some(at) = text.find(query) {
+        score -= 100.0;
+        // Earlier still beats later, among matches that all contain it.
+        score += at as f64 * 0.1;
+    }
     if query == text {
         score -= 100.0;
     }
@@ -172,5 +184,54 @@ mod tests {
         let ranked = filter("main", &candidates);
         assert_eq!(ranked.len(), 2);
         assert_eq!(ranked[0], "main.rs");
+    }
+}
+
+#[cfg(test)]
+mod substring_tests {
+    use super::*;
+
+    fn better(a: &str, b: &str, query: &str) {
+        let x = score(query, a).expect("a matches").score;
+        let y = score(query, b).expect("b matches").score;
+        assert!(x < y, "{query:?}: {a} scored {x:.2}, {b} scored {y:.2}");
+    }
+
+    #[test]
+    fn the_word_you_typed_beats_the_letters_you_typed() {
+        // The complaint that started this: `opus` put `deepseek-v3.2` above `claude-opus-5`,
+        // because the position penalty on a match 30 characters in outweighed everything the
+        // contiguity bonus could give back.
+        better(
+            "openrouter/anthropic/claude-opus-5",
+            "openrouter/deepseek/deepseek-v3.2",
+            "opus",
+        );
+    }
+
+    #[test]
+    fn an_earlier_occurrence_still_beats_a_later_one() {
+        better("opus/thing", "some/other/opus", "opus");
+    }
+
+    #[test]
+    fn an_exact_name_still_wins_outright() {
+        better("opus", "claude-opus-5", "opus");
+    }
+
+    #[test]
+    fn scattered_letters_still_match_when_nothing_contains_the_word() {
+        // The looseness is the point of a fuzzy matcher; this only reorders.
+        assert!(score("orcs", "openrouter/claude-sonnet").is_some());
+    }
+
+    #[test]
+    fn a_prefix_query_is_not_made_worse() {
+        // Pi's weights are right for the path-like case, and that case must not regress.
+        better(
+            "openrouter/deepseek",
+            "some/openrouter-mirror",
+            "openrouter",
+        );
     }
 }

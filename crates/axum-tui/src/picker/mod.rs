@@ -8,10 +8,6 @@
 //! Built for models, where the set is long, mostly unreachable, and the reason a given entry
 //! is unreachable is the single most useful thing on the row.
 
-use crate::theme::Theme;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-
 /// Rows shown at once. The same budget the completion popup uses.
 const MAX_VISIBLE: usize = 8;
 
@@ -197,114 +193,15 @@ impl Picker {
     }
 }
 
-/// Draw the list.
-#[must_use]
-pub fn render(picker: &Picker, width: u16, theme: &Theme) -> Vec<Line<'static>> {
-    let window = picker.window();
-    if picker.choices.is_empty() {
-        return vec![Line::from(crate::fit(
-            vec![
-                Span::styled(
-                    picker.title.clone(),
-                    Style::default()
-                        .fg(theme.accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("  nothing matches \u{201c}{}\u{201d}", picker.query()),
-                    Style::default().fg(theme.warning),
-                ),
-            ],
-            usize::from(width),
-        ))];
-    }
-    let value_width = picker.choices[window.clone()]
-        .iter()
-        .map(|c| c.value.chars().count())
-        .max()
-        .unwrap_or(0);
+mod view;
 
-    // A heading, because unlike the completion popup this is not obviously about what you just
-    // typed: it appears because you asked a question, and it should say which one.
-    let position = if let Some(said) = &picker.notice {
-        format!("  {said}")
-    } else if picker.query().is_empty() {
-        format!(" {}/{}", picker.selected + 1, picker.choices.len())
-    } else {
-        // The query is shown in the heading rather than in the prompt, because the prompt is
-        // holding whatever it was holding and this is not an edit of it.
-        format!(
-            " {}/{}  ▸ {}",
-            picker.selected + 1,
-            picker.choices.len(),
-            picker.query()
-        )
-    };
-    let mut out = vec![Line::from(crate::fit(
-        vec![
-            Span::styled(
-                picker.title.clone(),
-                Style::default()
-                    .fg(theme.accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                position,
-                Style::default().fg(if picker.notice.is_some() {
-                    theme.warning
-                } else {
-                    theme.dim
-                }),
-            ),
-        ],
-        usize::from(width),
-    ))];
-
-    out.extend(
-        picker.choices[window.clone()]
-            .iter()
-            .enumerate()
-            .map(|(offset, choice)| {
-                let selected = window.start + offset == picker.selected;
-                let (marker, value_style) = if selected {
-                    ("→ ", Style::default().fg(theme.accent))
-                } else if choice.ready {
-                    ("  ", Style::default().fg(theme.text))
-                } else {
-                    // Dimmed rather than hidden: it is real, it is just not ready.
-                    ("  ", Style::default().fg(theme.dim))
-                };
-
-                let gap = value_width - choice.value.chars().count() + 2;
-                let detail_style = if choice.ready {
-                    Style::default().fg(theme.muted)
-                } else {
-                    Style::default().fg(theme.warning)
-                };
-                let spans = vec![
-                    Span::styled(marker, Style::default().fg(theme.accent)),
-                    Span::styled(
-                        choice.value.clone(),
-                        if selected {
-                            value_style.add_modifier(Modifier::BOLD)
-                        } else {
-                            value_style
-                        },
-                    ),
-                    Span::styled(
-                        format!("{}{}", " ".repeat(gap), choice.detail),
-                        detail_style,
-                    ),
-                ];
-                Line::from(crate::fit(spans, usize::from(width)))
-            }),
-    );
-    out
-}
+pub use view::render;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::theme::Theme;
+    use ratatui::text::Line;
 
     fn choices() -> Vec<Choice> {
         vec![
@@ -391,7 +288,7 @@ mod tests {
             &Theme::default(),
         ));
         assert!(shown[0].contains("Model"), "{:?}", shown[0]);
-        assert!(shown[0].contains("1/3"), "{:?}", shown[0]);
+        assert!(shown[0].contains("1 of 3"), "{:?}", shown[0]);
     }
 
     #[test]
@@ -425,6 +322,7 @@ mod tests {
 #[cfg(test)]
 mod filter_tests {
     use super::*;
+    use crate::theme::Theme;
 
     fn many() -> Vec<Choice> {
         [
@@ -532,6 +430,7 @@ mod filter_tests {
 #[cfg(test)]
 mod take_tests {
     use super::*;
+    use crate::theme::Theme;
 
     fn mixed() -> Vec<Choice> {
         vec![
@@ -674,5 +573,89 @@ mod readiness_tests {
         assert!(!picker.is_empty(), "the rows are still listed");
         assert!(picker.take().is_none(), "and taking one says why instead");
         assert!(picker.notice.is_some());
+    }
+}
+
+#[cfg(test)]
+mod fluidity_tests {
+    use super::*;
+    use crate::theme::Theme;
+    use ratatui::text::Line;
+
+    fn many(n: usize) -> Vec<Choice> {
+        (1..=n)
+            .map(|i| Choice {
+                value: format!("provider/model-{i}"),
+                detail: "131k".into(),
+                ready: true,
+            })
+            .collect()
+    }
+
+    fn text(lines: &[Line<'_>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn a_long_list_says_how_much_is_below() {
+        // Fifty rows in a window of eight gave no sign there was anything past the eighth, so
+        // moving through it felt like the list was changing under you.
+        let picker = Picker::new("Model", many(50), None);
+        let shown = text(&render(&picker, 60, &Theme::default()));
+        assert!(shown[0].contains('↓'), "{:?}", shown[0]);
+        assert!(
+            !shown[0].contains('↑'),
+            "nothing is above the top: {:?}",
+            shown[0]
+        );
+    }
+
+    #[test]
+    fn scrolling_down_says_how_much_is_above() {
+        let mut picker = Picker::new("Model", many(50), None);
+        for _ in 0..40 {
+            picker.next();
+        }
+        let shown = text(&render(&picker, 60, &Theme::default()));
+        assert!(shown[0].contains('↑'), "{:?}", shown[0]);
+    }
+
+    #[test]
+    fn a_list_that_fits_says_neither() {
+        let picker = Picker::new("Model", many(3), None);
+        let shown = text(&render(&picker, 60, &Theme::default()));
+        assert!(
+            !shown[0].contains('↑') && !shown[0].contains('↓'),
+            "{:?}",
+            shown[0]
+        );
+    }
+
+    #[test]
+    fn the_highlight_bar_reaches_the_edge() {
+        // A background that stops where the text stops reads as a ragged block, which is worse
+        // than no highlight at all.
+        let picker = Picker::new("Model", many(5), None);
+        let rendered = render(&picker, 60, &Theme::default());
+        let row = &rendered[1];
+        let painted: usize = row.spans.iter().map(|s| s.content.chars().count()).sum();
+        assert_eq!(painted, 60, "the selected row fills the width");
+        assert!(
+            row.spans.iter().any(|s| s.style.bg.is_some()),
+            "and it is filled"
+        );
+    }
+
+    #[test]
+    fn an_unselected_row_is_not_filled() {
+        let picker = Picker::new("Model", many(5), None);
+        let rendered = render(&picker, 60, &Theme::default());
+        assert!(
+            rendered[2].spans.iter().all(|s| s.style.bg.is_none()),
+            "only the selection is barred"
+        );
     }
 }

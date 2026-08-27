@@ -202,10 +202,16 @@ axum.provider("openrouter", {
   base_url = "https://openrouter.ai/api/v1",
   auth = { kind = "api-key", vars = { "OPENROUTER_API_KEY" } },
   compat = { supports_reasoning_effort = true, thinking_format = "openrouter" },
+  -- Context, ceiling and price come from OpenRouter's own `/models`, not from memory. The
+  -- three models this used to list were a generation and a half behind what the account could
+  -- actually reach, which reads from the inside as "OpenRouter is broken".
   models = {
-    { id = "anthropic/claude-sonnet-4.5", name = "Claude Sonnet 4.5", context_window = 200000, max_tokens = 64000, reasoning = true, cost = { input = 3.0, output = 15.0 } },
+    { id = "anthropic/claude-opus-5", name = "Claude Opus 5", context_window = 1000000, max_tokens = 128000, reasoning = true, cost = { input = 5.0, output = 25.0 } },
+    { id = "anthropic/claude-sonnet-4.5", name = "Claude Sonnet 4.5", context_window = 1000000, max_tokens = 64000, reasoning = true, cost = { input = 3.0, output = 15.0 } },
     { id = "openai/gpt-5.1", name = "GPT-5.1", context_window = 400000, max_tokens = 128000, reasoning = true, cost = { input = 1.25, output = 10.0 } },
-    { id = "deepseek/deepseek-v3.2", name = "DeepSeek V3.2", context_window = 163840, max_tokens = 65536, reasoning = true, cost = { input = 0.28, output = 0.42 } },
+    { id = "deepseek/deepseek-v4-pro", name = "DeepSeek V4 Pro", context_window = 1048576, max_tokens = 384000, reasoning = true, cost = { input = 0.87, output = 1.74 } },
+    { id = "deepseek/deepseek-v4-flash-0731", name = "DeepSeek V4 Flash", context_window = 1310720, max_tokens = 943718, reasoning = true, cost = { input = 0.05, output = 0.10 } },
+    { id = "deepseek/deepseek-v3.2", name = "DeepSeek V3.2", context_window = 163840, max_tokens = 147456, reasoning = true, cost = { input = 0.26, output = 0.38 } },
   },
 })
 

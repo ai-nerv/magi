@@ -94,21 +94,23 @@ pub fn fit_path(path: &str, width: usize) -> String {
 }
 
 /// Render the footer.
+///
+/// **One line.** It was two — the directory on its own row above the stats — and two rows of
+/// dim text under the prompt is a lot of screen for something you glance at. Everything that
+/// was on both is here: the directory and branch on the left, usage in the middle, the model on
+/// the right, and each is dropped in that order when the terminal cannot hold it. The mode is
+/// gone from the default; it mattered while two backends were being built and it does not now.
 #[must_use]
 pub fn render(data: &FooterData, width: u16, theme: &Theme) -> Vec<Line<'static>> {
     let dim = Style::default().fg(theme.dim);
+    let muted = Style::default().fg(theme.muted);
+    let width = usize::from(width);
 
-    // The branch and the mode are short and are what changes; the path is long and is what
-    // gets cut. Build the suffix first so the path is fitted to what is actually left.
-    let mut suffix = String::new();
-    if let Some(branch) = &data.branch {
-        suffix.push_str(&format!(" ({branch})"));
-    }
-    if !data.mode.is_empty() {
-        suffix.push_str(&format!(" · {}", data.mode));
-    }
-    let room = usize::from(width).saturating_sub(suffix.chars().count());
-    let location = format!("{}{suffix}", fit_path(&data.cwd, room));
+    // Right first: the model is the thing you check, so it is the last to go.
+    let model = fit_path(&data.model, width.saturating_sub(MIN_GAP));
+    let mut room = width.saturating_sub(model.chars().count() + MIN_GAP);
+
+    // Then usage, which is short and changes every turn.
     let mut stats = Vec::new();
     if data.input_tokens > 0 {
         stats.push(format!("↑{}", format_tokens(data.input_tokens)));
@@ -116,7 +118,6 @@ pub fn render(data: &FooterData, width: u16, theme: &Theme) -> Vec<Line<'static>
     if data.output_tokens > 0 {
         stats.push(format!("↓{}", format_tokens(data.output_tokens)));
     }
-
     // Nothing to say about a context window nobody has: `?/0` is three characters of noise on
     // exactly the screen a new person is trying to read.
     let context = if data.context_window == 0 {
@@ -127,6 +128,30 @@ pub fn render(data: &FooterData, width: u16, theme: &Theme) -> Vec<Line<'static>
             None => format!("?/{}", format_tokens(data.context_window)),
         }
     };
+    if !context.is_empty() {
+        stats.push(context.clone());
+    }
+    let usage = stats.join(" ");
+    let usage = if usage.chars().count() + MIN_GAP <= room {
+        room -= usage.chars().count() + MIN_GAP;
+        usage
+    } else {
+        String::new()
+    };
+
+    // Whatever is left goes to the path, which is the part that can always be shortened.
+    let mut suffix = String::new();
+    if let Some(branch) = &data.branch {
+        suffix.push_str(&format!(" ({branch})"));
+    }
+    if !data.mode.is_empty() {
+        suffix.push_str(&format!(" · {}", data.mode));
+    }
+    let location = format!(
+        "{}{suffix}",
+        fit_path(&data.cwd, room.saturating_sub(suffix.chars().count()))
+    );
+
     // Context pressure is the one thing in the footer worth breaking the dim palette for.
     let context_color = match data.context_percent {
         Some(p) if p > 90.0 => theme.error,
@@ -134,45 +159,29 @@ pub fn render(data: &FooterData, width: u16, theme: &Theme) -> Vec<Line<'static>
         _ => theme.dim,
     };
 
-    let left = stats.join(" ");
-    let left_width = left.chars().count();
-    let context_width = context.chars().count();
-
-    let head = match (left.is_empty(), context.is_empty()) {
-        (true, true) => 0,
-        (true, false) => context_width,
-        (false, true) => left_width,
-        (false, false) => left_width + 1 + context_width,
+    let used = location.chars().count() + usage.chars().count() + model.chars().count();
+    let gap = width.saturating_sub(used).max(MIN_GAP);
+    let (left_gap, right_gap) = if usage.is_empty() {
+        (gap, 0)
+    } else {
+        (gap / 2, gap - gap / 2)
     };
-    // The model is right-aligned, so the terminal cuts its tail -- which on `provider/family/
-    // model` is the only part that says which model. Fitted from the left instead, the way the
-    // path above is: the provider prefix is the half a reader can infer.
-    let model = fit_path(
-        &data.model,
-        usize::from(width).saturating_sub(head + MIN_GAP),
-    );
-    let right_width = model.chars().count();
-    let gap = usize::from(width)
-        .saturating_sub(head + right_width)
-        .max(MIN_GAP);
 
-    let mut spans = Vec::new();
-    if !left.is_empty() {
-        spans.push(Span::styled(left.clone(), dim));
-        if !context.is_empty() {
-            spans.push(Span::styled(" ".to_owned(), dim));
+    let mut spans = vec![Span::styled(location, dim)];
+    spans.push(Span::styled(" ".repeat(left_gap), dim));
+    if !usage.is_empty() {
+        let split = usage.len() - context.len();
+        if context.is_empty() {
+            spans.push(Span::styled(usage.clone(), dim));
+        } else {
+            spans.push(Span::styled(usage[..split].to_owned(), dim));
+            spans.push(Span::styled(context, Style::default().fg(context_color)));
         }
+        spans.push(Span::styled(" ".repeat(right_gap), dim));
     }
-    if !context.is_empty() {
-        spans.push(Span::styled(context, Style::default().fg(context_color)));
-    }
-    spans.push(Span::styled(" ".repeat(gap), dim));
-    spans.push(Span::styled(model, dim));
+    spans.push(Span::styled(model, muted));
 
-    vec![
-        Line::from(Span::styled(clip(&location, usize::from(width)), dim)),
-        Line::from(clip_spans(spans, usize::from(width))),
-    ]
+    vec![Line::from(clip_spans(spans, width))]
 }
 
 /// Trim a styled line to `width`, dropping whole spans and then characters.
@@ -198,16 +207,6 @@ fn clip_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
         break;
     }
     out
-}
-
-fn clip(text: &str, width: usize) -> String {
-    if text.chars().count() <= width {
-        return text.to_owned();
-    }
-    text.chars()
-        .take(width.saturating_sub(3))
-        .collect::<String>()
-        + "..."
 }
 
 #[cfg(test)]
@@ -254,7 +253,11 @@ mod tests {
             ..FooterData::default()
         };
         let rendered = text_of(&render(&data, 60, &Theme::default()));
-        assert_eq!(rendered[0], "~/src/axum (develop)");
+        assert!(
+            rendered[0].starts_with("~/src/axum (develop)"),
+            "{:?}",
+            rendered[0]
+        );
     }
 
     #[test]
@@ -267,8 +270,8 @@ mod tests {
             ..FooterData::default()
         };
         let rendered = text_of(&render(&data, 40, &Theme::default()));
-        assert!(rendered[1].ends_with("claude-opus-5"), "{:?}", rendered[1]);
-        assert_eq!(rendered[1].chars().count(), 40);
+        assert!(rendered[0].ends_with("claude-opus-5"), "{:?}", rendered[0]);
+        assert_eq!(rendered[0].chars().count(), 40);
     }
 
     #[test]
@@ -279,7 +282,7 @@ mod tests {
             ..FooterData::default()
         };
         let rendered = text_of(&render(&data, 40, &Theme::default()));
-        assert!(rendered[1].contains("?/200k"), "{:?}", rendered[1]);
+        assert!(rendered[0].contains("?/200k"), "{:?}", rendered[0]);
     }
 }
 
@@ -349,9 +352,9 @@ mod fit_tests {
             ..FooterData::default()
         };
         let out = render(&data, 40, &crate::theme::DARK);
-        assert!(!line_text(&out, 1).contains("?/"), "{}", line_text(&out, 1));
+        assert!(!line_text(&out, 0).contains("?/"), "{}", line_text(&out, 0));
         assert!(
-            line_text(&out, 1).contains(NO_MODEL),
+            line_text(&out, 0).contains(NO_MODEL),
             "the model still shows"
         );
     }
@@ -362,7 +365,7 @@ mod model_fit_tests {
     use super::*;
 
     fn stats_row(data: &FooterData, width: u16) -> String {
-        render(data, width, &crate::theme::DARK)[1]
+        render(data, width, &crate::theme::DARK)[0]
             .spans
             .iter()
             .map(|s| s.content.as_ref())

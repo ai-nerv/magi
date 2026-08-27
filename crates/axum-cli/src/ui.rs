@@ -15,7 +15,7 @@
 use crate::app::App;
 use crate::terminal::Mode;
 use axum_tui::footer::{self, FooterData};
-use axum_tui::{Theme, complete, greeting, prompt, status, transcript};
+use axum_tui::{Theme, complete, prompt, status, transcript};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::Paragraph;
@@ -24,7 +24,10 @@ use ratatui::widgets::Paragraph;
 pub const CHROME_ROWS: u16 = STATUS_ROWS + PROMPT_MIN_ROWS + FOOTER_ROWS;
 
 /// Rows the footer always occupies.
-const FOOTER_ROWS: u16 = 2;
+///
+/// One. It was two -- the directory on its own row above the stats -- and two rows of dim text
+/// under the prompt is a lot of screen for something you glance at.
+const FOOTER_ROWS: u16 = 1;
 
 /// Rows the status line always occupies.
 ///
@@ -93,13 +96,7 @@ pub fn draw(
         // the tail of it — a message longer than the region streams past, and the newest text
         // is the part being written.
         Mode::Inline => {
-            // The greeting belongs here too: inline mode defers history to the terminal, and a
-            // terminal with no history yet is exactly the blank screen this was written for.
-            let live = if app.started() {
-                transcript::render(app.live(), area.width, theme, app.detail)
-            } else {
-                greeting::render(&footer_data.model, &footer_data.cwd, area.width, theme)
-            };
+            let live = transcript::render(app.live(), area.width, theme, app.detail);
             let shown = live
                 .len()
                 .saturating_sub(usize::from(live_area.height))
@@ -108,20 +105,13 @@ pub fn draw(
         }
         // Alt: there is no terminal history to defer to, so the whole transcript is ours and
         // the reader's scroll position decides what shows.
+        //
+        // An empty session draws nothing. There was a greeting here — a name, the model, the
+        // directory and four key hints — and it was right for somebody meeting the thing for
+        // the first time and wrong for everybody after that. The prompt's own placeholder still
+        // names `/`, which is the one line of it worth keeping.
         Mode::Alt => {
-            // The greeting is a header on an unstarted session, not a substitute for it: a
-            // notice arriving before the first message used to take the whole screen with it.
-            let mut all = if app.started() {
-                Vec::new()
-            } else {
-                greeting::render(&footer_data.model, &footer_data.cwd, area.width, theme)
-            };
-            all.extend(transcript::render(
-                app.entries(),
-                area.width,
-                theme,
-                app.detail,
-            ));
+            let all = transcript::render(app.entries(), area.width, theme, app.detail);
             app.scrollback.set_lines(all);
             let view = app.scrollback.view(live_area.height).to_vec();
             // Bottom-aligned: a transcript grows towards the prompt, so a short one sits above
@@ -198,13 +188,13 @@ mod tests {
 
     #[test]
     fn the_live_region_gets_a_third_of_the_screen() {
-        // 24 rows: 8 live + 2 status + 3 prompt + 2 footer.
-        assert_eq!(initial_height(24), 15);
+        // 24 rows: 8 live + 2 status + 3 prompt + 1 footer.
+        assert_eq!(initial_height(24), 14);
     }
 
     #[test]
     fn a_tall_terminal_does_not_get_a_tall_viewport() {
-        assert_eq!(initial_height(200), LIVE_TARGET + 7);
+        assert_eq!(initial_height(200), LIVE_TARGET + 6);
     }
 
     #[test]

@@ -380,7 +380,14 @@ fn local_footer(mode: Mode) -> FooterData {
         cwd: axum_tui::footer::format_cwd(&cwd, home.as_deref()),
         branch: git_branch(),
         model: axum_tui::footer::NO_MODEL.into(),
-        mode: mode.label(),
+        // Named only for the backend that is not the default. `alt` is what you get unless you
+        // asked otherwise, so saying so on every line is a word that is never news; `inline`
+        // is a choice you made and worth confirming.
+        mode: if matches!(mode, Mode::Inline) {
+            mode.label()
+        } else {
+            ""
+        },
         ..FooterData::default()
     }
 }
