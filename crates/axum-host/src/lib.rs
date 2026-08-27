@@ -9,6 +9,7 @@
 
 pub mod cancel;
 pub mod compact;
+pub mod context;
 pub mod paths;
 pub mod session;
 pub mod turn;
@@ -122,6 +123,17 @@ async fn connection(
                 match command {
                     Some(UiCommand::SubmitPrompt { text }) => {
                         submit(&session, text, worker.clone()).await?;
+                    }
+                    Some(UiCommand::Branch { keeps }) => {
+                        let mut held = session.lock().await;
+                        if let Some(keeps) =
+                            keeps.or_else(|| context::rewind_point(held.entries()))
+                        {
+                            // Journalled, not applied: the entries it skips are still there.
+                            // What changes is what the provider is shown from now on.
+                            let id = MessageId::new(format!("b{}", held.cursor().next().0));
+                            held.commit(Entry::Branch { id, keeps })?;
+                        }
                     }
                     Some(UiCommand::Interrupt) => {
                         // The status is set here as well as by the turn: a stop the user asked for

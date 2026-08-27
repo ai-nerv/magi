@@ -5,7 +5,7 @@
 
 use crate::session::Session;
 use axum_core::{Step, Turn};
-use axum_model::{Content, Context, Message, Role, StopReason};
+use axum_model::StopReason;
 use axum_proto::{AgentStatus, Entry, MessageId, ToolCallId};
 use axum_provider::api::Options;
 use axum_provider::client::Client;
@@ -53,7 +53,7 @@ async fn compact(
 ) -> bool {
     let (context, entries) = {
         let held = session.lock().await;
-        (context_of(&held), held.entries().len())
+        (crate::context::of(&held), held.entries().len())
     };
     let Some(covered) = crate::compact::covers(entries) else {
         return false;
@@ -112,7 +112,7 @@ async fn one_turn(
     tools: Vec<axum_model::Tool>,
     cancel: &crate::cancel::Cancel,
 ) -> Result<Round, crate::HostError> {
-    let mut context = context_of(&*session.lock().await);
+    let mut context = crate::context::of(&*session.lock().await);
     context.tools = tools;
 
     {
@@ -229,133 +229,6 @@ fn assistant(id: &MessageId, turn: &Turn) -> Entry {
     }
 }
 
-/// Build the provider-facing conversation from the transcript.
-///
-/// The journal holds what was shown; a provider needs what was said. Tool entries become tool
-/// results, and an assistant entry that failed is dropped — replaying an error as if the model
-/// had said it teaches it to produce more of them.
-pub fn context_of(session: &Session) -> Context {
-    let entries = session.entries();
-    // Where the conversation starts as far as the provider is concerned. The entries before it
-    // are still in the journal and still on screen; what changed is what fits in the window.
-    //
-    // `replaces`, not the position of the record. A compaction is appended after the entries
-    // it keeps, so starting from the record itself would skip the recent tail — the part it
-    // went to the trouble of not summarising.
-    let (from, summary) = entries
-        .iter()
-        .rev()
-        .find_map(|e| match e {
-            Entry::Compaction {
-                summary, replaces, ..
-            } => Some((*replaces, Some(summary.clone()))),
-            _ => None,
-        })
-        .unwrap_or((0, None));
-
-    let mut messages: Vec<Message> = Vec::new();
-    if let Some(summary) = summary {
-        // As a user message, because it is context the model is being given rather than
-        // something it said. A model shown its own words as a summary tends to continue them.
-        messages.push(Message::user(format!(
-            "Here is a summary of the earlier part of this conversation:\n\n{summary}"
-        )));
-    }
-    // Where the assistant message currently being rebuilt lives, so the tool entries that
-    // follow it can put their calls back into it. The journal stores a call as its own record
-    // -- it is committed before the registry is consulted, which is what makes an unrouted
-    // call auditable -- but a provider needs it inside the message that made it.
-    let mut open: Option<usize> = None;
-
-    for entry in entries.iter().skip(from) {
-        match entry {
-            // A compaction inside the replayed range cannot happen: `from` is past the last
-            // one. Ignored rather than handled, so adding a second kind of marker later is a
-            // new arm and not a change to this one.
-            Entry::Compaction { .. } => {}
-            Entry::User { text, .. } => {
-                open = None;
-                messages.push(Message::user(text.clone()));
-            }
-            Entry::Assistant {
-                text,
-                thinking,
-                stop_reason,
-                error,
-                signatures,
-                ..
-            } => {
-                open = None;
-                // Replaying an error as if the model had said it teaches it to produce more.
-                if error.is_some() || *stop_reason == Some(StopReason::Error) {
-                    continue;
-                }
-                let mut content = Vec::new();
-                if !thinking.is_empty() {
-                    content.push(Content::Thinking {
-                        thinking: thinking.clone(),
-                        signature: signatures.thinking.clone(),
-                    });
-                }
-                if !text.is_empty() {
-                    content.push(Content::Text {
-                        text: text.clone(),
-                        signature: signatures.text.clone(),
-                    });
-                }
-                // Pushed even when empty, because the common shape of a tool-using turn is a
-                // model that says nothing and calls something. The empty ones are pruned below.
-                messages.push(Message {
-                    role: Role::Assistant,
-                    content,
-                    stop_reason: *stop_reason,
-                    usage: None,
-                    error: None,
-                });
-                open = Some(messages.len() - 1);
-            }
-            Entry::Tool {
-                id,
-                name,
-                args,
-                result,
-                thought_signature,
-            } => {
-                if let Some(at) = open {
-                    messages[at].content.push(Content::ToolCall {
-                        id: id.to_string(),
-                        name: name.clone(),
-                        arguments: serde_json::from_str(args).unwrap_or(serde_json::Value::Null),
-                        thought_signature: thought_signature.clone(),
-                    });
-                }
-                if let Some(result) = result {
-                    messages.push(Message {
-                        role: Role::Tool,
-                        content: vec![Content::ToolResult {
-                            id: id.to_string(),
-                            name: name.clone(),
-                            content: result.output.clone(),
-                            is_error: result.is_error,
-                        }],
-                        stop_reason: None,
-                        usage: None,
-                        error: None,
-                    });
-                }
-            }
-        }
-    }
-
-    // The entry committed before the first delta has no content and never gained a call. A
-    // message with nothing in it is rejected by every provider that checks.
-    messages.retain(|m| !(m.role == Role::Assistant && m.content.is_empty()));
-    Context {
-        messages,
-        ..Context::default()
-    }
-}
-
 /// Rounds of tool use one prompt may take before the loop gives up.
 ///
 /// A model that keeps asking for tools without finishing is not making progress, and an
@@ -384,7 +257,7 @@ pub async fn run(
     // still in the middle of.
     let over = {
         let held = session.lock().await;
-        crate::compact::needed(&context_of(&held), &backend.model)
+        crate::compact::needed(&crate::context::of(&held), &backend.model)
     };
     if over {
         compact(session, backend, adapter, client).await;
@@ -521,204 +394,5 @@ fn turn_calls(turn: &Turn) -> Vec<axum_core::PendingCall> {
     match turn.step() {
         Step::RunTools(calls) => calls,
         _ => Vec::new(),
-    }
-}
-
-#[cfg(test)]
-mod context_tests {
-    use super::*;
-    use axum_journal::JournalError;
-    use axum_proto::{MessageId, SessionId, Signatures, ToolCallId, ToolResult};
-
-    fn session(name: &str) -> (Session, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("axum-ctx-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let session =
-            Session::open(&dir.join("s.jsonl"), SessionId::new("s"), "/tmp", 0).expect("session");
-        (session, dir)
-    }
-
-    /// One tool-using round, exactly as the turn loop journals it.
-    fn tool_round(session: &mut Session) -> Result<(), JournalError> {
-        session.commit(Entry::User {
-            id: MessageId::new("u1"),
-            text: "read the file".into(),
-        })?;
-        session.commit(Entry::Assistant {
-            id: MessageId::new("a2"),
-            text: String::new(),
-            thinking: "I should read it".into(),
-            stop_reason: Some(StopReason::ToolUse),
-            error: None,
-            signatures: Signatures {
-                text: None,
-                thinking: Some("sig-thinking".into()),
-            },
-        })?;
-        session.commit(Entry::Tool {
-            id: ToolCallId::new("c1"),
-            name: "read".into(),
-            args: r#"{"path":"a.rs"}"#.into(),
-            result: Some(ToolResult {
-                output: "contents".into(),
-                is_error: false,
-            }),
-            thought_signature: Some("sig-call".into()),
-        })?;
-        Ok(())
-    }
-
-    #[test]
-    fn the_call_the_model_made_is_replayed_with_its_result() {
-        // A tool result with no preceding tool call is not a conversation. Anthropic rejects
-        // it outright; an OpenAI-compatible endpoint takes it and leaves the model with no
-        // record of what it asked for, which is worse because it looks like it worked.
-        let (mut session, dir) = session("callback");
-        tool_round(&mut session).expect("journal");
-
-        let context = context_of(&session);
-        let assistant = context
-            .messages
-            .iter()
-            .find(|m| m.role == Role::Assistant)
-            .expect("an assistant message");
-        let call = assistant
-            .content
-            .iter()
-            .find_map(|c| match c {
-                Content::ToolCall {
-                    id,
-                    name,
-                    arguments,
-                    ..
-                } => Some((id, name, arguments)),
-                _ => None,
-            })
-            .expect("the assistant asked for a tool, so the message must show it");
-        assert_eq!(call.0, "c1");
-        assert_eq!(call.1, "read");
-        assert_eq!(call.2["path"], "a.rs");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn the_call_comes_before_the_result_it_answers() {
-        let (mut session, dir) = session("order");
-        tool_round(&mut session).expect("journal");
-
-        let context = context_of(&session);
-        let asked = context
-            .messages
-            .iter()
-            .position(|m| {
-                m.content
-                    .iter()
-                    .any(|c| matches!(c, Content::ToolCall { .. }))
-            })
-            .expect("a call");
-        let answered = context
-            .messages
-            .iter()
-            .position(|m| {
-                m.content
-                    .iter()
-                    .any(|c| matches!(c, Content::ToolResult { .. }))
-            })
-            .expect("a result");
-        assert!(asked < answered, "{asked} came after {answered}");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn the_signatures_survive_the_journal() {
-        // A reasoning model does not send back reasoning you can re-send; it sends a token
-        // standing for it. Dropping it makes the next request a 400 on the providers that
-        // check, which is the second round trip of every tool-using turn.
-        let (mut session, dir) = session("signatures");
-        tool_round(&mut session).expect("journal");
-
-        let context = context_of(&session);
-        let assistant = context
-            .messages
-            .iter()
-            .find(|m| m.role == Role::Assistant)
-            .expect("an assistant message");
-        let thinking = assistant
-            .content
-            .iter()
-            .find_map(|c| match c {
-                Content::Thinking { signature, .. } => Some(signature.clone()),
-                _ => None,
-            })
-            .expect("a thinking block");
-        assert_eq!(thinking.as_deref(), Some("sig-thinking"));
-
-        let carried = assistant.content.iter().find_map(|c| match c {
-            Content::ToolCall {
-                thought_signature, ..
-            } => Some(thought_signature.clone()),
-            _ => None,
-        });
-        assert_eq!(carried.flatten().as_deref(), Some("sig-call"));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_message_that_only_asked_for_a_tool_is_still_a_message() {
-        // Empty text and empty thinking, which is the common shape: the model says nothing and
-        // calls something. Dropping it takes the tool call with it.
-        let (mut session, dir) = session("silent");
-        session
-            .commit(Entry::Assistant {
-                id: MessageId::new("a1"),
-                text: String::new(),
-                thinking: String::new(),
-                stop_reason: Some(StopReason::ToolUse),
-                error: None,
-                signatures: Signatures::default(),
-            })
-            .expect("journal");
-        session
-            .commit(Entry::Tool {
-                id: ToolCallId::new("c1"),
-                name: "read".into(),
-                args: "{}".into(),
-                result: Some(ToolResult {
-                    output: "x".into(),
-                    is_error: false,
-                }),
-                thought_signature: None,
-            })
-            .expect("journal");
-
-        let context = context_of(&session);
-        assert!(
-            context.messages.iter().any(|m| m
-                .content
-                .iter()
-                .any(|c| matches!(c, Content::ToolCall { .. }))),
-            "{:?}",
-            context.messages
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn an_assistant_message_with_nothing_at_all_is_still_dropped() {
-        // The empty entry the turn loop commits before the first delta. Sending it would be
-        // a message with no content, which providers reject.
-        let (mut session, dir) = session("empty");
-        session
-            .commit(Entry::Assistant {
-                id: MessageId::new("a1"),
-                text: String::new(),
-                thinking: String::new(),
-                stop_reason: None,
-                error: None,
-                signatures: Signatures::default(),
-            })
-            .expect("journal");
-        assert!(context_of(&session).messages.is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

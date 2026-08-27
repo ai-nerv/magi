@@ -111,6 +111,9 @@ impl Recording {
                     summary,
                     replaces,
                 }),
+                HarnessEvent::Branched { id, keeps, .. } => {
+                    entries.push(Entry::Branch { id, keeps });
+                }
                 HarnessEvent::ToolCallStarted { id, name, args, .. } => {
                     entries.push(Entry::Tool {
                         id,

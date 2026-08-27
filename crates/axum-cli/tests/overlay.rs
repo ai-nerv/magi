@@ -47,9 +47,10 @@ fn the_command_palette_marks_the_selection_and_shows_details() {
     assert_eq!(
         rendered,
         vec![
-            "→ /help   show keybindings and commands",
-            "  /clear  clear the transcript",
-            "  /quit   exit axum",
+            "→ /help    show keybindings and commands",
+            "  /clear   clear the transcript",
+            "  /rewind  undo the last exchange, or /rewind N",
+            "  /quit    exit axum",
         ]
     );
 }

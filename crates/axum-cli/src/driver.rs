@@ -93,8 +93,12 @@ pub async fn run(socket: &Path, mode: Mode, prompt: Option<String>) -> Result<()
                                 dirty = true;
                             }
                             Action::Command(text) => {
-                                if run_command(&text, &mut app) == Control::Quit {
-                                    break;
+                                match run_command(&text, &mut app) {
+                                    Control::Quit => break,
+                                    Control::Send(command) => {
+                                        let _ = command_tx.send(command).await;
+                                    }
+                                    Control::Continue => {}
                                 }
                                 dirty = true;
                             }
@@ -301,12 +305,14 @@ fn git_branch() -> Option<String> {
 }
 
 /// Whether a slash command asked the UI to exit.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 enum Control {
     /// Stay running.
     Continue,
     /// Exit.
     Quit,
+    /// Something only the daemon can do.
+    Send(UiCommand),
 }
 
 /// Run a slash command.
@@ -324,6 +330,18 @@ fn run_command(input: &str, app: &mut App) -> Control {
             app.show_help();
             Control::Continue
         }
+        // Rewinding is the daemon's to work out: it holds the session, and which messages are
+        // still live is a question about the session rather than about what is on screen.
+        "/rewind" => match input.split_whitespace().nth(1) {
+            None => Control::Send(UiCommand::Branch { keeps: None }),
+            Some(n) => match n.parse() {
+                Ok(keeps) => Control::Send(UiCommand::Branch { keeps: Some(keeps) }),
+                Err(_) => {
+                    app.show_notice(format!("/rewind takes a number, not {n:?}"));
+                    Control::Continue
+                }
+            },
+        },
         _ => {
             app.show_notice(format!("unknown command: {input}"));
             Control::Continue

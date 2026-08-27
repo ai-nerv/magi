@@ -248,6 +248,11 @@ fn events_for(cursor: Cursor, entry: &Entry) -> Vec<HarnessEvent> {
             }
             out
         }
+        Entry::Branch { id, keeps } => vec![HarnessEvent::Branched {
+            cursor,
+            id: id.clone(),
+            keeps: *keeps,
+        }],
         Entry::Compaction {
             id,
             summary,

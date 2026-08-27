@@ -83,6 +83,7 @@ pub fn commands() -> Vec<Candidate> {
     [
         ("/help", "show keybindings and commands"),
         ("/clear", "clear the transcript"),
+        ("/rewind", "undo the last exchange, or /rewind N"),
         ("/quit", "exit axum"),
     ]
     .iter()

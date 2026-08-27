@@ -429,7 +429,7 @@ async fn a_compacted_session_sends_the_summary_and_not_the_history() {
     }
 
     let held = session.lock().await;
-    let context = axum_host::turn::context_of(&held);
+    let context = axum_host::context::of(&held);
     let sent = format!("{:?}", context.messages);
     assert!(sent.contains("porting a journal"), "the summary is sent");
     assert!(sent.contains("carry on"), "and what followed it");

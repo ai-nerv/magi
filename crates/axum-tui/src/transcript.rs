@@ -41,19 +41,25 @@ pub fn entry_lines(entry: &Entry, width: u16, theme: &Theme) -> Vec<Line<'static
         Entry::Tool {
             name, args, result, ..
         } => tool(name, args, result.as_ref(), width, theme),
-        Entry::Compaction { replaces, .. } => compaction(*replaces, width, theme),
+        Entry::Compaction { replaces, .. } => marker(
+            &format!(" {replaces} earlier messages summarised "),
+            width,
+            theme,
+        ),
+        Entry::Branch { keeps, .. } => {
+            marker(&format!(" rewound to message {keeps} "), width, theme)
+        }
     }
 }
 
-/// A rule saying the conversation was summarised, and how much of it.
+/// A labelled rule across the transcript.
 ///
-/// Shown rather than hidden: the transcript above it is still there and still true, but what
-/// the model can see of it has changed, and a reader wondering why it forgot something needs
-/// this line to be the answer.
-fn compaction(replaces: usize, width: u16, theme: &Theme) -> Vec<Line<'static>> {
-    let label = format!(" {replaces} earlier messages summarised ");
+/// Shown rather than hidden. The transcript above one of these is still there and still true,
+/// but what the model can see of it has changed — and a reader wondering why it forgot
+/// something, or why an exchange seems to have been undone, needs this line to be the answer.
+fn marker(label: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
+    let label = label.to_owned();
     let rule = usize::from(width).saturating_sub(label.chars().count());
-    Line::default();
     vec![
         Line::default(),
         Line::from(vec![

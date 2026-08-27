@@ -183,6 +183,9 @@ impl App {
                     *err = error;
                 }
             }
+            HarnessEvent::Branched { id, keeps, .. } => {
+                self.entries.push(Entry::Branch { id, keeps });
+            }
             HarnessEvent::Compacted {
                 id,
                 summary,

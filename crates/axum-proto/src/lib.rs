@@ -153,6 +153,20 @@ pub enum Entry {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         thought_signature: Option<String>,
     },
+    /// The conversation as it was at an earlier point, taken up again.
+    ///
+    /// "That went wrong, back up and try something else." The entries it skips stay in the
+    /// journal and stay on screen greyed behind it, because a session is append-only: what a
+    /// branch changes is what the model is shown, never what happened.
+    Branch {
+        /// Stable identity for this record.
+        id: MessageId,
+        /// How many entries from the start of the session remain live.
+        ///
+        /// Everything from here up to this record is skipped. A count, like a compaction's,
+        /// because both answer the same question: where does the live conversation start.
+        keeps: usize,
+    },
     /// Everything before this, standing in for itself.
     ///
     /// A conversation outgrows the window long before it stops being useful, and the usual fix
@@ -287,6 +301,15 @@ pub enum HarnessEvent {
         /// The new state.
         status: AgentStatus,
     },
+    /// The conversation was rewound to an earlier point.
+    Branched {
+        /// Position of this event.
+        cursor: Cursor,
+        /// Stable identity for the record.
+        id: MessageId,
+        /// How many entries from the start remain live.
+        keeps: usize,
+    },
     /// The conversation was summarised to fit the window.
     Compacted {
         /// Position of this event.
@@ -326,6 +349,7 @@ impl HarnessEvent {
             | Self::ToolCallEnded { cursor, .. }
             | Self::StatusChanged { cursor, .. }
             | Self::Compacted { cursor, .. }
+            | Self::Branched { cursor, .. }
             | Self::Error { cursor, .. } => *cursor,
         }
     }
@@ -349,6 +373,15 @@ pub enum UiCommand {
     },
     /// Interrupt the running turn.
     Interrupt,
+    /// Rewind the conversation.
+    Branch {
+        /// How many entries from the start to keep, or `None` for "undo the last exchange".
+        ///
+        /// Optional because only the daemon knows which entries are still live: after one
+        /// rewind the abandoned exchange is still on screen, so a UI counting for itself would
+        /// name a message that is already gone.
+        keeps: Option<usize>,
+    },
     /// Unsubscribe; the turn keeps running.
     Detach,
 }
