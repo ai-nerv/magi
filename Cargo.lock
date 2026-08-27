@@ -73,6 +73,7 @@ dependencies = [
  "anyhow",
  "axum-host",
  "axum-ipc",
+ "axum-journal",
  "axum-lua",
  "axum-proto",
  "axum-provider",

@@ -301,3 +301,79 @@ fn two_directories_do_not_share_a_session() {
     teardown(&one);
     teardown(&two);
 }
+
+/// A provider that accepts the request and never answers, leaving a turn in flight.
+fn serve_silently() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for socket in listener.incoming() {
+            // Kept rather than dropped: closing would end the turn on its own, which is not
+            // the thing being tested.
+            held.push(socket);
+        }
+    });
+    format!("http://127.0.0.1:{port}")
+}
+
+#[test]
+fn a_daemon_killed_mid_turn_leaves_a_journal_that_still_loads() {
+    // The crash case. The prompt is journalled before the provider is called, so the record of
+    // what was asked survives even though no answer ever came back.
+    let dir = workspace("crash", &serve_silently());
+    let mut child = Command::new(env!("CARGO_BIN_EXE_axum"))
+        .current_dir(&dir)
+        .env("XDG_RUNTIME_DIR", dir.join("run"))
+        .env("XDG_CONFIG_HOME", dir.join("no-such-config"))
+        .arg("--socket")
+        .arg(dir.join("run/host.sock"))
+        .args(["--sessions", "sessions", "-p", "a question with no answer"])
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("run axum");
+
+    // Wait for the prompt to reach the journal, which is what the kill has to interrupt.
+    let mut journal = None;
+    for _ in 0..100 {
+        journal = std::fs::read_dir(dir.join("sessions"))
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "jsonl"))
+            .find(|p| {
+                std::fs::read_to_string(p).is_ok_and(|s| s.contains("a question with no answer"))
+            });
+        if journal.is_some() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let journal = journal.expect("the prompt was journalled before the provider was called");
+
+    stop_daemon(&dir);
+    let _ = child.kill();
+    let _ = child.wait();
+
+    // Reopening is the test: a torn tail is truncated, a corrupt line is not, and this
+    // distinguishes them where a `contains` check on the text could not.
+    let reopened = axum_journal::Journal::open(
+        &journal,
+        axum_proto::SessionId::new("unused"),
+        &dir.display().to_string(),
+        0,
+    )
+    .expect("the journal still loads");
+    assert!(
+        reopened
+            .entries()
+            .iter()
+            .any(|e| matches!(e, axum_proto::Entry::User { text, .. }
+                if text == "a question with no answer")),
+        "the prompt survived: {:?}",
+        reopened.entries()
+    );
+    teardown(&dir);
+}
