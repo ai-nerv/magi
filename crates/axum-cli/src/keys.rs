@@ -38,6 +38,8 @@ pub enum Action {
     Redraw,
     /// A completion was taken, and the popup must stay closed until the next keystroke.
     Accepted,
+    /// Show tool results in full, or fold them back.
+    ToggleDetail,
     /// Send this prompt.
     Submit(String),
     /// Run this slash command.
@@ -83,6 +85,7 @@ pub fn handle(
         }
         KeyCode::Char('d') if ctrl && editor.is_blank() => return Action::Quit,
         KeyCode::Char('x') if ctrl => return Action::ExternalEdit,
+        KeyCode::Char('o') if ctrl => return Action::ToggleDetail,
         _ => {}
     }
 

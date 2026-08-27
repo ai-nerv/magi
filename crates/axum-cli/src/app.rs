@@ -18,6 +18,7 @@ const KEYS: &str = "\
 - `esc` interrupt a running turn
 - `tab` accept a completion — `↑/↓` move through it
 - `pgup`/`pgdn` scroll — `shift+↑/↓` by a line — `shift+home/end` to the ends
+- `ctrl+o` show tool output in full, again to fold it back
 - `ctrl+x` edit the prompt in `$EDITOR`
 - `ctrl+c` clear the prompt, again to quit — `ctrl+d` quit
 - `ctrl+a/e` line start/end — `ctrl+k/u` kill — `ctrl+y` yank
@@ -89,6 +90,8 @@ pub struct App {
     /// for itself would name whatever is configured *now*, which after an edit is not what the
     /// daemon on the other end of the socket is actually talking to.
     pub model: Option<axum_proto::ModelInfo>,
+    /// How much of each tool result to show.
+    pub detail: axum_tui::transcript::Detail,
 }
 
 impl Default for App {
@@ -111,6 +114,7 @@ impl App {
             completion: None,
             connected: false,
             model: None,
+            detail: axum_tui::transcript::Detail::Preview,
             tick: 0,
         }
     }
@@ -350,6 +354,19 @@ impl App {
     /// Append the keybinding reference.
     pub fn show_help(&mut self) {
         self.show_notice(help());
+    }
+
+    /// Show every line of each tool result, or go back to the preview.
+    ///
+    /// A whole transcript at a time rather than one block: picking a block needs a selection,
+    /// and a selection needs keys, a highlight and a rule for what happens when the thing
+    /// selected scrolls away. The question being asked is almost always about the last result.
+    pub fn toggle_detail(&mut self) -> axum_tui::transcript::Detail {
+        self.detail = match self.detail {
+            axum_tui::transcript::Detail::Preview => axum_tui::transcript::Detail::Full,
+            axum_tui::transcript::Detail::Full => axum_tui::transcript::Detail::Preview,
+        };
+        self.detail
     }
 
     /// Recompute the completion popup from the current prompt.

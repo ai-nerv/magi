@@ -83,7 +83,7 @@ pub fn draw(
         // the tail of it — a message longer than the region streams past, and the newest text
         // is the part being written.
         Mode::Inline => {
-            let live = transcript::render(app.live(), area.width, theme);
+            let live = transcript::render(app.live(), area.width, theme, app.detail);
             let shown = live
                 .len()
                 .saturating_sub(usize::from(live_area.height))
@@ -93,7 +93,7 @@ pub fn draw(
         // Alt: there is no terminal history to defer to, so the whole transcript is ours and
         // the reader's scroll position decides what shows.
         Mode::Alt => {
-            let all = transcript::render(app.entries(), area.width, theme);
+            let all = transcript::render(app.entries(), area.width, theme, app.detail);
             app.scrollback.set_lines(all);
             let view = app.scrollback.view(live_area.height).to_vec();
             // Bottom-aligned: a transcript grows towards the prompt, so a short one sits above

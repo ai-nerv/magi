@@ -16,19 +16,35 @@ const PAD: u16 = 1;
 /// Lines of a tool result shown before it is expanded. Pi's `FALLBACK_PREVIEW_LINES`.
 const PREVIEW_LINES: usize = 10;
 
+/// How much of a tool's output to show.
+///
+/// A named choice rather than a boolean parameter, because `render(entries, w, theme, true)`
+/// says nothing at the call site about what is true.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Detail {
+    /// The first few lines, and a count of what was left out.
+    ///
+    /// The default because a tool result is usually skimmed: an `ls`, a build, a test run.
+    /// The whole of one is worth a keystroke, not the whole transcript's worth of scrolling.
+    #[default]
+    Preview,
+    /// Every line.
+    Full,
+}
+
 /// Render the whole transcript.
 #[must_use]
-pub fn render(entries: &[Entry], width: u16, theme: &Theme) -> Vec<Line<'static>> {
+pub fn render(entries: &[Entry], width: u16, theme: &Theme, detail: Detail) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     for entry in entries {
-        out.extend(entry_lines(entry, width, theme));
+        out.extend(entry_lines(entry, width, theme, detail));
     }
     out
 }
 
 /// Render one entry.
 #[must_use]
-pub fn entry_lines(entry: &Entry, width: u16, theme: &Theme) -> Vec<Line<'static>> {
+pub fn entry_lines(entry: &Entry, width: u16, theme: &Theme, detail: Detail) -> Vec<Line<'static>> {
     match entry {
         Entry::User { text, .. } => user(text, width, theme),
         Entry::Assistant {
@@ -40,7 +56,7 @@ pub fn entry_lines(entry: &Entry, width: u16, theme: &Theme) -> Vec<Line<'static
         } => assistant(text, thinking, *stop_reason, error.as_deref(), width, theme),
         Entry::Tool {
             name, args, result, ..
-        } => tool(name, args, result.as_ref(), width, theme),
+        } => tool(name, args, result.as_ref(), width, theme, detail),
         Entry::Compaction { replaces, .. } => marker(
             &format!(" {replaces} earlier messages summarised "),
             width,
@@ -161,6 +177,7 @@ fn tool(
     result: Option<&axum_proto::ToolResult>,
     width: u16,
     theme: &Theme,
+    detail: Detail,
 ) -> Vec<Line<'static>> {
     let bg = match result {
         None => theme.tool_pending_bg,
@@ -189,7 +206,10 @@ fn tool(
         let body = result.output.trim_end();
         if !body.is_empty() {
             let all: Vec<&str> = body.lines().collect();
-            let shown = all.len().min(PREVIEW_LINES);
+            let shown = match detail {
+                Detail::Preview => all.len().min(PREVIEW_LINES),
+                Detail::Full => all.len(),
+            };
             for line in &all[..shown] {
                 let fg = if result.is_error {
                     theme.error
@@ -336,7 +356,7 @@ mod tests {
             id: MessageId::new("m1"),
             text: "hello".into(),
         };
-        let lines = entry_lines(&entry, 20, &Theme::default());
+        let lines = entry_lines(&entry, 20, &Theme::default(), Detail::Preview);
         let rendered = text_of(&lines);
         assert_eq!(rendered.len(), 3, "blank, body, blank");
         assert_eq!(rendered[1], " hello              ");
@@ -354,7 +374,7 @@ mod tests {
             signatures: axum_proto::Signatures::default(),
             usage: axum_proto::Usage::default(),
         };
-        let rendered = text_of(&entry_lines(&entry, 20, &Theme::default()));
+        let rendered = text_of(&entry_lines(&entry, 20, &Theme::default(), Detail::Preview));
         assert_eq!(rendered, vec!["", " sure"]);
     }
 
@@ -367,7 +387,7 @@ mod tests {
             result: None,
             thought_signature: None,
         };
-        let rendered = text_of(&entry_lines(&entry, 40, &Theme::default()));
+        let rendered = text_of(&entry_lines(&entry, 40, &Theme::default(), Detail::Preview));
         assert!(rendered[1].contains("read"), "{:?}", rendered[1]);
         assert!(rendered[1].contains("a.rs"), "{:?}", rendered[1]);
     }
@@ -388,7 +408,7 @@ mod tests {
             }),
             thought_signature: None,
         };
-        let rendered = text_of(&entry_lines(&entry, 40, &Theme::default()));
+        let rendered = text_of(&entry_lines(&entry, 40, &Theme::default(), Detail::Preview));
         assert!(
             rendered.iter().any(|l| l.contains("15 more lines")),
             "{rendered:?}"
@@ -406,7 +426,7 @@ mod tests {
             signatures: axum_proto::Signatures::default(),
             usage: axum_proto::Usage::default(),
         };
-        let rendered = text_of(&entry_lines(&entry, 40, &Theme::default()));
+        let rendered = text_of(&entry_lines(&entry, 40, &Theme::default(), Detail::Preview));
         assert!(
             rendered.iter().any(|l| l.contains("truncated")),
             "{rendered:?}"
@@ -424,7 +444,7 @@ mod tests {
             signatures: axum_proto::Signatures::default(),
             usage: axum_proto::Usage::default(),
         };
-        let rendered = text_of(&entry_lines(&entry, 40, &Theme::default()));
+        let rendered = text_of(&entry_lines(&entry, 40, &Theme::default(), Detail::Preview));
         assert!(
             rendered.iter().any(|l| l.contains("Error: overloaded")),
             "{rendered:?}"
@@ -463,7 +483,12 @@ mod diff_tests {
     #[test]
     fn added_and_removed_lines_are_coloured_apart() {
         let theme = Theme::default();
-        let lines = entry_lines(&edit_entry("edited a.rs\n-was\n+now\n"), 40, &theme);
+        let lines = entry_lines(
+            &edit_entry("edited a.rs\n-was\n+now\n"),
+            40,
+            &theme,
+            Detail::Preview,
+        );
         assert_eq!(colour_of(&lines, "-was"), Some(theme.diff_removed));
         assert_eq!(colour_of(&lines, "+now"), Some(theme.diff_added));
     }
@@ -471,7 +496,7 @@ mod diff_tests {
     #[test]
     fn ordinary_output_keeps_the_tool_colour() {
         let theme = Theme::default();
-        let lines = entry_lines(&edit_entry("edited a.rs\n"), 40, &theme);
+        let lines = entry_lines(&edit_entry("edited a.rs\n"), 40, &theme, Detail::Preview);
         assert_eq!(colour_of(&lines, "edited"), Some(theme.tool_output));
     }
 
@@ -480,7 +505,12 @@ mod diff_tests {
         // `---`/`+++` name the file. Coloured as changes, every diff appears to add and remove
         // its own filename.
         let theme = Theme::default();
-        let lines = entry_lines(&edit_entry("--- a.rs\n+++ a.rs\n-was\n"), 40, &theme);
+        let lines = entry_lines(
+            &edit_entry("--- a.rs\n+++ a.rs\n-was\n"),
+            40,
+            &theme,
+            Detail::Preview,
+        );
         assert_eq!(colour_of(&lines, "--- a.rs"), Some(theme.tool_output));
         assert_eq!(colour_of(&lines, "+++ a.rs"), Some(theme.tool_output));
     }
@@ -499,7 +529,7 @@ mod diff_tests {
             }),
             thought_signature: None,
         };
-        let lines = entry_lines(&entry, 40, &theme);
+        let lines = entry_lines(&entry, 40, &theme, Detail::Preview);
         assert_eq!(colour_of(&lines, "-was"), Some(theme.error));
         assert_eq!(colour_of(&lines, "+now"), Some(theme.error));
     }
@@ -533,7 +563,7 @@ mod tab_tests {
             }),
             thought_signature: None,
         };
-        let rendered = cells(&entry_lines(&entry, 60, &Theme::default()));
+        let rendered = cells(&entry_lines(&entry, 60, &Theme::default(), Detail::Preview));
         assert!(!rendered.contains('\t'), "{rendered:?}");
         assert!(rendered.contains("     3  }"), "{rendered:?}");
     }
@@ -550,7 +580,7 @@ mod tab_tests {
             signatures: axum_proto::Signatures::default(),
             usage: axum_proto::Usage::default(),
         };
-        let rendered = cells(&entry_lines(&entry, 60, &Theme::default()));
+        let rendered = cells(&entry_lines(&entry, 60, &Theme::default(), Detail::Preview));
         assert!(!rendered.contains('\t'), "{rendered:?}");
         assert!(rendered.contains("    cargo build"), "{rendered:?}");
     }
@@ -648,5 +678,82 @@ mod summary_tests {
     #[test]
     fn a_call_with_no_arguments_summarises_to_nothing() {
         assert_eq!(summarize("{}"), "");
+    }
+}
+
+#[cfg(test)]
+mod detail_tests {
+    use super::*;
+    use axum_proto::{ToolCallId, ToolResult};
+
+    fn long_result(lines: usize) -> Entry {
+        Entry::Tool {
+            id: ToolCallId::new("t1"),
+            name: "bash".into(),
+            args: r#"{"command": "ls"}"#.into(),
+            result: Some(ToolResult {
+                output: (0..lines)
+                    .map(|i| format!("line {i}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                is_error: false,
+            }),
+            thought_signature: None,
+        }
+    }
+
+    fn text_of(lines: &[Line<'static>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_preview_stops_and_says_how_much_it_left() {
+        let shown = text_of(&entry_lines(
+            &long_result(40),
+            40,
+            &Theme::default(),
+            Detail::Preview,
+        ));
+        assert!(shown.iter().any(|l| l.contains("line 9")), "{shown:?}");
+        assert!(!shown.iter().any(|l| l.contains("line 10")), "{shown:?}");
+        assert!(
+            shown.iter().any(|l| l.contains("30 more lines")),
+            "{shown:?}"
+        );
+    }
+
+    #[test]
+    fn asking_for_the_whole_thing_gets_the_whole_thing() {
+        // The 190 lines of a real `ls` or test run were otherwise unreachable: the preview
+        // cut them and nothing in the UI could ask for the rest.
+        let shown = text_of(&entry_lines(
+            &long_result(40),
+            40,
+            &Theme::default(),
+            Detail::Full,
+        ));
+        assert!(shown.iter().any(|l| l.contains("line 39")), "{shown:?}");
+        assert!(
+            !shown.iter().any(|l| l.contains("more lines")),
+            "and does not still claim there is more: {shown:?}"
+        );
+    }
+
+    #[test]
+    fn a_short_result_reads_the_same_either_way() {
+        let short = long_result(3);
+        let preview = text_of(&entry_lines(&short, 40, &Theme::default(), Detail::Preview));
+        let full = text_of(&entry_lines(&short, 40, &Theme::default(), Detail::Full));
+        assert_eq!(preview, full);
     }
 }

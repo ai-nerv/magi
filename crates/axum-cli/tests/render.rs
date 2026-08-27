@@ -28,7 +28,7 @@ fn screen(terminal: &Terminal<TestBackend>) -> Vec<String> {
 
 fn render_entries(entries: &[Entry], width: u16) -> Vec<String> {
     let theme = Theme::default();
-    let lines = transcript::render(entries, width, &theme);
+    let lines = transcript::render(entries, width, &theme, transcript::Detail::Preview);
     let height = lines.len() as u16;
     let mut terminal =
         Terminal::new(TestBackend::new(width, height.max(1))).expect("test terminal");
@@ -75,15 +75,15 @@ fn a_conversation_renders_the_way_pi_lays_it_out() {
     assert_eq!(
         rendered,
         vec![
-            "",                                 // user box: top padding
-            " run the tests",                   // user box: body
-            "",                                 // user box: bottom padding
-            "",                                 // assistant: leading blank
-            " Running them now.",               // assistant: body, indented
-            "",                                 // tool box: top padding
-            " bash cargo test", // tool box: header, values without their keys
-            " test result: ok. 42 passed",      // tool box: output
-            "",                                 // tool box: bottom padding
+            "",                            // user box: top padding
+            " run the tests",              // user box: body
+            "",                            // user box: bottom padding
+            "",                            // assistant: leading blank
+            " Running them now.",          // assistant: body, indented
+            "",                            // tool box: top padding
+            " bash cargo test",            // tool box: header, values without their keys
+            " test result: ok. 42 passed", // tool box: output
+            "",                            // tool box: bottom padding
         ]
     );
 }
@@ -137,7 +137,7 @@ fn every_row_of_a_user_box_spans_the_full_width() {
         id: MessageId::new("m1"),
         text: "short".into(),
     };
-    for line in transcript::entry_lines(&entry, 30, &theme) {
+    for line in transcript::entry_lines(&entry, 30, &theme, transcript::Detail::Preview) {
         let width: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
         assert_eq!(width, 30, "a background row must fill the width");
     }

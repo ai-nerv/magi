@@ -110,6 +110,17 @@ pub async fn run(socket: &Path, mode: Mode, prompt: Option<String>) -> Result<()
                                 let _ = command_tx.send(UiCommand::Interrupt).await;
                                 dirty = true;
                             }
+                            Action::ToggleDetail => {
+                                let now = app.toggle_detail();
+                                app.show_notice(match now {
+                                    axum_tui::transcript::Detail::Full =>
+                                        "Showing tool output in full. `ctrl+o` folds it back."
+                                            .to_owned(),
+                                    axum_tui::transcript::Detail::Preview =>
+                                        "Tool output folded back to a preview.".to_owned(),
+                                });
+                                dirty = true;
+                            }
                             Action::ExternalEdit => {
                                 external_edit(&mut session, &mut app)?;
                                 dirty = true;
@@ -168,6 +179,9 @@ pub async fn run(socket: &Path, mode: Mode, prompt: Option<String>) -> Result<()
 /// `insert_before` scrolls the viewport down and emits the lines above it, so they become part
 /// of the terminal's own history — searchable and copyable with the tools the user already has.
 fn flush_settled(session: &mut Session, app: &mut App, theme: &Theme) -> Result<()> {
+    // Whatever was in force when the block settled. Scrollback cannot be taken back, so a
+    // later toggle changes what is drawn from here on and not what the terminal already holds.
+    let detail = app.detail;
     // Alt mode owns the whole screen and the whole transcript; there is no terminal history to
     // hand anything to, and `insert_before` on a fullscreen viewport has nowhere to put it.
     if session.mode == Mode::Alt {
@@ -180,7 +194,7 @@ fn flush_settled(session: &mut Session, app: &mut App, theme: &Theme) -> Result<
     let pending: Vec<Line<'static>> = app.entries()[..n]
         .iter()
         .skip(app.entries().len() - app.live().len())
-        .flat_map(|entry| transcript::entry_lines(entry, width, theme))
+        .flat_map(|entry| transcript::entry_lines(entry, width, theme, detail))
         .collect();
 
     if !pending.is_empty() {
