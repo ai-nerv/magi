@@ -20,6 +20,11 @@ pub fn print() -> Result<(), axum_lua::LuaError> {
     let mut registry = Registry::new();
     axum_tools::builtin::install(&mut registry);
     axum_lua::tool::install(std::rc::Rc::clone(&engine), &mut registry);
+    // Asked rather than assumed. `axum tools` answers "what can the model call", and the only
+    // thing that knows what a peer offers is the peer.
+    registry.probe(&axum_tools::ops::Real::new(
+        std::env::current_dir().unwrap_or_default(),
+    ));
 
     for tool in registry.declarations() {
         let transport = declared

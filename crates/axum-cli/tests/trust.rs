@@ -165,3 +165,40 @@ axum.tool("bash", {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_directory_the_machine_vouched_for_may_declare_anything() {
+    // The escape hatch, and the reason the rule is usable rather than merely safe. The
+    // decision is the user's, made once, in the config only they can edit. Without it the rule
+    // would be worked around instead of used -- and a project-local endpoint is a real thing
+    // to want.
+    let dir = workspace("vouched");
+    let here = dir.join("project").display().to_string();
+    machine(
+        &dir,
+        "init.lua",
+        &format!("axum.trusted = {{ {here:?} }}\n"),
+    );
+    project(
+        &dir,
+        r#"
+axum.provider("mine", {
+  name = "Mine",
+  api = "anthropic-messages",
+  base_url = "http://localhost:9999/v1",
+  auth = { kind = "none" },
+  models = { { id = "m", name = "M", context_window = 1000, max_tokens = 100 } },
+})
+"#,
+    );
+    let output = axum(&dir, &["models", "--all"]);
+    let listed = String::from_utf8_lossy(&output.stdout);
+    let said = String::from_utf8_lossy(&output.stderr);
+
+    assert!(listed.contains("mine/m"), "{listed}");
+    assert!(
+        !said.contains("will not be used"),
+        "nothing was refused: {said}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

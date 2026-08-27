@@ -40,17 +40,37 @@ const CANCEL_GRACE: Duration = Duration::from_secs(5);
 /// feels immediate, long enough that a running tool costs nothing to wait on.
 const CANCEL_POLL: Duration = Duration::from_millis(50);
 
+/// How long a peer has to say what it offers.
+///
+/// Bounded so a peer that declares nothing costs a moment rather than the session. What it
+/// costs is the config's claim standing unchallenged, which is where things were before.
+const DECLARE_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// A tool reached by talking to a process.
 pub struct ProcessTool {
     name: String,
-    description: String,
-    parameters: serde_json::Value,
+    /// What the config claimed, used until the peer has been asked.
+    claimed: Declared,
+    /// What the peer said when it was asked, which settles it.
+    ///
+    /// The peer is the authority. A config can only describe what somebody believed a program
+    /// did when they wrote the line, and a model handed a schema the peer does not implement
+    /// calls it with the wrong arguments and is told nothing useful about why. Set once,
+    /// before any turn: a schema cannot be corrected halfway through a conversation that has
+    /// already used it.
+    confirmed: std::cell::OnceCell<Declared>,
     command: String,
     args: Vec<String>,
     /// The running peer, started on first use.
     peer: RefCell<Option<Peer>>,
     /// Calls answered so far, so an id is never reused.
     next: std::cell::Cell<u64>,
+}
+
+/// A name, a description and a schema, from whichever source is currently believed.
+struct Declared {
+    description: String,
+    parameters: serde_json::Value,
 }
 
 struct Peer {
@@ -80,8 +100,11 @@ impl ProcessTool {
     ) -> Self {
         Self {
             name: name.to_owned(),
-            description: description.to_owned(),
-            parameters,
+            claimed: Declared {
+                description: description.to_owned(),
+                parameters,
+            },
+            confirmed: std::cell::OnceCell::new(),
             command: command.to_owned(),
             args,
             peer: RefCell::new(None),
@@ -138,6 +161,46 @@ impl ProcessTool {
         if let Some(mut peer) = self.peer.borrow_mut().take() {
             let _ = peer.child.kill();
             let _ = peer.child.wait();
+        }
+    }
+
+    /// What this tool currently believes it offers.
+    fn believed(&self) -> &Declared {
+        self.confirmed.get().unwrap_or(&self.claimed)
+    }
+
+    /// Read what the peer declares on connect, and take its word for it.
+    ///
+    /// Bounded, because a peer that never declares is one whose config claim is all there is
+    /// -- which is no worse than before it was asked, and better than refusing to run it.
+    fn adopt(&self) {
+        let mut held = self.peer.borrow_mut();
+        let Some(peer) = held.as_mut() else { return };
+        let deadline = Instant::now() + DECLARE_TIMEOUT;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return;
+            }
+            match peer.reports.recv_timeout(remaining) {
+                Ok(Ok(ToolReport::Declare {
+                    name,
+                    description,
+                    parameters,
+                })) => {
+                    // A peer may serve several tools and declares each; this one takes only
+                    // its own, and the rest are somebody else's to adopt.
+                    if name == self.name {
+                        let _ = self.confirmed.set(Declared {
+                            description,
+                            parameters,
+                        });
+                        return;
+                    }
+                }
+                // Anything else means the peer has moved on from declaring.
+                Ok(Ok(_)) | Ok(Err(_)) | Err(_) => return,
+            }
         }
     }
 
@@ -225,11 +288,18 @@ impl Tool for ProcessTool {
     }
 
     fn description(&self) -> &str {
-        &self.description
+        &self.believed().description
     }
 
     fn parameters(&self) -> serde_json::Value {
-        self.parameters.clone()
+        self.believed().parameters.clone()
+    }
+
+    fn probe(&self, ops: &dyn Ops) {
+        if self.ensure(ops).is_err() {
+            return;
+        }
+        self.adopt();
     }
 
     fn run(&self, arguments: &serde_json::Value, ops: &dyn Ops, cancel: &dyn Cancel) -> Output {

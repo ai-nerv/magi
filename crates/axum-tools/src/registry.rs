@@ -27,6 +27,13 @@ pub trait Tool {
     /// so it comes back as [`Output::error`] rather than as an error the turn loop has to
     /// invent a message for.
     fn run(&self, arguments: &serde_json::Value, ops: &dyn Ops, cancel: &dyn Cancel) -> Output;
+
+    /// Ask the tool to confirm what it offers, before the model is told about it.
+    ///
+    /// Nothing by default, because a tool written here is its own description and cannot
+    /// disagree with itself. A peer can: it is another program, and what a config says about
+    /// it is a claim rather than a fact.
+    fn probe(&self, _ops: &dyn Ops) {}
 }
 
 /// Every tool the session can reach.
@@ -52,6 +59,16 @@ impl Registry {
     /// point of shipping a default is that it can be overridden.
     pub fn register(&mut self, tool: Box<dyn Tool>) {
         self.tools.insert(tool.name().to_owned(), tool);
+    }
+
+    /// Ask every tool to confirm what it offers.
+    ///
+    /// Called once, after the registry is built and before any turn: a schema the model was
+    /// given cannot be corrected halfway through a conversation it has already used it in.
+    pub fn probe(&self, ops: &dyn Ops) {
+        for tool in self.tools.values() {
+            tool.probe(ops);
+        }
     }
 
     /// One tool by name.

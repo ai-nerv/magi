@@ -12,6 +12,12 @@
 --
 -- Replace `command` to run commands somewhere else entirely — a container, another machine,
 -- a shell with different credentials. Nothing above this line changes.
+--
+-- The description and schema below are a FALLBACK, not the truth. A peer declares what it
+-- offers when it connects, and what it says wins: it is the only thing that knows what it
+-- actually implements. These are here for the case where the peer cannot be reached at all --
+-- a wrong command, a missing binary -- so the model is told something rather than being handed
+-- a tool with no schema it can never call correctly.
 
 axum.tool("bash", {
   description = [[

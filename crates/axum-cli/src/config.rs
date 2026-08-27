@@ -102,7 +102,13 @@ pub fn load() -> Result<Loaded, LuaError> {
 
     // The line between the two kinds of configuration. Above it is the machine's own, which
     // the user wrote. Below it is a file that arrived with a checkout.
-    let machine = Trusted::snapshot(&mut engine);
+    //
+    // Unless the user said otherwise: `axum.trusted` names directories whose project files are
+    // as good as their own. The decision belongs to the person, it is made once, and it lives
+    // in the config only they can edit -- which is the whole of what a trust boundary needs to
+    // be. Without a way to say yes, the rule would be worked around instead of used.
+    engine.harvest();
+    let machine = trusts_here(&engine.config()).then(|| Trusted::snapshot(&mut engine));
 
     // Then the project, last, so a repository can choose among what the machine offers.
     for path in axum_lua::search_paths() {
@@ -111,10 +117,33 @@ pub fn load() -> Result<Loaded, LuaError> {
         }
     }
     engine.harvest();
-    for refused in machine.refusals(&mut engine) {
-        eprintln!("axum: {refused}");
+    if let Some(machine) = &machine {
+        for refused in machine.refusals(&mut engine) {
+            eprintln!("axum: {refused}");
+        }
     }
-    collect(engine.config(), apis, tools, stubs, &machine)
+    collect(engine.config(), apis, tools, stubs, machine.as_ref())
+}
+
+/// Whether the working directory is one the machine's config vouched for.
+///
+/// Inverted on purpose: `Some(Trusted)` means a boundary is being enforced, and a trusted
+/// directory has none. Ancestors count, so trusting a worktree root covers what is under it.
+fn trusts_here(config: &Config) -> bool {
+    let Ok(cwd) = std::env::current_dir() else {
+        return true;
+    };
+    let listed = config
+        .get("trusted")
+        .and_then(|v| v.as_array())
+        .map(|paths| {
+            paths
+                .iter()
+                .filter_map(|p| p.as_str())
+                .any(|p| cwd.starts_with(p))
+        })
+        .unwrap_or(false);
+    !listed
 }
 
 /// Replace a compiled-in file with the installed one of the same name, or add it.
@@ -131,13 +160,14 @@ fn collect(
     apis: Vec<(String, String)>,
     tools: Vec<(String, String)>,
     stubs: Vec<(String, String)>,
-    machine: &Trusted,
+    machine: Option<&Trusted>,
 ) -> Result<Loaded, LuaError> {
     let mut providers = Vec::new();
     for (id, spec) in config.all("provider") {
         // Refused rather than declared: `refusals` has already said why on stderr, and a
-        // provider that is never built is one no model can be resolved against.
-        if !machine.allows(id) {
+        // provider that is never built is one no model can be resolved against. `None` is a
+        // directory the user vouched for, where there is nothing to refuse.
+        if machine.is_some_and(|m| !m.allows(id)) {
             continue;
         }
         providers.push(declare(id, spec).map_err(|message| LuaError::Shape {
@@ -172,15 +202,7 @@ pub fn builtin() -> Result<Vec<Provider>, LuaError> {
     let mut engine = Engine::new();
     engine.run(BUILTIN, "providers.lua")?;
     engine.harvest();
-    let everything = Trusted::snapshot(&mut engine);
-    Ok(collect(
-        engine.config(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        &everything,
-    )?
-    .providers)
+    Ok(collect(engine.config(), Vec::new(), Vec::new(), Vec::new(), None)?.providers)
 }
 
 /// Find the model the config chose, and the provider offering it.
@@ -445,18 +467,11 @@ mod tests {
         engine.run(BUILTIN, "providers.lua").expect("builtin");
         engine.run(extra, "user.lua").expect("user config");
         engine.harvest();
-        // Snapshotted after the extra chunk: these tests are about what a *machine* config can
-        // declare, so everything they run counts as the machine's own.
-        let everything = Trusted::snapshot(&mut engine);
-        collect(
-            engine.config(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            &everything,
-        )
-        .expect("collect")
-        .providers
+        // `None`: these tests are about what a *machine* config can declare, so everything
+        // they run counts as the machine's own and there is no boundary to enforce.
+        collect(engine.config(), Vec::new(), Vec::new(), Vec::new(), None)
+            .expect("collect")
+            .providers
     }
 
     #[test]

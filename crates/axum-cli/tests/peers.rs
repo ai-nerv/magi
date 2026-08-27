@@ -10,16 +10,11 @@
 use axum_tools::{Registry, Uncancelled};
 use std::path::PathBuf;
 
-/// A Lua peer file, and a session rooted next to it.
+/// A Lua peer file, and a session with both peers registered.
 fn session(name: &str, lua: &str) -> (Registry, axum_tools::ops::Real, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("axum-peers-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
-    let file = dir.join("peer.lua");
-    std::fs::write(&file, lua).expect("write");
+    let (mut registry, ops, dir) = session_raw(name);
+    std::fs::write(dir.join("peer.lua"), lua).expect("write");
 
-    let mut registry = Registry::new();
-    axum_tools::builtin::install(&mut registry);
     registry.register(Box::new(axum_tools::process::ProcessTool::new(
         "bash",
         "Run a shell command.",
@@ -40,8 +35,22 @@ fn session(name: &str, lua: &str) -> (Registry, axum_tools::ops::Real, PathBuf) 
             "required": ["who"],
         }),
         env!("CARGO_BIN_EXE_axum"),
-        vec!["ext".into(), "lua".into(), file.display().to_string()],
+        vec![
+            "ext".into(),
+            "lua".into(),
+            dir.join("peer.lua").display().to_string(),
+        ],
     )));
+    (registry, ops, dir)
+}
+
+/// The directory and the builtins, with no peers registered yet.
+fn session_raw(name: &str) -> (Registry, axum_tools::ops::Real, PathBuf) {
+    let dir = std::env::temp_dir().join(format!("axum-peers-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let mut registry = Registry::new();
+    axum_tools::builtin::install(&mut registry);
     (registry, axum_tools::ops::Real::new(dir.clone()), dir)
 }
 
@@ -265,5 +274,77 @@ axum.tool("greet", {
     let output = registry.call("greet", &serde_json::json!({}), &ops, &Uncancelled);
     assert!(!output.is_error, "{}", output.content);
     assert_eq!(output.content.trim(), "sealed");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_peer_declares_and_the_config_is_only_a_claim() {
+    // A config can only describe what somebody believed a program did when they wrote the
+    // line. The peer is the thing that knows, so what the model is told comes from the peer --
+    // and the schema below, which is wrong on purpose, is not what reaches it.
+    let (mut registry, ops, dir) = session_raw("declared");
+    std::fs::write(dir.join("peer.lua"), GREETER).expect("write");
+    registry.register(Box::new(axum_tools::process::ProcessTool::new(
+        "greet",
+        "A stale description nobody updated.",
+        serde_json::json!({
+            "type": "object",
+            "properties": { "wrong": { "type": "number" } },
+            "required": ["wrong"],
+        }),
+        env!("CARGO_BIN_EXE_axum"),
+        vec![
+            "ext".into(),
+            "lua".into(),
+            dir.join("peer.lua").display().to_string(),
+        ],
+    )));
+    registry.probe(&ops);
+
+    let declared = registry
+        .declarations()
+        .into_iter()
+        .find(|d| d.name == "greet")
+        .expect("greet is registered");
+    assert_eq!(
+        declared.description, "Say hello to somebody.",
+        "the peer's description won"
+    );
+    assert!(
+        declared.parameters["properties"].get("who").is_some(),
+        "the peer's schema won: {}",
+        declared.parameters
+    );
+    assert!(
+        declared.parameters["properties"].get("wrong").is_none(),
+        "the config's claim is gone: {}",
+        declared.parameters
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_peer_that_declares_nothing_leaves_the_config_claim_standing() {
+    // The peer never starts, so nothing corrects the claim. Better than refusing to offer the
+    // tool at all, and no worse than where things stood before it was asked.
+    let dir = std::env::temp_dir().join(format!("axum-peers-{}-silent", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let mut registry = Registry::new();
+    registry.register(Box::new(axum_tools::process::ProcessTool::new(
+        "absent",
+        "What the config claimed.",
+        serde_json::json!({ "type": "object" }),
+        "/nonexistent/peer",
+        Vec::new(),
+    )));
+    registry.probe(&axum_tools::ops::Real::new(dir.clone()));
+
+    let declared = registry
+        .declarations()
+        .into_iter()
+        .find(|d| d.name == "absent")
+        .expect("still registered");
+    assert_eq!(declared.description, "What the config claimed.");
     let _ = std::fs::remove_dir_all(&dir);
 }
