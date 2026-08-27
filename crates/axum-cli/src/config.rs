@@ -235,6 +235,23 @@ pub fn resolve<'a>(
     providers.iter().find_map(|p| p.model(name).map(|m| (p, m)))
 }
 
+/// Everything the daemon could talk to, so `/model` has something to pick among.
+///
+/// Built once at start rather than re-read on each switch: a session should keep answering
+/// with what it was started with, and picking up an edit made since would leave a person
+/// asking why it is using a model they did not choose.
+#[must_use]
+pub fn catalog(loaded: &Loaded) -> axum_host::catalog::Catalog {
+    axum_host::catalog::Catalog {
+        apis: loaded.apis.clone(),
+        tools: loaded.tools.clone(),
+        stubs: loaded.stubs.clone(),
+        cwd: std::env::current_dir().unwrap_or_default(),
+        providers: loaded.providers.clone(),
+        options: axum_provider::api::Options::default(),
+    }
+}
+
 /// The backend a daemon should run turns against, if one is both chosen and usable.
 ///
 /// A model that is configured but has no credential yields `None` rather than an error: the

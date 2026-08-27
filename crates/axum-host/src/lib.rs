@@ -8,6 +8,7 @@
 //! registry is a lookup rather than a protocol change.
 
 pub mod cancel;
+pub mod catalog;
 pub mod compact;
 pub mod context;
 pub mod paths;
@@ -50,8 +51,22 @@ pub enum HostError {
 /// the lock is held for a journal append and released, never across a provider call.
 pub async fn serve(
     listener: UnixListener,
+    session: Session,
+    backend: Option<turn::Backend>,
+) -> Result<(), HostError> {
+    serve_catalog(listener, session, backend, crate::catalog::Catalog::empty()).await
+}
+
+/// The same, able to change model without restarting.
+///
+/// The catalog is what `/model` picks among: everything this session started with, held so a
+/// switch cannot silently pick up an edit made since. Re-reading the configuration on each
+/// switch would leave a person asking why it is using a model they did not choose.
+pub async fn serve_catalog(
+    listener: UnixListener,
     mut session: Session,
     backend: Option<turn::Backend>,
+    catalog: crate::catalog::Catalog,
 ) -> Result<(), HostError> {
     // Told once, here, because this is the only place that knows both. A UI asking the
     // configuration for itself would report whatever is configured now rather than what this
@@ -63,7 +78,15 @@ pub async fn serve(
     let session = Arc::new(Mutex::new(session));
     // Turns run on the worker's own thread because a protocol lives in a Lua VM. A daemon
     // with no backend has no worker, and says so when a prompt arrives.
-    let worker = backend.map(worker::Worker::start).map(Arc::new);
+    //
+    // Behind a lock because `/model` replaces it. Replaced rather than reconfigured: the
+    // worker owns a VM built for one protocol, and handing a live VM a new one across a thread
+    // boundary is a great deal of machinery to avoid rebuilding something that takes
+    // milliseconds and happens by hand.
+    let worker = Arc::new(tokio::sync::RwLock::new(
+        backend.map(worker::Worker::start).map(Arc::new),
+    ));
+    let catalog = Arc::new(catalog);
     loop {
         let (stream, _) = listener.accept().await?;
         // The daemon serves one user. A connection from any other uid is refused rather than
@@ -73,9 +96,10 @@ pub async fn serve(
             _ => continue,
         }
         let session = Arc::clone(&session);
-        let worker = worker.clone();
+        let worker = Arc::clone(&worker);
+        let catalog = Arc::clone(&catalog);
         tokio::spawn(async move {
-            let _ = connection(stream, session, worker).await;
+            let _ = connection(stream, session, &worker, &catalog).await;
         });
     }
 }
@@ -84,7 +108,8 @@ pub async fn serve(
 async fn connection(
     stream: UnixStream,
     session: Arc<Mutex<Session>>,
-    worker: Option<Arc<worker::Worker>>,
+    worker: &tokio::sync::RwLock<Option<Arc<worker::Worker>>>,
+    catalog: &crate::catalog::Catalog,
 ) -> Result<(), HostError> {
     let (read_half, write_half) = stream.into_split();
     let mut reader = FrameReader::new(read_half);
@@ -129,7 +154,23 @@ async fn connection(
             command = incoming.recv() => {
                 match command {
                     Some(UiCommand::SubmitPrompt { text }) => {
-                        submit(&session, text, worker.clone()).await?;
+                        let held = worker.read().await.clone();
+                        submit(&session, text, held).await?;
+                    }
+                    Some(UiCommand::SetModel { name }) => {
+                        if let Some(refusal) =
+                            switch_model(&session, worker, catalog, &name).await
+                        {
+                            // On the stream rather than in the transcript: the request was
+                            // understood and declined, which is a fact about the UI's ask and
+                            // not about the conversation.
+                            writer
+                                .write(&HarnessEvent::Refused {
+                                    cursor: session.lock().await.cursor(),
+                                    message: refusal,
+                                })
+                                .await?;
+                        }
                     }
                     Some(UiCommand::Branch { keeps }) => {
                         let mut held = session.lock().await;
@@ -171,6 +212,46 @@ async fn connection(
 
     reading.abort();
     Ok(())
+}
+
+/// Point the session at a different model, or say why not.
+///
+/// Returns `None` on success. The new worker is built before the old one is dropped, so a
+/// switch that fails leaves the session able to carry on with what it had.
+async fn switch_model(
+    session: &Arc<Mutex<Session>>,
+    worker: &tokio::sync::RwLock<Option<Arc<worker::Worker>>>,
+    catalog: &crate::catalog::Catalog,
+    name: &str,
+) -> Option<String> {
+    let Some(backend) = catalog.backend(name) else {
+        return Some(catalog.unusable(name).unwrap_or_else(|| {
+            let usable = catalog.usable();
+            if usable.is_empty() {
+                format!("there is no model called {name:?}, and none is configured")
+            } else {
+                format!(
+                    "there is no model called {name:?}. Available: {}",
+                    usable.join(", ")
+                )
+            }
+        }));
+    };
+
+    let info = axum_proto::ModelInfo {
+        name: backend.model.qualified(),
+        context_window: backend.model.context_window,
+    };
+    let fresh = Arc::new(worker::Worker::start(backend));
+    *worker.write().await = Some(fresh);
+    {
+        let mut held = session.lock().await;
+        held.set_model(Some(info));
+        // Announced so the footer changes now rather than after the next turn: the whole
+        // point of switching is to see that it happened.
+        held.announce_model();
+    }
+    None
 }
 
 /// Accept a prompt and run a turn.

@@ -246,6 +246,10 @@ impl App {
                     *cost = usage;
                 }
             }
+            HarnessEvent::ModelChanged { model, .. } => self.model = model,
+            // Not a transcript entry: the request was understood and declined, which is a
+            // fact about what the UI asked rather than about the conversation.
+            HarnessEvent::Refused { message, .. } => self.show_notice(message),
             HarnessEvent::Branched { id, keeps, .. } => {
                 self.entries.push(Entry::Branch { id, keeps });
             }

@@ -197,6 +197,7 @@ async fn host(
     // the wrong model for as long as nobody notices.
     let loaded = crate::config::load()?;
     let backend = crate::config::backend(&loaded);
+    let catalog = crate::config::catalog(&loaded);
     if backend.is_none() {
         eprintln!("axum host: no model configured; prompts will say so");
     }
@@ -206,7 +207,7 @@ async fn host(
     // with it. Left behind, a socket nobody is listening on is indistinguishable from a daemon
     // that is merely busy, and the next run waits out its whole startup timeout on it.
     tokio::select! {
-        result = axum_host::serve(listener, session, backend) => result?,
+        result = axum_host::serve_catalog(listener, session, backend, catalog) => result?,
         () = shutdown() => eprintln!("axum host: stopping"),
     }
     let _ = tokio::fs::remove_file(socket).await;

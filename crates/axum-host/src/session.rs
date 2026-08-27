@@ -163,6 +163,18 @@ impl Session {
         Ok(cursor)
     }
 
+    /// Tell everyone which model is answering now.
+    ///
+    /// Its own event, because a UI learns the model from the snapshot it attached with and
+    /// there is otherwise nothing to change its mind. Republishing the status does not do it:
+    /// a status event carries a status and nothing else.
+    pub fn announce_model(&mut self) {
+        let _ = self.events.send(HarnessEvent::ModelChanged {
+            cursor: self.cursor(),
+            model: self.model.clone(),
+        });
+    }
+
     /// Change what the agent is doing and tell everyone.
     ///
     /// Status is not journalled: it describes the daemon right now, and a session restored

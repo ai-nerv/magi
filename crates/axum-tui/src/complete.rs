@@ -83,6 +83,7 @@ pub fn commands() -> Vec<Candidate> {
     [
         ("/help", "show keybindings and commands"),
         ("/clear", "clear the transcript"),
+        ("/model", "the model, or /model <name> to switch"),
         ("/rewind", "undo the last exchange, or /rewind N"),
         ("/quit", "exit axum"),
     ]
@@ -195,12 +196,35 @@ pub fn render(completion: &Completion, width: u16, theme: &Theme) -> Vec<Line<'s
                 ));
             }
 
-            let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
-            let fill = usize::from(width).saturating_sub(used);
-            spans.push(Span::raw(" ".repeat(fill)));
-            Line::from(spans)
+            Line::from(fit(spans, usize::from(width)))
         })
         .collect()
+}
+
+/// Make a row exactly `width` columns: padded if short, cut if long.
+///
+/// One rule at the end rather than a limit on each part. A detail is prose and prose grows, a
+/// command name could be long, and a popup can be narrower than either — and a row wider than
+/// the popup does not wrap, it pushes the layout sideways for every other row that was drawn
+/// from the width they all agreed on.
+fn fit(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
+    let mut out = Vec::with_capacity(spans.len() + 1);
+    let mut used = 0;
+    for span in spans {
+        let len = span.content.chars().count();
+        if used + len <= width {
+            used += len;
+            out.push(span);
+        } else {
+            let room = width - used;
+            let cut: String = span.content.chars().take(room).collect();
+            used += room;
+            out.push(Span::styled(cut, span.style));
+            break;
+        }
+    }
+    out.push(Span::raw(" ".repeat(width - used)));
+    out
 }
 
 /// Which slice of the candidate list is on screen, scrolled to keep the selection visible.
@@ -307,6 +331,47 @@ mod tests {
         for line in render(&c, 50, &Theme::default()) {
             let width: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
             assert_eq!(width, 50);
+        }
+    }
+}
+
+#[cfg(test)]
+mod clip_tests {
+    use super::*;
+
+    #[test]
+    fn a_detail_longer_than_the_popup_is_cut_rather_than_overflowing() {
+        // A row wider than the popup does not wrap: it pushes the layout sideways, and every
+        // other row was drawn from a width they all agreed on.
+        let completion = Completion {
+            kind: Kind::Command,
+            candidates: vec![Candidate {
+                value: "/x".to_owned(),
+                detail: "a description far longer than the space available for it".to_owned(),
+            }],
+            selected: 0,
+            token_start: 0,
+        };
+        for line in render(&completion, 30, &Theme::default()) {
+            let width: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+            assert_eq!(width, 30, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn a_popup_too_narrow_for_any_detail_still_renders() {
+        let completion = Completion {
+            kind: Kind::Command,
+            candidates: vec![Candidate {
+                value: "/x".to_owned(),
+                detail: "anything".to_owned(),
+            }],
+            selected: 0,
+            token_start: 0,
+        };
+        for line in render(&completion, 4, &Theme::default()) {
+            let width: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+            assert!(width <= 4, "{width}");
         }
     }
 }

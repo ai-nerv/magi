@@ -367,6 +367,28 @@ fn run_command(input: &str, app: &mut App) -> Control {
             app.show_help();
             Control::Continue
         }
+        // With a name it is the daemon's to do: only it knows the catalog this session
+        // started with and whether the name reaches anything. Without one, the answer is
+        // already on screen — the footer says which model is answering — so this says it
+        // again in words, which is what somebody typing `/model` is asking for.
+        "/model" => match input.split_whitespace().nth(1) {
+            Some(name) => Control::Send(UiCommand::SetModel {
+                name: name.to_owned(),
+            }),
+            None => {
+                let said = app.model.as_ref().map_or_else(
+                    || "No model is configured. `axum models` lists what is available.".to_owned(),
+                    |model| {
+                        format!(
+                            "{} — {} tokens. `/model <name>` switches.",
+                            model.name, model.context_window
+                        )
+                    },
+                );
+                app.show_notice(said);
+                Control::Continue
+            }
+        },
         // Rewinding is the daemon's to work out: it holds the session, and which messages are
         // still live is a question about the session rather than about what is on screen.
         "/rewind" => match input.split_whitespace().nth(1) {

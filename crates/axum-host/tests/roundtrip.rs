@@ -58,6 +58,25 @@ impl Client {
         }
     }
 
+    /// Attach and report which model the session says is answering.
+    async fn model_of(socket: &Path) -> Option<axum_proto::ModelInfo> {
+        let stream = axum_ipc::connect(socket).await.expect("connect");
+        let (read_half, write_half) = stream.into_split();
+        let mut reader = FrameReader::new(read_half);
+        let mut writer = FrameWriter::new(write_half);
+        writer
+            .write(&UiCommand::Attach {
+                session: None,
+                from_cursor: Cursor::ZERO,
+            })
+            .await
+            .expect("attach");
+        match reader.read::<HarnessEvent>().await.expect("snapshot") {
+            HarnessEvent::SessionSnapshot { model, .. } => model,
+            other => panic!("expected a snapshot, got {other:?}"),
+        }
+    }
+
     async fn submit(&mut self, text: &str) {
         self.writer
             .write(&UiCommand::SubmitPrompt { text: text.into() })
@@ -468,6 +487,157 @@ async fn what_a_turn_cost_reaches_the_ui() {
 
     // And the session's own total agrees, which is what a resumed footer reads.
     assert_eq!(session.lock().await.usage(), spent);
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&socket);
+}
+
+/// A catalog with two reachable models and one that needs a key nobody has set.
+fn two_models() -> axum_host::catalog::Catalog {
+    let providers =
+        serde_json::from_value::<Vec<axum_provider::provider::Provider>>(serde_json::json!([
+            {
+                "id": "local", "name": "Local", "api": "openai-completions",
+                "base_url": "http://127.0.0.1:1/v1", "auth": { "kind": "none" },
+                "models": [
+                    { "id": "a", "name": "A", "context_window": 1000, "max_tokens": 100 },
+                    { "id": "b", "name": "B", "context_window": 2000, "max_tokens": 100 }
+                ]
+            },
+            {
+                "id": "paid", "name": "Paid Co", "api": "openai-completions",
+                "base_url": "https://paid.test/v1",
+                "auth": { "kind": "api-key", "vars": ["AXUM_TEST_UNSET_KEY"] },
+                "models": [
+                    { "id": "x", "name": "X", "context_window": 1000, "max_tokens": 100 }
+                ]
+            }
+        ]))
+        .expect("providers");
+    axum_host::catalog::Catalog {
+        apis: axum_lua::adapter::BUILTIN
+            .iter()
+            .map(|(n, s)| ((*n).to_owned(), (*s).to_owned()))
+            .collect(),
+        tools: Vec::new(),
+        stubs: Vec::new(),
+        cwd: std::env::temp_dir(),
+        providers,
+        options: axum_provider::api::Options::default(),
+    }
+}
+
+async fn start_with_catalog(name: &str) -> (PathBuf, PathBuf) {
+    let (dir, socket) = temp(name);
+    let session = open_session(&dir, "/tmp", 1).expect("session");
+    let catalog = two_models();
+    let backend = catalog.backend("local/a");
+    let listener = axum_ipc::bind(&socket).await.expect("bind");
+    tokio::spawn(
+        async move { axum_host::serve_catalog(listener, session, backend, catalog).await },
+    );
+    (dir, socket)
+}
+
+#[tokio::test]
+async fn switching_model_is_announced_so_the_footer_can_follow() {
+    // Republishing the status does not do it: a status event carries a status. A UI learns
+    // which model is answering from the snapshot it attached with, and without an event of its
+    // own there is nothing to change its mind — the switch worked and the footer lied.
+    let (dir, socket) = start_with_catalog("switch").await;
+    let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
+
+    client
+        .writer
+        .write(&UiCommand::SetModel {
+            name: "local/b".to_owned(),
+        })
+        .await
+        .expect("send");
+
+    let mut announced = None;
+    for _ in 0..10 {
+        if let HarnessEvent::ModelChanged { model, .. } = client.next().await {
+            announced = model;
+            break;
+        }
+    }
+    let model = announced.expect("the switch was announced");
+    assert_eq!(model.name, "local/b");
+    assert_eq!(model.context_window, 2000, "and its window came with it");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&socket);
+}
+
+#[tokio::test]
+async fn a_model_that_does_not_exist_is_refused_with_the_ones_that_do() {
+    let (dir, socket) = start_with_catalog("unknown").await;
+    let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
+
+    client
+        .writer
+        .write(&UiCommand::SetModel {
+            name: "nope/nope".to_owned(),
+        })
+        .await
+        .expect("send");
+
+    let HarnessEvent::Refused { message, .. } = client.next().await else {
+        panic!("expected a refusal");
+    };
+    assert!(message.contains("no model called"), "{message}");
+    assert!(
+        message.contains("local/a"),
+        "it lists what works: {message}"
+    );
+    // And not what does not: a list of models you cannot reach is one nobody reads.
+    assert!(!message.contains("paid/x"), "{message}");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&socket);
+}
+
+#[tokio::test]
+async fn a_model_with_no_credential_is_refused_with_what_to_set() {
+    // "No such model" and "you have not set a key" send a person to two different places.
+    let (dir, socket) = start_with_catalog("uncredentialed").await;
+    let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
+
+    client
+        .writer
+        .write(&UiCommand::SetModel {
+            name: "paid/x".to_owned(),
+        })
+        .await
+        .expect("send");
+
+    let HarnessEvent::Refused { message, .. } = client.next().await else {
+        panic!("expected a refusal");
+    };
+    assert!(message.contains("AXUM_TEST_UNSET_KEY"), "{message}");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&socket);
+}
+
+#[tokio::test]
+async fn a_refused_switch_leaves_the_session_answering_with_what_it_had() {
+    // The new worker is built before the old one is dropped, so a switch that fails costs
+    // nothing. A session that stopped working because a name was mistyped would be worse than
+    // no `/model` at all.
+    let (dir, socket) = start_with_catalog("kept").await;
+    let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
+
+    client
+        .writer
+        .write(&UiCommand::SetModel {
+            name: "nope".to_owned(),
+        })
+        .await
+        .expect("send");
+    let _refusal = client.next().await;
+
+    // Asked of the session rather than inferred from a turn: what a refused switch must not
+    // do is change which model answers, and that is a question with a direct answer.
+    let model = Client::model_of(&socket).await.expect("still a model");
+    assert_eq!(model.name, "local/a", "the switch was refused, not applied");
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_file(&socket);
 }

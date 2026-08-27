@@ -49,6 +49,7 @@ fn the_command_palette_marks_the_selection_and_shows_details() {
         vec![
             "→ /help    show keybindings and commands",
             "  /clear   clear the transcript",
+            "  /model   the model, or /model <name> to switch",
             "  /rewind  undo the last exchange, or /rewind N",
             "  /quit    exit axum",
         ]

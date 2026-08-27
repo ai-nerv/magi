@@ -341,6 +341,28 @@ pub enum HarnessEvent {
         /// The new state.
         status: AgentStatus,
     },
+    /// The session now answers with a different model.
+    ///
+    /// Its own event rather than a re-sent snapshot: a snapshot carries the transcript, and a
+    /// UI folding one has to decide what it has already written to scrollback. Which model is
+    /// answering is one fact, and one fact is what this carries.
+    ModelChanged {
+        /// Position of this event.
+        cursor: Cursor,
+        /// The model now answering, or `None` if there is none.
+        model: Option<ModelInfo>,
+    },
+    /// Something the UI asked for could not be done, with the reason.
+    ///
+    /// Distinct from [`Self::Error`], which is the session going wrong. This is a request that
+    /// was understood and declined — a model that is not configured, a name that matches
+    /// nothing — and the answer belongs on screen rather than in the transcript.
+    Refused {
+        /// Position of this event.
+        cursor: Cursor,
+        /// What could not be done, and why.
+        message: String,
+    },
     /// The conversation was rewound to an earlier point.
     Branched {
         /// Position of this event.
@@ -389,6 +411,8 @@ impl HarnessEvent {
             | Self::ToolCallEnded { cursor, .. }
             | Self::StatusChanged { cursor, .. }
             | Self::Compacted { cursor, .. }
+            | Self::Refused { cursor, .. }
+            | Self::ModelChanged { cursor, .. }
             | Self::Branched { cursor, .. }
             | Self::Error { cursor, .. } => *cursor,
         }
@@ -413,6 +437,14 @@ pub enum UiCommand {
     },
     /// Interrupt the running turn.
     Interrupt,
+    /// Answer with a different model from here on.
+    ///
+    /// The daemon's choice to make: it holds the catalog this session started with, and only
+    /// it knows whether the name resolves to something reachable.
+    SetModel {
+        /// Qualified or bare name, as `axum models` prints it.
+        name: String,
+    },
     /// Rewind the conversation.
     Branch {
         /// How many entries from the start to keep, or `None` for "undo the last exchange".

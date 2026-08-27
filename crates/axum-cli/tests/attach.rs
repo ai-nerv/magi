@@ -175,6 +175,7 @@ fn fold(mut entries: Vec<Entry>, events: &[HarnessEvent]) -> Vec<Entry> {
                     *err = error;
                 }
             }
+            HarnessEvent::Refused { .. } | HarnessEvent::ModelChanged { .. } => {}
             HarnessEvent::Branched { id, keeps, .. } => {
                 entries.push(Entry::Branch { id, keeps });
             }
