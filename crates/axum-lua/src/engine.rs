@@ -219,6 +219,16 @@ impl Engine {
             });
             axum.set(ctx, "tool", tool).ok();
 
+            // The path of the binary that is running, so a config can name a peer axum ships
+            // without hoping the right `axum` is on PATH. It is a multi-call binary: its own
+            // peers are the same executable under another name, and `command = "axum"` finds
+            // whichever copy the shell happens to see -- an older install, or none at all,
+            // and the failure arrives as a broken pipe with nothing to read.
+            if let Ok(exe) = std::env::current_exe() {
+                let path = luna::String::from_slice(&ctx, exe.as_os_str().as_encoded_bytes());
+                axum.set(ctx, "self", path).ok();
+            }
+
             ctx.set_global("axum", axum);
         });
     }

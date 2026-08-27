@@ -348,3 +348,39 @@ fn a_peer_that_declares_nothing_leaves_the_config_claim_standing() {
     assert_eq!(declared.description, "What the config claimed.");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_peer_that_cannot_start_says_why() {
+    // Found against a real model. The shipped config named the peer `axum` and trusted PATH to
+    // find it; PATH found an older install that did not know `ext`, which exited at once. All
+    // the model was told was "io: Broken pipe (os error 32)", so it retried, failed the same
+    // way, and went looking for the problem somewhere else entirely.
+    let (mut registry, ops, dir) = session_raw("complaining");
+    registry.register(Box::new(axum_tools::process::ProcessTool::new(
+        "broken",
+        "A peer that refuses its arguments.",
+        serde_json::json!({ "type": "object" }),
+        env!("CARGO_BIN_EXE_axum"),
+        vec!["ext".into(), "lua".into(), "/nonexistent/peer.lua".into()],
+    )));
+
+    let output = registry.call("broken", &serde_json::json!({}), &ops, &Uncancelled);
+    assert!(output.is_error, "{}", output.content);
+    assert!(
+        output.content.contains("nonexistent") || output.content.contains("loading"),
+        "the peer's own complaint reaches the result: {}",
+        output.content
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_shipped_config_names_the_binary_that_is_running() {
+    // `command = "axum"` resolves through PATH, so it finds whichever copy the shell sees --
+    // an older install, or none. `axum.self` is the one actually running.
+    let source = include_str!("../../../config/tools/bash.lua");
+    assert!(
+        source.contains("command = axum.self"),
+        "bash.lua must not rely on PATH"
+    );
+}

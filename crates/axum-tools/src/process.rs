@@ -20,6 +20,7 @@ use axum_proto::{ToolCallId, ToolReport, ToolRequest};
 use std::cell::RefCell;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// How long to wait for a peer to answer one call.
@@ -45,6 +46,12 @@ const CANCEL_POLL: Duration = Duration::from_millis(50);
 /// Bounded so a peer that declares nothing costs a moment rather than the session. What it
 /// costs is the config's claim standing unchallenged, which is where things were before.
 const DECLARE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// How much of a peer's stderr is kept to explain its death.
+const COMPLAINT_LIMIT: u64 = 4096;
+
+/// How long to wait for a dead peer's stderr to be collected before giving up on it.
+const COMPLAINT_WAIT: Duration = Duration::from_millis(500);
 
 /// A tool reached by talking to a process.
 pub struct ProcessTool {
@@ -78,6 +85,13 @@ struct Peer {
     /// Reports as they arrive, or the error that ended the stream.
     reports: Receiver<Result<ToolReport, String>>,
     writer: FrameWriter<std::process::ChildStdin>,
+    /// Whatever the peer complained about on the way down.
+    ///
+    /// Kept because a peer that fails to start fails on the wire as "broken pipe", which says
+    /// nothing anyone can act on. The reason is almost always on its stderr -- a missing
+    /// binary, a bad argument, a config error -- and that is the sentence the model and the
+    /// user actually need.
+    complaint: Arc<Mutex<String>>,
 }
 
 /// How a call ended.
@@ -124,14 +138,29 @@ impl ProcessTool {
             .current_dir(ops.cwd())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            // Left alone: a peer's diagnostics belong on the daemon's stderr, not swallowed
-            // into a tool result where they would read as model-facing output.
-            .stderr(Stdio::inherit())
+            // Captured rather than inherited. A daemon is started with its own output going
+            // nowhere, so an inherited stderr is a diagnostic written to no one; and when a
+            // peer dies on startup its complaint is the only thing that explains the failure.
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("could not start {}: {e}", self.command))?;
 
         let stdin = child.stdin.take().ok_or("the peer has no stdin")?;
         let stdout = child.stdout.take().ok_or("the peer has no stdout")?;
+
+        let complaint = Arc::new(Mutex::new(String::new()));
+        if let Some(stderr) = child.stderr.take() {
+            let held = Arc::clone(&complaint);
+            std::thread::spawn(move || {
+                use std::io::Read;
+                let mut said = String::new();
+                // Bounded: a chatty peer must not be able to grow this without limit.
+                let _ = stderr.take(COMPLAINT_LIMIT).read_to_string(&mut said);
+                if let Ok(mut slot) = held.lock() {
+                    *slot = said;
+                }
+            });
+        }
 
         let (reports, incoming) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -152,8 +181,30 @@ impl ProcessTool {
             child,
             reports: incoming,
             writer: FrameWriter::new(stdin),
+            complaint,
         });
         Ok(())
+    }
+
+    /// Whatever the peer wrote to its stderr, trimmed.
+    /// Waited for, briefly. The draining thread is still finishing when the wire notices the
+    /// peer has gone, and reading the slot at once gets an empty string — which is the very
+    /// failure this exists to fix. The peer is already dead, so its stderr is closed and the
+    /// wait ends as soon as the thread does.
+    fn complaint(&self) -> String {
+        let deadline = Instant::now() + COMPLAINT_WAIT;
+        loop {
+            let said = self
+                .peer
+                .borrow()
+                .as_ref()
+                .and_then(|peer| peer.complaint.lock().ok().map(|c| c.trim().to_owned()))
+                .unwrap_or_default();
+            if !said.is_empty() || Instant::now() >= deadline {
+                return said;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 
     /// Stop the peer, so the next call starts a fresh one.
@@ -312,10 +363,16 @@ impl Tool for ProcessTool {
         match self.exchange(&id, arguments, cancel) {
             Ended::Answered(output) => output,
             Ended::Lost(why) => {
-                // A peer that died, wedged or ignored an interrupt takes its state with it, so
-                // the next call starts fresh rather than writing into a pipe nobody reads.
+                // The peer's own words first: "broken pipe" is what the wire saw, and the
+                // reason is on its stderr. A peer that could not start says so there, and
+                // without it the failure is unactionable for both the model and the user.
+                let said = self.complaint();
                 self.drop_peer();
-                Output::error(format!("{}: {why}", self.name))
+                if said.is_empty() {
+                    Output::error(format!("{}: {why}", self.name))
+                } else {
+                    Output::error(format!("{}: {why}\n{said}", self.name))
+                }
             }
         }
     }

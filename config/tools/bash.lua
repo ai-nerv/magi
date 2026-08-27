@@ -37,8 +37,10 @@ carry over. Output is returned as it is produced.]],
   transport = {
     kind = "process",
     -- axum is a multi-call binary, so its own shell peer is the same executable under
-    -- another name. A peer of your own goes here instead.
-    command = "axum",
+    -- another name. `axum.self` is the path of the binary that is running: naming it "axum"
+    -- and hoping PATH agrees finds whichever copy the shell sees, and an older one fails as
+    -- a broken pipe with nothing to read. A peer of your own goes here instead.
+    command = axum.self,
     args = { "ext", "shell" },
   },
 })
