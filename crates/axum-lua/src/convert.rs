@@ -123,3 +123,54 @@ pub fn lua_from_json<'gc>(ctx: luna::Context<'gc>, value: &serde_json::Value) ->
         }
     }
 }
+
+/// A Lua table as JSON, dropping anything that cannot be described.
+///
+/// [`json_from_lua`] refuses a whole table containing a function, which is right for a value
+/// crossing the boundary: silently losing a field would be worse than refusing. A *declaration*
+/// is the other case — a tool spec deliberately holds its `run` function beside describable
+/// fields, and refusing the table would drop the tool.
+///
+/// So the two are separate functions rather than a flag: the strict one is the default, and
+/// choosing to lose something is written down at the call site.
+#[must_use]
+pub fn declaration_from_lua<'gc>(
+    ctx: luna::Context<'gc>,
+    value: Value<'gc>,
+    depth: usize,
+) -> Option<serde_json::Value> {
+    if depth > 32 {
+        return None;
+    }
+    let Value::Table(table) = value else {
+        return json_from_lua(ctx, value, depth);
+    };
+
+    let entries: Vec<(Value<'gc>, Value<'gc>)> = table.iter(ctx).collect();
+    let is_list = !entries.is_empty()
+        && entries
+            .iter()
+            .enumerate()
+            .all(|(index, (key, _))| matches!(key, Value::Integer(i) if *i == index as i64 + 1));
+
+    if is_list {
+        let items: Vec<serde_json::Value> = entries
+            .into_iter()
+            .filter_map(|(_, value)| declaration_from_lua(ctx, value, depth + 1))
+            .collect();
+        return Some(serde_json::Value::Array(items));
+    }
+
+    let mut out = serde_json::Map::new();
+    for (key, value) in entries {
+        let name = match key {
+            Value::String(s) => String::from_utf8_lossy(s.as_bytes()).into_owned(),
+            Value::Integer(i) => i.to_string(),
+            _ => continue,
+        };
+        if let Some(json) = declaration_from_lua(ctx, value, depth + 1) {
+            out.insert(name, json);
+        }
+    }
+    Some(serde_json::Value::Object(out))
+}

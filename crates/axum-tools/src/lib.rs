@@ -12,6 +12,7 @@
 
 pub mod builtin;
 pub mod ops;
+pub mod process;
 pub mod registry;
 
 pub use ops::{Ops, Shell};

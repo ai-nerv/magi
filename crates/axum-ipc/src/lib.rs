@@ -7,6 +7,7 @@
 //! Linux only, deliberately. Peer identity comes from `SO_PEERCRED`, which means there is no
 //! handshake token to design, issue, or leak.
 
+pub mod blocking;
 mod codec;
 mod peer;
 

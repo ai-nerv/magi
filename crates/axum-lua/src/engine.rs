@@ -89,6 +89,8 @@ impl Engine {
             config: Rc::new(RefCell::new(Config::default())),
         };
         engine.install();
+        // After install, so a removal cannot be undone by something the installer adds.
+        crate::sandbox::apply(&mut engine.lua);
         engine
     }
 
@@ -187,6 +189,8 @@ impl Engine {
             // `__axum_apis` and Rust keeps only their names.
             let apis = Table::new(&ctx);
             ctx.set_global(APIS, apis);
+            let tools = Table::new(&ctx);
+            ctx.set_global(TOOLS, tools);
             let api = Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
                 let (name, spec): (Value, Value) = stack.consume(ctx)?;
                 let (Value::String(name), Value::Table(_)) = (name, spec) else {
@@ -199,6 +203,21 @@ impl Engine {
                 Ok(CallbackReturn::Return)
             });
             axum.set(ctx, "api", api).ok();
+
+            // Tools register the same way protocols do, and for the same reason: a `run`
+            // function cannot be described as data, so the VM keeps the whole declaration.
+            let tool = Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
+                let (name, spec): (Value, Value) = stack.consume(ctx)?;
+                let (Value::String(name), Value::Table(_)) = (name, spec) else {
+                    return Err(raise(ctx, "axum.tool(name, spec): a name and a table"));
+                };
+                if let Value::Table(tools) = ctx.get_global_value(TOOLS) {
+                    tools.set(ctx, name, spec).ok();
+                }
+                stack.replace(ctx, ());
+                Ok(CallbackReturn::Return)
+            });
+            axum.set(ctx, "tool", tool).ok();
 
             ctx.set_global("axum", axum);
         });
@@ -297,5 +316,89 @@ impl Engine {
             out = crate::convert::json_from_lua(ctx, ctx.get_global_value("__axum_result"), 0);
         });
         out.filter(|value| !value.is_null())
+    }
+}
+
+/// Where registered tool declarations live inside the VM.
+const TOOLS: &str = "__axum_tools";
+
+impl Engine {
+    /// The tools a config registered, as `(name, declaration json)`.
+    #[must_use]
+    pub fn tools(&mut self) -> Vec<(String, serde_json::Value)> {
+        let mut out = Vec::new();
+        self.lua.enter(|ctx| {
+            let Value::Table(tools) = ctx.get_global_value(TOOLS) else {
+                return;
+            };
+            for (key, value) in tools.iter(ctx) {
+                let Value::String(name) = key else { continue };
+                // The `run` function cannot be described, so what comes back is the
+                // declaration without it; the function stays in the VM where it belongs.
+                if let Some(json) = crate::convert::declaration_from_lua(ctx, value, 0) {
+                    out.push((String::from_utf8_lossy(name.as_bytes()).into_owned(), json));
+                }
+            }
+        });
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    /// Run a registered tool's `run` function.
+    pub fn call_tool(
+        &mut self,
+        name: &str,
+        arguments: &serde_json::Value,
+    ) -> Option<serde_json::Value> {
+        self.lua.enter(|ctx| {
+            let value = crate::convert::lua_from_json(ctx, arguments);
+            ctx.set_global("__axum_tool_args", value);
+        });
+
+        // Wrapped in `pcall` so a raise inside a tool is a failed call rather than a failed
+        // turn: a config author's mistake must not cost the conversation.
+        let source = format!(
+            "local spec = {TOOLS} and {TOOLS}[{name:?}]\n\
+             local fn = spec and spec.run\n\
+             if not fn then __axum_tool_result = nil return end\n\
+             local ok, answer = pcall(fn, __axum_tool_args)\n\
+             if not ok then\n\
+               __axum_tool_result = {{ content = tostring(answer), is_error = true }}\n\
+             elseif type(answer) == \"string\" then\n\
+               __axum_tool_result = {{ content = answer, is_error = false }}\n\
+             else\n\
+               __axum_tool_result = answer\n\
+             end"
+        );
+        self.run(&source, "tool.lua").ok()?;
+
+        let mut out = None;
+        self.lua.enter(|ctx| {
+            out = crate::convert::json_from_lua(ctx, ctx.get_global_value("__axum_tool_result"), 0);
+        });
+        out.filter(|value| !value.is_null())
+    }
+}
+
+impl Engine {
+    /// Hand the VM the family's client stubs, as source.
+    ///
+    /// Read by Rust and passed in rather than opened by the config, because `io` is not
+    /// reachable from a config and should not be: a tool needing one file is not a reason to
+    /// give every config the ability to open any.
+    ///
+    /// `axum.stubs.hexe` is then a string a tool loads with `load(...)`, which is exactly how
+    /// the family says a sibling's stub should be consumed.
+    pub fn install_stubs(&mut self, stubs: &[(String, String)]) {
+        self.lua.enter(|ctx| {
+            let table = Table::new(&ctx);
+            for (name, source) in stubs {
+                let source = luna::String::from_slice(&ctx, source.as_bytes());
+                table.set(ctx, name.as_str(), source).ok();
+            }
+            if let Value::Table(axum) = ctx.get_global_value("axum") {
+                axum.set(ctx, "stubs", table).ok();
+            }
+        });
     }
 }

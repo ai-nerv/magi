@@ -139,6 +139,7 @@ version = "0.1.0"
 dependencies = [
  "axum-model",
  "axum-provider",
+ "axum-tools",
  "luna",
  "serde",
  "serde_json",
@@ -159,6 +160,7 @@ version = "0.1.0"
 dependencies = [
  "axum-model",
  "serde",
+ "serde_json",
  "thiserror 2.0.20",
 ]
 
@@ -190,7 +192,9 @@ dependencies = [
 name = "axum-tools"
 version = "0.1.0"
 dependencies = [
+ "axum-ipc",
  "axum-model",
+ "axum-proto",
  "ignore",
  "serde",
  "serde_json",

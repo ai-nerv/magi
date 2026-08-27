@@ -43,8 +43,10 @@ mod engine;
 mod fs;
 mod json;
 pub mod peer;
+mod sandbox;
 mod stream;
 pub mod stub;
+pub mod tool;
 
 pub use convert::{FromLua, json_from_lua};
 pub use engine::{Config, Engine, Registered};

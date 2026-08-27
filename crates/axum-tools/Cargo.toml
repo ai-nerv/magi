@@ -6,7 +6,9 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
+axum-ipc.workspace = true
 axum-model.workspace = true
+axum-proto.workspace = true
 ignore.workspace = true
 serde.workspace = true
 similar.workspace = true

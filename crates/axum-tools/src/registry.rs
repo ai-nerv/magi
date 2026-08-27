@@ -7,7 +7,11 @@ use std::collections::BTreeMap;
 ///
 /// Implemented once per transport, never once per tool: `builtin` here, `lua` in `axum-lua`,
 /// `process` over the wire. A caller holding a `&dyn Tool` cannot tell which it has.
-pub trait Tool: Send + Sync {
+///
+/// Deliberately not `Send + Sync`. A Lua tool's body lives in a VM that is neither, and a
+/// registry is built on -- and never leaves -- the worker thread that owns it. Demanding the
+/// bounds would force an `unsafe impl` asserting exactly what the design already guarantees.
+pub trait Tool {
     /// The name the model calls it by.
     fn name(&self) -> &str;
 
