@@ -79,7 +79,22 @@ pub fn handle(
     if let Some(open) = picker.as_mut() {
         match key.code {
             KeyCode::Esc => {
+                // One escape closes the whole list, not one character of the query. Backspace
+                // is how you widen it; escape is how you leave.
                 *picker = None;
+                return Action::Accepted;
+            }
+            // Typing narrows the list rather than reaching the prompt. Fifty-three rows is
+            // more than anyone should arrow through, and the prompt is holding whatever it was
+            // holding — this is not an edit of it.
+            KeyCode::Char(c) if !ctrl && !alt => {
+                open.push(c);
+                return Action::Accepted;
+            }
+            KeyCode::Backspace => {
+                // A query that has run out closes nothing: backspacing past the start is a
+                // widened list, and leaving is what escape is for.
+                open.pop();
                 return Action::Accepted;
             }
             KeyCode::Up => {
@@ -91,9 +106,16 @@ pub fn handle(
                 return Action::Accepted;
             }
             KeyCode::Enter | KeyCode::Tab => {
-                let chosen = open.current().map(|c| c.value.clone());
-                *picker = None;
-                return chosen.map_or(Action::Accepted, Action::Chose);
+                // Only closes when something was actually taken. A row that cannot be used
+                // says so and leaves the list up, because the next thing you want is a
+                // different row and not to retype the query that found this one.
+                return match open.take() {
+                    Some(chosen) => {
+                        *picker = None;
+                        Action::Chose(chosen)
+                    }
+                    None => Action::Accepted,
+                };
             }
             _ => {}
         }

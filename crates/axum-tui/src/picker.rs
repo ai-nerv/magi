@@ -35,10 +35,23 @@ pub struct Choice {
 pub struct Picker {
     /// What is being chosen, shown as a heading.
     pub title: String,
-    /// Every option, in the order they are offered.
+    /// Everything on offer, unfiltered.
+    ///
+    /// Kept whole so backspacing widens the list again. Filtering destructively would mean a
+    /// typo could only be recovered from by closing the list and opening it afresh.
+    all: Vec<Choice>,
+    /// What has been typed to narrow it.
+    query: String,
+    /// The rows currently on offer, in rank order.
     pub choices: Vec<Choice>,
     /// Which row is highlighted.
     pub selected: usize,
+    /// Something to say about the last attempt, shown in the heading.
+    ///
+    /// Set when a row that cannot be taken is taken anyway. The list stays open: the answer to
+    /// "that one needs a key" is to choose a different one, and closing the list means
+    /// reopening it and retyping the query to do so.
+    notice: Option<String>,
 }
 
 impl Picker {
@@ -53,12 +66,73 @@ impl Picker {
             .unwrap_or(0);
         Self {
             title: title.into(),
+            all: choices.clone(),
+            query: String::new(),
             choices,
             selected,
+            notice: None,
         }
     }
 
-    /// Whether there is anything to choose.
+    /// Try to take the highlighted row.
+    ///
+    /// `None` when it cannot be taken, in which case the list stays open and says why. Refused
+    /// here rather than by the daemon because the row already carries the reason: a round trip
+    /// to be told what is written on screen would close the list to say it.
+    pub fn take(&mut self) -> Option<String> {
+        let choice = self.current()?.clone();
+        if choice.ready {
+            return Some(choice.value);
+        }
+        self.notice = Some(format!("{} — {}", choice.value, choice.detail));
+        None
+    }
+
+    /// What has been typed so far.
+    #[must_use]
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
+    /// Narrow the list by one more character.
+    ///
+    /// Fuzzy, and against the value rather than the detail: somebody typing `sonnet` wants the
+    /// models called that, not every row whose reason-it-is-unavailable happens to contain
+    /// those letters.
+    pub fn push(&mut self, c: char) {
+        self.notice = None;
+        self.query.push(c);
+        self.refilter();
+    }
+
+    /// Widen it again by one.
+    pub fn pop(&mut self) -> bool {
+        self.notice = None;
+        let popped = self.query.pop().is_some();
+        if popped {
+            self.refilter();
+        }
+        popped
+    }
+
+    /// Rebuild the offered rows from the query.
+    fn refilter(&mut self) {
+        if self.query.is_empty() {
+            self.choices = self.all.clone();
+        } else {
+            let values: Vec<String> = self.all.iter().map(|c| c.value.clone()).collect();
+            let ranked = crate::fuzzy::filter(&self.query, &values);
+            self.choices = ranked
+                .into_iter()
+                .filter_map(|value| self.all.iter().find(|c| &c.value == value).cloned())
+                .collect();
+        }
+        // Back to the top: the previous highlight was a position in a different list, and
+        // keeping the index would land on whatever happens to be there now.
+        self.selected = 0;
+    }
+
+    /// Whether there is anything to choose right now.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.choices.is_empty()
@@ -66,6 +140,7 @@ impl Picker {
 
     /// Move the highlight down, wrapping.
     pub fn next(&mut self) {
+        self.notice = None;
         if !self.choices.is_empty() {
             self.selected = (self.selected + 1) % self.choices.len();
         }
@@ -73,6 +148,7 @@ impl Picker {
 
     /// Move the highlight up, wrapping.
     pub fn previous(&mut self) {
+        self.notice = None;
         if !self.choices.is_empty() {
             self.selected = (self.selected + self.choices.len() - 1) % self.choices.len();
         }
@@ -88,6 +164,15 @@ impl Picker {
     #[must_use]
     pub fn height(&self) -> u16 {
         u16::try_from(self.choices.len().min(MAX_VISIBLE) + 1).unwrap_or(u16::MAX)
+    }
+
+    /// Whether the list started with anything at all.
+    ///
+    /// Distinct from having nothing *right now*: a query that matches nothing is a list you
+    /// can back out of, and a catalog with nothing in it is not.
+    #[must_use]
+    pub fn offers_nothing(&self) -> bool {
+        self.all.is_empty()
     }
 
     /// Which slice is on screen, scrolled to keep the highlight visible.
@@ -108,6 +193,23 @@ impl Picker {
 #[must_use]
 pub fn render(picker: &Picker, width: u16, theme: &Theme) -> Vec<Line<'static>> {
     let window = picker.window();
+    if picker.choices.is_empty() {
+        return vec![Line::from(crate::fit(
+            vec![
+                Span::styled(
+                    picker.title.clone(),
+                    Style::default()
+                        .fg(theme.accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("  nothing matches \u{201c}{}\u{201d}", picker.query()),
+                    Style::default().fg(theme.warning),
+                ),
+            ],
+            usize::from(width),
+        ))];
+    }
     let value_width = picker.choices[window.clone()]
         .iter()
         .map(|c| c.value.chars().count())
@@ -116,7 +218,20 @@ pub fn render(picker: &Picker, width: u16, theme: &Theme) -> Vec<Line<'static>> 
 
     // A heading, because unlike the completion popup this is not obviously about what you just
     // typed: it appears because you asked a question, and it should say which one.
-    let position = format!(" {}/{}", picker.selected + 1, picker.choices.len());
+    let position = if let Some(said) = &picker.notice {
+        format!("  {said}")
+    } else if picker.query().is_empty() {
+        format!(" {}/{}", picker.selected + 1, picker.choices.len())
+    } else {
+        // The query is shown in the heading rather than in the prompt, because the prompt is
+        // holding whatever it was holding and this is not an edit of it.
+        format!(
+            " {}/{}  ▸ {}",
+            picker.selected + 1,
+            picker.choices.len(),
+            picker.query()
+        )
+    };
     let mut out = vec![Line::from(crate::fit(
         vec![
             Span::styled(
@@ -125,7 +240,14 @@ pub fn render(picker: &Picker, width: u16, theme: &Theme) -> Vec<Line<'static>> 
                     .fg(theme.accent)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(position, Style::default().fg(theme.dim)),
+            Span::styled(
+                position,
+                Style::default().fg(if picker.notice.is_some() {
+                    theme.warning
+                } else {
+                    theme.dim
+                }),
+            ),
         ],
         usize::from(width),
     ))];
@@ -289,5 +411,167 @@ mod tests {
             let width: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
             assert_eq!(width, 40, "{line:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use super::*;
+
+    fn many() -> Vec<Choice> {
+        [
+            "openrouter/deepseek/deepseek-v3.2",
+            "openrouter/anthropic/claude-sonnet-4.5",
+            "anthropic/claude-haiku-4-5",
+            "ollama/llama3.3",
+        ]
+        .iter()
+        .map(|name| Choice {
+            value: (*name).to_owned(),
+            detail: "1k".into(),
+            ready: true,
+        })
+        .collect()
+    }
+
+    fn values(picker: &Picker) -> Vec<&str> {
+        picker.choices.iter().map(|c| c.value.as_str()).collect()
+    }
+
+    #[test]
+    fn typing_narrows_the_list() {
+        // Fifty-three rows is more than anyone should arrow through.
+        let mut picker = Picker::new("Model", many(), None);
+        for c in "sonnet".chars() {
+            picker.push(c);
+        }
+        assert_eq!(
+            values(&picker),
+            vec!["openrouter/anthropic/claude-sonnet-4.5"]
+        );
+    }
+
+    #[test]
+    fn backspacing_widens_it_again() {
+        // Destructive filtering would mean a typo could only be undone by closing the list.
+        let mut picker = Picker::new("Model", many(), None);
+        for c in "sonnetx".chars() {
+            picker.push(c);
+        }
+        assert!(picker.is_empty(), "the typo matches nothing");
+        picker.pop();
+        assert_eq!(
+            values(&picker),
+            vec!["openrouter/anthropic/claude-sonnet-4.5"]
+        );
+    }
+
+    #[test]
+    fn clearing_the_query_offers_everything_again() {
+        let mut picker = Picker::new("Model", many(), None);
+        picker.push('z');
+        while picker.pop() {}
+        assert_eq!(picker.choices.len(), 4);
+    }
+
+    #[test]
+    fn narrowing_puts_the_highlight_back_at_the_top() {
+        // The old index was a position in a different list, and keeping it lands on whatever
+        // happens to be there now.
+        let mut picker = Picker::new("Model", many(), None);
+        picker.next();
+        picker.next();
+        picker.push('l');
+        assert_eq!(picker.selected, 0);
+    }
+
+    #[test]
+    fn a_query_matching_nothing_says_so_rather_than_going_blank() {
+        let mut picker = Picker::new("Model", many(), None);
+        for c in "zzzz".chars() {
+            picker.push(c);
+        }
+        let shown: Vec<String> = render(&picker, 60, &Theme::default())
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(shown[0].contains("nothing matches"), "{shown:?}");
+        assert!(shown[0].contains("zzzz"), "{shown:?}");
+    }
+
+    #[test]
+    fn a_query_matching_nothing_is_not_the_same_as_an_empty_catalog() {
+        // One you can back out of; the other is a configuration with no providers in it.
+        let mut picker = Picker::new("Model", many(), None);
+        picker.push('z');
+        assert!(picker.is_empty());
+        assert!(!picker.offers_nothing());
+        assert!(Picker::new("Model", Vec::new(), None).offers_nothing());
+    }
+
+    #[test]
+    fn the_heading_shows_what_was_typed() {
+        let mut picker = Picker::new("Model", many(), None);
+        picker.push('l');
+        let shown: Vec<String> = render(&picker, 60, &Theme::default())
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(shown[0].contains("▸ l"), "{:?}", shown[0]);
+    }
+}
+
+#[cfg(test)]
+mod take_tests {
+    use super::*;
+
+    fn mixed() -> Vec<Choice> {
+        vec![
+            Choice {
+                value: "ready/one".into(),
+                detail: "1k".into(),
+                ready: true,
+            },
+            Choice {
+                value: "locked/two".into(),
+                detail: "set TWO_KEY".into(),
+                ready: false,
+            },
+        ]
+    }
+
+    #[test]
+    fn a_usable_row_is_taken() {
+        let mut picker = Picker::new("Model", mixed(), None);
+        assert_eq!(picker.take(), Some("ready/one".to_owned()));
+    }
+
+    #[test]
+    fn a_locked_row_is_refused_without_closing_anything() {
+        // Picking it can only fail, and the failure is written on the row. A round trip to be
+        // told that would close the list to say it, and then you retype the query.
+        let mut picker = Picker::new("Model", mixed(), None);
+        picker.next();
+        assert_eq!(picker.take(), None);
+        let heading: String = render(&picker, 70, &Theme::default())[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(heading.contains("set TWO_KEY"), "{heading}");
+    }
+
+    #[test]
+    fn moving_on_clears_what_was_said_about_the_last_one() {
+        let mut picker = Picker::new("Model", mixed(), None);
+        picker.next();
+        let _ = picker.take();
+        picker.previous();
+        let heading: String = render(&picker, 70, &Theme::default())[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(!heading.contains("TWO_KEY"), "{heading}");
     }
 }

@@ -355,7 +355,7 @@ impl App {
             .collect();
         let current = self.model.as_ref().map(|m| m.name.clone());
         let picker = axum_tui::picker::Picker::new("Model", choices, current.as_deref());
-        if picker.is_empty() {
+        if picker.offers_nothing() {
             self.show_notice(
                 "No providers are declared. `axum models --all` lists what axum ships.".to_owned(),
             );
