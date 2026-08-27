@@ -116,14 +116,16 @@ impl Session {
         Ok(cursor)
     }
 
-    /// Replace the last entry and republish it.
+    /// Replace the last entry and publish what changed about it.
     ///
-    /// A streaming message grows in place: the entry was committed before its first delta so
-    /// a UI attaching mid-turn has something to extend, and each amendment is the same entry
-    /// further along rather than a new one.
+    /// What changed, not what it now is. Describing an entry from nothing is right for a cold
+    /// replay and wrong here: it opens with a `started` event, and a UI that takes that at face
+    /// value gets a second copy of a message it is already showing. It also reports the whole
+    /// body as a delta, which a UI appending deltas would then show twice over.
     pub fn amend(&mut self, entry: Entry) -> Result<Cursor, JournalError> {
+        let previous = self.journal.entries().last().cloned();
         let cursor = self.journal.amend(entry.clone())?;
-        for event in events_for(cursor, &entry) {
+        for event in amendment_events(cursor, previous.as_ref(), &entry) {
             let _ = self.events.send(event);
         }
         Ok(cursor)
@@ -142,7 +144,72 @@ impl Session {
     }
 }
 
-/// The events that reconstruct one entry.
+/// The events describing how `entry` differs from `previous`.
+///
+/// Only the change is published, because every subscriber is already showing the entry as
+/// it was. A body grows by an increment; a tool call gains a result; nothing is started
+/// twice.
+fn amendment_events(cursor: Cursor, previous: Option<&Entry>, entry: &Entry) -> Vec<HarnessEvent> {
+    match (previous, entry) {
+        (
+            Some(Entry::Assistant {
+                text: before,
+                thinking: thought,
+                ..
+            }),
+            Entry::Assistant {
+                id,
+                text,
+                thinking,
+                stop_reason,
+                error,
+            },
+        ) => {
+            let mut out = Vec::new();
+            let added = grown(before, text);
+            let reasoned = grown(thought, thinking);
+            if !added.is_empty() || !reasoned.is_empty() {
+                out.push(HarnessEvent::AssistantDelta {
+                    cursor,
+                    id: id.clone(),
+                    text: added,
+                    thinking: reasoned,
+                });
+            }
+            if let Some(stop_reason) = stop_reason {
+                out.push(HarnessEvent::AssistantEnded {
+                    cursor,
+                    id: id.clone(),
+                    stop_reason: *stop_reason,
+                    error: error.clone(),
+                });
+            }
+            out
+        }
+        (Some(Entry::Tool { .. }), Entry::Tool { id, result, .. }) => result
+            .as_ref()
+            .map(|result| HarnessEvent::ToolCallEnded {
+                cursor,
+                id: id.clone(),
+                result: result.clone(),
+            })
+            .into_iter()
+            .collect(),
+        // An amendment that changed the kind of entry, or arrived with no entry under it,
+        // is not an amendment. Describing it in full is the only honest answer.
+        _ => events_for(cursor, entry),
+    }
+}
+
+/// The part of `now` that was not already in `before`.
+///
+/// Falls back to the whole of `now` when it is not an extension, which happens when a turn
+/// is rewritten rather than continued -- an aborted message keeping what arrived, say.
+fn grown(before: &str, now: &str) -> String {
+    now.strip_prefix(before).unwrap_or(now).to_owned()
+}
+
+/// The events that reconstruct one entry from nothing.
 fn events_for(cursor: Cursor, entry: &Entry) -> Vec<HarnessEvent> {
     match entry {
         Entry::User { id, text } => vec![HarnessEvent::UserMessage {

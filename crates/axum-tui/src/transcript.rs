@@ -7,7 +7,7 @@
 use crate::markdown;
 use crate::theme::Theme;
 use axum_proto::{Entry, StopReason};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 /// Horizontal padding inside a block, in cells. Pi's `outputPad`.
@@ -161,12 +161,12 @@ fn tool(
         if !body.is_empty() {
             let all: Vec<&str> = body.lines().collect();
             let shown = all.len().min(PREVIEW_LINES);
-            let fg = if result.is_error {
-                theme.error
-            } else {
-                theme.tool_output
-            };
             for line in &all[..shown] {
+                let fg = if result.is_error {
+                    theme.error
+                } else {
+                    change_colour(line, theme)
+                };
                 let clipped = clip(line, inner);
                 out.push(pad(
                     Line::from(Span::styled(clipped, style.fg(fg))),
@@ -189,6 +189,22 @@ fn tool(
 
     out.push(blank(width, style));
     out
+}
+
+/// The colour a line of tool output is drawn in.
+///
+/// `edit` reports what it changed as a unified diff, and a diff drawn in one colour is a wall
+/// of text with a sign column nobody reads. Applied to every tool rather than to `edit` by
+/// name: a declared tool that reports a patch gets the same treatment without the renderer
+/// having to be told which tools exist.
+fn change_colour(line: &str, theme: &Theme) -> Color {
+    match line.as_bytes().first() {
+        // `+++`/`---` are file headers, not changed lines, and colouring them as changes makes
+        // every diff look like it added and removed its own filename.
+        Some(b'+') if !line.starts_with("+++") => theme.diff_added,
+        Some(b'-') if !line.starts_with("---") => theme.diff_removed,
+        _ => theme.tool_output,
+    }
 }
 
 /// A one-line summary of a tool's arguments for the block header.
@@ -347,5 +363,76 @@ mod tests {
             rendered.iter().any(|l| l.contains("Error: overloaded")),
             "{rendered:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod diff_tests {
+    use super::*;
+    use axum_proto::{ToolCallId, ToolResult};
+
+    fn edit_entry(output: &str) -> Entry {
+        Entry::Tool {
+            id: ToolCallId::new("t1"),
+            name: "edit".into(),
+            args: r#"{"path": "a.rs"}"#.into(),
+            result: Some(ToolResult {
+                output: output.to_owned(),
+                is_error: false,
+            }),
+        }
+    }
+
+    /// The colour of the first span on the line whose text starts with `prefix`.
+    fn colour_of(lines: &[Line<'static>], prefix: &str) -> Option<Color> {
+        lines.iter().find_map(|line| {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            text.trim_start()
+                .starts_with(prefix)
+                .then(|| line.spans.iter().find_map(|s| s.style.fg))?
+        })
+    }
+
+    #[test]
+    fn added_and_removed_lines_are_coloured_apart() {
+        let theme = Theme::default();
+        let lines = entry_lines(&edit_entry("edited a.rs\n-was\n+now\n"), 40, &theme);
+        assert_eq!(colour_of(&lines, "-was"), Some(theme.diff_removed));
+        assert_eq!(colour_of(&lines, "+now"), Some(theme.diff_added));
+    }
+
+    #[test]
+    fn ordinary_output_keeps_the_tool_colour() {
+        let theme = Theme::default();
+        let lines = entry_lines(&edit_entry("edited a.rs\n"), 40, &theme);
+        assert_eq!(colour_of(&lines, "edited"), Some(theme.tool_output));
+    }
+
+    #[test]
+    fn file_headers_are_not_changes() {
+        // `---`/`+++` name the file. Coloured as changes, every diff appears to add and remove
+        // its own filename.
+        let theme = Theme::default();
+        let lines = entry_lines(&edit_entry("--- a.rs\n+++ a.rs\n-was\n"), 40, &theme);
+        assert_eq!(colour_of(&lines, "--- a.rs"), Some(theme.tool_output));
+        assert_eq!(colour_of(&lines, "+++ a.rs"), Some(theme.tool_output));
+    }
+
+    #[test]
+    fn a_failed_tool_is_all_error_coloured_whatever_it_printed() {
+        // A diff in a failure is still a failure; the block's meaning must not be diluted.
+        let theme = Theme::default();
+        let entry = Entry::Tool {
+            id: ToolCallId::new("t1"),
+            name: "edit".into(),
+            args: "{}".into(),
+            result: Some(ToolResult {
+                output: "-was\n+now\n".into(),
+                is_error: true,
+            }),
+        };
+        let lines = entry_lines(&entry, 40, &theme);
+        assert_eq!(colour_of(&lines, "-was"), Some(theme.error));
+        assert_eq!(colour_of(&lines, "+now"), Some(theme.error));
     }
 }

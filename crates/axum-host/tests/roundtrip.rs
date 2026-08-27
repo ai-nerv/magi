@@ -315,3 +315,92 @@ async fn an_interrupt_is_answered_while_a_turn_holds_the_connection() {
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_file(&socket);
 }
+
+#[tokio::test]
+async fn an_amended_entry_is_not_announced_as_a_new_one() {
+    // A tool call is committed before it runs and amended with its result, and an assistant
+    // message is committed empty and amended as it grows. Republishing the whole entry each
+    // time told the UI a second call had started, so the transcript showed every tool twice
+    // and every message once empty and once full.
+    use axum_proto::{Entry, MessageId, ToolCallId, ToolResult};
+
+    let (dir, socket) = temp("amend");
+    let session = open_session(&dir, "/tmp", 1).expect("session");
+    let session = std::sync::Arc::new(tokio::sync::Mutex::new(session));
+
+    let mut live = session.lock().await.subscribe();
+    {
+        let mut held = session.lock().await;
+        held.commit(Entry::Tool {
+            id: ToolCallId::new("c1"),
+            name: "edit".into(),
+            args: "{}".into(),
+            result: None,
+        })
+        .expect("commit");
+        held.amend(Entry::Tool {
+            id: ToolCallId::new("c1"),
+            name: "edit".into(),
+            args: "{}".into(),
+            result: Some(ToolResult {
+                output: "done".into(),
+                is_error: false,
+            }),
+        })
+        .expect("amend");
+    }
+
+    let first = live.try_recv().expect("the call started");
+    assert!(
+        matches!(first, HarnessEvent::ToolCallStarted { .. }),
+        "{first:?}"
+    );
+    let second = live.try_recv().expect("the call ended");
+    assert!(
+        matches!(second, HarnessEvent::ToolCallEnded { .. }),
+        "{second:?}"
+    );
+    assert!(
+        live.try_recv().is_err(),
+        "one start and one end, nothing more"
+    );
+
+    // The same for a message that grows: the amendment carries what was added, not the whole
+    // body, because a UI appending deltas would otherwise show the opening twice.
+    {
+        let mut held = session.lock().await;
+        held.commit(Entry::Assistant {
+            id: MessageId::new("a1"),
+            text: "Hello".into(),
+            thinking: String::new(),
+            stop_reason: None,
+            error: None,
+        })
+        .expect("commit");
+        held.amend(Entry::Assistant {
+            id: MessageId::new("a1"),
+            text: "Hello there".into(),
+            thinking: String::new(),
+            stop_reason: Some(axum_proto::StopReason::EndTurn),
+            error: None,
+        })
+        .expect("amend");
+    }
+
+    let _started = live.try_recv().expect("started");
+    let _opening = live.try_recv().expect("the opening delta");
+    let delta = live.try_recv().expect("the amendment's delta");
+    assert!(
+        matches!(delta, HarnessEvent::AssistantDelta { ref text, .. } if text == " there"),
+        "{delta:?}"
+    );
+    let ended = live.try_recv().expect("ended");
+    assert!(
+        matches!(ended, HarnessEvent::AssistantEnded { .. }),
+        "{ended:?}"
+    );
+    assert!(live.try_recv().is_err(), "nothing else was published");
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&socket);
+}
