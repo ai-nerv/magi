@@ -83,10 +83,12 @@ pub(super) fn block(
                     style,
                 ));
             }
+            // The affordance goes on the fold, because that is where a reader is
+            // looking when they wonder where the rest went.
             if all.len() > shown {
                 out.push(pad(
                     Line::from(Span::styled(
-                        format!("… {} more lines", all.len() - shown),
+                        format!("… {} more lines · ctrl+o", all.len() - shown),
                         style.fg(theme.dim),
                     )),
                     width,
@@ -416,5 +418,45 @@ mod detail_tests {
         let preview = text_of(&entry_lines(&short, 40, &Theme::default(), Detail::Preview));
         let full = text_of(&entry_lines(&short, 40, &Theme::default(), Detail::Full));
         assert_eq!(preview, full);
+    }
+}
+
+#[cfg(test)]
+mod fold_tests {
+    use super::*;
+
+    fn folded(lines: usize) -> Vec<String> {
+        let body: String = (1..=lines)
+            .map(|i| format!("line {i}\n"))
+            .collect::<String>();
+        let result = axum_proto::ToolResult {
+            output: body,
+            is_error: false,
+        };
+        block(
+            "bash",
+            "{\"command\":\"seq\"}",
+            Some(&result),
+            60,
+            &Theme::default(),
+            Detail::Preview,
+        )
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+        .collect()
+    }
+
+    #[test]
+    fn the_fold_says_how_to_open_it() {
+        // Without this the only place ctrl+o was mentioned was a notice printed after you had
+        // already found it, and one notice was appended per press.
+        let out = folded(40);
+        assert!(out.iter().any(|l| l.contains("ctrl+o")), "{out:?}");
+    }
+
+    #[test]
+    fn output_that_fits_gets_no_fold_and_no_hint() {
+        let out = folded(3);
+        assert!(!out.iter().any(|l| l.contains("ctrl+o")), "{out:?}");
     }
 }

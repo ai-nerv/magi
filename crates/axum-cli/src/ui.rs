@@ -93,7 +93,13 @@ pub fn draw(
         // the tail of it — a message longer than the region streams past, and the newest text
         // is the part being written.
         Mode::Inline => {
-            let live = transcript::render(app.live(), area.width, theme, app.detail);
+            // The greeting belongs here too: inline mode defers history to the terminal, and a
+            // terminal with no history yet is exactly the blank screen this was written for.
+            let live = if app.started() {
+                transcript::render(app.live(), area.width, theme, app.detail)
+            } else {
+                greeting::render(&footer_data.model, &footer_data.cwd, area.width, theme)
+            };
             let shown = live
                 .len()
                 .saturating_sub(usize::from(live_area.height))

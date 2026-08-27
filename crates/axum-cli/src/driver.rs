@@ -143,14 +143,11 @@ pub async fn run(socket: &Path, mode: Mode, prompt: Option<String>) -> Result<()
                                 dirty = true;
                             }
                             Action::ToggleDetail => {
-                                let now = app.toggle_detail();
-                                app.show_notice(match now {
-                                    axum_tui::transcript::Detail::Full =>
-                                        "Showing tool output in full. `ctrl+o` folds it back."
-                                            .to_owned(),
-                                    axum_tui::transcript::Detail::Preview =>
-                                        "Tool output folded back to a preview.".to_owned(),
-                                });
+                                // No notice. A view toggle is not something that happened in
+                                // the conversation, and one line per press left a transcript
+                                // that was half commentary after ten of them. What the fold
+                                // is and how to undo it is written on the fold itself.
+                                app.toggle_detail();
                                 dirty = true;
                             }
                             Action::ExternalEdit => {
