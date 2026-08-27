@@ -234,3 +234,66 @@ async fn the_turn_ends_idle_whatever_happened() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Accept a connection and never answer, standing in for a model still composing its reply.
+fn serve_never() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        let held = listener.accept();
+        // Held open: dropping the socket would close the stream and end the turn by itself,
+        // which is the thing this test must not be able to mistake for a cancellation.
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        drop(held);
+    });
+    format!("http://127.0.0.1:{port}")
+}
+
+#[tokio::test]
+async fn an_interrupt_stops_a_turn_the_model_has_not_finished() {
+    let (session, dir) = session("cancel");
+    let backend = backend(serve_never());
+
+    let cancel = session.lock().await.cancel();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        cancel.request();
+    });
+
+    let adapter = LuaAdapter::new(
+        engine_with_builtins().expect("builtins"),
+        "anthropic-messages",
+    )
+    .expect("the protocol is registered");
+    let registry = axum_tools::Registry::new();
+    let ops = axum_tools::ops::Real::new(std::env::temp_dir());
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        run(
+            &session,
+            &backend,
+            &adapter,
+            &Client::new(),
+            &registry,
+            &ops,
+        ),
+    )
+    .await
+    .expect("the turn gives up rather than waiting out the provider")
+    .expect("the turn returns");
+
+    let held = session.lock().await;
+    let Entry::Assistant {
+        stop_reason, error, ..
+    } = &held.entries()[0]
+    else {
+        panic!("expected an assistant entry");
+    };
+    // Aborted, not Error: the user stopped it, and nothing went wrong.
+    assert_eq!(*stop_reason, Some(StopReason::Aborted));
+    assert!(error.is_none(), "{error:?}");
+    assert_eq!(*held.status(), axum_proto::AgentStatus::Idle);
+
+    drop(held);
+    let _ = std::fs::remove_dir_all(&dir);
+}

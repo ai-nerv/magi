@@ -51,6 +51,7 @@ async fn one_turn(
     adapter: &dyn axum_provider::api::Adapter,
     client: &Client,
     tools: Vec<axum_model::Tool>,
+    cancel: &crate::cancel::Cancel,
 ) -> Result<Turn, crate::HostError> {
     let mut context = context_of(&*session.lock().await);
     context.tools = tools;
@@ -70,19 +71,40 @@ async fn one_turn(
     session.lock().await.commit(assistant(&id, &turn))?;
 
     let mut deltas = Vec::new();
-    let outcome = client
-        .stream(
+    // The provider call is raced against the interrupt rather than polled after it: a model
+    // mid-answer holds this future for as long as it keeps talking, and a flag checked when it
+    // returns is a stop that arrives once the work it was stopping is already paid for.
+    let outcome = tokio::select! {
+        biased;
+        () = cancel.requested() => Ok(()),
+        outcome = client.stream(
             adapter,
             &backend.provider,
             &backend.model,
             &context,
             &backend.options,
             |delta| deltas.push(delta),
-        )
-        .await;
+        ) => outcome,
+    };
 
     for delta in deltas {
         turn.apply(delta);
+    }
+
+    // Whatever arrived before the interrupt is kept: the model said it, and a transcript that
+    // drops a half-finished answer leaves the next prompt with no account of what happened.
+    if cancel.is_requested() {
+        turn.abort(StopReason::Aborted);
+        let mut held = session.lock().await;
+        held.amend(Entry::Assistant {
+            id,
+            text: turn.text().to_owned(),
+            thinking: turn.thinking().to_owned(),
+            stop_reason: Some(StopReason::Aborted),
+            error: None,
+        })?;
+        held.set_status(AgentStatus::Idle);
+        return Ok(turn);
     }
 
     if let Err(error) = outcome {
@@ -210,8 +232,26 @@ pub async fn run(
     registry: &Registry,
     ops: &dyn Ops,
 ) -> Result<(), crate::HostError> {
+    // Taken once: the handle is a clone of shared state, so a stop asked for mid-round is
+    // visible through it without going back to the session for a fresh one.
+    let cancel = session.lock().await.cancel();
+
     for _ in 0..MAX_ROUNDS {
-        let turn = one_turn(session, backend, adapter, client, registry.declarations()).await?;
+        let turn = one_turn(
+            session,
+            backend,
+            adapter,
+            client,
+            registry.declarations(),
+            &cancel,
+        )
+        .await?;
+
+        // An interrupted turn has already been journalled as aborted; continuing would call the
+        // provider again with the stop still pending and abort that one too.
+        if cancel.is_requested() {
+            return Ok(());
+        }
 
         // A truncated turn poisons its own calls: `length` can land mid-arguments, and
         // truncated JSON can still parse into something schema-valid.
@@ -259,8 +299,14 @@ pub async fn run(
         }
 
         for call in &calls {
-            let arguments = call.parsed().unwrap_or(serde_json::Value::Null);
-            let output = registry.call(&call.name, &arguments, ops);
+            // Checked per call, not per round: the entry is already committed, so a stop between
+            // two tools leaves a result saying it was never run rather than a call with no answer.
+            let output = if cancel.is_requested() {
+                axum_tools::Output::error("cancelled before this tool ran")
+            } else {
+                let arguments = call.parsed().unwrap_or(serde_json::Value::Null);
+                registry.call(&call.name, &arguments, ops)
+            };
             let mut held = session.lock().await;
             held.amend(Entry::Tool {
                 id: ToolCallId::new(call.id.clone()),
@@ -271,6 +317,11 @@ pub async fn run(
                     is_error: output.is_error,
                 }),
             })?;
+        }
+
+        if cancel.is_requested() {
+            session.lock().await.set_status(AgentStatus::Idle);
+            return Ok(());
         }
     }
 

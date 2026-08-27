@@ -14,6 +14,7 @@ const BROADCAST_CAPACITY: usize = 1024;
 
 /// A live session.
 pub struct Session {
+    cancel: crate::cancel::Cancel,
     journal: Journal,
     status: AgentStatus,
     events: broadcast::Sender<HarnessEvent>,
@@ -27,8 +28,18 @@ impl Session {
         Ok(Self {
             journal,
             status: AgentStatus::Idle,
+            cancel: crate::cancel::Cancel::default(),
             events,
         })
+    }
+
+    /// The interrupt this session's turns watch.
+    ///
+    /// Handed out rather than acted on here: the turn runs on another thread, and the
+    /// session is the one thing both it and the connection task already share.
+    #[must_use]
+    pub fn cancel(&self) -> crate::cancel::Cancel {
+        self.cancel.clone()
     }
 
     /// Subscribe to everything published from now on.

@@ -7,6 +7,7 @@
 //! One session per daemon, for now. `UiCommand::Attach` already names one, so growing to a
 //! registry is a lookup rather than a protocol change.
 
+pub mod cancel;
 pub mod paths;
 pub mod session;
 pub mod turn;
@@ -122,6 +123,11 @@ async fn connection(
                         submit(&session, text, worker).await?;
                     }
                     Some(UiCommand::Interrupt) => {
+                        // The status is set here as well as by the turn: a stop the user asked for
+                        // should show as stopped at once, not once the provider notices.
+                        let held = session.lock().await;
+                        held.cancel().request();
+                        drop(held);
                         session.lock().await.set_status(AgentStatus::Idle);
                     }
                     Some(UiCommand::Attach { .. }) => {}
@@ -159,6 +165,9 @@ async fn submit(
 ) -> Result<(), HostError> {
     {
         let mut held = session.lock().await;
+        // A stop belongs to the turn it interrupted. Left set, it would cancel the prompt typed
+        // to replace the one the user just stopped.
+        held.cancel().clear();
         let id = MessageId::new(format!("u{}", held.cursor().next().0));
         held.commit(Entry::User { id, text })?;
     }
