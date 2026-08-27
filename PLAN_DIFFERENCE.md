@@ -93,6 +93,10 @@ And three items `PLAN.md` §8 lists as **stolen wholesale** are declared and abs
   D7  THE TOOLS                                             1 high · 2 med
       read cannot page and has no byte cap · edit does one site at a time ·
       edit cannot match a CRLF file at all
+
+  D8  THE MISSING TOOLS                                     1 high · 2 med
+      no grep · no find · no ls — so every search is an unbounded
+      shell string, which is how D1's critical gap is reached
 ```
 
 ---
@@ -943,6 +947,44 @@ line 1 the same way.
 
 ---
 
+## 9b. D8 — the three tools Pi has and axum does not
+
+*Not found by the seven surveys. The verification pass refuted it as "reachable through
+`bash`", which is true and is not the same as present. Added by hand afterwards, with the
+argument for why the refutation was wrong.*
+
+Pi ships **eight** built-in tools; axum ships **three** (`axum-tools/src/builtin.rs:33,84,120`
+— `read`, `write`, `edit`) plus the `bash` peer. The five axum does not have are `powershell`
+(irrelevant here), and:
+
+| Pi | what Pi's costs it | axum |
+|---|---|---|
+| `grep` | spawns **ripgrep**, downloaded on demand, honours `.gitignore`, 100 matches default, lines capped at 500 chars — `coding-agent/src/core/tools/grep.ts:390` | absent |
+| `find` | spawns **fd**, auto-downloaded, glob→paths, 1000 results — `.../tools/find.ts:380` | absent |
+| `ls` | alphabetical, `/` on directories, dotfiles included, 500 entries — `.../tools/ls.ts:230` | absent |
+
+`grep -rn 'ripgrep\|"grep"\|"glob"' crates/ config/` finds only `axum-lua/src/fs.rs` (the
+config API's `fs.ls`, not model-facing) and `axum-tui/src/transcript/tool.rs`.
+
+**Why "you can shell out to grep" is not an answer.** It is how the model already behaves — the
+M9 live check watched it compose `grep -r "TODO" src/ | wc -l` — and every one of those calls
+returns through the path §3.1 describes as CRITICAL: **unbounded**. Pi's grep is capped at 100
+matches and 500 characters a line *because* it is a tool rather than a shell string. The two
+gaps are the same gap seen twice: axum has no bounded way to search, so every search is an
+unbounded shell command, so §3.1 is reachable from the single most common thing a coding agent
+does.
+
+The rest of the cost is ordinary: a shell string spends a round trip on quoting the model gets
+wrong, `.gitignore` is not honoured unless the model remembers to, and the result is
+unstructured text where Pi returns a capped list.
+
+**Shape of the fix, and it is cheap.** Pi's `grep` and `find` are wrappers around external
+binaries — which is exactly what a process peer is. Three declarations in `config/tools/`
+against a peer that runs one fixed program with argv from the schema. No fourth transport
+(M9 settled that), no new built-in, and the caps live in the peer where §3.1's chokepoint fix
+can also see them. If `rg` and `fd` are absent from the machine, the declaration falls back to
+POSIX `grep -rn` and `find` — the point is the bounded, structured result, not the binary.
+
 ## 10. What axum deliberately does not have
 
 These are gaps. They are also decisions, already written down. **Do not build them because they
@@ -979,29 +1021,50 @@ appear in this document.**
 
 ## 11. Next
 
-Ranked by what a user hits soonest, not by what is most interesting to build. The first two are
-each roughly a line of code and each currently ends a session.
+Ranked by what a user hits soonest, not by what is most interesting to build.
 
-1. **Isolate the shell's stdin (§6.1).** A bare `cat`, `sudo`, or `ssh` wedges the tool for the
-   full 600-second timeout and destroys the persistent shell's state. One redirect.
+**Done since this document was written:**
 
-2. **Bound tool output at the chokepoint (§3.1).** One `cat` of a lockfile is unrecoverable,
-   because the result is journalled, replayed on every request, inside the `KEEP = 8` tail that
-   compaction cannot touch, and fed to the summariser. This is the only gap on the list that
-   destroys a session permanently.
+- ~~**Isolate the shell's stdin.**~~ Fixed in `47fa5a4`. Both failure modes were reproduced
+  against a live model first: `cat` echoed the protocol's own `printf` marker line back as tool
+  output with a meaningless exit status, and `sort` swallowed the marker and hung the call —
+  `axum -p 'run exactly this with bash: sort'` did not return in 45 seconds. `{ … } < /dev/null`
+  on the command group; nothing legitimate reads stdin there, because stdin *is* the control
+  channel. Three tests, and the leak test was checked to fail without the redirect.
 
-3. **Move the compaction cut off tool boundaries (§3.2).** Every long tool-heavy session ends in
+**Still open, in order:**
+
+1. **Bound tool output at the chokepoint (§3.1).** One `cat` of a lockfile is unrecoverable: the
+   result is journalled, replayed on every request, sits inside the `KEEP = 8` tail that
+   compaction preserves verbatim, and is then fed to the summariser. The only gap on the list
+   that destroys a session permanently. Note it is reached most often through §9b — with no
+   `grep` tool, every search is an unbounded shell command.
+
+2. **Move the compaction cut off tool boundaries (§3.2).** Every long tool-heavy session ends in
    a 400 that `retry.rs:40` classifies `Invalid` — not retryable, not `Overflow` — so nothing
    recovers. `covers()` needs to see the entries it is cutting.
 
-4. **Publish deltas as they arrive (§4.2).** The protocol, the renderer and the doc comments were
+   The same defect has a second door, verified by hand: `context.rs:102` emits a `ToolCall` and
+   only emits the matching `ToolResult` `if let Some(result) = result`, so an `Entry::Tool`
+   committed and never amended reaches the provider unanswered. SIGKILL the daemon mid-tool and
+   the journal holds one. Tested live — OpenRouter/DeepSeek *accepted* it and answered, so this
+   is latent and provider-dependent rather than live; Anthropic rejects an unanswered
+   `tool_use`. One repair pass fixes both doors.
+
+3. **Publish deltas as they arrive (§4.2).** The protocol, the renderer and the doc comments were
    all written for streaming in M0 and M2. `client.rs:148-155` and `turn.rs:157-159` collect into
    a `Vec` first. Every turn currently looks hung, and this is §1's pattern in the most visible
    place in the product.
 
-5. **Emit cache breakpoints (§4.1).** Pure Lua, in the adapter axum ships first, on the provider
-   axum ships first. Nothing else on this list changes cost and latency by that factor for that
-   little work.
+4. **Emit cache breakpoints (§4.1).** Pure Lua, in the adapter axum ships first, on the provider
+   axum ships first. Verified by hand: every adapter *reads* `cache_read` back
+   (`anthropic-messages.lua:119`, `openai-completions.lua:162`, `google.lua:106`,
+   `openai-responses.lua:110`) and `grep -c cache_control config/apis/anthropic-messages.lua` is
+   **0** — axum reports a saving it never asks for, and M7's system prompt is now the largest
+   byte-identical prefix of every request in a session.
+
+5. **Declare `grep`, `find` and `ls` as peers (§9b).** Bounds the most common path into gap 1,
+   and costs three config files rather than any Rust.
 
 Everything else waits for something concrete to hit it — which is the rule `PLAN.md` §5e states
 and which this document exists to serve, not to replace.
