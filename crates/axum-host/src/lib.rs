@@ -66,7 +66,7 @@ pub async fn serve(
         let session = Arc::clone(&session);
         let worker = worker.clone();
         tokio::spawn(async move {
-            let _ = connection(stream, session, worker.as_deref()).await;
+            let _ = connection(stream, session, worker).await;
         });
     }
 }
@@ -75,7 +75,7 @@ pub async fn serve(
 async fn connection(
     stream: UnixStream,
     session: Arc<Mutex<Session>>,
-    worker: Option<&worker::Worker>,
+    worker: Option<Arc<worker::Worker>>,
 ) -> Result<(), HostError> {
     let (read_half, write_half) = stream.into_split();
     let mut reader = FrameReader::new(read_half);
@@ -120,7 +120,7 @@ async fn connection(
             command = incoming.recv() => {
                 match command {
                     Some(UiCommand::SubmitPrompt { text }) => {
-                        submit(&session, text, worker).await?;
+                        submit(&session, text, worker.clone()).await?;
                     }
                     Some(UiCommand::Interrupt) => {
                         // The status is set here as well as by the turn: a stop the user asked for
@@ -161,7 +161,7 @@ async fn connection(
 async fn submit(
     session: &Arc<Mutex<Session>>,
     text: String,
-    worker: Option<&worker::Worker>,
+    worker: Option<Arc<worker::Worker>>,
 ) -> Result<(), HostError> {
     {
         let mut held = session.lock().await;
@@ -190,7 +190,14 @@ async fn submit(
         return Ok(());
     };
 
-    worker.run(Arc::clone(session)).await;
+    // Spawned, not awaited. This runs on the connection's own task, which is also the task
+    // forwarding events to the attached UI: waiting here means nothing reaches the screen until
+    // the turn is over, so a streaming response arrives all at once at the end.
+    //
+    // Overlapping turns are not a risk. The worker is one thread taking one job at a time, so
+    // a second prompt queues behind the first exactly as it did when this awaited.
+    let session = Arc::clone(session);
+    tokio::spawn(async move { worker.run(session).await });
     Ok(())
 }
 

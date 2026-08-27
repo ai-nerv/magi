@@ -180,3 +180,138 @@ async fn the_journal_outlives_the_daemon() {
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_file(&socket);
 }
+
+/// A provider that accepts a request and never answers, leaving a turn in flight.
+fn serve_silently() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        let mut held = Vec::new();
+        for socket in listener.incoming() {
+            held.push(socket);
+        }
+    });
+    format!("http://127.0.0.1:{port}")
+}
+
+/// A daemon with a real backend, so a submitted prompt starts a turn that does not end.
+async fn start_with_backend(name: &str, base_url: String) -> (PathBuf, PathBuf) {
+    use axum_provider::model::{Api, Modality, Model};
+    use axum_provider::provider::{Auth, Provider};
+
+    let (dir, socket) = temp(name);
+    let session = open_session(&dir, "/tmp", 1).expect("session");
+    let model = Model {
+        id: "m".into(),
+        name: "M".into(),
+        provider: "fake".into(),
+        api: Api::AnthropicMessages,
+        reasoning: false,
+        input: vec![Modality::Text],
+        context_window: 200_000,
+        max_tokens: 4096,
+        cost: axum_model::Cost::default(),
+        thinking: std::collections::BTreeMap::new(),
+        compat: None,
+    };
+    let backend = axum_host::turn::Backend {
+        apis: axum_lua::adapter::BUILTIN
+            .iter()
+            .map(|(n, s)| ((*n).to_owned(), (*s).to_owned()))
+            .collect(),
+        tools: Vec::new(),
+        stubs: Vec::new(),
+        cwd: std::env::temp_dir(),
+        provider: Provider {
+            id: "fake".into(),
+            name: "Fake".into(),
+            base_url: Some(base_url),
+            api: Api::AnthropicMessages,
+            auth: Auth::None,
+            compat: None,
+            models: vec![model.clone()],
+        },
+        model,
+        options: axum_provider::api::Options::default(),
+    };
+    let listener = axum_ipc::bind(&socket).await.expect("bind");
+    tokio::spawn(async move { serve(listener, session, Some(backend)).await });
+    (dir, socket)
+}
+
+#[tokio::test]
+async fn events_reach_the_ui_while_the_turn_is_still_running() {
+    // The turn used to be awaited on the connection's own task, which is also the task that
+    // forwards events. Nothing reached the screen until the turn was over, so a streaming
+    // response arrived in one piece at the end and a slow one looked like a hang. Every other
+    // test passed throughout, because they all use a provider that answers immediately.
+    let (dir, socket) = start_with_backend("streaming", serve_silently()).await;
+    let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
+    client.submit("this will not be answered").await;
+
+    let event = tokio::time::timeout(std::time::Duration::from_secs(5), client.next())
+        .await
+        .expect("the prompt is echoed before the turn ends, not after");
+    assert!(
+        matches!(event, HarnessEvent::UserMessage { ref text, .. } if text == "this will not be answered"),
+        "{event:?}"
+    );
+
+    // And the status, which is what drives the spinner.
+    let event = tokio::time::timeout(std::time::Duration::from_secs(5), client.next())
+        .await
+        .expect("the working status arrives while the work is happening");
+    assert!(
+        matches!(
+            event,
+            HarnessEvent::AssistantStarted { .. } | HarnessEvent::StatusChanged { .. }
+        ),
+        "{event:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&socket);
+}
+
+#[tokio::test]
+async fn an_interrupt_is_answered_while_a_turn_holds_the_connection() {
+    // The interrupt has to be read by the same loop the turn used to block, so this fails the
+    // same way the streaming test does if a turn ever goes back to being awaited inline.
+    let (dir, socket) = start_with_backend("interrupt", serve_silently()).await;
+    let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
+    client.submit("this will be stopped").await;
+
+    // Drain until the turn is under way, so the interrupt lands on a running turn.
+    let mut started = false;
+    while !started {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), client.next())
+            .await
+            .expect("events flow");
+        started = matches!(event, HarnessEvent::AssistantStarted { .. });
+    }
+
+    client
+        .writer
+        .write(&UiCommand::Interrupt)
+        .await
+        .expect("interrupt");
+
+    let mut aborted = false;
+    for _ in 0..10 {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), client.next())
+            .await
+            .expect("the interrupt is acted on");
+        if matches!(
+            event,
+            HarnessEvent::AssistantEnded {
+                stop_reason: axum_proto::StopReason::Aborted,
+                ..
+            }
+        ) {
+            aborted = true;
+            break;
+        }
+    }
+    assert!(aborted, "the turn ended as aborted");
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&socket);
+}
