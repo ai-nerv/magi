@@ -51,6 +51,7 @@ fn the_command_palette_marks_the_selection_and_shows_details() {
             "  /clear   clear the transcript",
             "  /model   the model, or /model <name> to switch",
             "  /rewind  undo the last exchange, or /rewind N",
+            "  /think   how much reasoning to ask for",
             "  /quit    exit axum",
         ]
     );

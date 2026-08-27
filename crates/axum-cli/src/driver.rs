@@ -127,10 +127,19 @@ pub async fn run(socket: &Path, mode: Mode, prompt: Option<String>) -> Result<()
                                 let _ = command_tx.send(UiCommand::Interrupt).await;
                                 dirty = true;
                             }
-                            Action::Chose(name) => {
-                                let _ = command_tx
-                                    .send(UiCommand::SetModel { name })
-                                    .await;
+                            Action::Chose(value) => {
+                                let command = match app.picking.take() {
+                                    Some(crate::app::Picking::Thinking) => {
+                                        UiCommand::SetThinking { level: value }
+                                    }
+                                    // A list with no recorded purpose cannot have been opened
+                                    // by anything here, so there is nothing to send.
+                                    Some(crate::app::Picking::Model) => {
+                                        UiCommand::SetModel { name: value }
+                                    }
+                                    None => continue,
+                                };
+                                let _ = command_tx.send(command).await;
                                 dirty = true;
                             }
                             Action::ToggleDetail => {
@@ -424,6 +433,17 @@ fn run_command(input: &str, app: &mut App) -> Control {
             // not ask while leaving the one they did.
             None => {
                 app.open_model_picker();
+                Control::Continue
+            }
+        },
+        // Same shape as `/model`: a list rather than a sentence, because the useful reply to
+        // "how much reasoning" is the set of answers and which of them this model can give.
+        "/think" => match input.split_whitespace().nth(1) {
+            Some(level) => Control::Send(UiCommand::SetThinking {
+                level: level.to_owned(),
+            }),
+            None => {
+                app.open_thinking_picker();
                 Control::Continue
             }
         },

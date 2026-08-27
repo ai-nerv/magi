@@ -68,6 +68,9 @@ pub struct ModelChoice {
     pub context_window: u64,
     /// Empty when it is ready; otherwise what to do about it.
     pub requirement: String,
+    /// Whether it can reason, so a thinking level can be offered or refused.
+    #[serde(default)]
+    pub reasoning: bool,
 }
 
 /// Which model is answering, and how much room it has.
@@ -305,6 +308,9 @@ pub enum HarnessEvent {
         /// Everything this session could switch to.
         #[serde(default)]
         choices: Vec<ModelChoice>,
+        /// How much reasoning is being asked for.
+        #[serde(default)]
+        thinking: String,
     },
     /// A user message was accepted into the transcript.
     UserMessage {
@@ -477,6 +483,11 @@ pub enum UiCommand {
     SetModel {
         /// Qualified or bare name, as `axum models` prints it.
         name: String,
+    },
+    /// Ask for more or less reasoning from here on.
+    SetThinking {
+        /// A level, as `axum.thinking` names them.
+        level: String,
     },
     /// Rewind the conversation.
     Branch {

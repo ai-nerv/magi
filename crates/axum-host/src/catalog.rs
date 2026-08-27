@@ -106,6 +106,7 @@ impl Catalog {
                         name: model.qualified(),
                         context_window: model.context_window,
                         requirement: requirement.clone(),
+                        reasoning: model.reasoning,
                     })
             })
             .collect();

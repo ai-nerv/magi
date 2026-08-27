@@ -213,6 +213,7 @@ impl FakeHarness {
                 status,
                 model: None,
                 choices: Vec::new(),
+                thinking: String::new(),
             })
             .await?;
 

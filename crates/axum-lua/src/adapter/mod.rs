@@ -96,6 +96,52 @@ fn described(model: &Model) -> serde_json::Value {
     value
 }
 
+/// The options as this model can actually take them.
+///
+/// `thinking` is settled here rather than in a description: the catalog can say a model cannot
+/// do a level at all, which is not the same as having no opinion about it — and in Lua a key
+/// with no value and no key at all are indistinguishable, so the difference cannot survive the
+/// crossing. Ten descriptions each re-deriving it would be ten chances to lose it.
+fn asked(model: &Model, options: &Options) -> serde_json::Value {
+    let mut value = serde_json::to_value(options).unwrap_or_default();
+    let Some(object) = value.as_object_mut() else {
+        return value;
+    };
+    match effective_thinking(model, options) {
+        Some(level) => {
+            object.insert("thinking".to_owned(), serde_json::Value::String(level));
+        }
+        None => {
+            object.remove("thinking");
+        }
+    }
+    value
+}
+
+/// What to ask this model for, or nothing.
+///
+/// Nothing when it does not reason — a model sent `reasoning_effort` that has none answers 400,
+/// and the request that fails is the one somebody just typed.
+fn effective_thinking(model: &Model, options: &Options) -> Option<String> {
+    if !model.reasoning {
+        return None;
+    }
+    let level = options.thinking?;
+    if level == axum_model::ThinkingLevel::Off {
+        return None;
+    }
+    match model.thinking.get(&level) {
+        // Named: this model calls that level something else.
+        Some(Some(name)) => Some(name.clone()),
+        // Present and empty: it cannot do this level. Asking anyway is a refusal.
+        Some(None) => None,
+        // Unmapped, which is the ordinary case: the provider's own word for it.
+        None => serde_json::to_value(level)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_owned)),
+    }
+}
+
 impl Adapter for LuaAdapter {
     fn endpoint(&self, base_url: &str, model: &Model) -> String {
         self.call(
@@ -133,7 +179,7 @@ impl Adapter for LuaAdapter {
             &[
                 described(model),
                 serde_json::to_value(context).unwrap_or_default(),
-                serde_json::to_value(options).unwrap_or_default(),
+                asked(model, options),
             ],
         )
         .unwrap_or(serde_json::Value::Null)
@@ -257,3 +303,80 @@ mod protocols;
 mod support;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod thinking_tests {
+    use super::*;
+    use axum_model::ThinkingLevel;
+    use std::collections::BTreeMap;
+
+    fn model(reasoning: bool, thinking: BTreeMap<ThinkingLevel, Option<String>>) -> Model {
+        Model {
+            id: "m".into(),
+            name: "M".into(),
+            provider: "p".into(),
+            api: axum_provider::model::Api::OpenAiCompletions,
+            reasoning,
+            input: Vec::new(),
+            context_window: 1000,
+            max_tokens: 100,
+            cost: axum_model::Cost::default(),
+            thinking,
+            compat: None,
+        }
+    }
+
+    fn wanting(level: ThinkingLevel) -> Options {
+        Options {
+            thinking: Some(level),
+            max_tokens: None,
+        }
+    }
+
+    #[test]
+    fn a_model_that_does_not_reason_is_never_asked_to() {
+        // Sent `reasoning_effort` it answers 400, and the request that fails is the one
+        // somebody just typed.
+        let asked = asked(
+            &model(false, BTreeMap::new()),
+            &wanting(ThinkingLevel::High),
+        );
+        assert!(asked.get("thinking").is_none(), "{asked}");
+    }
+
+    #[test]
+    fn an_unmapped_level_goes_through_as_the_provider_names_it() {
+        let asked = asked(&model(true, BTreeMap::new()), &wanting(ThinkingLevel::High));
+        assert_eq!(asked["thinking"], "high");
+    }
+
+    #[test]
+    fn a_model_may_call_a_level_something_else() {
+        let mut map = BTreeMap::new();
+        map.insert(ThinkingLevel::High, Some("deep".to_owned()));
+        let asked = asked(&model(true, map), &wanting(ThinkingLevel::High));
+        assert_eq!(asked["thinking"], "deep");
+    }
+
+    #[test]
+    fn a_level_the_model_refuses_is_not_asked_for() {
+        // Present with no value means "cannot do this one", which has to stay tellable apart
+        // from "no opinion" — and in Lua it cannot, which is why this is settled here.
+        let mut map = BTreeMap::new();
+        map.insert(ThinkingLevel::Max, None);
+        let asked = asked(&model(true, map), &wanting(ThinkingLevel::Max));
+        assert!(asked.get("thinking").is_none(), "{asked}");
+    }
+
+    #[test]
+    fn off_is_not_a_level_to_ask_for() {
+        let asked = asked(&model(true, BTreeMap::new()), &wanting(ThinkingLevel::Off));
+        assert!(asked.get("thinking").is_none(), "{asked}");
+    }
+
+    #[test]
+    fn asking_for_nothing_asks_for_nothing() {
+        let asked = asked(&model(true, BTreeMap::new()), &Options::default());
+        assert!(asked.get("thinking").is_none(), "{asked}");
+    }
+}

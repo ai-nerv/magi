@@ -29,6 +29,15 @@ fn add(total: axum_proto::Usage, next: axum_proto::Usage) -> axum_proto::Usage {
     }
 }
 
+/// What an open selection list is choosing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Picking {
+    /// Which model answers.
+    Model,
+    /// How much reasoning to ask for.
+    Thinking,
+}
+
 /// Everything the UI knows.
 pub struct App {
     /// Transcript in order. Entries before `flushed` are already in scrollback.
@@ -58,10 +67,20 @@ pub struct App {
     /// for itself would name whatever is configured *now*, which after an edit is not what the
     /// daemon on the other end of the socket is actually talking to.
     pub model: Option<axum_proto::ModelInfo>,
+    /// How much reasoning is being asked for.
+    pub thinking: String,
+    /// Whether the model answering can reason at all.
+    model_reasons: bool,
     /// Everything the daemon says this session could switch to.
     pub choices: Vec<axum_proto::ModelChoice>,
     /// The open selection list, if any.
     pub picker: Option<axum_tui::picker::Picker>,
+    /// What that list is choosing.
+    ///
+    /// Held beside the list rather than inside it, because the list is a generic widget and
+    /// this is the one thing about it only its opener knows. Without it every list's answer
+    /// went to the same place, and picking a thinking level asked for a model called "medium".
+    pub picking: Option<Picking>,
     /// How much of each tool result to show.
     pub detail: axum_tui::transcript::Detail,
 }
@@ -86,8 +105,11 @@ impl App {
             completion: None,
             connected: false,
             model: None,
+            thinking: "off".to_owned(),
+            model_reasons: false,
             choices: Vec::new(),
             picker: None,
+            picking: None,
             detail: axum_tui::transcript::Detail::Preview,
             tick: 0,
         }
@@ -170,6 +192,7 @@ impl App {
                 status,
                 model,
                 choices,
+                thinking,
                 ..
             } => {
                 // A snapshot describes the session as of the cursor the UI asked to resume
@@ -188,6 +211,12 @@ impl App {
                 };
                 let unconfigured = model.is_none();
                 self.model = model;
+                self.model_reasons = self.model.as_ref().is_some_and(|chosen| {
+                    choices.iter().any(|c| c.name == chosen.name && c.reasoning)
+                });
+                if !thinking.is_empty() {
+                    self.thinking = thinking;
+                }
                 self.choices = choices;
                 let empty = entries.is_empty();
                 self.entries = entries;
@@ -362,6 +391,41 @@ impl App {
             return;
         }
         self.picker = Some(picker);
+        self.picking = Some(Picking::Model);
+    }
+
+    /// Open the reasoning-level list.
+    ///
+    /// Every level, marked with what this model can actually do: a level the catalog says it
+    /// refuses is shown and cannot be taken, for the same reason an unconfigured provider is.
+    pub fn open_thinking_picker(&mut self) {
+        const LEVELS: [(&str, &str); 6] = [
+            ("off", "no reasoning — the default"),
+            ("minimal", "the smallest budget the model offers"),
+            ("low", "a small budget"),
+            ("medium", "the usual budget"),
+            ("high", "a large budget"),
+            ("max", "the largest budget the model offers"),
+        ];
+        let reasons = self.model_reasons;
+        let choices = LEVELS
+            .iter()
+            .map(|(value, detail)| axum_tui::picker::Choice {
+                value: (*value).to_owned(),
+                detail: if reasons || *value == "off" {
+                    (*detail).to_owned()
+                } else {
+                    "this model does not reason".to_owned()
+                },
+                ready: reasons || *value == "off",
+            })
+            .collect();
+        self.picker = Some(axum_tui::picker::Picker::new(
+            "Thinking",
+            choices,
+            Some(self.thinking.as_str()),
+        ));
+        self.picking = Some(Picking::Thinking);
     }
 
     /// Show every line of each tool result, or go back to the preview.

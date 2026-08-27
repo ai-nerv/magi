@@ -173,6 +173,18 @@ async fn connection(
                                 .await?;
                         }
                     }
+                    Some(UiCommand::SetThinking { level }) => {
+                        if let Some(refusal) =
+                            switch_thinking(&session, worker, catalog, &level).await
+                        {
+                            writer
+                                .write(&HarnessEvent::Refused {
+                                    cursor: session.lock().await.cursor(),
+                                    message: refusal,
+                                })
+                                .await?;
+                        }
+                    }
                     Some(UiCommand::Branch { keeps }) => {
                         let mut held = session.lock().await;
                         if let Some(keeps) =
@@ -252,6 +264,38 @@ async fn switch_model(
         // point of switching is to see that it happened.
         held.announce_model();
     }
+    None
+}
+
+/// Ask for more or less reasoning from here on, or say why not.
+///
+/// The worker is rebuilt for the same reason a model switch rebuilds it: the level rides on
+/// every request, and the worker holds the backend the requests are built from.
+async fn switch_thinking(
+    session: &Arc<Mutex<Session>>,
+    worker: &tokio::sync::RwLock<Option<Arc<worker::Worker>>>,
+    catalog: &crate::catalog::Catalog,
+    level: &str,
+) -> Option<String> {
+    let Ok(parsed) = serde_json::from_value::<axum_model::ThinkingLevel>(
+        serde_json::Value::String(level.to_owned()),
+    ) else {
+        return Some(format!(
+            "there is no thinking level called {level:?}. \
+             Try off, minimal, low, medium, high or max."
+        ));
+    };
+
+    // Rebuilt from the catalog rather than mutated in place, so the level is applied the same
+    // way it would have been had the session started with it.
+    let name = session.lock().await.model_name()?;
+    let mut backend = catalog.backend(&name)?;
+    backend.options.thinking = Some(parsed);
+    let fresh = Arc::new(worker::Worker::start(backend));
+    *worker.write().await = Some(fresh);
+    let mut held = session.lock().await;
+    held.set_thinking(level.to_owned());
+    held.announce_model();
     None
 }
 

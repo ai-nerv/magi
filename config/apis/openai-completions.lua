@@ -104,8 +104,14 @@ function M.request(model, ctx, opts)
   end
 
   -- Five vendors, five ways to ask for reasoning. The dialect is declared in the catalog.
+  --
+  -- `opts.thinking` is already settled by the time it arrives: absent when this model cannot
+  -- reason or cannot do the level that was asked for, and otherwise the exact word this model
+  -- wants. The host resolves it because the answer needs to tell "the model refuses this
+  -- level" from "the model has no opinion" — and in Lua a key with no value and no key at all
+  -- are the same thing.
   local level = opts.thinking
-  if level and level ~= "off" then
+  if level then
     local format = compat.thinking_format
     if format == "openrouter" then
       body.reasoning = { effort = level }
@@ -162,8 +168,19 @@ function M.on_event(state, event)
   local choice = d.choices and d.choices[1]
   if choice then
     local delta = choice.delta or {}
-    if delta.reasoning_content and delta.reasoning_content ~= "" then
-      deltas[#deltas + 1] = { kind = "thinking", thinking = delta.reasoning_content }
+    -- Two spellings, because the dialects that added reasoning did not agree on one.
+    -- DeepSeek and the copies of it say `reasoning_content`; OpenRouter says `reasoning`.
+    -- Sending one vendor's request shape and reading only the other's reply shape is how
+    -- reasoning was asked for, answered, and thrown away without a word.
+    --
+    -- Only when it is a string: some replies also carry a `reasoning_details` array, and one
+    -- of them puts structured objects in `reasoning` itself.
+    local reasoned = delta.reasoning_content
+    if type(reasoned) ~= "string" or reasoned == "" then
+      reasoned = type(delta.reasoning) == "string" and delta.reasoning or nil
+    end
+    if reasoned and reasoned ~= "" then
+      deltas[#deltas + 1] = { kind = "thinking", thinking = reasoned }
     end
     if delta.content and delta.content ~= "" then
       deltas[#deltas + 1] = { kind = "text", text = delta.content }

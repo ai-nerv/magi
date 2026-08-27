@@ -17,6 +17,8 @@ pub struct Session {
     cancel: crate::cancel::Cancel,
     /// Everything this session could switch to, for the picker.
     choices: Vec<axum_proto::ModelChoice>,
+    /// How much reasoning is being asked for, as a level name.
+    thinking: String,
     /// Which model answers here, when one is configured.
     ///
     /// Held by the session rather than looked up by the UI: a UI that read the configuration
@@ -39,6 +41,7 @@ impl Session {
             cancel: crate::cancel::Cancel::default(),
             model: None,
             choices: Vec::new(),
+            thinking: "off".to_owned(),
             events,
         })
     }
@@ -60,6 +63,17 @@ impl Session {
     /// Say what it could switch to.
     pub fn set_choices(&mut self, choices: Vec<axum_proto::ModelChoice>) {
         self.choices = choices;
+    }
+
+    /// The model this session talks to, by name.
+    #[must_use]
+    pub fn model_name(&self) -> Option<String> {
+        self.model.as_ref().map(|m| m.name.clone())
+    }
+
+    /// Say how much reasoning is being asked for.
+    pub fn set_thinking(&mut self, level: String) {
+        self.thinking = level;
     }
 
     /// Every token this session has spent.
@@ -126,6 +140,7 @@ impl Session {
             status: self.status.clone(),
             model: self.model.clone(),
             choices: self.choices.clone(),
+            thinking: self.thinking.clone(),
         }
     }
 

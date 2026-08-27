@@ -150,6 +150,7 @@ mod reduction {
             status: AgentStatus::Idle,
             model: None,
             choices: Vec::new(),
+            thinking: String::new(),
         });
         assert_eq!(
             app.live().len(),
@@ -172,6 +173,7 @@ mod reduction {
             status: AgentStatus::Idle,
             model: None,
             choices: Vec::new(),
+            thinking: String::new(),
         });
         assert_eq!(app.live().len(), 1, "a cold snapshot is entirely unflushed");
     }
@@ -301,6 +303,7 @@ mod usage_tests {
             status: AgentStatus::Idle,
             model: None,
             choices: Vec::new(),
+            thinking: String::new(),
         });
         rejoined.apply(ended("a1", 1, spent(100, 20)));
         assert_eq!(rejoined.usage().input, 100, "counted once, not twice");
@@ -353,6 +356,7 @@ mod usage_tests {
                 context_window: 1000,
             }),
             choices: Vec::new(),
+            thinking: String::new(),
         });
         assert_eq!(app.model.expect("a model").name, "p/m");
     }
@@ -373,7 +377,9 @@ mod onboarding_tests {
                 name: "p/m".into(),
                 context_window: 1000,
                 requirement: "set P_KEY".into(),
+                reasoning: false,
             }],
+            thinking: String::new(),
         }
     }
 
@@ -423,5 +429,97 @@ mod onboarding_tests {
             }],
         ));
         assert!(notices(&app).is_empty());
+    }
+}
+
+mod picking {
+    use super::super::*;
+    use axum_proto::{ModelChoice, ModelInfo, SessionId};
+
+    fn app_with_a_reasoning_model() -> App {
+        let mut app = App::new();
+        app.apply(HarnessEvent::SessionSnapshot {
+            cursor: Cursor::ZERO,
+            session: SessionId::new("s"),
+            entries: Vec::new(),
+            status: AgentStatus::Idle,
+            model: Some(ModelInfo {
+                name: "p/m".into(),
+                context_window: 1000,
+            }),
+            choices: vec![ModelChoice {
+                name: "p/m".into(),
+                context_window: 1000,
+                requirement: String::new(),
+                reasoning: true,
+            }],
+            thinking: "off".into(),
+        });
+        app
+    }
+
+    #[test]
+    fn each_list_records_what_it_is_choosing() {
+        // Without this every list's answer went to the same place, and picking a thinking
+        // level asked the daemon for a model called "medium".
+        let mut app = app_with_a_reasoning_model();
+        app.open_model_picker();
+        assert_eq!(app.picking, Some(Picking::Model));
+        app.open_thinking_picker();
+        assert_eq!(app.picking, Some(Picking::Thinking));
+    }
+
+    #[test]
+    fn a_model_that_reasons_is_offered_every_level() {
+        let mut app = app_with_a_reasoning_model();
+        app.open_thinking_picker();
+        let picker = app.picker.as_ref().expect("a list");
+        assert!(
+            picker.choices.iter().all(|c| c.ready),
+            "{:?}",
+            picker.choices
+        );
+    }
+
+    #[test]
+    fn a_model_that_does_not_reason_is_offered_only_off() {
+        // Shown and refused rather than hidden, for the same reason an unconfigured provider
+        // is: the answer to "how much reasoning" is "this one cannot", not an empty list.
+        let mut app = App::new();
+        app.apply(HarnessEvent::SessionSnapshot {
+            cursor: Cursor::ZERO,
+            session: SessionId::new("s"),
+            entries: Vec::new(),
+            status: AgentStatus::Idle,
+            model: Some(ModelInfo {
+                name: "p/plain".into(),
+                context_window: 1000,
+            }),
+            choices: vec![ModelChoice {
+                name: "p/plain".into(),
+                context_window: 1000,
+                requirement: String::new(),
+                reasoning: false,
+            }],
+            thinking: "off".into(),
+        });
+        app.open_thinking_picker();
+        let picker = app.picker.as_ref().expect("a list");
+        let ready: Vec<&str> = picker
+            .choices
+            .iter()
+            .filter(|c| c.ready)
+            .map(|c| c.value.as_str())
+            .collect();
+        assert_eq!(ready, vec!["off"]);
+    }
+
+    #[test]
+    fn the_list_opens_on_the_level_in_force() {
+        let mut app = app_with_a_reasoning_model();
+        app.thinking = "high".into();
+        app.open_thinking_picker();
+        let picker = app.picker.as_ref().expect("a list");
+        assert_eq!(picker.current().expect("a row").value, "high");
     }
 }

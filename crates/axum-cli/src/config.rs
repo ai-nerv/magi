@@ -248,7 +248,25 @@ pub fn catalog(loaded: &Loaded) -> axum_host::catalog::Catalog {
         stubs: loaded.stubs.clone(),
         cwd: std::env::current_dir().unwrap_or_default(),
         providers: loaded.providers.clone(),
-        options: axum_provider::api::Options::default(),
+        options: options(loaded),
+    }
+}
+
+/// What to ask for beyond the conversation.
+///
+/// `axum.thinking` is off unless asked for. Reasoning costs tokens and money, and a default
+/// that quietly spends both is the wrong kind of surprise — but the whole branch that requests
+/// it existed in every protocol description with nothing ever setting this, so asking was
+/// impossible rather than merely off.
+#[must_use]
+fn options(loaded: &Loaded) -> axum_provider::api::Options {
+    let thinking = loaded
+        .config
+        .string("thinking")
+        .and_then(|level| serde_json::from_value(serde_json::Value::String(level.to_owned())).ok());
+    axum_provider::api::Options {
+        thinking,
+        max_tokens: None,
     }
 }
 
@@ -271,7 +289,7 @@ pub fn backend(loaded: &Loaded) -> Option<axum_host::turn::Backend> {
         cwd: std::env::current_dir().unwrap_or_default(),
         provider: provider.clone(),
         model: model.clone(),
-        options: axum_provider::api::Options::default(),
+        options: options(loaded),
     })
 }
 /// Files the installed config directory contributes, in the order they are applied.
