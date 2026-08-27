@@ -30,6 +30,11 @@ pub struct Catalog {
     pub options: axum_provider::api::Options,
     /// What the model is told it is.
     pub system: Option<String>,
+    /// The model the configuration asked for, whether or not it can be reached.
+    ///
+    /// Kept so a refusal can name it. Without this the daemon could only say "no model
+    /// is configured", which is false whenever one is configured and merely unusable.
+    pub chosen: Option<String>,
 }
 
 impl Catalog {
@@ -47,6 +52,7 @@ impl Catalog {
             providers: Vec::new(),
             options: axum_provider::api::Options::default(),
             system: None,
+            chosen: None,
         }
     }
 
@@ -191,6 +197,7 @@ mod tests {
             providers,
             options: axum_provider::api::Options::default(),
             system: None,
+            chosen: None,
         }
     }
 
@@ -249,5 +256,36 @@ mod tests {
     fn a_provider_needing_no_credential_counts_as_configured() {
         assert!(matches!(catalog().providers[0].auth, Auth::None));
         assert!(catalog().backend("local/a").is_some());
+    }
+}
+
+impl Catalog {
+    /// The model the configuration asked for.
+    #[must_use]
+    pub fn chosen(&self) -> Option<String> {
+        self.chosen.clone()
+    }
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::*;
+
+    #[test]
+    fn a_catalog_remembers_what_was_asked_for() {
+        // Without this the daemon could only say "no model is configured", which is false
+        // whenever one is configured and merely unusable — the common case for somebody whose
+        // environment holds a key for a different provider than the one their config names.
+        let mut catalog = Catalog::empty();
+        catalog.chosen = Some("anthropic/claude-sonnet-4-5".into());
+        assert_eq!(
+            catalog.chosen().as_deref(),
+            Some("anthropic/claude-sonnet-4-5")
+        );
+    }
+
+    #[test]
+    fn an_empty_catalog_asked_for_nothing() {
+        assert!(Catalog::empty().chosen().is_none());
     }
 }

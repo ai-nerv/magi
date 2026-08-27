@@ -525,6 +525,7 @@ fn two_models() -> axum_host::catalog::Catalog {
         providers,
         options: axum_provider::api::Options::default(),
         system: None,
+        chosen: None,
     }
 }
 

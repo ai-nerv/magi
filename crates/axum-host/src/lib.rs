@@ -157,7 +157,7 @@ async fn connection(
                 match command {
                     Some(UiCommand::SubmitPrompt { text }) => {
                         let held = worker.read().await.clone();
-                        submit(&session, text, held).await?;
+                        submit(&session, text, held, catalog).await?;
                     }
                     Some(UiCommand::SetModel { name }) => {
                         if let Some(refusal) =
@@ -300,6 +300,42 @@ async fn switch_thinking(
     None
 }
 
+/// Why there is no model, in the terms of the config that produced the situation.
+///
+/// "No model is configured" was the whole of what this said, and it was wrong in the common
+/// case: a model *is* configured, its provider's key is not set, and several other providers
+/// are ready and waiting. Somebody whose environment holds an OpenRouter key reads that message
+/// as OpenRouter being broken, because nothing in it mentions either fact.
+fn no_model(catalog: &crate::catalog::Catalog) -> String {
+    let chosen = catalog.chosen();
+    let why = chosen.as_deref().and_then(|name| catalog.unusable(name));
+    let ready = catalog.usable();
+
+    let mut said = match (&chosen, &why) {
+        (Some(name), Some(reason)) => format!("`{name}` cannot be used: {reason}."),
+        (Some(name), None) => format!("`{name}` is not a model this build knows about."),
+        (None, _) => "No model is configured.".to_owned(),
+    };
+    if ready.is_empty() {
+        said.push_str(" Nothing else is ready either — set a provider key, or run `axum models` to see what each one needs.");
+    } else {
+        // A few, not all of them. Nine model ids is a wall of text in an error, and the point
+        // is to get moving: `/model` is one keystroke from here and shows the rest.
+        let shown = ready.len().min(3);
+        let more = ready.len() - shown;
+        let tail = if more > 0 {
+            format!(" and {more} more")
+        } else {
+            String::new()
+        };
+        said.push_str(&format!(
+            " Ready now: {}{tail}. Type `/model` to switch, or set `axum.model` in your config.",
+            ready[..shown].join(", ")
+        ));
+    }
+    said
+}
+
 /// Accept a prompt and run a turn.
 ///
 /// The prompt is journalled before the provider is called, so an interrupted turn still shows
@@ -309,6 +345,7 @@ async fn submit(
     session: &Arc<Mutex<Session>>,
     text: String,
     worker: Option<Arc<worker::Worker>>,
+    catalog: &crate::catalog::Catalog,
 ) -> Result<(), HostError> {
     {
         let mut held = session.lock().await;
@@ -327,11 +364,7 @@ async fn submit(
             text: String::new(),
             thinking: String::new(),
             stop_reason: Some(StopReason::Error),
-            error: Some(
-                "no model is configured. Set a provider key, or choose one with `axum.model` \
-                 in your config; `axum models` lists what is available."
-                    .into(),
-            ),
+            error: Some(no_model(catalog)),
             signatures: axum_proto::Signatures::default(),
             usage: axum_proto::Usage::default(),
         })?;

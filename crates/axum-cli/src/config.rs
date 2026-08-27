@@ -257,6 +257,7 @@ pub fn catalog(loaded: &Loaded) -> axum_host::catalog::Catalog {
         providers: loaded.providers.clone(),
         options: options(loaded),
         system: system(loaded),
+        chosen: loaded.config.string("model").map(ToOwned::to_owned),
     }
 }
 
