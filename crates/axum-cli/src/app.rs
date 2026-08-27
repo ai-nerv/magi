@@ -340,15 +340,7 @@ impl App {
     /// Notices are UI-side only and never reach the journal: `/help` output is not something
     /// a future session should replay, and the daemon never authored it.
     pub fn show_notice(&mut self, text: String) {
-        self.entries.push(Entry::Assistant {
-            id: MessageId::new("notice"),
-            text,
-            thinking: String::new(),
-            stop_reason: Some(axum_proto::StopReason::EndTurn),
-            error: None,
-            signatures: axum_proto::Signatures::default(),
-            usage: axum_proto::Usage::default(),
-        });
+        self.entries.push(Entry::Notice { text });
     }
 
     /// Append the keybinding reference.

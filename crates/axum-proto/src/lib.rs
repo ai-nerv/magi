@@ -179,6 +179,20 @@ pub enum Entry {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         thought_signature: Option<String>,
     },
+    /// Something axum is telling you, rather than something the model said.
+    ///
+    /// `/help`, a refused `/model`, an unknown command. Its own kind because a notice rendered
+    /// as an assistant message *is* an assistant message as far as anyone reading is
+    /// concerned, and "the model just printed a keybinding reference" is a confusing thing to
+    /// believe.
+    ///
+    /// Produced by a UI and never journalled: the daemon has no reason to make one, and a
+    /// transcript replayed from disk should hold the conversation rather than one UI's
+    /// running commentary on it.
+    Notice {
+        /// Markdown, rendered like any other prose.
+        text: String,
+    },
     /// The conversation as it was at an earlier point, taken up again.
     ///
     /// "That went wrong, back up and try something else." The entries it skips stay in the

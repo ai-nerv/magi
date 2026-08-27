@@ -109,7 +109,12 @@ pub fn draw(
     }
 
     frame.render_widget(
-        Paragraph::new(status::render(app.status(), app.tick, theme)),
+        Paragraph::new(status::connected(
+            app.status(),
+            app.tick,
+            theme,
+            app.connected,
+        )),
         status_area,
     );
     frame.render_widget(Paragraph::new(prompt_lines), prompt_area);

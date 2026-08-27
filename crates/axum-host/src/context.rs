@@ -40,7 +40,9 @@ pub fn of(session: &Session) -> Context {
 
     for entry in live {
         match entry {
-            Entry::Branch { .. } | Entry::Compaction { .. } => {}
+            // A notice is one UI talking to the person in front of it. Sending it to a
+            // provider would be telling the model what axum told somebody about axum.
+            Entry::Branch { .. } | Entry::Compaction { .. } | Entry::Notice { .. } => {}
             Entry::User { text, .. } => {
                 open = None;
                 messages.push(Message::user(text.clone()));

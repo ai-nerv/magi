@@ -296,6 +296,9 @@ fn events_for(cursor: Cursor, entry: &Entry) -> Vec<HarnessEvent> {
             }
             out
         }
+        // Never journalled, so never replayed. A UI makes its own and the daemon has none to
+        // give: this arm exists because the type allows one, not because one arrives.
+        Entry::Notice { .. } => Vec::new(),
         Entry::Branch { id, keeps } => vec![HarnessEvent::Branched {
             cursor,
             id: id.clone(),

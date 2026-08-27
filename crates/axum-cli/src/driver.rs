@@ -42,11 +42,16 @@ pub async fn run(socket: &Path, mode: Mode, prompt: Option<String>) -> Result<()
 
     let (event_tx, mut event_rx) = mpsc::channel::<HarnessEvent>(256);
     let (command_tx, command_rx) = mpsc::channel::<UiCommand>(32);
+    // Shared rather than inferred from the event stream: a dropped connection produces no
+    // event, so a UI watching only for events cannot tell "nothing is happening" from
+    // "nothing can happen".
+    let attached = Arc::new(std::sync::atomic::AtomicBool::new(false));
     tokio::spawn(connection_loop(
         socket.to_path_buf(),
         event_tx,
         command_rx,
         app.cursor(),
+        Arc::clone(&attached),
     ));
 
     let list_paths = |query: &str| {
@@ -63,6 +68,14 @@ pub async fn run(socket: &Path, mode: Mode, prompt: Option<String>) -> Result<()
 
     let mut dirty = true;
     loop {
+        // Read each pass rather than tracked here: the connection lives in another task, and
+        // this is the one thing about it the screen has to show.
+        let attached_now = attached.load(Ordering::Relaxed);
+        if attached_now != app.connected {
+            app.connected = attached_now;
+            dirty = true;
+        }
+
         if dirty {
             flush_settled(&mut session, &mut app, &theme)?;
             let _ = session.terminal.autoresize();
@@ -76,8 +89,6 @@ pub async fn run(socket: &Path, mode: Mode, prompt: Option<String>) -> Result<()
 
         tokio::select! {
             Some(event) = event_rx.recv() => {
-                // A snapshot means the daemon accepted an attach: the socket is up.
-                app.connected = true;
                 app.apply(event);
                 dirty = true;
             }
@@ -163,7 +174,9 @@ pub async fn run(socket: &Path, mode: Mode, prompt: Option<String>) -> Result<()
                 }
             }
             _ = ticker.tick() => {
-                if app.is_busy() {
+                // Also while disconnected: the reconnect message carries a spinner, and a
+                // spinner that has stopped says "hung" rather than "trying".
+                if app.is_busy() || !app.connected {
                     app.tick = app.tick.wrapping_add(1);
                     dirty = true;
                 }
@@ -220,8 +233,10 @@ async fn connection_loop(
     events: mpsc::Sender<HarnessEvent>,
     mut commands: mpsc::Receiver<UiCommand>,
     mut from_cursor: Cursor,
+    attached: Arc<std::sync::atomic::AtomicBool>,
 ) {
     loop {
+        attached.store(false, Ordering::Relaxed);
         let Ok(stream) = axum_ipc::connect(&socket).await else {
             debug_log(format_args!("connect failed"));
             tokio::time::sleep(RECONNECT_DELAY).await;
@@ -249,6 +264,7 @@ async fn connection_loop(
         // a length and then a body, and a `select!` that drops it between the two leaves the
         // next read parsing body bytes as a length. Sending a command used to do exactly that,
         // which desynced the stream on the first prompt.
+        attached.store(true, Ordering::Relaxed);
         let cursor = Arc::new(AtomicU64::new(from_cursor.0));
         let reader_cursor = Arc::clone(&cursor);
         let reader_events = events.clone();

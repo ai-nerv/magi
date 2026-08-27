@@ -1,0 +1,432 @@
+//! Transcript entries to styled lines.
+//!
+//! The shape is Pi's, block for block: a user message is a full-width padded box on
+//! `userMessageBg`; an assistant message is bare markdown preceded by one blank line; a tool
+//! call is a padded box whose background carries its outcome.
+
+use crate::markdown;
+use crate::theme::Theme;
+use axum_proto::{Entry, StopReason};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+
+/// Horizontal padding inside a block, in cells. Pi's `outputPad`.
+const PAD: u16 = 1;
+
+mod tool;
+
+pub use tool::Detail;
+
+/// Render the whole transcript.
+#[must_use]
+pub fn render(entries: &[Entry], width: u16, theme: &Theme, detail: Detail) -> Vec<Line<'static>> {
+    let mut out = Vec::new();
+    for entry in entries {
+        out.extend(entry_lines(entry, width, theme, detail));
+    }
+    out
+}
+
+/// Render one entry.
+#[must_use]
+pub fn entry_lines(entry: &Entry, width: u16, theme: &Theme, detail: Detail) -> Vec<Line<'static>> {
+    match entry {
+        Entry::User { text, .. } => user(text, width, theme),
+        Entry::Assistant {
+            text,
+            thinking,
+            stop_reason,
+            error,
+            ..
+        } => assistant(text, thinking, *stop_reason, error.as_deref(), width, theme),
+        Entry::Tool {
+            name, args, result, ..
+        } => tool::block(name, args, result.as_ref(), width, theme, detail),
+        Entry::Notice { text } => notice(text, width, theme),
+        Entry::Compaction { replaces, .. } => marker(
+            &format!(" {replaces} earlier messages summarised "),
+            width,
+            theme,
+        ),
+        Entry::Branch { keeps, .. } => {
+            marker(&format!(" rewound to message {keeps} "), width, theme)
+        }
+    }
+}
+
+/// Something axum is saying, marked so it cannot be read as the model saying it.
+///
+/// A bar down the left and muted text: the same shape as a block quote, which is what this
+/// is — a voice that is not the conversation's.
+fn notice(text: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
+    let style = Style::default().fg(theme.dim);
+    let inner = width.saturating_sub(PAD * 2 + 2);
+    let mut out = vec![Line::default()];
+    for line in markdown::render(text, inner, theme, style) {
+        let mut spans = vec![Span::styled("│ ", Style::default().fg(theme.md_quote))];
+        spans.extend(line.spans);
+        out.push(indent(Line::from(spans)));
+    }
+    out
+}
+
+/// A labelled rule across the transcript.
+///
+/// Shown rather than hidden. The transcript above one of these is still there and still true,
+/// but what the model can see of it has changed — and a reader wondering why it forgot
+/// something, or why an exchange seems to have been undone, needs this line to be the answer.
+fn marker(label: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
+    let label = label.to_owned();
+    let rule = usize::from(width).saturating_sub(label.chars().count());
+    vec![
+        Line::default(),
+        Line::from(vec![
+            Span::styled("─".repeat(rule / 2), Style::default().fg(theme.md_quote)),
+            Span::styled(label, Style::default().fg(theme.dim)),
+            Span::styled(
+                "─".repeat(rule.saturating_sub(rule / 2)),
+                Style::default().fg(theme.md_quote),
+            ),
+        ]),
+    ]
+}
+
+/// A full-width box on `userMessageBg`, padded one cell on every side.
+fn user(text: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
+    let style = Style::default()
+        .bg(theme.user_message_bg)
+        .fg(theme.user_message_text);
+    let inner = width.saturating_sub(PAD * 2);
+    let body = markdown::render(text, inner, theme, style);
+
+    let mut out = vec![blank(width, style)];
+    for line in body {
+        out.push(pad(line, width, style));
+    }
+    out.push(blank(width, style));
+    out
+}
+
+/// Bare markdown with no background, preceded by one blank line.
+fn assistant(
+    text: &str,
+    thinking: &str,
+    stop_reason: Option<StopReason>,
+    error: Option<&str>,
+    width: u16,
+    theme: &Theme,
+) -> Vec<Line<'static>> {
+    let base = Style::default().fg(theme.text);
+    let inner = width.saturating_sub(PAD * 2);
+    let mut out = Vec::new();
+
+    if !thinking.trim().is_empty() || !text.trim().is_empty() {
+        out.push(Line::default());
+    }
+
+    if !thinking.trim().is_empty() {
+        let style = Style::default()
+            .fg(theme.thinking_text)
+            .add_modifier(Modifier::ITALIC);
+        for line in markdown::render(thinking.trim(), inner, theme, style) {
+            out.push(indent(line));
+        }
+        if !text.trim().is_empty() {
+            out.push(Line::default());
+        }
+    }
+
+    if !text.trim().is_empty() {
+        for line in markdown::render(text.trim(), inner, theme, base) {
+            out.push(indent(line));
+        }
+    }
+
+    // A truncated response is surfaced here even when tool calls follow, because a length stop
+    // can land before a call's arguments are complete and the tool block would show nothing.
+    match stop_reason {
+        Some(StopReason::Length) => {
+            out.push(Line::default());
+            out.push(indent(Line::from(Span::styled(
+                "Response was truncated before completion.",
+                Style::default().fg(theme.error),
+            ))));
+        }
+        Some(StopReason::Aborted) => {
+            out.push(Line::default());
+            out.push(indent(Line::from(Span::styled(
+                error.unwrap_or("Operation aborted").to_owned(),
+                Style::default().fg(theme.error),
+            ))));
+        }
+        Some(StopReason::Error) => {
+            out.push(Line::default());
+            out.push(indent(Line::from(Span::styled(
+                format!("Error: {}", error.unwrap_or("Unknown error")),
+                Style::default().fg(theme.error),
+            ))));
+        }
+        _ => {}
+    }
+
+    out
+}
+
+fn clip(text: &str, width: usize) -> String {
+    // Expanded before it is measured, because a tab is one character and several columns.
+    let text = crate::wrap::expand_tabs(text);
+    if text.chars().count() <= width {
+        return text;
+    }
+    text.chars()
+        .take(width.saturating_sub(1))
+        .collect::<String>()
+        + "…"
+}
+
+/// A full-width line carrying only the background.
+fn blank(width: u16, style: Style) -> Line<'static> {
+    Line::from(Span::styled(" ".repeat(usize::from(width)), style))
+}
+
+/// Indent a line by [`PAD`] without a background.
+fn indent(line: Line<'static>) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ".repeat(usize::from(PAD)))];
+    spans.extend(line.spans);
+    Line::from(spans)
+}
+
+/// Indent a line and extend its background to the full width.
+///
+/// The trailing fill is what makes a box read as a block rather than as ragged coloured text.
+fn pad(line: Line<'static>, width: u16, style: Style) -> Line<'static> {
+    let used: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+    let pad = usize::from(PAD);
+    let trailing = usize::from(width).saturating_sub(used + pad);
+
+    let mut spans = vec![Span::styled(" ".repeat(pad), style)];
+    spans.extend(line.spans);
+    spans.push(Span::styled(" ".repeat(trailing), style));
+    Line::from(spans)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum_proto::{MessageId, ToolCallId, ToolResult};
+
+    fn text_of(lines: &[Line<'_>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn a_user_message_is_a_padded_full_width_box() {
+        let entry = Entry::User {
+            id: MessageId::new("m1"),
+            text: "hello".into(),
+        };
+        let lines = entry_lines(&entry, 20, &Theme::default(), Detail::Preview);
+        let rendered = text_of(&lines);
+        assert_eq!(rendered.len(), 3, "blank, body, blank");
+        assert_eq!(rendered[1], " hello              ");
+        assert!(rendered.iter().all(|l| l.chars().count() == 20));
+    }
+
+    #[test]
+    fn an_assistant_message_has_no_background_fill() {
+        let entry = Entry::Assistant {
+            id: MessageId::new("m2"),
+            text: "sure".into(),
+            thinking: String::new(),
+            stop_reason: Some(StopReason::EndTurn),
+            error: None,
+            signatures: axum_proto::Signatures::default(),
+            usage: axum_proto::Usage::default(),
+        };
+        let rendered = text_of(&entry_lines(&entry, 20, &Theme::default(), Detail::Preview));
+        assert_eq!(rendered, vec!["", " sure"]);
+    }
+
+    #[test]
+    fn a_pending_tool_shows_its_name_and_args() {
+        let entry = Entry::Tool {
+            id: ToolCallId::new("t1"),
+            name: "read".into(),
+            args: r#"{"path": "a.rs"}"#.into(),
+            result: None,
+            thought_signature: None,
+        };
+        let rendered = text_of(&entry_lines(&entry, 40, &Theme::default(), Detail::Preview));
+        assert!(rendered[1].contains("read"), "{:?}", rendered[1]);
+        assert!(rendered[1].contains("a.rs"), "{:?}", rendered[1]);
+    }
+
+    #[test]
+    fn a_long_tool_result_is_previewed_with_a_remainder_count() {
+        let output = (0..25)
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let entry = Entry::Tool {
+            id: ToolCallId::new("t2"),
+            name: "bash".into(),
+            args: "{}".into(),
+            result: Some(ToolResult {
+                output,
+                is_error: false,
+            }),
+            thought_signature: None,
+        };
+        let rendered = text_of(&entry_lines(&entry, 40, &Theme::default(), Detail::Preview));
+        assert!(
+            rendered.iter().any(|l| l.contains("15 more lines")),
+            "{rendered:?}"
+        );
+    }
+
+    #[test]
+    fn a_truncated_response_says_so() {
+        let entry = Entry::Assistant {
+            id: MessageId::new("m3"),
+            text: "partial".into(),
+            thinking: String::new(),
+            stop_reason: Some(StopReason::Length),
+            error: None,
+            signatures: axum_proto::Signatures::default(),
+            usage: axum_proto::Usage::default(),
+        };
+        let rendered = text_of(&entry_lines(&entry, 40, &Theme::default(), Detail::Preview));
+        assert!(
+            rendered.iter().any(|l| l.contains("truncated")),
+            "{rendered:?}"
+        );
+    }
+
+    #[test]
+    fn an_errored_response_shows_the_message() {
+        let entry = Entry::Assistant {
+            id: MessageId::new("m4"),
+            text: String::new(),
+            thinking: String::new(),
+            stop_reason: Some(StopReason::Error),
+            error: Some("overloaded".into()),
+            signatures: axum_proto::Signatures::default(),
+            usage: axum_proto::Usage::default(),
+        };
+        let rendered = text_of(&entry_lines(&entry, 40, &Theme::default(), Detail::Preview));
+        assert!(
+            rendered.iter().any(|l| l.contains("Error: overloaded")),
+            "{rendered:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tab_tests {
+    use super::*;
+    use axum_proto::{ToolCallId, ToolResult};
+
+    /// Every character the renderer would put in a cell.
+    fn cells(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect()
+    }
+
+    #[test]
+    fn no_tab_reaches_the_buffer_from_tool_output() {
+        // Found against a real model, not in any test: `read` numbers lines with a tab, the
+        // buffer counted it as one column, the terminal moved the cursor to the next tab stop,
+        // and a character from the previous frame was left on screen at the gap.
+        let entry = Entry::Tool {
+            id: ToolCallId::new("t1"),
+            name: "read".into(),
+            args: "{}".into(),
+            result: Some(ToolResult {
+                output: "     1\tfn main() {\n     3\t}\n".into(),
+                is_error: false,
+            }),
+            thought_signature: None,
+        };
+        let rendered = cells(&entry_lines(&entry, 60, &Theme::default(), Detail::Preview));
+        assert!(!rendered.contains('\t'), "{rendered:?}");
+        assert!(rendered.contains("     3  }"), "{rendered:?}");
+    }
+
+    #[test]
+    fn no_tab_reaches_the_buffer_from_a_fenced_code_block() {
+        // A model quoting a Makefile or Go, which are indented with tabs.
+        let entry = Entry::Assistant {
+            id: axum_proto::MessageId::new("a1"),
+            text: "```\nbuild:\n\tcargo build\n```".into(),
+            thinking: String::new(),
+            stop_reason: None,
+            error: None,
+            signatures: axum_proto::Signatures::default(),
+            usage: axum_proto::Usage::default(),
+        };
+        let rendered = cells(&entry_lines(&entry, 60, &Theme::default(), Detail::Preview));
+        assert!(!rendered.contains('\t'), "{rendered:?}");
+        assert!(rendered.contains("    cargo build"), "{rendered:?}");
+    }
+}
+
+#[cfg(test)]
+mod notice_tests {
+    use super::*;
+
+    #[test]
+    fn a_notice_is_marked_so_it_reads_as_axum_and_not_the_model() {
+        // It used to be pushed as an assistant message, so `/help` output was — to anyone
+        // reading — the model printing a keybinding reference at you.
+        let lines = entry_lines(
+            &Entry::Notice {
+                text: "unknown command: /nope".to_owned(),
+            },
+            40,
+            &Theme::default(),
+            Detail::Preview,
+        );
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(
+            rendered.iter().any(|l: &String| l.contains('│')),
+            "{rendered:?}"
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|l: &String| l.contains("unknown command")),
+            "{rendered:?}"
+        );
+    }
+
+    #[test]
+    fn a_notice_renders_its_markdown() {
+        // `/help` is markdown, and a notice is where it lands.
+        let lines = entry_lines(
+            &Entry::Notice {
+                text: "**Keys**\n\n- `enter` submit".to_owned(),
+            },
+            40,
+            &Theme::default(),
+            Detail::Preview,
+        );
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(rendered.iter().any(|l: &String| l.contains("Keys")));
+        assert!(
+            !rendered.iter().any(|l: &String| l.contains("**")),
+            "the markers are rendered away: {rendered:?}"
+        );
+        assert!(rendered.iter().any(|l: &String| l.contains('•')));
+    }
+}

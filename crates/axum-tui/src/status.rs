@@ -20,6 +20,30 @@ pub const FRAME_MS: u64 = 80;
 /// function of state.
 #[must_use]
 pub fn render(status: &AgentStatus, tick: usize, theme: &Theme) -> Line<'static> {
+    connected(status, tick, theme, true)
+}
+
+/// The same, saying so when the daemon cannot be reached.
+///
+/// A UI that has lost its socket looks exactly like an idle one: the prompt accepts text, the
+/// transcript sits there, and a submitted turn goes into a channel nobody is reading. The
+/// session is not lost — the daemon owns it and the UI redials — but a person typing into
+/// silence deserves to be told which silence it is.
+#[must_use]
+pub fn connected(
+    status: &AgentStatus,
+    tick: usize,
+    theme: &Theme,
+    connected: bool,
+) -> Line<'static> {
+    if !connected {
+        return spinner(
+            "Reconnecting to the daemon...".to_owned(),
+            tick,
+            theme.warning,
+            theme,
+        );
+    }
     match status {
         AgentStatus::Idle => Line::default(),
         AgentStatus::Working { label } => spinner(label.clone(), tick, theme.accent, theme),
@@ -96,5 +120,40 @@ mod tests {
             "{}",
             text_of(&render(&status, 0, &Theme::default()))
         );
+    }
+}
+
+#[cfg(test)]
+mod connection_tests {
+    use super::*;
+
+    fn text(line: &Line<'static>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn a_lost_daemon_is_said_out_loud() {
+        // A UI with no socket looks exactly like an idle one: the prompt takes text and a
+        // submitted turn goes into a channel nobody is reading.
+        let line = connected(&AgentStatus::Idle, 0, &Theme::default(), false);
+        assert!(text(&line).contains("Reconnecting"), "{}", text(&line));
+    }
+
+    #[test]
+    fn it_outranks_whatever_the_session_last_said_it_was_doing() {
+        // The last status to arrive was "Thinking", and it has not been true since the socket
+        // went. Showing it would be reporting a turn that nothing is running.
+        let working = AgentStatus::Working {
+            label: "Thinking".into(),
+        };
+        let line = connected(&working, 0, &Theme::default(), false);
+        assert!(!text(&line).contains("Thinking"), "{}", text(&line));
+    }
+
+    #[test]
+    fn a_connected_idle_session_still_says_nothing() {
+        // Two lines while idle so the layout does not jump; the words are the exception.
+        let line = connected(&AgentStatus::Idle, 0, &Theme::default(), true);
+        assert_eq!(text(&line), "");
     }
 }
