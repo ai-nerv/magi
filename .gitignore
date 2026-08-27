@@ -23,3 +23,6 @@ __pycache__/
 compile_commands.json
 .complog
 .quickfix
+
+# Planning documents stay local, as PLAN.md does.
+PLAN_DIFFERENCE.md
