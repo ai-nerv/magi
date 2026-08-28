@@ -77,7 +77,7 @@ pub fn draw(
     } else {
         axum_tui::border::Scan::Holding
     };
-    let prompt_lines = prompt::render(&app.editor, area.width, rows, app.tick, scan, theme);
+    let prompt_lines = prompt::render(&app.editor, area.width, rows, app.scan_tick(), scan, theme);
     let prompt_rows = (prompt_lines.len() as u16)
         .min(rows.saturating_sub(FOOTER_ROWS + STATUS_ROWS + 1))
         .max(1);

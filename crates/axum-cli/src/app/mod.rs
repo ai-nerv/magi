@@ -92,6 +92,14 @@ pub struct App {
     pub queued: usize,
     /// Spinner phase.
     pub tick: usize,
+    /// Scan phase, in hundredths of a tick.
+    ///
+    /// Its own clock rather than the spinner's, because the scan has a speed somebody can set
+    /// and the spinner does not. Hundredths so `scan_speed = 0.5` is half as fast rather than
+    /// stopped, which is what it would round to in whole ticks.
+    scan_phase: usize,
+    /// How much [`Self::scan_phase`] gains per frame; a hundred is the built-in speed.
+    pub scan_rate: usize,
     /// Which model is answering, as the daemon reported it.
     ///
     /// From the daemon rather than read from the configuration here: a UI reading the config
@@ -149,7 +157,21 @@ impl App {
             queued: 0,
             working_since: None,
             tick: 0,
+            scan_phase: 0,
+            scan_rate: crate::config::NORMAL_SCAN,
         }
+    }
+
+    /// Advance both clocks by one frame.
+    pub fn advance(&mut self) {
+        self.tick = self.tick.wrapping_add(1);
+        self.scan_phase = self.scan_phase.wrapping_add(self.scan_rate);
+    }
+
+    /// The scan's phase in whole ticks, which is what the border is drawn from.
+    #[must_use]
+    pub fn scan_tick(&self) -> usize {
+        self.scan_phase / crate::config::NORMAL_SCAN
     }
 
     /// The transcript.

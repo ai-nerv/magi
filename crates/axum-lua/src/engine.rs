@@ -35,6 +35,16 @@ impl Config {
         self.get(name).and_then(serde_json::Value::as_bool)
     }
 
+    /// A setting as a number.
+    ///
+    /// Lua has one number type, so `2` and `2.0` are the same value written twice and both have
+    /// to answer here — a config that says `2` and gets nothing would be right to call that a
+    /// bug in axum.
+    #[must_use]
+    pub fn number(&self, name: &str) -> Option<f64> {
+        self.get(name).and_then(serde_json::Value::as_f64)
+    }
+
     /// Everything handed to one registrar, in declaration order.
     #[must_use]
     pub fn all(&self, registrar: &str) -> Vec<(&str, &serde_json::Value)> {

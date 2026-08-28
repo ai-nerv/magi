@@ -267,6 +267,8 @@ mod settings;
 
 use settings::{grants, options, system};
 
+pub use settings::{NORMAL_SCAN, scan_rate};
+
 /// The backend a daemon should run turns against, if one is both chosen and usable.
 ///
 /// A model that is configured but has no credential yields `None` rather than an error: the

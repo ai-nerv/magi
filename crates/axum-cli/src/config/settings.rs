@@ -98,3 +98,95 @@ pub fn options(loaded: &Loaded) -> axum_provider::api::Options {
         max_tokens: None,
     }
 }
+
+/// How fast the border scan moves, as hundredths of the built-in rate.
+///
+/// A multiplier rather than three speeds, because the three modes are deliberately paced against
+/// each other — resting drifts, holding shuttles, working races — and a config able to set them
+/// independently is a config able to make working slower than resting.
+///
+/// ```lua
+/// axum.scan_speed = 2      -- twice as fast
+/// axum.scan_speed = 0.5    -- half
+/// axum.scan_speed = 0      -- still
+/// ```
+///
+/// Held as hundredths so a fractional speed survives in integer arithmetic all the way to the
+/// cell, and clamped because a scan moving a hundred cells a frame is not an animation.
+#[must_use]
+pub fn scan_rate(loaded: &Loaded) -> usize {
+    let asked = loaded.config.number("scan_speed").unwrap_or(1.0);
+    if !asked.is_finite() || asked <= 0.0 {
+        return if asked == 0.0 { 0 } else { NORMAL_SCAN };
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to a small positive range first"
+    )]
+    let rate = (asked * 100.0).clamp(0.0, 800.0) as usize;
+    rate
+}
+
+/// The rate `scan_speed = 1` means.
+pub const NORMAL_SCAN: usize = 100;
+
+#[cfg(test)]
+mod scan_tests {
+    use super::*;
+
+    /// A config holding nothing but what a `.lua` file assigned.
+    fn from_lua(source: &str) -> Loaded {
+        let mut engine = axum_lua::Engine::new();
+        engine.run(source, "test").expect("the config must run");
+        engine.harvest();
+        Loaded {
+            config: engine.config(),
+            tools: Vec::new(),
+            stubs: Vec::new(),
+            apis: Vec::new(),
+            providers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_config_that_says_nothing_gets_the_built_in_speed() {
+        assert_eq!(scan_rate(&from_lua("")), NORMAL_SCAN);
+    }
+
+    #[test]
+    fn a_whole_number_is_a_multiple() {
+        // Lua has one number type, so `2` and `2.0` are the same value written twice and a
+        // reader that only answered to one of them would be a bug worth reporting.
+        assert_eq!(scan_rate(&from_lua("axum.scan_speed = 2")), 200);
+        assert_eq!(scan_rate(&from_lua("axum.scan_speed = 2.0")), 200);
+    }
+
+    #[test]
+    fn a_fraction_survives_to_the_cell() {
+        // The reason the rate is hundredths rather than ticks: in whole ticks this rounds to
+        // nought and half speed is a scan that does not move.
+        assert_eq!(scan_rate(&from_lua("axum.scan_speed = 0.5")), 50);
+    }
+
+    #[test]
+    fn zero_is_still() {
+        assert_eq!(scan_rate(&from_lua("axum.scan_speed = 0")), 0);
+    }
+
+    #[test]
+    fn a_speed_that_is_not_one_is_the_built_in_one() {
+        // A negative speed is not a scan running backwards, it is a typo. Refusing to read it
+        // as anything leaves the border moving, which is the state somebody can see and fix.
+        assert_eq!(scan_rate(&from_lua("axum.scan_speed = -3")), NORMAL_SCAN);
+        assert_eq!(
+            scan_rate(&from_lua("axum.scan_speed = 'fast'")),
+            NORMAL_SCAN
+        );
+    }
+
+    #[test]
+    fn an_absurd_speed_is_clamped_rather_than_honoured() {
+        assert_eq!(scan_rate(&from_lua("axum.scan_speed = 1000")), 800);
+    }
+}

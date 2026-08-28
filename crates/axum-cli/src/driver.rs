@@ -39,6 +39,14 @@ pub async fn run(
 ) -> Result<()> {
     let theme = Theme::default();
     let mut app = App::new();
+    // Read here rather than taken from the daemon, because this one is about the screen in front
+    // of the person reading it. A model or a tool set has to come from the daemon — it is what
+    // the daemon is actually using — but nothing on the other end of the socket has an opinion
+    // about how fast a border moves. A config that will not run leaves the built-in speed: the
+    // daemon has already refused to start over it and said why.
+    if let Ok(loaded) = crate::config::load() {
+        app.scan_rate = crate::config::scan_rate(&loaded);
+    }
     // Before anything else, because the answer to "why is my new tool not there" has to arrive
     // before the model is asked to use it. The daemon holds the tool set it was built with, and
     // a session that outlived a config edit reports the tool as unregistered -- which reads as a
@@ -257,7 +265,7 @@ pub async fn run(
                 // Always, now. The spinner needed this only while something was running; the
                 // prompt's border scan runs whenever the box is on screen, and a scan that
                 // stops the moment a turn ends reads as the UI having frozen.
-                app.tick = app.tick.wrapping_add(1);
+                app.advance();
                 dirty = true;
             }
         }

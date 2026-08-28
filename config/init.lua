@@ -62,3 +62,14 @@ axum.model = "anthropic/claude-sonnet-4-5"
 --   { verb = "read",  directory = "/home/you/work" },
 --   { verb = "run",   program = "git" },
 -- }
+
+-- How fast the prompt's border scan moves, as a multiple of the built-in speed.
+--
+-- One multiplier rather than three, because the modes are paced against each other on purpose:
+-- the scan drifts when nothing is happening, shuttles along the two long edges while there is
+-- text waiting to be sent, and races round the ring while a turn runs. Setting them separately
+-- would let working end up slower than resting, which reads as the UI having got stuck.
+--
+-- Zero is still. It goes up to 8, which nobody wants.
+--
+-- axum.scan_speed = 2
