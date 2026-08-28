@@ -8,7 +8,7 @@
 //! Its own module because the markdown renderer is a line-at-a-time loop and a table is the
 //! one construct that needs several lines in hand before it can decide anything.
 
-use crate::theme::Theme;
+use crate::colour;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -57,7 +57,7 @@ pub fn cells(line: &str) -> Vec<String> {
 /// table, and the reader is better served by a truncation they can see than a shape they
 /// cannot.
 #[must_use]
-pub fn render(rows: &[String], width: u16, theme: &Theme) -> Vec<Line<'static>> {
+pub fn render(rows: &[String], width: u16) -> Vec<Line<'static>> {
     let parsed: Vec<Vec<String>> = rows
         .iter()
         .enumerate()
@@ -77,13 +77,13 @@ pub fn render(rows: &[String], width: u16, theme: &Theme) -> Vec<Line<'static>> 
     }
     fit(&mut widths, usize::from(width));
 
-    let rule = Style::default().fg(theme.border_muted);
+    let rule = Style::default().fg(colour::RULE);
     let mut out = vec![divider(&widths, '┌', '┬', '┐', rule)];
     out.push(row_line(
         header,
         &widths,
         Style::default()
-            .fg(theme.md_heading)
+            .fg(colour::HEADING)
             .add_modifier(Modifier::BOLD),
         rule,
     ));
@@ -92,7 +92,7 @@ pub fn render(rows: &[String], width: u16, theme: &Theme) -> Vec<Line<'static>> 
         out.push(row_line(
             row,
             &widths,
-            Style::default().fg(theme.text),
+            Style::default().fg(colour::TEXT),
             rule,
         ));
     }
@@ -185,14 +185,14 @@ mod tests {
     #[test]
     fn the_separator_is_not_drawn_as_a_row() {
         // It is punctuation in the source, not data.
-        let out = text_of(&render(&sample(), 60, &crate::theme::DARK));
+        let out = text_of(&render(&sample(), 60));
         assert!(!out.iter().any(|l| l.contains("-----")), "{out:?}");
     }
 
     #[test]
     fn every_row_gets_its_own_line() {
         // The bug: three source lines reflowed into one paragraph of pipes.
-        let out = text_of(&render(&sample(), 60, &crate::theme::DARK));
+        let out = text_of(&render(&sample(), 60));
         assert!(out.iter().any(|l| l.contains("Concept")), "{out:?}");
         assert!(out.iter().any(|l| l.contains("println!")), "{out:?}");
         assert!(
@@ -204,7 +204,7 @@ mod tests {
 
     #[test]
     fn columns_line_up() {
-        let out = text_of(&render(&sample(), 60, &crate::theme::DARK));
+        let out = text_of(&render(&sample(), 60));
         let widths: Vec<usize> = out.iter().map(|l| l.chars().count()).collect();
         assert!(
             widths.windows(2).all(|w| w[0] == w[1]),
@@ -215,7 +215,7 @@ mod tests {
     #[test]
     fn a_narrow_terminal_shrinks_the_widest_column() {
         // Taking evenly makes the narrow columns unreadable to spare the wide one.
-        let out = text_of(&render(&sample(), 30, &crate::theme::DARK));
+        let out = text_of(&render(&sample(), 30));
         for line in &out {
             assert!(line.chars().count() <= 30, "{line:?} in {out:?}");
         }
@@ -233,12 +233,12 @@ mod tests {
             "|---|---|---|".to_owned(),
             "| 1 |".to_owned(),
         ];
-        let out = text_of(&render(&rows, 40, &crate::theme::DARK));
+        let out = text_of(&render(&rows, 40));
         assert!(out.len() >= 4, "{out:?}");
     }
 
     #[test]
     fn an_empty_table_renders_nothing() {
-        assert!(render(&[], 40, &crate::theme::DARK).is_empty());
+        assert!(render(&[], 40).is_empty());
     }
 }

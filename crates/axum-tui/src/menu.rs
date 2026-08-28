@@ -11,7 +11,7 @@
 //! candidate adds, which is the single thing that makes a long list scannable: the eye is
 //! looking for what is *different* between forty rows that share a prefix.
 
-use crate::theme::Theme;
+use crate::colour;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -37,38 +37,38 @@ pub struct Row<'a> {
 
 /// Draw one row: marker, value with the typed part picked out, detail, filled to the edge.
 #[must_use]
-pub fn row(r: &Row<'_>, typed: &str, width: u16, theme: &Theme) -> Line<'static> {
+pub fn row(r: &Row<'_>, typed: &str, width: u16) -> Line<'static> {
     let bg = if r.selected {
-        theme.menu_sel_bg
+        colour::RAISED_BG
     } else {
-        theme.menu_bg
+        colour::BLOCK_BG
     };
     let on = |style: Style| style.bg(bg);
 
     let value_style = if r.selected {
         Style::default()
-            .fg(theme.menu_sel_text)
+            .fg(colour::SELECTED)
             .add_modifier(Modifier::BOLD)
     } else if r.ready {
-        Style::default().fg(theme.text)
+        Style::default().fg(colour::TEXT)
     } else {
-        Style::default().fg(theme.dim)
+        Style::default().fg(colour::DIM)
     };
 
     let mut spans = vec![Span::styled(
         if r.selected { MARKER } else { NO_MARKER },
-        on(Style::default().fg(theme.accent)),
+        on(Style::default().fg(colour::ACCENT)),
     )];
-    spans.extend(matched(r.value, typed, value_style, theme, bg));
+    spans.extend(matched(r.value, typed, value_style, bg));
 
     if !r.detail.is_empty() {
         let gap = r.value_width.saturating_sub(r.value.chars().count()) + 2;
         let detail_style = if !r.ready {
-            Style::default().fg(theme.warning)
+            Style::default().fg(colour::WARNING)
         } else if r.selected {
-            Style::default().fg(theme.menu_detail_sel)
+            Style::default().fg(colour::TEXT)
         } else {
-            Style::default().fg(theme.menu_detail)
+            Style::default().fg(colour::MUTED)
         };
         spans.push(Span::styled(" ".repeat(gap), on(Style::default())));
         spans.push(Span::styled(r.detail.to_owned(), on(detail_style)));
@@ -79,17 +79,17 @@ pub fn row(r: &Row<'_>, typed: &str, width: u16, theme: &Theme) -> Line<'static>
 
 /// A heading above a list: what it is, and where you are in it.
 #[must_use]
-pub fn heading(title: &str, note: &str, width: u16, theme: &Theme) -> Line<'static> {
-    let bg = theme.menu_bg;
+pub fn heading(title: &str, note: &str, width: u16) -> Line<'static> {
+    let bg = colour::BLOCK_BG;
     let spans = vec![
         Span::styled(
             format!(" {title} "),
             Style::default()
-                .fg(theme.accent)
+                .fg(colour::ACCENT)
                 .bg(bg)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(note.to_owned(), Style::default().fg(theme.menu_meta).bg(bg)),
+        Span::styled(note.to_owned(), Style::default().fg(colour::DIM).bg(bg)),
     ];
     Line::from(fill(clip(spans, usize::from(width)), width, bg))
 }
@@ -104,19 +104,13 @@ pub fn heading(title: &str, note: &str, width: u16, theme: &Theme) -> Line<'stat
 /// The subsequence is the fallback, for the rows that only matched that way. Marking nothing
 /// there would be worse: those rows are in the list precisely because something matched, and
 /// the reader is owed the reason.
-fn matched(
-    value: &str,
-    typed: &str,
-    base: Style,
-    theme: &Theme,
-    bg: ratatui::style::Color,
-) -> Vec<Span<'static>> {
+fn matched(value: &str, typed: &str, base: Style, bg: ratatui::style::Color) -> Vec<Span<'static>> {
     let base = base.bg(bg);
     if typed.is_empty() {
         return vec![Span::styled(value.to_owned(), base)];
     }
     let hit = Style::default()
-        .fg(theme.menu_match)
+        .fg(colour::MATCH)
         .bg(bg)
         .add_modifier(Modifier::BOLD);
 
@@ -226,30 +220,28 @@ mod tests {
     fn every_row_carries_a_background_to_the_edge() {
         // Without it a menu is loose text under the prompt; the colour is the only thing saying
         // where the list starts and stops.
-        let line = row(&a_row("a/b", false), "", 40, &crate::theme::DARK);
+        let line = row(&a_row("a/b", false), "", 40);
         assert_eq!(text(&line).chars().count(), 40);
         assert!(line.spans.iter().all(|s| s.style.bg.is_some()));
     }
 
     #[test]
     fn the_selected_row_is_a_different_block() {
-        let theme = crate::theme::DARK;
-        let plain = row(&a_row("a/b", false), "", 40, &theme);
-        let picked = row(&a_row("a/b", true), "", 40, &theme);
-        assert_eq!(plain.spans[0].style.bg, Some(theme.menu_bg));
-        assert_eq!(picked.spans[0].style.bg, Some(theme.menu_sel_bg));
+        let plain = row(&a_row("a/b", false), "", 40);
+        let picked = row(&a_row("a/b", true), "", 40);
+        assert_eq!(plain.spans[0].style.bg, Some(colour::BLOCK_BG));
+        assert_eq!(picked.spans[0].style.bg, Some(colour::RAISED_BG));
         assert!(text(&picked).starts_with(MARKER));
     }
 
     #[test]
     fn what_you_typed_is_picked_out_of_what_you_did_not() {
         // The one thing that makes forty rows sharing a prefix scannable.
-        let theme = crate::theme::DARK;
-        let line = row(&a_row("claude-opus-5", false), "opus", 40, &theme);
+        let line = row(&a_row("claude-opus-5", false), "opus", 40);
         let lit: String = line
             .spans
             .iter()
-            .filter(|s| s.style.fg == Some(theme.menu_match))
+            .filter(|s| s.style.fg == Some(colour::MATCH))
             .map(|s| s.content.as_ref())
             .collect();
         assert_eq!(lit, "opus");
@@ -258,12 +250,11 @@ mod tests {
     #[test]
     fn a_scattered_match_is_marked_where_it_actually_matched() {
         // Matched as a subsequence, because that is how the candidate was chosen.
-        let theme = crate::theme::DARK;
-        let line = row(&a_row("deepseek-v4-flash", false), "v4", 40, &theme);
+        let line = row(&a_row("deepseek-v4-flash", false), "v4", 40);
         let lit: String = line
             .spans
             .iter()
-            .filter(|s| s.style.fg == Some(theme.menu_match))
+            .filter(|s| s.style.fg == Some(colour::MATCH))
             .map(|s| s.content.as_ref())
             .collect();
         assert_eq!(lit, "v4");
@@ -271,18 +262,12 @@ mod tests {
 
     #[test]
     fn nothing_typed_lights_nothing() {
-        let theme = crate::theme::DARK;
-        let line = row(&a_row("anything", false), "", 40, &theme);
-        assert!(
-            line.spans
-                .iter()
-                .all(|s| s.style.fg != Some(theme.menu_match))
-        );
+        let line = row(&a_row("anything", false), "", 40);
+        assert!(line.spans.iter().all(|s| s.style.fg != Some(colour::MATCH)));
     }
 
     #[test]
     fn an_unready_row_says_so_in_the_detail_colour() {
-        let theme = crate::theme::DARK;
         let r = Row {
             value: "anthropic/x",
             detail: "set ANTHROPIC_API_KEY",
@@ -290,16 +275,18 @@ mod tests {
             ready: false,
             value_width: 11,
         };
-        let line = row(&r, "", 60, &theme);
+        let line = row(&r, "", 60);
         assert!(
-            line.spans.iter().any(|s| s.style.fg == Some(theme.warning)),
+            line.spans
+                .iter()
+                .any(|s| s.style.fg == Some(colour::WARNING)),
             "the reason stands out from the size"
         );
     }
 
     #[test]
     fn a_heading_fills_the_width_too() {
-        let line = heading("Model", "  3 of 40", 40, &crate::theme::DARK);
+        let line = heading("Model", "  3 of 40", 40);
         assert_eq!(text(&line).chars().count(), 40);
         assert!(text(&line).contains("Model"));
     }
@@ -307,12 +294,7 @@ mod tests {
     #[test]
     fn a_narrow_terminal_does_not_overflow() {
         for w in 1..12_u16 {
-            let line = row(
-                &a_row("provider/model", true),
-                "mod",
-                w,
-                &crate::theme::DARK,
-            );
+            let line = row(&a_row("provider/model", true), "mod", w);
             assert!(text(&line).chars().count() <= usize::from(w), "width {w}");
         }
     }
@@ -323,7 +305,6 @@ mod match_tests {
     use super::*;
 
     fn lit(value: &str, typed: &str) -> String {
-        let theme = crate::theme::DARK;
         let r = Row {
             value,
             detail: "",
@@ -331,10 +312,10 @@ mod match_tests {
             ready: true,
             value_width: value.chars().count(),
         };
-        row(&r, typed, 80, &theme)
+        row(&r, typed, 80)
             .spans
             .iter()
-            .filter(|s| s.style.fg == Some(theme.menu_match))
+            .filter(|s| s.style.fg == Some(colour::MATCH))
             .map(|s| s.content.as_ref())
             .collect()
     }
@@ -342,7 +323,6 @@ mod match_tests {
     /// How many separate lit runs there are, which is what tells a literal match from a
     /// scattered one: both collect to the same characters.
     fn runs(value: &str, typed: &str) -> usize {
-        let theme = crate::theme::DARK;
         let r = Row {
             value,
             detail: "",
@@ -350,10 +330,10 @@ mod match_tests {
             ready: true,
             value_width: value.chars().count(),
         };
-        row(&r, typed, 80, &theme)
+        row(&r, typed, 80)
             .spans
             .iter()
-            .filter(|s| s.style.fg == Some(theme.menu_match))
+            .filter(|s| s.style.fg == Some(colour::MATCH))
             .count()
     }
 
@@ -379,7 +359,6 @@ mod match_tests {
 
     #[test]
     fn a_match_at_the_very_start_keeps_the_rest() {
-        let theme = crate::theme::DARK;
         let r = Row {
             value: "opus-5",
             detail: "",
@@ -387,7 +366,7 @@ mod match_tests {
             ready: true,
             value_width: 6,
         };
-        let text: String = row(&r, "opus", 40, &theme)
+        let text: String = row(&r, "opus", 40)
             .spans
             .iter()
             .map(|s| s.content.as_ref())

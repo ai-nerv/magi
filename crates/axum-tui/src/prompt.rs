@@ -5,8 +5,8 @@
 //! into the line with inverse video rather than parked with the terminal's own cursor, which
 //! is what lets the block scroll and wrap without the cursor drifting off it.
 
+use crate::colour;
 use crate::editor::Editor;
-use crate::theme::Theme;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -35,7 +35,7 @@ const PLACEHOLDER: &str = "ask anything, or / for commands";
 const PLACEHOLDER_SHORT: &str = "/ for commands";
 
 /// The blank prompt: the cursor, then the hint, dimmed.
-fn placeholder_spans(width: u16, theme: &Theme) -> Vec<Span<'static>> {
+fn placeholder_spans(width: u16) -> Vec<Span<'static>> {
     let hint = if PLACEHOLDER.chars().count() < usize::from(width) {
         PLACEHOLDER
     } else if PLACEHOLDER_SHORT.chars().count() < usize::from(width) {
@@ -47,10 +47,10 @@ fn placeholder_spans(width: u16, theme: &Theme) -> Vec<Span<'static>> {
         Span::styled(
             " ",
             Style::default()
-                .fg(theme.text)
+                .fg(colour::TEXT)
                 .add_modifier(Modifier::REVERSED),
         ),
-        Span::styled(hint, Style::default().fg(theme.dim)),
+        Span::styled(hint, Style::default().fg(colour::DIM)),
     ]
 }
 
@@ -69,9 +69,8 @@ pub fn render(
     rows: u16,
     tick: usize,
     scan: crate::border::Scan,
-    theme: &Theme,
 ) -> Vec<Line<'static>> {
-    let text_style = Style::default().fg(theme.text);
+    let text_style = Style::default().fg(colour::TEXT);
     let (cursor_row, cursor_col) = editor.cursor();
     // Two columns of the width belong to the sides now.
     let inner_width = width.saturating_sub(2);
@@ -85,15 +84,15 @@ pub fn render(
 
     let blank = total == 1 && editor.lines()[0].is_empty();
     let shown = if blank { 1 } else { end - offset };
-    let (top, bottom) = crate::border::edges(width, shown, tick, scan, theme);
+    let (top, bottom) = crate::border::edges(width, shown, tick, scan);
 
     let mut out = Vec::with_capacity(shown + 2);
-    out.push(hidden(top, Direction::Up, offset, theme));
+    out.push(hidden(top, Direction::Up, offset));
 
     for row in 0..shown {
-        let (left, right) = crate::border::side(width, shown, row, tick, scan, theme);
+        let (left, right) = crate::border::side(width, shown, row, tick, scan);
         let body = if blank {
-            placeholder_spans(inner_width, theme)
+            placeholder_spans(inner_width)
         } else {
             let index = offset + row;
             let text = &editor.lines()[index];
@@ -110,7 +109,7 @@ pub fn render(
     }
 
     let below = total.saturating_sub(end);
-    out.push(hidden(bottom, Direction::Down, below, theme));
+    out.push(hidden(bottom, Direction::Down, below));
     out
 }
 
@@ -128,7 +127,7 @@ fn pad(mut spans: Vec<Span<'static>>, width: u16) -> Vec<Span<'static>> {
 ///
 /// On the border rather than instead of it: the box stays a box, and the count sits in it the
 /// way a caption sits in a frame.
-fn hidden(edge: Line<'static>, direction: Direction, count: usize, theme: &Theme) -> Line<'static> {
+fn hidden(edge: Line<'static>, direction: Direction, count: usize) -> Line<'static> {
     if count == 0 {
         return edge;
     }
@@ -146,19 +145,19 @@ fn hidden(edge: Line<'static>, direction: Direction, count: usize, theme: &Theme
     let mut spans: Vec<Span<'static>> = edge.spans.into_iter().take(3).collect();
     spans.push(Span::styled(
         label.clone(),
-        Style::default().fg(theme.menu_meta),
+        Style::default().fg(colour::DIM),
     ));
     let used = 3 + label.chars().count();
     for _ in used..width - 1 {
-        spans.push(Span::styled("─", Style::default().fg(theme.border)));
+        spans.push(Span::styled("─", Style::default().fg(colour::BORDER)));
     }
     spans.push(Span::styled(
         "╮".to_owned(),
-        Style::default().fg(theme.border),
+        Style::default().fg(colour::BORDER),
     ));
     let last = spans.len() - 1;
     if matches!(direction, Direction::Down) {
-        spans[last] = Span::styled("╯".to_owned(), Style::default().fg(theme.border));
+        spans[last] = Span::styled("╯".to_owned(), Style::default().fg(colour::BORDER));
     }
     Line::from(spans)
 }
@@ -217,14 +216,7 @@ mod tests {
     fn an_empty_prompt_says_what_to_do_with_it() {
         // An empty box between two rules gives no way to tell a prompt waiting for input from
         // a screen that has hung, and no way to find the command list without being told.
-        let rendered = rows_of(&render(
-            &Editor::new(),
-            40,
-            24,
-            0,
-            crate::border::Scan::Off,
-            &Theme::default(),
-        ));
+        let rendered = rows_of(&render(&Editor::new(), 40, 24, 0, crate::border::Scan::Off));
         assert_eq!(rendered.len(), 3, "top edge, text, bottom edge");
         assert!(rendered[1].contains("/ for commands"), "{:?}", rendered[1]);
     }
@@ -237,7 +229,6 @@ mod tests {
             24,
             0,
             crate::border::Scan::Off,
-            &Theme::default(),
         ));
         assert!(!rendered[1].contains("commands"), "{:?}", rendered[1]);
         assert!(
@@ -255,7 +246,6 @@ mod tests {
             24,
             0,
             crate::border::Scan::Off,
-            &Theme::default(),
         ));
         assert_eq!(
             rendered[1], "│ hello            │",
@@ -267,14 +257,7 @@ mod tests {
     fn the_cursor_cell_is_inverted_in_place() {
         let mut editor = editor_with("abc");
         editor.home();
-        let lines = render(
-            &editor,
-            20,
-            24,
-            0,
-            crate::border::Scan::Off,
-            &Theme::default(),
-        );
+        let lines = render(&editor, 20, 24, 0, crate::border::Scan::Off);
         let cursor = lines[1]
             .spans
             .iter()
@@ -285,14 +268,7 @@ mod tests {
 
     #[test]
     fn a_cursor_at_the_end_inverts_an_added_space() {
-        let lines = render(
-            &editor_with("ab"),
-            20,
-            24,
-            0,
-            crate::border::Scan::Off,
-            &Theme::default(),
-        );
+        let lines = render(&editor_with("ab"), 20, 24, 0, crate::border::Scan::Off);
         let cursor = lines[1]
             .spans
             .iter()
@@ -303,14 +279,7 @@ mod tests {
 
     #[test]
     fn the_rules_span_the_full_width() {
-        let lines = render(
-            &editor_with("x"),
-            30,
-            24,
-            0,
-            crate::border::Scan::Off,
-            &Theme::default(),
-        );
+        let lines = render(&editor_with("x"), 30, 24, 0, crate::border::Scan::Off);
         for index in [0, lines.len() - 1] {
             let width: usize = lines[index]
                 .spans
@@ -333,7 +302,6 @@ mod tests {
             24,
             0,
             crate::border::Scan::Off,
-            &Theme::default(),
         ));
         assert!(rendered[0].contains("↑"), "{:?}", rendered[0]);
         assert!(rendered[0].contains("more"), "{:?}", rendered[0]);
@@ -355,14 +323,7 @@ mod tests {
             editor.history_prev();
         }
         editor.set_text(&body);
-        let rendered = rows_of(&render(
-            &editor,
-            40,
-            24,
-            0,
-            crate::border::Scan::Off,
-            &Theme::default(),
-        ));
+        let rendered = rows_of(&render(&editor, 40, 24, 0, crate::border::Scan::Off));
         assert_eq!(rendered.len(), visible_rows(24) + 2, "rules plus text rows");
     }
 
@@ -377,18 +338,11 @@ mod narrow_tests {
     use super::*;
 
     fn row(width: u16) -> String {
-        render(
-            &Editor::new(),
-            width,
-            24,
-            0,
-            crate::border::Scan::Off,
-            &Theme::default(),
-        )[1]
-        .spans
-        .iter()
-        .map(|s| s.content.as_ref())
-        .collect()
+        render(&Editor::new(), width, 24, 0, crate::border::Scan::Off)[1]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
     }
 
     #[test]

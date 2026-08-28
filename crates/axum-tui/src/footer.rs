@@ -3,7 +3,7 @@
 //! Two dim lines, as Pi renders them: the working directory with the git branch, then usage
 //! stats on the left with the model right-aligned.
 
-use crate::theme::Theme;
+use crate::colour;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
@@ -101,9 +101,9 @@ pub fn fit_path(path: &str, width: usize) -> String {
 /// the right, and each is dropped in that order when the terminal cannot hold it. The mode is
 /// gone from the default; it mattered while two backends were being built and it does not now.
 #[must_use]
-pub fn render(data: &FooterData, width: u16, theme: &Theme) -> Vec<Line<'static>> {
-    let dim = Style::default().fg(theme.dim);
-    let muted = Style::default().fg(theme.muted);
+pub fn render(data: &FooterData, width: u16) -> Vec<Line<'static>> {
+    let dim = Style::default().fg(colour::DIM);
+    let muted = Style::default().fg(colour::MUTED);
     let width = usize::from(width);
 
     // Right first: the model is the thing you check, so it is the last to go.
@@ -154,9 +154,9 @@ pub fn render(data: &FooterData, width: u16, theme: &Theme) -> Vec<Line<'static>
 
     // Context pressure is the one thing in the footer worth breaking the dim palette for.
     let context_color = match data.context_percent {
-        Some(p) if p > 90.0 => theme.error,
-        Some(p) if p > 70.0 => theme.warning,
-        _ => theme.dim,
+        Some(p) if p > 90.0 => colour::ERROR,
+        Some(p) if p > 70.0 => colour::WARNING,
+        _ => colour::DIM,
     };
 
     let used = location.chars().count() + usage.chars().count() + model.chars().count();
@@ -241,7 +241,7 @@ mod tests {
             mode: "alt",
             ..FooterData::default()
         };
-        let rendered = text_of(&render(&data, 60, &Theme::default()));
+        let rendered = text_of(&render(&data, 60));
         assert!(rendered[0].contains("alt"), "{:?}", rendered[0]);
     }
 
@@ -252,7 +252,7 @@ mod tests {
             branch: Some("develop".into()),
             ..FooterData::default()
         };
-        let rendered = text_of(&render(&data, 60, &Theme::default()));
+        let rendered = text_of(&render(&data, 60));
         assert!(
             rendered[0].starts_with("~/src/axum (develop)"),
             "{:?}",
@@ -269,7 +269,7 @@ mod tests {
             model: "claude-opus-5".into(),
             ..FooterData::default()
         };
-        let rendered = text_of(&render(&data, 40, &Theme::default()));
+        let rendered = text_of(&render(&data, 40));
         assert!(rendered[0].ends_with("claude-opus-5"), "{:?}", rendered[0]);
         assert_eq!(rendered[0].chars().count(), 40);
     }
@@ -281,7 +281,7 @@ mod tests {
             context_percent: None,
             ..FooterData::default()
         };
-        let rendered = text_of(&render(&data, 40, &Theme::default()));
+        let rendered = text_of(&render(&data, 40));
         assert!(rendered[0].contains("?/200k"), "{:?}", rendered[0]);
     }
 }
@@ -336,7 +336,7 @@ mod fit_tests {
             model: "m".into(),
             ..FooterData::default()
         };
-        let out = render(&data, 40, &crate::theme::DARK);
+        let out = render(&data, 40);
         assert!(
             line_text(&out, 0).contains("(develop)"),
             "{}",
@@ -351,7 +351,7 @@ mod fit_tests {
             model: NO_MODEL.into(),
             ..FooterData::default()
         };
-        let out = render(&data, 40, &crate::theme::DARK);
+        let out = render(&data, 40);
         assert!(!line_text(&out, 0).contains("?/"), "{}", line_text(&out, 0));
         assert!(
             line_text(&out, 0).contains(NO_MODEL),
@@ -365,7 +365,7 @@ mod model_fit_tests {
     use super::*;
 
     fn stats_row(data: &FooterData, width: u16) -> String {
-        render(data, width, &crate::theme::DARK)[0]
+        render(data, width)[0]
             .spans
             .iter()
             .map(|s| s.content.as_ref())

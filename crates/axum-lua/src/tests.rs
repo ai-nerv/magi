@@ -20,7 +20,7 @@ fn a_setting_is_assigned_not_declared_in_a_table() {
 fn a_setting_the_config_never_mentions_is_absent_rather_than_defaulted() {
     let config = run("axum.model = 'x'");
     assert!(
-        config.get("theme").is_none(),
+        config.get("nothing_set_this").is_none(),
         "the host decides its own default"
     );
 }

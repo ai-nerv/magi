@@ -13,7 +13,7 @@ use anyhow::Result;
 use axum_ipc::{FrameReader, FrameWriter};
 use axum_proto::{Cursor, HarnessEvent, UiCommand};
 use axum_tui::footer::FooterData;
-use axum_tui::{Theme, status, transcript};
+use axum_tui::{status, transcript};
 use crossterm::event::{Event, EventStream};
 use ratatui::text::Line;
 use std::path::Path;
@@ -37,7 +37,6 @@ pub async fn run(
     prompt: Option<String>,
     sessions: Option<std::path::PathBuf>,
 ) -> Result<()> {
-    let theme = Theme::default();
     let mut app = App::new();
     // Read here rather than taken from the daemon, because this one is about the screen in front
     // of the person reading it. A model or a tool set has to come from the daemon — it is what
@@ -106,13 +105,13 @@ pub async fn run(
         }
 
         if dirty {
-            flush_settled(&mut session, &mut app, &theme)?;
+            flush_settled(&mut session, &mut app)?;
             let _ = session.terminal.autoresize();
             let mode = session.mode;
             session.terminal.draw(|frame| {
                 let footer = footer_data(&base_footer, &app);
                 app.queued = command_tx.max_capacity() - command_tx.capacity();
-                ui::draw(frame, &mut app, &footer, &theme, mode);
+                ui::draw(frame, &mut app, &footer, mode);
             })?;
             dirty = false;
         }
@@ -299,7 +298,7 @@ pub async fn run(
 ///
 /// `insert_before` scrolls the viewport down and emits the lines above it, so they become part
 /// of the terminal's own history — searchable and copyable with the tools the user already has.
-fn flush_settled(session: &mut Session, app: &mut App, theme: &Theme) -> Result<()> {
+fn flush_settled(session: &mut Session, app: &mut App) -> Result<()> {
     // Whatever was in force when the block settled. Scrollback cannot be taken back, so a
     // later toggle changes what is drawn from here on and not what the terminal already holds.
     let detail = app.detail;
@@ -315,7 +314,7 @@ fn flush_settled(session: &mut Session, app: &mut App, theme: &Theme) -> Result<
     let pending: Vec<Line<'static>> = app.entries()[..n]
         .iter()
         .skip(app.entries().len() - app.live().len())
-        .flat_map(|entry| transcript::entry_lines(entry, width, theme, detail))
+        .flat_map(|entry| transcript::entry_lines(entry, width, detail))
         .collect();
 
     if !pending.is_empty() {

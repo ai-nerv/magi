@@ -5,19 +5,17 @@
 //! different-looking lists.
 
 use super::Picker;
-use crate::theme::Theme;
 use ratatui::text::Line;
 
 /// Draw the list.
 #[must_use]
-pub fn render(picker: &Picker, width: u16, theme: &Theme) -> Vec<Line<'static>> {
+pub fn render(picker: &Picker, width: u16) -> Vec<Line<'static>> {
     let window = picker.window();
     if picker.choices.is_empty() {
         return vec![crate::menu::heading(
             &picker.title,
             &format!("  nothing matches \u{201c}{}\u{201d}", picker.query()),
             width,
-            theme,
         )];
     }
     let value_width = picker.choices[window.clone()]
@@ -57,7 +55,7 @@ pub fn render(picker: &Picker, width: u16, theme: &Theme) -> Vec<Line<'static>> 
         )
     };
 
-    let mut out = vec![crate::menu::heading(&picker.title, &note, width, theme)];
+    let mut out = vec![crate::menu::heading(&picker.title, &note, width)];
     out.extend(
         picker.choices[window.clone()]
             .iter()
@@ -73,7 +71,6 @@ pub fn render(picker: &Picker, width: u16, theme: &Theme) -> Vec<Line<'static>> 
                     },
                     picker.query(),
                     width,
-                    theme,
                 )
             }),
     );

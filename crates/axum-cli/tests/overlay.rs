@@ -1,7 +1,6 @@
 //! The completion popup, on screen.
 
 use axum_tui::complete::{self, Kind};
-use axum_tui::theme::Theme;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
@@ -18,7 +17,7 @@ fn some_paths(_: &str) -> Vec<String> {
 
 fn screen(line: &str, col: usize, width: u16, paths: &dyn Fn(&str) -> Vec<String>) -> Vec<String> {
     let completion = complete::resolve(line, col, paths).expect("a popup");
-    let lines = complete::render(&completion, width, &Theme::default());
+    let lines = complete::render(&completion, width);
     let mut terminal =
         Terminal::new(TestBackend::new(width, lines.len() as u16)).expect("test terminal");
     terminal

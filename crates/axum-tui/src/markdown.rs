@@ -4,8 +4,8 @@
 //! lists, block quotes, and rules. Pi's renderer is 1,015 lines and also does tables, links
 //! with URL dimming, and LaTeX; those wait until a transcript needs them.
 
+use crate::colour;
 use crate::table;
-use crate::theme::Theme;
 use crate::wrap;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -14,7 +14,7 @@ use ratatui::text::{Line, Span};
 ///
 /// `width` is the space available for text after padding is applied by the caller.
 #[must_use]
-pub fn render(source: &str, width: u16, theme: &Theme, base: Style) -> Vec<Line<'static>> {
+pub fn render(source: &str, width: u16, base: Style) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     let mut in_fence = false;
     // Consecutive prose lines are one paragraph and reflow together; a hard break in the
@@ -33,21 +33,21 @@ pub fn render(source: &str, width: u16, theme: &Theme, base: Style) -> Vec<Line<
                 table.push(trimmed.to_owned());
                 continue;
             }
-            out.extend(table::render(&table, width, theme));
+            out.extend(table::render(&table, width));
             table.clear();
         }
 
         if let Some(rest) = fence_marker(trimmed) {
-            flush_paragraph(&mut paragraph, &mut out, width, theme, base);
+            flush_paragraph(&mut paragraph, &mut out, width, base);
             in_fence = !in_fence;
             if in_fence {
-                out.push(fence_head(rest, width, theme));
+                out.push(fence_head(rest, width));
             } else {
                 // Closed, so the eye has something to land on. An opening bar with no closing
                 // one leaves the block looking like it ran off the end of the message.
                 out.push(Line::from(Span::styled(
                     "└".to_owned(),
-                    Style::default().fg(theme.border_muted),
+                    Style::default().fg(colour::RULE),
                 )));
             }
             continue;
@@ -55,10 +55,10 @@ pub fn render(source: &str, width: u16, theme: &Theme, base: Style) -> Vec<Line<
 
         if in_fence {
             out.push(Line::from(vec![
-                Span::styled(GUTTER, Style::default().fg(theme.border_muted)),
+                Span::styled(GUTTER, Style::default().fg(colour::RULE)),
                 Span::styled(
                     crate::wrap::expand_tabs(trimmed),
-                    Style::default().fg(theme.md_code_block),
+                    Style::default().fg(colour::CODE_BLOCK),
                 ),
             ]));
             continue;
@@ -71,7 +71,7 @@ pub fn render(source: &str, width: u16, theme: &Theme, base: Style) -> Vec<Line<
                 .get(index + 1)
                 .is_some_and(|next| table::is_separator(next))
         {
-            flush_paragraph(&mut paragraph, &mut out, width, theme, base);
+            flush_paragraph(&mut paragraph, &mut out, width, base);
             table.push(trimmed.to_owned());
             continue;
         }
@@ -81,13 +81,13 @@ pub fn render(source: &str, width: u16, theme: &Theme, base: Style) -> Vec<Line<
             continue;
         }
 
-        flush_paragraph(&mut paragraph, &mut out, width, theme, base);
-        out.extend(block(trimmed, width, theme, base));
+        flush_paragraph(&mut paragraph, &mut out, width, base);
+        out.extend(block(trimmed, width, base));
     }
 
-    flush_paragraph(&mut paragraph, &mut out, width, theme, base);
+    flush_paragraph(&mut paragraph, &mut out, width, base);
     if !table.is_empty() {
-        out.extend(table::render(&table, width, theme));
+        out.extend(table::render(&table, width));
     }
     out
 }
@@ -99,8 +99,8 @@ pub fn render(source: &str, width: u16, theme: &Theme, base: Style) -> Vec<Line<
 const GUTTER: &str = "│ ";
 
 /// The opening line of a fenced block: the bar, and the language if one was named.
-fn fence_head(language: &str, width: u16, theme: &Theme) -> Line<'static> {
-    let bar = Style::default().fg(theme.border_muted);
+fn fence_head(language: &str, width: u16) -> Line<'static> {
+    let bar = Style::default().fg(colour::RULE);
     if language.is_empty() {
         return Line::from(Span::styled("┌".to_owned(), bar));
     }
@@ -128,7 +128,6 @@ fn flush_paragraph(
     paragraph: &mut Vec<&str>,
     out: &mut Vec<Line<'static>>,
     width: u16,
-    theme: &Theme,
     base: Style,
 ) {
     if paragraph.is_empty() {
@@ -136,7 +135,7 @@ fn flush_paragraph(
     }
     let joined = paragraph.join(" ");
     paragraph.clear();
-    out.extend(block(&joined, width, theme, base));
+    out.extend(block(&joined, width, base));
 }
 
 /// The text after a ``` marker, or `None` if this is not a fence line.
@@ -145,7 +144,7 @@ fn fence_marker(line: &str) -> Option<&str> {
     trimmed.strip_prefix("```").map(str::trim)
 }
 
-fn block(line: &str, width: u16, theme: &Theme, base: Style) -> Vec<Line<'static>> {
+fn block(line: &str, width: u16, base: Style) -> Vec<Line<'static>> {
     let trimmed = line.trim_start();
     let indent = line.len() - trimmed.len();
 
@@ -157,7 +156,7 @@ fn block(line: &str, width: u16, theme: &Theme, base: Style) -> Vec<Line<'static
         let rule = "─".repeat(usize::from(width).max(1));
         return vec![Line::from(Span::styled(
             rule,
-            Style::default().fg(theme.md_quote),
+            Style::default().fg(colour::MUTED),
         ))];
     }
 
@@ -167,7 +166,7 @@ fn block(line: &str, width: u16, theme: &Theme, base: Style) -> Vec<Line<'static
             Line::from(Span::styled(
                 text,
                 Style::default()
-                    .fg(theme.md_heading)
+                    .fg(colour::HEADING)
                     .add_modifier(Modifier::BOLD),
             )),
             width,
@@ -175,17 +174,17 @@ fn block(line: &str, width: u16, theme: &Theme, base: Style) -> Vec<Line<'static
     }
 
     if let Some(rest) = trimmed.strip_prefix("> ") {
-        let mut spans = vec![Span::styled("│ ", Style::default().fg(theme.md_quote))];
-        spans.extend(inline(rest, theme, base.fg(theme.md_quote)));
+        let mut spans = vec![Span::styled("│ ", Style::default().fg(colour::MUTED))];
+        spans.extend(inline(rest, base.fg(colour::MUTED)));
         return wrap::line(Line::from(spans), width);
     }
 
     if let Some((marker, rest)) = list_marker(trimmed) {
         let mut spans = vec![
             Span::raw(" ".repeat(indent)),
-            Span::styled(marker, Style::default().fg(theme.accent)),
+            Span::styled(marker, Style::default().fg(colour::ACCENT)),
         ];
-        spans.extend(inline(rest, theme, base));
+        spans.extend(inline(rest, base));
         return wrap::line(Line::from(spans), width);
     }
 
@@ -193,7 +192,7 @@ fn block(line: &str, width: u16, theme: &Theme, base: Style) -> Vec<Line<'static
     if indent > 0 {
         spans.push(Span::raw(" ".repeat(indent)));
     }
-    spans.extend(inline(trimmed, theme, base));
+    spans.extend(inline(trimmed, base));
     wrap::line(Line::from(spans), width)
 }
 
@@ -229,7 +228,7 @@ fn list_marker(line: &str) -> Option<(String, &str)> {
 }
 
 /// Emphasis and inline code within one line.
-fn inline(text: &str, theme: &Theme, base: Style) -> Vec<Span<'static>> {
+fn inline(text: &str, base: Style) -> Vec<Span<'static>> {
     let chars: Vec<char> = text.chars().collect();
     let mut spans = Vec::new();
     let mut buf = String::new();
@@ -262,7 +261,7 @@ fn inline(text: &str, theme: &Theme, base: Style) -> Vec<Span<'static>> {
                 if let Some(end) = chars[i + 1..].iter().position(|&n| n == '`') {
                     flush(&mut buf, &mut spans, base);
                     let code: String = chars[i + 1..i + 1 + end].iter().collect();
-                    spans.push(Span::styled(code, Style::default().fg(theme.md_code)));
+                    spans.push(Span::styled(code, Style::default().fg(colour::ACCENT)));
                     i += end + 2;
                     continue;
                 }
@@ -322,7 +321,7 @@ mod tests {
     use super::*;
 
     fn lines_of(source: &str) -> Vec<String> {
-        render(source, 40, &Theme::default(), Style::default())
+        render(source, 40, Style::default())
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect()
@@ -377,7 +376,7 @@ mod emphasis_tests {
     use super::*;
 
     fn rendered(source: &str) -> String {
-        render(source, 80, &Theme::default(), Style::default())
+        render(source, 80, Style::default())
             .iter()
             .map(|l| {
                 l.spans
@@ -431,7 +430,7 @@ mod block_tests {
     use super::*;
 
     fn rows(source: &str) -> Vec<String> {
-        render(source, 60, &Theme::default(), Style::default())
+        render(source, 60, Style::default())
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect()
@@ -497,7 +496,7 @@ mod fence_close_tests {
     use super::*;
 
     fn rows(source: &str) -> Vec<String> {
-        render(source, 60, &Theme::default(), Style::default())
+        render(source, 60, Style::default())
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect()

@@ -7,13 +7,13 @@
 //! a diff, and a decision about how much of it to show.
 
 use super::{PAD, blank, clip, pad};
-use crate::theme::Theme;
+use crate::colour;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 /// How much of a tool's output to show.
 ///
-/// A named choice rather than a boolean parameter, because `render(entries, w, theme, true)`
+/// A named choice rather than a boolean parameter, because `render(entries, w, true)`
 /// says nothing at the call site about what is true.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Detail {
@@ -30,34 +30,36 @@ pub enum Detail {
 /// Lines of a tool result shown before it is expanded. Pi's `FALLBACK_PREVIEW_LINES`.
 const PREVIEW_LINES: usize = 10;
 
-/// A padded box whose background states the outcome: pending, success, or error.
+/// A padded box whose title states the outcome: pending, success, or error.
+///
+/// The background used to say it, in three barely-different tints of the same dark. A palette
+/// index cannot be tinted — there is no "this grey, but slightly green" in sixteen colours — so
+/// the outcome moved to the one thing that can carry it at any palette: the name, in the colour
+/// of what happened. It reads better anyway; a green block and a red block are the same shape
+/// glanced at, and a green word and a red word are not.
 pub(super) fn block(
     name: &str,
     args: &str,
     result: Option<&axum_proto::ToolResult>,
     width: u16,
-    theme: &Theme,
     detail: Detail,
 ) -> Vec<Line<'static>> {
-    let bg = match result {
-        None => theme.tool_pending_bg,
-        Some(r) if r.is_error => theme.tool_error_bg,
-        Some(_) => theme.tool_success_bg,
+    let outcome = match result {
+        None => colour::MUTED,
+        Some(r) if r.is_error => colour::ERROR,
+        Some(_) => colour::SUCCESS,
     };
-    let style = Style::default().bg(bg);
+    let style = Style::default().bg(colour::BLOCK_BG);
     let inner = usize::from(width.saturating_sub(PAD * 2));
 
     let mut out = vec![blank(width, style), {
         let mut spans = vec![Span::styled(
             name.to_owned(),
-            style.fg(theme.tool_title).add_modifier(Modifier::BOLD),
+            style.fg(outcome).add_modifier(Modifier::BOLD),
         )];
         let summary = summarize(args);
         if !summary.is_empty() {
-            spans.push(Span::styled(
-                format!(" {summary}"),
-                style.fg(theme.tool_output),
-            ));
+            spans.push(Span::styled(format!(" {summary}"), style.fg(colour::MUTED)));
         }
         pad(Line::from(spans), width, style)
     }];
@@ -72,9 +74,9 @@ pub(super) fn block(
             };
             for line in &all[..shown] {
                 let fg = if result.is_error {
-                    theme.error
+                    colour::ERROR
                 } else {
-                    change_colour(line, theme)
+                    change_colour(line)
                 };
                 let clipped = clip(line, inner);
                 out.push(pad(
@@ -89,7 +91,7 @@ pub(super) fn block(
                 out.push(pad(
                     Line::from(Span::styled(
                         format!("… {} more lines · ctrl+o", all.len() - shown),
-                        style.fg(theme.dim),
+                        style.fg(colour::DIM),
                     )),
                     width,
                     style,
@@ -108,13 +110,13 @@ pub(super) fn block(
 /// of text with a sign column nobody reads. Applied to every tool rather than to `edit` by
 /// name: a declared tool that reports a patch gets the same treatment without the renderer
 /// having to be told which tools exist.
-fn change_colour(line: &str, theme: &Theme) -> Color {
+fn change_colour(line: &str) -> Color {
     match line.as_bytes().first() {
         // `+++`/`---` are file headers, not changed lines, and colouring them as changes makes
         // every diff look like it added and removed its own filename.
-        Some(b'+') if !line.starts_with("+++") => theme.diff_added,
-        Some(b'-') if !line.starts_with("---") => theme.diff_removed,
-        _ => theme.tool_output,
+        Some(b'+') if !line.starts_with("+++") => colour::SUCCESS,
+        Some(b'-') if !line.starts_with("---") => colour::ERROR,
+        _ => colour::MUTED,
     }
 }
 
@@ -194,43 +196,37 @@ mod diff_tests {
 
     #[test]
     fn added_and_removed_lines_are_coloured_apart() {
-        let theme = Theme::default();
         let lines = entry_lines(
             &edit_entry("edited a.rs\n-was\n+now\n"),
             40,
-            &theme,
             Detail::Preview,
         );
-        assert_eq!(colour_of(&lines, "-was"), Some(theme.diff_removed));
-        assert_eq!(colour_of(&lines, "+now"), Some(theme.diff_added));
+        assert_eq!(colour_of(&lines, "-was"), Some(colour::ERROR));
+        assert_eq!(colour_of(&lines, "+now"), Some(colour::SUCCESS));
     }
 
     #[test]
     fn ordinary_output_keeps_the_tool_colour() {
-        let theme = Theme::default();
-        let lines = entry_lines(&edit_entry("edited a.rs\n"), 40, &theme, Detail::Preview);
-        assert_eq!(colour_of(&lines, "edited"), Some(theme.tool_output));
+        let lines = entry_lines(&edit_entry("edited a.rs\n"), 40, Detail::Preview);
+        assert_eq!(colour_of(&lines, "edited"), Some(colour::MUTED));
     }
 
     #[test]
     fn file_headers_are_not_changes() {
         // `---`/`+++` name the file. Coloured as changes, every diff appears to add and remove
         // its own filename.
-        let theme = Theme::default();
         let lines = entry_lines(
             &edit_entry("--- a.rs\n+++ a.rs\n-was\n"),
             40,
-            &theme,
             Detail::Preview,
         );
-        assert_eq!(colour_of(&lines, "--- a.rs"), Some(theme.tool_output));
-        assert_eq!(colour_of(&lines, "+++ a.rs"), Some(theme.tool_output));
+        assert_eq!(colour_of(&lines, "--- a.rs"), Some(colour::MUTED));
+        assert_eq!(colour_of(&lines, "+++ a.rs"), Some(colour::MUTED));
     }
 
     #[test]
     fn a_failed_tool_is_all_error_coloured_whatever_it_printed() {
         // A diff in a failure is still a failure; the block's meaning must not be diluted.
-        let theme = Theme::default();
         let entry = Entry::Tool {
             id: ToolCallId::new("t1"),
             name: "edit".into(),
@@ -241,9 +237,9 @@ mod diff_tests {
             }),
             thought_signature: None,
         };
-        let lines = entry_lines(&entry, 40, &theme, Detail::Preview);
-        assert_eq!(colour_of(&lines, "-was"), Some(theme.error));
-        assert_eq!(colour_of(&lines, "+now"), Some(theme.error));
+        let lines = entry_lines(&entry, 40, Detail::Preview);
+        assert_eq!(colour_of(&lines, "-was"), Some(colour::ERROR));
+        assert_eq!(colour_of(&lines, "+now"), Some(colour::ERROR));
     }
 }
 
@@ -381,12 +377,7 @@ mod detail_tests {
 
     #[test]
     fn a_preview_stops_and_says_how_much_it_left() {
-        let shown = text_of(&entry_lines(
-            &long_result(40),
-            40,
-            &Theme::default(),
-            Detail::Preview,
-        ));
+        let shown = text_of(&entry_lines(&long_result(40), 40, Detail::Preview));
         assert!(shown.iter().any(|l| l.contains("line 9")), "{shown:?}");
         assert!(!shown.iter().any(|l| l.contains("line 10")), "{shown:?}");
         assert!(
@@ -399,12 +390,7 @@ mod detail_tests {
     fn asking_for_the_whole_thing_gets_the_whole_thing() {
         // The 190 lines of a real `ls` or test run were otherwise unreachable: the preview
         // cut them and nothing in the UI could ask for the rest.
-        let shown = text_of(&entry_lines(
-            &long_result(40),
-            40,
-            &Theme::default(),
-            Detail::Full,
-        ));
+        let shown = text_of(&entry_lines(&long_result(40), 40, Detail::Full));
         assert!(shown.iter().any(|l| l.contains("line 39")), "{shown:?}");
         assert!(
             !shown.iter().any(|l| l.contains("more lines")),
@@ -415,8 +401,8 @@ mod detail_tests {
     #[test]
     fn a_short_result_reads_the_same_either_way() {
         let short = long_result(3);
-        let preview = text_of(&entry_lines(&short, 40, &Theme::default(), Detail::Preview));
-        let full = text_of(&entry_lines(&short, 40, &Theme::default(), Detail::Full));
+        let preview = text_of(&entry_lines(&short, 40, Detail::Preview));
+        let full = text_of(&entry_lines(&short, 40, Detail::Full));
         assert_eq!(preview, full);
     }
 }
@@ -438,7 +424,6 @@ mod fold_tests {
             "{\"command\":\"seq\"}",
             Some(&result),
             60,
-            &Theme::default(),
             Detail::Preview,
         )
         .iter()
@@ -458,5 +443,55 @@ mod fold_tests {
     fn output_that_fits_gets_no_fold_and_no_hint() {
         let out = folded(3);
         assert!(!out.iter().any(|l| l.contains("ctrl+o")), "{out:?}");
+    }
+}
+
+#[cfg(test)]
+mod block_tests {
+    use super::*;
+    use axum_proto::ToolResult;
+
+    fn header(result: Option<&ToolResult>) -> Line<'static> {
+        block(
+            "shell",
+            r#"{"command":"echo hi"}"#,
+            result,
+            40,
+            Detail::Preview,
+        )
+        .into_iter()
+        .nth(1)
+        .expect("the header row")
+    }
+
+    #[test]
+    fn the_whole_header_row_carries_the_block_background() {
+        // Without it the box is ragged coloured text rather than a block. The three tinted
+        // backgrounds collapsed into one when the palette became the terminal's, so this is now
+        // the only thing holding the shape together.
+        for span in header(None).spans {
+            assert_eq!(
+                span.style.bg,
+                Some(colour::BLOCK_BG),
+                "{:?} has no background",
+                span.content
+            );
+        }
+    }
+
+    #[test]
+    fn the_name_says_what_happened() {
+        let ok = ToolResult {
+            output: "hi".into(),
+            is_error: false,
+        };
+        let bad = ToolResult {
+            is_error: true,
+            ..ok.clone()
+        };
+        let fg = |result: Option<&ToolResult>| header(result).spans[1].style.fg;
+        assert_eq!(fg(None), Some(colour::MUTED), "still running");
+        assert_eq!(fg(Some(&ok)), Some(colour::SUCCESS));
+        assert_eq!(fg(Some(&bad)), Some(colour::ERROR));
     }
 }

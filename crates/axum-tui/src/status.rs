@@ -3,7 +3,7 @@
 //! Pi renders two lines while idle so the layout does not jump when work starts. The spinner
 //! is accent-coloured and the message muted, matching `WorkingStatusIndicator`.
 
-use crate::theme::Theme;
+use crate::colour;
 use axum_proto::AgentStatus;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -19,19 +19,14 @@ pub const FRAME_MS: u64 = 80;
 /// `tick` advances the spinner; the caller increments it on a timer so rendering stays a pure
 /// function of state.
 #[must_use]
-pub fn render(status: &AgentStatus, tick: usize, theme: &Theme) -> Line<'static> {
-    working(status, tick, theme, true, None)
+pub fn render(status: &AgentStatus, tick: usize) -> Line<'static> {
+    working(status, tick, true, None)
 }
 
 /// The same, saying so when the daemon cannot be reached.
 #[must_use]
-pub fn connected(
-    status: &AgentStatus,
-    tick: usize,
-    theme: &Theme,
-    connected: bool,
-) -> Line<'static> {
-    working(status, tick, theme, connected, None)
+pub fn connected(status: &AgentStatus, tick: usize, connected: bool) -> Line<'static> {
+    working(status, tick, connected, None)
 }
 
 /// The status line, with how long the turn has been running.
@@ -47,7 +42,6 @@ pub fn connected(
 pub fn working(
     status: &AgentStatus,
     tick: usize,
-    theme: &Theme,
     connected: bool,
     elapsed: Option<std::time::Duration>,
 ) -> Line<'static> {
@@ -55,16 +49,13 @@ pub fn working(
         return spinner(
             "Reconnecting to the daemon...".to_owned(),
             tick,
-            theme.warning,
-            theme,
+            colour::WARNING,
             None,
         );
     }
     match status {
         AgentStatus::Idle => Line::default(),
-        AgentStatus::Working { label } => {
-            spinner(label.clone(), tick, theme.accent, theme, elapsed)
-        }
+        AgentStatus::Working { label } => spinner(label.clone(), tick, colour::ACCENT, elapsed),
         AgentStatus::Retrying {
             attempt,
             max_attempts,
@@ -75,7 +66,7 @@ pub fn working(
                 format!("Retrying ({attempt}/{max_attempts}) in {seconds}s... (esc to cancel)");
             // No elapsed clock: the countdown already says how long, and two numbers that
             // both look like seconds and mean different things is worse than one.
-            spinner(label, tick, theme.warning, theme, None)
+            spinner(label, tick, colour::WARNING, None)
         }
     }
 }
@@ -86,14 +77,14 @@ pub fn working(
 /// goes out on reconnect -- but the box emptied and nothing appeared, so there was no way to
 /// tell a queued message from a swallowed one.
 #[must_use]
-pub fn queued(count: usize, theme: &Theme) -> Vec<Span<'static>> {
+pub fn queued(count: usize) -> Vec<Span<'static>> {
     if count == 0 {
         return Vec::new();
     }
     let what = if count == 1 { "message" } else { "messages" };
     vec![Span::styled(
         format!("  {count} {what} waiting to send"),
-        Style::default().fg(theme.dim),
+        Style::default().fg(colour::DIM),
     )]
 }
 
@@ -103,15 +94,15 @@ pub fn queued(count: usize, theme: &Theme) -> Vec<Span<'static>> {
 /// as the spinner does, and the two are never in conflict -- one says work is happening, the
 /// other says you are not looking at where it lands.
 #[must_use]
-pub fn scrolled(hidden: usize, theme: &Theme) -> Vec<Span<'static>> {
+pub fn scrolled(hidden: usize) -> Vec<Span<'static>> {
     if hidden == 0 {
         return Vec::new();
     }
     vec![
-        Span::styled("  ↓ ", Style::default().fg(theme.warning)),
+        Span::styled("  ↓ ", Style::default().fg(colour::WARNING)),
         Span::styled(
             format!("{hidden} more below · shift+end to follow"),
-            Style::default().fg(theme.dim),
+            Style::default().fg(colour::DIM),
         ),
     ]
 }
@@ -130,7 +121,6 @@ fn spinner(
     label: String,
     tick: usize,
     spinner_color: ratatui::style::Color,
-    theme: &Theme,
     elapsed: Option<std::time::Duration>,
 ) -> Line<'static> {
     let frame = FRAMES[tick % FRAMES.len()];
@@ -138,18 +128,18 @@ fn spinner(
         Span::styled(" ", Style::default()),
         Span::styled(frame.to_owned(), Style::default().fg(spinner_color)),
         Span::styled(" ", Style::default()),
-        Span::styled(label, Style::default().fg(theme.muted)),
+        Span::styled(label, Style::default().fg(colour::MUTED)),
     ];
     // Only once there is something to say. A clock that appears reading `0s` on every turn is
     // noise for the nine turns in ten that finish before anyone looks at it.
     if let Some(elapsed) = elapsed.filter(|e| e.as_secs() >= 1) {
         spans.push(Span::styled(
             format!("  {}", format_elapsed(elapsed)),
-            Style::default().fg(theme.dim),
+            Style::default().fg(colour::DIM),
         ));
         spans.push(Span::styled(
             "  esc to interrupt",
-            Style::default().fg(theme.dim),
+            Style::default().fg(colour::DIM),
         ));
     }
     Line::from(spans)
@@ -165,7 +155,7 @@ mod tests {
 
     #[test]
     fn idle_renders_nothing() {
-        let line = render(&AgentStatus::Idle, 0, &Theme::default());
+        let line = render(&AgentStatus::Idle, 0);
         assert_eq!(text_of(&line), "");
     }
 
@@ -174,17 +164,14 @@ mod tests {
         let status = AgentStatus::Working {
             label: "Thinking".into(),
         };
-        assert_eq!(
-            text_of(&render(&status, 0, &Theme::default())),
-            " ⠋ Thinking"
-        );
+        assert_eq!(text_of(&render(&status, 0)), " ⠋ Thinking");
     }
 
     #[test]
     fn the_spinner_advances_with_the_tick() {
         let status = AgentStatus::Working { label: "x".into() };
-        let a = text_of(&render(&status, 0, &Theme::default()));
-        let b = text_of(&render(&status, 1, &Theme::default()));
+        let a = text_of(&render(&status, 0));
+        let b = text_of(&render(&status, 1));
         assert_ne!(a, b);
     }
 
@@ -196,9 +183,9 @@ mod tests {
             delay_ms: 1500,
         };
         assert!(
-            text_of(&render(&status, 0, &Theme::default())).contains("(2/5) in 2s"),
+            text_of(&render(&status, 0)).contains("(2/5) in 2s"),
             "{}",
-            text_of(&render(&status, 0, &Theme::default()))
+            text_of(&render(&status, 0))
         );
     }
 }
@@ -215,7 +202,7 @@ mod connection_tests {
     fn a_lost_daemon_is_said_out_loud() {
         // A UI with no socket looks exactly like an idle one: the prompt takes text and a
         // submitted turn goes into a channel nobody is reading.
-        let line = connected(&AgentStatus::Idle, 0, &Theme::default(), false);
+        let line = connected(&AgentStatus::Idle, 0, false);
         assert!(text(&line).contains("Reconnecting"), "{}", text(&line));
     }
 
@@ -226,14 +213,14 @@ mod connection_tests {
         let working = AgentStatus::Working {
             label: "Thinking".into(),
         };
-        let line = connected(&working, 0, &Theme::default(), false);
+        let line = connected(&working, 0, false);
         assert!(!text(&line).contains("Thinking"), "{}", text(&line));
     }
 
     #[test]
     fn a_connected_idle_session_still_says_nothing() {
         // Two lines while idle so the layout does not jump; the words are the exception.
-        let line = connected(&AgentStatus::Idle, 0, &Theme::default(), true);
+        let line = connected(&AgentStatus::Idle, 0, true);
         assert_eq!(text(&line), "");
     }
 }
@@ -254,13 +241,7 @@ mod elapsed_tests {
         let status = AgentStatus::Working {
             label: "Thinking".into(),
         };
-        let line = working(
-            &status,
-            0,
-            &crate::theme::DARK,
-            true,
-            Some(Duration::from_secs(12)),
-        );
+        let line = working(&status, 0, true, Some(Duration::from_secs(12)));
         assert!(text_of(&line).contains("12s"), "{}", text_of(&line));
     }
 
@@ -269,13 +250,7 @@ mod elapsed_tests {
         let status = AgentStatus::Working {
             label: "Thinking".into(),
         };
-        let line = working(
-            &status,
-            0,
-            &crate::theme::DARK,
-            true,
-            Some(Duration::from_millis(200)),
-        );
+        let line = working(&status, 0, true, Some(Duration::from_millis(200)));
         assert!(!text_of(&line).contains("0s"), "{}", text_of(&line));
     }
 
@@ -291,13 +266,7 @@ mod elapsed_tests {
         let status = AgentStatus::Working {
             label: "Thinking".into(),
         };
-        let line = working(
-            &status,
-            0,
-            &crate::theme::DARK,
-            true,
-            Some(Duration::from_secs(3)),
-        );
+        let line = working(&status, 0, true, Some(Duration::from_secs(3)));
         assert!(text_of(&line).contains("esc"), "{}", text_of(&line));
     }
 
@@ -309,13 +278,7 @@ mod elapsed_tests {
             max_attempts: 5,
             delay_ms: 4000,
         };
-        let line = working(
-            &status,
-            0,
-            &crate::theme::DARK,
-            true,
-            Some(Duration::from_secs(30)),
-        );
+        let line = working(&status, 0, true, Some(Duration::from_secs(30)));
         let text = text_of(&line);
         assert!(text.contains("in 4s"), "{text}");
         assert!(!text.contains("30s"), "{text}");
@@ -332,18 +295,18 @@ mod queued_tests {
 
     #[test]
     fn nothing_waiting_is_nothing_said() {
-        assert!(queued(0, &crate::theme::DARK).is_empty());
+        assert!(queued(0).is_empty());
     }
 
     #[test]
     fn one_waiting_message_is_singular() {
         // An emptied prompt box with nothing on screen gave no way to tell a queued message
         // from a swallowed one.
-        assert!(text(&queued(1, &crate::theme::DARK)).contains("1 message waiting"));
+        assert!(text(&queued(1)).contains("1 message waiting"));
     }
 
     #[test]
     fn several_are_plural() {
-        assert!(text(&queued(3, &crate::theme::DARK)).contains("3 messages waiting"));
+        assert!(text(&queued(3)).contains("3 messages waiting"));
     }
 }

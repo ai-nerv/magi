@@ -4,10 +4,12 @@
 //! sockets, sessions, or agents: everything here is a pure function of state, which is what
 //! makes it testable against a `vt100` screen rather than a live daemon.
 //!
-//! The visual design is Pi's — palette, block shapes, and footer format all match
-//! `xtra/pi/packages/coding-agent/src/modes/interactive`.
+//! The block shapes and footer format are Pi's, from
+//! `xtra/pi/packages/coding-agent/src/modes/interactive`. The palette is not, and is not anybody
+//! else's either: see [`colour`].
 
 pub mod border;
+pub mod colour;
 pub mod complete;
 pub mod editor;
 pub mod footer;
@@ -21,10 +23,8 @@ pub mod prompt;
 pub mod scrollback;
 pub mod status;
 pub mod table;
-pub mod theme;
 pub mod transcript;
 pub mod wrap;
 
 pub use editor::Editor;
 pub use footer::FooterData;
-pub use theme::{DARK, Theme};

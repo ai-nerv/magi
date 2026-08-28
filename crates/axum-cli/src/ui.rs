@@ -15,7 +15,7 @@
 use crate::app::App;
 use crate::terminal::Mode;
 use axum_tui::footer::{self, FooterData};
-use axum_tui::{Theme, complete, prompt, status, transcript};
+use axum_tui::{complete, prompt, status, transcript};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::Paragraph;
@@ -55,13 +55,7 @@ pub fn initial_height(rows: u16) -> u16 {
 }
 
 /// Draw the live region.
-pub fn draw(
-    frame: &mut Frame<'_>,
-    app: &mut App,
-    footer_data: &FooterData,
-    theme: &Theme,
-    mode: Mode,
-) {
+pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData, mode: Mode) {
     let area = frame.area();
     let mut hidden_below = 0usize;
     let rows = area.height;
@@ -77,7 +71,7 @@ pub fn draw(
     } else {
         axum_tui::border::Scan::Holding
     };
-    let prompt_lines = prompt::render(&app.editor, area.width, rows, app.scan_tick(), scan, theme);
+    let prompt_lines = prompt::render(&app.editor, area.width, rows, app.scan_tick(), scan);
     let prompt_rows = (prompt_lines.len() as u16)
         .min(rows.saturating_sub(FOOTER_ROWS + STATUS_ROWS + 1))
         .max(1);
@@ -110,7 +104,7 @@ pub fn draw(
         // the tail of it — a message longer than the region streams past, and the newest text
         // is the part being written.
         Mode::Inline => {
-            let live = transcript::render(app.live(), area.width, theme, app.detail);
+            let live = transcript::render(app.live(), area.width, app.detail);
             let shown = live
                 .len()
                 .saturating_sub(usize::from(live_area.height))
@@ -125,7 +119,7 @@ pub fn draw(
         // the first time and wrong for everybody after that. The prompt's own placeholder still
         // names `/`, which is the one line of it worth keeping.
         Mode::Alt => {
-            let all = transcript::render(app.entries(), area.width, theme, app.detail);
+            let all = transcript::render(app.entries(), area.width, app.detail);
             app.scrollback.set_lines(all);
             let view = app.scrollback.view(live_area.height).to_vec();
             // Bottom-aligned: a transcript grows towards the prompt, so a short one sits above
@@ -143,32 +137,29 @@ pub fn draw(
 
     // Composed rather than passed in: the scroll note is a fact about where the reader is
     // looking, which the status line has no business knowing how to compute.
-    let mut status_line =
-        status::working(app.status(), app.tick, theme, app.connected, app.elapsed());
+    let mut status_line = status::working(app.status(), app.tick, app.connected, app.elapsed());
     if matches!(mode, Mode::Alt) {
-        status_line
-            .spans
-            .extend(status::scrolled(hidden_below, theme));
+        status_line.spans.extend(status::scrolled(hidden_below));
     }
     if !app.connected {
-        status_line.spans.extend(status::queued(app.queued, theme));
+        status_line.spans.extend(status::queued(app.queued));
     }
     frame.render_widget(Paragraph::new(status_line), status_area);
     frame.render_widget(Paragraph::new(prompt_lines), prompt_area);
 
     if let Some(picker) = &app.picker {
         frame.render_widget(
-            Paragraph::new(axum_tui::picker::render(picker, area.width, theme)),
+            Paragraph::new(axum_tui::picker::render(picker, area.width)),
             popup_area,
         );
     } else if let Some(popup) = &app.completion {
         frame.render_widget(
-            Paragraph::new(complete::render(popup, area.width, theme)),
+            Paragraph::new(complete::render(popup, area.width)),
             popup_area,
         );
     }
     frame.render_widget(
-        Paragraph::new(footer::render(footer_data, area.width, theme)),
+        Paragraph::new(footer::render(footer_data, area.width)),
         footer_area,
     );
 

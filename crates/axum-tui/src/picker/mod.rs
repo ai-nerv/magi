@@ -200,7 +200,6 @@ pub use view::render;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::Theme;
     use ratatui::text::Line;
 
     fn choices() -> Vec<Choice> {
@@ -271,22 +270,14 @@ mod tests {
     fn an_unusable_choice_is_shown_with_what_it_needs() {
         // Filtering it out leaves an empty list for somebody who has configured nothing, and
         // an empty list does not tell them which variable to set.
-        let shown = text(&render(
-            &Picker::new("Model", choices(), None),
-            60,
-            &Theme::default(),
-        ));
+        let shown = text(&render(&Picker::new("Model", choices(), None), 60));
         assert!(shown.iter().any(|l| l.contains("b/two")), "{shown:?}");
         assert!(shown.iter().any(|l| l.contains("set B_KEY")), "{shown:?}");
     }
 
     #[test]
     fn the_heading_says_where_you_are_in_the_list() {
-        let shown = text(&render(
-            &Picker::new("Model", choices(), None),
-            60,
-            &Theme::default(),
-        ));
+        let shown = text(&render(&Picker::new("Model", choices(), None), 60));
         assert!(shown[0].contains("Model"), "{:?}", shown[0]);
         assert!(shown[0].contains("1 of 3"), "{:?}", shown[0]);
     }
@@ -304,7 +295,7 @@ mod tests {
         for _ in 0..20 {
             picker.next();
         }
-        let shown = text(&render(&picker, 60, &Theme::default()));
+        let shown = text(&render(&picker, 60));
         assert!(shown.iter().any(|l| l.contains("m/20")), "{shown:?}");
         assert_eq!(shown.len(), MAX_VISIBLE + 1, "heading plus a window");
     }
@@ -312,7 +303,7 @@ mod tests {
     #[test]
     fn every_row_fills_the_width() {
         let picker = Picker::new("Model", choices(), None);
-        for line in render(&picker, 40, &Theme::default()) {
+        for line in render(&picker, 40) {
             let width: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
             assert_eq!(width, 40, "{line:?}");
         }
@@ -322,7 +313,6 @@ mod tests {
 #[cfg(test)]
 mod filter_tests {
     use super::*;
-    use crate::theme::Theme;
 
     fn many() -> Vec<Choice> {
         [
@@ -397,7 +387,7 @@ mod filter_tests {
         for c in "zzzz".chars() {
             picker.push(c);
         }
-        let shown: Vec<String> = render(&picker, 60, &Theme::default())
+        let shown: Vec<String> = render(&picker, 60)
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect();
@@ -419,7 +409,7 @@ mod filter_tests {
     fn the_heading_shows_what_was_typed() {
         let mut picker = Picker::new("Model", many(), None);
         picker.push('l');
-        let shown: Vec<String> = render(&picker, 60, &Theme::default())
+        let shown: Vec<String> = render(&picker, 60)
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect();
@@ -430,7 +420,6 @@ mod filter_tests {
 #[cfg(test)]
 mod take_tests {
     use super::*;
-    use crate::theme::Theme;
 
     fn mixed() -> Vec<Choice> {
         vec![
@@ -460,7 +449,7 @@ mod take_tests {
         let mut picker = Picker::new("Model", mixed(), None);
         picker.next();
         assert_eq!(picker.take(), None);
-        let heading: String = render(&picker, 70, &Theme::default())[0]
+        let heading: String = render(&picker, 70)[0]
             .spans
             .iter()
             .map(|s| s.content.as_ref())
@@ -474,7 +463,7 @@ mod take_tests {
         picker.next();
         let _ = picker.take();
         picker.previous();
-        let heading: String = render(&picker, 70, &Theme::default())[0]
+        let heading: String = render(&picker, 70)[0]
             .spans
             .iter()
             .map(|s| s.content.as_ref())
@@ -579,7 +568,7 @@ mod readiness_tests {
 #[cfg(test)]
 mod fluidity_tests {
     use super::*;
-    use crate::theme::Theme;
+    use crate::colour;
     use ratatui::text::Line;
 
     fn many(n: usize) -> Vec<Choice> {
@@ -604,7 +593,7 @@ mod fluidity_tests {
         // Fifty rows in a window of eight gave no sign there was anything past the eighth, so
         // moving through it felt like the list was changing under you.
         let picker = Picker::new("Model", many(50), None);
-        let shown = text(&render(&picker, 60, &Theme::default()));
+        let shown = text(&render(&picker, 60));
         assert!(shown[0].contains('↓'), "{:?}", shown[0]);
         assert!(
             !shown[0].contains('↑'),
@@ -619,14 +608,14 @@ mod fluidity_tests {
         for _ in 0..40 {
             picker.next();
         }
-        let shown = text(&render(&picker, 60, &Theme::default()));
+        let shown = text(&render(&picker, 60));
         assert!(shown[0].contains('↑'), "{:?}", shown[0]);
     }
 
     #[test]
     fn a_list_that_fits_says_neither() {
         let picker = Picker::new("Model", many(3), None);
-        let shown = text(&render(&picker, 60, &Theme::default()));
+        let shown = text(&render(&picker, 60));
         assert!(
             !shown[0].contains('↑') && !shown[0].contains('↓'),
             "{:?}",
@@ -639,7 +628,7 @@ mod fluidity_tests {
         // A background that stops where the text stops reads as a ragged block, which is worse
         // than no highlight at all.
         let picker = Picker::new("Model", many(5), None);
-        let rendered = render(&picker, 60, &Theme::default());
+        let rendered = render(&picker, 60);
         let row = &rendered[1];
         let painted: usize = row.spans.iter().map(|s| s.content.chars().count()).sum();
         assert_eq!(painted, 60, "the selected row fills the width");
@@ -653,21 +642,20 @@ mod fluidity_tests {
     fn an_unselected_row_is_the_block_colour_not_the_bar_colour() {
         // Every row carries a background now — that is what makes the list read as one object
         // rather than as loose text. What marks the selection is that its background differs.
-        let theme = Theme::default();
         let picker = Picker::new("Model", many(5), None);
-        let rendered = render(&picker, 60, &theme);
+        let rendered = render(&picker, 60);
         assert!(
             rendered[2]
                 .spans
                 .iter()
-                .all(|s| s.style.bg == Some(theme.menu_bg)),
+                .all(|s| s.style.bg == Some(colour::BLOCK_BG)),
             "the block"
         );
         assert!(
             rendered[1]
                 .spans
                 .iter()
-                .any(|s| s.style.bg == Some(theme.menu_sel_bg)),
+                .any(|s| s.style.bg == Some(colour::RAISED_BG)),
             "and the bar on the row above it"
         );
     }

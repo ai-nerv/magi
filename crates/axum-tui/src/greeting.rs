@@ -8,7 +8,7 @@
 //! Deliberately small. This is a prompt with a label on it, not a splash screen: it occupies
 //! the space a transcript is about to, and the first message pushes it out of the way for good.
 
-use crate::theme::Theme;
+use crate::colour;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -26,15 +26,15 @@ const HINTS: &[(&str, &str)] = &[
 /// footer is two dim lines at the bottom edge and this is the middle of the screen, which is
 /// where a person is looking when they have just started.
 #[must_use]
-pub fn render(model: &str, cwd: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
-    let dim = Style::default().fg(theme.dim);
-    let muted = Style::default().fg(theme.muted);
+pub fn render(model: &str, cwd: &str, width: u16) -> Vec<Line<'static>> {
+    let dim = Style::default().fg(colour::DIM);
+    let muted = Style::default().fg(colour::MUTED);
 
     let mut out = vec![
         Line::from(Span::styled(
             "axum",
             Style::default()
-                .fg(theme.accent)
+                .fg(colour::ACCENT)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
@@ -96,12 +96,7 @@ mod tests {
 
     #[test]
     fn it_says_what_it_is_and_what_it_will_use() {
-        let out = render(
-            "openrouter/deepseek",
-            "/work/thing",
-            80,
-            &crate::theme::DARK,
-        );
+        let out = render("openrouter/deepseek", "/work/thing", 80);
         let text = text_of(&out);
         assert!(text.contains("axum"), "{text}");
         assert!(text.contains("openrouter/deepseek"), "{text}");
@@ -111,19 +106,14 @@ mod tests {
     #[test]
     fn it_names_the_key_that_finds_the_rest() {
         // The complaint that started this was not being able to reach the model list.
-        let out = render("m", "/w", 80, &crate::theme::DARK);
+        let out = render("m", "/w", 80);
         let text = text_of(&out);
         assert!(text.contains("/ commands"), "{text}");
     }
 
     #[test]
     fn a_narrow_terminal_still_gets_a_path_it_can_read() {
-        let out = render(
-            "m",
-            "/home/someone/work/deeply/nested/project",
-            20,
-            &crate::theme::DARK,
-        );
+        let out = render("m", "/home/someone/work/deeply/nested/project", 20);
         let text = text_of(&out);
         assert!(
             text.contains("project"),
@@ -134,7 +124,7 @@ mod tests {
     #[test]
     fn no_model_yet_is_not_an_empty_line() {
         // Before the daemon answers, the model is unknown; a blank row reads as a bug.
-        let out = render("", "/w", 80, &crate::theme::DARK);
+        let out = render("", "/w", 80);
         let text = text_of(&out);
         assert!(!text.contains("\n\n\n"), "{text}");
     }
@@ -145,7 +135,7 @@ mod narrow_tests {
     use super::*;
 
     fn hints_row(width: u16) -> String {
-        let out = render("m", "/w", width, &crate::theme::DARK);
+        let out = render("m", "/w", width);
         out.last()
             .expect("a line")
             .spans

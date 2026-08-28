@@ -20,8 +20,8 @@
 //! circuit and shuttle the long edges in step, which is the shape of a thing waiting to be sent;
 //! while a turn runs they race, and the breath goes with them.
 
-use crate::theme::Theme;
-use ratatui::style::{Color, Style};
+use crate::colour;
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 /// How bright a cell is `n` steps *ahead* of a head, and `n` steps *behind* one.
@@ -106,13 +106,7 @@ const fn pace(scan: Scan) -> (usize, usize) {
 /// Answers the top and bottom edges; the sides are [`side`], because the caller owns what goes
 /// between them and has to interleave.
 #[must_use]
-pub fn edges(
-    width: u16,
-    rows: usize,
-    tick: usize,
-    scan: Scan,
-    theme: &Theme,
-) -> (Line<'static>, Line<'static>) {
+pub fn edges(width: u16, rows: usize, tick: usize, scan: Scan) -> (Line<'static>, Line<'static>) {
     let width = usize::from(width).max(2);
     let inner = width - 2;
     let ring = ring_length(inner, rows);
@@ -120,35 +114,21 @@ pub fn edges(
     let base = breathing(scan, tick);
 
     let mut top = Vec::with_capacity(width);
-    top.push(cell('╭', 0, &heads, ring, base, theme));
+    top.push(cell('╭', 0, &heads, ring, base));
     for i in 0..inner {
-        top.push(cell('─', 1 + i, &heads, ring, base, theme));
+        top.push(cell('─', 1 + i, &heads, ring, base));
     }
-    top.push(cell('╮', 1 + inner, &heads, ring, base, theme));
+    top.push(cell('╮', 1 + inner, &heads, ring, base));
 
     // Anticlockwise along the bottom, because the ring runs clockwise: the bottom-right corner
     // comes before the bottom-left one when you are walking round.
     let bottom_right = 1 + inner + 1 + rows;
     let mut bottom = Vec::with_capacity(width);
-    bottom.push(cell(
-        '╰',
-        bottom_right + inner + 1,
-        &heads,
-        ring,
-        base,
-        theme,
-    ));
+    bottom.push(cell('╰', bottom_right + inner + 1, &heads, ring, base));
     for i in 0..inner {
-        bottom.push(cell(
-            '─',
-            bottom_right + inner - i,
-            &heads,
-            ring,
-            base,
-            theme,
-        ));
+        bottom.push(cell('─', bottom_right + inner - i, &heads, ring, base));
     }
-    bottom.push(cell('╯', bottom_right, &heads, ring, base, theme));
+    bottom.push(cell('╯', bottom_right, &heads, ring, base));
 
     (Line::from(top), Line::from(bottom))
 }
@@ -161,7 +141,6 @@ pub fn side(
     row: usize,
     tick: usize,
     scan: Scan,
-    theme: &Theme,
 ) -> (Span<'static>, Span<'static>) {
     let inner = usize::from(width).max(2) - 2;
     let ring = ring_length(inner, rows);
@@ -171,8 +150,8 @@ pub fn side(
     let right = 1 + inner + 1 + row;
     let left = ring - 1 - row;
     (
-        cell('│', left, &heads, ring, base, theme),
-        cell('│', right, &heads, ring, base, theme),
+        cell('│', left, &heads, ring, base),
+        cell('│', right, &heads, ring, base),
     )
 }
 
@@ -272,39 +251,12 @@ fn lit(at: usize, head: Head, ring: usize) -> f32 {
 }
 
 /// One border cell: the breath underneath, and whichever head lights it most.
-fn cell(
-    glyph: char,
-    at: usize,
-    heads: &[Head],
-    ring: usize,
-    base: f32,
-    theme: &Theme,
-) -> Span<'static> {
+fn cell(glyph: char, at: usize, heads: &[Head], ring: usize, base: f32) -> Span<'static> {
     let mut best = base;
     for &head in heads {
         best = best.max(lit(at, head, ring));
     }
-    let colour = if best > 0.0 {
-        mix(theme.border, theme.border_scan, best)
-    } else {
-        theme.border
-    };
-    Span::styled(glyph.to_string(), Style::default().fg(colour))
-}
-
-/// `amount` of the way from `from` to `to`.
-fn mix(from: Color, to: Color, amount: f32) -> Color {
-    let (Color::Rgb(fr, fg, fb), Color::Rgb(tr, tg, tb)) = (from, to) else {
-        // A themed colour that is not RGB cannot be interpolated; the scan simply does not show
-        // rather than the border changing to something unrelated.
-        return from;
-    };
-    let blend = |a: u8, b: u8| {
-        let a = f32::from(a);
-        let b = f32::from(b);
-        (a + (b - a) * amount).round().clamp(0.0, 255.0) as u8
-    };
-    Color::Rgb(blend(fr, tr), blend(fg, tg), blend(fb, tb))
+    Span::styled(glyph.to_string(), Style::default().fg(colour::scan(best)))
 }
 
 #[cfg(test)]
@@ -317,25 +269,23 @@ mod tests {
 
     #[test]
     fn the_box_is_rounded_and_spans_the_width() {
-        let (top, bottom) = edges(20, 1, 0, Scan::Off, &crate::theme::DARK);
+        let (top, bottom) = edges(20, 1, 0, Scan::Off);
         assert_eq!(text(&top), "╭──────────────────╮");
         assert_eq!(text(&bottom), "╰──────────────────╯");
     }
 
     #[test]
     fn the_sides_are_bars() {
-        let (l, r) = side(20, 1, 0, 0, Scan::Off, &crate::theme::DARK);
+        let (l, r) = side(20, 1, 0, 0, Scan::Off);
         assert_eq!(l.content.as_ref(), "│");
         assert_eq!(r.content.as_ref(), "│");
     }
 
     #[test]
     fn with_the_scan_off_every_cell_is_the_border_colour() {
-        let (top, _) = edges(20, 1, 7, Scan::Off, &crate::theme::DARK);
+        let (top, _) = edges(20, 1, 7, Scan::Off);
         assert!(
-            top.spans
-                .iter()
-                .all(|s| s.style.fg == Some(crate::theme::DARK.border)),
+            top.spans.iter().all(|s| s.style.fg == Some(colour::BORDER)),
             "nothing is lit"
         );
     }
@@ -343,14 +293,13 @@ mod tests {
     #[test]
     fn every_running_mode_has_two_heads() {
         // One reads as a stray highlight; two read as a mechanism.
-        let theme = crate::theme::DARK;
         for scan in [Scan::Resting, Scan::Holding, Scan::Working] {
-            let (top, bottom) = edges(40, 1, 0, scan, &theme);
+            let (top, bottom) = edges(40, 1, 0, scan);
             let peaks = top
                 .spans
                 .iter()
                 .chain(bottom.spans.iter())
-                .filter(|s| s.style.fg == Some(theme.border_scan))
+                .filter(|s| s.style.fg == Some(colour::scan(1.0)))
                 .count();
             assert_eq!(peaks, 2, "{scan:?} on a one-row box puts both on the edges");
         }
@@ -439,27 +388,25 @@ mod tests {
 
     #[test]
     fn the_scan_moves_with_the_tick() {
-        let theme = crate::theme::DARK;
-        let a = text_colours(&edges(30, 1, 0, Scan::Resting, &theme).0);
-        let b = text_colours(&edges(30, 1, 12, Scan::Resting, &theme).0);
+        let a = text_colours(&edges(30, 1, 0, Scan::Resting).0);
+        let b = text_colours(&edges(30, 1, 12, Scan::Resting).0);
         assert_ne!(a, b, "it travels");
     }
 
-    fn text_colours(line: &Line<'_>) -> Vec<Option<Color>> {
+    fn text_colours(line: &Line<'_>) -> Vec<Option<ratatui::style::Color>> {
         line.spans.iter().map(|s| s.style.fg).collect()
     }
 
     #[test]
     fn holding_lights_both_long_edges() {
         // Two heads sweeping in step: the shape of something waiting to be sent.
-        let theme = crate::theme::DARK;
-        let (top, bottom) = edges(30, 1, 0, Scan::Holding, &theme);
-        assert!(top.spans.iter().any(|s| s.style.fg != Some(theme.border)));
+        let (top, bottom) = edges(30, 1, 0, Scan::Holding);
+        assert!(top.spans.iter().any(|s| s.style.fg != Some(colour::BORDER)));
         assert!(
             bottom
                 .spans
                 .iter()
-                .any(|s| s.style.fg != Some(theme.border))
+                .any(|s| s.style.fg != Some(colour::BORDER))
         );
     }
 
@@ -472,8 +419,8 @@ mod tests {
     #[test]
     fn a_narrow_box_does_not_panic() {
         for width in 0..6_u16 {
-            let _ = edges(width, 1, 3, Scan::Working, &crate::theme::DARK);
-            let _ = side(width, 1, 0, 3, Scan::Working, &crate::theme::DARK);
+            let _ = edges(width, 1, 3, Scan::Working);
+            let _ = side(width, 1, 0, 3, Scan::Working);
         }
     }
 
@@ -481,12 +428,11 @@ mod tests {
     fn a_tall_box_lights_its_sides_too() {
         // Swept across ticks rather than pinned to one: which cell is lit at a given tick is a
         // function of the pace, and pinning it made a speed change look like a bug in the ring.
-        let theme = crate::theme::DARK;
         let lit = (0..120)
             .flat_map(|tick| (0..6).map(move |row| (tick, row)))
             .filter(|&(tick, row)| {
-                let (l, r) = side(30, 6, row, tick, Scan::Working, &theme);
-                l.style.fg != Some(theme.border) || r.style.fg != Some(theme.border)
+                let (l, r) = side(30, 6, row, tick, Scan::Working);
+                l.style.fg != Some(colour::BORDER) || r.style.fg != Some(colour::BORDER)
             })
             .count();
         assert!(lit > 0, "the scan goes round, not just along the top");
@@ -498,20 +444,19 @@ mod holding_tests {
     use super::*;
 
     /// Which screen column of a rendered edge is brightest.
-    fn peak(line: &Line<'_>, theme: &Theme) -> Option<usize> {
+    fn peak(line: &Line<'_>) -> Option<usize> {
         line.spans
             .iter()
-            .position(|s| s.style.fg == Some(theme.border_scan))
+            .position(|s| s.style.fg == Some(colour::scan(1.0)))
     }
 
     #[test]
     fn the_two_lights_stay_in_the_same_column() {
         // The bottom edge is walked anticlockwise, so its leftmost cell is its highest ring
         // index. Getting that off by one put the lower light a cell ahead for the whole sweep.
-        let theme = crate::theme::DARK;
         for tick in 0..60 {
-            let (top, bottom) = edges(40, 1, tick, Scan::Holding, &theme);
-            let (Some(t), Some(b)) = (peak(&top, &theme), peak(&bottom, &theme)) else {
+            let (top, bottom) = edges(40, 1, tick, Scan::Holding);
+            let (Some(t), Some(b)) = (peak(&top), peak(&bottom)) else {
                 continue;
             };
             assert_eq!(t, b, "tick {tick}: top at {t}, bottom at {b}");
@@ -520,20 +465,18 @@ mod holding_tests {
 
     #[test]
     fn both_lights_are_present_from_the_first_tick() {
-        let theme = crate::theme::DARK;
-        let (top, bottom) = edges(40, 1, 0, Scan::Holding, &theme);
-        assert!(peak(&top, &theme).is_some(), "top lit at rest");
-        assert!(peak(&bottom, &theme).is_some(), "and so is the bottom");
+        let (top, bottom) = edges(40, 1, 0, Scan::Holding);
+        assert!(peak(&top).is_some(), "top lit at rest");
+        assert!(peak(&bottom).is_some(), "and so is the bottom");
     }
 
     #[test]
     fn the_sweep_turns_round_inside_the_edge() {
         // It must not walk onto a corner and wrap: this is a shuttle, not a circuit.
-        let theme = crate::theme::DARK;
         let width = 20u16;
         for tick in 0..80 {
-            let (top, _) = edges(width, 1, tick, Scan::Holding, &theme);
-            if let Some(at) = peak(&top, &theme) {
+            let (top, _) = edges(width, 1, tick, Scan::Holding);
+            if let Some(at) = peak(&top) {
                 assert!(at >= 1, "tick {tick}: on the left corner");
                 assert!(
                     at <= usize::from(width) - 2,

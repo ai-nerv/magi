@@ -4,8 +4,8 @@
 //! `userMessageBg`; an assistant message is bare markdown preceded by one blank line; a tool
 //! call is a padded box whose background carries its outcome.
 
+use crate::colour;
 use crate::markdown;
-use crate::theme::Theme;
 use axum_proto::{Entry, StopReason};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -19,35 +19,33 @@ pub use tool::Detail;
 
 /// Render the whole transcript.
 #[must_use]
-pub fn render(entries: &[Entry], width: u16, theme: &Theme, detail: Detail) -> Vec<Line<'static>> {
+pub fn render(entries: &[Entry], width: u16, detail: Detail) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     for entry in entries {
-        out.extend(entry_lines(entry, width, theme, detail));
+        out.extend(entry_lines(entry, width, detail));
     }
     out
 }
 
 /// Render one entry.
 #[must_use]
-pub fn entry_lines(entry: &Entry, width: u16, theme: &Theme, detail: Detail) -> Vec<Line<'static>> {
+pub fn entry_lines(entry: &Entry, width: u16, detail: Detail) -> Vec<Line<'static>> {
     match entry {
-        Entry::User { text, .. } => user(text, width, theme),
+        Entry::User { text, .. } => user(text, width),
         Entry::Assistant {
             text,
             thinking,
             stop_reason,
             error,
             ..
-        } => assistant(text, thinking, *stop_reason, error.as_deref(), width, theme),
+        } => assistant(text, thinking, *stop_reason, error.as_deref(), width),
         Entry::Tool {
             name, args, result, ..
-        } => tool::block(name, args, result.as_ref(), width, theme, detail),
-        Entry::Notice { text } => notice(text, width, theme),
-        Entry::Compaction { replaces, .. } => marker(
-            &format!(" {replaces} earlier messages summarised "),
-            width,
-            theme,
-        ),
+        } => tool::block(name, args, result.as_ref(), width, detail),
+        Entry::Notice { text } => notice(text, width),
+        Entry::Compaction { replaces, .. } => {
+            marker(&format!(" {replaces} earlier messages summarised "), width)
+        }
         // `keeps` is a journal index, and printing it says nothing a reader can act on. What
         // matters is that everything above the rule is still on the screen and no longer sent.
         Entry::Branch { keeps, .. } => marker(
@@ -57,7 +55,6 @@ pub fn entry_lines(entry: &Entry, width: u16, theme: &Theme, detail: Detail) -> 
                 format!(" rewound — only the first {keeps} messages are sent from here ")
             },
             width,
-            theme,
         ),
     }
 }
@@ -66,12 +63,12 @@ pub fn entry_lines(entry: &Entry, width: u16, theme: &Theme, detail: Detail) -> 
 ///
 /// A bar down the left and muted text: the same shape as a block quote, which is what this
 /// is — a voice that is not the conversation's.
-fn notice(text: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
-    let style = Style::default().fg(theme.dim);
+fn notice(text: &str, width: u16) -> Vec<Line<'static>> {
+    let style = Style::default().fg(colour::DIM);
     let inner = width.saturating_sub(PAD * 2 + 2);
     let mut out = vec![Line::default()];
-    for line in markdown::render(text, inner, theme, style) {
-        let mut spans = vec![Span::styled("│ ", Style::default().fg(theme.md_quote))];
+    for line in markdown::render(text, inner, style) {
+        let mut spans = vec![Span::styled("│ ", Style::default().fg(colour::MUTED))];
         spans.extend(line.spans);
         out.push(indent(Line::from(spans)));
     }
@@ -83,29 +80,27 @@ fn notice(text: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
 /// Shown rather than hidden. The transcript above one of these is still there and still true,
 /// but what the model can see of it has changed — and a reader wondering why it forgot
 /// something, or why an exchange seems to have been undone, needs this line to be the answer.
-fn marker(label: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
+fn marker(label: &str, width: u16) -> Vec<Line<'static>> {
     let label = label.to_owned();
     let rule = usize::from(width).saturating_sub(label.chars().count());
     vec![
         Line::default(),
         Line::from(vec![
-            Span::styled("─".repeat(rule / 2), Style::default().fg(theme.md_quote)),
-            Span::styled(label, Style::default().fg(theme.dim)),
+            Span::styled("─".repeat(rule / 2), Style::default().fg(colour::MUTED)),
+            Span::styled(label, Style::default().fg(colour::DIM)),
             Span::styled(
                 "─".repeat(rule.saturating_sub(rule / 2)),
-                Style::default().fg(theme.md_quote),
+                Style::default().fg(colour::MUTED),
             ),
         ]),
     ]
 }
 
 /// A full-width box on `userMessageBg`, padded one cell on every side.
-fn user(text: &str, width: u16, theme: &Theme) -> Vec<Line<'static>> {
-    let style = Style::default()
-        .bg(theme.user_message_bg)
-        .fg(theme.user_message_text);
+fn user(text: &str, width: u16) -> Vec<Line<'static>> {
+    let style = Style::default().bg(colour::RAISED_BG).fg(colour::TEXT);
     let inner = width.saturating_sub(PAD * 2);
-    let body = markdown::render(text, inner, theme, style);
+    let body = markdown::render(text, inner, style);
 
     let mut out = vec![blank(width, style)];
     for line in body {
@@ -122,9 +117,8 @@ fn assistant(
     stop_reason: Option<StopReason>,
     error: Option<&str>,
     width: u16,
-    theme: &Theme,
 ) -> Vec<Line<'static>> {
-    let base = Style::default().fg(theme.text);
+    let base = Style::default().fg(colour::TEXT);
     let inner = width.saturating_sub(PAD * 2);
     let mut out = Vec::new();
 
@@ -134,9 +128,9 @@ fn assistant(
 
     if !thinking.trim().is_empty() {
         let style = Style::default()
-            .fg(theme.thinking_text)
+            .fg(colour::MUTED)
             .add_modifier(Modifier::ITALIC);
-        for line in markdown::render(thinking.trim(), inner, theme, style) {
+        for line in markdown::render(thinking.trim(), inner, style) {
             out.push(indent(line));
         }
         if !text.trim().is_empty() {
@@ -145,7 +139,7 @@ fn assistant(
     }
 
     if !text.trim().is_empty() {
-        for line in markdown::render(text.trim(), inner, theme, base) {
+        for line in markdown::render(text.trim(), inner, base) {
             out.push(indent(line));
         }
     }
@@ -158,7 +152,7 @@ fn assistant(
             out.push(Line::default());
             out.push(indent(Line::from(Span::styled(
                 "Response hit the length limit and stopped here.",
-                Style::default().fg(theme.warning),
+                Style::default().fg(colour::WARNING),
             ))));
         }
         // Not an error. You pressed escape and it obeyed; saying so in red claims something
@@ -167,14 +161,14 @@ fn assistant(
             out.push(Line::default());
             out.push(indent(Line::from(Span::styled(
                 error.map_or_else(|| "Interrupted.".to_owned(), ToOwned::to_owned),
-                Style::default().fg(theme.dim),
+                Style::default().fg(colour::DIM),
             ))));
         }
         Some(StopReason::Error) => {
             out.push(Line::default());
             out.push(indent(Line::from(Span::styled(
                 format!("Error: {}", error.unwrap_or("Unknown error")),
-                Style::default().fg(theme.error),
+                Style::default().fg(colour::ERROR),
             ))));
         }
         _ => {}
@@ -239,7 +233,7 @@ mod tests {
             id: MessageId::new("m1"),
             text: "hello".into(),
         };
-        let lines = entry_lines(&entry, 20, &Theme::default(), Detail::Preview);
+        let lines = entry_lines(&entry, 20, Detail::Preview);
         let rendered = text_of(&lines);
         assert_eq!(rendered.len(), 3, "blank, body, blank");
         assert_eq!(rendered[1], " hello              ");
@@ -257,7 +251,7 @@ mod tests {
             signatures: axum_proto::Signatures::default(),
             usage: axum_proto::Usage::default(),
         };
-        let rendered = text_of(&entry_lines(&entry, 20, &Theme::default(), Detail::Preview));
+        let rendered = text_of(&entry_lines(&entry, 20, Detail::Preview));
         assert_eq!(rendered, vec!["", " sure"]);
     }
 
@@ -270,7 +264,7 @@ mod tests {
             result: None,
             thought_signature: None,
         };
-        let rendered = text_of(&entry_lines(&entry, 40, &Theme::default(), Detail::Preview));
+        let rendered = text_of(&entry_lines(&entry, 40, Detail::Preview));
         assert!(rendered[1].contains("read"), "{:?}", rendered[1]);
         assert!(rendered[1].contains("a.rs"), "{:?}", rendered[1]);
     }
@@ -291,7 +285,7 @@ mod tests {
             }),
             thought_signature: None,
         };
-        let rendered = text_of(&entry_lines(&entry, 40, &Theme::default(), Detail::Preview));
+        let rendered = text_of(&entry_lines(&entry, 40, Detail::Preview));
         assert!(
             rendered.iter().any(|l| l.contains("15 more lines")),
             "{rendered:?}"
@@ -309,7 +303,7 @@ mod tests {
             signatures: axum_proto::Signatures::default(),
             usage: axum_proto::Usage::default(),
         };
-        let rendered = text_of(&entry_lines(&entry, 40, &Theme::default(), Detail::Preview));
+        let rendered = text_of(&entry_lines(&entry, 40, Detail::Preview));
         assert!(
             rendered.iter().any(|l| l.contains("length limit")),
             "{rendered:?}"
@@ -327,7 +321,7 @@ mod tests {
             signatures: axum_proto::Signatures::default(),
             usage: axum_proto::Usage::default(),
         };
-        let rendered = text_of(&entry_lines(&entry, 40, &Theme::default(), Detail::Preview));
+        let rendered = text_of(&entry_lines(&entry, 40, Detail::Preview));
         assert!(
             rendered.iter().any(|l| l.contains("Error: overloaded")),
             "{rendered:?}"
@@ -363,7 +357,7 @@ mod tab_tests {
             }),
             thought_signature: None,
         };
-        let rendered = cells(&entry_lines(&entry, 60, &Theme::default(), Detail::Preview));
+        let rendered = cells(&entry_lines(&entry, 60, Detail::Preview));
         assert!(!rendered.contains('\t'), "{rendered:?}");
         assert!(rendered.contains("     3  }"), "{rendered:?}");
     }
@@ -380,7 +374,7 @@ mod tab_tests {
             signatures: axum_proto::Signatures::default(),
             usage: axum_proto::Usage::default(),
         };
-        let rendered = cells(&entry_lines(&entry, 60, &Theme::default(), Detail::Preview));
+        let rendered = cells(&entry_lines(&entry, 60, Detail::Preview));
         assert!(!rendered.contains('\t'), "{rendered:?}");
         assert!(rendered.contains("    cargo build"), "{rendered:?}");
     }
@@ -399,7 +393,6 @@ mod notice_tests {
                 text: "unknown command: /nope".to_owned(),
             },
             40,
-            &Theme::default(),
             Detail::Preview,
         );
         let rendered: Vec<String> = lines
@@ -426,7 +419,6 @@ mod notice_tests {
                 text: "**Keys**\n\n- `enter` submit".to_owned(),
             },
             40,
-            &Theme::default(),
             Detail::Preview,
         );
         let rendered: Vec<String> = lines
@@ -466,7 +458,6 @@ mod stop_tests {
         let lines = text_of(&entry_lines(
             &stopped(StopReason::Aborted, None),
             40,
-            &Theme::default(),
             Detail::Preview,
         ));
         assert!(lines.iter().any(|l| l.contains("Interrupted")), "{lines:?}");
@@ -476,19 +467,13 @@ mod stop_tests {
     #[test]
     fn an_interrupt_is_not_coloured_as_a_failure() {
         // Red claims something went wrong; the reader asked for this.
-        let theme = Theme::default();
-        let rendered = entry_lines(
-            &stopped(StopReason::Aborted, None),
-            40,
-            &theme,
-            Detail::Preview,
-        );
+        let rendered = entry_lines(&stopped(StopReason::Aborted, None), 40, Detail::Preview);
         let note = rendered
             .iter()
             .flat_map(|l| l.spans.iter())
             .find(|s| s.content.contains("Interrupted"))
             .expect("the note");
-        assert_ne!(note.style.fg, Some(theme.error));
+        assert_ne!(note.style.fg, Some(colour::ERROR));
     }
 
     #[test]
@@ -496,7 +481,6 @@ mod stop_tests {
         let lines = text_of(&entry_lines(
             &stopped(StopReason::Aborted, None),
             40,
-            &Theme::default(),
             Detail::Preview,
         ));
         assert!(
@@ -507,11 +491,9 @@ mod stop_tests {
 
     #[test]
     fn a_real_failure_is_still_red() {
-        let theme = Theme::default();
         let rendered = entry_lines(
             &stopped(StopReason::Error, Some("no route")),
             40,
-            &theme,
             Detail::Preview,
         );
         let note = rendered
@@ -519,7 +501,7 @@ mod stop_tests {
             .flat_map(|l| l.spans.iter())
             .find(|s| s.content.contains("no route"))
             .expect("the note");
-        assert_eq!(note.style.fg, Some(theme.error));
+        assert_eq!(note.style.fg, Some(colour::ERROR));
     }
 
     #[test]
@@ -527,7 +509,6 @@ mod stop_tests {
         let lines = text_of(&entry_lines(
             &stopped(StopReason::Aborted, Some("the daemon went away")),
             40,
-            &Theme::default(),
             Detail::Preview,
         ));
         assert!(
@@ -553,12 +534,7 @@ mod branch_tests {
     #[test]
     fn a_rewind_says_what_it_did_rather_than_where_it_landed() {
         // "rewound to message 0" is a journal index. Nobody has one of those in mind.
-        let lines = text_of(&entry_lines(
-            &rewound(0),
-            80,
-            &Theme::default(),
-            Detail::Preview,
-        ));
+        let lines = text_of(&entry_lines(&rewound(0), 80, Detail::Preview));
         let joined = lines.join(" ");
         assert!(joined.contains("nothing above is sent"), "{joined}");
         assert!(!joined.contains("message 0"), "{joined}");
@@ -566,18 +542,13 @@ mod branch_tests {
 
     #[test]
     fn a_partial_rewind_says_how_much_it_kept() {
-        let lines = text_of(&entry_lines(
-            &rewound(4),
-            80,
-            &Theme::default(),
-            Detail::Preview,
-        ));
+        let lines = text_of(&entry_lines(&rewound(4), 80, Detail::Preview));
         assert!(lines.join(" ").contains("first 4"), "{lines:?}");
     }
 
     #[test]
     fn the_rule_still_spans_the_width() {
-        let lines = entry_lines(&rewound(2), 60, &Theme::default(), Detail::Preview);
+        let lines = entry_lines(&rewound(2), 60, Detail::Preview);
         let widest = lines
             .iter()
             .map(|l| {

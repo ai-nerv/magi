@@ -12,7 +12,7 @@
 //! local axum = require("axum")
 //!
 //! axum.model = "anthropic/claude-sonnet-4-5"   -- a setting, assigned
-//! axum.theme = "dark"
+//! axum.scan_speed = 2                          -- another one
 //!
 //! axum.provider("my-vllm", {                    -- a description, handed in
 //!   name = "My vLLM box",

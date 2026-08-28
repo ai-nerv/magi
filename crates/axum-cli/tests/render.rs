@@ -8,7 +8,7 @@ use axum_proto::{
     AgentStatus, Cursor, Entry, HarnessEvent, MessageId, StopReason, ToolCallId, ToolResult,
 };
 use axum_tui::footer::FooterData;
-use axum_tui::{Theme, transcript};
+use axum_tui::transcript;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 
@@ -27,8 +27,7 @@ fn screen(terminal: &Terminal<TestBackend>) -> Vec<String> {
 }
 
 fn render_entries(entries: &[Entry], width: u16) -> Vec<String> {
-    let theme = Theme::default();
-    let lines = transcript::render(entries, width, &theme, transcript::Detail::Preview);
+    let lines = transcript::render(entries, width, transcript::Detail::Preview);
     let height = lines.len() as u16;
     let mut terminal =
         Terminal::new(TestBackend::new(width, height.max(1))).expect("test terminal");
@@ -132,12 +131,11 @@ fn thinking_renders_above_the_response() {
 
 #[test]
 fn every_row_of_a_user_box_spans_the_full_width() {
-    let theme = Theme::default();
     let entry = Entry::User {
         id: MessageId::new("m1"),
         text: "short".into(),
     };
-    for line in transcript::entry_lines(&entry, 30, &theme, transcript::Detail::Preview) {
+    for line in transcript::entry_lines(&entry, 30, transcript::Detail::Preview) {
         let width: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
         assert_eq!(width, 30, "a background row must fill the width");
     }
@@ -224,7 +222,7 @@ fn a_footer_row_is_exactly_the_terminal_width() {
         model: "claude-opus-5".into(),
         mode: "inline",
     };
-    let lines = axum_tui::footer::render(&data, 70, &Theme::default());
+    let lines = axum_tui::footer::render(&data, 70);
     let stats: usize = lines[0]
         .spans
         .iter()

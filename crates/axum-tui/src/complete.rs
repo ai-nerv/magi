@@ -5,7 +5,6 @@
 //! the editor's current line, so nothing here holds state the editor already owns.
 
 use crate::fuzzy;
-use crate::theme::Theme;
 use ratatui::text::Line;
 
 /// Rows the overlay will use at most, so a long candidate list cannot eat the screen.
@@ -163,7 +162,7 @@ pub fn resolve(
 
 /// Render the overlay.
 #[must_use]
-pub fn render(completion: &Completion, width: u16, theme: &Theme) -> Vec<Line<'static>> {
+pub fn render(completion: &Completion, width: u16) -> Vec<Line<'static>> {
     let window = window(completion);
     // Details line up in a column: a ragged left edge on the descriptions makes the list read
     // as noise rather than as a table of choices.
@@ -190,7 +189,6 @@ pub fn render(completion: &Completion, width: u16, theme: &Theme) -> Vec<Line<'s
                 },
                 &typed,
                 width,
-                theme,
             )
         })
         .collect()
@@ -298,7 +296,7 @@ mod tests {
     #[test]
     fn every_overlay_row_fills_the_width() {
         let c = resolve("/", 1, &no_paths).expect("completion");
-        for line in render(&c, 50, &Theme::default()) {
+        for line in render(&c, 50) {
             let width: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
             assert_eq!(width, 50);
         }
@@ -323,7 +321,7 @@ mod clip_tests {
             selected: 0,
             token_start: 0,
         };
-        for line in render(&completion, 30, &Theme::default()) {
+        for line in render(&completion, 30) {
             let width: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
             assert_eq!(width, 30, "{line:?}");
         }
@@ -341,7 +339,7 @@ mod clip_tests {
             selected: 0,
             token_start: 0,
         };
-        for line in render(&completion, 4, &Theme::default()) {
+        for line in render(&completion, 4) {
             let width: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
             assert!(width <= 4, "{width}");
         }
