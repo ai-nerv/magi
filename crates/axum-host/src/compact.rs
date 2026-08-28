@@ -10,6 +10,7 @@
 //! compaction is a record saying what the *provider* is now sent.
 
 use axum_model::{Content, Context, Message, Role};
+use axum_proto::Entry;
 use axum_provider::model::Model;
 
 /// The percentage of the window at which a conversation is compacted.
@@ -73,11 +74,38 @@ pub fn needed(context: &Context, model: &Model) -> bool {
 /// Counted in journal entries rather than in messages, because that is what the record stores
 /// and what the replay skips. Returns `None` when there is not enough history to be worth
 /// summarising — compacting four messages into a paragraph saves nothing and loses detail.
+///
+/// **It takes the entries, not a count of them.** It used to be arithmetic over a `usize` that
+/// never saw an `Entry`, so the boundary it picked had no idea whether it fell between a call and
+/// the result answering it. When it did, the summary replaced the assistant message that made the
+/// call and the orphaned result went to the provider on its own: Anthropic answers 400, `retry`
+/// classifies that `Invalid` — neither retryable nor `Overflow` — and nothing recovers. Every long
+/// tool-heavy session ended that way, with `/clear` the only way out.
 #[must_use]
-pub fn covers(entries: usize) -> Option<usize> {
+pub fn covers(entries: &[Entry]) -> Option<usize> {
     // One more than `KEEP` so a compaction always removes at least one entry; otherwise a
     // session at the high-water mark compacts on every turn and never gets smaller.
-    (entries > KEEP + 1).then(|| entries - KEEP)
+    if entries.len() <= KEEP + 1 {
+        return None;
+    }
+    let mut cut = entries.len() - KEEP;
+    // A `Tool` entry answers a call made by an assistant entry before it, so a cut landing on
+    // one leaves the answer without its question. Moved forward rather than back: forward always
+    // removes at least as much as the arithmetic asked for, and a cut moved back can reach the
+    // start and compact nothing at all.
+    while entries.get(cut).is_some_and(is_answer) {
+        cut += 1;
+    }
+    // Everything from the cut to the end was one long run of tool results. Nothing here can be
+    // summarised without orphaning something, so nothing is: the reactive path — the provider
+    // saying the window overflowed — is what catches this, and a broken conversation would not
+    // have been an improvement on a full one.
+    (cut < entries.len()).then_some(cut)
+}
+
+/// Whether this entry is the answer to a call made before it.
+fn is_answer(entry: &Entry) -> bool {
+    matches!(entry, Entry::Tool { .. })
 }
 
 /// The conversation to summarise, and the instruction for doing it.
@@ -181,19 +209,80 @@ mod tests {
         assert!(!needed(&context(100, 4_000), &model(0)));
     }
 
+    /// `n` entries, none of them a tool call.
+    fn plain(n: usize) -> Vec<Entry> {
+        (0..n)
+            .map(|i| Entry::User {
+                id: axum_proto::MessageId::new(format!("u{i}")),
+                text: "hello".into(),
+            })
+            .collect()
+    }
+
+    /// A tool entry, which is an answer to a call made before it.
+    fn answer(i: usize) -> Entry {
+        Entry::Tool {
+            id: axum_proto::ToolCallId::new(format!("t{i}")),
+            name: "read".into(),
+            args: "{}".into(),
+            result: Some(axum_proto::ToolResult {
+                output: "ok".into(),
+                is_error: false,
+            }),
+            thought_signature: None,
+        }
+    }
+
     #[test]
     fn there_is_nothing_to_compact_in_a_short_session() {
-        assert_eq!(covers(3), None);
-        assert_eq!(covers(KEEP), None);
-        assert_eq!(covers(KEEP + 1), None);
+        assert_eq!(covers(&plain(3)), None);
+        assert_eq!(covers(&plain(KEEP)), None);
+        assert_eq!(covers(&plain(KEEP + 1)), None);
     }
 
     #[test]
     fn compacting_always_removes_at_least_one_entry() {
         // Otherwise a session at the mark compacts every turn and never gets smaller.
-        let covered = covers(KEEP + 2).expect("something to compact");
+        let covered = covers(&plain(KEEP + 2)).expect("something to compact");
         assert!(covered >= 1);
         assert_eq!(covered, 2);
+    }
+
+    #[test]
+    fn a_cut_that_lands_between_a_call_and_its_result_moves() {
+        // The defect: the boundary was arithmetic over a count that never saw an entry, so it
+        // fell between an assistant message and the tool entries answering it. The summary then
+        // replaced the call and the orphaned result went to the provider on its own.
+        let mut entries = plain(KEEP + 2);
+        entries[2] = answer(1);
+        let covered = covers(&entries).expect("something to compact");
+        assert_eq!(covered, 3, "moved past the answer rather than onto it");
+        assert!(
+            !matches!(entries[covered], Entry::Tool { .. }),
+            "and does not land on one"
+        );
+    }
+
+    #[test]
+    fn a_cut_walks_a_whole_run_of_results() {
+        // One assistant message can make several calls, so the answers arrive in a run.
+        let mut entries = plain(KEEP + 4);
+        for (at, entry) in entries.iter_mut().enumerate().take(6).skip(2) {
+            *entry = answer(at);
+        }
+        let covered = covers(&entries).expect("something to compact");
+        assert_eq!(covered, 6);
+    }
+
+    #[test]
+    fn a_session_that_is_all_answers_after_the_cut_is_left_alone() {
+        // Nothing here can be summarised without orphaning something, and a broken conversation
+        // is not an improvement on a full one. The reactive path catches it instead.
+        let mut entries = plain(KEEP + 2);
+        for (at, entry) in entries.iter_mut().enumerate().skip(2) {
+            *entry = answer(at);
+        }
+        assert_eq!(covers(&entries), None);
     }
 
     #[test]

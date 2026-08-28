@@ -69,9 +69,9 @@ async fn compact(
 ) -> bool {
     let (context, entries) = {
         let held = session.lock().await;
-        (crate::context::of(&held), held.entries().len())
+        (crate::context::of(&held), held.entries().to_vec())
     };
-    let Some(covered) = crate::compact::covers(entries) else {
+    let Some(covered) = crate::compact::covers(&entries) else {
         return false;
     };
 
