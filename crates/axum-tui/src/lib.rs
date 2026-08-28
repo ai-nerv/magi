@@ -7,13 +7,14 @@
 //! The visual design is Pi's — palette, block shapes, and footer format all match
 //! `xtra/pi/packages/coding-agent/src/modes/interactive`.
 
+pub mod border;
 pub mod complete;
 pub mod editor;
 pub mod footer;
 pub mod fuzzy;
 pub mod greeting;
 pub mod markdown;
-pub(crate) use complete::fit;
+pub mod menu;
 
 pub mod picker;
 pub mod prompt;

@@ -6,8 +6,7 @@
 
 use crate::fuzzy;
 use crate::theme::Theme;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::Line;
 
 /// Rows the overlay will use at most, so a long candidate list cannot eat the screen.
 pub const MAX_VISIBLE: usize = 8;
@@ -39,6 +38,11 @@ pub struct Completion {
     pub candidates: Vec<Candidate>,
     /// Which candidate is highlighted.
     pub selected: usize,
+    /// What the user typed, which is what the candidates were ranked against.
+    ///
+    /// Kept so the renderer can pick those characters out of each candidate; derived here so it
+    /// cannot drift from what was actually matched on.
+    pub typed: String,
     /// Character index in the line where the replaced token starts.
     pub token_start: usize,
 }
@@ -120,6 +124,7 @@ pub fn resolve(
                 .collect::<Vec<_>>();
             return (!candidates.is_empty()).then_some(Completion {
                 kind: Kind::Command,
+                typed: format!("/{query}"),
                 candidates,
                 selected: 0,
                 token_start: 0,
@@ -146,6 +151,7 @@ pub fn resolve(
 
     (!candidates.is_empty()).then(|| Completion {
         kind: Kind::Path,
+        typed: query.to_owned(),
         candidates,
         selected: 0,
         // The `@` itself is replaced along with the query, so accepting a path leaves a bare
@@ -165,67 +171,28 @@ pub fn render(completion: &Completion, width: u16, theme: &Theme) -> Vec<Line<'s
         .map(|c| c.value.chars().count())
         .max()
         .unwrap_or(0);
+    // What the popup is completing, so the part of each candidate you have already typed can be
+    // told apart from the part it adds.
+    let typed = completion.typed.clone();
 
     completion.candidates[window.clone()]
         .iter()
         .enumerate()
         .map(|(offset, candidate)| {
-            let index = window.start + offset;
-            let selected = index == completion.selected;
-            let (marker, value_style) = if selected {
-                ("→ ", Style::default().fg(theme.accent))
-            } else {
-                ("  ", Style::default().fg(theme.text))
-            };
-
-            let mut spans = vec![
-                Span::styled(marker, Style::default().fg(theme.accent)),
-                Span::styled(
-                    candidate.value.clone(),
-                    if selected {
-                        value_style.add_modifier(Modifier::BOLD)
-                    } else {
-                        value_style
-                    },
-                ),
-            ];
-            if !candidate.detail.is_empty() {
-                let gap = value_width - candidate.value.chars().count() + 2;
-                spans.push(Span::styled(
-                    format!("{}{}", " ".repeat(gap), candidate.detail),
-                    Style::default().fg(theme.muted),
-                ));
-            }
-
-            Line::from(fit(spans, usize::from(width)))
+            crate::menu::row(
+                &crate::menu::Row {
+                    value: &candidate.value,
+                    detail: &candidate.detail,
+                    selected: window.start + offset == completion.selected,
+                    ready: true,
+                    value_width,
+                },
+                &typed,
+                width,
+                theme,
+            )
         })
         .collect()
-}
-
-/// Make a row exactly `width` columns: padded if short, cut if long.
-///
-/// One rule at the end rather than a limit on each part. A detail is prose and prose grows, a
-/// command name could be long, and a popup can be narrower than either — and a row wider than
-/// the popup does not wrap, it pushes the layout sideways for every other row that was drawn
-/// from the width they all agreed on.
-pub(crate) fn fit(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
-    let mut out = Vec::with_capacity(spans.len() + 1);
-    let mut used = 0;
-    for span in spans {
-        let len = span.content.chars().count();
-        if used + len <= width {
-            used += len;
-            out.push(span);
-        } else {
-            let room = width - used;
-            let cut: String = span.content.chars().take(room).collect();
-            used += room;
-            out.push(Span::styled(cut, span.style));
-            break;
-        }
-    }
-    out.push(Span::raw(" ".repeat(width - used)));
-    out
 }
 
 /// Which slice of the candidate list is on screen, scrolled to keep the selection visible.
@@ -317,6 +284,7 @@ mod tests {
             .collect();
         let c = Completion {
             kind: Kind::Path,
+            typed: String::new(),
             candidates,
             selected: 15,
             token_start: 0,
@@ -346,6 +314,7 @@ mod clip_tests {
         // other row was drawn from a width they all agreed on.
         let completion = Completion {
             kind: Kind::Command,
+            typed: String::new(),
             candidates: vec![Candidate {
                 value: "/x".to_owned(),
                 detail: "a description far longer than the space available for it".to_owned(),
@@ -363,6 +332,7 @@ mod clip_tests {
     fn a_popup_too_narrow_for_any_detail_still_renders() {
         let completion = Completion {
             kind: Kind::Command,
+            typed: String::new(),
             candidates: vec![Candidate {
                 value: "/x".to_owned(),
                 detail: "anything".to_owned(),

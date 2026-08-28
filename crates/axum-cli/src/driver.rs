@@ -221,12 +221,11 @@ pub async fn run(
                 }
             }
             _ = ticker.tick() => {
-                // Also while disconnected: the reconnect message carries a spinner, and a
-                // spinner that has stopped says "hung" rather than "trying".
-                if app.is_busy() || !app.connected {
-                    app.tick = app.tick.wrapping_add(1);
-                    dirty = true;
-                }
+                // Always, now. The spinner needed this only while something was running; the
+                // prompt's border scan runs whenever the box is on screen, and a scan that
+                // stops the moment a turn ends reads as the UI having frozen.
+                app.tick = app.tick.wrapping_add(1);
+                dirty = true;
             }
         }
     }

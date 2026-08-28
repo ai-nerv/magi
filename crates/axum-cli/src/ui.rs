@@ -63,7 +63,18 @@ pub fn draw(
     let mut hidden_below = 0usize;
     let rows = area.height;
 
-    let prompt_lines = prompt::render(&app.editor, area.width, rows, theme);
+    // The scan says what the session is doing, which is why it is chosen here rather than in the
+    // prompt: this is the only place that knows about the turn as well as the text.
+    let scan = if !app.connected {
+        axum_tui::border::Scan::Off
+    } else if app.is_busy() {
+        axum_tui::border::Scan::Working
+    } else if app.editor.is_blank() {
+        axum_tui::border::Scan::Resting
+    } else {
+        axum_tui::border::Scan::Holding
+    };
+    let prompt_lines = prompt::render(&app.editor, area.width, rows, app.tick, scan, theme);
     let prompt_rows = (prompt_lines.len() as u16)
         .min(rows.saturating_sub(FOOTER_ROWS + STATUS_ROWS + 1))
         .max(1);

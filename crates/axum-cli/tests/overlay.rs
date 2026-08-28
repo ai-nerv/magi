@@ -47,7 +47,7 @@ fn the_command_palette_marks_the_selection_and_shows_details() {
     assert_eq!(
         rendered,
         vec![
-            "→ /help    show keybindings and commands",
+            "❯ /help    show keybindings and commands",
             "  /clear   start a fresh conversation",
             "  /model   the model, or /model <name> to switch",
             "  /rewind  undo the last exchange, or /rewind N",
@@ -61,13 +61,13 @@ fn the_command_palette_marks_the_selection_and_shows_details() {
 fn typing_narrows_the_palette_to_one_row() {
     let rendered = screen("/cl", 3, 50, &no_paths);
     assert_eq!(rendered.len(), 1);
-    assert!(rendered[0].starts_with("→ /clear"), "{rendered:?}");
+    assert!(rendered[0].starts_with("❯ /clear"), "{rendered:?}");
 }
 
 #[test]
 fn path_completion_ranks_the_closest_match_first() {
     let rendered = screen("open @main", 10, 40, &some_paths);
-    assert!(rendered[0].starts_with("→ src/main.rs"), "{rendered:?}");
+    assert!(rendered[0].starts_with("❯ src/main.rs"), "{rendered:?}");
 }
 
 #[test]

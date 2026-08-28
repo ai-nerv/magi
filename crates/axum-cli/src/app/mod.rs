@@ -338,10 +338,11 @@ impl App {
             HarnessEvent::ModelChanged { model, .. } => {
                 let before = self.model.as_ref().map(|m| m.name.clone());
                 let after = model.as_ref().map(|m| m.name.clone());
-                if self.started() && before != after {
-                    if let Some(name) = after {
-                        self.show_notice(format!("Model is now `{name}`."));
-                    }
+                if self.started()
+                    && before != after
+                    && let Some(name) = after
+                {
+                    self.show_notice(format!("Model is now `{name}`."));
                 }
                 self.model = model;
             }

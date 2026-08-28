@@ -650,12 +650,25 @@ mod fluidity_tests {
     }
 
     #[test]
-    fn an_unselected_row_is_not_filled() {
+    fn an_unselected_row_is_the_block_colour_not_the_bar_colour() {
+        // Every row carries a background now — that is what makes the list read as one object
+        // rather than as loose text. What marks the selection is that its background differs.
+        let theme = Theme::default();
         let picker = Picker::new("Model", many(5), None);
-        let rendered = render(&picker, 60, &Theme::default());
+        let rendered = render(&picker, 60, &theme);
         assert!(
-            rendered[2].spans.iter().all(|s| s.style.bg.is_none()),
-            "only the selection is barred"
+            rendered[2]
+                .spans
+                .iter()
+                .all(|s| s.style.bg == Some(theme.menu_bg)),
+            "the block"
+        );
+        assert!(
+            rendered[1]
+                .spans
+                .iter()
+                .any(|s| s.style.bg == Some(theme.menu_sel_bg)),
+            "and the bar on the row above it"
         );
     }
 }

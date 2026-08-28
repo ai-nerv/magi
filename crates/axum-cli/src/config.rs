@@ -745,7 +745,7 @@ mod staleness_tests {
         let file = dir.join("greet.lua");
         std::fs::write(&file, "x").expect("write");
         let started = SystemTime::now() - Duration::from_secs(3600);
-        assert_eq!(newer_than(&[file.clone()], started), vec![file]);
+        assert_eq!(newer_than(std::slice::from_ref(&file), started), vec![file]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -55,6 +55,33 @@ pub struct Theme {
     pub diff_removed: Color,
     /// Unchanged context lines in a diff.
     pub diff_context: Color,
+
+    // ---------------------------------------------------------------- menus
+    //
+    // A menu is a block, not loose text. oslo's dropdown is the reference: a background behind
+    // every row is what says where the list starts and stops, and the part of a candidate you
+    // have already typed is painted differently from the part it adds — which is the one thing
+    // that makes a long list scannable.
+    /// Behind every row of a list, so it reads as one object.
+    pub menu_bg: Color,
+    /// Behind the row you are on.
+    pub menu_sel_bg: Color,
+    /// The row you are on.
+    pub menu_sel_text: Color,
+    /// The characters you typed, wherever they appear in a candidate.
+    pub menu_match: Color,
+    /// What a row says about itself, beside its name.
+    pub menu_detail: Color,
+    /// The same, on the selected row.
+    pub menu_detail_sel: Color,
+    /// Counts and scroll markers on the heading.
+    pub menu_meta: Color,
+
+    // ------------------------------------------------------------- the box
+    /// The prompt's border at rest.
+    pub border: Color,
+    /// The brightest point of the scan travelling along it.
+    pub border_scan: Color,
 }
 
 /// Pi's `dark` theme values.
@@ -82,6 +109,17 @@ pub const DARK: Theme = Theme {
     diff_added: Color::Rgb(0xb5, 0xbd, 0x68),
     diff_removed: Color::Rgb(0xcc, 0x66, 0x66),
     diff_context: Color::Rgb(0x80, 0x80, 0x80),
+
+    menu_bg: Color::Rgb(0x22, 0x23, 0x28),
+    menu_sel_bg: Color::Rgb(0x33, 0x38, 0x42),
+    menu_sel_text: Color::Rgb(0xff, 0xff, 0xff),
+    menu_match: Color::Rgb(0x5f, 0xd7, 0xd7),
+    menu_detail: Color::Rgb(0x8a, 0x8a, 0x8a),
+    menu_detail_sel: Color::Rgb(0xd0, 0xd0, 0xd0),
+    menu_meta: Color::Rgb(0x6c, 0x6c, 0x6c),
+
+    border: Color::Rgb(0x45, 0x48, 0x52),
+    border_scan: Color::Rgb(0x8a, 0xbe, 0xb7),
 };
 
 impl Default for Theme {
