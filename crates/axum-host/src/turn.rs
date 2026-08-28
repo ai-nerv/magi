@@ -429,6 +429,13 @@ pub async fn run(
             return Ok(());
         }
 
+        // Where each call was journalled, so its answer lands on its own entry. Amending "the
+        // last entry" is right for a message still streaming and wrong here: a round commits
+        // every call before running any, so by the time the first result arrives there are two
+        // more entries after it. Every result but the last went to the wrong entry and was then
+        // overwritten, leaving calls with `result: null` that the model had made and never got
+        // an answer to.
+        let mut at = Vec::with_capacity(calls.len());
         {
             let mut held = session.lock().await;
             held.set_status(AgentStatus::Working {
@@ -438,35 +445,62 @@ pub async fn run(
                 // Journalled before it is run, and before the registry is consulted: a call
                 // that went nowhere is still something the transcript can account for. Tau
                 // calls this commit-before-route and it is its best idea.
-                held.commit(Entry::Tool {
+                at.push(held.commit(Entry::Tool {
                     id: ToolCallId::new(call.id.clone()),
                     name: call.name.clone(),
                     args: call.arguments.clone(),
                     result: None,
                     thought_signature: None,
-                })?;
+                })?);
             }
         }
 
+        // Sequential preparation, parallel execution, results in source order — Pi's shape
+        // (`agent-loop.ts:489-554`), and the only one available here. `Tool` is deliberately not
+        // `Send`, because a Lua tool runs in a VM that is not, so this cannot be threads. It does
+        // not need to be: a peer is another *process*, so writing its request and coming back for
+        // the answer is all the concurrency there is to have. Three calls to three peers cost the
+        // slowest rather than the sum; a built-in or a Lua tool has nothing to overlap and says
+        // so, and runs where it stands.
+        //
+        // Preparation stays one at a time on purpose. Checking arguments is cheap, but asking a
+        // person for permission is not, and two prompts racing onto one screen is not a faster
+        // round but an unanswerable one.
+        let mut prepared = Vec::with_capacity(calls.len());
         for call in &calls {
+            if cancel.is_requested() {
+                prepared.push(None);
+                continue;
+            }
+            prepared.push(Some(registry.prepare(&call.name, &call.arguments, ops)));
+        }
+
+        for ((call, prepared), at) in calls.iter().zip(prepared).zip(at) {
             // Checked per call, not per round: the entry is already committed, so a stop between
             // two tools leaves a result saying it was never run rather than a call with no answer.
-            let output = if cancel.is_requested() {
-                axum_tools::Output::error("cancelled before this tool ran")
-            } else {
-                registry.answer(&call.name, &call.arguments, ops, &cancel)
+            let output = match prepared {
+                // A call already in flight is collected even after an interrupt: the peer is
+                // running it either way, and the answer is owed to the entry that was committed
+                // before it went out.
+                Some(prepared) if !cancel.is_requested() || prepared.in_flight() => {
+                    registry.finish(prepared, ops, &cancel)
+                }
+                _ => axum_tools::Output::error("cancelled before this tool ran"),
             };
             let mut held = session.lock().await;
-            held.amend(Entry::Tool {
-                id: ToolCallId::new(call.id.clone()),
-                name: call.name.clone(),
-                args: call.arguments.clone(),
-                thought_signature: None,
-                result: Some(axum_proto::ToolResult {
-                    output: output.content,
-                    is_error: output.is_error,
-                }),
-            })?;
+            held.amend_at(
+                at,
+                Entry::Tool {
+                    id: ToolCallId::new(call.id.clone()),
+                    name: call.name.clone(),
+                    args: call.arguments.clone(),
+                    thought_signature: None,
+                    result: Some(axum_proto::ToolResult {
+                        output: output.content,
+                        is_error: output.is_error,
+                    }),
+                },
+            )?;
         }
 
         if cancel.is_requested() {

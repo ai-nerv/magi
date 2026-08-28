@@ -171,6 +171,14 @@ impl Journal {
         }
     }
 
+    /// Where the entry a cursor names sits, if it names one.
+    ///
+    /// Cursors count from one, so the first entry is at cursor 1. `None` for the zero cursor,
+    /// which names the state before anything was written.
+    fn at(cursor: Cursor) -> Option<usize> {
+        usize::try_from(cursor.0).ok()?.checked_sub(1)
+    }
+
     /// The position of the last entry written.
     #[must_use]
     pub fn cursor(&self) -> Cursor {
@@ -201,12 +209,36 @@ impl Journal {
             return self.append(entry);
         }
         let cursor = self.cursor();
-        if let Some(last) = self.entries.last_mut() {
-            *last = entry.clone();
-        }
+        self.amend_at(cursor, entry)?;
+        Ok(cursor)
+    }
+
+    /// Replace the entry at `cursor`, wherever it is.
+    ///
+    /// [`Journal::amend`] replaces the *last* entry, which is right for a message that is still
+    /// streaming and wrong for anything else. A round of three tool calls commits three entries
+    /// and then answers them one at a time: with only the last-entry form, the first two results
+    /// landed on the third entry and were then overwritten by it, so two calls kept `result:
+    /// null` for the rest of the session. What the model saw was two calls it had made and
+    /// never got an answer to.
+    ///
+    /// The record on disk already carried the cursor it belonged to; nothing read it back.
+    ///
+    /// # Errors
+    /// When the write fails. A cursor naming no entry is ignored rather than refused: it can
+    /// only come from a caller holding a cursor from another session, and there is nothing to
+    /// amend.
+    pub fn amend_at(&mut self, cursor: Cursor, entry: Entry) -> Result<(), JournalError> {
+        let Some(at) = Self::at(cursor) else {
+            return Ok(());
+        };
+        let Some(slot) = self.entries.get_mut(at) else {
+            return Ok(());
+        };
+        *slot = entry.clone();
         self.write(&Record::Entry { cursor, entry })?;
         self.writer.flush()?;
-        Ok(cursor)
+        Ok(())
     }
 
     fn write(&mut self, record: &Record) -> Result<(), JournalError> {
@@ -380,5 +412,107 @@ mod tests {
             "{error:?}"
         );
         let _ = std::fs::remove_dir_all(path.parent().expect("parent"));
+    }
+}
+
+#[cfg(test)]
+mod amend_at_tests {
+    use super::*;
+    use axum_proto::{MessageId, ToolCallId, ToolResult};
+
+    fn journal(name: &str) -> (Journal, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("axum-amendat-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("s.jsonl");
+        let journal = Journal::open(&path, SessionId::new("s"), "/tmp", 0).expect("open");
+        (journal, path)
+    }
+
+    fn call(at: usize, answered: bool) -> Entry {
+        Entry::Tool {
+            id: ToolCallId::new(format!("c{at}")),
+            name: "read".into(),
+            args: "{}".into(),
+            result: answered.then(|| ToolResult {
+                output: format!("answer {at}"),
+                is_error: false,
+            }),
+            thought_signature: None,
+        }
+    }
+
+    /// Which entries have an answer, by their call id.
+    fn answered(entries: &[Entry]) -> Vec<&str> {
+        entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Tool { id, result, .. } => result.as_ref().map(|_| id.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_round_of_calls_each_get_their_own_answer() {
+        // The bug this exists for: a round commits every call before running any, so by the time
+        // the first result arrives there are two more entries after it. Amending "the last
+        // entry" put every result but the last on the wrong one, and the model was left with
+        // calls it had made and never got an answer to.
+        let (mut journal, _) = journal("round");
+        let at: Vec<Cursor> = (0..3)
+            .map(|n| journal.append(call(n, false)).expect("append"))
+            .collect();
+
+        for (n, cursor) in at.iter().enumerate() {
+            journal.amend_at(*cursor, call(n, true)).expect("amend");
+        }
+
+        assert_eq!(answered(journal.entries()), vec!["c0", "c1", "c2"]);
+    }
+
+    #[test]
+    fn an_amendment_to_an_earlier_entry_survives_a_reload() {
+        // The record already carried the cursor it belonged to; nothing read it back, so a
+        // reload turned each amendment into a fourth, fifth and sixth entry.
+        let (mut journal, path) = journal("reload");
+        let at: Vec<Cursor> = (0..3)
+            .map(|n| journal.append(call(n, false)).expect("append"))
+            .collect();
+        for (n, cursor) in at.iter().enumerate() {
+            journal.amend_at(*cursor, call(n, true)).expect("amend");
+        }
+        drop(journal);
+
+        let reopened = Journal::open(&path, SessionId::new("s"), "/tmp", 0).expect("reopen");
+        assert_eq!(reopened.entries().len(), 3, "three entries, not six");
+        assert_eq!(answered(reopened.entries()), vec!["c0", "c1", "c2"]);
+    }
+
+    #[test]
+    fn amending_the_last_entry_still_works_the_way_it_did() {
+        // What a streaming message uses, and the path everything else still takes.
+        let (mut journal, _) = journal("last");
+        journal
+            .append(Entry::User {
+                id: MessageId::new("u1"),
+                text: "hello".into(),
+            })
+            .expect("append");
+        journal.append(call(0, false)).expect("append");
+        journal.amend(call(0, true)).expect("amend");
+
+        assert_eq!(journal.entries().len(), 2);
+        assert_eq!(answered(journal.entries()), vec!["c0"]);
+    }
+
+    #[test]
+    fn a_cursor_naming_no_entry_is_ignored_rather_than_appended() {
+        // It can only come from a caller holding a cursor from another session, and there is
+        // nothing to amend.
+        let (mut journal, _) = journal("stray");
+        journal.append(call(0, false)).expect("append");
+        journal.amend_at(Cursor(99), call(9, true)).expect("amend");
+        assert_eq!(journal.entries().len(), 1);
+        assert!(answered(journal.entries()).is_empty());
     }
 }

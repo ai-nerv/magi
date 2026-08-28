@@ -197,6 +197,26 @@ impl Session {
         Ok(cursor)
     }
 
+    /// The same, for an entry that is no longer the last one.
+    ///
+    /// A round of tool calls commits every call before running any of them, so by the time a
+    /// result arrives its entry has others after it. [`Session::amend`] replaces the *last*
+    /// entry, so every result but the last landed on the wrong one and was then overwritten —
+    /// leaving calls with `result: null` for the rest of the session, which is a call the model
+    /// made and never got an answer to.
+    ///
+    /// # Errors
+    /// When the write fails.
+    pub fn amend_at(&mut self, cursor: Cursor, entry: Entry) -> Result<(), JournalError> {
+        let at = usize::try_from(cursor.0).unwrap_or(0).saturating_sub(1);
+        let previous = self.journal.entries().get(at).cloned();
+        self.journal.amend_at(cursor, entry.clone())?;
+        for event in amendment_events(cursor, previous.as_ref(), &entry) {
+            let _ = self.events.send(event);
+        }
+        Ok(())
+    }
+
     /// The same, for a message that is still arriving: published, not written down.
     ///
     /// Every delta of an answer goes through here. [`Session::amend`] would be correct and

@@ -90,6 +90,11 @@ pub struct ProcessTool {
     peer: RefCell<Option<Peer>>,
     /// Calls answered so far, so an id is never reused.
     next: std::cell::Cell<u64>,
+    /// The call that has been sent and not yet collected, with how long it may take.
+    ///
+    /// At most one: a peer answers one call at a time, so a second call to the same tool has
+    /// nothing to overlap with the first.
+    flight: RefCell<Option<(ToolCallId, Duration)>>,
 }
 
 /// A name, a description and a schema, from whichever source is currently believed.
@@ -141,6 +146,7 @@ impl ProcessTool {
             args,
             peer: RefCell::new(None),
             next: std::cell::Cell::new(1),
+            flight: RefCell::new(None),
         }
     }
 
@@ -278,26 +284,51 @@ impl ProcessTool {
     /// Bounded three ways, because a peer is another program and none of them can be assumed:
     /// the call has a deadline, an interrupt is passed on and then enforced, and a peer whose
     /// stream ends is reported rather than waited on.
-    fn exchange(
-        &self,
-        id: &ToolCallId,
-        arguments: &serde_json::Value,
-        cancel: &dyn Cancel,
-    ) -> Ended {
+    /// What a lost peer is reported as.
+    ///
+    /// The peer's own words first: "broken pipe" is what the wire saw, and the reason is on its
+    /// stderr. A peer that could not start says so there, and without it the failure is
+    /// unactionable for both the model and the user.
+    fn lost(&self, why: &str) -> Output {
+        let said = self.complaint();
+        self.drop_peer();
+        if said.is_empty() {
+            Output::error(format!("{}: {why}", self.name))
+        } else {
+            Output::error(format!("{}: {why}\n{said}", self.name))
+        }
+    }
+
+    /// Write the call and return, leaving the answer for [`Tool::wait`].
+    ///
+    /// Split from the waiting so a round of calls to *different* peers overlaps: the requests go
+    /// out one after another and the answers are collected in the order the model asked, so the
+    /// round costs the slowest peer rather than the sum of them. See [`crate::Sending`].
+    fn post(&self, arguments: &serde_json::Value) -> Result<ToolCallId, String> {
+        let id = ToolCallId::new(format!("c{}", self.next.get()));
+        self.next.set(self.next.get() + 1);
+
+        let mut held = self.peer.borrow_mut();
+        let Some(peer) = held.as_mut() else {
+            return Err("the peer is not running".to_owned());
+        };
+        peer.writer
+            .write_blocking(&ToolRequest::Call {
+                id: id.clone(),
+                name: self.name.clone(),
+                arguments: arguments.clone(),
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(id)
+    }
+
+    fn exchange(&self, id: &ToolCallId, deadline_in: Duration, cancel: &dyn Cancel) -> Ended {
         let mut held = self.peer.borrow_mut();
         let Some(peer) = held.as_mut() else {
             return Ended::Lost("the peer is not running".to_owned());
         };
 
-        if let Err(e) = peer.writer.write_blocking(&ToolRequest::Call {
-            id: id.clone(),
-            name: self.name.clone(),
-            arguments: arguments.clone(),
-        }) {
-            return Ended::Lost(e.to_string());
-        }
-
-        let mut deadline = Instant::now() + allowed(arguments);
+        let mut deadline = Instant::now() + deadline_in;
         let mut progress = String::new();
         let mut asked_to_stop = false;
 
@@ -384,23 +415,50 @@ impl Tool for ProcessTool {
         if let Err(why) = self.ensure(ops) {
             return Output::error(why);
         }
-        let id = ToolCallId::new(format!("c{}", self.next.get()));
-        self.next.set(self.next.get() + 1);
+        let id = match self.post(arguments) {
+            Ok(id) => id,
+            Err(why) => return self.lost(&why),
+        };
 
-        match self.exchange(&id, arguments, cancel) {
+        match self.exchange(&id, allowed(arguments), cancel) {
             Ended::Answered(output) => output,
-            Ended::Lost(why) => {
-                // The peer's own words first: "broken pipe" is what the wire saw, and the
-                // reason is on its stderr. A peer that could not start says so there, and
-                // without it the failure is unactionable for both the model and the user.
-                let said = self.complaint();
-                self.drop_peer();
-                if said.is_empty() {
-                    Output::error(format!("{}: {why}", self.name))
-                } else {
-                    Output::error(format!("{}: {why}\n{said}", self.name))
-                }
+            Ended::Lost(why) => self.lost(&why),
+        }
+    }
+
+    fn send(&self, arguments: &serde_json::Value, ops: &dyn Ops) -> crate::Sending {
+        // The permission question is asked *here*, in the phase that runs one call at a time,
+        // because it is a question to a person: two prompts racing onto one screen is not a
+        // faster round, it is an unanswerable one.
+        if let Some(action) = self.action(arguments)
+            && let Err(why) = ops.allow(&self.name, &action)
+        {
+            return crate::Sending::Refused(Output::error(why));
+        }
+        if let Err(why) = self.ensure(ops) {
+            return crate::Sending::Refused(Output::error(why));
+        }
+        // One peer answers one call at a time, so a second call to the *same* tool has nothing
+        // to overlap with the first and waits its turn. Overlap is between peers.
+        if self.flight.borrow().is_some() {
+            return crate::Sending::Inline;
+        }
+        match self.post(arguments) {
+            Ok(id) => {
+                *self.flight.borrow_mut() = Some((id, allowed(arguments)));
+                crate::Sending::Sent
             }
+            Err(why) => crate::Sending::Refused(self.lost(&why)),
+        }
+    }
+
+    fn wait(&self, cancel: &dyn Cancel) -> Output {
+        let Some((id, allowed)) = self.flight.borrow_mut().take() else {
+            return Output::error(format!("{}: nothing was sent", self.name));
+        };
+        match self.exchange(&id, allowed, cancel) {
+            Ended::Answered(output) => output,
+            Ended::Lost(why) => self.lost(&why),
         }
     }
 }

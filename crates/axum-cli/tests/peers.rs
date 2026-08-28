@@ -459,3 +459,89 @@ fn which(program: &str) -> Result<String, ()> {
         .map(|found| found.display().to_string())
         .ok_or(())
 }
+
+#[test]
+fn a_round_of_calls_to_different_peers_overlaps() {
+    // The milestone, measured. Two peers each sleeping a second: run one after the other that is
+    // two seconds, and the point of sending both before collecting either is that it is one.
+    //
+    // `Tool` is deliberately not `Send` — a Lua tool runs in a VM that is not — so this cannot
+    // be threads. It does not need to be: a peer is another *process*, and writing its request
+    // and coming back for the answer is all the concurrency there is to have.
+    let (mut registry, ops, dir) = session_raw("overlap");
+    for name in ["one", "two"] {
+        registry.register(Box::new(axum_tools::process::ProcessTool::new(
+            name,
+            "A shell.",
+            serde_json::json!({
+                "type": "object",
+                "properties": { "command": { "type": "string" } },
+                "required": ["command"],
+            }),
+            env!("CARGO_BIN_EXE_axum"),
+            vec!["ext".into(), "shell".into()],
+        )));
+    }
+    registry.probe(&ops);
+    // Started before the clock: the first call to a peer pays for spawning it, which is not
+    // what this is measuring.
+    for name in ["one", "two"] {
+        let _ = registry.answer(name, r#"{"command":"true"}"#, &ops, &Uncancelled);
+    }
+
+    let started = std::time::Instant::now();
+    let sent: Vec<_> = ["one", "two"]
+        .into_iter()
+        .map(|name| registry.prepare(name, r#"{"command":"sleep 1"}"#, &ops))
+        .collect();
+    assert!(
+        sent.iter().all(axum_tools::Prepared::in_flight),
+        "both went out"
+    );
+    for prepared in sent {
+        let output = registry.finish(prepared, &ops, &Uncancelled);
+        assert!(!output.is_error, "{}", output.content);
+    }
+    let took = started.elapsed();
+
+    assert!(
+        took < std::time::Duration::from_millis(1800),
+        "two one-second calls took {took:?}, which is the sum rather than the slowest"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn two_calls_to_one_peer_still_take_their_turn() {
+    // A peer answers one call at a time, so a second call to the *same* tool has nothing to
+    // overlap with the first. It says so rather than pretending, and runs where it stands.
+    let (mut registry, ops, dir) = session_raw("queued");
+    registry.register(Box::new(axum_tools::process::ProcessTool::new(
+        "bash",
+        "A shell.",
+        serde_json::json!({
+            "type": "object",
+            "properties": { "command": { "type": "string" } },
+            "required": ["command"],
+        }),
+        env!("CARGO_BIN_EXE_axum"),
+        vec!["ext".into(), "shell".into()],
+    )));
+    registry.probe(&ops);
+
+    let first = registry.prepare("bash", r#"{"command":"echo one"}"#, &ops);
+    let second = registry.prepare("bash", r#"{"command":"echo two"}"#, &ops);
+    assert!(first.in_flight(), "the first went out");
+    assert!(!second.in_flight(), "the second waits its turn");
+
+    assert_eq!(
+        registry.finish(first, &ops, &Uncancelled).content.trim(),
+        "one"
+    );
+    assert_eq!(
+        registry.finish(second, &ops, &Uncancelled).content.trim(),
+        "two",
+        "and still answers, in the order it was asked"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

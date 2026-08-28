@@ -71,12 +71,13 @@ pub fn parse(source: &str) -> Result<Recovered, usize> {
                 });
             }
             Record::Entry { cursor, entry } => {
-                // A later record for the same cursor is an amendment: a message that was
-                // still streaming when its first line was written. The last one wins.
-                if cursor == out.cursor && !out.entries.is_empty() {
-                    if let Some(last) = out.entries.last_mut() {
-                        *last = entry;
-                    }
+                // A record naming an entry already read is an amendment, and the last one wins.
+                // It used to have to name the *last* entry, which held while only a streaming
+                // message was ever amended; a round of tool calls answers several entries that
+                // are no longer the last, and those amendments were read back as new entries.
+                let at = usize::try_from(cursor.0).unwrap_or(0).saturating_sub(1);
+                if let Some(slot) = out.entries.get_mut(at) {
+                    *slot = entry;
                 } else {
                     out.entries.push(entry);
                     out.cursor = cursor;

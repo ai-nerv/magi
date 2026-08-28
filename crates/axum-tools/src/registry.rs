@@ -34,6 +34,43 @@ pub trait Tool {
     /// disagree with itself. A peer can: it is another program, and what a config says about
     /// it is a claim rather than a fact.
     fn probe(&self, _ops: &dyn Ops) {}
+
+    /// Start the call without waiting for it, if this tool can be waited on separately.
+    ///
+    /// The half of a round that overlaps. A model asking for three files, or a grep and an ls,
+    /// used to pay for them one after another; sending all three and then collecting them costs
+    /// the slowest rather than the sum.
+    ///
+    /// [`Sending::Inline`] by default, which means "there is nothing to overlap — call `run`".
+    /// That is the honest answer for a built-in, whose work is a syscall, and for a Lua tool,
+    /// whose work happens in a VM this thread owns. Only a peer has something to wait *for*:
+    /// it is another process, and the waiting is what overlaps.
+    ///
+    /// Anything a tool refuses before sending — a permission it was denied — comes back here as
+    /// [`Sending::Refused`], because a call that never went out has its answer already.
+    fn send(&self, arguments: &serde_json::Value, ops: &dyn Ops) -> Sending {
+        let _ = (arguments, ops);
+        Sending::Inline
+    }
+
+    /// Wait for a call [`Tool::send`] started.
+    ///
+    /// Only called after `send` answered [`Sending::Sent`], so the default cannot be reached by
+    /// a tool that did not opt in.
+    fn wait(&self, cancel: &dyn Cancel) -> Output {
+        let _ = cancel;
+        Output::error("this tool was never sent")
+    }
+}
+
+/// What [`Tool::send`] did with the call.
+pub enum Sending {
+    /// It is on its way. [`Tool::wait`] has the answer.
+    Sent,
+    /// This tool has nothing to overlap; call [`Tool::run`].
+    Inline,
+    /// It never went out, and this is why.
+    Refused(Output),
 }
 
 /// Every tool the session can reach.
@@ -163,11 +200,111 @@ impl Registry {
         ops: &dyn Ops,
         cancel: &dyn Cancel,
     ) -> Output {
-        match crate::repair::arguments(arguments) {
-            Ok(parsed) => self.call(name, &parsed, ops, cancel),
-            Err(why) => Output::error(format!("{name}: {why}")),
+        self.finish(self.prepare(name, arguments, ops), ops, cancel)
+    }
+
+    /// Check a call and start it, without waiting for the answer.
+    ///
+    /// The first half of a round, and it runs **one call at a time**: repairing, checking against
+    /// the schema and asking the person for permission are all things that must happen in the
+    /// order the model asked, and two permission prompts racing onto one screen is not a faster
+    /// round but an unanswerable one. Pi draws the line in the same place — sequential
+    /// preparation, parallel execution, results in source order (`agent-loop.ts:489-554`).
+    ///
+    /// What overlaps is the *waiting*, which is [`Registry::finish`].
+    #[must_use]
+    pub fn prepare(&self, name: &str, arguments: &str, ops: &dyn Ops) -> Prepared {
+        let Some(tool) = self.get(name) else {
+            let known: Vec<&str> = self.tools.keys().map(String::as_str).collect();
+            return Prepared::answered(
+                name,
+                Output::error(format!(
+                    "there is no tool called {name:?}. Available: {}",
+                    known.join(", ")
+                )),
+            );
+        };
+        let parsed = match crate::repair::arguments(arguments) {
+            Ok(parsed) => parsed,
+            Err(why) => return Prepared::answered(name, Output::error(format!("{name}: {why}"))),
+        };
+        let checked = match crate::schema::check(&parsed, &tool.parameters()) {
+            Ok(checked) => checked,
+            Err(wrong) => {
+                return Prepared::answered(
+                    name,
+                    Output::error(format!("{name}: the arguments do not fit:\n{wrong}")),
+                );
+            }
+        };
+        let state = match tool.send(&checked, ops) {
+            Sending::Sent => State::Sent,
+            Sending::Inline => State::Inline(checked),
+            Sending::Refused(output) => State::Answered(output),
+        };
+        Prepared {
+            name: name.to_owned(),
+            state,
         }
     }
+
+    /// Collect what [`Registry::prepare`] started.
+    ///
+    /// The second half, and the half that overlaps: a call already sent is only waited on here,
+    /// so a round of calls to different peers costs the slowest rather than the sum. Called in
+    /// the order the model asked, so the transcript is the same whatever the timing was.
+    #[must_use]
+    pub fn finish(&self, prepared: Prepared, ops: &dyn Ops, cancel: &dyn Cancel) -> Output {
+        let Prepared { name, state } = prepared;
+        let output = match state {
+            State::Answered(output) => return output,
+            State::Sent => match self.get(&name) {
+                Some(tool) => tool.wait(cancel),
+                None => Output::error(format!("{name} is gone")),
+            },
+            State::Inline(arguments) => match self.get(&name) {
+                Some(tool) => tool.run(&arguments, ops, cancel),
+                None => Output::error(format!("{name} is gone")),
+            },
+        };
+        Output {
+            content: crate::bound::apply(&name, output.content),
+            is_error: output.is_error,
+        }
+    }
+}
+
+/// A call that has been checked, and started if it could be.
+pub struct Prepared {
+    name: String,
+    state: State,
+}
+
+impl Prepared {
+    fn answered(name: &str, output: Output) -> Self {
+        Self {
+            name: name.to_owned(),
+            state: State::Answered(output),
+        }
+    }
+
+    /// Whether this call is already out and only needs collecting.
+    ///
+    /// What makes a round worth splitting: nothing is overlapping unless something is in flight.
+    #[must_use]
+    pub fn in_flight(&self) -> bool {
+        matches!(self.state, State::Sent)
+    }
+}
+
+/// How far a prepared call got.
+enum State {
+    /// Sent to a peer, waiting to be collected.
+    Sent,
+    /// Not sent; run it where it stands, with these arguments.
+    Inline(serde_json::Value),
+    /// It never started, and this is why.
+    Answered(Output),
 }
 
 #[cfg(test)]
