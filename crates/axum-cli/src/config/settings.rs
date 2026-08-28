@@ -190,3 +190,99 @@ mod scan_tests {
         assert_eq!(scan_rate(&from_lua("axum.scan_speed = 1000")), 800);
     }
 }
+
+/// The colours the UI draws with, as `axum.ui` left them.
+///
+/// Every field is a palette index and every one is optional: a config that names three of them
+/// gets the ordinary terminal reading for the rest. Names are the role, not the slot — `accent`
+/// rather than `color1` — because which slot is the accent is exactly the thing that differs
+/// between one machine and the next.
+///
+/// ```lua
+/// axum.ui.accent = 1
+/// axum.ui.muted  = 8
+/// ```
+#[must_use]
+pub fn palette(loaded: &Loaded) -> axum_tui::colour::Palette {
+    let mut palette = axum_tui::colour::Palette::default();
+    let Some(ui) = loaded.config.get("ui").and_then(|v| v.as_object()) else {
+        return palette;
+    };
+    // A value that is not an index is left alone rather than clamped. Clamping 300 to 255 would
+    // paint something, and the something would not be what was asked for.
+    let index = |name: &str| -> Option<u8> {
+        ui.get(name)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|n| u8::try_from(n).ok())
+    };
+    let set = |name: &str, field: &mut u8| {
+        if let Some(value) = index(name) {
+            *field = value;
+        }
+    };
+    set("accent", &mut palette.accent);
+    set("success", &mut palette.success);
+    set("warning", &mut palette.warning);
+    set("error", &mut palette.error);
+    set("heading", &mut palette.heading);
+    set("code", &mut palette.code);
+    set("match", &mut palette.match_);
+    set("block_bg", &mut palette.block_bg);
+    set("raised_bg", &mut palette.raised_bg);
+    set("rule", &mut palette.rule);
+    set("dim", &mut palette.dim);
+    set("muted", &mut palette.muted);
+    set("text", &mut palette.text);
+    set("selected", &mut palette.selected);
+    set("border", &mut palette.border);
+    set("scan", &mut palette.scan);
+    palette
+}
+
+#[cfg(test)]
+mod palette_tests {
+    use super::*;
+
+    fn from_lua(source: &str) -> Loaded {
+        let mut engine = axum_lua::Engine::new();
+        engine.run(source, "test").expect("the config must run");
+        engine.harvest();
+        Loaded {
+            config: engine.config(),
+            tools: Vec::new(),
+            stubs: Vec::new(),
+            apis: Vec::new(),
+            providers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_config_that_says_nothing_gets_the_ordinary_terminal() {
+        assert_eq!(palette(&from_lua("")), axum_tui::colour::STOCK);
+    }
+
+    #[test]
+    fn a_field_can_be_set_without_declaring_the_table_first() {
+        // `axum.ui` exists before any config runs, so this is an assignment rather than an
+        // attempt to index a nil.
+        let chosen = palette(&from_lua("axum.ui.accent = 1"));
+        assert_eq!(chosen.accent, 1);
+        assert_eq!(chosen.muted, axum_tui::colour::STOCK.muted, "and only that");
+    }
+
+    #[test]
+    fn the_whole_table_can_be_replaced_at_once() {
+        let chosen = palette(&from_lua(
+            "axum.ui = { accent = 1, muted = 8, border = 237 }",
+        ));
+        assert_eq!((chosen.accent, chosen.muted, chosen.border), (1, 8, 237));
+    }
+
+    #[test]
+    fn a_value_that_is_not_an_index_is_left_alone() {
+        // Clamping would paint something, and the something would not be what was asked for.
+        let chosen = palette(&from_lua("axum.ui.accent = 300\naxum.ui.dim = 'grey'"));
+        assert_eq!(chosen.accent, axum_tui::colour::STOCK.accent);
+        assert_eq!(chosen.dim, axum_tui::colour::STOCK.dim);
+    }
+}

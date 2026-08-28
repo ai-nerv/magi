@@ -102,8 +102,8 @@ pub fn fit_path(path: &str, width: usize) -> String {
 /// gone from the default; it mattered while two backends were being built and it does not now.
 #[must_use]
 pub fn render(data: &FooterData, width: u16) -> Vec<Line<'static>> {
-    let dim = Style::default().fg(colour::DIM);
-    let muted = Style::default().fg(colour::MUTED);
+    let dim = Style::default().fg(colour::dim());
+    let muted = Style::default().fg(colour::muted());
     let width = usize::from(width);
 
     // Right first: the model is the thing you check, so it is the last to go.
@@ -154,9 +154,9 @@ pub fn render(data: &FooterData, width: u16) -> Vec<Line<'static>> {
 
     // Context pressure is the one thing in the footer worth breaking the dim palette for.
     let context_color = match data.context_percent {
-        Some(p) if p > 90.0 => colour::ERROR,
-        Some(p) if p > 70.0 => colour::WARNING,
-        _ => colour::DIM,
+        Some(p) if p > 90.0 => colour::error(),
+        Some(p) if p > 70.0 => colour::warning(),
+        _ => colour::dim(),
     };
 
     let used = location.chars().count() + usage.chars().count() + model.chars().count();

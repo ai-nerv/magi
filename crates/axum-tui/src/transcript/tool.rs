@@ -45,11 +45,11 @@ pub(super) fn block(
     detail: Detail,
 ) -> Vec<Line<'static>> {
     let outcome = match result {
-        None => colour::MUTED,
-        Some(r) if r.is_error => colour::ERROR,
-        Some(_) => colour::SUCCESS,
+        None => colour::muted(),
+        Some(r) if r.is_error => colour::error(),
+        Some(_) => colour::success(),
     };
-    let style = Style::default().bg(colour::BLOCK_BG);
+    let style = Style::default().bg(colour::block_bg());
     let inner = usize::from(width.saturating_sub(PAD * 2));
 
     let mut out = vec![blank(width, style), {
@@ -59,7 +59,10 @@ pub(super) fn block(
         )];
         let summary = summarize(args);
         if !summary.is_empty() {
-            spans.push(Span::styled(format!(" {summary}"), style.fg(colour::MUTED)));
+            spans.push(Span::styled(
+                format!(" {summary}"),
+                style.fg(colour::muted()),
+            ));
         }
         pad(Line::from(spans), width, style)
     }];
@@ -74,7 +77,7 @@ pub(super) fn block(
             };
             for line in &all[..shown] {
                 let fg = if result.is_error {
-                    colour::ERROR
+                    colour::error()
                 } else {
                     change_colour(line)
                 };
@@ -91,7 +94,7 @@ pub(super) fn block(
                 out.push(pad(
                     Line::from(Span::styled(
                         format!("… {} more lines · ctrl+o", all.len() - shown),
-                        style.fg(colour::DIM),
+                        style.fg(colour::dim()),
                     )),
                     width,
                     style,
@@ -114,9 +117,9 @@ fn change_colour(line: &str) -> Color {
     match line.as_bytes().first() {
         // `+++`/`---` are file headers, not changed lines, and colouring them as changes makes
         // every diff look like it added and removed its own filename.
-        Some(b'+') if !line.starts_with("+++") => colour::SUCCESS,
-        Some(b'-') if !line.starts_with("---") => colour::ERROR,
-        _ => colour::MUTED,
+        Some(b'+') if !line.starts_with("+++") => colour::success(),
+        Some(b'-') if !line.starts_with("---") => colour::error(),
+        _ => colour::muted(),
     }
 }
 
@@ -201,14 +204,14 @@ mod diff_tests {
             40,
             Detail::Preview,
         );
-        assert_eq!(colour_of(&lines, "-was"), Some(colour::ERROR));
-        assert_eq!(colour_of(&lines, "+now"), Some(colour::SUCCESS));
+        assert_eq!(colour_of(&lines, "-was"), Some(colour::error()));
+        assert_eq!(colour_of(&lines, "+now"), Some(colour::success()));
     }
 
     #[test]
     fn ordinary_output_keeps_the_tool_colour() {
         let lines = entry_lines(&edit_entry("edited a.rs\n"), 40, Detail::Preview);
-        assert_eq!(colour_of(&lines, "edited"), Some(colour::MUTED));
+        assert_eq!(colour_of(&lines, "edited"), Some(colour::muted()));
     }
 
     #[test]
@@ -220,8 +223,8 @@ mod diff_tests {
             40,
             Detail::Preview,
         );
-        assert_eq!(colour_of(&lines, "--- a.rs"), Some(colour::MUTED));
-        assert_eq!(colour_of(&lines, "+++ a.rs"), Some(colour::MUTED));
+        assert_eq!(colour_of(&lines, "--- a.rs"), Some(colour::muted()));
+        assert_eq!(colour_of(&lines, "+++ a.rs"), Some(colour::muted()));
     }
 
     #[test]
@@ -238,8 +241,8 @@ mod diff_tests {
             thought_signature: None,
         };
         let lines = entry_lines(&entry, 40, Detail::Preview);
-        assert_eq!(colour_of(&lines, "-was"), Some(colour::ERROR));
-        assert_eq!(colour_of(&lines, "+now"), Some(colour::ERROR));
+        assert_eq!(colour_of(&lines, "-was"), Some(colour::error()));
+        assert_eq!(colour_of(&lines, "+now"), Some(colour::error()));
     }
 }
 
@@ -472,7 +475,7 @@ mod block_tests {
         for span in header(None).spans {
             assert_eq!(
                 span.style.bg,
-                Some(colour::BLOCK_BG),
+                Some(colour::block_bg()),
                 "{:?} has no background",
                 span.content
             );
@@ -490,8 +493,8 @@ mod block_tests {
             ..ok.clone()
         };
         let fg = |result: Option<&ToolResult>| header(result).spans[1].style.fg;
-        assert_eq!(fg(None), Some(colour::MUTED), "still running");
-        assert_eq!(fg(Some(&ok)), Some(colour::SUCCESS));
-        assert_eq!(fg(Some(&bad)), Some(colour::ERROR));
+        assert_eq!(fg(None), Some(colour::muted()), "still running");
+        assert_eq!(fg(Some(&ok)), Some(colour::success()));
+        assert_eq!(fg(Some(&bad)), Some(colour::error()));
     }
 }

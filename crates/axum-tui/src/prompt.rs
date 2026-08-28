@@ -47,10 +47,10 @@ fn placeholder_spans(width: u16) -> Vec<Span<'static>> {
         Span::styled(
             " ",
             Style::default()
-                .fg(colour::TEXT)
+                .fg(colour::text())
                 .add_modifier(Modifier::REVERSED),
         ),
-        Span::styled(hint, Style::default().fg(colour::DIM)),
+        Span::styled(hint, Style::default().fg(colour::dim())),
     ]
 }
 
@@ -70,7 +70,7 @@ pub fn render(
     tick: usize,
     scan: crate::border::Scan,
 ) -> Vec<Line<'static>> {
-    let text_style = Style::default().fg(colour::TEXT);
+    let text_style = Style::default().fg(colour::text());
     let (cursor_row, cursor_col) = editor.cursor();
     // Two columns of the width belong to the sides now.
     let inner_width = width.saturating_sub(2);
@@ -145,19 +145,19 @@ fn hidden(edge: Line<'static>, direction: Direction, count: usize) -> Line<'stat
     let mut spans: Vec<Span<'static>> = edge.spans.into_iter().take(3).collect();
     spans.push(Span::styled(
         label.clone(),
-        Style::default().fg(colour::DIM),
+        Style::default().fg(colour::dim()),
     ));
     let used = 3 + label.chars().count();
     for _ in used..width - 1 {
-        spans.push(Span::styled("─", Style::default().fg(colour::BORDER)));
+        spans.push(Span::styled("─", Style::default().fg(colour::border())));
     }
     spans.push(Span::styled(
         "╮".to_owned(),
-        Style::default().fg(colour::BORDER),
+        Style::default().fg(colour::border()),
     ));
     let last = spans.len() - 1;
     if matches!(direction, Direction::Down) {
-        spans[last] = Span::styled("╯".to_owned(), Style::default().fg(colour::BORDER));
+        spans[last] = Span::styled("╯".to_owned(), Style::default().fg(colour::border()));
     }
     Line::from(spans)
 }

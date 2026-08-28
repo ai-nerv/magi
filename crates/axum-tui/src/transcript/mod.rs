@@ -64,11 +64,11 @@ pub fn entry_lines(entry: &Entry, width: u16, detail: Detail) -> Vec<Line<'stati
 /// A bar down the left and muted text: the same shape as a block quote, which is what this
 /// is — a voice that is not the conversation's.
 fn notice(text: &str, width: u16) -> Vec<Line<'static>> {
-    let style = Style::default().fg(colour::DIM);
+    let style = Style::default().fg(colour::dim());
     let inner = width.saturating_sub(PAD * 2 + 2);
     let mut out = vec![Line::default()];
     for line in markdown::render(text, inner, style) {
-        let mut spans = vec![Span::styled("│ ", Style::default().fg(colour::MUTED))];
+        let mut spans = vec![Span::styled("│ ", Style::default().fg(colour::muted()))];
         spans.extend(line.spans);
         out.push(indent(Line::from(spans)));
     }
@@ -86,11 +86,11 @@ fn marker(label: &str, width: u16) -> Vec<Line<'static>> {
     vec![
         Line::default(),
         Line::from(vec![
-            Span::styled("─".repeat(rule / 2), Style::default().fg(colour::MUTED)),
-            Span::styled(label, Style::default().fg(colour::DIM)),
+            Span::styled("─".repeat(rule / 2), Style::default().fg(colour::muted())),
+            Span::styled(label, Style::default().fg(colour::dim())),
             Span::styled(
                 "─".repeat(rule.saturating_sub(rule / 2)),
-                Style::default().fg(colour::MUTED),
+                Style::default().fg(colour::muted()),
             ),
         ]),
     ]
@@ -98,7 +98,7 @@ fn marker(label: &str, width: u16) -> Vec<Line<'static>> {
 
 /// A full-width box on `userMessageBg`, padded one cell on every side.
 fn user(text: &str, width: u16) -> Vec<Line<'static>> {
-    let style = Style::default().bg(colour::RAISED_BG).fg(colour::TEXT);
+    let style = Style::default().bg(colour::raised_bg()).fg(colour::text());
     let inner = width.saturating_sub(PAD * 2);
     let body = markdown::render(text, inner, style);
 
@@ -118,7 +118,7 @@ fn assistant(
     error: Option<&str>,
     width: u16,
 ) -> Vec<Line<'static>> {
-    let base = Style::default().fg(colour::TEXT);
+    let base = Style::default().fg(colour::text());
     let inner = width.saturating_sub(PAD * 2);
     let mut out = Vec::new();
 
@@ -128,7 +128,7 @@ fn assistant(
 
     if !thinking.trim().is_empty() {
         let style = Style::default()
-            .fg(colour::MUTED)
+            .fg(colour::muted())
             .add_modifier(Modifier::ITALIC);
         for line in markdown::render(thinking.trim(), inner, style) {
             out.push(indent(line));
@@ -152,7 +152,7 @@ fn assistant(
             out.push(Line::default());
             out.push(indent(Line::from(Span::styled(
                 "Response hit the length limit and stopped here.",
-                Style::default().fg(colour::WARNING),
+                Style::default().fg(colour::warning()),
             ))));
         }
         // Not an error. You pressed escape and it obeyed; saying so in red claims something
@@ -161,14 +161,14 @@ fn assistant(
             out.push(Line::default());
             out.push(indent(Line::from(Span::styled(
                 error.map_or_else(|| "Interrupted.".to_owned(), ToOwned::to_owned),
-                Style::default().fg(colour::DIM),
+                Style::default().fg(colour::dim()),
             ))));
         }
         Some(StopReason::Error) => {
             out.push(Line::default());
             out.push(indent(Line::from(Span::styled(
                 format!("Error: {}", error.unwrap_or("Unknown error")),
-                Style::default().fg(colour::ERROR),
+                Style::default().fg(colour::error()),
             ))));
         }
         _ => {}
@@ -473,7 +473,7 @@ mod stop_tests {
             .flat_map(|l| l.spans.iter())
             .find(|s| s.content.contains("Interrupted"))
             .expect("the note");
-        assert_ne!(note.style.fg, Some(colour::ERROR));
+        assert_ne!(note.style.fg, Some(colour::error()));
     }
 
     #[test]
@@ -501,7 +501,7 @@ mod stop_tests {
             .flat_map(|l| l.spans.iter())
             .find(|s| s.content.contains("no route"))
             .expect("the note");
-        assert_eq!(note.style.fg, Some(colour::ERROR));
+        assert_eq!(note.style.fg, Some(colour::error()));
     }
 
     #[test]

@@ -49,13 +49,13 @@ pub fn working(
         return spinner(
             "Reconnecting to the daemon...".to_owned(),
             tick,
-            colour::WARNING,
+            colour::warning(),
             None,
         );
     }
     match status {
         AgentStatus::Idle => Line::default(),
-        AgentStatus::Working { label } => spinner(label.clone(), tick, colour::ACCENT, elapsed),
+        AgentStatus::Working { label } => spinner(label.clone(), tick, colour::accent(), elapsed),
         AgentStatus::Retrying {
             attempt,
             max_attempts,
@@ -66,7 +66,7 @@ pub fn working(
                 format!("Retrying ({attempt}/{max_attempts}) in {seconds}s... (esc to cancel)");
             // No elapsed clock: the countdown already says how long, and two numbers that
             // both look like seconds and mean different things is worse than one.
-            spinner(label, tick, colour::WARNING, None)
+            spinner(label, tick, colour::warning(), None)
         }
     }
 }
@@ -84,7 +84,7 @@ pub fn queued(count: usize) -> Vec<Span<'static>> {
     let what = if count == 1 { "message" } else { "messages" };
     vec![Span::styled(
         format!("  {count} {what} waiting to send"),
-        Style::default().fg(colour::DIM),
+        Style::default().fg(colour::dim()),
     )]
 }
 
@@ -99,10 +99,10 @@ pub fn scrolled(hidden: usize) -> Vec<Span<'static>> {
         return Vec::new();
     }
     vec![
-        Span::styled("  ↓ ", Style::default().fg(colour::WARNING)),
+        Span::styled("  ↓ ", Style::default().fg(colour::warning())),
         Span::styled(
             format!("{hidden} more below · shift+end to follow"),
-            Style::default().fg(colour::DIM),
+            Style::default().fg(colour::dim()),
         ),
     ]
 }
@@ -128,18 +128,18 @@ fn spinner(
         Span::styled(" ", Style::default()),
         Span::styled(frame.to_owned(), Style::default().fg(spinner_color)),
         Span::styled(" ", Style::default()),
-        Span::styled(label, Style::default().fg(colour::MUTED)),
+        Span::styled(label, Style::default().fg(colour::muted())),
     ];
     // Only once there is something to say. A clock that appears reading `0s` on every turn is
     // noise for the nine turns in ten that finish before anyone looks at it.
     if let Some(elapsed) = elapsed.filter(|e| e.as_secs() >= 1) {
         spans.push(Span::styled(
             format!("  {}", format_elapsed(elapsed)),
-            Style::default().fg(colour::DIM),
+            Style::default().fg(colour::dim()),
         ));
         spans.push(Span::styled(
             "  esc to interrupt",
-            Style::default().fg(colour::DIM),
+            Style::default().fg(colour::dim()),
         ));
     }
     Line::from(spans)

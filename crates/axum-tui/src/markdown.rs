@@ -47,7 +47,7 @@ pub fn render(source: &str, width: u16, base: Style) -> Vec<Line<'static>> {
                 // one leaves the block looking like it ran off the end of the message.
                 out.push(Line::from(Span::styled(
                     "└".to_owned(),
-                    Style::default().fg(colour::RULE),
+                    Style::default().fg(colour::rule()),
                 )));
             }
             continue;
@@ -55,10 +55,10 @@ pub fn render(source: &str, width: u16, base: Style) -> Vec<Line<'static>> {
 
         if in_fence {
             out.push(Line::from(vec![
-                Span::styled(GUTTER, Style::default().fg(colour::RULE)),
+                Span::styled(GUTTER, Style::default().fg(colour::rule())),
                 Span::styled(
                     crate::wrap::expand_tabs(trimmed),
-                    Style::default().fg(colour::CODE_BLOCK),
+                    Style::default().fg(colour::code_block()),
                 ),
             ]));
             continue;
@@ -100,7 +100,7 @@ const GUTTER: &str = "│ ";
 
 /// The opening line of a fenced block: the bar, and the language if one was named.
 fn fence_head(language: &str, width: u16) -> Line<'static> {
-    let bar = Style::default().fg(colour::RULE);
+    let bar = Style::default().fg(colour::rule());
     if language.is_empty() {
         return Line::from(Span::styled("┌".to_owned(), bar));
     }
@@ -156,7 +156,7 @@ fn block(line: &str, width: u16, base: Style) -> Vec<Line<'static>> {
         let rule = "─".repeat(usize::from(width).max(1));
         return vec![Line::from(Span::styled(
             rule,
-            Style::default().fg(colour::MUTED),
+            Style::default().fg(colour::muted()),
         ))];
     }
 
@@ -166,7 +166,7 @@ fn block(line: &str, width: u16, base: Style) -> Vec<Line<'static>> {
             Line::from(Span::styled(
                 text,
                 Style::default()
-                    .fg(colour::HEADING)
+                    .fg(colour::heading())
                     .add_modifier(Modifier::BOLD),
             )),
             width,
@@ -174,15 +174,15 @@ fn block(line: &str, width: u16, base: Style) -> Vec<Line<'static>> {
     }
 
     if let Some(rest) = trimmed.strip_prefix("> ") {
-        let mut spans = vec![Span::styled("│ ", Style::default().fg(colour::MUTED))];
-        spans.extend(inline(rest, base.fg(colour::MUTED)));
+        let mut spans = vec![Span::styled("│ ", Style::default().fg(colour::muted()))];
+        spans.extend(inline(rest, base.fg(colour::muted())));
         return wrap::line(Line::from(spans), width);
     }
 
     if let Some((marker, rest)) = list_marker(trimmed) {
         let mut spans = vec![
             Span::raw(" ".repeat(indent)),
-            Span::styled(marker, Style::default().fg(colour::ACCENT)),
+            Span::styled(marker, Style::default().fg(colour::accent())),
         ];
         spans.extend(inline(rest, base));
         return wrap::line(Line::from(spans), width);
@@ -261,7 +261,7 @@ fn inline(text: &str, base: Style) -> Vec<Span<'static>> {
                 if let Some(end) = chars[i + 1..].iter().position(|&n| n == '`') {
                     flush(&mut buf, &mut spans, base);
                     let code: String = chars[i + 1..i + 1 + end].iter().collect();
-                    spans.push(Span::styled(code, Style::default().fg(colour::ACCENT)));
+                    spans.push(Span::styled(code, Style::default().fg(colour::accent())));
                     i += end + 2;
                     continue;
                 }

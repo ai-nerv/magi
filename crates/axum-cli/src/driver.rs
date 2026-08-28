@@ -45,6 +45,7 @@ pub async fn run(
     // daemon has already refused to start over it and said why.
     if let Ok(loaded) = crate::config::load() {
         app.scan_rate = crate::config::scan_rate(&loaded);
+        axum_tui::colour::adopt(crate::config::palette(&loaded));
     }
     // Before anything else, because the answer to "why is my new tool not there" has to arrive
     // before the model is asked to use it. The daemon holds the tool set it was built with, and

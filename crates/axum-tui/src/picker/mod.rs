@@ -648,14 +648,14 @@ mod fluidity_tests {
             rendered[2]
                 .spans
                 .iter()
-                .all(|s| s.style.bg == Some(colour::BLOCK_BG)),
+                .all(|s| s.style.bg == Some(colour::block_bg())),
             "the block"
         );
         assert!(
             rendered[1]
                 .spans
                 .iter()
-                .any(|s| s.style.bg == Some(colour::RAISED_BG)),
+                .any(|s| s.style.bg == Some(colour::raised_bg())),
             "and the bar on the row above it"
         );
     }

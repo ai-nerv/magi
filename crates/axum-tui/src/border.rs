@@ -255,7 +255,9 @@ mod tests {
     fn with_the_scan_off_every_cell_is_the_border_colour() {
         let (top, _) = edges(20, 1, 7, Scan::Off);
         assert!(
-            top.spans.iter().all(|s| s.style.fg == Some(colour::BORDER)),
+            top.spans
+                .iter()
+                .all(|s| s.style.fg == Some(colour::border())),
             "nothing is lit"
         );
     }
@@ -350,7 +352,7 @@ mod tests {
             })
             .collect();
         assert!(
-            quiet.contains(&Some(colour::BORDER)),
+            quiet.contains(&Some(colour::border())),
             "an unlit cell is the border colour, whatever the tick"
         );
     }
@@ -370,12 +372,16 @@ mod tests {
     fn holding_lights_both_long_edges() {
         // Two heads sweeping in step: the shape of something waiting to be sent.
         let (top, bottom) = edges(30, 1, 0, Scan::Holding);
-        assert!(top.spans.iter().any(|s| s.style.fg != Some(colour::BORDER)));
+        assert!(
+            top.spans
+                .iter()
+                .any(|s| s.style.fg != Some(colour::border()))
+        );
         assert!(
             bottom
                 .spans
                 .iter()
-                .any(|s| s.style.fg != Some(colour::BORDER))
+                .any(|s| s.style.fg != Some(colour::border()))
         );
     }
 
@@ -401,7 +407,7 @@ mod tests {
             .flat_map(|tick| (0..6).map(move |row| (tick, row)))
             .filter(|&(tick, row)| {
                 let (l, r) = side(30, 6, row, tick, Scan::Working);
-                l.style.fg != Some(colour::BORDER) || r.style.fg != Some(colour::BORDER)
+                l.style.fg != Some(colour::border()) || r.style.fg != Some(colour::border())
             })
             .count();
         assert!(lit > 0, "the scan goes round, not just along the top");

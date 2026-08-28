@@ -77,13 +77,13 @@ pub fn render(rows: &[String], width: u16) -> Vec<Line<'static>> {
     }
     fit(&mut widths, usize::from(width));
 
-    let rule = Style::default().fg(colour::RULE);
+    let rule = Style::default().fg(colour::rule());
     let mut out = vec![divider(&widths, '┌', '┬', '┐', rule)];
     out.push(row_line(
         header,
         &widths,
         Style::default()
-            .fg(colour::HEADING)
+            .fg(colour::heading())
             .add_modifier(Modifier::BOLD),
         rule,
     ));
@@ -92,7 +92,7 @@ pub fn render(rows: &[String], width: u16) -> Vec<Line<'static>> {
         out.push(row_line(
             row,
             &widths,
-            Style::default().fg(colour::TEXT),
+            Style::default().fg(colour::text()),
             rule,
         ));
     }

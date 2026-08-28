@@ -27,14 +27,14 @@ const HINTS: &[(&str, &str)] = &[
 /// where a person is looking when they have just started.
 #[must_use]
 pub fn render(model: &str, cwd: &str, width: u16) -> Vec<Line<'static>> {
-    let dim = Style::default().fg(colour::DIM);
-    let muted = Style::default().fg(colour::MUTED);
+    let dim = Style::default().fg(colour::dim());
+    let muted = Style::default().fg(colour::muted());
 
     let mut out = vec![
         Line::from(Span::styled(
             "axum",
             Style::default()
-                .fg(colour::ACCENT)
+                .fg(colour::accent())
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(""),

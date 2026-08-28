@@ -185,6 +185,12 @@ impl Engine {
                 axum.set(ctx, *registrar, callback).ok();
             }
 
+            // Made here rather than left to the config, so `axum.ui.accent = 1` works without a
+            // config having to write `axum.ui = {}` first. It is a plain settings table — nothing
+            // registers into it — and it harvests as a nested object like any other, so a config
+            // may also replace it wholesale.
+            axum.set(ctx, "ui", Table::new(&ctx)).ok();
+
             // The socket primitive, so the family's stubs run unchanged in this VM and axum can
             // dial oslo and hexe. Named twice: `axum.stream` for a stub that knows this host,
             // `__stream` for one that does not.

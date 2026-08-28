@@ -39,36 +39,36 @@ pub struct Row<'a> {
 #[must_use]
 pub fn row(r: &Row<'_>, typed: &str, width: u16) -> Line<'static> {
     let bg = if r.selected {
-        colour::RAISED_BG
+        colour::raised_bg()
     } else {
-        colour::BLOCK_BG
+        colour::block_bg()
     };
     let on = |style: Style| style.bg(bg);
 
     let value_style = if r.selected {
         Style::default()
-            .fg(colour::SELECTED)
+            .fg(colour::selected())
             .add_modifier(Modifier::BOLD)
     } else if r.ready {
-        Style::default().fg(colour::TEXT)
+        Style::default().fg(colour::text())
     } else {
-        Style::default().fg(colour::DIM)
+        Style::default().fg(colour::dim())
     };
 
     let mut spans = vec![Span::styled(
         if r.selected { MARKER } else { NO_MARKER },
-        on(Style::default().fg(colour::ACCENT)),
+        on(Style::default().fg(colour::accent())),
     )];
     spans.extend(matched(r.value, typed, value_style, bg));
 
     if !r.detail.is_empty() {
         let gap = r.value_width.saturating_sub(r.value.chars().count()) + 2;
         let detail_style = if !r.ready {
-            Style::default().fg(colour::WARNING)
+            Style::default().fg(colour::warning())
         } else if r.selected {
-            Style::default().fg(colour::TEXT)
+            Style::default().fg(colour::text())
         } else {
-            Style::default().fg(colour::MUTED)
+            Style::default().fg(colour::muted())
         };
         spans.push(Span::styled(" ".repeat(gap), on(Style::default())));
         spans.push(Span::styled(r.detail.to_owned(), on(detail_style)));
@@ -80,16 +80,16 @@ pub fn row(r: &Row<'_>, typed: &str, width: u16) -> Line<'static> {
 /// A heading above a list: what it is, and where you are in it.
 #[must_use]
 pub fn heading(title: &str, note: &str, width: u16) -> Line<'static> {
-    let bg = colour::BLOCK_BG;
+    let bg = colour::block_bg();
     let spans = vec![
         Span::styled(
             format!(" {title} "),
             Style::default()
-                .fg(colour::ACCENT)
+                .fg(colour::accent())
                 .bg(bg)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(note.to_owned(), Style::default().fg(colour::DIM).bg(bg)),
+        Span::styled(note.to_owned(), Style::default().fg(colour::dim()).bg(bg)),
     ];
     Line::from(fill(clip(spans, usize::from(width)), width, bg))
 }
@@ -110,7 +110,7 @@ fn matched(value: &str, typed: &str, base: Style, bg: ratatui::style::Color) -> 
         return vec![Span::styled(value.to_owned(), base)];
     }
     let hit = Style::default()
-        .fg(colour::MATCH)
+        .fg(colour::match_())
         .bg(bg)
         .add_modifier(Modifier::BOLD);
 
@@ -229,8 +229,8 @@ mod tests {
     fn the_selected_row_is_a_different_block() {
         let plain = row(&a_row("a/b", false), "", 40);
         let picked = row(&a_row("a/b", true), "", 40);
-        assert_eq!(plain.spans[0].style.bg, Some(colour::BLOCK_BG));
-        assert_eq!(picked.spans[0].style.bg, Some(colour::RAISED_BG));
+        assert_eq!(plain.spans[0].style.bg, Some(colour::block_bg()));
+        assert_eq!(picked.spans[0].style.bg, Some(colour::raised_bg()));
         assert!(text(&picked).starts_with(MARKER));
     }
 
@@ -241,7 +241,7 @@ mod tests {
         let lit: String = line
             .spans
             .iter()
-            .filter(|s| s.style.fg == Some(colour::MATCH))
+            .filter(|s| s.style.fg == Some(colour::match_()))
             .map(|s| s.content.as_ref())
             .collect();
         assert_eq!(lit, "opus");
@@ -254,7 +254,7 @@ mod tests {
         let lit: String = line
             .spans
             .iter()
-            .filter(|s| s.style.fg == Some(colour::MATCH))
+            .filter(|s| s.style.fg == Some(colour::match_()))
             .map(|s| s.content.as_ref())
             .collect();
         assert_eq!(lit, "v4");
@@ -263,7 +263,11 @@ mod tests {
     #[test]
     fn nothing_typed_lights_nothing() {
         let line = row(&a_row("anything", false), "", 40);
-        assert!(line.spans.iter().all(|s| s.style.fg != Some(colour::MATCH)));
+        assert!(
+            line.spans
+                .iter()
+                .all(|s| s.style.fg != Some(colour::match_()))
+        );
     }
 
     #[test]
@@ -279,7 +283,7 @@ mod tests {
         assert!(
             line.spans
                 .iter()
-                .any(|s| s.style.fg == Some(colour::WARNING)),
+                .any(|s| s.style.fg == Some(colour::warning())),
             "the reason stands out from the size"
         );
     }
@@ -315,7 +319,7 @@ mod match_tests {
         row(&r, typed, 80)
             .spans
             .iter()
-            .filter(|s| s.style.fg == Some(colour::MATCH))
+            .filter(|s| s.style.fg == Some(colour::match_()))
             .map(|s| s.content.as_ref())
             .collect()
     }
@@ -333,7 +337,7 @@ mod match_tests {
         row(&r, typed, 80)
             .spans
             .iter()
-            .filter(|s| s.style.fg == Some(colour::MATCH))
+            .filter(|s| s.style.fg == Some(colour::match_()))
             .count()
     }
 
