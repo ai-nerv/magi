@@ -36,7 +36,6 @@ pub async fn run(
     mode: Mode,
     prompt: Option<String>,
     sessions: Option<std::path::PathBuf>,
-    started_the_daemon: bool,
 ) -> Result<()> {
     let theme = Theme::default();
     let mut app = App::new();
@@ -67,15 +66,11 @@ pub async fn run(
     // event, so a UI watching only for events cannot tell "nothing is happening" from
     // "nothing can happen".
     let attached = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    // Set by whichever path spawns a daemon, including the reconnect loop: a daemon this UI
-    // restarted after a crash is as much ours to stop as the one it started with.
-    let owns_daemon = Arc::new(std::sync::atomic::AtomicBool::new(started_the_daemon));
     tokio::spawn(connection_loop(
         socket.to_path_buf(),
         event_tx,
         command_rx,
         sessions,
-        Arc::clone(&owns_daemon),
         app.cursor(),
         Arc::clone(&attached),
     ));
@@ -238,16 +233,18 @@ pub async fn run(
     // environment of whichever shell happened to start it. That last one cost three sessions —
     // a daemon started before a key was exported can never see it, and nothing said so.
     //
-    // Only one we started. Attaching to somebody else's daemon and killing it on the way out
-    // would end their session. A second UI on the same socket survives this: its own reconnect
-    // loop starts a replacement and resumes, because the session is on disk rather than in the
-    // process.
+    // **Unconditional.** The first attempt stopped only a daemon this UI had started itself,
+    // which sounds careful and is the bug: anything left by an earlier `-p`, a crash, or a
+    // killed session means the UI attaches rather than spawns, and it then left the mess
+    // exactly where it found it. From the outside that is indistinguishable from the cleanup
+    // never having been written.
     //
-    // Unconditional for now. The flag and the `axum.daemon` setting that decide it are worth
-    // having and are not worth guessing at before somebody wants the other behaviour.
-    if owns_daemon.load(Ordering::Relaxed) {
-        crate::stop::stop_one(&crate::daemon::pid_path(socket));
-    }
+    // A second UI on the same socket survives it: its own reconnect loop starts a replacement
+    // and resumes, because the session is on disk rather than in the process.
+    //
+    // The flag and the `axum.daemon` setting that would make this a choice are worth having and
+    // are not worth guessing at before somebody wants the other behaviour.
+    crate::stop::stop_one(&crate::daemon::pid_path(socket));
 
     Ok(())
 }
@@ -298,7 +295,6 @@ async fn connection_loop(
     events: mpsc::Sender<HarnessEvent>,
     mut commands: mpsc::Receiver<UiCommand>,
     sessions: Option<std::path::PathBuf>,
-    owns_daemon: Arc<std::sync::atomic::AtomicBool>,
     mut from_cursor: Cursor,
     attached: Arc<std::sync::atomic::AtomicBool>,
 ) {
@@ -317,11 +313,9 @@ async fn connection_loop(
             // replaced. The session being resumed is this directory's most recent, which is
             // precisely the one that just died.
             match crate::daemon::ensure(&socket, sessions.as_deref(), true).await {
-                Ok(spawned) => {
-                    if spawned {
-                        owns_daemon.store(true, Ordering::Relaxed);
-                    }
-                }
+                // Nothing to record: the UI stops this directory's daemon on the way out
+                // whether it started it or adopted it.
+                Ok(_) => {}
                 Err(error) => {
                     debug_log(format_args!("restart failed: {error}"));
                     tokio::time::sleep(RECONNECT_DELAY).await;

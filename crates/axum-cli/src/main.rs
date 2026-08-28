@@ -143,7 +143,7 @@ async fn main() -> Result<()> {
             let Some(prompt) = cli.prompt else {
                 anyhow::bail!("`-p` needs a prompt: axum -p \"…\"");
             };
-            let _ = daemon::ensure(&socket, cli.sessions.as_deref(), cli.resume).await?;
+            daemon::ensure(&socket, cli.sessions.as_deref(), cli.resume).await?;
             let outcome = print::run(&socket, prompt).await?;
             if !outcome.text.is_empty() {
                 println!("{}", outcome.text);
@@ -157,13 +157,10 @@ async fn main() -> Result<()> {
             Ok(())
         }
         None => {
-            // Whether *this* command started the daemon decides whether it stops one on the way
-            // out. Attaching to a daemon somebody else started and then killing it would end
-            // their session; starting one and leaving it behind is how a week of work ends up
-            // with a process per project, each holding the environment of the shell that
-            // happened to start it.
-            let ours = daemon::ensure(&socket, cli.sessions.as_deref(), cli.resume).await?;
-            driver::run(&socket, mode, cli.prompt, cli.sessions, ours).await
+            // The return value is not kept: the UI stops this directory's daemon when it
+            // exits whether it started it or adopted one that was already there.
+            daemon::ensure(&socket, cli.sessions.as_deref(), cli.resume).await?;
+            driver::run(&socket, mode, cli.prompt, cli.sessions).await
         }
     }
 }
