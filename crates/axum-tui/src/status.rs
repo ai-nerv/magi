@@ -8,12 +8,6 @@ use axum_proto::AgentStatus;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-/// Spinner frames, in order. Pi's `Loader` cycles braille at roughly 80ms.
-const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
-/// Milliseconds per spinner frame.
-pub const FRAME_MS: u64 = 80;
-
 /// Render the status line.
 ///
 /// `tick` advances the spinner; the caller increments it on a timer so rendering stays a pure
@@ -123,7 +117,7 @@ fn spinner(
     spinner_color: ratatui::style::Color,
     elapsed: Option<std::time::Duration>,
 ) -> Line<'static> {
-    let frame = FRAMES[tick % FRAMES.len()];
+    let frame = crate::glyph::spinner(tick);
     let mut spans = vec![
         Span::styled(" ", Style::default()),
         Span::styled(frame.to_owned(), Style::default().fg(spinner_color)),

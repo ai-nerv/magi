@@ -8,9 +8,6 @@
 //! Built for models, where the set is long, mostly unreachable, and the reason a given entry
 //! is unreachable is the single most useful thing on the row.
 
-/// Rows shown at once. The same budget the completion popup uses.
-const MAX_VISIBLE: usize = 8;
-
 /// One row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choice {
@@ -167,7 +164,7 @@ impl Picker {
     /// Rows this needs on screen, heading included.
     #[must_use]
     pub fn height(&self) -> u16 {
-        u16::try_from(self.choices.len().min(MAX_VISIBLE) + 1).unwrap_or(u16::MAX)
+        u16::try_from(self.choices.len().min(max_visible()) + 1).unwrap_or(u16::MAX)
     }
 
     /// Whether the list started with anything at all.
@@ -182,14 +179,14 @@ impl Picker {
     /// Which slice is on screen, scrolled to keep the highlight visible.
     fn window(&self) -> std::ops::Range<usize> {
         let total = self.choices.len();
-        if total <= MAX_VISIBLE {
+        if total <= max_visible() {
             return 0..total;
         }
         let start = self
             .selected
-            .saturating_sub(MAX_VISIBLE - 1)
-            .min(total - MAX_VISIBLE);
-        start..start + MAX_VISIBLE
+            .saturating_sub(max_visible() - 1)
+            .min(total - max_visible());
+        start..start + max_visible()
     }
 }
 
@@ -297,7 +294,7 @@ mod tests {
         }
         let shown = text(&render(&picker, 60));
         assert!(shown.iter().any(|l| l.contains("m/20")), "{shown:?}");
-        assert_eq!(shown.len(), MAX_VISIBLE + 1, "heading plus a window");
+        assert_eq!(shown.len(), max_visible() + 1, "heading plus a window");
     }
 
     #[test]
@@ -648,15 +645,20 @@ mod fluidity_tests {
             rendered[2]
                 .spans
                 .iter()
-                .all(|s| s.style.bg == Some(colour::block_bg())),
+                .all(|s| s.style.bg == Some(colour::menu_bg())),
             "the block"
         );
         assert!(
             rendered[1]
                 .spans
                 .iter()
-                .any(|s| s.style.bg == Some(colour::raised_bg())),
+                .any(|s| s.style.bg == Some(colour::menu_selected_bg())),
             "and the bar on the row above it"
         );
     }
+}
+
+/// Rows shown at once, as `axum.ui.menu_rows` left it.
+fn max_visible() -> usize {
+    usize::from(crate::metric::menu_rows())
 }

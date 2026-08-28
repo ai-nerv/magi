@@ -98,8 +98,6 @@ pub struct App {
     /// and the spinner does not. Hundredths so `scan_speed = 0.5` is half as fast rather than
     /// stopped, which is what it would round to in whole ticks.
     scan_phase: usize,
-    /// How much [`Self::scan_phase`] gains per frame; a hundred is the built-in speed.
-    pub scan_rate: usize,
     /// Which model is answering, as the daemon reported it.
     ///
     /// From the daemon rather than read from the configuration here: a UI reading the config
@@ -158,20 +156,21 @@ impl App {
             working_since: None,
             tick: 0,
             scan_phase: 0,
-            scan_rate: crate::config::NORMAL_SCAN,
         }
     }
 
     /// Advance both clocks by one frame.
     pub fn advance(&mut self) {
         self.tick = self.tick.wrapping_add(1);
-        self.scan_phase = self.scan_phase.wrapping_add(self.scan_rate);
+        self.scan_phase = self
+            .scan_phase
+            .wrapping_add(usize::from(axum_tui::metric::scan_speed()));
     }
 
     /// The scan's phase in whole ticks, which is what the border is drawn from.
     #[must_use]
     pub fn scan_tick(&self) -> usize {
-        self.scan_phase / crate::config::NORMAL_SCAN
+        self.scan_phase / usize::from(axum_tui::metric::NORMAL)
     }
 
     /// The transcript.

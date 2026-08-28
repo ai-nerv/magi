@@ -13,7 +13,7 @@ use anyhow::Result;
 use axum_ipc::{FrameReader, FrameWriter};
 use axum_proto::{Cursor, HarnessEvent, UiCommand};
 use axum_tui::footer::FooterData;
-use axum_tui::{status, transcript};
+use axum_tui::transcript;
 use crossterm::event::{Event, EventStream};
 use ratatui::text::Line;
 use std::path::Path;
@@ -44,8 +44,7 @@ pub async fn run(
     // about how fast a border moves. A config that will not run leaves the built-in speed: the
     // daemon has already refused to start over it and said why.
     if let Ok(loaded) = crate::config::load() {
-        app.scan_rate = crate::config::scan_rate(&loaded);
-        axum_tui::colour::adopt(crate::config::palette(&loaded));
+        crate::config::adopt_ui(&loaded);
     }
     // Before anything else, because the answer to "why is my new tool not there" has to arrive
     // before the model is asked to use it. The daemon holds the tool set it was built with, and
@@ -66,7 +65,7 @@ pub async fn run(
 
     let mut session = Session::open(mode, ui::initial_height(terminal_size().1))?;
     let mut terminal_events = EventStream::new();
-    let mut ticker = tokio::time::interval(Duration::from_millis(status::FRAME_MS));
+    let mut ticker = tokio::time::interval(Duration::from_millis(axum_tui::metric::frame_ms()));
 
     let (event_tx, mut event_rx) = mpsc::channel::<HarnessEvent>(256);
     let (command_tx, command_rx) = mpsc::channel::<UiCommand>(32);
@@ -228,7 +227,7 @@ pub async fn run(
                                 // of the way rather than fighting it.
                                 if session.mode == Mode::Alt {
                                     let rows = terminal_size().1;
-                                    let view = rows.saturating_sub(ui::CHROME_ROWS);
+                                    let view = rows.saturating_sub(ui::chrome_rows());
                                     match motion {
                                         Scroll::PageUp => app.scrollback.page_up(view),
                                         Scroll::PageDown => app.scrollback.page_down(view),
@@ -450,7 +449,7 @@ fn local_footer(mode: Mode) -> FooterData {
     FooterData {
         cwd: axum_tui::footer::format_cwd(&cwd, home.as_deref()),
         branch: git_branch(),
-        model: axum_tui::footer::NO_MODEL.into(),
+        model: axum_tui::glyph::no_model().into(),
         // Named only for the backend that is not the default. `alt` is what you get unless you
         // asked otherwise, so saying so on every line is a word that is never news; `inline`
         // is a choice you made and worth confirming.
@@ -474,10 +473,10 @@ fn footer_data(base: &FooterData, app: &App) -> FooterData {
         cwd: base.cwd.clone(),
         branch: base.branch.clone(),
         mode: base.mode,
-        model: app
-            .model
-            .as_ref()
-            .map_or_else(|| axum_tui::footer::NO_MODEL.to_owned(), |m| m.name.clone()),
+        model: app.model.as_ref().map_or_else(
+            || axum_tui::glyph::no_model().to_owned(),
+            |m| m.name.clone(),
+        ),
         input_tokens: app.usage().prompt_tokens(),
         output_tokens: app.usage().output,
         context_window: window,

@@ -5,6 +5,7 @@
 //! with URL dimming, and LaTeX; those wait until a transcript needs them.
 
 use crate::colour;
+use crate::glyph;
 use crate::table;
 use crate::wrap;
 use ratatui::style::{Modifier, Style};
@@ -55,10 +56,10 @@ pub fn render(source: &str, width: u16, base: Style) -> Vec<Line<'static>> {
 
         if in_fence {
             out.push(Line::from(vec![
-                Span::styled(GUTTER, Style::default().fg(colour::rule())),
+                Span::styled(glyph::quote_rule(), Style::default().fg(colour::rule())),
                 Span::styled(
                     crate::wrap::expand_tabs(trimmed),
-                    Style::default().fg(colour::code_block()),
+                    Style::default().fg(colour::md_code_block()),
                 ),
             ]));
             continue;
@@ -91,12 +92,6 @@ pub fn render(source: &str, width: u16, base: Style) -> Vec<Line<'static>> {
     }
     out
 }
-
-/// The bar drawn down the left of a fenced block.
-///
-/// Without it a code block is prose in a different colour, and the language tag above it reads
-/// as a stray word rather than a label on anything.
-const GUTTER: &str = "│ ";
 
 /// The opening line of a fenced block: the bar, and the language if one was named.
 fn fence_head(language: &str, width: u16) -> Line<'static> {
@@ -156,7 +151,7 @@ fn block(line: &str, width: u16, base: Style) -> Vec<Line<'static>> {
         let rule = "─".repeat(usize::from(width).max(1));
         return vec![Line::from(Span::styled(
             rule,
-            Style::default().fg(colour::muted()),
+            Style::default().fg(colour::md_quote()),
         ))];
     }
 
@@ -166,7 +161,7 @@ fn block(line: &str, width: u16, base: Style) -> Vec<Line<'static>> {
             Line::from(Span::styled(
                 text,
                 Style::default()
-                    .fg(colour::heading())
+                    .fg(colour::md_heading())
                     .add_modifier(Modifier::BOLD),
             )),
             width,
@@ -174,8 +169,11 @@ fn block(line: &str, width: u16, base: Style) -> Vec<Line<'static>> {
     }
 
     if let Some(rest) = trimmed.strip_prefix("> ") {
-        let mut spans = vec![Span::styled("│ ", Style::default().fg(colour::muted()))];
-        spans.extend(inline(rest, base.fg(colour::muted())));
+        let mut spans = vec![Span::styled(
+            glyph::quote_rule(),
+            Style::default().fg(colour::md_quote()),
+        )];
+        spans.extend(inline(rest, base.fg(colour::md_quote())));
         return wrap::line(Line::from(spans), width);
     }
 
@@ -213,7 +211,7 @@ fn heading_level(line: &str) -> Option<usize> {
 fn list_marker(line: &str) -> Option<(String, &str)> {
     for bullet in ["- ", "* ", "+ "] {
         if let Some(rest) = line.strip_prefix(bullet) {
-            return Some(("• ".to_owned(), rest));
+            return Some((glyph::bullet().to_owned(), rest));
         }
     }
 
@@ -261,7 +259,7 @@ fn inline(text: &str, base: Style) -> Vec<Span<'static>> {
                 if let Some(end) = chars[i + 1..].iter().position(|&n| n == '`') {
                     flush(&mut buf, &mut spans, base);
                     let code: String = chars[i + 1..i + 1 + end].iter().collect();
-                    spans.push(Span::styled(code, Style::default().fg(colour::accent())));
+                    spans.push(Span::styled(code, Style::default().fg(colour::md_code())));
                     i += end + 2;
                     continue;
                 }

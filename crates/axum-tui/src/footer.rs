@@ -7,15 +7,6 @@ use crate::colour;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-/// What the footer shows when no model has been chosen.
-///
-/// Named because three places compare against it, and a string literal repeated three times
-/// is a rename waiting to go wrong.
-pub const NO_MODEL: &str = "no-model";
-
-/// Minimum gap between the stats and the right-aligned model name.
-const MIN_GAP: usize = 2;
-
 /// What the footer displays. The UI owns none of this; the daemon reports it.
 #[derive(Debug, Clone, Default)]
 pub struct FooterData {
@@ -107,8 +98,12 @@ pub fn render(data: &FooterData, width: u16) -> Vec<Line<'static>> {
     let width = usize::from(width);
 
     // Right first: the model is the thing you check, so it is the last to go.
-    let model = fit_path(&data.model, width.saturating_sub(MIN_GAP));
-    let mut room = width.saturating_sub(model.chars().count() + MIN_GAP);
+    let model = fit_path(
+        &data.model,
+        width.saturating_sub(usize::from(crate::metric::column_gap())),
+    );
+    let mut room =
+        width.saturating_sub(model.chars().count() + usize::from(crate::metric::column_gap()));
 
     // Then usage, which is short and changes every turn.
     let mut stats = Vec::new();
@@ -132,8 +127,8 @@ pub fn render(data: &FooterData, width: u16) -> Vec<Line<'static>> {
         stats.push(context.clone());
     }
     let usage = stats.join(" ");
-    let usage = if usage.chars().count() + MIN_GAP <= room {
-        room -= usage.chars().count() + MIN_GAP;
+    let usage = if usage.chars().count() + usize::from(crate::metric::column_gap()) <= room {
+        room -= usage.chars().count() + usize::from(crate::metric::column_gap());
         usage
     } else {
         String::new()
@@ -160,7 +155,9 @@ pub fn render(data: &FooterData, width: u16) -> Vec<Line<'static>> {
     };
 
     let used = location.chars().count() + usage.chars().count() + model.chars().count();
-    let gap = width.saturating_sub(used).max(MIN_GAP);
+    let gap = width
+        .saturating_sub(used)
+        .max(usize::from(crate::metric::column_gap()));
     let (left_gap, right_gap) = if usage.is_empty() {
         (gap, 0)
     } else {
@@ -348,13 +345,13 @@ mod fit_tests {
     fn no_context_window_is_no_context_group() {
         // `?/0` is three characters of noise on exactly the screen a new person is reading.
         let data = FooterData {
-            model: NO_MODEL.into(),
+            model: crate::glyph::no_model().into(),
             ..FooterData::default()
         };
         let out = render(&data, 40);
         assert!(!line_text(&out, 0).contains("?/"), "{}", line_text(&out, 0));
         assert!(
-            line_text(&out, 0).contains(NO_MODEL),
+            line_text(&out, 0).contains(crate::glyph::no_model()),
             "the model still shows"
         );
     }

@@ -78,7 +78,7 @@ fn the_popup_never_exceeds_its_row_budget() {
     assert_eq!(completion.kind, Kind::Path);
     assert_eq!(
         usize::from(completion.height()),
-        complete::MAX_VISIBLE,
+        complete::rows(),
         "a long list is capped, not scrolled off screen"
     );
 }

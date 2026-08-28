@@ -7,9 +7,6 @@
 use crate::fuzzy;
 use ratatui::text::Line;
 
-/// Rows the overlay will use at most, so a long candidate list cannot eat the screen.
-pub const MAX_VISIBLE: usize = 8;
-
 /// What is being completed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -73,7 +70,7 @@ impl Completion {
     /// Rows the overlay needs.
     #[must_use]
     pub fn height(&self) -> u16 {
-        self.candidates.len().min(MAX_VISIBLE) as u16
+        self.candidates.len().min(max_visible()) as u16
     }
 }
 
@@ -142,7 +139,7 @@ pub fn resolve(
     let ranked = fuzzy::filter(query, &paths);
     let candidates: Vec<Candidate> = ranked
         .into_iter()
-        .take(MAX_VISIBLE * 4)
+        .take(max_visible() * 4)
         .map(|value| Candidate {
             value: value.clone(),
             detail: String::new(),
@@ -197,14 +194,14 @@ pub fn render(completion: &Completion, width: u16) -> Vec<Line<'static>> {
 /// Which slice of the candidate list is on screen, scrolled to keep the selection visible.
 fn window(completion: &Completion) -> std::ops::Range<usize> {
     let total = completion.candidates.len();
-    if total <= MAX_VISIBLE {
+    if total <= max_visible() {
         return 0..total;
     }
     let start = completion
         .selected
-        .saturating_sub(MAX_VISIBLE - 1)
-        .min(total - MAX_VISIBLE);
-    start..start + MAX_VISIBLE
+        .saturating_sub(max_visible() - 1)
+        .min(total - max_visible());
+    start..start + max_visible()
 }
 
 #[cfg(test)]
@@ -290,7 +287,7 @@ mod tests {
         };
         let w = window(&c);
         assert!(w.contains(&15), "{w:?}");
-        assert_eq!(w.len(), MAX_VISIBLE);
+        assert_eq!(w.len(), max_visible());
     }
 
     #[test]
@@ -344,4 +341,15 @@ mod clip_tests {
             assert!(width <= 4, "{width}");
         }
     }
+}
+
+/// Rows shown at once, as `axum.ui.menu_rows` left it.
+fn max_visible() -> usize {
+    usize::from(crate::metric::menu_rows())
+}
+
+/// The same, for a caller outside this crate.
+#[must_use]
+pub fn rows() -> usize {
+    max_visible()
 }

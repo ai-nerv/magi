@@ -191,10 +191,6 @@ mod tests {
     }
 }
 
-/// Columns a tab advances to. Four, because tool output is mostly code and eight wastes a
-/// terminal that is already sharing its width with a padded block.
-const TAB: usize = 4;
-
 /// Replace tabs with the spaces they stand for.
 ///
 /// A `\t` written into a cell breaks the renderer's arithmetic: the buffer counts it as one
@@ -214,7 +210,8 @@ pub fn expand_tabs(text: &str) -> String {
     let mut column = 0;
     for c in text.chars() {
         if c == '\t' {
-            let stop = TAB - (column % TAB);
+            let stop = usize::from(crate::metric::tab_width())
+                - (column % usize::from(crate::metric::tab_width()));
             out.extend(std::iter::repeat_n(' ', stop));
             column += stop;
         } else {

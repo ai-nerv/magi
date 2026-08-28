@@ -14,9 +14,11 @@ pub mod complete;
 pub mod editor;
 pub mod footer;
 pub mod fuzzy;
+pub mod glyph;
 pub mod greeting;
 pub mod markdown;
 pub mod menu;
+pub mod metric;
 
 pub mod picker;
 pub mod prompt;

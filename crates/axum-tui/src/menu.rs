@@ -12,14 +12,9 @@
 //! looking for what is *different* between forty rows that share a prefix.
 
 use crate::colour;
+use crate::glyph;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-
-/// The marker on the row you are on.
-pub const MARKER: &str = "❯ ";
-
-/// The same width, on every other row.
-pub const NO_MARKER: &str = "  ";
 
 /// One row of a list.
 pub struct Row<'a> {
@@ -39,24 +34,28 @@ pub struct Row<'a> {
 #[must_use]
 pub fn row(r: &Row<'_>, typed: &str, width: u16) -> Line<'static> {
     let bg = if r.selected {
-        colour::raised_bg()
+        colour::menu_selected_bg()
     } else {
-        colour::block_bg()
+        colour::menu_bg()
     };
     let on = |style: Style| style.bg(bg);
 
     let value_style = if r.selected {
         Style::default()
-            .fg(colour::selected())
+            .fg(colour::menu_selected())
             .add_modifier(Modifier::BOLD)
     } else if r.ready {
         Style::default().fg(colour::text())
     } else {
-        Style::default().fg(colour::dim())
+        Style::default().fg(colour::menu_detail())
     };
 
     let mut spans = vec![Span::styled(
-        if r.selected { MARKER } else { NO_MARKER },
+        if r.selected {
+            glyph::marker()
+        } else {
+            glyph::no_marker()
+        },
         on(Style::default().fg(colour::accent())),
     )];
     spans.extend(matched(r.value, typed, value_style, bg));
@@ -66,9 +65,9 @@ pub fn row(r: &Row<'_>, typed: &str, width: u16) -> Line<'static> {
         let detail_style = if !r.ready {
             Style::default().fg(colour::warning())
         } else if r.selected {
-            Style::default().fg(colour::text())
+            Style::default().fg(colour::menu_detail_selected())
         } else {
-            Style::default().fg(colour::muted())
+            Style::default().fg(colour::menu_detail())
         };
         spans.push(Span::styled(" ".repeat(gap), on(Style::default())));
         spans.push(Span::styled(r.detail.to_owned(), on(detail_style)));
@@ -80,7 +79,7 @@ pub fn row(r: &Row<'_>, typed: &str, width: u16) -> Line<'static> {
 /// A heading above a list: what it is, and where you are in it.
 #[must_use]
 pub fn heading(title: &str, note: &str, width: u16) -> Line<'static> {
-    let bg = colour::block_bg();
+    let bg = colour::menu_bg();
     let spans = vec![
         Span::styled(
             format!(" {title} "),
@@ -89,7 +88,10 @@ pub fn heading(title: &str, note: &str, width: u16) -> Line<'static> {
                 .bg(bg)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(note.to_owned(), Style::default().fg(colour::dim()).bg(bg)),
+        Span::styled(
+            note.to_owned(),
+            Style::default().fg(colour::menu_meta()).bg(bg),
+        ),
     ];
     Line::from(fill(clip(spans, usize::from(width)), width, bg))
 }
@@ -110,7 +112,7 @@ fn matched(value: &str, typed: &str, base: Style, bg: ratatui::style::Color) -> 
         return vec![Span::styled(value.to_owned(), base)];
     }
     let hit = Style::default()
-        .fg(colour::match_())
+        .fg(colour::typed())
         .bg(bg)
         .add_modifier(Modifier::BOLD);
 
@@ -229,9 +231,9 @@ mod tests {
     fn the_selected_row_is_a_different_block() {
         let plain = row(&a_row("a/b", false), "", 40);
         let picked = row(&a_row("a/b", true), "", 40);
-        assert_eq!(plain.spans[0].style.bg, Some(colour::block_bg()));
-        assert_eq!(picked.spans[0].style.bg, Some(colour::raised_bg()));
-        assert!(text(&picked).starts_with(MARKER));
+        assert_eq!(plain.spans[0].style.bg, Some(colour::menu_bg()));
+        assert_eq!(picked.spans[0].style.bg, Some(colour::menu_selected_bg()));
+        assert!(text(&picked).starts_with(glyph::marker()));
     }
 
     #[test]
@@ -241,7 +243,7 @@ mod tests {
         let lit: String = line
             .spans
             .iter()
-            .filter(|s| s.style.fg == Some(colour::match_()))
+            .filter(|s| s.style.fg == Some(colour::typed()))
             .map(|s| s.content.as_ref())
             .collect();
         assert_eq!(lit, "opus");
@@ -254,7 +256,7 @@ mod tests {
         let lit: String = line
             .spans
             .iter()
-            .filter(|s| s.style.fg == Some(colour::match_()))
+            .filter(|s| s.style.fg == Some(colour::typed()))
             .map(|s| s.content.as_ref())
             .collect();
         assert_eq!(lit, "v4");
@@ -266,7 +268,7 @@ mod tests {
         assert!(
             line.spans
                 .iter()
-                .all(|s| s.style.fg != Some(colour::match_()))
+                .all(|s| s.style.fg != Some(colour::typed()))
         );
     }
 
@@ -319,7 +321,7 @@ mod match_tests {
         row(&r, typed, 80)
             .spans
             .iter()
-            .filter(|s| s.style.fg == Some(colour::match_()))
+            .filter(|s| s.style.fg == Some(colour::typed()))
             .map(|s| s.content.as_ref())
             .collect()
     }
@@ -337,7 +339,7 @@ mod match_tests {
         row(&r, typed, 80)
             .spans
             .iter()
-            .filter(|s| s.style.fg == Some(colour::match_()))
+            .filter(|s| s.style.fg == Some(colour::typed()))
             .count()
     }
 

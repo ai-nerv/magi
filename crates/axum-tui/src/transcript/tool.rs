@@ -6,7 +6,7 @@
 //! prose and an assistant message is prose, and this is a name, arguments, a body that may be
 //! a diff, and a decision about how much of it to show.
 
-use super::{PAD, blank, clip, pad};
+use super::{blank, clip, pad};
 use crate::colour;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -27,9 +27,6 @@ pub enum Detail {
     Full,
 }
 
-/// Lines of a tool result shown before it is expanded. Pi's `FALLBACK_PREVIEW_LINES`.
-const PREVIEW_LINES: usize = 10;
-
 /// A padded box whose title states the outcome: pending, success, or error.
 ///
 /// The background used to say it, in three barely-different tints of the same dark. A palette
@@ -45,12 +42,12 @@ pub(super) fn block(
     detail: Detail,
 ) -> Vec<Line<'static>> {
     let outcome = match result {
-        None => colour::muted(),
-        Some(r) if r.is_error => colour::error(),
-        Some(_) => colour::success(),
+        None => colour::tool_title(),
+        Some(r) if r.is_error => colour::tool_failed(),
+        Some(_) => colour::tool_ok(),
     };
-    let style = Style::default().bg(colour::block_bg());
-    let inner = usize::from(width.saturating_sub(PAD * 2));
+    let style = Style::default().bg(colour::tool_bg());
+    let inner = usize::from(width.saturating_sub(crate::metric::block_pad() * 2));
 
     let mut out = vec![blank(width, style), {
         let mut spans = vec![Span::styled(
@@ -61,7 +58,7 @@ pub(super) fn block(
         if !summary.is_empty() {
             spans.push(Span::styled(
                 format!(" {summary}"),
-                style.fg(colour::muted()),
+                style.fg(colour::tool_output()),
             ));
         }
         pad(Line::from(spans), width, style)
@@ -72,12 +69,12 @@ pub(super) fn block(
         if !body.is_empty() {
             let all: Vec<&str> = body.lines().collect();
             let shown = match detail {
-                Detail::Preview => all.len().min(PREVIEW_LINES),
+                Detail::Preview => all.len().min(usize::from(crate::metric::preview_lines())),
                 Detail::Full => all.len(),
             };
             for line in &all[..shown] {
                 let fg = if result.is_error {
-                    colour::error()
+                    colour::tool_failed()
                 } else {
                     change_colour(line)
                 };
@@ -94,7 +91,7 @@ pub(super) fn block(
                 out.push(pad(
                     Line::from(Span::styled(
                         format!("… {} more lines · ctrl+o", all.len() - shown),
-                        style.fg(colour::dim()),
+                        style.fg(colour::tool_fold()),
                     )),
                     width,
                     style,
@@ -117,22 +114,11 @@ fn change_colour(line: &str) -> Color {
     match line.as_bytes().first() {
         // `+++`/`---` are file headers, not changed lines, and colouring them as changes makes
         // every diff look like it added and removed its own filename.
-        Some(b'+') if !line.starts_with("+++") => colour::success(),
-        Some(b'-') if !line.starts_with("---") => colour::error(),
-        _ => colour::muted(),
+        Some(b'+') if !line.starts_with("+++") => colour::diff_added(),
+        Some(b'-') if !line.starts_with("---") => colour::diff_removed(),
+        _ => colour::diff_context(),
     }
 }
-
-/// How much of the line the arguments may take between them.
-///
-/// A budget rather than a cap on each, shared out by how many there are. One argument is the
-/// thing being done — a command, a path — and cutting it at a fixed width to leave room for
-/// arguments that do not exist helps nobody. Three arguments are an `edit`, where the header
-/// answers "which call is this" and the diff two lines below answers what it did.
-const SUMMARY: usize = 72;
-
-/// The least any one argument gets, however many there are.
-const ARGUMENT_FLOOR: usize = 12;
 
 /// A one-line summary of a tool's arguments for the block header.
 ///
@@ -148,7 +134,8 @@ fn summarize(args: &str) -> String {
     else {
         return flatten(args);
     };
-    let share = (SUMMARY / fields.len().max(1)).max(ARGUMENT_FLOOR);
+    let share = (usize::from(crate::metric::summary_budget()) / fields.len().max(1))
+        .max(usize::from(crate::metric::argument_floor()));
     fields
         .values()
         .map(|value| match value {
@@ -272,7 +259,10 @@ mod summary_tests {
         // An `edit` header that repeats both sides in full is a diff written twice, once badly
         // — and the real one is two lines below it.
         let summary = summarize(&format!(r#"{{"new": "{}"}}"#, "x".repeat(200)));
-        assert!(summary.chars().count() <= SUMMARY, "{summary}");
+        assert!(
+            summary.chars().count() <= usize::from(crate::metric::summary_budget()),
+            "{summary}"
+        );
         assert!(summary.ends_with('…'), "{summary}");
     }
 
@@ -294,7 +284,10 @@ mod summary_tests {
         let summary = summarize(&format!(
             r#"{{"a": "{long}", "b": "{long}", "c": "{long}"}}"#
         ));
-        assert!(summary.chars().count() <= SUMMARY + 4, "{summary}");
+        assert!(
+            summary.chars().count() <= usize::from(crate::metric::summary_budget()) + 4,
+            "{summary}"
+        );
         assert_eq!(summary.matches('…').count(), 3, "each was cut: {summary}");
     }
 
@@ -475,7 +468,7 @@ mod block_tests {
         for span in header(None).spans {
             assert_eq!(
                 span.style.bg,
-                Some(colour::block_bg()),
+                Some(colour::menu_bg()),
                 "{:?} has no background",
                 span.content
             );
@@ -493,8 +486,8 @@ mod block_tests {
             ..ok.clone()
         };
         let fg = |result: Option<&ToolResult>| header(result).spans[1].style.fg;
-        assert_eq!(fg(None), Some(colour::muted()), "still running");
-        assert_eq!(fg(Some(&ok)), Some(colour::success()));
-        assert_eq!(fg(Some(&bad)), Some(colour::error()));
+        assert_eq!(fg(None), Some(colour::tool_title()), "still running");
+        assert_eq!(fg(Some(&ok)), Some(colour::tool_ok()));
+        assert_eq!(fg(Some(&bad)), Some(colour::tool_failed()));
     }
 }

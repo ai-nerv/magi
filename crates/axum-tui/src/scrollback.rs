@@ -7,9 +7,6 @@
 
 use ratatui::text::Line;
 
-/// Lines scrolled by a page-key press, as a fraction of the visible height.
-const PAGE_FRACTION: usize = 2;
-
 /// The full transcript, plus where the reader is looking.
 #[derive(Default)]
 pub struct Scrollback {
@@ -123,7 +120,7 @@ impl Scrollback {
 
 /// Rows a page key moves, leaving some overlap so the reader keeps their place.
 fn page(height: u16) -> usize {
-    (usize::from(height) / PAGE_FRACTION).max(1)
+    usize::from(crate::metric::share(height, crate::metric::page_share()))
 }
 
 #[cfg(test)]

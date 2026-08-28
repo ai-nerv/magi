@@ -7,39 +7,23 @@
 
 use crate::colour;
 use crate::editor::Editor;
+use crate::glyph;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-
-/// Rows the prompt shows before it scrolls, as a fraction of the terminal.
-const VISIBLE_FRACTION: f32 = 0.3;
-
-/// Rows the prompt shows at minimum, however short the terminal is.
-const MIN_VISIBLE: usize = 5;
 
 /// How many text rows the prompt will show on a terminal `rows` tall.
 #[must_use]
 pub fn visible_rows(rows: u16) -> usize {
-    ((f32::from(rows) * VISIBLE_FRACTION) as usize).max(MIN_VISIBLE)
+    usize::from(crate::metric::share(rows, crate::metric::prompt_share()))
+        .max(usize::from(crate::metric::prompt_min_lines()))
 }
-
-/// What an empty prompt says instead of nothing.
-///
-/// An empty box between two rules gives a reader no way to tell a prompt waiting for input
-/// from a screen that has hung, and no way to find the command list without being told.
-const PLACEHOLDER: &str = "ask anything, or / for commands";
-
-/// The same, for a terminal too narrow to hold it.
-///
-/// Shortened rather than cut: `ask anything, or / for comman` is a rendering bug on the
-/// screen, and the half it loses is the half that says what to press.
-const PLACEHOLDER_SHORT: &str = "/ for commands";
 
 /// The blank prompt: the cursor, then the hint, dimmed.
 fn placeholder_spans(width: u16) -> Vec<Span<'static>> {
-    let hint = if PLACEHOLDER.chars().count() < usize::from(width) {
-        PLACEHOLDER
-    } else if PLACEHOLDER_SHORT.chars().count() < usize::from(width) {
-        PLACEHOLDER_SHORT
+    let hint = if glyph::placeholder().chars().count() < usize::from(width) {
+        glyph::placeholder()
+    } else if glyph::placeholder_short().chars().count() < usize::from(width) {
+        glyph::placeholder_short()
     } else {
         ""
     };
@@ -50,7 +34,7 @@ fn placeholder_spans(width: u16) -> Vec<Span<'static>> {
                 .fg(colour::text())
                 .add_modifier(Modifier::REVERSED),
         ),
-        Span::styled(hint, Style::default().fg(colour::dim())),
+        Span::styled(hint, Style::default().fg(colour::hint())),
     ]
 }
 
@@ -329,7 +313,10 @@ mod tests {
 
     #[test]
     fn a_short_terminal_still_shows_five_rows() {
-        assert_eq!(visible_rows(10), MIN_VISIBLE);
+        assert_eq!(
+            visible_rows(10),
+            usize::from(crate::metric::prompt_min_lines())
+        );
     }
 }
 

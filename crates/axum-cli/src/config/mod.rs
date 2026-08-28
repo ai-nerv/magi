@@ -267,7 +267,7 @@ mod settings;
 
 use settings::{grants, options, system};
 
-pub use settings::{NORMAL_SCAN, palette, scan_rate};
+pub use settings::adopt_ui;
 
 /// The backend a daemon should run turns against, if one is both chosen and usable.
 ///

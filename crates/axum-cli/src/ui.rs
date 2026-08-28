@@ -15,34 +15,17 @@
 use crate::app::App;
 use crate::terminal::Mode;
 use axum_tui::footer::{self, FooterData};
+use axum_tui::metric;
 use axum_tui::{complete, prompt, status, transcript};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::Paragraph;
 
 /// Rows the chrome below the transcript occupies at its smallest: status, prompt, footer.
-pub const CHROME_ROWS: u16 = STATUS_ROWS + PROMPT_MIN_ROWS + FOOTER_ROWS;
-
-/// Columns the box takes before the text: the left bar, then one of padding.
-const GUTTER: u16 = 2;
-
-/// Rows the footer always occupies.
-///
-/// One. It was two -- the directory on its own row above the stats -- and two rows of dim text
-/// under the prompt is a lot of screen for something you glance at.
-const FOOTER_ROWS: u16 = 1;
-
-/// Rows the status line always occupies.
-///
-/// Two, even when idle. Pi's `IdleStatus` renders two blank lines and its `Loader` renders a
-/// blank line above the spinner, so the layout does not jump the moment work starts.
-const STATUS_ROWS: u16 = 2;
-
-/// Rows the prompt claims when it holds a single line: rule, text, rule.
-const PROMPT_MIN_ROWS: u16 = 3;
-
-/// Live transcript rows to aim for, before the terminal's own height is taken into account.
-const LIVE_TARGET: u16 = 10;
+#[must_use]
+pub fn chrome_rows() -> u16 {
+    metric::status_rows() + metric::prompt_min_rows() + metric::footer_rows()
+}
 
 /// Rows the live region should claim on a terminal `rows` tall.
 ///
@@ -50,8 +33,9 @@ const LIVE_TARGET: u16 = 10;
 /// fills the terminal defeats the point of rendering into it.
 #[must_use]
 pub fn initial_height(rows: u16) -> u16 {
-    let live = (rows / 3).clamp(4, LIVE_TARGET);
-    (live + STATUS_ROWS + PROMPT_MIN_ROWS + FOOTER_ROWS).min(rows.saturating_sub(1))
+    let live = metric::share(rows, metric::live_share()).min(metric::live_rows());
+    (live + metric::status_rows() + metric::prompt_min_rows() + metric::footer_rows())
+        .min(rows.saturating_sub(1))
 }
 
 /// Draw the live region.
@@ -73,7 +57,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData, mode
     };
     let prompt_lines = prompt::render(&app.editor, area.width, rows, app.scan_tick(), scan);
     let prompt_rows = (prompt_lines.len() as u16)
-        .min(rows.saturating_sub(FOOTER_ROWS + STATUS_ROWS + 1))
+        .min(rows.saturating_sub(metric::footer_rows() + metric::status_rows() + 1))
         .max(1);
     // One overlay slot. The two never open together — a list is opened by a command, and
     // running a command closes the popup that offered it.
@@ -88,14 +72,14 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData, mode
             },
             axum_tui::picker::Picker::height,
         )
-        .min(rows.saturating_sub(FOOTER_ROWS + STATUS_ROWS + prompt_rows + 1));
+        .min(rows.saturating_sub(metric::footer_rows() + metric::status_rows() + prompt_rows + 1));
 
     let [live_area, status_area, prompt_area, popup_area, footer_area] = Layout::vertical([
         Constraint::Min(0),
-        Constraint::Length(STATUS_ROWS),
+        Constraint::Length(metric::status_rows()),
         Constraint::Length(prompt_rows),
         Constraint::Length(popup_rows),
-        Constraint::Length(FOOTER_ROWS),
+        Constraint::Length(metric::footer_rows()),
     ])
     .areas(area);
 
@@ -189,7 +173,7 @@ fn place_hardware_cursor(frame: &mut Frame<'_>, app: &App, area: Rect, rows: u16
     // line, so the caret and the block disagreed about where you were typing.
     let col = u16::try_from(cursor_col)
         .unwrap_or(u16::MAX)
-        .saturating_add(GUTTER);
+        .saturating_add(metric::gutter());
     frame.set_cursor_position((area.x + col.min(area.width.saturating_sub(1)), area.y + row));
 }
 
@@ -205,7 +189,7 @@ mod tests {
 
     #[test]
     fn a_tall_terminal_does_not_get_a_tall_viewport() {
-        assert_eq!(initial_height(200), LIVE_TARGET + 6);
+        assert_eq!(initial_height(200), metric::live_rows() + 6);
     }
 
     #[test]

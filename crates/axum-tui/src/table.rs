@@ -12,11 +12,6 @@ use crate::colour;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-/// The narrowest a column is allowed to become before the table gives up.
-///
-/// Below this every cell is ellipsis and the table conveys less than the raw pipes did.
-const MIN_COLUMN: usize = 3;
-
 /// Whether a line could be part of a table.
 ///
 /// Deliberately loose: a single pipe-delimited line is not a table, and the caller only
@@ -83,7 +78,7 @@ pub fn render(rows: &[String], width: u16) -> Vec<Line<'static>> {
         header,
         &widths,
         Style::default()
-            .fg(colour::heading())
+            .fg(colour::md_heading())
             .add_modifier(Modifier::BOLD),
         rule,
     ));
@@ -111,7 +106,7 @@ fn fit(widths: &mut [usize], width: usize) {
         let Some(widest) = widths
             .iter()
             .enumerate()
-            .filter(|(_, w)| **w > MIN_COLUMN)
+            .filter(|(_, w)| **w > usize::from(crate::metric::min_column()))
             .max_by_key(|(_, w)| **w)
             .map(|(i, _)| i)
         else {

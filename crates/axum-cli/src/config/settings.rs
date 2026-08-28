@@ -99,148 +99,61 @@ pub fn options(loaded: &Loaded) -> axum_provider::api::Options {
     }
 }
 
-/// How fast the border scan moves, as hundredths of the built-in rate.
+/// Everything `axum.ui` says about how the screen looks.
 ///
-/// A multiplier rather than three speeds, because the three modes are deliberately paced against
-/// each other — resting drifts, holding shuttles, working races — and a config able to set them
-/// independently is a config able to make working slower than resting.
-///
-/// ```lua
-/// axum.scan_speed = 2      -- twice as fast
-/// axum.scan_speed = 0.5    -- half
-/// axum.scan_speed = 0      -- still
-/// ```
-///
-/// Held as hundredths so a fractional speed survives in integer arithmetic all the way to the
-/// cell, and clamped because a scan moving a hundred cells a frame is not an animation.
-#[must_use]
-pub fn scan_rate(loaded: &Loaded) -> usize {
-    let asked = loaded.config.number("scan_speed").unwrap_or(1.0);
-    if !asked.is_finite() || asked <= 0.0 {
-        return if asked == 0.0 { 0 } else { NORMAL_SCAN };
-    }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "clamped to a small positive range first"
-    )]
-    let rate = (asked * 100.0).clamp(0.0, 800.0) as usize;
-    rate
-}
-
-/// The rate `scan_speed = 1` means.
-pub const NORMAL_SCAN: usize = 100;
-
-#[cfg(test)]
-mod scan_tests {
-    use super::*;
-
-    /// A config holding nothing but what a `.lua` file assigned.
-    fn from_lua(source: &str) -> Loaded {
-        let mut engine = axum_lua::Engine::new();
-        engine.run(source, "test").expect("the config must run");
-        engine.harvest();
-        Loaded {
-            config: engine.config(),
-            tools: Vec::new(),
-            stubs: Vec::new(),
-            apis: Vec::new(),
-            providers: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn a_config_that_says_nothing_gets_the_built_in_speed() {
-        assert_eq!(scan_rate(&from_lua("")), NORMAL_SCAN);
-    }
-
-    #[test]
-    fn a_whole_number_is_a_multiple() {
-        // Lua has one number type, so `2` and `2.0` are the same value written twice and a
-        // reader that only answered to one of them would be a bug worth reporting.
-        assert_eq!(scan_rate(&from_lua("axum.scan_speed = 2")), 200);
-        assert_eq!(scan_rate(&from_lua("axum.scan_speed = 2.0")), 200);
-    }
-
-    #[test]
-    fn a_fraction_survives_to_the_cell() {
-        // The reason the rate is hundredths rather than ticks: in whole ticks this rounds to
-        // nought and half speed is a scan that does not move.
-        assert_eq!(scan_rate(&from_lua("axum.scan_speed = 0.5")), 50);
-    }
-
-    #[test]
-    fn zero_is_still() {
-        assert_eq!(scan_rate(&from_lua("axum.scan_speed = 0")), 0);
-    }
-
-    #[test]
-    fn a_speed_that_is_not_one_is_the_built_in_one() {
-        // A negative speed is not a scan running backwards, it is a typo. Refusing to read it
-        // as anything leaves the border moving, which is the state somebody can see and fix.
-        assert_eq!(scan_rate(&from_lua("axum.scan_speed = -3")), NORMAL_SCAN);
-        assert_eq!(
-            scan_rate(&from_lua("axum.scan_speed = 'fast'")),
-            NORMAL_SCAN
-        );
-    }
-
-    #[test]
-    fn an_absurd_speed_is_clamped_rather_than_honoured() {
-        assert_eq!(scan_rate(&from_lua("axum.scan_speed = 1000")), 800);
-    }
-}
-
-/// The colours the UI draws with, as `axum.ui` left them.
-///
-/// Every field is a palette index and every one is optional: a config that names three of them
-/// gets the ordinary terminal reading for the rest. Names are the role, not the slot — `accent`
-/// rather than `color1` — because which slot is the accent is exactly the thing that differs
-/// between one machine and the next.
+/// One table, three kinds of value, and the names come from the three modules themselves — so a
+/// colour, a glyph or a size that exists is one a config can set, and there is no list here to
+/// keep in step with them.
 ///
 /// ```lua
-/// axum.ui.accent = 1
-/// axum.ui.muted  = 8
+/// axum.ui.accent    = 1
+/// axum.ui.marker    = "▶ "
+/// axum.ui.menu_rows = 12
 /// ```
-#[must_use]
-pub fn palette(loaded: &Loaded) -> axum_tui::colour::Palette {
-    let mut palette = axum_tui::colour::Palette::default();
+///
+/// A name that is not any of theirs is ignored rather than refused: a config written for a later
+/// axum should not stop an earlier one from starting.
+pub fn adopt_ui(loaded: &Loaded) {
     let Some(ui) = loaded.config.get("ui").and_then(|v| v.as_object()) else {
-        return palette;
+        return;
     };
-    // A value that is not an index is left alone rather than clamped. Clamping 300 to 255 would
-    // paint something, and the something would not be what was asked for.
-    let index = |name: &str| -> Option<u8> {
+
+    // A value of the wrong kind is left alone rather than coerced. `accent = "red"` is a mistake,
+    // and painting something anyway would hide it behind a colour nobody chose.
+    let mut palette = axum_tui::colour::Palette::default();
+    palette.overlay(&|name| {
         ui.get(name)
             .and_then(serde_json::Value::as_u64)
             .and_then(|n| u8::try_from(n).ok())
-    };
-    let set = |name: &str, field: &mut u8| {
-        if let Some(value) = index(name) {
-            *field = value;
+    });
+    axum_tui::colour::adopt(palette);
+
+    let mut glyphs = axum_tui::glyph::Glyphs::default();
+    glyphs.overlay(&|name| {
+        ui.get(name)
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+    });
+    // A spinner with no frames is a division by zero at the one moment somebody is watching, so
+    // an empty list is read as "say nothing about the spinner" rather than obeyed.
+    if let Some(frames) = ui.get("spinner").and_then(|v| v.as_array()) {
+        let drawn: Vec<String> = frames
+            .iter()
+            .filter_map(|f| f.as_str().map(ToOwned::to_owned))
+            .collect();
+        if !drawn.is_empty() {
+            glyphs.spinner = drawn;
         }
-    };
-    set("accent", &mut palette.accent);
-    set("success", &mut palette.success);
-    set("warning", &mut palette.warning);
-    set("error", &mut palette.error);
-    set("heading", &mut palette.heading);
-    set("code", &mut palette.code);
-    set("match", &mut palette.match_);
-    set("block_bg", &mut palette.block_bg);
-    set("raised_bg", &mut palette.raised_bg);
-    set("rule", &mut palette.rule);
-    set("dim", &mut palette.dim);
-    set("muted", &mut palette.muted);
-    set("text", &mut palette.text);
-    set("selected", &mut palette.selected);
-    set("border", &mut palette.border);
-    set("scan", &mut palette.scan);
-    palette
+    }
+    axum_tui::glyph::adopt(glyphs);
+
+    let mut metrics = axum_tui::metric::Metrics::default();
+    metrics.overlay(&|name| ui.get(name).and_then(serde_json::Value::as_u64));
+    axum_tui::metric::adopt(metrics);
 }
 
 #[cfg(test)]
-mod palette_tests {
+mod ui_tests {
     use super::*;
 
     fn from_lua(source: &str) -> Loaded {
@@ -254,35 +167,72 @@ mod palette_tests {
             apis: Vec::new(),
             providers: Vec::new(),
         }
+    }
+
+    /// The palette a config would produce, without adopting it process-wide.
+    fn palette_of(source: &str) -> axum_tui::colour::Palette {
+        let loaded = from_lua(source);
+        let ui = loaded
+            .config
+            .get("ui")
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+        let mut palette = axum_tui::colour::Palette::default();
+        palette.overlay(&|name| {
+            ui.get(name)
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|n| u8::try_from(n).ok())
+        });
+        palette
     }
 
     #[test]
     fn a_config_that_says_nothing_gets_the_ordinary_terminal() {
-        assert_eq!(palette(&from_lua("")), axum_tui::colour::STOCK);
+        assert_eq!(palette_of(""), axum_tui::colour::STOCK);
     }
 
     #[test]
     fn a_field_can_be_set_without_declaring_the_table_first() {
         // `axum.ui` exists before any config runs, so this is an assignment rather than an
         // attempt to index a nil.
-        let chosen = palette(&from_lua("axum.ui.accent = 1"));
+        let chosen = palette_of("axum.ui.accent = 1");
         assert_eq!(chosen.accent, 1);
         assert_eq!(chosen.muted, axum_tui::colour::STOCK.muted, "and only that");
     }
 
     #[test]
     fn the_whole_table_can_be_replaced_at_once() {
-        let chosen = palette(&from_lua(
-            "axum.ui = { accent = 1, muted = 8, border = 237 }",
-        ));
+        let chosen = palette_of("axum.ui = { accent = 1, muted = 8, border = 237 }");
         assert_eq!((chosen.accent, chosen.muted, chosen.border), (1, 8, 237));
     }
 
     #[test]
-    fn a_value_that_is_not_an_index_is_left_alone() {
-        // Clamping would paint something, and the something would not be what was asked for.
-        let chosen = palette(&from_lua("axum.ui.accent = 300\naxum.ui.dim = 'grey'"));
+    fn a_value_of_the_wrong_kind_is_left_alone() {
+        // Painting something anyway would hide the mistake behind a colour nobody chose.
+        let chosen = palette_of("axum.ui.accent = 300\naxum.ui.dim = 'grey'");
         assert_eq!(chosen.accent, axum_tui::colour::STOCK.accent);
         assert_eq!(chosen.dim, axum_tui::colour::STOCK.dim);
+    }
+
+    #[test]
+    fn a_name_nothing_recognises_is_ignored_rather_than_refused() {
+        // A config written for a later axum still starts this one.
+        let loaded = from_lua("axum.ui.from_the_future = 3");
+        assert!(loaded.config.get("ui").is_some(), "it ran");
+    }
+
+    #[test]
+    fn the_three_kinds_are_named_apart() {
+        // One flat table only works if a colour, a glyph and a size never want the same name.
+        use axum_tui::{colour::Palette, glyph::Glyphs, metric::Metrics};
+        let mut all: Vec<&str> = Vec::new();
+        all.extend(Palette::NAMES);
+        all.extend(Glyphs::NAMES);
+        all.extend(Metrics::NAMES);
+        let mut seen = std::collections::BTreeSet::new();
+        for name in all {
+            assert!(seen.insert(name), "{name} is claimed twice");
+        }
     }
 }

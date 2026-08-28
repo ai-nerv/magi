@@ -5,14 +5,13 @@
 //! call is a padded box whose background carries its outcome.
 
 use crate::colour;
+use crate::glyph;
 use crate::markdown;
 use axum_proto::{Entry, StopReason};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 /// Horizontal padding inside a block, in cells. Pi's `outputPad`.
-const PAD: u16 = 1;
-
 mod tool;
 
 pub use tool::Detail;
@@ -65,10 +64,13 @@ pub fn entry_lines(entry: &Entry, width: u16, detail: Detail) -> Vec<Line<'stati
 /// is — a voice that is not the conversation's.
 fn notice(text: &str, width: u16) -> Vec<Line<'static>> {
     let style = Style::default().fg(colour::dim());
-    let inner = width.saturating_sub(PAD * 2 + 2);
+    let inner = width.saturating_sub(crate::metric::block_pad() * 2 + 2);
     let mut out = vec![Line::default()];
     for line in markdown::render(text, inner, style) {
-        let mut spans = vec![Span::styled("│ ", Style::default().fg(colour::muted()))];
+        let mut spans = vec![Span::styled(
+            glyph::notice_rule(),
+            Style::default().fg(colour::muted()),
+        )];
         spans.extend(line.spans);
         out.push(indent(Line::from(spans)));
     }
@@ -98,8 +100,10 @@ fn marker(label: &str, width: u16) -> Vec<Line<'static>> {
 
 /// A full-width box on `userMessageBg`, padded one cell on every side.
 fn user(text: &str, width: u16) -> Vec<Line<'static>> {
-    let style = Style::default().bg(colour::raised_bg()).fg(colour::text());
-    let inner = width.saturating_sub(PAD * 2);
+    let style = Style::default()
+        .bg(colour::message_bg())
+        .fg(colour::message_text());
+    let inner = width.saturating_sub(crate::metric::block_pad() * 2);
     let body = markdown::render(text, inner, style);
 
     let mut out = vec![blank(width, style)];
@@ -119,7 +123,7 @@ fn assistant(
     width: u16,
 ) -> Vec<Line<'static>> {
     let base = Style::default().fg(colour::text());
-    let inner = width.saturating_sub(PAD * 2);
+    let inner = width.saturating_sub(crate::metric::block_pad() * 2);
     let mut out = Vec::new();
 
     if !thinking.trim().is_empty() || !text.trim().is_empty() {
@@ -128,7 +132,7 @@ fn assistant(
 
     if !thinking.trim().is_empty() {
         let style = Style::default()
-            .fg(colour::muted())
+            .fg(colour::thinking())
             .add_modifier(Modifier::ITALIC);
         for line in markdown::render(thinking.trim(), inner, style) {
             out.push(indent(line));
@@ -186,7 +190,7 @@ fn clip(text: &str, width: usize) -> String {
     text.chars()
         .take(width.saturating_sub(1))
         .collect::<String>()
-        + "…"
+        + glyph::ellipsis()
 }
 
 /// A full-width line carrying only the background.
@@ -194,9 +198,11 @@ fn blank(width: u16, style: Style) -> Line<'static> {
     Line::from(Span::styled(" ".repeat(usize::from(width)), style))
 }
 
-/// Indent a line by [`PAD`] without a background.
+/// Indent a line by [`crate::metric::block_pad()`] without a background.
 fn indent(line: Line<'static>) -> Line<'static> {
-    let mut spans = vec![Span::raw(" ".repeat(usize::from(PAD)))];
+    let mut spans = vec![Span::raw(
+        " ".repeat(usize::from(crate::metric::block_pad())),
+    )];
     spans.extend(line.spans);
     Line::from(spans)
 }
@@ -206,7 +212,7 @@ fn indent(line: Line<'static>) -> Line<'static> {
 /// The trailing fill is what makes a box read as a block rather than as ragged coloured text.
 fn pad(line: Line<'static>, width: u16, style: Style) -> Line<'static> {
     let used: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
-    let pad = usize::from(PAD);
+    let pad = usize::from(crate::metric::block_pad());
     let trailing = usize::from(width).saturating_sub(used + pad);
 
     let mut spans = vec![Span::styled(" ".repeat(pad), style)];

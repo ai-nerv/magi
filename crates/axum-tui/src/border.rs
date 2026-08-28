@@ -22,6 +22,8 @@
 //! step, which is the shape of a thing waiting to be sent; while a turn runs they race.
 
 use crate::colour;
+use crate::glyph;
+use crate::metric;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
@@ -33,9 +35,16 @@ use ratatui::text::{Line, Span};
 /// a long tail read as travel in a single frame, which is what makes the thing look alive
 /// standing still.
 ///
-/// Tables rather than a curve, so the shape stays editable by eye.
-const NOSE: [f32; 3] = [1.0, 0.5, 0.2];
-const TAIL: [f32; 10] = [1.0, 0.9, 0.78, 0.65, 0.52, 0.4, 0.29, 0.2, 0.12, 0.06];
+/// A curve rather than a table, now that the two lengths are settings: a table cannot be as long
+/// as somebody asks for. Squared, so the fade is quick near the head and slow out at the end,
+/// which is what the hand-written table was.
+fn fade(step: u16, over: u16) -> f32 {
+    if step >= over {
+        return 0.0;
+    }
+    let left = f32::from(over - step) / f32::from(over.max(1));
+    left * left
+}
 
 /// A scan head: where it is on the ring, and which way it is travelling.
 ///
@@ -65,12 +74,13 @@ pub enum Scan {
 ///
 /// A fraction rather than a divisor so the speeds can sit between whole cells: the caller ticks
 /// at the spinner's rate, and one cell per tick is already brisk.
-const fn pace(scan: Scan) -> (usize, usize) {
-    match scan {
-        Scan::Resting => (4, 3),
-        Scan::Holding => (2, 1),
-        Scan::Working | Scan::Off => (4, 1),
-    }
+fn pace(scan: Scan) -> (usize, usize) {
+    let hundredths = match scan {
+        Scan::Resting => metric::rest_pace(),
+        Scan::Holding => metric::hold_pace(),
+        Scan::Working | Scan::Off => metric::work_pace(),
+    };
+    (usize::from(hundredths), 100)
 }
 
 /// A box `width` wide holding `rows` of content.
@@ -85,21 +95,36 @@ pub fn edges(width: u16, rows: usize, tick: usize, scan: Scan) -> (Line<'static>
     let heads = heads(scan, tick, inner, rows, ring);
 
     let mut top = Vec::with_capacity(width);
-    top.push(cell('╭', 0, &heads, ring));
+    top.push(cell(glyph::corner_top_left(), 0, &heads, ring));
     for i in 0..inner {
-        top.push(cell('─', 1 + i, &heads, ring));
+        top.push(cell(glyph::edge_horizontal(), 1 + i, &heads, ring));
     }
-    top.push(cell('╮', 1 + inner, &heads, ring));
+    top.push(cell(glyph::corner_top_right(), 1 + inner, &heads, ring));
 
     // Anticlockwise along the bottom, because the ring runs clockwise: the bottom-right corner
     // comes before the bottom-left one when you are walking round.
     let bottom_right = 1 + inner + 1 + rows;
     let mut bottom = Vec::with_capacity(width);
-    bottom.push(cell('╰', bottom_right + inner + 1, &heads, ring));
+    bottom.push(cell(
+        glyph::corner_bottom_left(),
+        bottom_right + inner + 1,
+        &heads,
+        ring,
+    ));
     for i in 0..inner {
-        bottom.push(cell('─', bottom_right + inner - i, &heads, ring));
+        bottom.push(cell(
+            glyph::edge_horizontal(),
+            bottom_right + inner - i,
+            &heads,
+            ring,
+        ));
     }
-    bottom.push(cell('╯', bottom_right, &heads, ring));
+    bottom.push(cell(
+        glyph::corner_bottom_right(),
+        bottom_right,
+        &heads,
+        ring,
+    ));
 
     (Line::from(top), Line::from(bottom))
 }
@@ -120,8 +145,8 @@ pub fn side(
     let right = 1 + inner + 1 + row;
     let left = ring - 1 - row;
     (
-        cell('│', left, &heads, ring),
-        cell('│', right, &heads, ring),
+        cell(glyph::edge_vertical(), left, &heads, ring),
+        cell(glyph::edge_vertical(), right, &heads, ring),
     )
 }
 
@@ -215,18 +240,21 @@ fn lit(at: usize, head: Head, ring: usize) -> f32 {
     } else {
         (anticlockwise, clockwise)
     };
-    let ahead = NOSE.get(nose).copied().unwrap_or(0.0);
-    let behind = TAIL.get(tail).copied().unwrap_or(0.0);
+    let ahead = fade(u16::try_from(nose).unwrap_or(u16::MAX), metric::scan_nose());
+    let behind = fade(u16::try_from(tail).unwrap_or(u16::MAX), metric::scan_tail());
     ahead.max(behind)
 }
 
 /// One border cell, lit by whichever head is nearest.
-fn cell(glyph: char, at: usize, heads: &[Head], ring: usize) -> Span<'static> {
+fn cell(glyph: &str, at: usize, heads: &[Head], ring: usize) -> Span<'static> {
     let mut best = 0.0_f32;
     for &head in heads {
         best = best.max(lit(at, head, ring));
     }
-    Span::styled(glyph.to_string(), Style::default().fg(colour::scan(best)))
+    Span::styled(
+        glyph.to_string(),
+        Style::default().fg(colour::scan_at(best)),
+    )
 }
 
 #[cfg(test)]
@@ -271,7 +299,7 @@ mod tests {
                 .spans
                 .iter()
                 .chain(bottom.spans.iter())
-                .filter(|s| s.style.fg == Some(colour::scan(1.0)))
+                .filter(|s| s.style.fg == Some(colour::scan_at(1.0)))
                 .count();
             assert_eq!(peaks, 2, "{scan:?} on a one-row box puts both on the edges");
         }
@@ -279,12 +307,17 @@ mod tests {
 
     #[test]
     fn resting_and_working_are_the_same_figure_at_different_speeds() {
-        // Nothing is happening, or something is, and it is the same box either way.
-        assert_eq!(
-            heads(Scan::Resting, 30, 20, 1, 44),
-            heads(Scan::Working, 10, 20, 1, 44),
-            "resting at 2/3 and working at 2/1 land together when the ticks line up"
-        );
+        // Nothing is happening, or something is, and it is the same box either way. The figure
+        // is what is asserted rather than a tick either mode lands on: the two paces are settings
+        // now, and a test that pins them to a ratio fails the moment somebody changes one.
+        let ring = 44;
+        for scan in [Scan::Resting, Scan::Working] {
+            let heads = heads(scan, 30, 20, 1, ring);
+            assert_eq!(heads.len(), 2, "{scan:?}");
+            let apart = heads[1].at.abs_diff(heads[0].at);
+            assert_eq!(apart, ring / 2, "{scan:?}: opposite each other");
+            assert!(heads.iter().all(|h| h.forward), "{scan:?}: both travelling");
+        }
     }
 
     #[test]
@@ -296,13 +329,14 @@ mod tests {
         };
         let ring = 100;
         assert!((lit(40, head, ring) - 1.0).abs() < f32::EPSILON, "the head");
-        for step in 1..TAIL.len() {
+        let tail = usize::from(metric::scan_tail());
+        for step in 1..tail {
             assert!(
                 lit(40 - step, head, ring) < lit(40 - step + 1, head, ring),
                 "the tail dims as it goes back, at {step}"
             );
         }
-        assert_eq!(lit(40 - TAIL.len(), head, ring), 0.0, "and then it is out");
+        assert_eq!(lit(40 - tail, head, ring), 0.0, "and then it is out");
     }
 
     #[test]
@@ -422,7 +456,7 @@ mod holding_tests {
     fn peak(line: &Line<'_>) -> Option<usize> {
         line.spans
             .iter()
-            .position(|s| s.style.fg == Some(colour::scan(1.0)))
+            .position(|s| s.style.fg == Some(colour::scan_at(1.0)))
     }
 
     #[test]
@@ -462,11 +496,19 @@ mod holding_tests {
     }
 
     #[test]
-    fn every_mode_moves_faster_than_it_did() {
-        // Doubled twice. Two thirds of a cell per tick read as drifting rather than scanning;
-        // the pass after that still read as slow next to the spinner it ticks with.
-        assert_eq!(pace(Scan::Resting), (4, 3));
-        assert_eq!(pace(Scan::Holding), (2, 1));
-        assert_eq!(pace(Scan::Working), (4, 1));
+    fn the_modes_are_paced_against_each_other() {
+        // The ordering is the point and the numbers are settings: drift at rest, shuttle with
+        // something waiting, race while a turn runs. A config that inverts it will get what it
+        // asked for, but the built-in set says what the shape is meant to be.
+        let cells = |scan| {
+            let (num, den) = pace(scan);
+            num * 1000 / den
+        };
+        assert!(cells(Scan::Resting) < cells(Scan::Holding));
+        assert!(cells(Scan::Holding) < cells(Scan::Working));
+        assert!(
+            cells(Scan::Resting) > 1000,
+            "and even resting is a cell a tick"
+        );
     }
 }

@@ -42,7 +42,7 @@ pub fn render(model: &str, cwd: &str, width: u16) -> Vec<Line<'static>> {
 
     // The sentinel is not a name. Printing `no-model` here reads as a model called that, and
     // the notice below already says what to do about it.
-    if !model.is_empty() && model != crate::footer::NO_MODEL {
+    if !model.is_empty() && model != crate::glyph::no_model() {
         out.push(Line::from(Span::styled(
             crate::footer::fit_path(model, usize::from(width)),
             muted,
