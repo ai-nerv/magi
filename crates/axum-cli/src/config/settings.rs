@@ -92,6 +92,8 @@ pub fn options(loaded: &Loaded) -> axum_provider::api::Options {
         .string("thinking")
         .and_then(|level| serde_json::from_value(serde_json::Value::String(level.to_owned())).ok());
     axum_provider::api::Options {
+        // Set per request, not per session: a schema belongs to one question.
+        schema: None,
         thinking,
         max_tokens: None,
     }

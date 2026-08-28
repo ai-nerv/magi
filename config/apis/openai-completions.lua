@@ -110,6 +110,15 @@ function M.request(model, ctx, opts)
   -- wants. The host resolves it because the answer needs to tell "the model refuses this
   -- level" from "the model has no opinion" — and in Lua a key with no value and no key at all
   -- are the same thing.
+  -- A schema turns "reply with JSON" into a contract the provider enforces. The OpenAI family
+  -- spells it `response_format`; `strict` is what makes it a guarantee rather than a hint.
+  if opts.schema then
+    body.response_format = {
+      type = "json_schema",
+      json_schema = { name = opts.schema.name, schema = opts.schema.schema, strict = true },
+    }
+  end
+
   local level = opts.thinking
   if level then
     local format = compat.thinking_format

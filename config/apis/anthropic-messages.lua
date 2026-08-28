@@ -81,7 +81,19 @@ function M.request(model, ctx, opts)
   }
   if ctx.system then body.system = ctx.system end
 
-  if ctx.tools and #ctx.tools > 0 then
+  -- Anthropic has no `response_format`. The idiom is a single tool the model is forced to call,
+  -- whose input schema is the shape wanted -- so a schema request becomes exactly that, and the
+  -- caller reads the answer out of the tool call rather than out of the text.
+  if opts.schema then
+    body.tools = {
+      {
+        name = opts.schema.name,
+        description = "Answer by calling this with the requested value.",
+        input_schema = opts.schema.schema,
+      },
+    }
+    body.tool_choice = { type = "tool", name = opts.schema.name }
+  elseif ctx.tools and #ctx.tools > 0 then
     local tools = {}
     for _, t in ipairs(ctx.tools) do
       tools[#tools + 1] = { name = t.name, description = t.description, input_schema = t.parameters }

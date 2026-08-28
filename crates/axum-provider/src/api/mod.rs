@@ -22,6 +22,27 @@ pub struct Options {
     /// Cap the response, below the model's own maximum.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u64>,
+    /// A JSON Schema the answer must satisfy.
+    ///
+    /// The difference between asking a model a question and asking it for a *value*. Without it
+    /// every structured answer is a prompt saying "reply with JSON" and a parser that copes with
+    /// the model saying "Sure! Here is the JSON:" first — which works until it does not, at the
+    /// least convenient moment.
+    ///
+    /// Carried as a schema rather than a Rust type because the adapters are Lua and the shape
+    /// differs per protocol: `response_format` on the OpenAI family, `text.format` on Responses,
+    /// `responseSchema` on Google. What they share is the schema itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema: Option<Schema>,
+}
+
+/// A named JSON Schema an answer must satisfy.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Schema {
+    /// What to call it. Some providers require one and none of them show it to anybody.
+    pub name: String,
+    /// The schema itself.
+    pub schema: serde_json::Value,
 }
 
 /// One thing that happened while a response streamed.

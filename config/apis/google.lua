@@ -62,6 +62,13 @@ function M.request(model, ctx, opts)
       maxOutputTokens = math.min(opts.max_tokens or model.max_tokens, model.max_tokens),
     },
   }
+  -- Google puts it on the generation config, and wants the mime type set with it.
+  if opts.schema then
+    body.generationConfig = body.generationConfig or {}
+    body.generationConfig.responseMimeType = "application/json"
+    body.generationConfig.responseSchema = opts.schema.schema
+  end
+
   if ctx.system then
     body.systemInstruction = { parts = { { text = ctx.system } } }
   end

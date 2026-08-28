@@ -53,6 +53,18 @@ function M.request(model, ctx, opts)
   }
   if ctx.system then body.instructions = ctx.system end
 
+  -- Responses moved it under `text.format`, and flattened the schema up a level.
+  if opts.schema then
+    body.text = {
+      format = {
+        type = "json_schema",
+        name = opts.schema.name,
+        schema = opts.schema.schema,
+        strict = true,
+      },
+    }
+  end
+
   if ctx.tools and #ctx.tools > 0 then
     local tools = {}
     for _, t in ipairs(ctx.tools) do

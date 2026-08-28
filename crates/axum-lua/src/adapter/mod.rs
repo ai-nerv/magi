@@ -328,6 +328,7 @@ mod thinking_tests {
 
     fn wanting(level: ThinkingLevel) -> Options {
         Options {
+            schema: None,
             thinking: Some(level),
             max_tokens: None,
         }

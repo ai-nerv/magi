@@ -413,3 +413,86 @@ fn a_malformed_payload_is_ignored_rather_than_fatal() {
         );
     }
 }
+
+#[cfg(test)]
+mod schema_tests {
+    use super::*;
+
+    /// Options asking for one small object back.
+    fn asking_for_a_shape() -> Options {
+        Options {
+            schema: Some(axum_provider::api::Schema {
+                name: "answer".into(),
+                schema: serde_json::json!({
+                    "type": "object",
+                    "properties": { "ok": { "type": "boolean" } },
+                    "required": ["ok"],
+                }),
+            }),
+            ..Options::default()
+        }
+    }
+
+    #[test]
+    fn completions_asks_for_a_json_schema_response_format() {
+        let body = adapter("openai-completions").request(
+            &plain_model(),
+            &plain_context(),
+            &asking_for_a_shape(),
+        );
+        assert_eq!(body["response_format"]["type"], "json_schema");
+        assert_eq!(body["response_format"]["json_schema"]["strict"], true);
+        assert_eq!(body["response_format"]["json_schema"]["name"], "answer");
+    }
+
+    #[test]
+    fn responses_puts_it_under_text_format() {
+        let body = adapter("openai-responses").request(
+            &plain_model(),
+            &plain_context(),
+            &asking_for_a_shape(),
+        );
+        assert_eq!(body["text"]["format"]["type"], "json_schema");
+        assert_eq!(body["text"]["format"]["name"], "answer");
+    }
+
+    #[test]
+    fn google_puts_it_on_the_generation_config() {
+        let body = adapter("google-generative-ai").request(
+            &plain_model(),
+            &plain_context(),
+            &asking_for_a_shape(),
+        );
+        assert_eq!(
+            body["generationConfig"]["responseMimeType"],
+            "application/json"
+        );
+        assert!(body["generationConfig"]["responseSchema"].is_object());
+    }
+
+    #[test]
+    fn anthropic_forces_a_single_tool_because_it_has_no_response_format() {
+        // The idiom there: one tool whose input schema is the shape wanted, and `tool_choice`
+        // naming it, so the answer arrives as a tool call rather than as text.
+        let body = adapter("anthropic-messages").request(
+            &plain_model(),
+            &plain_context(),
+            &asking_for_a_shape(),
+        );
+        assert_eq!(body["tool_choice"]["type"], "tool");
+        assert_eq!(body["tool_choice"]["name"], "answer");
+        assert_eq!(body["tools"][0]["name"], "answer");
+        assert!(body["tools"][0]["input_schema"].is_object());
+    }
+
+    #[test]
+    fn no_schema_asked_for_means_no_field_added() {
+        // A request that did not ask for a shape must look exactly as it did before.
+        let body = adapter("openai-completions").request(
+            &plain_model(),
+            &plain_context(),
+            &Options::default(),
+        );
+        assert!(body.get("response_format").is_none());
+    }
+}

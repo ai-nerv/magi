@@ -335,3 +335,62 @@ mod tests {
         assert_eq!(first_line(""), "");
     }
 }
+
+impl Client {
+    /// Ask for one value of a known shape, and parse it.
+    ///
+    /// The reusable half of structured output: everywhere axum wants a *decision* from a model
+    /// rather than prose — which permissions a plan needs, how to summarise for compaction, what
+    /// to title a session — is this call with a different schema.
+    ///
+    /// Two places the answer can arrive from, because the protocols disagree. Most put it in the
+    /// response text; Anthropic has no `response_format`, so its adapter asks with a single
+    /// forced tool and the value comes back as that call's arguments. Both are collected and the
+    /// tool call wins, since a provider that produced one was answering the schema by
+    /// construction.
+    ///
+    /// # Errors
+    /// When the request failed, or when what came back was not the shape that was asked for —
+    /// which is a fact about the model worth reporting rather than papering over.
+    pub async fn value(&self, call: &Call<'_>) -> Result<serde_json::Value, ProviderError> {
+        let mut text = String::new();
+        let mut args = String::new();
+        self.stream(call, |delta| match delta {
+            Delta::Text(chunk) => text.push_str(&chunk),
+            Delta::ToolCallArgs(chunk) => args.push_str(&chunk),
+            _ => {}
+        })
+        .await?;
+
+        let raw = if args.trim().is_empty() { &text } else { &args };
+        serde_json::from_str(raw.trim()).map_err(|why| {
+            ProviderError::new(
+                RetryClass::Invalid,
+                format!("the answer was not the shape that was asked for: {why}"),
+            )
+        })
+    }
+}
+
+#[cfg(test)]
+mod value_tests {
+    use super::*;
+
+    #[test]
+    fn a_tool_call_answer_is_preferred_over_text() {
+        // Anthropic answers a schema by calling a forced tool; anything in the text beside it is
+        // commentary, and a provider that produced a call was answering by construction.
+        let text = "Sure! Here is the JSON:";
+        let args = r#"{"ok":true}"#;
+        let raw = if args.trim().is_empty() { text } else { args };
+        assert_eq!(raw, args);
+    }
+
+    #[test]
+    fn text_is_used_when_there_was_no_tool_call() {
+        let text = r#"{"ok":false}"#;
+        let args = "";
+        let raw = if args.trim().is_empty() { text } else { args };
+        assert_eq!(raw, text);
+    }
+}
