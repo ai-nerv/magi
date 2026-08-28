@@ -118,7 +118,6 @@ pub fn run() -> anyhow::Result<()> {
 struct Session {
     child: Child,
     /// The terminal we write commands into. A `File`, because that is what a pty is.
-    /// The terminal we write commands into. A `File`, because that is what a pty is.
     stdin: std::fs::File,
     /// The shell's output, a line at a time.
     ///
@@ -127,6 +126,13 @@ struct Session {
     /// shell does not help: a command that spawned anything leaves that child holding the
     /// same pipe open, so the read blocks on for as long as the thing being interrupted runs.
     lines: Receiver<String>,
+    /// The named pipe the output comes down.
+    ///
+    /// Kept only to unlink. The reader removes the name as soon as both ends are open, so this
+    /// is for the shell that never opened its end — a peer that was killed in the moment
+    /// between being told about the pipe and the shell getting round to it, which over a test
+    /// run that starts a peer per case leaves the temporary directory full of them.
+    fifo: std::path::PathBuf,
     /// Raised by the request reader when the host asks for a stop.
     interrupted: Arc<AtomicBool>,
     /// Unguessable per-session half of the end-of-command marker.
@@ -252,6 +258,7 @@ const REPORT_FD: i32 = 3;
 /// filesystem bound read-only has no writable `/tmp` — the session directory is the one place it
 /// can write, and a shell that cannot make its own output channel is a shell that does not start.
 fn make_fifo() -> anyhow::Result<std::path::PathBuf> {
+    sweep_stale_fifos();
     let name = format!("axum-shell-{}-{}", std::process::id(), nonce());
     let mut refused = None;
     for dir in [std::env::temp_dir(), std::path::PathBuf::from(".")] {
@@ -271,6 +278,31 @@ fn make_fifo() -> anyhow::Result<std::path::PathBuf> {
         || anyhow::anyhow!("nowhere to put the shell's output channel"),
         anyhow::Error::from,
     ))
+}
+
+/// Remove the fifos of peers that are no longer running.
+///
+/// A peer killed between telling its shell about the pipe and the shell opening it leaves the
+/// name behind — nothing unlinks it, because the process that would have is gone. One per dead
+/// peer is nothing; a test run that starts a peer per case leaves dozens. The pid is in the
+/// name, so whether it is still wanted is a question `/proc` answers.
+fn sweep_stale_fifos() {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(rest) = name
+            .to_string_lossy()
+            .strip_prefix("axum-shell-")
+            .map(|rest| rest.split('-').next().unwrap_or_default().to_owned())
+        else {
+            continue;
+        };
+        if !rest.is_empty() && !std::path::Path::new(&format!("/proc/{rest}")).exists() {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// A named pipe for one shell's output, and the lines that come out of it.
@@ -314,7 +346,7 @@ fn report_pipe() -> anyhow::Result<(std::path::PathBuf, Receiver<String>)> {
 }
 
 /// Spawn one shell, and a thread turning its output into lines.
-fn spawn_shell() -> anyhow::Result<(Child, std::fs::File, Receiver<String>)> {
+fn spawn_shell() -> anyhow::Result<(Child, std::fs::File, Receiver<String>, std::path::PathBuf)> {
     let (controller, device) = open_pty()?;
     // **A terminal on all three.** A shell writing to a pipe block-buffers, so nothing arrives
     // until it exits — which is why nothing came back at all once this ran the user's own shell
@@ -348,16 +380,17 @@ fn spawn_shell() -> anyhow::Result<(Child, std::fs::File, Receiver<String>)> {
     let (path, incoming) = report_pipe()?;
     writeln!(to_shell, "exec {REPORT_FD}>'{}'", path.display())?;
     to_shell.flush()?;
-    Ok((child, to_shell, incoming))
+    Ok((child, to_shell, incoming, path))
 }
 
 impl Session {
     fn start() -> anyhow::Result<Self> {
-        let (child, stdin, lines) = spawn_shell()?;
+        let (child, stdin, lines, fifo) = spawn_shell()?;
         Ok(Self {
             child,
             stdin,
             lines,
+            fifo,
             interrupted: Arc::new(AtomicBool::new(false)),
             nonce: nonce(),
             seq: 0,
@@ -367,12 +400,14 @@ impl Session {
 
     /// Replace the shell, keeping the interrupt flag the reader thread already holds.
     fn restart(&mut self) -> anyhow::Result<()> {
-        let (child, stdin, lines) = spawn_shell()?;
+        let (child, stdin, lines, fifo) = spawn_shell()?;
         let _ = self.child.kill();
         let _ = self.child.wait();
+        let _ = std::fs::remove_file(&self.fifo);
         self.child = child;
         self.stdin = stdin;
         self.lines = lines;
+        self.fifo = fifo;
         // A fresh marker, because a line from the abandoned shell arriving late must not be
         // able to end a command in this one.
         self.nonce = nonce();
@@ -480,6 +515,7 @@ impl Drop for Session {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        let _ = std::fs::remove_file(&self.fifo);
     }
 }
 
