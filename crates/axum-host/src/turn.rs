@@ -25,6 +25,11 @@ pub struct Backend {
     pub stubs: Vec<(String, String)>,
     /// Where the session is rooted, which is what tools resolve paths against.
     pub cwd: std::path::PathBuf,
+    /// Whether the file tools refuse paths outside `cwd`.
+    ///
+    /// Off unless a config asks. See [`axum_tools::ops::Real`] for why a wall only the careful
+    /// tools obey is worse than no wall.
+    pub confine: bool,
     /// The protocol descriptions to build the VM from, as `(name, source)`.
     ///
     /// Carried as text rather than as a built VM because a VM cannot cross a thread boundary,

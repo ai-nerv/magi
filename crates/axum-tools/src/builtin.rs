@@ -385,8 +385,14 @@ mod tests {
     }
 
     #[test]
-    fn a_path_outside_the_session_is_refused_by_every_tool() {
-        let (registry, ops, dir) = session("escape");
+    fn a_confined_session_refuses_an_escape_from_every_tool() {
+        // The rule lives on `axum.confine` now, and this is what it buys when it is on.
+        let dir = std::env::temp_dir().join(format!("axum-bwall-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let mut registry = crate::Registry::new();
+        install(&mut registry);
+        let ops = crate::ops::Real::confined(dir.clone());
         for (name, args) in [
             ("read", json!({ "path": "../../etc/passwd" })),
             ("write", json!({ "path": "../../tmp/x", "contents": "x" })),

@@ -29,6 +29,12 @@ impl Config {
         self.get(name).and_then(serde_json::Value::as_str)
     }
 
+    /// A setting as a boolean.
+    #[must_use]
+    pub fn boolean(&self, name: &str) -> Option<bool> {
+        self.get(name).and_then(serde_json::Value::as_bool)
+    }
+
     /// Everything handed to one registrar, in declaration order.
     #[must_use]
     pub fn all(&self, registrar: &str) -> Vec<(&str, &serde_json::Value)> {

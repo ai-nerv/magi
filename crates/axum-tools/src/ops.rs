@@ -57,18 +57,44 @@ pub trait Ops: Send + Sync {
 }
 
 /// Ops against the real machine, rooted at one directory.
+///
+/// The root is where **relative** paths resolve from — the session's directory, so `src/main.rs`
+/// means what it means in the shell you started in.
+///
+/// It is not a wall by default, and that is deliberate. It used to be: an absolute path outside
+/// the session was refused, and the effect was not safety but a detour. Asked to edit
+/// `/tmp/scratch/hello.py`, the model was told "outside this session's directory", so it reached
+/// for `bash` and did the same edit through a `python3` heredoc — unreviewable, undiffed, and
+/// through the one tool that has no confinement at all. A rule that only the careful tools obey
+/// moves work to the careless one.
+///
+/// Confinement is a *configuration*, the same way sandboxing is (§5e): `axum.confine = true`
+/// restores the wall, and `bwrap` in front of the shell peer is what actually contains anything.
 pub struct Real {
     root: PathBuf,
+    confined: bool,
 }
 
 impl Real {
-    /// Ops rooted at `root`.
+    /// Ops rooted at `root`, reaching anywhere.
     #[must_use]
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            confined: false,
+        }
     }
 
-    /// Resolve a path against the root, refusing anything that escapes it.
+    /// Ops that refuse anything outside `root`.
+    #[must_use]
+    pub fn confined(root: PathBuf) -> Self {
+        Self {
+            root,
+            confined: true,
+        }
+    }
+
+    /// Resolve a path against the root, refusing anything that escapes it when confined.
     ///
     /// Checked after normalising rather than by looking for `..` in the text: `a/../../etc` has
     /// no leading `..` and still escapes, and a symlink has none at all.
@@ -79,10 +105,13 @@ impl Real {
             self.root.join(path)
         };
         let normalised = normalise(&joined);
+        if !self.confined {
+            return Ok(normalised);
+        }
         let root = normalise(&self.root);
         if !normalised.starts_with(&root) {
             return Err(format!(
-                "{} is outside this session's directory",
+                "{} is outside this session's directory, and `axum.confine` is on",
                 path.display()
             ));
         }
@@ -152,6 +181,14 @@ mod tests {
         (Real::new(dir.clone()), dir)
     }
 
+    /// The same, with the wall on: `axum.confine` is where that rule lives now.
+    fn walled(name: &str) -> (Real, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("axum-wall-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        (Real::confined(dir.clone()), dir)
+    }
+
     #[test]
     fn a_write_then_a_read_round_trips() {
         let (ops, dir) = rooted("roundtrip");
@@ -170,8 +207,8 @@ mod tests {
     }
 
     #[test]
-    fn a_path_that_escapes_the_root_is_refused() {
-        let (ops, dir) = rooted("escape");
+    fn a_confined_path_that_escapes_the_root_is_refused() {
+        let (ops, dir) = walled("escape");
         let error = ops
             .read(Path::new("../../etc/passwd"))
             .expect_err("must refuse");
@@ -189,8 +226,8 @@ mod tests {
     }
 
     #[test]
-    fn an_absolute_path_outside_the_root_is_refused() {
-        let (ops, dir) = rooted("absolute");
+    fn a_confined_absolute_path_outside_the_root_is_refused() {
+        let (ops, dir) = walled("absolute");
         assert!(ops.read(Path::new("/etc/passwd")).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -221,5 +258,72 @@ mod tests {
         let error = ops.read(Path::new("nope.txt")).expect_err("must fail");
         assert!(error.contains("nope.txt"), "{error}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod reach_tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("axum-reach-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        dir
+    }
+
+    #[test]
+    fn a_path_outside_the_session_is_reachable() {
+        // The refusal was not safety. Told "outside this session's directory", a model reaches
+        // for `bash` and does the same edit through a heredoc — through the one tool with no
+        // confinement at all, and with no diff to show for it.
+        let session = scratch("session");
+        let elsewhere = scratch("elsewhere");
+        let file = elsewhere.join("hello.py");
+        std::fs::write(&file, "print('a')\n").expect("write");
+
+        let ops = Real::new(session.clone());
+        assert_eq!(ops.read(&file).expect("read"), "print('a')\n");
+        ops.write(&file, "print('b')\n").expect("write");
+        assert_eq!(
+            std::fs::read_to_string(&file).expect("read back"),
+            "print('b')\n"
+        );
+
+        let _ = std::fs::remove_dir_all(&session);
+        let _ = std::fs::remove_dir_all(&elsewhere);
+    }
+
+    #[test]
+    fn a_relative_path_still_means_the_session() {
+        // The root's real job: `src/main.rs` means what it means in the shell you started in.
+        let session = scratch("relative");
+        std::fs::create_dir_all(session.join("src")).expect("mkdir");
+        std::fs::write(session.join("src/main.rs"), "fn main() {}\n").expect("write");
+        let ops = Real::new(session.clone());
+        assert_eq!(
+            ops.read(Path::new("src/main.rs")).expect("read"),
+            "fn main() {}\n"
+        );
+        let _ = std::fs::remove_dir_all(&session);
+    }
+
+    #[test]
+    fn confined_ops_still_refuse_and_say_why() {
+        let session = scratch("wall");
+        let ops = Real::confined(session.clone());
+        let outside = std::env::temp_dir().join("axum-not-here.txt");
+        let why = ops.read(&outside).expect_err("refused");
+        assert!(why.contains("axum.confine"), "it names the setting: {why}");
+        let _ = std::fs::remove_dir_all(&session);
+    }
+
+    #[test]
+    fn confinement_still_catches_a_path_that_climbs_out() {
+        // `a/../../etc` has no leading `..` and still escapes.
+        let session = scratch("climb");
+        let ops = Real::confined(session.clone());
+        assert!(ops.read(Path::new("a/../../etc/passwd")).is_err());
+        let _ = std::fs::remove_dir_all(&session);
     }
 }

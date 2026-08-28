@@ -258,6 +258,7 @@ pub fn catalog(loaded: &Loaded) -> axum_host::catalog::Catalog {
         options: options(loaded),
         system: system(loaded),
         chosen: loaded.config.string("model").map(ToOwned::to_owned),
+        confine: loaded.config.boolean("confine").unwrap_or(false),
     }
 }
 
@@ -330,6 +331,7 @@ pub fn backend(loaded: &Loaded) -> Option<axum_host::turn::Backend> {
         model: model.clone(),
         options: options(loaded),
         system: system(loaded),
+        confine: loaded.config.boolean("confine").unwrap_or(false),
     })
 }
 

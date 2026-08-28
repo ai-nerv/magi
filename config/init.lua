@@ -30,3 +30,15 @@ axum.model = "anthropic/claude-sonnet-4-5"
 --
 -- Registration is keyed, so declaring the same id twice replaces rather than appends — which
 -- is what makes a loop over a directory of machines safe to re-run.
+
+-- Whether `read`, `write` and `edit` refuse paths outside the session's directory.
+--
+-- Off. It was on, and the effect was a detour rather than safety: asked to edit a file in
+-- /tmp, the model was told the path was outside the session and reached for `bash` instead,
+-- doing the same edit through a heredoc — no diff, no review, and through the one tool that
+-- has no confinement at all. A rule only the careful tools obey moves work to the careless one.
+--
+-- Turn it on if you want the wall, but the thing that actually contains anything is running
+-- the shell peer under `bwrap`: see `tools/bash-sandboxed.lua` in the examples.
+--
+-- axum.confine = true

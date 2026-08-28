@@ -30,6 +30,8 @@ pub struct Catalog {
     pub options: axum_provider::api::Options,
     /// What the model is told it is.
     pub system: Option<String>,
+    /// Whether the file tools refuse paths outside `cwd`.
+    pub confine: bool,
     /// The model the configuration asked for, whether or not it can be reached.
     ///
     /// Kept so a refusal can name it. Without this the daemon could only say "no model
@@ -53,6 +55,7 @@ impl Catalog {
             options: axum_provider::api::Options::default(),
             system: None,
             chosen: None,
+            confine: false,
         }
     }
 
@@ -73,6 +76,7 @@ impl Catalog {
             model: model.clone(),
             options: self.options.clone(),
             system: self.system.clone(),
+            confine: self.confine,
         })
     }
 
@@ -204,6 +208,7 @@ mod tests {
             options: axum_provider::api::Options::default(),
             system: None,
             chosen: None,
+            confine: false,
         }
     }
 

@@ -68,7 +68,11 @@ impl Worker {
             let mut registry = axum_tools::Registry::new();
             axum_tools::builtin::install(&mut registry);
             axum_lua::tool::install(std::rc::Rc::clone(&engine), &mut registry);
-            let ops = axum_tools::ops::Real::new(backend.cwd.clone());
+            let ops = if backend.confine {
+                axum_tools::ops::Real::confined(backend.cwd.clone())
+            } else {
+                axum_tools::ops::Real::new(backend.cwd.clone())
+            };
             // Before the first turn, so the schema the model is given is the one the peers
             // actually implement rather than the one a config file claimed for them.
             registry.probe(&ops);
