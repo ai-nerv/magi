@@ -378,7 +378,7 @@ fn a_peer_that_cannot_start_says_why() {
 fn the_shipped_config_names_the_binary_that_is_running() {
     // `command = "axum"` resolves through PATH, so it finds whichever copy the shell sees --
     // an older install, or none. `axum.self` is the one actually running.
-    let source = include_str!("../../../config/tools/bash.lua");
+    let source = include_str!("../../../config/tools/shell.lua");
     assert!(
         source.contains("command = axum.self"),
         "bash.lua must not rely on PATH"

@@ -34,7 +34,7 @@ axum.model = "anthropic/claude-sonnet-4-5"
 -- Whether `read`, `write` and `edit` refuse paths outside the session's directory.
 --
 -- Off. It was on, and the effect was a detour rather than safety: asked to edit a file in
--- /tmp, the model was told the path was outside the session and reached for `bash` instead,
+-- /tmp, the model was told the path was outside the session and reached for the shell instead,
 -- doing the same edit through a heredoc — no diff, no review, and through the one tool that
 -- has no confinement at all. A rule only the careful tools obey moves work to the careless one.
 --

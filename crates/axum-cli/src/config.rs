@@ -26,7 +26,7 @@ const BUILTIN_SYSTEM: &str = include_str!("../../../config/system.lua");
 /// `bash` among them, declared as a process tool. Shipped rather than built in so that what a
 /// fresh install can do is written down in a file you can read and replace.
 const BUILTIN_TOOLS: &[(&str, &str)] = &[
-    ("bash", include_str!("../../../config/tools/bash.lua")),
+    ("shell", include_str!("../../../config/tools/shell.lua")),
     ("hexe", include_str!("../../../config/tools/hexe.lua")),
     ("oslo", include_str!("../../../config/tools/oslo.lua")),
 ];

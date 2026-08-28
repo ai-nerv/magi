@@ -1,4 +1,4 @@
--- `bash`, as a PROCESS tool.
+-- `shell`, as a PROCESS tool.
 --
 -- This is the branch that exists for tools like this one. Running shell commands is the most
 -- dangerous thing the model can ask for, the thing you would most want to isolate, and the
@@ -19,9 +19,9 @@
 -- a wrong command, a missing binary -- so the model is told something rather than being handed
 -- a tool with no schema it can never call correctly.
 
-axum.tool("bash", {
+axum.tool("shell", {
   description = [[
-Run a shell command in the session's directory.
+Run a command in the user's own shell (`$SHELL`, falling back to `sh`).
 
 The working directory and environment persist between calls, so `cd` and exported variables
 carry over. Output is returned as it is produced.]],

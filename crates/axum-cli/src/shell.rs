@@ -15,7 +15,9 @@
 use axum_ipc::blocking::{FrameReader, FrameWriter};
 use axum_proto::{ToolCallId, ToolReport, ToolRequest};
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::os::fd::OwnedFd;
+use std::os::unix::ffi::OsStringExt;
+use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -51,13 +53,18 @@ pub fn run() -> anyhow::Result<()> {
 
     // Declared on connect rather than configured by the host: the peer is the only thing that
     // knows what it can actually do.
+    let which = shell_name();
     writer.write_blocking(&ToolReport::Declare {
-        name: "bash".to_owned(),
-        description: "Run a shell command. The working directory and environment persist \
-                      between calls.\n\n\
-                      Long output is truncated in the middle and the whole of it is written to \
-                      a file the result names."
-            .to_owned(),
+        name: "shell".to_owned(),
+        description: format!(
+            "Run a command in the user's own shell ({which}). The working directory and \
+             environment persist between calls.\n\n\
+             This is their login shell, not `sh`: their aliases, functions and shell-specific \
+             features are available, and a scriptable shell can be asked things a POSIX one \
+             cannot.\n\n\
+             Long output is truncated in the middle and the whole of it is written to a file \
+             the result names."
+        ),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
@@ -110,7 +117,9 @@ pub fn run() -> anyhow::Result<()> {
 /// One long-lived `sh`.
 struct Session {
     child: Child,
-    stdin: ChildStdin,
+    /// The terminal we write commands into. A `File`, because that is what a pty is.
+    /// The terminal we write commands into. A `File`, because that is what a pty is.
+    stdin: std::fs::File,
     /// The shell's output, a line at a time.
     ///
     /// A channel rather than the pipe itself, because a pipe cannot be read with a deadline
@@ -143,44 +152,130 @@ fn nonce() -> String {
     )
 }
 
+/// Which shell to run.
+///
+/// `$AXUM_SHELL`, then `$SHELL`, then `sh`. It was `sh` outright, which threw away the thing
+/// that makes this tool worth having: a person's own shell is the one that knows their aliases,
+/// their functions, and — for a shell like oslo — a whole scripting surface the model can reach
+/// through the same tool it already has. Running the lowest common denominator is a choice to
+/// be useless on every machine equally.
+///
+/// `sh` remains the floor, because a login shell recorded in the environment is not always a
+/// shell that exists on this machine.
+#[must_use]
+pub fn shell_command() -> String {
+    let axum_shell = std::env::var("AXUM_SHELL").ok();
+    let login = std::env::var("SHELL").ok();
+    shell_command_from(login.as_deref(), axum_shell.as_deref())
+}
+
+/// The same, from values rather than the environment, so it can be tested.
+#[must_use]
+fn shell_command_from(login: Option<&str>, override_: Option<&str>) -> String {
+    for candidate in [override_, login].into_iter().flatten() {
+        if !candidate.is_empty() && std::path::Path::new(candidate).exists() {
+            return candidate.to_owned();
+        }
+    }
+    "sh".to_owned()
+}
+
+/// The shell's name, for saying what this tool runs.
+#[must_use]
+pub fn shell_name() -> String {
+    name_of(&shell_command())
+}
+
+/// The last component of a path, or the whole of it.
+fn name_of(command: &str) -> String {
+    std::path::Path::new(command)
+        .file_name()
+        .map_or_else(|| command.to_owned(), |n| n.to_string_lossy().into_owned())
+}
+
+/// Open a pseudo-terminal: the side we hold, and the side the shell gets.
+///
+/// **A pipe is not good enough for a real shell.** Writing to a pipe a shell block-buffers, so
+/// nothing arrives until it exits; writing to a terminal it line-buffers, which is what the
+/// end-of-command marker depends on. `sh` happened to behave, which is why pipes worked while
+/// this ran `sh` and stopped the moment it ran the user's own — oslo produced nothing at all for
+/// the whole 600-second timeout. Tau's shell extension runs on a pty for the same reason.
+///
+/// A terminal is also what makes a shell answer "yes" to *am I interactive*, which is what loads
+/// aliases and functions in the first place.
+fn open_pty() -> anyhow::Result<(OwnedFd, OwnedFd)> {
+    use rustix::pty::OpenptFlags;
+    let controller = rustix::pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY)?;
+    rustix::pty::grantpt(&controller)?;
+    rustix::pty::unlockpt(&controller)?;
+
+    let name = rustix::pty::ptsname(&controller, Vec::new())?;
+    let path = std::path::PathBuf::from(std::ffi::OsString::from_vec(name.into_bytes()));
+    let device = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)?;
+
+    // Echo off. A terminal repeats what is written to it, so every command would come back as
+    // the first line of its own output — and the end-of-command marker would arrive before the
+    // command had run.
+    if let Ok(mut attrs) = rustix::termios::tcgetattr(&controller) {
+        attrs.local_modes -= rustix::termios::LocalModes::ECHO;
+        let _ =
+            rustix::termios::tcsetattr(&controller, rustix::termios::OptionalActions::Now, &attrs);
+    }
+    Ok((controller, OwnedFd::from(device)))
+}
+
 /// Spawn one shell, and a thread turning its output into lines.
-fn spawn_shell() -> anyhow::Result<(Child, ChildStdin, Receiver<String>)> {
-    let mut child = Command::new("sh")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        // Merged into stdout rather than read separately: two pipes cannot be interleaved
-        // faithfully, and a build's errors belong where they happened in its output.
-        .stderr(Stdio::piped())
+fn spawn_shell() -> anyhow::Result<(Child, std::fs::File, Receiver<String>)> {
+    let (controller, device) = open_pty()?;
+    // **A terminal on all three.** A shell writing to a pipe block-buffers, so nothing arrives
+    // until it exits — which is why nothing came back at all once this ran the user's own shell
+    // instead of `sh`. Worse, a shell like oslo reads a piped stdin to EOF before running any of
+    // it, so a persistent session over pipes is not merely slow, it is impossible.
+    //
+    // On a terminal both problems go: output is line-buffered, and the shell behaves as the REPL
+    // this protocol assumes. Tau's shell extension is on a pty for the same reason.
+    //
+    // The cost is that the shell now believes it is interactive and prints a prompt and its
+    // startup escape codes into the same stream. Both are handled where the output is read: the
+    // escapes are stripped, and the markers are emitted on lines of their own so anything
+    // sharing a line with one is, by construction, not the command's output.
+    let child = Command::new(shell_command())
+        .env("TERM", "dumb")
+        .stdin(Stdio::from(device.try_clone()?))
+        .stdout(Stdio::from(device.try_clone()?))
+        .stderr(Stdio::from(device))
         .spawn()?;
-    let stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("no stdin"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("no stdout"))?;
+
+    // Two handles on our side: reading happens on its own thread, writing on this one.
+    let to_shell = std::fs::File::from(controller.try_clone()?);
+    let from_shell = std::fs::File::from(controller);
 
     let (lines, incoming) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let mut reader = BufReader::new(stdout);
+        let mut reader = BufReader::new(from_shell);
         let mut line = String::new();
         loop {
             line.clear();
             match reader.read_line(&mut line) {
                 Ok(0) | Err(_) => return,
                 // A closed receiver means this shell was abandoned. The thread outlives it
-                // only until whatever still holds the pipe lets go, which is exactly as long
-                // as the interrupted command keeps running.
+                // only until whatever still holds the terminal lets go, which is exactly as
+                // long as the interrupted command keeps running.
                 Ok(_) => {
-                    if lines.send(std::mem::take(&mut line)).is_err() {
+                    // A terminal ends every line with CRLF, and a stray carriage return in tool
+                    // output is noise the model reads as data.
+                    let cleaned = line.trim_end_matches(['\r', '\n']).to_owned();
+                    if lines.send(cleaned).is_err() {
                         return;
                     }
                 }
             }
         }
     });
-    Ok((child, stdin, incoming))
+    Ok((child, to_shell, incoming))
 }
 
 impl Session {
@@ -225,21 +320,43 @@ impl Session {
         // stderr is folded into stdout for this command only, so ordering survives without the
         // shell's own diagnostics being redirected for the rest of its life.
         self.seq += 1;
-        let marker = marker(&self.nonce, self.seq);
+        let open = format!("{}o", marker(&self.nonce, self.seq));
+        let close = format!("{}c", marker(&self.nonce, self.seq));
         // `< /dev/null` on the command group, because the shell's stdin IS this protocol's
-        // control channel: the marker below is written into the same pipe. A command that
-        // reads stdin therefore eats its own end-of-command marker. `cat` echoes it back and
-        // the marker lands in the tool result with a meaningless exit status; `sort`, `sudo`,
-        // `ssh` and `read` swallow it and the call hangs for the whole of CALL_TIMEOUT, taking
-        // the persistent shell's state with it when the peer is killed. Nothing legitimate
-        // reads stdin here -- the peer never feeds a command input.
-        let script =
-            format!("{{ {command} ; }} < /dev/null 2>&1\nprintf '%s%s\\n' \"{marker}\" \"$?\"\n");
-        if writeln!(self.stdin, "{script}").is_err() || self.stdin.flush().is_err() {
+        // control channel: the markers are written into the same terminal. A command that reads
+        // stdin therefore eats its own end-of-command marker. `cat` echoes it back and the
+        // marker lands in the tool result with a meaningless exit status; `sort`, `sudo`, `ssh`
+        // and `read` swallow it and the call hangs for the whole of CALL_TIMEOUT, taking the
+        // persistent shell's state with it when the peer is killed. Nothing legitimate reads
+        // stdin here -- the peer never feeds a command input.
+        let script = format!(
+            "printf '\\n%s\\n' \"{open}\"\n{{ printf '\\n' ; {command} ; __axum_status=$? ; printf '\\n' ; }} < /dev/null 2>&1\nprintf '\\n%s%s\\n' \"{close}\" \"$__axum_status\"\n"
+        );
+        if write!(self.stdin, "{script}").is_err() || self.stdin.flush().is_err() {
             return ("the shell is not accepting input".to_owned(), true);
         }
 
         let mut output = String::new();
+        // **Prompt-agnostic.** A terminal makes the shell interactive, so it prints a prompt
+        // before every line it reads -- the command's and both marker `printf`s -- and no
+        // environment variable suppresses that reliably. Learning the prompt and stripping it
+        // does not work either: nearly every prompt carries the working directory, so the very
+        // command that changes it (`cd`) invalidates the thing being stripped mid-call.
+        //
+        // So the protocol does not need to know what a prompt looks like. Each marker is printed
+        // after a newline of its own, and the command's own output is preceded by one:
+        //
+        //   PROMPT              <- discarded, before the open marker
+        //   OPEN                <- discarded
+        //   PROMPT              <- exactly one line, always: discarded
+        //   ...the output...
+        //   PROMPT              <- held back, then dropped when the close marker arrives
+        //   CLOSE<status>
+        //
+        // Holding the last line back is what removes the final prompt without recognising it.
+        let mut started = false;
+        let mut skipped_prompt = false;
+        let mut held: Option<String> = None;
         loop {
             if self.interrupted.swap(false, Ordering::SeqCst) {
                 // Abandoned rather than waited out. The shell is killed and a fresh one starts
@@ -251,22 +368,44 @@ impl Session {
             }
             match self.lines.recv_timeout(INTERRUPT_POLL) {
                 Ok(line) => {
-                    if let Some(at) = line.find(&marker) {
-                        // Anything before the marker is output that did not end in a newline.
-                        output.push_str(&line[..at]);
-                        let code = line[at + marker.len()..].trim_end();
+                    let line = strip_escapes(&line);
+                    if !started {
+                        started = line.contains(&open);
+                        continue;
+                    }
+                    if !skipped_prompt {
+                        skipped_prompt = true;
+                        continue;
+                    }
+                    if let Some(at) = line.find(&close) {
+                        let code = line[at + close.len()..].trim_end();
                         let failed = code != "0";
+                        // `held` is the prompt that preceded this marker. Dropped, not written.
+                        //
+                        // The command group ends with a newline of its own so that the prompt
+                        // is always alone on its line -- `printf no-newline` otherwise leaves
+                        // the two glued together and the output goes with the prompt. The cost
+                        // is a blank line whenever the output already ended in one.
+                        while output.ends_with('\n') {
+                            output.pop();
+                        }
                         if failed {
                             output.push_str(&format!("\n(exit {code})"));
                         }
                         return (output, failed);
                     }
-                    output.push_str(&line);
+                    if let Some(previous) = held.replace(line) {
+                        output.push_str(&previous);
+                        output.push('\n');
+                    }
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
                     // The shell ended without a marker: the command took it with it.
                     self.dead = true;
+                    if let Some(previous) = held.take() {
+                        output.push_str(&previous);
+                    }
                     output.push_str("\n(the shell exited; a fresh one starts on the next call)");
                     return (output, true);
                 }
@@ -416,5 +555,115 @@ mod stdin_tests {
         let (output, is_error) = shell.run("echo alive");
         assert!(!is_error, "{output}");
         assert_eq!(output.trim(), "alive");
+    }
+}
+
+#[cfg(test)]
+mod which_shell_tests {
+    use super::*;
+
+    #[test]
+    fn a_shell_that_does_not_exist_is_not_used() {
+        // `$SHELL` records a login shell, which is not always a shell this machine has — a
+        // home directory carried between machines is the usual way that happens.
+        assert_eq!(shell_command_from(Some("/no/such/shell"), None), "sh");
+    }
+
+    #[test]
+    fn the_users_own_shell_wins_over_sh() {
+        assert_eq!(shell_command_from(Some("/bin/sh"), None), "/bin/sh");
+    }
+
+    #[test]
+    fn an_override_beats_the_login_shell() {
+        // `$AXUM_SHELL` exists so a session can differ from the login shell without changing it.
+        assert_eq!(
+            shell_command_from(Some("/bin/sh"), Some("/bin/sh")),
+            "/bin/sh"
+        );
+    }
+
+    #[test]
+    fn nothing_set_is_sh() {
+        assert_eq!(shell_command_from(None, None), "sh");
+    }
+
+    #[test]
+    fn the_name_is_what_the_model_is_told_it_is_running() {
+        assert_eq!(name_of("/usr/bin/oslo"), "oslo");
+        assert_eq!(name_of("sh"), "sh");
+    }
+}
+
+/// Remove terminal escape sequences from one line.
+///
+/// A shell on a terminal writes colour, title and shell-integration codes into the same stream
+/// as its output. None of it is the command's, and a model handed `\u{1b}]3008;start=…` reads it
+/// as data. CSI sequences end at their final byte; OSC ones run to a BEL or an ST.
+fn strip_escapes(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            // CSI: parameters, then one final byte in `@`..`~`.
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            // OSC: runs to BEL, or to ESC \.
+            Some(']') => {
+                while let Some(c) = chars.next() {
+                    if c == '\u{7}' {
+                        break;
+                    }
+                    if c == '\u{1b}' {
+                        let _ = chars.next();
+                        break;
+                    }
+                }
+            }
+            // Anything else is a two-character sequence, already consumed.
+            _ => {}
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod escape_tests {
+    use super::*;
+
+    #[test]
+    fn colour_is_removed_and_the_text_kept() {
+        assert_eq!(strip_escapes("\u{1b}[01;32mhello\u{1b}[00m"), "hello");
+    }
+
+    #[test]
+    fn shell_integration_codes_are_removed() {
+        // A model handed `]3008;start=…` reads it as data.
+        let noisy = "\u{1b}]3008;start=abc;cwd=/tmp\u{1b}\\hello";
+        assert_eq!(strip_escapes(noisy), "hello");
+    }
+
+    #[test]
+    fn an_osc_ending_in_bell_is_removed() {
+        assert_eq!(strip_escapes("\u{1b}]0;a title\u{7}text"), "text");
+    }
+
+    #[test]
+    fn plain_text_is_untouched() {
+        assert_eq!(strip_escapes("just output"), "just output");
+    }
+
+    #[test]
+    fn a_lone_escape_does_not_eat_the_line() {
+        assert_eq!(strip_escapes("a\u{1b}b"), "a");
     }
 }

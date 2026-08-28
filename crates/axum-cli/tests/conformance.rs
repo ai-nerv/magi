@@ -37,7 +37,7 @@ fn the_shell_peer_conforms() {
         command: env!("CARGO_BIN_EXE_axum"),
         args: &["ext".into(), "shell".into()],
         dir: &dir,
-        call: ("bash", serde_json::json!({ "command": "echo hi" })),
+        call: ("shell", serde_json::json!({ "command": "echo hi" })),
     });
     let _ = std::fs::remove_dir_all(&dir);
 }

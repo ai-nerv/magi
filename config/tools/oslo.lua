@@ -4,7 +4,7 @@
 -- over a socket, so this is a function rather than a process.
 --
 -- Note what it is *not*: this does not run commands. Asking oslo what it knows is a different
--- thing from asking it to do something, and the second is what `bash` is for — behind a
+-- thing from asking it to do something, and the second is what `shell` is for — behind a
 -- process boundary, where it belongs.
 
 -- The stub arrives as source in `axum.stubs`, handed in by the host. A config cannot open
@@ -30,7 +30,7 @@ axum.tool("oslo", {
   description = [[
 Ask the oslo shell about its own state: environment, working directory, and what it can do.
 
-Reads only. To run a command, use `bash`.]],
+Reads only. To run a command, use `shell`.]],
 
   parameters = {
     type = "object",

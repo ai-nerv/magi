@@ -5,7 +5,7 @@
 -- `axum.stream` to open the socket and hexe's own client stub to speak its protocol — so the
 -- whole tool is a function.
 --
--- That is the distinction the two branches are for. `bash` needs isolation and a life of its
+-- That is the distinction the two branches are for. `shell` needs isolation and a life of its
 -- own; this needs a socket and twenty lines. Making both a process would waste one; making
 -- both Lua would give the config layer a shell.
 

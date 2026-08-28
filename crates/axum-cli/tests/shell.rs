@@ -1,4 +1,4 @@
-//! `bash` across the process boundary, for real.
+//! The shell peer across the process boundary, for real.
 //!
 //! Spawns the actual peer, speaks the actual protocol, and runs actual commands. The point is
 //! that nothing here knows it is talking to another process: it calls a tool in a registry,
@@ -8,10 +8,10 @@ use axum_tools::Registry;
 use axum_tools::ops::Real;
 use axum_tools::process::ProcessTool;
 
-/// The `bash` tool, pointed at the binary this test was built alongside.
-fn bash() -> ProcessTool {
+/// The shell tool, pointed at the binary this test was built alongside.
+fn shell_tool() -> ProcessTool {
     ProcessTool::new(
-        "bash",
+        "shell",
         "Run a shell command.",
         serde_json::json!({ "type": "object" }),
         env!("CARGO_BIN_EXE_axum"),
@@ -25,7 +25,7 @@ fn session(name: &str) -> (Registry, Real, std::path::PathBuf) {
     std::fs::create_dir_all(&dir).expect("mkdir");
     let mut registry = Registry::new();
     axum_tools::builtin::install(&mut registry);
-    registry.register(Box::new(bash()));
+    registry.register(Box::new(shell_tool()));
     (registry, Real::new(dir.clone()), dir)
 }
 
@@ -33,7 +33,7 @@ fn session(name: &str) -> (Registry, Real, std::path::PathBuf) {
 fn a_command_runs_in_another_process_and_comes_back() {
     let (registry, ops, dir) = session("basic");
     let output = registry.call(
-        "bash",
+        "shell",
         &serde_json::json!({ "command": "echo hello" }),
         &ops,
         &axum_tools::Uncancelled,
@@ -47,7 +47,7 @@ fn a_command_runs_in_another_process_and_comes_back() {
 fn the_peer_starts_in_the_session_directory() {
     let (registry, ops, dir) = session("cwd");
     let output = registry.call(
-        "bash",
+        "shell",
         &serde_json::json!({ "command": "pwd" }),
         &ops,
         &axum_tools::Uncancelled,
@@ -61,13 +61,13 @@ fn state_survives_between_calls_because_the_peer_does() {
     // The property a per-call spawn cannot give you, and the reason this is a process.
     let (registry, ops, dir) = session("state");
     let _ = registry.call(
-        "bash",
+        "shell",
         &serde_json::json!({ "command": "export CARRIED=yes" }),
         &ops,
         &axum_tools::Uncancelled,
     );
     let output = registry.call(
-        "bash",
+        "shell",
         &serde_json::json!({ "command": "echo $CARRIED" }),
         &ops,
         &axum_tools::Uncancelled,
@@ -80,7 +80,7 @@ fn state_survives_between_calls_because_the_peer_does() {
 fn a_failing_command_is_a_result_the_model_can_read() {
     let (registry, ops, dir) = session("failing");
     let output = registry.call(
-        "bash",
+        "shell",
         &serde_json::json!({ "command": "echo attempted; false" }),
         &ops,
         &axum_tools::Uncancelled,
@@ -103,7 +103,7 @@ fn the_builtins_and_the_peer_share_one_directory() {
     assert!(!written.is_error, "{}", written.content);
 
     let output = registry.call(
-        "bash",
+        "shell",
         &serde_json::json!({ "command": "cat note.txt" }),
         &ops,
         &axum_tools::Uncancelled,
@@ -116,7 +116,7 @@ fn the_builtins_and_the_peer_share_one_directory() {
 fn a_peer_that_dies_is_restarted_on_the_next_call() {
     let (registry, ops, dir) = session("restart");
     let killed = registry.call(
-        "bash",
+        "shell",
         &serde_json::json!({ "command": "exit 1" }),
         &ops,
         &axum_tools::Uncancelled,
@@ -124,7 +124,7 @@ fn a_peer_that_dies_is_restarted_on_the_next_call() {
     assert!(killed.is_error);
 
     let output = registry.call(
-        "bash",
+        "shell",
         &serde_json::json!({ "command": "echo alive" }),
         &ops,
         &axum_tools::Uncancelled,
@@ -144,7 +144,7 @@ fn nothing_downstream_knows_which_transport_it_used() {
         &ops,
         &axum_tools::Uncancelled,
     );
-    for name in ["read", "bash"] {
+    for name in ["read", "shell"] {
         let args = if name == "read" {
             serde_json::json!({ "path": "a" })
         } else {
@@ -183,7 +183,7 @@ fn a_running_command_is_interrupted_rather_than_waited_out() {
 
     let started = std::time::Instant::now();
     let output = registry.call(
-        "bash",
+        "shell",
         &serde_json::json!({ "command": "sleep 60" }),
         &ops,
         &After(deadline),
@@ -210,14 +210,14 @@ fn the_peer_is_usable_again_after_an_interrupt() {
     let (registry, ops, dir) = session("after-cancel");
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
     let _ = registry.call(
-        "bash",
+        "shell",
         &serde_json::json!({ "command": "sleep 60" }),
         &ops,
         &After(deadline),
     );
 
     let output = registry.call(
-        "bash",
+        "shell",
         &serde_json::json!({ "command": "echo recovered" }),
         &ops,
         &axum_tools::Uncancelled,
@@ -234,7 +234,7 @@ fn a_call_made_under_an_interrupt_does_not_run_forever() {
     let (registry, ops, dir) = session("pre-cancel");
     let started = std::time::Instant::now();
     let output = registry.call(
-        "bash",
+        "shell",
         &serde_json::json!({ "command": "sleep 60" }),
         &ops,
         &Stopped,
