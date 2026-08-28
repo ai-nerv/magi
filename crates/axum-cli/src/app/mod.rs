@@ -330,16 +330,34 @@ impl App {
             HarnessEvent::UserMessage { id, text, .. } => {
                 self.entries.push(Entry::User { id, text });
             }
+            // Beginning a message that is already on screen means beginning it *again*: an
+            // attempt streamed half an answer, failed, and the retry starts from nothing. So it
+            // empties the one that is there rather than pushing a second — which is what a
+            // retry mid-answer used to leave behind, two copies of the same half-message.
             HarnessEvent::AssistantStarted { id, .. } => {
-                self.entries.push(Entry::Assistant {
-                    id,
-                    text: String::new(),
-                    thinking: String::new(),
-                    stop_reason: None,
-                    error: None,
-                    signatures: axum_proto::Signatures::default(),
-                    usage: axum_proto::Usage::default(),
-                });
+                if let Some(Entry::Assistant {
+                    text,
+                    thinking,
+                    stop_reason,
+                    error,
+                    ..
+                }) = self.assistant_mut(&id)
+                {
+                    text.clear();
+                    thinking.clear();
+                    *stop_reason = None;
+                    *error = None;
+                } else {
+                    self.entries.push(Entry::Assistant {
+                        id,
+                        text: String::new(),
+                        thinking: String::new(),
+                        stop_reason: None,
+                        error: None,
+                        signatures: axum_proto::Signatures::default(),
+                        usage: axum_proto::Usage::default(),
+                    });
+                }
             }
             HarnessEvent::AssistantDelta {
                 id, text, thinking, ..
@@ -638,5 +656,7 @@ impl App {
     }
 }
 
+#[cfg(test)]
+mod retracting;
 #[cfg(test)]
 mod tests;

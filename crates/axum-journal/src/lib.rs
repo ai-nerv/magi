@@ -155,6 +155,22 @@ impl Journal {
         &self.entries
     }
 
+    /// Replace the last entry in memory, without writing it down yet.
+    ///
+    /// For a message that is still arriving. [`Journal::amend`] appends a whole record and
+    /// flushes, which is right once and ruinous per token: a thousand-token answer would write
+    /// the message a thousand times, each copy longer than the last. This keeps the transcript
+    /// current — so a UI attaching mid-answer sees what has arrived — and leaves the writing to
+    /// the `amend` that ends the message.
+    ///
+    /// What it costs is the tail of an answer on a crash, which is what the tail of an answer
+    /// cost before anything was written down at all.
+    pub fn revise(&mut self, entry: Entry) {
+        if let Some(last) = self.entries.last_mut() {
+            *last = entry;
+        }
+    }
+
     /// The position of the last entry written.
     #[must_use]
     pub fn cursor(&self) -> Cursor {

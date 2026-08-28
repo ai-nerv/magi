@@ -148,11 +148,15 @@ async fn one_turn(
     // extend rather than a message that appears fully formed at the end.
     session.lock().await.commit(assistant(&id, &turn))?;
 
-    let mut deltas = Vec::new();
-    // A channel rather than a collected list, because the whole value of saying "retrying" is
-    // saying it *during* the wait. A person watching a spinner for forty seconds needs to know
-    // it is a wait and not a hang, and afterwards is too late to be the answer.
-    let (retries, mut retried) = tokio::sync::mpsc::unbounded_channel();
+    // One channel for both, because the order matters: a delta from the second attempt arriving
+    // before the retry that discarded the first would be thrown away with it. Two channels
+    // cannot promise that; one can.
+    //
+    // A channel at all because the callbacks are synchronous and the session is behind an async
+    // lock — and because the whole value of saying "retrying" is saying it *during* the wait. A
+    // person watching a spinner for forty seconds needs to know it is a wait and not a hang.
+    let (arrivals, mut arriving) = tokio::sync::mpsc::unbounded_channel();
+    let retries = arrivals.clone();
     let outcome = {
         // The provider call is raced against the interrupt rather than polled after it: a model
         // mid-answer holds this future for as long as it keeps talking, and a flag checked when
@@ -166,10 +170,12 @@ async fn one_turn(
         };
         let streaming = client.stream_reporting(
             &call,
-            |delta| deltas.push(delta),
+            // A closed receiver means the turn is over; there is nobody to tell.
+            |delta| {
+                let _ = arrivals.send(Arrival::Delta(delta));
+            },
             |retry| {
-                // A closed receiver means the turn is over; there is nobody to tell.
-                let _ = retries.send(retry);
+                let _ = retries.send(Arrival::Retrying(retry));
             },
         );
         let mut streaming = std::pin::pin!(streaming);
@@ -177,24 +183,49 @@ async fn one_turn(
             tokio::select! {
                 biased;
                 () = cancel.requested() => break Ok(()),
-                Some(retry) = retried.recv() => {
-                    // The UI has had a display for this since M0 that nothing ever set: during
-                    // an overload a person saw "Thinking" for a minute with no sign that
-                    // anything had gone wrong or that it was going to be tried again.
-                    session.lock().await.set_status(AgentStatus::Retrying {
-                        attempt: retry.attempt,
-                        max_attempts: retry.max_attempts,
-                        delay_ms: u64::try_from(retry.delay.as_millis()).unwrap_or(u64::MAX),
-                    });
+                Some(arrival) = arriving.recv() => {
+                    match arrival {
+                        // Applied and published as it arrives, which is the whole milestone.
+                        // Revised rather than amended: an amendment writes the message to disk
+                        // and flushes, which per token would write it once per token, each copy
+                        // longer than the last.
+                        Arrival::Delta(delta) => {
+                            turn.apply(delta);
+                            session.lock().await.revise(assistant(&id, &turn));
+                        }
+                        Arrival::Retrying(retry) => {
+                            // What the attempt published has to be taken back. The transcript
+                            // can say so — a message that is not an extension of itself is
+                            // described in full rather than as an append — so this is one
+                            // revision back to nothing.
+                            turn = Turn::new();
+                            let mut held = session.lock().await;
+                            held.revise(assistant(&id, &turn));
+                            // The UI has had a display for this since M0 that nothing ever set:
+                            // during an overload a person saw "Thinking" for a minute with no
+                            // sign that anything had gone wrong or would be tried again.
+                            held.set_status(AgentStatus::Retrying {
+                                attempt: retry.attempt,
+                                max_attempts: retry.max_attempts,
+                                delay_ms: u64::try_from(retry.delay.as_millis())
+                                    .unwrap_or(u64::MAX),
+                            });
+                        }
+                    }
                 }
                 outcome = &mut streaming => break outcome,
             }
         }
     };
 
-    for delta in deltas {
-        turn.apply(delta);
+    // Whatever the select! did not get to before the stream ended. A delta and the end of the
+    // stream can arrive in the same poll, and the loop breaks on the outcome.
+    while let Ok(arrival) = arriving.try_recv() {
+        if let Arrival::Delta(delta) = arrival {
+            turn.apply(delta);
+        }
     }
+    session.lock().await.revise(assistant(&id, &turn));
 
     // Whatever arrived before the interrupt is kept: the model said it, and a transcript that
     // drops a half-finished answer leaves the next prompt with no account of what happened.
@@ -260,6 +291,18 @@ struct Round {
     turn: Turn,
     /// Set when the provider refused, and the class it refused with.
     failed: Option<axum_provider::retry::RetryClass>,
+}
+
+/// Something the provider call said, in the order it said it.
+///
+/// One type down one channel, because the order is what makes a retraction safe. A delta from
+/// the second attempt arriving before the retry that discarded the first would be discarded
+/// with it, and two channels have no way to promise it does not.
+enum Arrival {
+    /// Part of the answer.
+    Delta(axum_provider::api::Delta),
+    /// The attempt failed and another is starting. Everything published so far is retracted.
+    Retrying(axum_provider::client::Retrying),
 }
 
 /// The assistant entry for a turn in its current state.

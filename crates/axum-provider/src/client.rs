@@ -146,21 +146,19 @@ impl Client {
     ) -> Result<(), ProviderError> {
         let mut attempt = 1;
         loop {
-            // Deltas from an attempt that then failed must not reach the caller: a turn that
-            // folded half a message and then retried would show it twice.
-            let mut collected = Vec::new();
-            let outcome = self
-                .attempt(call, |delta| {
-                    collected.push(delta);
-                })
-                .await;
+            // Straight through, as they arrive. They were collected into a `Vec` and replayed
+            // only on success, for a reason that was real — deltas from an attempt that then
+            // failed must not be *kept*, or a turn that folded half a message and then retried
+            // would show it twice. The cost was that nothing streamed at all: a three-hundred
+            // word answer was fourteen seconds of spinner and then the whole text at once.
+            //
+            // The tension resolves the other way round. A delta reaches the caller immediately,
+            // and `on_retry` is the caller's signal to **retract what it has published** before
+            // the next attempt starts. Every caller that keeps deltas has to honour that; one
+            // that only counts them does not care.
+            let outcome = self.attempt(call, &mut on_delta).await;
             match outcome {
-                Ok(()) => {
-                    for delta in collected {
-                        on_delta(delta);
-                    }
-                    return Ok(());
-                }
+                Ok(()) => return Ok(()),
                 Err(why) if why.class.is_retryable() && attempt < MAX_ATTEMPTS => {
                     let wait = crate::retry::backoff_from(
                         self.base_delay,
@@ -353,15 +351,26 @@ impl Client {
     /// When the request failed, or when what came back was not the shape that was asked for —
     /// which is a fact about the model worth reporting rather than papering over.
     pub async fn value(&self, call: &Call<'_>) -> Result<serde_json::Value, ProviderError> {
-        let mut text = String::new();
-        let mut args = String::new();
-        self.stream(call, |delta| match delta {
-            Delta::Text(chunk) => text.push_str(&chunk),
-            Delta::ToolCallArgs(chunk) => args.push_str(&chunk),
-            _ => {}
-        })
+        let text = std::cell::RefCell::new(String::new());
+        let args = std::cell::RefCell::new(String::new());
+        self.stream_reporting(
+            call,
+            |delta| match delta {
+                Delta::Text(chunk) => text.borrow_mut().push_str(&chunk),
+                Delta::ToolCallArgs(chunk) => args.borrow_mut().push_str(&chunk),
+                _ => {}
+            },
+            // This one keeps deltas, so it retracts. Half an answer from a failed attempt
+            // concatenated with a whole one from the next parses as neither.
+            |_| {
+                text.borrow_mut().clear();
+                args.borrow_mut().clear();
+            },
+        )
         .await?;
 
+        let text = text.into_inner();
+        let args = args.into_inner();
         let raw = if args.trim().is_empty() { &text } else { &args };
         serde_json::from_str(raw.trim()).map_err(|why| {
             ProviderError::new(
