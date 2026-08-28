@@ -12,6 +12,7 @@ pub mod cancel;
 pub mod catalog;
 pub mod compact;
 pub mod context;
+pub mod declaring;
 pub mod paths;
 pub mod session;
 pub mod system;
@@ -186,6 +187,15 @@ async fn connection(
                     Some(UiCommand::SubmitPrompt { text }) => {
                         let held = worker.read().await.clone();
                         submit(&session, text, held, catalog).await?;
+                    }
+                    Some(UiCommand::DeclareNeeds) => {
+                        let held = worker.read().await.clone();
+                        if let Some(worker) = held {
+                            // Spawned, because the declaration blocks on permission prompts and
+                            // those are answered by commands read on this very loop.
+                            let session = Arc::clone(&session);
+                            tokio::spawn(async move { worker.declare(session).await });
+                        }
                     }
                     Some(UiCommand::SetModel { name }) => {
                         if let Some(refusal) =

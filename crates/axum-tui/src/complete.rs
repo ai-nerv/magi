@@ -88,6 +88,7 @@ pub fn commands() -> Vec<Candidate> {
         ("/help", "show keybindings and commands"),
         ("/clear", "start a fresh conversation"),
         ("/model", "the model, or /model <name> to switch"),
+        ("/permissions", "ask the model what it needs, and decide"),
         ("/rewind", "undo the last exchange, or /rewind N"),
         ("/think", "how much reasoning to ask for"),
         ("/quit", "exit axum"),

@@ -527,6 +527,13 @@ pub enum UiCommand {
         /// What was decided.
         decision: crate::permit::Decision,
     },
+    /// Ask the model what the work ahead will need, and offer those permissions.
+    ///
+    /// A proposal, not a decision: every need it names goes through the same prompt any other
+    /// request would, so the model gains no authority it did not have. What it buys is being
+    /// asked once, about an accurate description of the job, instead of four times in the
+    /// middle of it.
+    DeclareNeeds,
     /// Rewind the conversation.
     Branch {
         /// How many entries from the start to keep, or `None` for "undo the last exchange".

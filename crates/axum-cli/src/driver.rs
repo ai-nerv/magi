@@ -553,6 +553,9 @@ fn run_command(input: &str, app: &mut App) -> Control {
                 Control::Continue
             }
         },
+        // The daemon's, because it holds the conversation the question is about and the
+        // provider that answers it.
+        "/permissions" => Control::Send(UiCommand::DeclareNeeds),
         // Rewinding is the daemon's to work out: it holds the session, and which messages are
         // still live is a question about the session rather than about what is on screen.
         "/rewind" => match input.split_whitespace().nth(1) {

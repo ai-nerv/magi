@@ -14,10 +14,23 @@ use axum_provider::client::Client;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc, oneshot};
 
-/// One turn to run, and where to say it finished.
+/// One piece of work for the thread that owns the VM, and where to say it finished.
 struct Job {
     session: Arc<Mutex<Session>>,
+    kind: Work,
     done: oneshot::Sender<()>,
+}
+
+/// What a job is.
+enum Work {
+    /// Run a turn.
+    Turn,
+    /// Ask the model what the work ahead needs, then put each answer to the person.
+    ///
+    /// On this thread because it is a provider call against this session's context, and the
+    /// adapter and client live here. It queues behind any turn already running, which is right:
+    /// asking what a turn will need while one is in flight would describe the wrong work.
+    Declare,
 }
 
 /// A handle to the thread running turns.
@@ -108,10 +121,24 @@ impl Worker {
             let client = Client::new();
             runtime.block_on(async {
                 while let Some(job) = queue.recv().await {
-                    // A failed turn is already journalled as an error entry by `turn::run`;
-                    // there is nothing further to report and nothing to abort the daemon for.
-                    let _ =
-                        turn::run(&job.session, &backend, &adapter, &client, &registry, &ops).await;
+                    match job.kind {
+                        // A failed turn is already journalled as an error entry by `turn::run`;
+                        // there is nothing further to report and nothing to abort the daemon for.
+                        Work::Turn => {
+                            let _ = turn::run(
+                                &job.session,
+                                &backend,
+                                &adapter,
+                                &client,
+                                &registry,
+                                &ops,
+                            )
+                            .await;
+                        }
+                        Work::Declare => {
+                            declare(&job.session, &backend, &adapter, &client, &ops).await;
+                        }
+                    }
                     let _ = job.done.send(());
                 }
             });
@@ -124,11 +151,147 @@ impl Worker {
     /// Waiting is what makes a second prompt queue behind the first rather than interleave. The
     /// UI is not blocked by it: deltas are published as they arrive, from the worker.
     pub async fn run(&self, session: Arc<Mutex<Session>>) {
+        self.queue(session, Work::Turn).await;
+    }
+
+    /// Ask the model what the work ahead needs, and put each answer to the person.
+    pub async fn declare(&self, session: Arc<Mutex<Session>>) {
+        self.queue(session, Work::Declare).await;
+    }
+
+    async fn queue(&self, session: Arc<Mutex<Session>>, kind: Work) {
         let (done, finished) = oneshot::channel();
-        if self.jobs.send(Job { session, done }).await.is_err() {
+        if self
+            .jobs
+            .send(Job {
+                session,
+                kind,
+                done,
+            })
+            .await
+            .is_err()
+        {
             return;
         }
         let _ = finished.await;
+    }
+}
+
+/// Ask what the work ahead needs, then put each need through the ordinary prompt.
+///
+/// The answer is a proposal. Every need becomes an [`Ops::allow`] call — the same one a tool
+/// makes — so the person sees the same prompt and the ledger is written by the same path. The
+/// model gains nothing it did not have; what changes is that the questions arrive together, in
+/// front of the work, described by the only party that knows the shape of it.
+async fn declare(
+    session: &Arc<Mutex<Session>>,
+    backend: &Backend,
+    adapter: &dyn axum_provider::api::Adapter,
+    client: &Client,
+    ops: &axum_tools::ops::Real,
+) {
+    use axum_tools::Ops;
+
+    // Said, not journalled. `Entry::Notice` is the UI's own device -- the protocol says the
+    // daemon never authors one -- and a transcript replayed later should hold the conversation
+    // rather than a proposal that was answered at the time. `Refused` is the existing path for
+    // "the daemon has something to say that is not the conversation", and the UI already turns
+    // one into a notice on screen.
+    let say = |session: &Arc<Mutex<Session>>, message: String| {
+        let session = Arc::clone(session);
+        async move {
+            let held = session.lock().await;
+            let _ = held.publisher().send(axum_proto::HarnessEvent::Refused {
+                cursor: held.cursor(),
+                message,
+            });
+        }
+    };
+
+    let mut context = crate::context::of(&*session.lock().await);
+    context.system.clone_from(&backend.system);
+
+    // Nothing to plan about. A provider handed a conversation with no messages does not answer
+    // -- it does not refuse either, which is how this presented: a spinner and then nothing,
+    // for as long as anybody was willing to watch.
+    if context.messages.is_empty() {
+        say(
+            session,
+            "Nothing to plan yet — say what you want done first, then ask again.".to_owned(),
+        )
+        .await;
+        return;
+    }
+    // The question, last, so the conversation ends on something addressed to the model. Without
+    // it the context ends on the model's own answer and the reply comes back empty.
+    context
+        .messages
+        .push(axum_model::Message::user(crate::declaring::question(
+            &backend.cwd,
+        )));
+
+    let options = axum_provider::api::Options {
+        schema: Some(crate::declaring::schema()),
+        ..backend.options.clone()
+    };
+    let call = axum_provider::client::Call {
+        adapter,
+        provider: &backend.provider,
+        model: &backend.model,
+        context: &context,
+        options: &options,
+    };
+
+    // Bounded. A provider that never answers must not hold the worker thread for the life of
+    // the daemon, which is what a plain await here did.
+    let asked = tokio::time::timeout(std::time::Duration::from_secs(120), client.value(&call));
+    let answer = match asked.await {
+        Err(_) => {
+            say(
+                session,
+                "The model did not answer what it needs within two minutes.".to_owned(),
+            )
+            .await;
+            return;
+        }
+        Ok(Ok(value)) => value,
+        Ok(Err(why)) => {
+            say(session, format!("Could not ask what this needs: {why}")).await;
+            return;
+        }
+    };
+
+    let needs = crate::declaring::read(&answer);
+    if needs.is_empty() {
+        say(session, "The model asked for no permissions.".to_owned()).await;
+        return;
+    }
+
+    {
+        let lines: Vec<String> = needs
+            .iter()
+            .map(|need| format!("{} {} — {}", need.verb, need.scope, need.why))
+            .collect();
+        say(session, format!("It says it needs: {}", lines.join("; "))).await;
+    }
+
+    // Asked one at a time, through the ordinary gate, so each is answerable at any width and a
+    // refusal is just a refusal. Blocking, so they queue rather than racing onto one screen.
+    for need in needs {
+        let Some(grant) = need.grant() else { continue };
+        let action = match &grant.scope {
+            axum_proto::permit::Scope::Program { program } => axum_proto::permit::Action::Run {
+                command: program.clone(),
+                program: program.clone(),
+            },
+            axum_proto::permit::Scope::Directory { path } => match need.verb.as_str() {
+                "write" => axum_proto::permit::Action::Write { path: path.clone() },
+                "reach" => axum_proto::permit::Action::Network { host: path.clone() },
+                _ => axum_proto::permit::Action::Read { path: path.clone() },
+            },
+            _ => continue,
+        };
+        let _ = ops.allow(&action);
     }
 }
 

@@ -47,12 +47,13 @@ fn the_command_palette_marks_the_selection_and_shows_details() {
     assert_eq!(
         rendered,
         vec![
-            "❯ /help    show keybindings and commands",
-            "  /clear   start a fresh conversation",
-            "  /model   the model, or /model <name> to switch",
-            "  /rewind  undo the last exchange, or /rewind N",
-            "  /think   how much reasoning to ask for",
-            "  /quit    exit axum",
+            "❯ /help         show keybindings and commands",
+            "  /clear        start a fresh conversation",
+            "  /model        the model, or /model <name> to swi",
+            "  /permissions  ask the model what it needs, and d",
+            "  /rewind       undo the last exchange, or /rewind",
+            "  /think        how much reasoning to ask for",
+            "  /quit         exit axum",
         ]
     );
 }
