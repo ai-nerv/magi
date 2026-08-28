@@ -45,9 +45,9 @@ pub enum Scan {
 /// at the spinner's rate, and one cell per tick is already brisk.
 const fn pace(scan: Scan) -> (usize, usize) {
     match scan {
-        Scan::Resting => (2, 3),
-        Scan::Holding => (1, 1),
-        Scan::Working | Scan::Off => (2, 1),
+        Scan::Resting => (4, 3),
+        Scan::Holding => (2, 1),
+        Scan::Working | Scan::Off => (4, 1),
     }
 }
 
@@ -390,10 +390,10 @@ mod holding_tests {
 
     #[test]
     fn every_mode_moves_faster_than_it_did() {
-        // Doubled: the old rates were one cell per three ticks at rest and one per two while
-        // holding, which read as drifting rather than scanning.
-        assert_eq!(pace(Scan::Resting), (2, 3));
-        assert_eq!(pace(Scan::Holding), (1, 1));
-        assert_eq!(pace(Scan::Working), (2, 1));
+        // Doubled twice. Two thirds of a cell per tick read as drifting rather than scanning;
+        // the pass after that still read as slow next to the spinner it ticks with.
+        assert_eq!(pace(Scan::Resting), (4, 3));
+        assert_eq!(pace(Scan::Holding), (2, 1));
+        assert_eq!(pace(Scan::Working), (4, 1));
     }
 }
