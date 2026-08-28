@@ -39,12 +39,15 @@ pub enum Scan {
     Off,
 }
 
-/// Ticks per step, per mode. Higher is slower; the caller ticks at the spinner's rate.
-const fn pace(scan: Scan) -> usize {
+/// How far the scan travels per tick, as `cells * num / den`.
+///
+/// A fraction rather than a divisor so the speeds can sit between whole cells: the caller ticks
+/// at the spinner's rate, and one cell per tick is already brisk.
+const fn pace(scan: Scan) -> (usize, usize) {
     match scan {
-        Scan::Resting => 3,
-        Scan::Holding => 2,
-        Scan::Working | Scan::Off => 1,
+        Scan::Resting => (2, 3),
+        Scan::Holding => (1, 1),
+        Scan::Working | Scan::Off => (2, 1),
     }
 }
 
@@ -118,19 +121,23 @@ fn heads(scan: Scan, tick: usize, inner: usize, rows: usize, ring: usize) -> Vec
     if ring == 0 {
         return Vec::new();
     }
-    let step = tick / pace(scan);
+    let (num, den) = pace(scan);
+    let step = tick * num / den;
     match scan {
         Scan::Off => Vec::new(),
         Scan::Resting => vec![step % ring],
         // The two long edges, swept in step and reversing at the ends: a shuttle rather than a
         // circuit, because something is waiting to be sent rather than travelling.
+        //
+        // The bottom edge is walked anticlockwise -- the ring runs clockwise, so its leftmost
+        // cell is its *highest* index. Column `at` on the bottom is therefore
+        // `bottom_right + inner - at`, and getting that off by one put the lower light a cell
+        // ahead of the upper one for the whole sweep.
         Scan::Holding => {
             let span = inner.max(1);
-            let at = bounce(step, span);
-            vec![
-                1 + at,
-                1 + inner + 1 + rows + (inner - 1 - at.min(inner - 1)),
-            ]
+            let at = bounce(step, span).min(inner.saturating_sub(1));
+            let bottom_right = 1 + inner + 1 + rows;
+            vec![1 + at, bottom_right + inner - at]
         }
         // Opposite points of the ring, so the box always has light on two sides of it.
         Scan::Working => vec![step % ring, (step + ring / 2) % ring],
@@ -299,11 +306,76 @@ mod tests {
 
     #[test]
     fn a_tall_box_lights_its_sides_too() {
+        // Swept across ticks rather than pinned to one: which cell is lit at a given tick is a
+        // function of the pace, and pinning it made a speed change look like a bug in the ring.
         let theme = crate::theme::DARK;
-        let lit = (0..6)
-            .map(|row| side(30, 6, row, 40, Scan::Working, &theme))
-            .filter(|(l, r)| l.style.fg != Some(theme.border) || r.style.fg != Some(theme.border))
+        let lit = (0..120)
+            .flat_map(|tick| (0..6).map(move |row| (tick, row)))
+            .filter(|&(tick, row)| {
+                let (l, r) = side(30, 6, row, tick, Scan::Working, &theme);
+                l.style.fg != Some(theme.border) || r.style.fg != Some(theme.border)
+            })
             .count();
         assert!(lit > 0, "the scan goes round, not just along the top");
+    }
+}
+
+#[cfg(test)]
+mod holding_tests {
+    use super::*;
+
+    /// Which screen column of a rendered edge is brightest.
+    fn peak(line: &Line<'_>, theme: &Theme) -> Option<usize> {
+        line.spans
+            .iter()
+            .position(|s| s.style.fg == Some(theme.border_scan))
+    }
+
+    #[test]
+    fn the_two_lights_stay_in_the_same_column() {
+        // The bottom edge is walked anticlockwise, so its leftmost cell is its highest ring
+        // index. Getting that off by one put the lower light a cell ahead for the whole sweep.
+        let theme = crate::theme::DARK;
+        for tick in 0..60 {
+            let (top, bottom) = edges(40, 1, tick, Scan::Holding, &theme);
+            let (Some(t), Some(b)) = (peak(&top, &theme), peak(&bottom, &theme)) else {
+                continue;
+            };
+            assert_eq!(t, b, "tick {tick}: top at {t}, bottom at {b}");
+        }
+    }
+
+    #[test]
+    fn both_lights_are_present_from_the_first_tick() {
+        let theme = crate::theme::DARK;
+        let (top, bottom) = edges(40, 1, 0, Scan::Holding, &theme);
+        assert!(peak(&top, &theme).is_some(), "top lit at rest");
+        assert!(peak(&bottom, &theme).is_some(), "and so is the bottom");
+    }
+
+    #[test]
+    fn the_sweep_turns_round_inside_the_edge() {
+        // It must not walk onto a corner and wrap: this is a shuttle, not a circuit.
+        let theme = crate::theme::DARK;
+        let width = 20u16;
+        for tick in 0..80 {
+            let (top, _) = edges(width, 1, tick, Scan::Holding, &theme);
+            if let Some(at) = peak(&top, &theme) {
+                assert!(at >= 1, "tick {tick}: on the left corner");
+                assert!(
+                    at <= usize::from(width) - 2,
+                    "tick {tick}: on the right corner"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_mode_moves_faster_than_it_did() {
+        // Doubled: the old rates were one cell per three ticks at rest and one per two while
+        // holding, which read as drifting rather than scanning.
+        assert_eq!(pace(Scan::Resting), (2, 3));
+        assert_eq!(pace(Scan::Holding), (1, 1));
+        assert_eq!(pace(Scan::Working), (2, 1));
     }
 }

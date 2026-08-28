@@ -23,6 +23,9 @@ use ratatui::widgets::Paragraph;
 /// Rows the chrome below the transcript occupies at its smallest: status, prompt, footer.
 pub const CHROME_ROWS: u16 = STATUS_ROWS + PROMPT_MIN_ROWS + FOOTER_ROWS;
 
+/// Columns the box takes before the text: the left bar, then one of padding.
+const GUTTER: u16 = 2;
+
 /// Rows the footer always occupies.
 ///
 /// One. It was two -- the directory on its own row above the stats -- and two rows of dim text
@@ -184,12 +187,18 @@ fn place_hardware_cursor(frame: &mut Frame<'_>, app: &App, area: Rect, rows: u16
     let visible = prompt::visible_rows(rows);
     let offset = cursor_row.saturating_sub(visible.saturating_sub(1));
 
-    // Row 0 of the prompt area is the rule, so the text begins one row down.
+    // Row 0 of the prompt area is the box's top edge, so the text begins one row down.
     let row = u16::try_from(cursor_row.saturating_sub(offset)).unwrap_or(0) + 1;
     if row >= area.height {
         return;
     }
-    let col = u16::try_from(cursor_col).unwrap_or(u16::MAX);
+    // And two columns in: the left bar, then the padding column. This used to be `area.x + col`,
+    // which was right while the prompt was two rules and text starting in column zero — with
+    // the box it put the terminal's cursor two cells to the left of the one drawn into the
+    // line, so the caret and the block disagreed about where you were typing.
+    let col = u16::try_from(cursor_col)
+        .unwrap_or(u16::MAX)
+        .saturating_add(GUTTER);
     frame.set_cursor_position((area.x + col.min(area.width.saturating_sub(1)), area.y + row));
 }
 
