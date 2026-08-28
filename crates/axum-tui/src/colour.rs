@@ -9,9 +9,11 @@
 //! So every colour here is an **index into the palette the terminal already has**, and what those
 //! indices actually look like is not this program's business.
 //!
-//! **The defaults assume nothing.** They are the ordinary xterm reading: 1 is red, 2 is green, 3
-//! is yellow, 6 is cyan, and 232-255 is the 24-step greyscale. That is what somebody who has never
-//! configured anything has, and it is what they get.
+//! **The defaults assume nothing but a dark screen.** They are the ordinary xterm reading — 9 is
+//! bright red, 10 bright green, 14 bright cyan, and 232-255 the 24-step greyscale — taken from the
+//! bright half of each pair and the top fifth of that greyscale, because that is the half meant to
+//! be read *off* a dark background. The first pass took the dark half of both and the result was a
+//! UI you squint at.
 //!
 //! **Every one of them is settable**, by the name in the table below, from `axum.ui` in Lua. Roles
 //! that share a default are still separate names: `tool_output` and `md_quote` happen to be the
@@ -56,54 +58,62 @@ macro_rules! palette {
     };
 }
 
+// The greyscale runs 232 (#080808) to 255 (#eeeeee), and the first pass sat far too low in it:
+// text at 252 but everything beside it at 241 and 244, on backgrounds of 234. Those are 38%,
+// 50% and 11% grey — a menu whose rows were barely above the screen and whose detail column was
+// half lit. Secondary text lives in the 246-251 band now and surfaces sit above 236, which is the
+// difference between quiet and unreadable.
+//
+// The hues moved to the bright six for the same reason. On most palettes 1, 2 and 3 are the dark
+// half of the pair and 9, 10 and 11 are the one meant to be read off a dark background.
 palette! {
     // ---------------------------------------------------------------- hues
-    accent = 6, "Spinners, list cursors, markdown bullets.";
-    success = 2, "Success states.";
-    warning = 3, "Warnings and elevated context usage.";
-    error = 1, "Errors, and a tool that failed.";
-    typed = 14, "The characters you have already typed, wherever they appear in a candidate.";
+    accent = 14, "Spinners, list cursors, markdown bullets.";
+    success = 10, "Success states.";
+    warning = 11, "Warnings and elevated context usage.";
+    error = 9, "Errors, and a tool that failed.";
+    typed = 13, "The characters you have already typed, wherever they appear in a candidate.";
 
     // ------------------------------------------------------------ markdown
     md_heading = 11, "Markdown headings.";
-    md_code = 6, "Inline code spans.";
-    md_code_block = 2, "Fenced code block contents.";
-    md_quote = 244, "Block quote text and its rule.";
+    md_code = 14, "Inline code spans.";
+    md_code_block = 10, "Fenced code block contents.";
+    md_quote = 250, "Block quote text and its rule.";
 
     // ---------------------------------------------------------------- diffs
-    diff_added = 2, "Added lines in a diff.";
-    diff_removed = 1, "Removed lines in a diff.";
-    diff_context = 244, "Unchanged context lines in a diff.";
+    diff_added = 10, "Added lines in a diff.";
+    diff_removed = 9, "Removed lines in a diff.";
+    diff_context = 250, "Unchanged context lines in a diff.";
 
     // ---------------------------------------------------------------- tools
-    tool_bg = 234, "Behind a tool block.";
-    tool_title = 252, "The tool's name, when it is still running.";
-    tool_ok = 2, "The tool's name, when it finished.";
-    tool_failed = 1, "The tool's name, when it failed.";
-    tool_output = 244, "A tool's output.";
-    tool_fold = 241, "The note saying how much of a result is not shown.";
+    tool_bg = 237, "Behind a tool block.";
+    tool_title = 255, "The tool's name, when it is still running.";
+    tool_ok = 10, "The tool's name, when it finished.";
+    tool_failed = 9, "The tool's name, when it failed.";
+    tool_output = 251, "A tool's output.";
+    tool_fold = 246, "The note saying how much of a result is not shown.";
 
     // ---------------------------------------------------------------- menus
-    menu_bg = 234, "Behind every row of a list, so it reads as one object.";
-    menu_selected_bg = 237, "Behind the row you are on.";
+    menu_bg = 237, "Behind every row of a list, so it reads as one object.";
+    menu_selected_bg = 241, "Behind the row you are on.";
     menu_selected = 255, "The row you are on.";
-    menu_detail = 244, "What a row says about itself, beside its name.";
-    menu_detail_selected = 252, "The same, on the selected row.";
-    menu_meta = 241, "Counts and scroll markers on the heading.";
+    menu_detail = 250, "What a row says about itself, beside its name.";
+    menu_detail_selected = 255, "The same, on the selected row.";
+    menu_meta = 247, "Counts and scroll markers on the heading.";
 
     // -------------------------------------------------------------- the box
-    border = 239, "The prompt's border with nothing lit, and the floor of its scan.";
-    scan = 252, "The brightest point of the light travelling along the border.";
-    hint = 241, "The prompt's own text, before you type anything.";
-    rule = 239, "The rule above and below a quotation.";
+    border = 245, "The prompt's border with nothing lit, and the floor of its scan.";
+    scan = 255, "The brightest point of the light travelling along the border.";
+    hint = 246, "The prompt's own text, before you type anything.";
+    rule = 245, "The rule above and below a quotation.";
 
     // ------------------------------------------------------------ the rest
-    message_bg = 237, "Behind something you said.";
-    message_text = 252, "Something you said.";
-    thinking = 244, "Reasoning blocks.";
-    text = 252, "Default foreground.";
-    muted = 244, "Secondary text.";
-    dim = 241, "Tertiary text; the footer lives here.";
+    message_bg = 240, "Behind something you said.";
+    message_text = 255, "Something you said.";
+    thinking = 249, "Reasoning blocks.";
+    text = 253, "Default foreground.";
+    muted = 250, "Secondary text.";
+    dim = 246, "Tertiary text; the footer lives here.";
 }
 
 impl Default for Palette {
@@ -214,11 +224,11 @@ mod tests {
         reason = "the constants are the subject"
     )]
     fn nothing_that_sits_on_the_screen_is_lost_in_it() {
-        // A surface has to read as *on* the screen. Two steps off black is a lift; below that is
-        // a hole, and the first pass at this put tool blocks and menus underneath the terminal's
-        // own background.
+        // A surface has to read as *on* the screen, and read as a surface rather than a shadow.
+        // 232-236 is the bottom fifth of the greyscale: a block painted there is a hole on a
+        // dark terminal, which is what the first pass at this drew.
         for surface in [STOCK.tool_bg, STOCK.menu_bg, STOCK.message_bg, STOCK.border] {
-            assert!(surface > 232, "{surface} is as good as black");
+            assert!(surface > 236, "{surface} is as good as black");
         }
         assert!(
             STOCK.menu_selected_bg > STOCK.menu_bg,
@@ -227,11 +237,33 @@ mod tests {
     }
 
     #[test]
+    fn no_secondary_text_is_left_in_the_dark_half() {
+        // The complaint this answers: text at 241 and 244 on a 234 background is a menu you
+        // squint at. Everything a person actually reads sits in the top fifth of the greyscale.
+        for weight in [
+            STOCK.dim,
+            STOCK.muted,
+            STOCK.text,
+            STOCK.menu_detail,
+            STOCK.menu_meta,
+            STOCK.tool_output,
+            STOCK.tool_fold,
+            STOCK.md_quote,
+            STOCK.thinking,
+            STOCK.hint,
+        ] {
+            assert!(weight >= 246, "{weight} is too dark to read comfortably");
+        }
+    }
+
+    #[test]
     fn the_stock_palette_reads_as_an_ordinary_terminal() {
-        assert_eq!(STOCK.error, 1, "red");
-        assert_eq!(STOCK.success, 2, "green");
-        assert_eq!(STOCK.warning, 3, "yellow");
-        assert_eq!(STOCK.accent, 6, "cyan");
+        // The bright half of each pair: on most palettes 1, 2 and 3 are the dark ones and 9, 10
+        // and 11 are the ones meant to be read off a dark background.
+        assert_eq!(STOCK.error, 9, "bright red");
+        assert_eq!(STOCK.success, 10, "bright green");
+        assert_eq!(STOCK.warning, 11, "bright yellow");
+        assert_eq!(STOCK.accent, 14, "bright cyan");
     }
 
     #[test]
