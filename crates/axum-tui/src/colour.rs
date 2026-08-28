@@ -102,7 +102,12 @@ palette! {
     menu_meta = 247, "Counts and scroll markers on the heading.";
 
     // -------------------------------------------------------------- the box
-    border = 245, "The prompt's border with nothing lit, and the floor of its scan.";
+    //
+    // The one thing that is *not* brightened with the rest. A border is not text, it is what the
+    // light moves against, and the two are one gradient: the further apart they sit the more of
+    // a comet there is to see. Raised to 245 alongside everything else, the run was ten steps
+    // from an already-bright frame and the scan vanished into its own border.
+    border = 240, "The prompt's border with nothing lit, and the floor of its scan.";
     scan = 255, "The brightest point of the light travelling along the border.";
     hint = 246, "The prompt's own text, before you type anything.";
     rule = 245, "The rule above and below a quotation.";
@@ -254,6 +259,18 @@ mod tests {
         ] {
             assert!(weight >= 246, "{weight} is too dark to read comfortably");
         }
+    }
+
+    #[test]
+    fn the_scan_has_a_run_long_enough_to_read_as_one() {
+        // The border and the scan are two ends of a gradient, so a border brightened towards the
+        // scan is a scan nobody can see. Twelve steps is the floor at which a comet still reads
+        // as a comet rather than as two slightly different greys.
+        let run = STOCK.scan.saturating_sub(STOCK.border);
+        assert!(
+            run >= 12,
+            "only {run} steps between the border and the scan"
+        );
     }
 
     #[test]

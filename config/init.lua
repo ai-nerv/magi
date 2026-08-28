@@ -151,6 +151,9 @@ axum.model = "anthropic/claude-sonnet-4-5"
 --   -- Above 236, because 232-236 runs black to your background: below it is a hole rather than
 --   -- a surface. These sit high enough to read as raised.
 --   tool_bg = 239, menu_bg = 239, menu_selected_bg = 242, message_bg = 242,
---   -- The one place the tinted middle is wanted: this gradient runs through your own accent.
---   border = 244, scan = 254,
+--   -- Two ends of a gradient, and they have to be far apart or there is no comet to see. Keep
+--   -- the border LOW: 243-244 is your accent at full strength, so a border there glows and the
+--   -- light moving along it disappears into its own frame. Down at 238 the frame is quiet and
+--   -- the run climbs through the accent to white.
+--   border = 238, scan = 254,
 -- }
