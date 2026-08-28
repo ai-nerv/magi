@@ -227,6 +227,92 @@ fn open_pty() -> anyhow::Result<(OwnedFd, OwnedFd)> {
     Ok((controller, OwnedFd::from(device)))
 }
 
+/// The descriptor a command's output is written to, apart from the terminal.
+///
+/// **The terminal is the shell's, not ours.** An interactive shell owns its screen: it redraws
+/// the line being typed, paints a prompt before and after every command, and — for a shell with
+/// history suggestions, which oslo has — writes a *guess* at what you are about to type. All of
+/// that arrived in the middle of tool output, so a tool result held the prompt three times, the
+/// script the peer had just sent, and a line from somebody's shell history that was never run.
+///
+/// Neither stripping nor counting fixes that: a prompt is whatever the person configured, and a
+/// redraw is not a line. So the output does not share the terminal at all. The shell keeps the
+/// pty and may write whatever it likes there — nothing reads it — and each command is run with
+/// its output redirected to this descriptor, which carries the markers and the output and
+/// nothing else.
+///
+/// The shell opens it itself, from a named pipe this side made — rather than being handed an
+/// inherited descriptor, which needs code between fork and exec, which needs `unsafe`, which
+/// this workspace does not have. `exec 3>` is POSIX and every shell worth running has it.
+const REPORT_FD: i32 = 3;
+
+/// Make the fifo somewhere that will have it.
+///
+/// The temporary directory, then the working directory. A peer running under `bwrap` with the
+/// filesystem bound read-only has no writable `/tmp` — the session directory is the one place it
+/// can write, and a shell that cannot make its own output channel is a shell that does not start.
+fn make_fifo() -> anyhow::Result<std::path::PathBuf> {
+    let name = format!("axum-shell-{}-{}", std::process::id(), nonce());
+    let mut refused = None;
+    for dir in [std::env::temp_dir(), std::path::PathBuf::from(".")] {
+        let path = dir.join(&name);
+        match rustix::fs::mknodat(
+            rustix::fs::CWD,
+            &path,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+            0,
+        ) {
+            Ok(()) => return Ok(path),
+            Err(why) => refused = Some(why),
+        }
+    }
+    Err(refused.map_or_else(
+        || anyhow::anyhow!("nowhere to put the shell's output channel"),
+        anyhow::Error::from,
+    ))
+}
+
+/// A named pipe for one shell's output, and the lines that come out of it.
+///
+/// Opening a fifo for reading blocks until somebody opens it for writing, and vice versa — so
+/// the read happens on the thread that will go on doing it, and the shell is told to open the
+/// other end from the caller. Whichever arrives first waits for the other.
+///
+/// The path is removed as soon as both ends are open. What is left is a pipe with exactly two
+/// holders and no name, which nothing else on the machine can join.
+fn report_pipe() -> anyhow::Result<(std::path::PathBuf, Receiver<String>)> {
+    let path = make_fifo()?;
+    let (lines, incoming) = std::sync::mpsc::channel();
+    let opening = path.clone();
+    std::thread::spawn(move || {
+        let Ok(pipe) = std::fs::File::open(&opening) else {
+            return;
+        };
+        let _ = std::fs::remove_file(&opening);
+        let mut reader = BufReader::new(pipe);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => return,
+                // A closed receiver means this shell was abandoned. The thread outlives it
+                // only until whatever still holds the descriptor lets go, which is exactly as
+                // long as the interrupted command keeps running.
+                Ok(_) => {
+                    // A command that writes to a terminal of its own ends lines with CRLF, and
+                    // a stray carriage return in tool output is noise the model reads as data.
+                    let cleaned = line.trim_end_matches(['\r', '\n']).to_owned();
+                    if lines.send(cleaned).is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    });
+    Ok((path, incoming))
+}
+
 /// Spawn one shell, and a thread turning its output into lines.
 fn spawn_shell() -> anyhow::Result<(Child, std::fs::File, Receiver<String>)> {
     let (controller, device) = open_pty()?;
@@ -237,11 +323,6 @@ fn spawn_shell() -> anyhow::Result<(Child, std::fs::File, Receiver<String>)> {
     //
     // On a terminal both problems go: output is line-buffered, and the shell behaves as the REPL
     // this protocol assumes. Tau's shell extension is on a pty for the same reason.
-    //
-    // The cost is that the shell now believes it is interactive and prints a prompt and its
-    // startup escape codes into the same stream. Both are handled where the output is read: the
-    // escapes are stripped, and the markers are emitted on lines of their own so anything
-    // sharing a line with one is, by construction, not the command's output.
     let child = Command::new(shell_command())
         .env("TERM", "dumb")
         .stdin(Stdio::from(device.try_clone()?))
@@ -250,31 +331,23 @@ fn spawn_shell() -> anyhow::Result<(Child, std::fs::File, Receiver<String>)> {
         .spawn()?;
 
     // Two handles on our side: reading happens on its own thread, writing on this one.
-    let to_shell = std::fs::File::from(controller.try_clone()?);
-    let from_shell = std::fs::File::from(controller);
+    let mut to_shell = std::fs::File::from(controller.try_clone()?);
+    let terminal = std::fs::File::from(controller);
 
-    let (lines, incoming) = std::sync::mpsc::channel();
+    // Read and thrown away. A terminal nobody reads fills, and a shell writing into a full one
+    // stops — taking the command with it.
     std::thread::spawn(move || {
-        let mut reader = BufReader::new(from_shell);
-        let mut line = String::new();
-        loop {
-            line.clear();
-            match reader.read_line(&mut line) {
-                Ok(0) | Err(_) => return,
-                // A closed receiver means this shell was abandoned. The thread outlives it
-                // only until whatever still holds the terminal lets go, which is exactly as
-                // long as the interrupted command keeps running.
-                Ok(_) => {
-                    // A terminal ends every line with CRLF, and a stray carriage return in tool
-                    // output is noise the model reads as data.
-                    let cleaned = line.trim_end_matches(['\r', '\n']).to_owned();
-                    if lines.send(cleaned).is_err() {
-                        return;
-                    }
-                }
-            }
+        let mut sink = BufReader::new(terminal);
+        let mut ignored = String::new();
+        while sink.read_line(&mut ignored).is_ok_and(|read| read > 0) {
+            ignored.clear();
         }
     });
+
+    // The first thing the shell is told, before any command can be sent.
+    let (path, incoming) = report_pipe()?;
+    writeln!(to_shell, "exec {REPORT_FD}>'{}'", path.display())?;
+    to_shell.flush()?;
     Ok((child, to_shell, incoming))
 }
 
@@ -323,40 +396,41 @@ impl Session {
         let open = format!("{}o", marker(&self.nonce, self.seq));
         let close = format!("{}c", marker(&self.nonce, self.seq));
         // `< /dev/null` on the command group, because the shell's stdin IS this protocol's
-        // control channel: the markers are written into the same terminal. A command that reads
-        // stdin therefore eats its own end-of-command marker. `cat` echoes it back and the
-        // marker lands in the tool result with a meaningless exit status; `sort`, `sudo`, `ssh`
-        // and `read` swallow it and the call hangs for the whole of CALL_TIMEOUT, taking the
-        // persistent shell's state with it when the peer is killed. Nothing legitimate reads
-        // stdin here -- the peer never feeds a command input.
+        // control channel: a command that reads stdin would eat the next command rather than
+        // find input. `cat` echoes it back and the marker lands in the tool result with a
+        // meaningless exit status; `sort`, `sudo`, `ssh` and `read` swallow it and the call
+        // hangs for the whole of CALL_TIMEOUT, taking the persistent shell's state with it when
+        // the peer is killed. Nothing legitimate reads stdin here -- the peer never feeds a
+        // command input.
+        //
+        // **Three lines, and the command inside `eval`.** Both were one compound command until a
+        // call arrived with no command in it at all: an empty command line makes the whole thing
+        // a syntax error, the shell parses none of it, and neither marker is ever printed —
+        // silence, for the whole timeout, over a mistake the host could have been told about
+        // instantly. Separate lines mean the markers are parsed apart from what they bracket,
+        // and `eval` moves a bad command from a parse error to a runtime one, where its message
+        // still reaches the person who wrote it.
+        let quoted = command.replace('\'', r"'\''");
         let script = format!(
-            "printf '\\n%s\\n' \"{open}\"\n{{ printf '\\n' ; {command} ; __axum_status=$? ; printf '\\n' ; }} < /dev/null 2>&1\nprintf '\\n%s%s\\n' \"{close}\" \"$__axum_status\"\n"
+            "printf '\\n%s\\n' \"{open}\" >&{REPORT_FD}\n\
+             {{ eval '{quoted}' ; __axum_status=$? ; }} < /dev/null >&{REPORT_FD} 2>&{REPORT_FD}\n\
+             printf '\\n%s%s\\n' \"{close}\" \"$__axum_status\" >&{REPORT_FD}\n"
         );
         if write!(self.stdin, "{script}").is_err() || self.stdin.flush().is_err() {
             return ("the shell is not accepting input".to_owned(), true);
         }
 
         let mut output = String::new();
-        // **Prompt-agnostic.** A terminal makes the shell interactive, so it prints a prompt
-        // before every line it reads -- the command's and both marker `printf`s -- and no
-        // environment variable suppresses that reliably. Learning the prompt and stripping it
-        // does not work either: nearly every prompt carries the working directory, so the very
-        // command that changes it (`cd`) invalidates the thing being stripped mid-call.
+        // What arrives on [`REPORT_FD`], and nothing else does:
         //
-        // So the protocol does not need to know what a prompt looks like. Each marker is printed
-        // after a newline of its own, and the command's own output is preceded by one:
-        //
-        //   PROMPT              <- discarded, before the open marker
         //   OPEN                <- discarded
-        //   PROMPT              <- exactly one line, always: discarded
         //   ...the output...
-        //   PROMPT              <- held back, then dropped when the close marker arrives
         //   CLOSE<status>
         //
-        // Holding the last line back is what removes the final prompt without recognising it.
+        // The open marker is still waited for rather than assumed. A command interrupted in the
+        // last call can have left its own output in flight, and a marker nothing can guess is
+        // what separates that from this.
         let mut started = false;
-        let mut skipped_prompt = false;
-        let mut held: Option<String> = None;
         loop {
             if self.interrupted.swap(false, Ordering::SeqCst) {
                 // Abandoned rather than waited out. The shell is killed and a fresh one starts
@@ -373,19 +447,12 @@ impl Session {
                         started = line.contains(&open);
                         continue;
                     }
-                    if !skipped_prompt {
-                        skipped_prompt = true;
-                        continue;
-                    }
                     if let Some(at) = line.find(&close) {
                         let code = line[at + close.len()..].trim_end();
                         let failed = code != "0";
-                        // `held` is the prompt that preceded this marker. Dropped, not written.
-                        //
-                        // The command group ends with a newline of its own so that the prompt
-                        // is always alone on its line -- `printf no-newline` otherwise leaves
-                        // the two glued together and the output goes with the prompt. The cost
-                        // is a blank line whenever the output already ended in one.
+                        // Each marker is printed after a newline of its own, so that output
+                        // ending without one does not share a line with it. The cost is a blank
+                        // line whenever the output already ended in one.
                         while output.ends_with('\n') {
                             output.pop();
                         }
@@ -394,18 +461,13 @@ impl Session {
                         }
                         return (output, failed);
                     }
-                    if let Some(previous) = held.replace(line) {
-                        output.push_str(&previous);
-                        output.push('\n');
-                    }
+                    output.push_str(&line);
+                    output.push('\n');
                 }
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => {
                     // The shell ended without a marker: the command took it with it.
                     self.dead = true;
-                    if let Some(previous) = held.take() {
-                        output.push_str(&previous);
-                    }
                     output.push_str("\n(the shell exited; a fresh one starts on the next call)");
                     return (output, true);
                 }
@@ -485,6 +547,37 @@ mod tests {
         let (output, failed) = shell.run("true");
         assert_eq!(output, "");
         assert!(!failed);
+    }
+
+    #[test]
+    fn a_call_with_no_command_in_it_is_answered_rather_than_waited_out() {
+        // A call for a tool this peer does not have arrives with no `command` argument at all.
+        // Run as a bare word it made the whole script a syntax error, so the shell parsed none
+        // of it and printed neither marker: silence for the whole timeout, over a mistake the
+        // host could have been told about at once.
+        let mut shell = Session::start().expect("a shell");
+        let (_, failed) = shell.run("");
+        assert!(!failed, "an empty command is not a failure");
+    }
+
+    #[test]
+    fn nothing_of_the_shell_own_screen_reaches_the_output() {
+        // An interactive shell paints a prompt around every command and, if it suggests from
+        // history, a guess at what comes next. All of it used to land in the middle of the tool
+        // result. The output goes down a descriptor of its own now, and this is what says so.
+        let mut shell = Session::start().expect("a shell");
+        let (output, _) = shell.run("echo only-this");
+        assert_eq!(output, "only-this");
+    }
+
+    #[test]
+    fn a_command_that_will_not_parse_says_why() {
+        // Through `eval`, so the shell's complaint is a runtime message on the command's own
+        // stderr rather than a parse error that stops the markers being printed too.
+        let mut shell = Session::start().expect("a shell");
+        let (output, failed) = shell.run("if then");
+        assert!(failed, "it did not run");
+        assert!(!output.is_empty(), "and it said something: {output:?}");
     }
 
     #[test]
