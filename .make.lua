@@ -356,7 +356,10 @@ make.recipe{
 make.recipe{
   name = "configs",
   desc = "install config/ into $XDG_CONFIG_HOME/axum",
-  params = { { "--dest", desc = "somewhere other than the config directory" } },
+  params = {
+    { "--dest", desc = "somewhere other than the config directory" },
+    { "--force", flag = true, desc = "overwrite files you have edited" },
+  },
   run = function(a)
     assert(oslo.run{ "sh", "-c", "command -v rsync", capture = true }.ok,
            "rsync is not installed; install it first")
@@ -376,22 +379,60 @@ make.recipe{
     end
     sh.mkdir("-p", dest)
 
-    -- One entry at a time, each mirrored with --delete, rather than one --delete over the whole
-    -- tree: the destination is where anything else you keep beside init.lua lives, and a
-    -- tree-wide mirror would take it with it.
-    local synced = 0
+    -- Never over an edit. `rsync -a` overwrites unconditionally and preserves the source's
+    -- mtime, so a config you had changed came back as the shipped one *looking untouched* --
+    -- which is how a model choice reverted to a provider with no key, three times, while the
+    -- file's timestamp said nobody had been near it. The whole point of installing these is
+    -- that they are yours to edit; a command that undoes the editing is worse than useless.
+    --
+    -- So: anything missing is written, anything identical is written (it is the same bytes),
+    -- and anything that differs is left alone and named. `--force` is the way to say you meant
+    -- it. Directories are walked file by file for the same reason, and without `--delete`: a
+    -- tool you wrote into `tools/` is not litter.
+    local function same(a, b)
+      return oslo.run{ "cmp", "-s", a, b }.ok
+    end
+
+    local synced, kept = 0, {}
+    local function install_file(src, dir, name)
+      local dst = dir .. "/" .. name
+      if oslo.fs.stat(dst) and not same(src, dst) and not a.force then
+        kept[#kept + 1] = dst
+        return
+      end
+      sh.mkdir("-p", dir)
+      sh.rsync("-a", src, dst)
+      synced = synced + 1
+    end
+
+    local function install_tree(src, dst)
+      for _, path in ipairs(oslo.fs.glob(src .. "/*")) do
+        local name = oslo.path.name(path)
+        if oslo.fs.stat(path .. "/") then
+          install_tree(path, dst .. "/" .. name)
+        else
+          install_file(path, dst, name)
+        end
+      end
+    end
+
     for _, path in ipairs(oslo.fs.glob(source .. "/*")) do
       local name = oslo.path.name(path)
       if oslo.fs.stat(path .. "/") then
-        sh.mkdir("-p", dest .. "/" .. name)
-        sh.rsync("-a", "--delete", path .. "/", dest .. "/" .. name .. "/")
+        install_tree(path, dest .. "/" .. name)
       else
-        sh.rsync("-a", path, dest .. "/" .. name)
+        install_file(path, dest, name)
       end
-      synced = synced + 1
     end
     print(oslo.ui.style("✓ ", { fg = "green" }) ..
-          ("%d entr%s -> %s"):format(synced, synced == 1 and "y" or "ies", dest))
+          ("%d file%s -> %s"):format(synced, synced == 1 and "" or "s", dest))
+    if #kept > 0 then
+      print(oslo.ui.style("!  ", { fg = "yellow" }) ..
+            ("%d file%s left alone because you have changed %s:")
+              :format(#kept, #kept == 1 and "" or "s", #kept == 1 and "it" or "them"))
+      for _, path in ipairs(kept) do print(dim("   " .. path)) end
+      print(dim("   `make configs --force` overwrites them"))
+    end
 
     -- Installed, then read back. axum loads its own configuration, so a file that will not run
     -- is worth knowing about now rather than the next time a daemon starts and quietly falls
