@@ -13,29 +13,29 @@ use axum_provider::provider::Provider;
 use std::collections::BTreeSet;
 
 /// The catalog axum ships, as Lua.
-const BUILTIN: &str = include_str!("../../../config/providers.lua");
+const BUILTIN: &str = include_str!("../../../../config/providers.lua");
 
 /// What axum tells the model it is, as Lua.
 ///
 /// Shipped as a file for the same reason the catalog is: a fresh binary has one, and the copy
 /// you can edit is the copy it uses.
-const BUILTIN_SYSTEM: &str = include_str!("../../../config/system.lua");
+const BUILTIN_SYSTEM: &str = include_str!("../../../../config/system.lua");
 
 /// The tools axum ships, as Lua.
 ///
 /// `bash` among them, declared as a process tool. Shipped rather than built in so that what a
 /// fresh install can do is written down in a file you can read and replace.
 const BUILTIN_TOOLS: &[(&str, &str)] = &[
-    ("shell", include_str!("../../../config/tools/shell.lua")),
-    ("hexe", include_str!("../../../config/tools/hexe.lua")),
-    ("oslo", include_str!("../../../config/tools/oslo.lua")),
+    ("shell", include_str!("../../../../config/tools/shell.lua")),
+    ("hexe", include_str!("../../../../config/tools/hexe.lua")),
+    ("oslo", include_str!("../../../../config/tools/oslo.lua")),
 ];
 
 /// The family's client stubs, so a Lua tool can talk to a sibling without opening a file.
 const BUILTIN_STUBS: &[(&str, &str)] = &[
-    ("axum", include_str!("../../../config/stubs/axum.lua")),
-    ("hexe", include_str!("../../../config/stubs/hexe.lua")),
-    ("oslo", include_str!("../../../config/stubs/oslo.lua")),
+    ("axum", include_str!("../../../../config/stubs/axum.lua")),
+    ("hexe", include_str!("../../../../config/stubs/hexe.lua")),
+    ("oslo", include_str!("../../../../config/stubs/oslo.lua")),
 ];
 
 /// Everything the config files said, in one value.
@@ -257,58 +257,15 @@ pub fn catalog(loaded: &Loaded) -> axum_host::catalog::Catalog {
         providers: loaded.providers.clone(),
         options: options(loaded),
         system: system(loaded),
+        grants: grants(loaded),
         chosen: loaded.config.string("model").map(ToOwned::to_owned),
         confine: loaded.config.boolean("confine").unwrap_or(false),
     }
 }
 
-/// What the model is told it is, for this session.
-///
-/// Assembled here because this is where the configuration and the working directory are both
-/// in hand. Every milestone before this one sent nothing: the model got tool schemas and no
-/// idea what it was, where it was, or what machine it was on.
-#[must_use]
-fn system(loaded: &Loaded) -> Option<String> {
-    let cwd = std::env::current_dir().unwrap_or_default();
-    axum_host::system::assemble(loaded.config.string("system"), &cwd, &today())
-}
+mod settings;
 
-/// Today, as the model should read it.
-fn today() -> String {
-    let seconds = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    // Civil from days, so a date needs no calendar crate. The model wants to know roughly
-    // when it is, not to do arithmetic with it.
-    let days = i64::try_from(seconds / 86_400).unwrap_or(0) + 719_468;
-    let era = days.div_euclid(146_097);
-    let doe = days.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 };
-    let year = era * 400 + yoe + i64::from(month <= 2);
-    format!("{year:04}-{month:02}-{day:02}")
-}
-
-/// What to ask for beyond the conversation.
-///
-/// `axum.thinking` is off unless asked for. Reasoning costs tokens and money, and a default
-/// that quietly spends both is the wrong kind of surprise — but the whole branch that requests
-/// it existed in every protocol description with nothing ever setting this, so asking was
-/// impossible rather than merely off.
-#[must_use]
-fn options(loaded: &Loaded) -> axum_provider::api::Options {
-    let thinking = loaded
-        .config
-        .string("thinking")
-        .and_then(|level| serde_json::from_value(serde_json::Value::String(level.to_owned())).ok());
-    axum_provider::api::Options {
-        thinking,
-        max_tokens: None,
-    }
-}
+use settings::{grants, options, system};
 
 /// The backend a daemon should run turns against, if one is both chosen and usable.
 ///
@@ -331,6 +288,7 @@ pub fn backend(loaded: &Loaded) -> Option<axum_host::turn::Backend> {
         model: model.clone(),
         options: options(loaded),
         system: system(loaded),
+        grants: grants(loaded),
         confine: loaded.config.boolean("confine").unwrap_or(false),
     })
 }

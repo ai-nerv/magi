@@ -372,6 +372,15 @@ impl Tool for ProcessTool {
     }
 
     fn run(&self, arguments: &serde_json::Value, ops: &dyn Ops, cancel: &dyn Cancel) -> Output {
+        // A peer is another program, so the question is asked here rather than trusted to it.
+        // A shell command is asked as a *command*, with its program named separately, because
+        // "any `git` command" is the answer people actually want to give and they cannot give
+        // it if the question was "may the shell tool run".
+        if let Some(action) = self.action(arguments)
+            && let Err(why) = ops.allow(&action)
+        {
+            return Output::error(why);
+        }
         if let Err(why) = self.ensure(ops) {
             return Output::error(why);
         }
@@ -445,5 +454,59 @@ mod timeout_tests {
             allowed(&serde_json::json!({ "timeout": "soon" })),
             CALL_TIMEOUT
         );
+    }
+}
+
+impl ProcessTool {
+    /// What this call is about to do, in the terms a person is asked about.
+    ///
+    /// Only a `command` argument is recognised, which is the shell's. A peer that takes
+    /// something else is not asked about — its own schema is the description of what it does,
+    /// and inventing an action from arguments this code does not understand would put a
+    /// sentence in front of somebody that does not mean what it says.
+    fn action(&self, arguments: &serde_json::Value) -> Option<axum_proto::permit::Action> {
+        let command = arguments.get("command")?.as_str()?;
+        Some(axum_proto::permit::Action::Run {
+            command: command.to_owned(),
+            program: first_word(command),
+        })
+    }
+}
+
+/// The program a command line runs, for the "any `git` command" answer.
+///
+/// Leading environment assignments are stepped over: `FOO=1 git status` is a `git` command, and
+/// a person offered "any `FOO=1` command" would rightly not know what they were being asked.
+fn first_word(command: &str) -> String {
+    command
+        .split_whitespace()
+        .find(|word| !word.contains('=') || word.starts_with('/'))
+        .unwrap_or("")
+        .to_owned()
+}
+
+#[cfg(test)]
+mod action_tests {
+    use super::*;
+
+    #[test]
+    fn a_shell_call_is_asked_about_as_a_command() {
+        assert_eq!(first_word("git status --short"), "git");
+    }
+
+    #[test]
+    fn leading_environment_is_stepped_over() {
+        // Somebody offered "any `FOO=1` command" would rightly not know what was being asked.
+        assert_eq!(first_word("FOO=1 BAR=2 git push"), "git");
+    }
+
+    #[test]
+    fn an_absolute_path_is_the_program_even_with_an_equals_in_it() {
+        assert_eq!(first_word("/usr/bin/env python"), "/usr/bin/env");
+    }
+
+    #[test]
+    fn an_empty_command_names_no_program() {
+        assert_eq!(first_word("   "), "");
     }
 }

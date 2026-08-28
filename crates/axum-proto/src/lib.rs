@@ -8,6 +8,7 @@
 //! are being added where they should be composed.
 
 mod ids;
+pub mod permit;
 
 pub use ids::{MessageId, SessionId, ToolCallId};
 
@@ -400,6 +401,23 @@ pub enum HarnessEvent {
         /// The model now answering, or `None` if there is none.
         model: Option<ModelInfo>,
     },
+    /// A tool is about to do something nothing has allowed yet.
+    ///
+    /// The turn stops here. Nothing else can decide this: the daemon knows what is about to
+    /// happen and the person knows whether they want it, and only one of them is at the
+    /// keyboard. Answered with [`UiCommand::Permit`].
+    PermissionAsked {
+        /// Position of this event.
+        cursor: Cursor,
+        /// Which question this is, so the answer can be matched to it.
+        id: ToolCallId,
+        /// The tool that wants to act.
+        tool: String,
+        /// What it is about to do.
+        action: crate::permit::Action,
+        /// The widths this may be answered at, narrowest first.
+        offers: Vec<crate::permit::Scope>,
+    },
     /// Something the UI asked for could not be done, with the reason.
     ///
     /// Distinct from [`Self::Error`], which is the session going wrong. This is a request that
@@ -459,6 +477,7 @@ impl HarnessEvent {
             | Self::ToolCallEnded { cursor, .. }
             | Self::StatusChanged { cursor, .. }
             | Self::Compacted { cursor, .. }
+            | Self::PermissionAsked { cursor, .. }
             | Self::Refused { cursor, .. }
             | Self::ModelChanged { cursor, .. }
             | Self::Branched { cursor, .. }
@@ -497,6 +516,16 @@ pub enum UiCommand {
     SetThinking {
         /// A level, as `axum.thinking` names them.
         level: String,
+    },
+    /// Answer a [`HarnessEvent::PermissionAsked`].
+    ///
+    /// An answer that names an unknown id is dropped: the turn it belonged to is over, and
+    /// acting on it would allow something nobody is waiting for.
+    Permit {
+        /// Which question is being answered.
+        id: ToolCallId,
+        /// What was decided.
+        decision: crate::permit::Decision,
     },
     /// Rewind the conversation.
     Branch {

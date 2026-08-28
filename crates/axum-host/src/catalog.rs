@@ -32,6 +32,8 @@ pub struct Catalog {
     pub system: Option<String>,
     /// Whether the file tools refuse paths outside `cwd`.
     pub confine: bool,
+    /// Permissions a configuration granted before anybody was asked anything.
+    pub grants: Vec<axum_proto::permit::Grant>,
     /// The model the configuration asked for, whether or not it can be reached.
     ///
     /// Kept so a refusal can name it. Without this the daemon could only say "no model
@@ -56,6 +58,7 @@ impl Catalog {
             system: None,
             chosen: None,
             confine: false,
+            grants: Vec::new(),
         }
     }
 
@@ -77,6 +80,7 @@ impl Catalog {
             options: self.options.clone(),
             system: self.system.clone(),
             confine: self.confine,
+            grants: self.grants.clone(),
         })
     }
 
@@ -209,6 +213,7 @@ mod tests {
             system: None,
             chosen: None,
             confine: false,
+            grants: Vec::new(),
         }
     }
 

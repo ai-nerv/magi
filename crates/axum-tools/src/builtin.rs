@@ -79,6 +79,13 @@ impl Tool for Read {
             Ok(path) => path,
             Err(output) => return output,
         };
+        // Asked before it is done, and in the terms the person will see: "read /etc/shadow"
+        // is a question somebody can answer, "the read tool wants to run" is not.
+        if let Err(why) = ops.allow(&axum_proto::permit::Action::Read {
+            path: ops.cwd().join(path).display().to_string(),
+        }) {
+            return Output::error(why);
+        }
         match ops.read(Path::new(path)) {
             Err(why) => Output::error(why),
             Ok(contents) => {
@@ -150,6 +157,11 @@ impl Tool for Write {
             (Ok(path), Ok(contents)) => (path, contents),
             (Err(output), _) | (_, Err(output)) => return output,
         };
+        if let Err(why) = ops.allow(&axum_proto::permit::Action::Write {
+            path: ops.cwd().join(path).display().to_string(),
+        }) {
+            return Output::error(why);
+        }
         match ops.write(Path::new(path), contents) {
             Ok(()) => Output::ok(format!("wrote {} ({} bytes)", path, contents.len())),
             Err(why) => Output::error(why),
@@ -207,6 +219,11 @@ impl Tool for Edit {
             )),
             1 => {
                 let patched = contents.replacen(old, new, 1);
+                if let Err(why) = ops.allow(&axum_proto::permit::Action::Write {
+                    path: ops.cwd().join(path).display().to_string(),
+                }) {
+                    return Output::error(why);
+                }
                 match ops.write(Path::new(path), &patched) {
                     Err(why) => Output::error(why),
                     Ok(()) => Output::ok(format!("edited {path}\n{}", diff(old, new))),

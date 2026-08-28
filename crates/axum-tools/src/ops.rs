@@ -54,6 +54,23 @@ pub trait Ops: Send + Sync {
     /// When the command could not be started at all. A command that ran and failed is a
     /// [`Shell`] with a non-zero code, not an error: the model needs to see what it said.
     fn shell(&self, command: &str) -> Result<Shell, String>;
+
+    /// Ask whether `action` may happen, blocking until it is answered.
+    ///
+    /// Called by a tool *before* it acts, not by the registry, because only the tool knows what
+    /// it is about to do: "run this command" and "read this file" are different questions and a
+    /// person can only answer the one they were actually asked.
+    ///
+    /// The default allows. Every `Ops` in the tree except [`Real`] is a test double, and a
+    /// double that had to be taught about permissions would make every tool test a permissions
+    /// test. `Real` is the one that gates.
+    ///
+    /// # Errors
+    /// When it was refused, with a sentence the model reads as a result.
+    fn allow(&self, action: &axum_proto::permit::Action) -> Result<(), String> {
+        let _ = action;
+        Ok(())
+    }
 }
 
 /// Ops against the real machine, rooted at one directory.
@@ -73,6 +90,14 @@ pub trait Ops: Send + Sync {
 pub struct Real {
     root: PathBuf,
     confined: bool,
+    /// What has already been allowed, and who to ask when it has not.
+    gate: Option<Gate>,
+}
+
+/// The ledger and the person, together.
+struct Gate {
+    ledger: std::sync::Mutex<crate::permit::Ledger>,
+    approver: std::sync::Arc<dyn crate::approve::Approver>,
 }
 
 impl Real {
@@ -82,7 +107,36 @@ impl Real {
         Self {
             root,
             confined: false,
+            gate: None,
         }
+    }
+
+    /// The same, asking `approver` about anything `ledger` does not already cover.
+    #[must_use]
+    pub fn gated(
+        root: PathBuf,
+        ledger: crate::permit::Ledger,
+        approver: std::sync::Arc<dyn crate::approve::Approver>,
+    ) -> Self {
+        Self {
+            root,
+            confined: false,
+            gate: Some(Gate {
+                ledger: std::sync::Mutex::new(ledger),
+                approver,
+            }),
+        }
+    }
+
+    /// The grants this session has accumulated, for writing down.
+    #[must_use]
+    pub fn grants(&self) -> Vec<axum_proto::permit::Grant> {
+        self.gate.as_ref().map_or_else(Vec::new, |gate| {
+            gate.ledger
+                .lock()
+                .map(|l| l.persistent().to_vec())
+                .unwrap_or_default()
+        })
     }
 
     /// Ops that refuse anything outside `root`.
@@ -91,6 +145,7 @@ impl Real {
         Self {
             root,
             confined: true,
+            gate: None,
         }
     }
 
@@ -153,6 +208,32 @@ impl Ops for Real {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
         std::fs::write(&path, contents).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    /// Consult the ledger, and ask if it has nothing to say.
+    ///
+    /// The answer is recorded before it is acted on, so a person asked once about a directory is
+    /// not asked again about the next file in it — which is the difference between a permission
+    /// prompt and a nuisance.
+    fn allow(&self, action: &axum_proto::permit::Action) -> Result<(), String> {
+        let Some(gate) = &self.gate else {
+            return Ok(());
+        };
+        if gate.ledger.lock().is_ok_and(|ledger| ledger.allows(action)) {
+            return Ok(());
+        }
+        let decision = gate.approver.ask(action.verb(), action);
+        if let Ok(mut ledger) = gate.ledger.lock() {
+            ledger.remember(action, &decision);
+        }
+        match decision {
+            axum_proto::permit::Decision::Allow { .. } => Ok(()),
+            axum_proto::permit::Decision::Deny => Err(format!(
+                "not permitted: {} {}. The person at the keyboard declined.",
+                action.verb(),
+                action.subject()
+            )),
+        }
     }
 
     fn shell(&self, command: &str) -> Result<Shell, String> {
@@ -325,5 +406,153 @@ mod reach_tests {
         let ops = Real::confined(session.clone());
         assert!(ops.read(Path::new("a/../../etc/passwd")).is_err());
         let _ = std::fs::remove_dir_all(&session);
+    }
+}
+
+#[cfg(test)]
+mod gate_tests {
+    use super::*;
+    use axum_proto::permit::{Action, Decision, Lifetime, Scope};
+    use std::sync::Arc;
+
+    /// An approver that answers from a script and records what it was asked.
+    struct Scripted {
+        answers: std::sync::Mutex<Vec<Decision>>,
+        asked: std::sync::Mutex<Vec<Action>>,
+    }
+
+    impl Scripted {
+        fn new(answers: Vec<Decision>) -> Arc<Self> {
+            Arc::new(Self {
+                answers: std::sync::Mutex::new(answers),
+                asked: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+        fn asked(&self) -> Vec<Action> {
+            self.asked.lock().map(|a| a.clone()).unwrap_or_default()
+        }
+    }
+
+    impl crate::approve::Approver for Scripted {
+        fn ask(&self, _tool: &str, action: &Action) -> Decision {
+            if let Ok(mut asked) = self.asked.lock() {
+                asked.push(action.clone());
+            }
+            self.answers
+                .lock()
+                .ok()
+                .and_then(|mut a| {
+                    if a.is_empty() {
+                        None
+                    } else {
+                        Some(a.remove(0))
+                    }
+                })
+                .unwrap_or(Decision::Deny)
+        }
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("axum-gate-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        dir
+    }
+
+    #[test]
+    fn an_ungated_ops_asks_nobody() {
+        // Every `Ops` but `Real` is a test double, and one that had to be taught about
+        // permissions would make every tool test a permissions test.
+        let dir = scratch("ungated");
+        let ops = Real::new(dir.clone());
+        assert!(ops.allow(&Action::Read { path: "/x".into() }).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_gated_ops_asks_and_a_refusal_reaches_the_model() {
+        let dir = scratch("refused");
+        let approver = Scripted::new(vec![Decision::Deny]);
+        let ops = Real::gated(dir.clone(), crate::permit::Ledger::new(), approver.clone());
+        let why = ops
+            .allow(&Action::Read {
+                path: "/etc/shadow".into(),
+            })
+            .expect_err("refused");
+        assert!(why.contains("not permitted"), "{why}");
+        assert!(
+            why.contains("/etc/shadow"),
+            "it says what was refused: {why}"
+        );
+        assert_eq!(approver.asked().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_directory_answer_means_the_next_file_is_not_asked_about() {
+        // The difference between a permission prompt and a nuisance.
+        let dir = scratch("once-only");
+        let approver = Scripted::new(vec![Decision::Allow {
+            scope: Scope::Directory {
+                path: "/home/x/work".into(),
+            },
+            lifetime: Lifetime::Session,
+        }]);
+        let ops = Real::gated(dir.clone(), crate::permit::Ledger::new(), approver.clone());
+        for file in ["a.rs", "b.rs", "c.rs"] {
+            ops.allow(&Action::Read {
+                path: format!("/home/x/work/{file}"),
+            })
+            .expect("allowed");
+        }
+        assert_eq!(approver.asked().len(), 1, "asked once, not three times");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_grant_for_one_directory_does_not_cover_another() {
+        let dir = scratch("elsewhere");
+        let approver = Scripted::new(vec![
+            Decision::Allow {
+                scope: Scope::Directory {
+                    path: "/home/x/work".into(),
+                },
+                lifetime: Lifetime::Session,
+            },
+            Decision::Deny,
+        ]);
+        let ops = Real::gated(dir.clone(), crate::permit::Ledger::new(), approver.clone());
+        ops.allow(&Action::Read {
+            path: "/home/x/work/a".into(),
+        })
+        .expect("allowed");
+        assert!(
+            ops.allow(&Action::Read {
+                path: "/home/x/secrets/a".into()
+            })
+            .is_err(),
+            "a second directory is a second question"
+        );
+        assert_eq!(approver.asked().len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn what_was_granted_can_be_written_down() {
+        let dir = scratch("grants");
+        let approver = Scripted::new(vec![Decision::Allow {
+            scope: Scope::Program {
+                program: "git".into(),
+            },
+            lifetime: Lifetime::Always,
+        }]);
+        let ops = Real::gated(dir.clone(), crate::permit::Ledger::new(), approver);
+        ops.allow(&Action::Run {
+            command: "git status".into(),
+            program: "git".into(),
+        })
+        .expect("allowed");
+        assert_eq!(ops.grants().len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

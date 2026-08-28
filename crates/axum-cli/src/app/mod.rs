@@ -30,12 +30,23 @@ fn add(total: axum_proto::Usage, next: axum_proto::Usage) -> axum_proto::Usage {
 }
 
 /// What an open selection list is choosing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Picking {
     /// Which model answers.
     Model,
     /// How much reasoning to ask for.
     Thinking,
+    /// Whether a tool may do what it is about to do.
+    ///
+    /// Carries the question's id, because the answer has to find its way back to the turn that
+    /// is blocked on it, and the widths on offer, because they were computed from the action by
+    /// the side that knows what the action was.
+    Permission {
+        /// Which question is being answered.
+        id: ToolCallId,
+        /// The widths, in the order they were offered.
+        offers: Vec<axum_proto::permit::Scope>,
+    },
 }
 
 /// Everything the UI knows.
@@ -67,6 +78,12 @@ pub struct App {
     /// so anything appended before the first snapshot is discarded by it. This is for things
     /// the UI knows at startup and the daemon does not.
     pending_notice: Option<String>,
+    /// What the open permission prompt is about.
+    ///
+    /// Kept because a scope's label is written *in terms of the action* — "any `git` command",
+    /// "anything under /home/you/work" — so turning a chosen label back into a scope needs the
+    /// action that produced it.
+    pub asking_about: axum_proto::permit::Action,
     /// Commands submitted but not yet handed to a daemon.
     ///
     /// Set by the driver from the command channel: a prompt sent while the daemon is away
@@ -126,6 +143,9 @@ impl App {
             picking: None,
             detail: axum_tui::transcript::Detail::Preview,
             pending_notice: None,
+            asking_about: axum_proto::permit::Action::Read {
+                path: String::new(),
+            },
             queued: 0,
             working_since: None,
             tick: 0,
@@ -335,6 +355,36 @@ impl App {
             // Said in the transcript, once the conversation has started. Which model answered
             // is part of the record, and a switch that changes only two dim words in the
             // footer leaves no mark on the place a reader actually reads.
+            // The turn is blocked until this is answered, so it takes the screen: a picker
+            // opened over whatever else was there, with the narrowest answer under the cursor.
+            HarnessEvent::PermissionAsked {
+                id,
+                tool,
+                action,
+                offers,
+                ..
+            } => {
+                let choices = offers
+                    .iter()
+                    .map(|scope| axum_tui::picker::Choice {
+                        value: scope.label(&action),
+                        detail: String::new(),
+                        ready: true,
+                    })
+                    .chain(std::iter::once(axum_tui::picker::Choice {
+                        value: "no".to_owned(),
+                        detail: "refuse, and tell the model".to_owned(),
+                        ready: true,
+                    }))
+                    .collect();
+                self.picker = Some(axum_tui::picker::Picker::new(
+                    format!("{tool} wants to {} {}", action.verb(), action.subject()),
+                    choices,
+                    None,
+                ));
+                self.asking_about = action;
+                self.picking = Some(Picking::Permission { id, offers });
+            }
             HarnessEvent::ModelChanged { model, .. } => {
                 let before = self.model.as_ref().map(|m| m.name.clone());
                 let after = model.as_ref().map(|m| m.name.clone());

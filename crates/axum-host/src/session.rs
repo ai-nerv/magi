@@ -95,6 +95,16 @@ impl Session {
             })
     }
 
+    /// A handle for publishing into this session from elsewhere.
+    ///
+    /// Handed out rather than reached through the lock, because the thing that needs it is a
+    /// turn running on another thread — and that thread is usually the one *holding* the lock,
+    /// so asking for it would deadlock or, with `try_lock`, silently drop the message.
+    #[must_use]
+    pub fn publisher(&self) -> broadcast::Sender<HarnessEvent> {
+        self.events.clone()
+    }
+
     /// Subscribe to everything published from now on.
     #[must_use]
     pub fn subscribe(&self) -> broadcast::Receiver<HarnessEvent> {

@@ -25,6 +25,11 @@ pub struct Backend {
     pub stubs: Vec<(String, String)>,
     /// Where the session is rooted, which is what tools resolve paths against.
     pub cwd: std::path::PathBuf,
+    /// Permissions a configuration granted before anybody was asked anything.
+    ///
+    /// A rule written down is a question already answered, so these go into the ledger at
+    /// startup rather than being prompted for.
+    pub grants: Vec<axum_proto::permit::Grant>,
     /// Whether the file tools refuse paths outside `cwd`.
     ///
     /// Off unless a config asks. See [`axum_tools::ops::Real`] for why a wall only the careful

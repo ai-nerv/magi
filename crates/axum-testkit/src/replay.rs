@@ -61,6 +61,9 @@ impl Recording {
 
         for event in self.events.iter().filter(|e| e.cursor() <= cursor) {
             match event.clone() {
+                // A recording is a transcript, not a session: a question nobody is there to
+                // answer has no place in one.
+                HarnessEvent::PermissionAsked { .. } => {}
                 HarnessEvent::UserMessage { id, text, .. } => {
                     entries.push(Entry::User { id, text });
                 }

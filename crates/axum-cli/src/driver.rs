@@ -159,6 +159,26 @@ pub async fn run(
                                     Some(crate::app::Picking::Model) => {
                                         UiCommand::SetModel { name: value }
                                     }
+                                    // Matched back by *label*, because that is what the person
+                                    // read and chose. The labels were generated from these same
+                                    // scopes a moment ago, so the pairing is exact rather than
+                                    // a guess — and a value matching none of them is the "no"
+                                    // row, which is the only other thing in the list.
+                                    Some(crate::app::Picking::Permission { id, offers }) => {
+                                        let decision = offers
+                                            .iter()
+                                            .find(|scope| {
+                                                scope.label(&app.asking_about) == value
+                                            })
+                                            .map_or(
+                                                axum_proto::permit::Decision::Deny,
+                                                |scope| axum_proto::permit::Decision::Allow {
+                                                    scope: scope.clone(),
+                                                    lifetime: axum_proto::permit::Lifetime::Session,
+                                                },
+                                            );
+                                        UiCommand::Permit { id, decision }
+                                    }
                                     None => continue,
                                 };
                                 let _ = command_tx.send(command).await;

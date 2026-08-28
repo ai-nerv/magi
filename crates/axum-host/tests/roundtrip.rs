@@ -254,6 +254,7 @@ async fn start_with_backend(name: &str, base_url: String) -> (PathBuf, PathBuf) 
         options: axum_provider::api::Options::default(),
         system: Some("You are axum.".to_owned()),
         confine: false,
+        grants: Vec::new(),
     };
     let listener = axum_ipc::bind(&socket).await.expect("bind");
     tokio::spawn(async move { serve(listener, session, Some(backend)).await });
@@ -527,6 +528,7 @@ fn two_models() -> axum_host::catalog::Catalog {
         options: axum_provider::api::Options::default(),
         system: None,
         confine: false,
+        grants: Vec::new(),
         chosen: None,
     }
 }

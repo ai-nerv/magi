@@ -105,6 +105,7 @@ fn backend(base_url: String) -> Backend {
         options: Options::default(),
         system: None,
         confine: false,
+        grants: Vec::new(),
     }
 }
 

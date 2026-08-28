@@ -42,3 +42,23 @@ axum.model = "anthropic/claude-sonnet-4-5"
 -- the shell peer under `bwrap`: see `tools/bash-sandboxed.lua` in the examples.
 --
 -- axum.confine = true
+
+-- Permissions granted in advance, so they are not asked about.
+--
+-- A tool that is about to read a file, write one, or run a command stops and asks — unless one
+-- of these already covers it. That is on by default and not a mode you opt into: sandboxing
+-- that has to be switched on is off for everybody who has not already thought about it, which
+-- is everybody it was meant to protect.
+--
+-- Each rule is a verb (`read`, `write`, `run`, `reach`) and one width:
+--
+--   anything = true        every action of that verb, anywhere
+--   directory = "/path"    that path and everything under it
+--   program = "git"        any command whose first word is this
+--
+-- A rule naming no width grants nothing, rather than being read as `anything`.
+--
+-- axum.allow = {
+--   { verb = "read",  directory = "/home/you/work" },
+--   { verb = "run",   program = "git" },
+-- }

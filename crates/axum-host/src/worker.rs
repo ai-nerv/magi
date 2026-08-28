@@ -32,6 +32,17 @@ impl Worker {
     /// is one description of each protocol, and a second would be a second copy to keep in step.
     #[must_use]
     pub fn start(backend: Backend) -> Self {
+        Self::gated(backend, None)
+    }
+
+    /// The same, with somebody to ask when a tool wants to do something new.
+    ///
+    /// `None` is a worker nothing gates — the print-mode and test paths, where there is nobody
+    /// to ask and refusing every action would make the tool set useless rather than safe.
+    pub fn gated(
+        backend: Backend,
+        approver: Option<std::sync::Arc<dyn axum_tools::approve::Approver>>,
+    ) -> Self {
         let (jobs, mut queue) = mpsc::channel::<Job>(32);
         std::thread::spawn(move || {
             let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
@@ -68,10 +79,16 @@ impl Worker {
             let mut registry = axum_tools::Registry::new();
             axum_tools::builtin::install(&mut registry);
             axum_lua::tool::install(std::rc::Rc::clone(&engine), &mut registry);
-            let ops = if backend.confine {
-                axum_tools::ops::Real::confined(backend.cwd.clone())
-            } else {
-                axum_tools::ops::Real::new(backend.cwd.clone())
+            // Gated when there is somebody to ask. The ledger starts with whatever the
+            // configuration already granted, so a rule written down is not a question asked.
+            let ops = match (&approver, backend.confine) {
+                (Some(approver), _) => axum_tools::ops::Real::gated(
+                    backend.cwd.clone(),
+                    axum_tools::permit::Ledger::with(backend.grants.clone()),
+                    std::sync::Arc::clone(approver),
+                ),
+                (None, true) => axum_tools::ops::Real::confined(backend.cwd.clone()),
+                (None, false) => axum_tools::ops::Real::new(backend.cwd.clone()),
             };
             // Before the first turn, so the schema the model is given is the one the peers
             // actually implement rather than the one a config file claimed for them.

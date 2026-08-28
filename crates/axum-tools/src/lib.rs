@@ -10,10 +10,12 @@
 //! among them — it is the tool whose requirements justify a process boundary, so it is
 //! declared as one in `config/tools/`.
 
+pub mod approve;
 pub mod bound;
 pub mod builtin;
 pub mod cancel;
 pub mod ops;
+pub mod permit;
 pub mod process;
 pub mod registry;
 

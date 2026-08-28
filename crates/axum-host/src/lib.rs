@@ -7,6 +7,7 @@
 //! One session per daemon, for now. `UiCommand::Attach` already names one, so growing to a
 //! registry is a lookup rather than a protocol change.
 
+pub mod asking;
 pub mod cancel;
 pub mod catalog;
 pub mod compact;
@@ -85,8 +86,33 @@ pub async fn serve_catalog(
     // worker owns a VM built for one protocol, and handing a live VM a new one across a thread
     // boundary is a great deal of machinery to avoid rebuilding something that takes
     // milliseconds and happens by hand.
+    // Shared with every connection, because a question raised by one turn has to be answerable
+    // by whichever UI is attached when it arrives.
+    let pending = Arc::new(crate::asking::Pending::new());
+    // The asker publishes through the session's own broadcast handle rather than through the
+    // lock: the thread that asks is the thread running the turn, which is usually the one
+    // holding it.
+    //
+    // "Is anybody attached" is the subscriber count on that same channel, which is exactly the
+    // question — a UI is attached precisely when it is listening.
+    let approver: Arc<dyn axum_tools::approve::Approver> = {
+        let events = session.lock().await.publisher();
+        let watched = events.clone();
+        Arc::new(crate::asking::Asker::new(
+            Arc::clone(&pending),
+            Box::new(move |event| {
+                let _ = events.send(event);
+            }),
+            // Transient rather than journalled: a question is not part of the conversation, and
+            // the UI tracks the highest cursor it has seen with a max, so zero disturbs nothing.
+            Box::new(|| Cursor::ZERO),
+            Box::new(move || watched.receiver_count() > 0),
+        ))
+    };
     let worker = Arc::new(tokio::sync::RwLock::new(
-        backend.map(worker::Worker::start).map(Arc::new),
+        backend
+            .map(|backend| worker::Worker::gated(backend, Some(Arc::clone(&approver))))
+            .map(Arc::new),
     ));
     let catalog = Arc::new(catalog);
     loop {
@@ -100,8 +126,9 @@ pub async fn serve_catalog(
         let session = Arc::clone(&session);
         let worker = Arc::clone(&worker);
         let catalog = Arc::clone(&catalog);
+        let pending = Arc::clone(&pending);
         tokio::spawn(async move {
-            let _ = connection(stream, session, &worker, &catalog).await;
+            let _ = connection(stream, session, &worker, &catalog, &pending).await;
         });
     }
 }
@@ -112,6 +139,7 @@ async fn connection(
     session: Arc<Mutex<Session>>,
     worker: &tokio::sync::RwLock<Option<Arc<worker::Worker>>>,
     catalog: &crate::catalog::Catalog,
+    pending: &crate::asking::Pending,
 ) -> Result<(), HostError> {
     let (read_half, write_half) = stream.into_split();
     let mut reader = FrameReader::new(read_half);
@@ -196,6 +224,11 @@ async fn connection(
                             let id = MessageId::new(format!("b{}", held.cursor().next().0));
                             held.commit(Entry::Branch { id, keeps })?;
                         }
+                    }
+                    // Handed straight to whoever is blocked on it. An id nobody is waiting on
+                    // is dropped inside `answer`: the turn it belonged to is over.
+                    Some(UiCommand::Permit { id, decision }) => {
+                        pending.answer(&id, decision);
                     }
                     Some(UiCommand::Interrupt) => {
                         // The status is set here as well as by the turn: a stop the user asked for
