@@ -333,7 +333,7 @@ make.recipe{
 
 make.recipe{
   name = "install",
-  desc = ("install the static binary to %s/bin"):format(PREFIX),
+  desc = ("install the static binary to %s/bin, and config/ where it reads it"):format(PREFIX),
   deps = { "build" },
   run = function()
     local bin = PREFIX .. "/bin"
@@ -341,6 +341,10 @@ make.recipe{
     assert(oslo.run{ "install", "-m", "755", binary_path(), bin .. "/" .. BIN }.ok,
            "could not install to " .. bin)
     print(("installed %s"):format(bin .. "/" .. BIN))
+    -- Last, and part of the install rather than a step to remember: a binary newer than
+    -- the config it reads is how a setting that shipped together with it silently does
+    -- nothing. Run alone, `configs` still installs only the config.
+    make.run("configs")
   end,
 }
 
