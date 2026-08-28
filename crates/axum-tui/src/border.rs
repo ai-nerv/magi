@@ -10,15 +10,16 @@
 //! cell near it is lit some fraction of the way between the border colour and the scan colour.
 //! Two heads on the same ring take the brighter of the two, so they cross without cancelling.
 //!
-//! **Two things move.** The heads travel, and the whole border *breathes* underneath them — a
-//! slow rise and fall of the base colour. The heads say where the light is; the breath says how
-//! hard the session is working, and it is what stops a box with nothing happening in it from
-//! looking switched off between passes of the scan.
+//! **Only the heads move.** The whole border used to breathe underneath them as well — a slow rise
+//! and fall of the base colour, a couple of steps up the ramp and back. In 24-bit colour that was
+//! a few values of grey. On a palette index it is not: a step along this ramp is a step towards
+//! the accent, so the breath recoloured the entire box on a cycle, and what it read as was a
+//! border that could not decide what colour it was. Anything the border says, it says with the
+//! heads.
 //!
 //! **What it says.** The mode is the state, not decoration: at rest two comets drift the ring
-//! opposite each other and the breath is slow and shallow; with something typed they leave the
-//! circuit and shuttle the long edges in step, which is the shape of a thing waiting to be sent;
-//! while a turn runs they race, and the breath goes with them.
+//! opposite each other; with something typed they leave the circuit and shuttle the long edges in
+//! step, which is the shape of a thing waiting to be sent; while a turn runs they race.
 
 use crate::colour;
 use ratatui::style::Style;
@@ -36,35 +37,6 @@ use ratatui::text::{Line, Span};
 const NOSE: [f32; 3] = [1.0, 0.5, 0.2];
 const TAIL: [f32; 10] = [1.0, 0.9, 0.78, 0.65, 0.52, 0.4, 0.29, 0.2, 0.12, 0.06];
 
-/// One cycle of the breath, as a fraction of the way to the scan colour.
-///
-/// Asymmetric on purpose: in over five steps, out over eleven. A symmetric pulse reads as a
-/// blink, and a border that blinks is a border demanding to be looked at.
-const BREATH: [f32; 16] = [
-    0.0, 0.05, 0.11, 0.16, 0.19, 0.20, 0.19, 0.17, 0.15, 0.12, 0.10, 0.07, 0.05, 0.03, 0.02, 0.01,
-];
-
-/// How many ticks one step of [`BREATH`] lasts, so the pulse rate is the state too.
-///
-/// Zero is no breath at all.
-const fn breath(scan: Scan) -> usize {
-    match scan {
-        Scan::Resting => 7,
-        Scan::Holding => 3,
-        Scan::Working => 1,
-        Scan::Off => 0,
-    }
-}
-
-/// Where the breath is in its cycle, as a fraction of the way to the scan colour.
-fn breathing(scan: Scan, tick: usize) -> f32 {
-    let each = breath(scan);
-    if each == 0 {
-        return 0.0;
-    }
-    BREATH[(tick / each) % BREATH.len()]
-}
-
 /// A scan head: where it is on the ring, and which way it is travelling.
 ///
 /// The direction is carried rather than derived because a comet has a front and a back, and the
@@ -79,11 +51,11 @@ struct Head {
 /// What the box is doing, which is what the session is doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scan {
-    /// Nothing typed, nothing running: two comets drifting the ring, breathing slowly.
+    /// Nothing typed, nothing running: two comets drifting the ring, slowly.
     Resting,
     /// Something is in the prompt: two comets shuttling the long edges in step.
     Holding,
-    /// A turn is running: the same circuit, at speed, and the breath keeping up.
+    /// A turn is running: the same circuit, at speed.
     Working,
     /// No animation at all.
     Off,
@@ -111,24 +83,23 @@ pub fn edges(width: u16, rows: usize, tick: usize, scan: Scan) -> (Line<'static>
     let inner = width - 2;
     let ring = ring_length(inner, rows);
     let heads = heads(scan, tick, inner, rows, ring);
-    let base = breathing(scan, tick);
 
     let mut top = Vec::with_capacity(width);
-    top.push(cell('╭', 0, &heads, ring, base));
+    top.push(cell('╭', 0, &heads, ring));
     for i in 0..inner {
-        top.push(cell('─', 1 + i, &heads, ring, base));
+        top.push(cell('─', 1 + i, &heads, ring));
     }
-    top.push(cell('╮', 1 + inner, &heads, ring, base));
+    top.push(cell('╮', 1 + inner, &heads, ring));
 
     // Anticlockwise along the bottom, because the ring runs clockwise: the bottom-right corner
     // comes before the bottom-left one when you are walking round.
     let bottom_right = 1 + inner + 1 + rows;
     let mut bottom = Vec::with_capacity(width);
-    bottom.push(cell('╰', bottom_right + inner + 1, &heads, ring, base));
+    bottom.push(cell('╰', bottom_right + inner + 1, &heads, ring));
     for i in 0..inner {
-        bottom.push(cell('─', bottom_right + inner - i, &heads, ring, base));
+        bottom.push(cell('─', bottom_right + inner - i, &heads, ring));
     }
-    bottom.push(cell('╯', bottom_right, &heads, ring, base));
+    bottom.push(cell('╯', bottom_right, &heads, ring));
 
     (Line::from(top), Line::from(bottom))
 }
@@ -145,13 +116,12 @@ pub fn side(
     let inner = usize::from(width).max(2) - 2;
     let ring = ring_length(inner, rows);
     let heads = heads(scan, tick, inner, rows, ring);
-    let base = breathing(scan, tick);
     // Right edge runs down after the top-right corner; left edge runs up before the top-left.
     let right = 1 + inner + 1 + row;
     let left = ring - 1 - row;
     (
-        cell('│', left, &heads, ring, base),
-        cell('│', right, &heads, ring, base),
+        cell('│', left, &heads, ring),
+        cell('│', right, &heads, ring),
     )
 }
 
@@ -250,9 +220,9 @@ fn lit(at: usize, head: Head, ring: usize) -> f32 {
     ahead.max(behind)
 }
 
-/// One border cell: the breath underneath, and whichever head lights it most.
-fn cell(glyph: char, at: usize, heads: &[Head], ring: usize, base: f32) -> Span<'static> {
-    let mut best = base;
+/// One border cell, lit by whichever head is nearest.
+fn cell(glyph: char, at: usize, heads: &[Head], ring: usize) -> Span<'static> {
+    let mut best = 0.0_f32;
     for &head in heads {
         best = best.max(lit(at, head, ring));
     }
@@ -368,22 +338,21 @@ mod tests {
     }
 
     #[test]
-    fn the_border_breathes_under_the_scan() {
-        // What stops a box with nothing happening in it looking switched off between passes.
-        let cycle: Vec<f32> = (0..BREATH.len() * breath(Scan::Working))
-            .map(|tick| breathing(Scan::Working, tick))
+    fn a_cell_no_head_is_near_is_the_resting_border() {
+        // The border does not move on its own. It used to breathe — the base colour rising and
+        // falling a couple of steps — which in 24-bit colour was a few values of grey and on a
+        // palette index is a walk towards the accent, so the box changed colour rather than
+        // brightness.
+        let quiet: Vec<_> = (0..40)
+            .map(|tick| {
+                let (top, _) = edges(60, 1, tick, Scan::Working);
+                top.spans[30].style.fg
+            })
             .collect();
-        let high = cycle.iter().copied().fold(0.0_f32, f32::max);
-        assert!(high > 0.1, "it rises: {high}");
-        assert!(cycle.contains(&0.0), "and falls back");
-        assert_eq!(breathing(Scan::Off, 7), 0.0, "off is off");
-    }
-
-    #[test]
-    fn a_working_box_breathes_faster_than_a_resting_one() {
-        // The rate is the state, the same way the pace is.
-        assert!(breath(Scan::Working) < breath(Scan::Holding));
-        assert!(breath(Scan::Holding) < breath(Scan::Resting));
+        assert!(
+            quiet.contains(&Some(colour::BORDER)),
+            "an unlit cell is the border colour, whatever the tick"
+        );
     }
 
     #[test]
