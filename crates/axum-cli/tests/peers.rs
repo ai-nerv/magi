@@ -41,6 +41,10 @@ fn session(name: &str, lua: &str) -> (Registry, axum_tools::ops::Real, PathBuf) 
             dir.join("peer.lua").display().to_string(),
         ],
     )));
+    // As a daemon does, before its first turn. Until a peer has been asked, `parameters()` is
+    // whatever the config claimed — and the registry now checks a call against the schema it
+    // would have shown the model, so a session that never probes checks against the wrong one.
+    registry.probe(&ops);
     (registry, ops, dir)
 }
 

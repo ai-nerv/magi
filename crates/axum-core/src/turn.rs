@@ -184,8 +184,12 @@ impl Turn {
                 id: call.id.clone(),
                 name: call.name.clone(),
                 // Arguments that did not finish arriving are kept as they are rather than
-                // dropped: the transcript should show what the model actually produced.
-                arguments: call.parsed().unwrap_or(serde_json::Value::Null),
+                // dropped: the transcript should show what the model actually produced. As the
+                // text, because `null` is a different call — it says the model asked for
+                // nothing, and what it did was ask for something and get cut off.
+                arguments: call
+                    .parsed()
+                    .unwrap_or_else(|_| serde_json::Value::String(call.arguments.clone())),
                 thought_signature: None,
             });
         }

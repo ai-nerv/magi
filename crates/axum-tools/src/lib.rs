@@ -18,6 +18,8 @@ pub mod ops;
 pub mod permit;
 pub mod process;
 pub mod registry;
+pub mod repair;
+pub mod schema;
 
 pub use cancel::{Cancel, Uncancelled};
 pub use ops::{Ops, Shell};

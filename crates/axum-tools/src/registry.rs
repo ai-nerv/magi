@@ -120,7 +120,19 @@ impl Registry {
     ) -> Output {
         match self.get(name) {
             Some(tool) => {
-                let output = tool.run(arguments, ops, cancel);
+                // Checked here rather than by each tool, because this is where the schema is:
+                // the tool published one and nothing ever read it back, so a call that did not
+                // fit reached the tool anyway and failed in words about the tool's own internals
+                // instead of about the call. The tool is not entered when it does not fit.
+                let arguments = match crate::schema::check(arguments, &tool.parameters()) {
+                    Ok(checked) => checked,
+                    Err(wrong) => {
+                        return Output::error(format!(
+                            "{name}: the arguments do not fit:\n{wrong}"
+                        ));
+                    }
+                };
+                let output = tool.run(&arguments, ops, cancel);
                 Output {
                     content: crate::bound::apply(name, output.content),
                     is_error: output.is_error,
@@ -133,6 +145,27 @@ impl Registry {
                     known.join(", ")
                 ))
             }
+        }
+    }
+
+    /// Answer a call whose arguments are still the text the model streamed.
+    ///
+    /// The entry point a turn uses, and the reason it exists: the raw text is the only place a
+    /// repair can happen, and it was being thrown away. `call.parsed().unwrap_or(Value::Null)`
+    /// handed the tool `null` **as if the model had asked for nothing** — no error, no retry, and
+    /// nothing anywhere saying the arguments had not parsed, so the model sent the same broken
+    /// call again. See [`crate::repair`] for what is mended and what is reported.
+    #[must_use]
+    pub fn answer(
+        &self,
+        name: &str,
+        arguments: &str,
+        ops: &dyn Ops,
+        cancel: &dyn Cancel,
+    ) -> Output {
+        match crate::repair::arguments(arguments) {
+            Ok(parsed) => self.call(name, &parsed, ops, cancel),
+            Err(why) => Output::error(format!("{name}: {why}")),
         }
     }
 }
@@ -247,7 +280,7 @@ mod bound_tests {
         let mut registry = Registry::new();
         registry.register(Box::new(Flood));
         let ops = crate::ops::Real::new(std::env::temp_dir());
-        let out = registry.call("flood", &serde_json::Value::Null, &ops, &Uncancelled);
+        let out = registry.call("flood", &serde_json::json!({}), &ops, &Uncancelled);
         assert!(out.content.len() < 200_000, "{} bytes", out.content.len());
         assert!(
             out.content.contains("cut from the middle"),
@@ -275,7 +308,7 @@ mod bound_tests {
         let mut registry = Registry::new();
         registry.register(Box::new(Quiet));
         let ops = crate::ops::Real::new(std::env::temp_dir());
-        let out = registry.call("quiet", &serde_json::Value::Null, &ops, &Uncancelled);
+        let out = registry.call("quiet", &serde_json::json!({}), &ops, &Uncancelled);
         assert_eq!(out.content, "ok");
     }
 
@@ -303,8 +336,118 @@ mod bound_tests {
         let mut registry = Registry::new();
         registry.register(Box::new(Loud));
         let ops = crate::ops::Real::new(std::env::temp_dir());
-        let out = registry.call("loud", &serde_json::Value::Null, &ops, &Uncancelled);
+        let out = registry.call("loud", &serde_json::json!({}), &ops, &Uncancelled);
         assert!(out.is_error, "a failure that is long is still a failure");
         assert!(out.content.len() < 200_000);
+    }
+}
+
+#[cfg(test)]
+mod checked_tests {
+    use super::*;
+    use crate::ops::Real;
+    use std::cell::Cell;
+
+    /// A tool that records whether it was entered.
+    struct Counted {
+        ran: std::rc::Rc<Cell<usize>>,
+    }
+
+    impl Tool for Counted {
+        fn name(&self) -> &str {
+            "read"
+        }
+        fn description(&self) -> &str {
+            "reads a file"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1 },
+                },
+                "required": ["path"],
+            })
+        }
+        fn run(&self, arguments: &serde_json::Value, _: &dyn Ops, _: &dyn Cancel) -> Output {
+            self.ran.set(self.ran.get() + 1);
+            Output::ok(arguments.to_string())
+        }
+    }
+
+    fn counted() -> (Registry, Real, std::rc::Rc<Cell<usize>>) {
+        let ran = std::rc::Rc::new(Cell::new(0));
+        let mut registry = Registry::new();
+        registry.register(Box::new(Counted {
+            ran: std::rc::Rc::clone(&ran),
+        }));
+        (registry, Real::new(std::env::temp_dir()), ran)
+    }
+
+    #[test]
+    fn a_call_that_does_not_fit_never_reaches_the_tool() {
+        // The whole point. It used to reach the tool, which failed for its own reasons in its
+        // own words, and nothing said the call had been wrong.
+        let (registry, ops, ran) = counted();
+        let out = registry.call("read", &serde_json::json!({}), &ops, &crate::Uncancelled);
+        assert!(out.is_error);
+        assert!(out.content.contains("path: required"), "{}", out.content);
+        assert_eq!(ran.get(), 0, "the tool was not entered");
+    }
+
+    #[test]
+    fn malformed_json_comes_back_naming_the_problem_rather_than_as_null() {
+        // The defect this milestone is about: `parsed().unwrap_or(Null)` handed the tool
+        // `null`, which reads as "the model asked for nothing", and it failed for a reason
+        // that had nothing to do with the mistake.
+        let (registry, ops, ran) = counted();
+        let out = registry.answer("read", r#"{"path": "a.rs"#, &ops, &crate::Uncancelled);
+        assert!(out.is_error);
+        assert!(out.content.contains("not valid JSON"), "{}", out.content);
+        assert_eq!(ran.get(), 0, "the tool was not entered");
+    }
+
+    #[test]
+    fn a_raw_newline_is_repaired_and_the_call_goes_through() {
+        // Between the two: not valid JSON, and not the model's meaning being unclear either.
+        let (registry, ops, ran) = counted();
+        let out = registry.answer("read", "{\"path\":\"a\nb.rs\"}", &ops, &crate::Uncancelled);
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(ran.get(), 1, "the tool ran");
+        assert!(out.content.contains("a\\nb.rs"), "{}", out.content);
+    }
+
+    #[test]
+    fn the_tool_receives_the_coerced_arguments_rather_than_what_arrived() {
+        // A provider stringified the number; the tool should never have to know that happened.
+        let (registry, ops, ran) = counted();
+        let out = registry.answer(
+            "read",
+            r#"{"path":"a.rs","limit":"5"}"#,
+            &ops,
+            &crate::Uncancelled,
+        );
+        assert!(!out.is_error, "{}", out.content);
+        assert_eq!(ran.get(), 1);
+        assert!(out.content.contains("\"limit\":5"), "{}", out.content);
+    }
+
+    #[test]
+    fn a_call_with_no_arguments_at_all_is_an_empty_object() {
+        // Providers differ on whether they send `{}` or nothing for a no-argument call.
+        let (registry, ops, _) = counted();
+        let out = registry.answer("read", "", &ops, &crate::Uncancelled);
+        assert!(out.is_error, "the schema still requires a path");
+        assert!(out.content.contains("path: required"), "{}", out.content);
+    }
+
+    #[test]
+    fn an_unknown_tool_is_still_answered_before_anything_is_checked() {
+        // There is no schema to check against, and the model needs the list either way.
+        let (registry, ops, _) = counted();
+        let out = registry.answer("nope", "{}", &ops, &crate::Uncancelled);
+        assert!(out.is_error);
+        assert!(out.content.contains("no tool called"), "{}", out.content);
     }
 }
