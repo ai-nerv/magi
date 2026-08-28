@@ -42,6 +42,12 @@ pub enum Action {
     ToggleDetail,
     /// A row was taken from an open selection list.
     Chose(String),
+    /// A selection list was left without taking a row.
+    ///
+    /// Distinct from [`Action::Accepted`] because something may be waiting on the answer: a
+    /// permission question closed with no reply leaves the turn that asked it blocked until it
+    /// gives up on its own, which reads as a hang.
+    Dismissed,
     /// Send this prompt.
     Submit(String),
     /// Run this slash command.
@@ -82,7 +88,7 @@ pub fn handle(
                 // One escape closes the whole list, not one character of the query. Backspace
                 // is how you widen it; escape is how you leave.
                 *picker = None;
-                return Action::Accepted;
+                return Action::Dismissed;
             }
             // Typing narrows the list rather than reaching the prompt. Fifty-three rows is
             // more than anyone should arrow through, and the prompt is holding whatever it was
@@ -586,6 +592,31 @@ mod tests {
         );
         assert_eq!(action, Action::Redraw);
         assert!(popup.is_none());
+    }
+
+    #[test]
+    fn escape_out_of_a_list_says_so_rather_than_going_quiet() {
+        // Something may be waiting on the answer, and a list closed with `Accepted` told
+        // nobody: the turn that asked stayed blocked until its own patience ran out.
+        let mut editor = Editor::new();
+        let mut picker = Some(axum_tui::picker::Picker::new(
+            "read wants to read /etc/hosts",
+            vec![axum_tui::picker::Choice {
+                value: "just this once".to_owned(),
+                detail: String::new(),
+                ready: true,
+            }],
+            None,
+        ));
+        let action = handle(
+            press(KeyCode::Esc, KeyModifiers::NONE),
+            &mut editor,
+            &mut None,
+            &mut picker,
+            true,
+        );
+        assert_eq!(action, Action::Dismissed);
+        assert!(picker.is_none());
     }
 
     #[test]

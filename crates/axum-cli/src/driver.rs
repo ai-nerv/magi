@@ -128,7 +128,8 @@ pub async fn run(
                             );
                         // Noted before the match consumes it: a taken completion must not be
                         // recomputed, and the arms move the action's payload out.
-                        let accepted = action == Action::Accepted;
+                        let accepted =
+                            action == Action::Accepted || action == Action::Dismissed;
                         match action {
                             Action::Quit => break,
                             Action::Submit(text) => {
@@ -182,6 +183,23 @@ pub async fn run(
                                     None => continue,
                                 };
                                 let _ = command_tx.send(command).await;
+                                dirty = true;
+                            }
+                            // Leaving a question is an answer to it. A permission prompt is the
+                            // only list something is waiting on, and the wait is a turn that
+                            // has stopped: closing it without a word left the daemon blocked
+                            // until its own patience ran out, which on screen is a hang.
+                            Action::Dismissed => {
+                                if let Some(crate::app::Picking::Permission { id, .. }) =
+                                    app.picking.take()
+                                {
+                                    let _ = command_tx
+                                        .send(UiCommand::Permit {
+                                            id,
+                                            decision: axum_proto::permit::Decision::Deny,
+                                        })
+                                        .await;
+                                }
                                 dirty = true;
                             }
                             Action::ToggleDetail => {
