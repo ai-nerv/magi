@@ -374,7 +374,6 @@ impl Client {
 
 #[cfg(test)]
 mod value_tests {
-    use super::*;
 
     #[test]
     fn a_tool_call_answer_is_preferred_over_text() {
