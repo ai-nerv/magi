@@ -117,6 +117,10 @@ fn ring_length(inner: usize, rows: usize) -> usize {
 }
 
 /// Where the light is, in ring coordinates.
+///
+/// **Always two.** One head reads as a stray highlight; two read as a mechanism. What differs
+/// between the modes is what the pair is doing — chasing each other round the ring, or shuttling
+/// the long edges in step — and how fast.
 fn heads(scan: Scan, tick: usize, inner: usize, rows: usize, ring: usize) -> Vec<usize> {
     if ring == 0 {
         return Vec::new();
@@ -125,7 +129,10 @@ fn heads(scan: Scan, tick: usize, inner: usize, rows: usize, ring: usize) -> Vec
     let step = tick * num / den;
     match scan {
         Scan::Off => Vec::new(),
-        Scan::Resting => vec![step % ring],
+        // Opposite points of the ring, so the box always has light on two sides of it. Resting
+        // and working are the same figure at different speeds, which is the honest relationship
+        // between them: nothing is happening, or something is, and it is the same box either way.
+        Scan::Resting | Scan::Working => vec![step % ring, (step + ring / 2) % ring],
         // The two long edges, swept in step and reversing at the ends: a shuttle rather than a
         // circuit, because something is waiting to be sent rather than travelling.
         //
@@ -139,8 +146,6 @@ fn heads(scan: Scan, tick: usize, inner: usize, rows: usize, ring: usize) -> Vec
             let bottom_right = 1 + inner + 1 + rows;
             vec![1 + at, bottom_right + inner - at]
         }
-        // Opposite points of the ring, so the box always has light on two sides of it.
-        Scan::Working => vec![step % ring, (step + ring / 2) % ring],
     }
 }
 
@@ -229,16 +234,29 @@ mod tests {
     }
 
     #[test]
-    fn resting_lights_exactly_one_brightest_cell() {
+    fn every_running_mode_has_two_heads() {
+        // One reads as a stray highlight; two read as a mechanism.
         let theme = crate::theme::DARK;
-        let (top, bottom) = edges(30, 1, 0, Scan::Resting, &theme);
-        let brightest = top
-            .spans
-            .iter()
-            .chain(bottom.spans.iter())
-            .filter(|s| s.style.fg == Some(theme.border_scan))
-            .count();
-        assert_eq!(brightest, 1, "one head, one peak");
+        for scan in [Scan::Resting, Scan::Holding, Scan::Working] {
+            let (top, bottom) = edges(40, 1, 0, scan, &theme);
+            let peaks = top
+                .spans
+                .iter()
+                .chain(bottom.spans.iter())
+                .filter(|s| s.style.fg == Some(theme.border_scan))
+                .count();
+            assert_eq!(peaks, 2, "{scan:?} on a one-row box puts both on the edges");
+        }
+    }
+
+    #[test]
+    fn resting_and_working_are_the_same_figure_at_different_speeds() {
+        // Nothing is happening, or something is, and it is the same box either way.
+        assert_eq!(
+            heads(Scan::Resting, 30, 20, 1, 44),
+            heads(Scan::Working, 10, 20, 1, 44),
+            "resting at 2/3 and working at 2/1 land together when the ticks line up"
+        );
     }
 
     #[test]
