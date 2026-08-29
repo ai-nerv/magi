@@ -440,7 +440,7 @@ impl Engine {
 }
 
 impl Engine {
-    /// Hand the VM the family's client clients, as source.
+    /// Hand the VM the family's client libraries, as source.
     ///
     /// Read by Rust and passed in rather than opened by the config, because `io` is not
     /// reachable from a config and should not be: a tool needing one file is not a reason to

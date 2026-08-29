@@ -247,3 +247,19 @@ fn a_call_made_under_an_interrupt_does_not_run_forever() {
     assert!(output.is_error, "{}", output.content);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn every_command_sees_the_axum_profile() {
+    // The chain is peer -> shell -> command, and each link inherits from the one before, so
+    // setting this where the peer is started is what reaches the command a tool actually runs.
+    let (registry, ops, dir) = session("profile");
+    let output = registry.call(
+        "shell",
+        &serde_json::json!({ "command": "printf %s \"$OSLO_PROFILE\"" }),
+        &ops,
+        &axum_tools::Uncancelled,
+    );
+    assert!(!output.is_error, "{}", output.content);
+    assert_eq!(output.content.trim(), "axum");
+    let _ = std::fs::remove_dir_all(&dir);
+}

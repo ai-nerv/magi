@@ -252,6 +252,7 @@ async fn start_with_backend(name: &str, base_url: String) -> (PathBuf, PathBuf) 
         system: Some("You are axum.".to_owned()),
         confine: false,
         grants: Vec::new(),
+        environ: std::collections::BTreeMap::new(),
     };
     let listener = axum_ipc::bind(&socket).await.expect("bind");
     tokio::spawn(async move { serve(listener, session, Some(backend)).await });
@@ -523,6 +524,7 @@ fn two_models() -> axum_host::catalog::Catalog {
         system: None,
         confine: false,
         grants: Vec::new(),
+        environ: std::collections::BTreeMap::new(),
         chosen: None,
     }
 }

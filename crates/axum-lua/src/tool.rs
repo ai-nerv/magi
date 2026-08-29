@@ -46,6 +46,9 @@ pub enum Transport {
         /// Its arguments.
         #[serde(default, deserialize_with = "lua_list")]
         args: Vec<String>,
+        /// Environment for this peer, beside what every process axum starts already gets.
+        #[serde(default)]
+        env: std::collections::BTreeMap<String, String>,
     },
 }
 
@@ -129,7 +132,11 @@ impl Tool for LuaTool {
 /// Both transports land here and the registry cannot tell them apart — which is the whole
 /// design. A declaration that will not parse is skipped with a reason on stderr rather than
 /// failing the daemon: one broken tool should cost you that tool, not the session.
-pub fn install(engine: Rc<RefCell<Engine>>, registry: &mut axum_tools::Registry) {
+pub fn install(
+    engine: Rc<RefCell<Engine>>,
+    registry: &mut axum_tools::Registry,
+    environ: &std::collections::BTreeMap<String, String>,
+) {
     let declared = engine.borrow_mut().tools();
     for (name, spec) in declared {
         let declaration: Declaration = match serde_json::from_value(spec) {
@@ -147,14 +154,23 @@ pub fn install(engine: Rc<RefCell<Engine>>, registry: &mut axum_tools::Registry)
                     &declaration,
                 )));
             }
-            Transport::Process { command, args } => {
-                registry.register(Box::new(axum_tools::process::ProcessTool::new(
-                    &name,
-                    &declaration.description,
-                    declaration.parameters.clone(),
-                    command,
-                    args.clone(),
-                )));
+            Transport::Process { command, args, env } => {
+                registry.register(Box::new(
+                    axum_tools::process::ProcessTool::new(
+                        &name,
+                        &declaration.description,
+                        declaration.parameters.clone(),
+                        command,
+                        args.clone(),
+                    )
+                    .with_env(
+                        environ
+                            .iter()
+                            .chain(env)
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect(),
+                    ),
+                ));
             }
         }
     }
@@ -198,7 +214,7 @@ mod tests {
         let engine = Rc::new(RefCell::new(engine));
         let mut registry = Registry::new();
         axum_tools::builtin::install(&mut registry);
-        install(Rc::clone(&engine), &mut registry);
+        install(Rc::clone(&engine), &mut registry, &Default::default());
         (registry, engine)
     }
 

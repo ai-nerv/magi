@@ -11,7 +11,7 @@ use serde_json::{Map, Number};
 /// A Lua value as JSON.
 ///
 /// Lua does not distinguish a list from a map, so a table whose keys are exactly `1..n` becomes
-/// an array and anything else an object. That is the same rule the family's client client uses,
+/// an array and anything else an object. That is the same rule the family's client library uses,
 /// and disagreeing with it would make a config and a socket describe one table two ways.
 #[must_use]
 pub fn json_from_lua<'gc>(

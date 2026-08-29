@@ -236,3 +236,62 @@ mod ui_tests {
         }
     }
 }
+
+/// Environment every process axum starts is given, beside the mandatory pairs.
+///
+/// ```lua
+/// axum.env = { RUST_LOG = "warn", PAGER = "cat" }
+/// ```
+///
+/// A flat table of strings. Anything that is not one is skipped rather than stringified: an
+/// environment variable holding `table: 0x...` is a typo that would otherwise reach a shell.
+#[must_use]
+pub fn environ(loaded: &Loaded) -> std::collections::BTreeMap<String, String> {
+    let Some(table) = loaded.config.get("env").and_then(|v| v.as_object()) else {
+        return std::collections::BTreeMap::new();
+    };
+    table
+        .iter()
+        .filter_map(|(name, value)| Some((name.clone(), value.as_str()?.to_owned())))
+        .collect()
+}
+
+#[cfg(test)]
+mod environ_tests {
+    use super::*;
+    use axum_lua::Engine;
+
+    fn from(source: &str) -> std::collections::BTreeMap<String, String> {
+        let mut engine = Engine::new();
+        engine.run(source, "test").expect("config");
+        engine.harvest();
+        environ(&Loaded {
+            config: engine.config(),
+            tools: Vec::new(),
+            clients: Vec::new(),
+            apis: Vec::new(),
+            providers: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn a_config_that_says_nothing_adds_nothing() {
+        assert!(from("").is_empty());
+    }
+
+    #[test]
+    fn a_table_of_strings_comes_through() {
+        let seen = from(r#"axum.env = { PAGER = "cat", RUST_LOG = "warn" }"#);
+        assert_eq!(seen.get("PAGER").map(String::as_str), Some("cat"));
+        assert_eq!(seen.get("RUST_LOG").map(String::as_str), Some("warn"));
+    }
+
+    #[test]
+    fn a_value_that_is_not_a_string_is_left_out() {
+        // Otherwise a nested table reaches a shell as `table: 0x55f...`, which is a typo that
+        // presents as a mysterious environment rather than as a mistake in the config.
+        let seen = from(r#"axum.env = { GOOD = "yes", BAD = { 1, 2 } }"#);
+        assert_eq!(seen.get("GOOD").map(String::as_str), Some("yes"));
+        assert!(!seen.contains_key("BAD"));
+    }
+}

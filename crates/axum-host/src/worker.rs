@@ -91,7 +91,7 @@ impl Worker {
             let engine = std::rc::Rc::new(std::cell::RefCell::new(engine));
             let mut registry = axum_tools::Registry::new();
             axum_tools::builtin::install(&mut registry);
-            axum_lua::tool::install(std::rc::Rc::clone(&engine), &mut registry);
+            axum_lua::tool::install(std::rc::Rc::clone(&engine), &mut registry, &backend.environ);
             // Gated when there is somebody to ask. The ledger starts with whatever the
             // configuration already granted, so a rule written down is not a question asked.
             let ops = match (&approver, backend.confine) {

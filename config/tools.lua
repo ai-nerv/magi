@@ -39,7 +39,7 @@ do -- hexe
   -- The client arrives as source in `axum.clients`: a config cannot open files.
   local function client()
     local source = axum.clients and axum.clients.hexe
-    if not source then return nil, "hexe's client client is not installed; run `make configs`" end
+    if not source then return nil, "hexe's client library is not installed; run `make configs`" end
     local chunk, why = load(source, "hexe.lua")
     if not chunk then return nil, why end
     return chunk(axum.stream)
@@ -96,7 +96,7 @@ do -- oslo
   -- The client arrives as source in `axum.clients`: a config cannot open files.
   local function client()
     local source = axum.clients and axum.clients.oslo
-    if not source then return nil, "oslo's client client is not installed; run `make configs`" end
+    if not source then return nil, "oslo's client library is not installed; run `make configs`" end
     local chunk, why = load(source, "oslo.lua")
     if not chunk then return nil, why end
     return chunk(axum.stream)

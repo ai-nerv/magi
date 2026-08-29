@@ -106,6 +106,7 @@ fn backend(base_url: String) -> Backend {
         system: None,
         confine: false,
         grants: Vec::new(),
+        environ: std::collections::BTreeMap::new(),
     }
 }
 

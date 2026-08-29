@@ -38,7 +38,7 @@ fn the_hexe_tool_answers_when_a_mux_is_running() {
 
     let engine = Rc::new(RefCell::new(engine));
     let mut registry = Registry::new();
-    axum_lua::tool::install(Rc::clone(&engine), &mut registry);
+    axum_lua::tool::install(Rc::clone(&engine), &mut registry, &Default::default());
 
     assert!(registry.get("hexe").is_some(), "the tool registered");
 
@@ -85,7 +85,7 @@ fn a_lua_tool_reports_an_absent_sibling_as_information_not_a_failure() {
     engine.run(&config("tools.lua"), "tools.lua").expect("run");
     let engine = Rc::new(RefCell::new(engine));
     let mut registry = Registry::new();
-    axum_lua::tool::install(Rc::clone(&engine), &mut registry);
+    axum_lua::tool::install(Rc::clone(&engine), &mut registry, &Default::default());
 
     let ops = axum_tools::ops::Real::new(std::env::temp_dir());
     let output = registry.call(

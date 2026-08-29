@@ -45,6 +45,11 @@ axum.model = "anthropic/claude-sonnet-4-5"
 --   { verb = "run",   program = "git" },
 -- }
 
+-- Environment every process axum starts is given, on top of what it inherits. `OSLO_PROFILE`
+-- is set to "axum" whether or not this says so, and naming it here overrides that.
+--
+-- axum.env = { PAGER = "cat", RUST_LOG = "warn" }
+
 -- Directories whose `.axum.lua` is as trusted as this file. A project file may otherwise set
 -- settings but not declare a provider, a tool or a peer.
 --

@@ -21,7 +21,7 @@ use axum_tools::{Ops, Registry};
 pub struct Backend {
     /// Tool descriptions to run in the VM, as `(name, source)`.
     pub tools: Vec<(String, String)>,
-    /// The family's client clients, so a Lua tool can talk to a sibling.
+    /// The family's client libraries, so a Lua tool can talk to a sibling.
     pub clients: Vec<(String, String)>,
     /// Where the session is rooted, which is what tools resolve paths against.
     pub cwd: std::path::PathBuf,
@@ -30,6 +30,8 @@ pub struct Backend {
     /// A rule written down is a question already answered, so these go into the ledger at
     /// startup rather than being prompted for.
     pub grants: Vec<axum_proto::permit::Grant>,
+    /// Environment every process this session starts is given, beside the mandatory pairs.
+    pub environ: std::collections::BTreeMap<String, String>,
     /// Whether the file tools refuse paths outside `cwd`.
     ///
     /// Off unless a config asks. See [`axum_tools::ops::Real`] for why a wall only the careful

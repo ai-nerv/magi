@@ -20,7 +20,7 @@ pub struct Catalog {
     pub apis: Vec<(String, String)>,
     /// Tool descriptions, as `(name, source)`.
     pub tools: Vec<(String, String)>,
-    /// The family's client clients, as `(name, source)`.
+    /// The family's client libraries, as `(name, source)`.
     pub clients: Vec<(String, String)>,
     /// Where the session is rooted.
     pub cwd: std::path::PathBuf,
@@ -34,6 +34,8 @@ pub struct Catalog {
     pub confine: bool,
     /// Permissions a configuration granted before anybody was asked anything.
     pub grants: Vec<axum_proto::permit::Grant>,
+    /// Environment every process this session starts is given, beside the mandatory pairs.
+    pub environ: std::collections::BTreeMap<String, String>,
     /// The model the configuration asked for, whether or not it can be reached.
     ///
     /// Kept so a refusal can name it. Without this the daemon could only say "no model
@@ -52,6 +54,7 @@ impl Catalog {
             apis: Vec::new(),
             tools: Vec::new(),
             clients: Vec::new(),
+            environ: std::collections::BTreeMap::new(),
             cwd: std::path::PathBuf::new(),
             providers: Vec::new(),
             options: axum_provider::api::Options::default(),
@@ -74,6 +77,7 @@ impl Catalog {
             apis: self.apis.clone(),
             tools: self.tools.clone(),
             clients: self.clients.clone(),
+            environ: self.environ.clone(),
             cwd: self.cwd.clone(),
             provider: provider.clone(),
             model: model.clone(),
@@ -207,6 +211,7 @@ mod tests {
             apis: Vec::new(),
             tools: Vec::new(),
             clients: Vec::new(),
+            environ: std::collections::BTreeMap::new(),
             cwd: std::env::temp_dir(),
             providers,
             options: axum_provider::api::Options::default(),

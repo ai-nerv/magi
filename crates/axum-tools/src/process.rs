@@ -86,6 +86,8 @@ pub struct ProcessTool {
     confirmed: std::cell::OnceCell<Declared>,
     command: String,
     args: Vec<String>,
+    /// Environment the peer is started with, beside what it inherits.
+    env: std::collections::BTreeMap<String, String>,
     /// The running peer, started on first use.
     peer: RefCell<Option<Peer>>,
     /// Calls answered so far, so an id is never reused.
@@ -144,10 +146,21 @@ impl ProcessTool {
             confirmed: std::cell::OnceCell::new(),
             command: command.to_owned(),
             args,
+            env: std::collections::BTreeMap::new(),
             peer: RefCell::new(None),
             next: std::cell::Cell::new(1),
             flight: RefCell::new(None),
         }
+    }
+
+    /// Start the peer with these extra environment pairs.
+    ///
+    /// Builder rather than a sixth argument: it is the one thing about a peer that is usually
+    /// nothing, and nine call sites passing an empty map say nothing at any of them.
+    #[must_use]
+    pub fn with_env(mut self, env: std::collections::BTreeMap<String, String>) -> Self {
+        self.env = env;
+        self
     }
 
     /// Start the peer if it is not running.
@@ -155,7 +168,9 @@ impl ProcessTool {
         if self.peer.borrow().is_some() {
             return Ok(());
         }
-        let mut child = Command::new(&self.command)
+        let mut command = Command::new(&self.command);
+        crate::environ::apply(&mut command, &self.env);
+        let mut child = command
             .args(&self.args)
             // Rooted where the session is, so a peer that resolves relative paths agrees with
             // the tools that do not go through it.

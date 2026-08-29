@@ -18,7 +18,7 @@ pub struct Loaded {
     pub config: Config,
     /// Every tool description that was run, as `(name, source)`.
     pub tools: Vec<(String, String)>,
-    /// The family's client clients, as `(name, source)`.
+    /// The family's client libraries, as `(name, source)`.
     pub clients: Vec<(String, String)>,
     /// Every protocol description that was run, in order, as `(name, source)`.
     ///
@@ -251,6 +251,7 @@ pub fn catalog(loaded: &Loaded) -> axum_host::catalog::Catalog {
         options: options(loaded),
         system: system(loaded),
         grants: grants(loaded),
+        environ: environ(loaded),
         chosen: asked(loaded),
         confine: loaded.config.boolean("confine").unwrap_or(false),
     }
@@ -260,7 +261,7 @@ mod chosen;
 use chosen::{asked, chosen};
 mod settings;
 
-use settings::{grants, options, system};
+use settings::{environ, grants, options, system};
 
 pub use settings::adopt_ui;
 
@@ -290,6 +291,7 @@ pub fn backend(loaded: &Loaded) -> Option<axum_host::turn::Backend> {
         options: options(loaded),
         system: system(loaded),
         grants: grants(loaded),
+        environ: environ(loaded),
         confine: loaded.config.boolean("confine").unwrap_or(false),
     })
 }

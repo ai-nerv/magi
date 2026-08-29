@@ -1,4 +1,4 @@
-//! The socket primitive the client clients need.
+//! The socket primitive the client libraries need.
 //!
 //! Layer one of three: the client carries framing and encoding in plain Lua, but it cannot open a
 //! socket, so the host lends it one. A host native like any other — deliberately *not* a VM
