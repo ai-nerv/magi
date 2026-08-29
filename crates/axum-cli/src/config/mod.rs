@@ -258,16 +258,14 @@ pub fn catalog(loaded: &Loaded) -> axum_host::catalog::Catalog {
         options: options(loaded),
         system: system(loaded),
         grants: grants(loaded),
-        // What was chosen here last, over what the configuration says. A `/model` switch is a
-        // decision somebody made in front of the thing; forgetting it on restart meant the only
-        // way to keep a choice was to stop making it in the UI and edit a file instead.
-        chosen: remembered()
-            .model
-            .or_else(|| loaded.config.string("model").map(ToOwned::to_owned)),
+        // The one the daemon will actually run, so the picker and the worker cannot disagree.
+        chosen: chosen(loaded).map(|(_, model)| model.qualified()),
         confine: loaded.config.boolean("confine").unwrap_or(false),
     }
 }
 
+mod chosen;
+use chosen::chosen;
 mod settings;
 
 use settings::{grants, options, system};
@@ -289,17 +287,7 @@ pub fn remembered() -> axum_host::remember::Chosen {
 /// start because a key was missing is a worse answer than a session that says so.
 #[must_use]
 pub fn backend(loaded: &Loaded) -> Option<axum_host::turn::Backend> {
-    // The same order the catalog uses: what was chosen here last, over what the configuration
-    // says. Two entry points read the model and fixing only one of them left the daemon
-    // reporting the remembered model in its picker and answering with the configured one.
-    let chosen = remembered().model;
-    let name = chosen
-        .as_deref()
-        .or_else(|| loaded.config.string("model"))?;
-    let (provider, model) = resolve(&loaded.providers, name)?;
-    if !provider.is_configured() {
-        return None;
-    }
+    let (provider, model) = chosen(loaded)?;
     Some(axum_host::turn::Backend {
         apis: loaded.apis.clone(),
         tools: loaded.tools.clone(),
