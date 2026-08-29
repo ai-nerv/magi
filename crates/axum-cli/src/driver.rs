@@ -4,18 +4,16 @@
 //! lives in [`App`], drawing lives in [`ui`], and this file owns only the wiring — which is
 //! what keeps the loop small enough to read.
 
-use crate::app::{App, Flush};
+use crate::app::App;
 use crate::keys;
 use crate::keys::{Action, Scroll};
-use crate::terminal::{Mode, Session};
+use crate::terminal::Session;
 use crate::ui;
 use anyhow::Result;
 use axum_ipc::{FrameReader, FrameWriter};
 use axum_proto::{Cursor, HarnessEvent, UiCommand};
 use axum_tui::footer::FooterData;
-use axum_tui::transcript;
 use crossterm::event::{Event, EventStream};
-use ratatui::text::Line;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,7 +31,6 @@ const RECONNECT_DELAY: Duration = Duration::from_millis(500);
 /// user has to retype into.
 pub async fn run(
     socket: &Path,
-    mode: Mode,
     prompt: Option<String>,
     sessions: Option<std::path::PathBuf>,
 ) -> Result<()> {
@@ -69,9 +66,9 @@ pub async fn run(
             names.join(", ")
         ));
     }
-    let base_footer = local_footer(mode);
+    let base_footer = local_footer();
 
-    let mut session = Session::open(mode, ui::initial_height(terminal_size().1))?;
+    let mut session = Session::open()?;
     let mut terminal_events = EventStream::new();
     let mut ticker = tokio::time::interval(Duration::from_millis(axum_tui::metric::frame_ms()));
 
@@ -113,13 +110,11 @@ pub async fn run(
         }
 
         if dirty {
-            flush_settled(&mut session, &mut app)?;
             let _ = session.terminal.autoresize();
-            let mode = session.mode;
             session.terminal.draw(|frame| {
                 let footer = footer_data(&base_footer, &app);
                 app.queued = command_tx.max_capacity() - command_tx.capacity();
-                ui::draw(frame, &mut app, &footer, mode);
+                ui::draw(frame, &mut app, &footer);
             })?;
             dirty = false;
         }
@@ -254,22 +249,17 @@ pub async fn run(
                                 dirty = true;
                             }
                             Action::Scroll(motion) => {
-                                // Inline mode has no owned buffer: the terminal's own
-                                // scrollback already answers these keys, so the UI stays out
-                                // of the way rather than fighting it.
-                                if session.mode == Mode::Alt {
-                                    let rows = terminal_size().1;
-                                    let view = rows.saturating_sub(ui::chrome_rows());
-                                    match motion {
-                                        Scroll::PageUp => app.scrollback.page_up(view),
-                                        Scroll::PageDown => app.scrollback.page_down(view),
-                                        Scroll::Top => app.scrollback.to_top(),
-                                        Scroll::Bottom => app.scrollback.to_bottom(),
-                                        Scroll::LineUp => app.scrollback.scroll_up(3),
-                                        Scroll::LineDown => app.scrollback.scroll_down(3, view),
-                                    }
-                                    dirty = true;
+                                let rows = terminal_size().1;
+                                let view = rows.saturating_sub(ui::chrome_rows());
+                                match motion {
+                                    Scroll::PageUp => app.scrollback.page_up(view),
+                                    Scroll::PageDown => app.scrollback.page_down(view),
+                                    Scroll::Top => app.scrollback.to_top(),
+                                    Scroll::Bottom => app.scrollback.to_bottom(),
+                                    Scroll::LineUp => app.scrollback.scroll_up(3),
+                                    Scroll::LineDown => app.scrollback.scroll_down(3, view),
                                 }
+                                dirty = true;
                             }
                             Action::Redraw | Action::Accepted | Action::Recalled => dirty = true,
                             Action::Ignore => {}
@@ -344,43 +334,6 @@ pub async fn run(
     // are not worth guessing at before somebody wants the other behaviour.
     crate::stop::stop_one(&crate::daemon::pid_path(socket));
 
-    Ok(())
-}
-
-/// Write settled transcript blocks into native scrollback.
-///
-/// `insert_before` scrolls the viewport down and emits the lines above it, so they become part
-/// of the terminal's own history — searchable and copyable with the tools the user already has.
-fn flush_settled(session: &mut Session, app: &mut App) -> Result<()> {
-    // Whatever was in force when the block settled. Scrollback cannot be taken back, so a
-    // later toggle changes what is drawn from here on and not what the terminal already holds.
-    let detail = app.detail;
-    // Alt mode owns the whole screen and the whole transcript; there is no terminal history to
-    // hand anything to, and `insert_before` on a fullscreen viewport has nowhere to put it.
-    if session.mode == Mode::Alt {
-        return Ok(());
-    }
-    let Flush::Upto(n) = app.settled() else {
-        return Ok(());
-    };
-    let width = terminal_width();
-    let pending: Vec<Line<'static>> = app.entries()[..n]
-        .iter()
-        .skip(app.entries().len() - app.live().len())
-        .flat_map(|entry| transcript::entry_lines(entry, width, detail))
-        .collect();
-
-    if !pending.is_empty() {
-        let height = pending.len() as u16;
-        session.terminal.insert_before(height, |buf| {
-            ratatui::widgets::Widget::render(
-                ratatui::widgets::Paragraph::new(pending.clone()),
-                buf.area,
-                buf,
-            );
-        })?;
-    }
-    app.mark_flushed(n);
     Ok(())
 }
 
@@ -481,10 +434,6 @@ async fn connection_loop(
     }
 }
 
-fn terminal_width() -> u16 {
-    terminal_size().0
-}
-
 fn terminal_size() -> (u16, u16) {
     crossterm::terminal::size().unwrap_or((80, 24))
 }
@@ -494,7 +443,7 @@ fn terminal_size() -> (u16, u16) {
 /// The working directory and the branch are facts about this process. Everything else — which
 /// model, how many tokens, how full the window is — belongs to the daemon, and is filled in by
 /// [`footer_data`] once it has told us.
-fn local_footer(mode: Mode) -> FooterData {
+fn local_footer() -> FooterData {
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
         .unwrap_or_default();
@@ -503,14 +452,6 @@ fn local_footer(mode: Mode) -> FooterData {
         cwd: axum_tui::footer::format_cwd(&cwd, home.as_deref()),
         branch: git_branch(),
         model: axum_tui::glyph::no_model().into(),
-        // Named only for the backend that is not the default. `alt` is what you get unless you
-        // asked otherwise, so saying so on every line is a word that is never news; `inline`
-        // is a choice you made and worth confirming.
-        mode: if matches!(mode, Mode::Inline) {
-            mode.label()
-        } else {
-            ""
-        },
         ..FooterData::default()
     }
 }
@@ -525,7 +466,6 @@ fn footer_data(base: &FooterData, app: &App) -> FooterData {
     FooterData {
         cwd: base.cwd.clone(),
         branch: base.branch.clone(),
-        mode: base.mode,
         mouse_held: app.mouse,
         model: app.model.as_ref().map_or_else(
             || axum_tui::glyph::no_model().to_owned(),
@@ -647,21 +587,19 @@ fn run_command(input: &str, app: &mut App) -> Control {
 /// The raw-mode session is dropped first and rebuilt after: a full-screen editor and a TUI
 /// cannot share a tty, and leaving raw mode on would hand the editor unreadable input.
 fn external_edit(session: &mut Session, app: &mut App) -> Result<()> {
-    let mode = session.mode;
     let before = app.editor.text();
     let Some(editor) = crate::external_editor::editor_command() else {
         app.show_notice("no $EDITOR or $VISUAL is set".into());
         return Ok(());
     };
 
-    let height = ui::initial_height(terminal_size().1);
-    let placeholder = Session::open(mode, height)?;
+    let placeholder = Session::open()?;
     let previous = std::mem::replace(session, placeholder);
     drop(previous);
 
     let edited = crate::external_editor::edit_with(&editor, &before);
 
-    *session = Session::open(mode, height)?;
+    *session = Session::open()?;
     session.terminal.clear()?;
 
     match edited {

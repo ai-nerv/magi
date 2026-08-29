@@ -7,15 +7,6 @@ use axum_proto::{AgentStatus, Cursor, Entry, HarnessEvent, MessageId, ToolCallId
 use axum_tui::Editor;
 use axum_tui::scrollback::Scrollback;
 
-/// Whether the transcript above the live region is up to date.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Flush {
-    /// Nothing new has settled.
-    Nothing,
-    /// Entries `..n` are final and belong in scrollback.
-    Upto(usize),
-}
-
 /// Add two token counts.
 ///
 /// Written out because `Usage` is four independent counters, and summing three while
@@ -60,20 +51,15 @@ pub enum Picking {
 
 /// Everything the UI knows.
 pub struct App {
-    /// Transcript in order. Entries before `flushed` are already in scrollback.
+    /// Transcript in order.
     entries: Vec<Entry>,
-    /// How many entries have been handed to the terminal's scrollback.
-    flushed: usize,
     /// Highest cursor seen, so a reconnect resumes rather than replays.
     cursor: Cursor,
     /// What the agent is doing.
     status: AgentStatus,
     /// The prompt buffer.
     pub editor: Editor,
-    /// The transcript we own, used by the alt-screen backend.
-    ///
-    /// Inline mode leaves history to the terminal and never touches this; alt mode has no
-    /// terminal history to leave it to.
+    /// The transcript, which axum owns: the alternate screen has no terminal history to defer to.
     pub scrollback: Scrollback,
     /// The open completion popup, if any.
     pub completion: Option<axum_tui::complete::Completion>,
@@ -166,7 +152,6 @@ impl App {
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
-            flushed: 0,
             cursor: Cursor::ZERO,
             status: AgentStatus::Idle,
             editor: Editor::new(),
@@ -255,12 +240,6 @@ impl App {
             .unwrap_or(0)
     }
 
-    /// Entries that have not yet reached scrollback.
-    #[must_use]
-    pub fn live(&self) -> &[Entry] {
-        &self.entries[self.flushed..]
-    }
-
     /// Position to resume from after a disconnect.
     #[must_use]
     pub fn cursor(&self) -> Cursor {
@@ -318,7 +297,7 @@ impl App {
         self.cursor = self.cursor.max(event.cursor());
         match event {
             HarnessEvent::SessionSnapshot {
-                cursor,
+                cursor: _,
                 entries,
                 status,
                 model,
@@ -326,20 +305,6 @@ impl App {
                 thinking,
                 ..
             } => {
-                // A snapshot describes the session as of the cursor the UI asked to resume
-                // from. On a cold attach that is nothing; on a reattach it is history this UI
-                // has already written to scrollback, and re-flushing it prints the transcript
-                // again on every reconnect.
-                //
-                // All but the last entry are therefore already on screen. The last is kept
-                // live because it may still be streaming, and a scrollback line cannot be
-                // taken back once written.
-                let resuming = cursor > Cursor::ZERO;
-                self.flushed = if resuming {
-                    entries.len().saturating_sub(1)
-                } else {
-                    0
-                };
                 let unconfigured = model.is_none();
                 self.model = model;
                 self.model_reasons = self.model.as_ref().is_some_and(|chosen| {
@@ -525,32 +490,12 @@ impl App {
         }
     }
 
-    /// Which entries have settled and can be written to scrollback.
-    ///
-    /// An entry settles when a later one exists: the last entry may still be streaming, and a
-    /// line written to scrollback cannot be taken back.
-    #[must_use]
-    pub fn settled(&self) -> Flush {
-        let settled = self.entries.len().saturating_sub(1);
-        if settled > self.flushed {
-            Flush::Upto(settled)
-        } else {
-            Flush::Nothing
-        }
-    }
-
-    /// Record that entries up to `n` reached scrollback.
-    pub fn mark_flushed(&mut self, n: usize) {
-        self.flushed = n.min(self.entries.len());
-    }
-
     /// Drop the transcript without touching the daemon.
     ///
     /// `/clear` hides history from the view; it does not delete it. The journal is
     /// append-only, and a UI command must never be able to rewrite it.
     pub fn clear_view(&mut self) {
         self.entries.clear();
-        self.flushed = 0;
     }
 
     /// Append a local notice to the transcript.

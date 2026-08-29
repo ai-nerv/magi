@@ -222,7 +222,6 @@ fn a_footer_row_is_exactly_the_terminal_width() {
         context_percent: Some(6.2),
         context_window: 200_000,
         model: "claude-opus-5".into(),
-        mode: "inline",
         mouse_held: false,
     };
     let lines = axum_tui::footer::render(&data, 70);

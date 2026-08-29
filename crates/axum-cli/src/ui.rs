@@ -1,19 +1,14 @@
-//! Drawing the live region.
+//! Drawing the screen.
 //!
-//! Settled transcript blocks go to native scrollback via `insert_before`; everything that can
-//! still change lives in an inline viewport that is redrawn each frame. That split is why the
-//! transcript stays scrollable with the terminal's own scrollbar, as Pi's does.
+//! axum owns every cell: the transcript is a buffer it keeps and scrolls, not lines handed to
+//! the terminal. That is what the wheel, the scroll keys, the edge rule and clicking a block
+//! open are all written against.
 //!
-//! The stack below the transcript is Pi's, in Pi's order: status, then the bordered prompt
-//! with its autocomplete beneath it, then the footer.
-//!
-//! The viewport is sized once, at startup, and never resized. Changing an inline viewport's
-//! height means rebuilding the terminal, which asks the emulator where the cursor is; that
-//! reply lands on stdin, where the key reader consumes it, and the resize times out. So the
-//! region is a fixed budget and content is clipped into it instead.
+//! The stack below the transcript is Pi's, in Pi's order: status, then the bordered prompt with
+//! its autocomplete beneath it, then the footer.
 
 use crate::app::App;
-use crate::terminal::Mode;
+
 use axum_tui::footer::{self, FooterData};
 use axum_tui::metric;
 use axum_tui::{complete, prompt, status, transcript};
@@ -27,21 +22,10 @@ pub fn chrome_rows() -> u16 {
     metric::status_rows() + metric::prompt_min_rows() + metric::footer_rows()
 }
 
-/// Rows the live region should claim on a terminal `rows` tall.
-///
-/// A third of the screen at most: the transcript's home is scrollback, and a viewport that
-/// fills the terminal defeats the point of rendering into it.
-#[must_use]
-pub fn initial_height(rows: u16) -> u16 {
-    let live = metric::share(rows, metric::live_share()).min(metric::live_rows());
-    (live + metric::status_rows() + metric::prompt_min_rows() + metric::footer_rows())
-        .min(rows.saturating_sub(1))
-}
-
 /// Draw the live region.
-pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData, mode: Mode) {
+pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     let area = frame.area();
-    let mut hidden_below = 0usize;
+
     let rows = area.height;
 
     // The scan says what the session is doing, which is why it is chosen here rather than in the
@@ -81,7 +65,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData, mode
     // "Not following" is exactly "you have scrolled away from the newest output", which is when
     // this is worth saying — and it avoids asking how much is below, which depends on a height
     // this row is about to change.
-    let more_rows = u16::from(matches!(mode, Mode::Alt) && !app.scrollback.is_following());
+    let more_rows = u16::from(!app.scrollback.is_following());
     let [
         live_area,
         status_area,
@@ -99,70 +83,52 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData, mode
     ])
     .areas(area);
 
-    match mode {
-        // Inline: the terminal owns the history, so only what has not settled is drawn, and
-        // the tail of it — a message longer than the region streams past, and the newest text
-        // is the part being written.
-        Mode::Inline => {
-            let live = transcript::render(app.live(), area.width, app.detail);
-            let shown = live
-                .len()
-                .saturating_sub(usize::from(live_area.height))
-                .min(live.len());
-            frame.render_widget(Paragraph::new(live[shown..].to_vec()), live_area);
-        }
-        // Alt: there is no terminal history to defer to, so the whole transcript is ours and
-        // the reader's scroll position decides what shows.
-        //
-        // An empty session draws nothing. There was a greeting here — a name, the model, the
-        // directory and four key hints — and it was right for somebody meeting the thing for
-        // the first time and wrong for everybody after that. The prompt's own placeholder still
-        // names `/`, which is the one line of it worth keeping.
-        Mode::Alt => {
-            let laid = transcript::laid_out(app.entries(), area.width, app.detail, &app.flipped);
-            app.owners = laid.owners;
-            app.scrollback.set_lines(laid.lines);
-            // Only the top edge takes a row out of the transcript; the bottom one has a slot of
-            // its own directly above the prompt.
-            let above = app.scrollback.hidden_above() > 0;
-            let live_area = Rect {
-                y: live_area.y + u16::from(above),
-                height: live_area.height.saturating_sub(u16::from(above)),
+    // The whole transcript is ours and the reader's scroll position decides what shows.
+    //
+    // An empty session draws nothing. There was a greeting here — a name, the model, the
+    // directory and four key hints — and it was right for somebody meeting the thing for the
+    // first time and wrong for everybody after that. The prompt's own placeholder still names
+    // `/`, which is the one line of it worth keeping.
+    let laid = transcript::laid_out(app.entries(), area.width, app.detail, &app.flipped);
+    app.owners = laid.owners;
+    app.scrollback.set_lines(laid.lines);
+    // Only the top edge takes a row out of the transcript; the bottom one has a slot of
+    // its own directly above the prompt.
+    let above = app.scrollback.hidden_above() > 0;
+    let live_area = Rect {
+        y: live_area.y + u16::from(above),
+        height: live_area.height.saturating_sub(u16::from(above)),
+        ..live_area
+    };
+    let view = app.scrollback.view(live_area.height).to_vec();
+    // Bottom-aligned: a transcript grows towards the prompt, so a short one sits above
+    // it rather than stranded at the top of the screen under a field of blank rows.
+    let used = u16::try_from(view.len()).unwrap_or(live_area.height);
+    let anchored = Rect {
+        y: live_area.y + live_area.height.saturating_sub(used),
+        height: used.min(live_area.height),
+        ..live_area
+    };
+    let hidden_below = app.scrollback.hidden_below(live_area.height);
+    // The rows the transcript actually landed on, which is what a click is measured
+    // against. Bottom-anchored, so a short transcript does not start at the top.
+    app.live_rows = anchored.y..anchored.y + anchored.height;
+    frame.render_widget(Paragraph::new(view), anchored);
+    if above {
+        frame.render_widget(
+            Paragraph::new(status::more(area.width)),
+            Rect {
+                y: live_area.y - 1,
+                height: 1,
                 ..live_area
-            };
-            let view = app.scrollback.view(live_area.height).to_vec();
-            // Bottom-aligned: a transcript grows towards the prompt, so a short one sits above
-            // it rather than stranded at the top of the screen under a field of blank rows.
-            let used = u16::try_from(view.len()).unwrap_or(live_area.height);
-            let anchored = Rect {
-                y: live_area.y + live_area.height.saturating_sub(used),
-                height: used.min(live_area.height),
-                ..live_area
-            };
-            hidden_below = app.scrollback.hidden_below(live_area.height);
-            // The rows the transcript actually landed on, which is what a click is measured
-            // against. Bottom-anchored, so a short transcript does not start at the top.
-            app.live_rows = anchored.y..anchored.y + anchored.height;
-            frame.render_widget(Paragraph::new(view), anchored);
-            if above {
-                frame.render_widget(
-                    Paragraph::new(status::more(area.width)),
-                    Rect {
-                        y: live_area.y - 1,
-                        height: 1,
-                        ..live_area
-                    },
-                );
-            }
-        }
+            },
+        );
     }
 
     // Composed rather than passed in: the scroll note is a fact about where the reader is
     // looking, which the status line has no business knowing how to compute.
     let mut status_line = status::working(app.status(), app.tick, app.connected, app.elapsed());
-    if matches!(mode, Mode::Alt) {
-        status_line.spans.extend(status::scrolled(hidden_below));
-    }
+    status_line.spans.extend(status::scrolled(hidden_below));
     if !app.connected {
         status_line.spans.extend(status::queued(app.queued));
     }
@@ -218,29 +184,6 @@ fn place_hardware_cursor(frame: &mut Frame<'_>, app: &App, area: Rect, rows: u16
     frame.set_cursor_position((area.x + col.min(area.width.saturating_sub(1)), area.y + row));
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_live_region_gets_a_third_of_the_screen() {
-        // 24 rows: 8 live + 2 status + 3 prompt + 1 footer.
-        assert_eq!(initial_height(24), 14);
-    }
-
-    #[test]
-    fn a_tall_terminal_does_not_get_a_tall_viewport() {
-        assert_eq!(initial_height(200), metric::live_rows() + 6);
-    }
-
-    #[test]
-    fn a_short_terminal_never_claims_more_rows_than_it_has() {
-        for rows in 3..12_u16 {
-            assert!(initial_height(rows) < rows, "{rows} rows");
-        }
-    }
-}
-
 /// The edge says the transcript continues, so "is this the end" is answered by looking rather
 /// than by reading a count somewhere else on the screen.
 #[cfg(test)]
@@ -264,13 +207,13 @@ mod continues_past_the_edge {
         let mut terminal = Terminal::new(TestBackend::new(60, 16)).expect("test terminal");
         // Drawn once so the scrollback learns how tall its view is, then scrolled and redrawn.
         terminal
-            .draw(|frame| draw(frame, &mut app, &footer, Mode::Alt))
+            .draw(|frame| draw(frame, &mut app, &footer))
             .expect("draw");
         if lines > 0 {
             app.scrollback.scroll_up(lines);
         }
         terminal
-            .draw(|frame| draw(frame, &mut app, &footer, Mode::Alt))
+            .draw(|frame| draw(frame, &mut app, &footer))
             .expect("draw");
         terminal
             .backend()

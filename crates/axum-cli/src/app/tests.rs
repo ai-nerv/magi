@@ -98,48 +98,21 @@ mod reduction {
     }
 
     #[test]
-    fn the_last_entry_never_settles_because_it_may_still_stream() {
-        let app = app_with(vec![HarnessEvent::UserMessage {
-            cursor: Cursor(1),
-            id: MessageId::new("m1"),
-            text: "hi".into(),
-        }]);
-        assert_eq!(app.settled(), Flush::Nothing);
-    }
-
-    #[test]
-    fn earlier_entries_settle_once_a_later_one_arrives() {
-        let mut app = app_with(vec![
-            HarnessEvent::UserMessage {
-                cursor: Cursor(1),
-                id: MessageId::new("m1"),
-                text: "hi".into(),
-            },
-            HarnessEvent::AssistantStarted {
-                cursor: Cursor(2),
-                id: MessageId::new("a1"),
-            },
-        ]);
-        assert_eq!(app.settled(), Flush::Upto(1));
-        app.mark_flushed(1);
-        assert_eq!(app.settled(), Flush::Nothing);
-        assert_eq!(app.live().len(), 1);
-    }
-
-    #[test]
-    fn a_reattach_snapshot_does_not_reprint_what_is_already_on_screen() {
+    fn a_reattach_snapshot_does_not_replay_what_is_already_on_screen() {
+        // The snapshot carries only what precedes the cursor the UI resumed from; the live
+        // stream carries the rest. Replaying everything would print the transcript twice.
         let mut app = App::new();
         app.apply(HarnessEvent::SessionSnapshot {
-            cursor: Cursor(9),
+            cursor: Cursor(2),
             session: axum_proto::SessionId::new("s"),
             entries: vec![
                 Entry::User {
                     id: MessageId::new("m1"),
-                    text: "hi".into(),
+                    text: "asked".into(),
                 },
                 Entry::Assistant {
                     id: MessageId::new("a1"),
-                    text: "partial".into(),
+                    text: "answered".into(),
                     thinking: String::new(),
                     stop_reason: None,
                     error: None,
@@ -152,16 +125,11 @@ mod reduction {
             choices: Vec::new(),
             thinking: String::new(),
         });
-        assert_eq!(
-            app.live().len(),
-            1,
-            "only the in-flight entry is redrawn; the rest is already in scrollback"
-        );
-        assert_eq!(app.settled(), Flush::Nothing, "nothing new to write");
+        assert_eq!(app.entries().len(), 2);
     }
 
     #[test]
-    fn a_cold_snapshot_still_renders_everything() {
+    fn a_cold_snapshot_renders_everything() {
         let mut app = App::new();
         app.apply(HarnessEvent::SessionSnapshot {
             cursor: Cursor::ZERO,
@@ -175,11 +143,11 @@ mod reduction {
             choices: Vec::new(),
             thinking: String::new(),
         });
-        assert_eq!(app.live().len(), 1, "a cold snapshot is entirely unflushed");
+        assert_eq!(app.entries().len(), 1);
     }
 
     #[test]
-    fn clearing_the_view_empties_the_transcript_and_the_flush_mark() {
+    fn clearing_the_view_empties_the_transcript_but_keeps_the_position() {
         let mut app = app_with(vec![
             HarnessEvent::UserMessage {
                 cursor: Cursor(1),
@@ -191,10 +159,8 @@ mod reduction {
                 id: MessageId::new("a1"),
             },
         ]);
-        app.mark_flushed(1);
         app.clear_view();
         assert!(app.entries().is_empty());
-        assert!(app.live().is_empty());
         assert_eq!(
             app.cursor(),
             Cursor(2),

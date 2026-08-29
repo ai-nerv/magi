@@ -35,11 +35,6 @@ struct Cli {
     #[arg(long, global = true)]
     socket: Option<PathBuf>,
 
-    /// Which backend draws the session: `inline` keeps the terminal's own scrollback,
-    /// `alt` takes the alternate screen and owns the transcript.
-    #[arg(long, default_value = "alt")]
-    tui: terminal::Mode,
-
     /// Continue this directory's most recent session instead of starting one.
     #[arg(short, long, global = true)]
     resume: bool,
@@ -108,7 +103,6 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let cwd = std::env::current_dir()?;
     let socket = cli.socket.unwrap_or_else(|| axum_ipc::socket_for(&cwd));
-    let mode = cli.tui;
 
     match cli.command {
         Some(Command::Ext(Ext::Shell)) => shell::run(),
@@ -161,7 +155,7 @@ async fn main() -> Result<()> {
             // The return value is not kept: the UI stops this directory's daemon when it
             // exits whether it started it or adopted one that was already there.
             daemon::ensure(&socket, cli.sessions.as_deref(), cli.resume).await?;
-            driver::run(&socket, mode, cli.prompt, cli.sessions).await
+            driver::run(&socket, cli.prompt, cli.sessions).await
         }
     }
 }

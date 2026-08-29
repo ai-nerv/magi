@@ -24,8 +24,6 @@ pub struct FooterData {
     pub context_window: u64,
     /// Model id, as the provider names it.
     pub model: String,
-    /// Which backend is drawing, shown so the two are never confused for each other.
-    pub mode: &'static str,
     /// Whether axum has taken the mouse from the terminal.
     ///
     /// The departure from normal, so the derived default is the normal state — and said out
@@ -95,8 +93,7 @@ pub fn fit_path(path: &str, width: usize) -> String {
 /// **One line.** It was two — the directory on its own row above the stats — and two rows of
 /// dim text under the prompt is a lot of screen for something you glance at. Everything that
 /// was on both is here: the directory and branch on the left, usage in the middle, the model on
-/// the right, and each is dropped in that order when the terminal cannot hold it. The mode is
-/// gone from the default; it mattered while two backends were being built and it does not now.
+/// the right, and each is dropped in that order when the terminal cannot hold it.
 #[must_use]
 pub fn render(data: &FooterData, width: u16) -> Vec<Line<'static>> {
     let dim = Style::default().fg(colour::dim());
@@ -144,9 +141,6 @@ pub fn render(data: &FooterData, width: u16) -> Vec<Line<'static>> {
     let mut suffix = String::new();
     if let Some(branch) = &data.branch {
         suffix.push_str(&format!(" ({branch})"));
-    }
-    if !data.mode.is_empty() {
-        suffix.push_str(&format!(" · {}", data.mode));
     }
     // Only when it is off. A state that breaks clicking and the wheel has to be visible, and a
     // state where everything works needs no announcement.
@@ -240,17 +234,6 @@ mod tests {
         assert_eq!(format_cwd("/home/me", Some("/home/me")), "~");
         assert_eq!(format_cwd("/home/me/src", Some("/home/me")), "~/src");
         assert_eq!(format_cwd("/etc", Some("/home/me")), "/etc");
-    }
-
-    #[test]
-    fn the_active_backend_is_named_beside_the_directory() {
-        let data = FooterData {
-            cwd: "~".into(),
-            mode: "alt",
-            ..FooterData::default()
-        };
-        let rendered = text_of(&render(&data, 60));
-        assert!(rendered[0].contains("alt"), "{:?}", rendered[0]);
     }
 
     #[test]
