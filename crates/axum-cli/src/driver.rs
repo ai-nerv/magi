@@ -38,6 +38,8 @@ pub async fn run(
     sessions: Option<std::path::PathBuf>,
 ) -> Result<()> {
     let mut app = App::new();
+    // The prompts from previous runs, so the arrow keys reach past this one.
+    app.editor = axum_tui::Editor::with_history(crate::history::load());
     // Read here rather than taken from the daemon, because this one is about the screen in front
     // of the person reading it. A model or a tool set has to come from the daemon — it is what
     // the daemon is actually using — but nothing on the other end of the socket has an opinion
@@ -140,6 +142,7 @@ pub async fn run(
                         match action {
                             Action::Quit => break,
                             Action::Submit(text) => {
+                                crate::history::remember(&text);
                                 let _ = command_tx.send(UiCommand::SubmitPrompt { text }).await;
                                 dirty = true;
                             }
@@ -166,6 +169,19 @@ pub async fn run(
                                     // by anything here, so there is nothing to send.
                                     Some(crate::app::Picking::Model) => {
                                         UiCommand::SetModel { name: value }
+                                    }
+                                    // Matched back by position, because a row is labelled with
+                                    // what a person can read -- when it was, what they asked --
+                                    // and none of that is the id the daemon needs.
+                                    Some(crate::app::Picking::Session { rows }) => {
+                                        let found = rows
+                                            .iter()
+                                            .find(|(label, _)| *label == value)
+                                            .map(|(_, id)| id.clone());
+                                        match found {
+                                            Some(id) => UiCommand::Resume { id },
+                                            None => continue,
+                                        }
                                     }
                                     // Matched back by *label*, because that is what the person
                                     // read and chose. The labels were generated from these same
@@ -563,6 +579,12 @@ fn run_command(input: &str, app: &mut App) -> Control {
         // The daemon's, because it holds the conversation the question is about and the
         // provider that answers it.
         "/permissions" => Control::Send(UiCommand::DeclareNeeds),
+        // A list rather than a flag. `--resume` continues this directory's most recent session
+        // and there was no way to reach any of the others, which is most of them.
+        "/resume" => {
+            app.open_session_picker();
+            Control::Continue
+        }
         // Rewinding is the daemon's to work out: it holds the session, and which messages are
         // still live is a question about the session rather than about what is on screen.
         "/rewind" => match input.split_whitespace().nth(1) {

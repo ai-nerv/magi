@@ -14,6 +14,7 @@ pub mod compact;
 pub mod context;
 pub mod declaring;
 pub mod paths;
+pub mod remember;
 pub mod session;
 pub mod system;
 pub mod turn;
@@ -128,8 +129,9 @@ pub async fn serve_catalog(
         let worker = Arc::clone(&worker);
         let catalog = Arc::clone(&catalog);
         let pending = Arc::clone(&pending);
+        let approver = Arc::clone(&approver);
         tokio::spawn(async move {
-            let _ = connection(stream, session, &worker, &catalog, &pending).await;
+            let _ = connection(stream, session, &worker, &catalog, &pending, &approver).await;
         });
     }
 }
@@ -141,6 +143,7 @@ async fn connection(
     worker: &tokio::sync::RwLock<Option<Arc<worker::Worker>>>,
     catalog: &crate::catalog::Catalog,
     pending: &crate::asking::Pending,
+    approver: &Arc<dyn axum_tools::approve::Approver>,
 ) -> Result<(), HostError> {
     let (read_half, write_half) = stream.into_split();
     let mut reader = FrameReader::new(read_half);
@@ -199,7 +202,7 @@ async fn connection(
                     }
                     Some(UiCommand::SetModel { name }) => {
                         if let Some(refusal) =
-                            switch_model(&session, worker, catalog, &name).await
+                            switch_model(&session, worker, catalog, approver, &name).await
                         {
                             // On the stream rather than in the transcript: the request was
                             // understood and declined, which is a fact about the UI's ask and
@@ -214,12 +217,33 @@ async fn connection(
                     }
                     Some(UiCommand::SetThinking { level }) => {
                         if let Some(refusal) =
-                            switch_thinking(&session, worker, catalog, &level).await
+                            switch_thinking(&session, worker, catalog, approver, &level).await
                         {
                             writer
                                 .write(&HarnessEvent::Refused {
                                     cursor: session.lock().await.cursor(),
                                     message: refusal,
+                                })
+                                .await?;
+                        }
+                    }
+                    Some(UiCommand::Resume { id }) => {
+                        let cwd = catalog.cwd.display().to_string();
+                        let dir = crate::paths::sessions_dir();
+                        let refusal = match crate::paths::journal_for(&dir, &id) {
+                            None => Some(format!("there is no session called {id:?}")),
+                            Some(path) => session
+                                .lock()
+                                .await
+                                .resume(&path, &cwd, seconds())
+                                .err()
+                                .map(|why| format!("{id} could not be opened: {why}")),
+                        };
+                        if let Some(message) = refusal {
+                            writer
+                                .write(&HarnessEvent::Refused {
+                                    cursor: session.lock().await.cursor(),
+                                    message,
                                 })
                                 .await?;
                         }
@@ -279,6 +303,7 @@ async fn switch_model(
     session: &Arc<Mutex<Session>>,
     worker: &tokio::sync::RwLock<Option<Arc<worker::Worker>>>,
     catalog: &crate::catalog::Catalog,
+    approver: &Arc<dyn axum_tools::approve::Approver>,
     name: &str,
 ) -> Option<String> {
     let Some(backend) = catalog.backend(name) else {
@@ -299,7 +324,10 @@ async fn switch_model(
         name: backend.model.qualified(),
         context_window: backend.model.context_window,
     };
-    let fresh = Arc::new(worker::Worker::start(backend));
+    // Gated, like the one it replaces. `Worker::start` is `gated(backend, None)` — a worker
+    // nothing asks — so switching the model used to switch the permission model off with it,
+    // and every tool for the rest of the session ran without being asked about.
+    let fresh = Arc::new(worker::Worker::gated(backend, Some(Arc::clone(approver))));
     *worker.write().await = Some(fresh);
     {
         let mut held = session.lock().await;
@@ -307,8 +335,18 @@ async fn switch_model(
         // Announced so the footer changes now rather than after the next turn: the whole
         // point of switching is to see that it happened.
         held.announce_model();
+        remember(catalog, held.model_name(), Some(held.thinking().to_owned()));
     }
     None
+}
+
+/// Write down what this directory is now using, so the next run starts with it.
+///
+/// A switch made in the UI is a decision somebody made in front of the thing. Forgetting it on
+/// restart meant the only way to keep a choice was to stop making it in the UI and edit a file.
+fn remember(catalog: &crate::catalog::Catalog, model: Option<String>, thinking: Option<String>) {
+    let cwd = catalog.cwd.display().to_string();
+    crate::remember::keep(&cwd, &crate::remember::Chosen { model, thinking });
 }
 
 /// Ask for more or less reasoning from here on, or say why not.
@@ -319,6 +357,7 @@ async fn switch_thinking(
     session: &Arc<Mutex<Session>>,
     worker: &tokio::sync::RwLock<Option<Arc<worker::Worker>>>,
     catalog: &crate::catalog::Catalog,
+    approver: &Arc<dyn axum_tools::approve::Approver>,
     level: &str,
 ) -> Option<String> {
     let Ok(parsed) = serde_json::from_value::<axum_model::ThinkingLevel>(
@@ -335,11 +374,15 @@ async fn switch_thinking(
     let name = session.lock().await.model_name()?;
     let mut backend = catalog.backend(&name)?;
     backend.options.thinking = Some(parsed);
-    let fresh = Arc::new(worker::Worker::start(backend));
+    // Gated, like the one it replaces. `Worker::start` is `gated(backend, None)` — a worker
+    // nothing asks — so switching the model used to switch the permission model off with it,
+    // and every tool for the rest of the session ran without being asked about.
+    let fresh = Arc::new(worker::Worker::gated(backend, Some(Arc::clone(approver))));
     *worker.write().await = Some(fresh);
     let mut held = session.lock().await;
     held.set_thinking(level.to_owned());
     held.announce_model();
+    remember(catalog, held.model_name(), Some(level.to_owned()));
     None
 }
 
@@ -441,4 +484,11 @@ pub fn open_session(dir: &Path, cwd: &str, now: u64) -> Result<Session, JournalE
     let id = paths::session_id(now);
     let path = dir.join(format!("{id}.jsonl"));
     Session::open(&path, axum_proto::SessionId::new(id), cwd, now)
+}
+
+/// Seconds since the epoch, for stamping a journal that is being opened now.
+fn seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }

@@ -156,3 +156,72 @@ mod resume_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+/// One session, as a picker needs to describe it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Summary {
+    /// Its identity, which is also its file name.
+    pub id: String,
+    /// Where its journal is.
+    pub path: PathBuf,
+    /// The first thing the person said in it, or empty if they never said anything.
+    ///
+    /// A session's name is what it was for, and nobody titles one. The opening prompt is the
+    /// closest thing to a title that exists without asking a model to invent one.
+    pub title: String,
+    /// How many entries it holds, so an abandoned session reads as abandoned.
+    pub entries: usize,
+}
+
+/// Every session recorded for `cwd`, newest first.
+///
+/// Ids sort by time because they are timestamps, so "newest first" is a reversed sort rather
+/// than a stat of every file. The whole journal is read to find the title and the count: they
+/// are small, there are few of them, and a picker that lied about which session was which
+/// would be worse than one that took a moment.
+#[must_use]
+pub fn summaries(dir: &std::path::Path, cwd: &str) -> Vec<Summary> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut journals: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "jsonl"))
+        .filter(|p| recorded_cwd(p).as_deref() == Some(cwd))
+        .collect();
+    journals.sort();
+    journals.reverse();
+    journals.iter().filter_map(|path| summary(path)).collect()
+}
+
+/// Read one journal far enough to describe it.
+fn summary(path: &std::path::Path) -> Option<Summary> {
+    let id = path.file_stem()?.to_string_lossy().into_owned();
+    let text = std::fs::read_to_string(path).ok()?;
+    let recovered = axum_journal::parse(&text).ok()?;
+    let title = recovered
+        .entries
+        .iter()
+        .find_map(|entry| match entry {
+            axum_proto::Entry::User { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    Some(Summary {
+        id,
+        path: path.to_owned(),
+        // One line, however it was typed: a picker row is one line and a prompt often is not.
+        title: title.split_whitespace().collect::<Vec<_>>().join(" "),
+        entries: recovered.entries.len(),
+    })
+}
+
+/// The journal for one session id, if it is in `dir`.
+#[must_use]
+pub fn journal_for(dir: &std::path::Path, id: &str) -> Option<PathBuf> {
+    // Built rather than searched, and then checked: an id is a file stem, so a caller that made
+    // one up would otherwise be asking this to open whatever the name resolved to.
+    let path = dir.join(format!("{id}.jsonl"));
+    (path.parent() == Some(dir) && path.is_file()).then_some(path)
+}

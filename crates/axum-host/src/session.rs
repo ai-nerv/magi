@@ -46,6 +46,25 @@ impl Session {
         })
     }
 
+    /// Put this session onto a different journal, keeping everyone attached to it.
+    ///
+    /// The journal is swapped rather than the `Session` replaced, because the broadcast channel
+    /// is what every attached UI is holding: building a new `Session` would build a new channel,
+    /// and every subscriber would go quiet on a resume that looked like it worked.
+    ///
+    /// Nothing is carried over. The transcript, the cursor and the status all belong to the
+    /// journal, and a status left behind would have a fresh session claiming to be mid-turn.
+    ///
+    /// # Errors
+    /// When the journal will not open, in which case this session is left on the one it had.
+    pub fn resume(&mut self, path: &Path, cwd: &str, now: u64) -> Result<(), JournalError> {
+        let journal = Journal::open(path, self.journal.session().clone(), cwd, now)?;
+        self.journal = journal;
+        self.status = AgentStatus::Idle;
+        let _ = self.events.send(self.snapshot(self.cursor()));
+        Ok(())
+    }
+
     /// The interrupt this session's turns watch.
     ///
     /// Handed out rather than acted on here: the turn runs on another thread, and the
@@ -74,6 +93,12 @@ impl Session {
     /// Say how much reasoning is being asked for.
     pub fn set_thinking(&mut self, level: String) {
         self.thinking = level;
+    }
+
+    /// How much reasoning is being asked for.
+    #[must_use]
+    pub fn thinking(&self) -> &str {
+        &self.thinking
     }
 
     /// Every token this session has spent.

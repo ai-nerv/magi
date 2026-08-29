@@ -12,6 +12,7 @@ mod driver;
 mod ext_lua;
 mod external_editor;
 mod help;
+mod history;
 mod keys;
 mod models;
 mod paths;

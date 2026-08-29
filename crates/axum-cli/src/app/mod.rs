@@ -36,6 +36,15 @@ pub enum Picking {
     Model,
     /// How much reasoning to ask for.
     Thinking,
+    /// Which earlier session to continue.
+    ///
+    /// Carries what each row said beside the id it means, because a row is labelled with what a
+    /// person can read — what they asked for — and that is not an id. The picker is taken by the
+    /// keypress that chose a row, so by the time this is read there is no list left to index.
+    Session {
+        /// Every row, as `(what it said, which session it was)`.
+        rows: Vec<(String, String)>,
+    },
     /// Whether a tool may do what it is about to do.
     ///
     /// Carries the question's id, because the answer has to find its way back to the turn that
@@ -660,3 +669,49 @@ impl App {
 mod retracting;
 #[cfg(test)]
 mod tests;
+
+impl App {
+    /// Offer the sessions recorded in this directory.
+    ///
+    /// Read here rather than asked of the daemon: the journals are files on this machine, this
+    /// process is on the same machine, and a round trip to be told what a directory listing says
+    /// would be a protocol message that earns nothing.
+    pub fn open_session_picker(&mut self) {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let dir = axum_host::paths::sessions_dir();
+        let found = axum_host::paths::summaries(&dir, &cwd.display().to_string());
+        if found.is_empty() {
+            self.show_notice(
+                "No earlier sessions in this directory. This one is the first.".to_owned(),
+            );
+            return;
+        }
+
+        let choices: Vec<axum_tui::picker::Choice> = found
+            .iter()
+            .map(|found| axum_tui::picker::Choice {
+                // What it was for, which is the only thing anybody recognises a session by.
+                // Nobody titles one, so the opening prompt stands in for a title.
+                value: if found.title.is_empty() {
+                    "(nothing was asked)".to_owned()
+                } else {
+                    found.title.clone()
+                },
+                detail: format!("{} entries", found.entries),
+                ready: true,
+            })
+            .collect();
+        self.picker = Some(axum_tui::picker::Picker::new(
+            "Continue which session?",
+            choices.clone(),
+            None,
+        ));
+        self.picking = Some(Picking::Session {
+            rows: choices
+                .iter()
+                .map(|choice| choice.value.clone())
+                .zip(found.into_iter().map(|found| found.id))
+                .collect(),
+        });
+    }
+}

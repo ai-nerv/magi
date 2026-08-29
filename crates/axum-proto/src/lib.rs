@@ -543,6 +543,14 @@ pub enum UiCommand {
         /// name a message that is already gone.
         keeps: Option<usize>,
     },
+    /// Continue a session recorded earlier, in place of this one.
+    ///
+    /// Named by id, which is a journal's file stem. The daemon swaps journals and publishes a
+    /// fresh snapshot, so every attached UI follows rather than only the one that asked.
+    Resume {
+        /// Which session, as [`SessionId`] names it.
+        id: String,
+    },
     /// Unsubscribe; the turn keeps running.
     Detach,
 }

@@ -30,6 +30,20 @@ impl Editor {
         }
     }
 
+    /// The same, starting with the prompts from previous runs.
+    ///
+    /// The arrow keys have walked a history since M2 and the history started empty every run, so
+    /// it worked within one session and had nothing in it the moment you came back — which is
+    /// when the prompt you want again is the one from yesterday.
+    #[must_use]
+    pub fn with_history(history: Vec<String>) -> Self {
+        Self {
+            lines: vec![String::new()],
+            history,
+            ..Self::default()
+        }
+    }
+
     /// The full text, lines joined by newlines.
     #[must_use]
     pub fn text(&self) -> String {
