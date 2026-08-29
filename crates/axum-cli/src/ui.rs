@@ -103,8 +103,20 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData, mode
         // the first time and wrong for everybody after that. The prompt's own placeholder still
         // names `/`, which is the one line of it worth keeping.
         Mode::Alt => {
-            let all = transcript::render(app.entries(), area.width, app.detail);
-            app.scrollback.set_lines(all);
+            let laid = transcript::laid_out(app.entries(), area.width, app.detail, &app.flipped);
+            app.owners = laid.owners;
+            app.scrollback.set_lines(laid.lines);
+            // Measured against the height the transcript will actually get, which is one row
+            // shorter per rule. Measuring against the full height and then taking a row for the
+            // rule pushes a line off the bottom that the rule then says nothing about.
+            let (above, below) = edges(app, live_area.height);
+            let live_area = Rect {
+                y: live_area.y + u16::from(above),
+                height: live_area
+                    .height
+                    .saturating_sub(u16::from(above) + u16::from(below)),
+                ..live_area
+            };
             let view = app.scrollback.view(live_area.height).to_vec();
             // Bottom-aligned: a transcript grows towards the prompt, so a short one sits above
             // it rather than stranded at the top of the screen under a field of blank rows.
@@ -115,7 +127,30 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData, mode
                 ..live_area
             };
             hidden_below = app.scrollback.hidden_below(live_area.height);
+            // The rows the transcript actually landed on, which is what a click is measured
+            // against. Bottom-anchored, so a short transcript does not start at the top.
+            app.live_rows = anchored.y..anchored.y + anchored.height;
             frame.render_widget(Paragraph::new(view), anchored);
+            if above {
+                frame.render_widget(
+                    Paragraph::new(status::more(area.width)),
+                    Rect {
+                        y: live_area.y - 1,
+                        height: 1,
+                        ..live_area
+                    },
+                );
+            }
+            if below {
+                frame.render_widget(
+                    Paragraph::new(status::more(area.width)),
+                    Rect {
+                        y: live_area.y + live_area.height,
+                        height: 1,
+                        ..live_area
+                    },
+                );
+            }
         }
     }
 
@@ -196,6 +231,104 @@ mod tests {
     fn a_short_terminal_never_claims_more_rows_than_it_has() {
         for rows in 3..12_u16 {
             assert!(initial_height(rows) < rows, "{rows} rows");
+        }
+    }
+}
+
+/// Which edges the transcript continues past, at the height it would get with those rules drawn.
+///
+/// Settled by iterating rather than solved, because taking a row for a rule can be what removes
+/// the overflow that called for it: a transcript one line too tall for the screen needs a rule,
+/// and with the rule drawn it is two lines too tall, which still needs one. Two passes reach the
+/// fixed point for the only case that oscillates.
+fn edges(app: &App, height: u16) -> (bool, bool) {
+    let (mut above, mut below) = (false, false);
+    for _ in 0..2 {
+        let room = height.saturating_sub(u16::from(above) + u16::from(below));
+        above = app.scrollback.hidden_above() > 0;
+        below = app.scrollback.hidden_below(room) > 0;
+    }
+    (above, below)
+}
+
+/// The edge says the transcript continues, so "is this the end" is answered by looking rather
+/// than by reading a count somewhere else on the screen.
+#[cfg(test)]
+mod continues_past_the_edge {
+    use super::*;
+    use axum_proto::{Cursor, HarnessEvent, MessageId};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    /// A 60x16 screen holding a conversation `turns` long, scrolled up by `lines`.
+    fn drawn(turns: usize, lines: usize) -> Vec<String> {
+        let mut app = App::new();
+        for n in 0..turns {
+            app.apply(HarnessEvent::UserMessage {
+                cursor: Cursor(n as u64 + 1),
+                id: MessageId::new(format!("u{n}")),
+                text: format!("question number {n}"),
+            });
+        }
+        let footer = FooterData::default();
+        let mut terminal = Terminal::new(TestBackend::new(60, 16)).expect("test terminal");
+        // Drawn once so the scrollback learns how tall its view is, then scrolled and redrawn.
+        terminal
+            .draw(|frame| draw(frame, &mut app, &footer, Mode::Alt))
+            .expect("draw");
+        if lines > 0 {
+            app.scrollback.scroll_up(lines);
+        }
+        terminal
+            .draw(|frame| draw(frame, &mut app, &footer, Mode::Alt))
+            .expect("draw");
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .chunks(60)
+            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
+            .collect()
+    }
+
+    fn rules(rows: &[String]) -> Vec<usize> {
+        rows.iter()
+            .enumerate()
+            .filter(|(_, row)| row.starts_with("─ ─ ─"))
+            .map(|(at, _)| at)
+            .collect()
+    }
+
+    #[test]
+    fn a_transcript_that_fits_draws_no_rule() {
+        let rows = drawn(1, 0);
+        assert!(rules(&rows).is_empty(), "{rows:#?}");
+    }
+
+    #[test]
+    fn more_below_draws_a_rule_under_the_transcript() {
+        let rows = drawn(30, 20);
+        assert!(
+            !rules(&rows).is_empty(),
+            "nothing marked the edge: {rows:#?}"
+        );
+    }
+
+    #[test]
+    fn scrolled_into_the_middle_marks_both_edges() {
+        let rows = drawn(30, 10);
+        assert_eq!(rules(&rows).len(), 2, "it runs off both ends: {rows:#?}");
+    }
+
+    #[test]
+    fn a_rule_never_lands_on_the_prompt() {
+        let rows = drawn(30, 20);
+        let box_top = rows
+            .iter()
+            .position(|row| row.contains('╭'))
+            .expect("the prompt is on screen");
+        for at in rules(&rows) {
+            assert!(at < box_top, "a rule landed on the prompt: {rows:#?}");
         }
     }
 }

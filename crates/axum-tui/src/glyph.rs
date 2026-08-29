@@ -68,6 +68,7 @@ glyphs! {
     no_marker = "  ", "In front of every other row, so the names stay in one column.";
     ellipsis = "…", "Where something was cut to fit.";
     bullet = "• ", "A markdown list item.";
+    more_rule = "─ ", "Repeated along an edge the transcript continues past.";
     quote_rule = "│ ", "Down the left of a block quote.";
     notice_rule = "│ ", "Down the left of something the UI itself is saying.";
     placeholder = "ask anything, or / for commands", "The prompt, before you type anything.";

@@ -27,6 +27,17 @@ pub enum Detail {
     Full,
 }
 
+impl Detail {
+    /// The other one, which is what a fold toggle means.
+    #[must_use]
+    pub const fn other(self) -> Self {
+        match self {
+            Self::Preview => Self::Full,
+            Self::Full => Self::Preview,
+        }
+    }
+}
+
 /// A padded box whose title states the outcome: pending, success, or error.
 ///
 /// The background used to say it, in three barely-different tints of the same dark. A palette

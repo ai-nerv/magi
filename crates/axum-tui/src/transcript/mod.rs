@@ -7,9 +7,10 @@
 use crate::colour;
 use crate::glyph;
 use crate::markdown;
-use axum_proto::{Entry, StopReason};
+use axum_proto::{Entry, StopReason, ToolCallId};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use std::collections::BTreeSet;
 
 /// Horizontal padding inside a block, in cells. Pi's `outputPad`.
 mod tool;
@@ -19,11 +20,51 @@ pub use tool::Detail;
 /// Render the whole transcript.
 #[must_use]
 pub fn render(entries: &[Entry], width: u16, detail: Detail) -> Vec<Line<'static>> {
-    let mut out = Vec::new();
+    laid_out(entries, width, detail, &BTreeSet::new()).lines
+}
+
+/// A rendered transcript, and which tool call each line came from.
+///
+/// The second half is what makes a click mean something. A row on the screen is a line in this
+/// list, and a line only belongs to a block if that block drew it — so the mapping is produced by
+/// the same pass that produces the lines, rather than by a second one that could disagree with it.
+pub struct Laid {
+    /// Every line, in transcript order.
+    pub lines: Vec<Line<'static>>,
+    /// For each line, the tool call it belongs to, if any.
+    pub owners: Vec<Option<ToolCallId>>,
+}
+
+/// Render the whole transcript, recording which block owns each line.
+///
+/// `flipped` names the tool calls showing the opposite of `detail`: a click toggles membership
+/// rather than storing a state, so the global fold key still moves every block that has not been
+/// clicked, and one that has keeps the answer the person gave it.
+#[must_use]
+pub fn laid_out(
+    entries: &[Entry],
+    width: u16,
+    detail: Detail,
+    flipped: &BTreeSet<ToolCallId>,
+) -> Laid {
+    let mut laid = Laid {
+        lines: Vec::new(),
+        owners: Vec::new(),
+    };
     for entry in entries {
-        out.extend(entry_lines(entry, width, detail));
+        let id = match entry {
+            Entry::Tool { id, .. } => Some(id.clone()),
+            _ => None,
+        };
+        let shown = match &id {
+            Some(id) if flipped.contains(id) => detail.other(),
+            _ => detail,
+        };
+        let lines = entry_lines(entry, width, shown);
+        laid.owners.extend(std::iter::repeat_n(id, lines.len()));
+        laid.lines.extend(lines);
     }
-    out
+    laid
 }
 
 /// Render one entry.

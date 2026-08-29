@@ -284,6 +284,14 @@ pub async fn run(
                         match mouse.kind {
                             MouseEventKind::ScrollUp => app.scrollback.scroll_up(3),
                             MouseEventKind::ScrollDown => app.scrollback.scroll_down(3, view),
+                            // A tool block opens and closes under the pointer. Ctrl+O still
+                            // moves the whole transcript at once; this is for the one result
+                            // you actually want to read, which is usually not the newest.
+                            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                                if !app.toggle_at(mouse.row) {
+                                    continue;
+                                }
+                            }
                             _ => continue,
                         }
                         dirty = true;

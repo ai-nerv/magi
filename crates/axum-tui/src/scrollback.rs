@@ -324,3 +324,14 @@ mod wheel {
         assert_eq!(top[0], "line0", "and it is the first line");
     }
 }
+
+impl Scrollback {
+    /// How many lines sit above the current view.
+    ///
+    /// The other half of [`Self::hidden_below`], and the one nothing asked for until the
+    /// transcript needed to say which edge it continues past.
+    #[must_use]
+    pub fn hidden_above(&self) -> usize {
+        self.offset
+    }
+}

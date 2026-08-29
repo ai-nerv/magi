@@ -304,3 +304,51 @@ mod queued_tests {
         assert!(text(&queued(3)).contains("3 messages waiting"));
     }
 }
+
+/// A dashed rule across an edge the transcript continues past.
+///
+/// The scroll note in the status line says how much is below, in words, in one place. That is
+/// the wrong shape for the question a reader actually has, which is "is this the end" — asked
+/// constantly, answered by glancing at the edge rather than by reading a number somewhere else.
+/// So the edge itself says it.
+#[must_use]
+pub fn more(width: u16) -> Line<'static> {
+    let dash = crate::glyph::more_rule();
+    let repeats = usize::from(width) / dash.chars().count().max(1);
+    Line::from(Span::styled(
+        dash.repeat(repeats),
+        Style::default().fg(colour::rule()),
+    ))
+}
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+
+    fn width_of(line: &Line<'_>) -> usize {
+        line.spans.iter().map(|s| s.content.chars().count()).sum()
+    }
+
+    #[test]
+    fn the_rule_fits_the_width_it_is_given() {
+        for width in [10u16, 40, 81, 120] {
+            let rule = more(width);
+            assert!(
+                width_of(&rule) <= usize::from(width),
+                "{} overflows {width}",
+                width_of(&rule)
+            );
+        }
+    }
+
+    #[test]
+    fn a_screen_too_narrow_for_one_dash_draws_nothing_rather_than_panicking() {
+        assert_eq!(width_of(&more(0)), 0);
+    }
+
+    #[test]
+    fn it_is_drawn_in_the_rule_colour_so_it_never_competes_with_the_text() {
+        let rule = more(20);
+        assert_eq!(rule.spans[0].style.fg, Some(colour::rule()));
+    }
+}

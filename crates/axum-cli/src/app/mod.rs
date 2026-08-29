@@ -134,6 +134,18 @@ pub struct App {
     pub picking: Option<Picking>,
     /// How much of each tool result to show.
     pub detail: axum_tui::transcript::Detail,
+    /// Tool blocks showing the opposite of `detail`, because they were clicked.
+    ///
+    /// Membership rather than an absolute state, so the fold key still moves every block a
+    /// person has not had an opinion about, and every block they have keeps the one they gave.
+    pub flipped: std::collections::BTreeSet<ToolCallId>,
+    /// Which tool call each rendered line belongs to, parallel to the scrollback.
+    pub owners: Vec<Option<ToolCallId>>,
+    /// Which screen rows the transcript occupies, so a click can be turned into a line.
+    ///
+    /// Recorded by the drawing pass because only it knows: the live region ends where the
+    /// prompt begins, and the prompt grows with what has been typed into it.
+    pub live_rows: std::ops::Range<u16>,
 }
 
 impl Default for App {
@@ -162,6 +174,9 @@ impl App {
             picker: None,
             picking: None,
             detail: axum_tui::transcript::Detail::Preview,
+            flipped: std::collections::BTreeSet::new(),
+            owners: Vec::new(),
+            live_rows: 0..0,
             pending_notice: None,
             no_model: None,
             asking_about: axum_proto::permit::Action::Read {
@@ -722,3 +737,5 @@ impl App {
         });
     }
 }
+
+mod folding;
