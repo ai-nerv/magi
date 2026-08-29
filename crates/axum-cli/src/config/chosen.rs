@@ -46,16 +46,24 @@ pub(super) fn asked(loaded: &Loaded) -> Option<String> {
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+pub(crate) mod tests {
     use super::*;
-    use crate::config::{backend, builtin, shipped};
+    use crate::config::{backend, builtin};
     use axum_lua::Engine;
+
+    /// The checkout's own `config/`, read at run time as the product reads it.
+    pub(crate) fn checkout(name: &str) -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../config")
+            .join(name);
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    }
 
     /// A catalog loaded the way the real thing loads it, with `config` layered over the top.
     pub(super) fn loaded(config: &str) -> Loaded {
         let mut engine = Engine::new();
         engine
-            .run(shipped("providers.lua").expect("shipped"), "providers.lua")
+            .run(&checkout("providers.lua"), "providers.lua")
             .expect("catalog");
         engine.run(config, "test").expect("config");
         engine.harvest();
@@ -134,52 +142,71 @@ mod asked_tests {
     }
 }
 
-/// One entry point, and what happens when it names nothing.
+/// One entry point, reading a tree the binary does not carry.
 #[cfg(test)]
 mod entry_point {
-    use super::tests::loaded;
-    use crate::config::{SHIPPED, SHIPPED_INIT, shipped};
+    use super::tests::checkout;
+    use crate::config::kind;
 
     #[test]
-    fn the_shipped_entry_point_names_every_shipped_file() {
-        // The two are kept in step by hand — the constant is the fallback for an old config, so
-        // a file in one and not the other is a file that loads for some people and not others.
-        for (path, _) in SHIPPED {
-            assert!(
-                SHIPPED_INIT.contains(&format!("axum.load(\"{path}\")")),
-                "init.lua never loads {path}"
-            );
+    fn the_entry_point_names_every_file_beside_it() {
+        // Nothing is discovered by scanning, so a file in the tree that `init.lua` never loads
+        // is a file that ships and does nothing.
+        let init = checkout("init.lua");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir).expect("the config tree") {
+            let path = entry.expect("entry").path();
+            let name = path
+                .file_name()
+                .expect("named")
+                .to_string_lossy()
+                .into_owned();
+            if name == "init.lua" {
+                continue;
+            }
+            if path.is_dir() {
+                for inner in std::fs::read_dir(&path).expect("subdirectory") {
+                    let leaf = inner
+                        .expect("entry")
+                        .file_name()
+                        .to_string_lossy()
+                        .into_owned();
+                    assert!(
+                        init.contains(&format!("axum.load(\"{name}/{leaf}\")")),
+                        "init.lua never loads {name}/{leaf}"
+                    );
+                    checked += 1;
+                }
+            } else if name.ends_with(".lua") {
+                assert!(
+                    init.contains(&format!("axum.load(\"{name}\")")),
+                    "init.lua never loads {name}"
+                );
+                checked += 1;
+            }
         }
+        assert!(checked >= 3, "only {checked} files checked");
     }
 
     #[test]
     fn stubs_are_named_before_the_tools_that_open_them() {
-        let order = |prefix: &str| {
-            SHIPPED
-                .iter()
-                .position(|(p, _)| p.starts_with(prefix))
-                .expect("present")
-        };
-        assert!(order("stubs/") < order("tools/"));
+        // A tool description opens its sibling's stub as it loads, so the order in the entry
+        // point is load-bearing rather than tidy.
+        let init = checkout("init.lua");
+        let stub = init.find("axum.load(\"stubs/").expect("a stub is loaded");
+        let tools = init.find("axum.load(\"tools").expect("tools are loaded");
+        assert!(stub < tools);
     }
 
     #[test]
-    fn every_shipped_path_resolves_to_a_source() {
-        for (path, _) in SHIPPED {
-            assert!(shipped(path).is_some(), "{path}");
-        }
-        assert!(shipped("apis/nothing.lua").is_none());
-    }
-
-    #[test]
-    fn an_old_entry_point_still_gets_a_catalog() {
-        // An `init.lua` predating `axum.load` names nothing. Left alone it would load no
-        // providers at all, and the upgrade would read as "axum knows no models".
-        let loaded = loaded("");
-        assert!(
-            loaded.providers.len() > 30,
-            "only {}",
-            loaded.providers.len()
-        );
+    fn a_merged_file_and_a_split_one_land_in_the_same_bucket() {
+        // The tree keeps one file per kind; somebody who prefers a file per protocol should not
+        // have to tell the host about it.
+        assert_eq!(kind("apis.lua"), Some("apis"));
+        assert_eq!(kind("apis/google.lua"), Some("apis"));
+        assert_eq!(kind("tools.lua"), Some("tools"));
+        assert_eq!(kind("stubs/oslo.lua"), Some("stubs"));
+        assert_eq!(kind("providers.lua"), None);
     }
 }

@@ -382,7 +382,9 @@ fn a_peer_that_cannot_start_says_why() {
 fn the_shipped_config_names_the_binary_that_is_running() {
     // `command = "axum"` resolves through PATH, so it finds whichever copy the shell sees --
     // an older install, or none. `axum.self` is the one actually running.
-    let source = include_str!("../../../config/tools/shell.lua");
+    // Read, not compiled in: the product reads its configuration and carries no copy.
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/tools.lua");
+    let source = std::fs::read_to_string(&path).expect("the checkout's tools");
     assert!(
         source.contains("command = axum.self"),
         "bash.lua must not rely on PATH"

@@ -10,8 +10,13 @@ use axum_tools::Registry;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-const HEXE_TOOL: &str = include_str!("../../../config/tools/hexe.lua");
-const HEXE_STUB: &str = include_str!("../../../config/stubs/hexe.lua");
+/// Read at run time, because the product does: nothing under `config/` is compiled in.
+fn config(name: &str) -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../config")
+        .join(name);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
 
 fn is_live(name: &str) -> bool {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
@@ -26,9 +31,9 @@ fn is_live(name: &str) -> bool {
 #[test]
 fn the_hexe_tool_answers_when_a_mux_is_running() {
     let mut engine = Engine::new();
-    engine.install_stubs(&[("hexe".to_owned(), HEXE_STUB.to_owned())]);
+    engine.install_stubs(&[("hexe".to_owned(), config("stubs/hexe.lua"))]);
     engine
-        .run(HEXE_TOOL, "hexe.lua")
+        .run(&config("tools.lua"), "tools.lua")
         .expect("the tool declaration must run");
 
     let engine = Rc::new(RefCell::new(engine));
@@ -77,7 +82,7 @@ fn the_hexe_tool_answers_when_a_mux_is_running() {
 fn a_lua_tool_reports_an_absent_sibling_as_information_not_a_failure() {
     let mut engine = Engine::new();
     // No stubs installed at all, which is what an install without `make configs` looks like.
-    engine.run(HEXE_TOOL, "hexe.lua").expect("run");
+    engine.run(&config("tools.lua"), "tools.lua").expect("run");
     let engine = Rc::new(RefCell::new(engine));
     let mut registry = Registry::new();
     axum_lua::tool::install(Rc::clone(&engine), &mut registry);

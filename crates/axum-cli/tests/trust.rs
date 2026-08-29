@@ -14,14 +14,25 @@ use std::process::Command;
 fn workspace(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("axum-trust-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
+    install_config(&dir.join("config/axum"));
     std::fs::create_dir_all(dir.join("config/axum/tools")).expect("mkdir");
     std::fs::create_dir_all(dir.join("project")).expect("mkdir");
     dir
 }
 
 /// What the machine's own configuration says.
+///
+/// `init.lua` is appended to rather than replaced: it is the entry point, and a test that
+/// overwrote it would be testing a config that loads no protocols and no catalog.
 fn machine(dir: &Path, file: &str, source: &str) {
-    std::fs::write(dir.join("config/axum").join(file), source).expect("write");
+    let path = dir.join("config/axum").join(file);
+    if file == "init.lua" {
+        let mut existing = std::fs::read_to_string(&path).unwrap_or_default();
+        existing.push_str(source);
+        std::fs::write(&path, existing).expect("write");
+        return;
+    }
+    std::fs::write(path, source).expect("write");
 }
 
 /// What the checked-out repository says.
@@ -146,9 +157,9 @@ axum.tool("mine", {
 }
 
 #[test]
-fn an_installed_tool_file_replaces_the_one_that_ships() {
-    // `make configs` writes these files so they can be edited. An edit that changes nothing is
-    // the bug this pins: for the whole of M3 they were installed and never read.
+fn the_installed_tool_file_is_the_one_that_runs() {
+    // There is no shipped copy to lose to any more: the binary carries no configuration, so the
+    // file on disk is the only one there is. This pins that it is actually read.
     let dir = workspace("override");
     // The transport, not the description: since M4 a peer declares its own description and
     // that wins, so asserting on one tests which binary happens to be on PATH rather than
@@ -156,7 +167,7 @@ fn an_installed_tool_file_replaces_the_one_that_ships() {
     // found had no `ext` subcommand, the peer never started, and the config's claim stood.
     machine(
         &dir,
-        "tools/shell.lua",
+        "tools.lua",
         r#"
 axum.tool("shell", {
   description = "A shell that is not a peer at all.",
@@ -242,10 +253,10 @@ fn no_two_shipped_tool_files_claim_the_same_tool() {
     // command anyone ran answered "bwrap: Can't find source path".
     //
     // Anything under `config/` is live configuration. This is the check that says so.
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/tools");
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config");
     let mut claimed: std::collections::BTreeMap<String, Vec<String>> =
         std::collections::BTreeMap::new();
-    for entry in std::fs::read_dir(&dir).expect("config/tools").flatten() {
+    for entry in std::fs::read_dir(&dir).expect("config").flatten() {
         let path = entry.path();
         if path.extension().is_none_or(|e| e != "lua") {
             continue;
@@ -274,4 +285,26 @@ fn no_two_shipped_tool_files_claim_the_same_tool() {
             "{tool} is declared by {files:?}; the last one installed wins and the rest vanish"
         );
     }
+}
+
+/// Copy the checkout's `config/` into a test's config directory.
+///
+/// The binary carries no configuration, so a test that isolates `XDG_CONFIG_HOME` has to install
+/// one — the same thing `make configs` does for a person. Without it there is no entry point, and
+/// every test fails identically at "no configuration".
+fn install_config(into: &Path) {
+    fn copy(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).expect("mkdir");
+        for entry in std::fs::read_dir(from).expect("read config") {
+            let path = entry.expect("entry").path();
+            let name = path.file_name().expect("named");
+            if path.is_dir() {
+                copy(&path, &to.join(name));
+            } else {
+                std::fs::copy(&path, to.join(name)).expect("copy");
+            }
+        }
+    }
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config");
+    copy(&source, into);
 }

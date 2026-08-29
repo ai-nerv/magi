@@ -243,34 +243,14 @@ fn delta_from_json(value: &serde_json::Value) -> Option<Delta> {
     })
 }
 
-/// The protocol descriptions axum ships.
+/// An engine with the protocols in `path` registered.
 ///
-/// Compiled in so a fresh install speaks something, and registered through the same registrar a
-/// user's own file would use — a private protocol is an extra file, not a fork.
-pub const BUILTIN: &[(&str, &str)] = &[
-    (
-        "anthropic-messages",
-        include_str!("../../../../config/apis/anthropic-messages.lua"),
-    ),
-    (
-        "openai-completions",
-        include_str!("../../../../config/apis/openai-completions.lua"),
-    ),
-    (
-        "openai-responses",
-        include_str!("../../../../config/apis/openai-responses.lua"),
-    ),
-    ("google", include_str!("../../../../config/apis/google.lua")),
-    (
-        "pi-messages",
-        include_str!("../../../../config/apis/pi-messages.lua"),
-    ),
-];
-
-/// An engine with every built-in protocol registered.
-pub fn engine_with_builtins() -> Result<Engine, crate::LuaError> {
+/// A path, not a compiled-in copy. A protocol description is configuration: it changes without
+/// the binary changing, and a binary that carries one is a binary you have to rebuild to fix a
+/// wire format.
+pub fn engine_with(sources: &[(String, String)]) -> Result<Engine, crate::LuaError> {
     let mut engine = Engine::new();
-    for (name, source) in BUILTIN {
+    for (name, source) in sources {
         engine.run(source, name)?;
     }
     Ok(engine)
@@ -295,6 +275,31 @@ pub fn why_unspoken(api: &str) -> Option<&'static str> {
         .iter()
         .find(|(name, _)| *name == api)
         .map(|(_, why)| *why)
+}
+
+/// The protocol descriptions in the checkout, read at run time. **For tests.**
+///
+/// The product reads its configuration from the config directory and carries no copy. A test
+/// still needs a real protocol to drive, so this is the one place that knows where the tree is —
+/// and it is a helper, not a path anything shipped depends on.
+///
+/// # Errors
+/// When the checkout's `config/apis.lua` cannot be read.
+pub fn shipped_apis() -> Result<Vec<(String, String)>, crate::LuaError> {
+    const PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../config/apis.lua");
+    let source = std::fs::read_to_string(PATH).map_err(|source| crate::LuaError::Io {
+        file: PATH.to_owned(),
+        source,
+    })?;
+    Ok(vec![("apis".to_owned(), source)])
+}
+
+/// An engine with those protocols registered. **For tests.**
+///
+/// # Errors
+/// When the descriptions cannot be read or do not load.
+pub fn engine_with_builtins() -> Result<Engine, crate::LuaError> {
+    engine_with(&shipped_apis()?)
 }
 
 #[cfg(test)]

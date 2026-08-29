@@ -5,23 +5,13 @@
 
 -- What runs. Nothing is discovered by scanning: a file not named here does not load.
 -- `axum.load` takes the installed copy if there is one and the shipped copy otherwise, so
--- replacing one file means replacing one file.
+-- replacing one file means replacing one file. Stubs first — a tool opens one as it loads.
 axum.load("stubs/axum.lua")
 axum.load("stubs/hexe.lua")
 axum.load("stubs/oslo.lua")
-
-axum.load("apis/openai-completions.lua")
-axum.load("apis/openai-responses.lua")
-axum.load("apis/anthropic-messages.lua")
-axum.load("apis/google.lua")
-axum.load("apis/pi-messages.lua")
-
+axum.load("apis.lua")
 axum.load("providers.lua")
-axum.load("system.lua")
-
-axum.load("tools/shell.lua")
-axum.load("tools/hexe.lua")
-axum.load("tools/oslo.lua")
+axum.load("tools.lua")
 
 -- Which model to use, as `axum models` prints it.
 axum.model = "anthropic/claude-sonnet-4-5"
@@ -118,3 +108,23 @@ axum.model = "anthropic/claude-sonnet-4-5"
 --   -- brightly enough that the light moving along it disappears into its own frame.
 --   border = 238, scan = 254,
 -- }
+
+-- What axum tells the model it is. axum appends the session's facts (directory, platform,
+-- date) and the project's `AGENTS.md`.
+axum.system = [[
+You are axum, a coding agent working in a terminal alongside a person at their computer.
+
+Do the work rather than describing it. When a change is needed, make it with `edit` or `write`;
+when something needs checking, check it with `read` or `shell`. Prefer reading the code to
+guessing about it, and prefer running a command to predicting its output.
+
+Match the code you are editing: its naming, its idioms, its comment density. A change that
+reads like the file around it is easier to review than one that is merely correct.
+
+Be brief. The person is reading a terminal, not a report. Say what you did and what it means;
+skip preamble, skip summarising what they just watched happen, and do not close by offering
+further help. If something failed, say so plainly with the output rather than hedging.
+
+Ask only when the answer would change what you do and you cannot find it yourself. Otherwise
+make the ordinary judgement call, say which one you made, and carry on.
+]]

@@ -33,38 +33,32 @@ pub struct Loaded {
 /// Run `init.lua`, then everything it asked for, and collect what they declared.
 ///
 /// **One entry point.** The host runs `init.lua` and nothing else by name; every other file is
-/// reached through `axum.load`, from `init.lua` or from a file it loaded. Nothing is discovered
-/// by scanning a directory, so a file that is not named does not run — which is the property a
-/// plugin mechanism will need later, and the one a scanner cannot offer.
+/// reached through `axum.load`. Nothing is discovered by scanning, so a file that is not named
+/// does not run — the property a plugin mechanism will need, and one a scanner cannot offer.
 ///
-/// A missing user `init.lua` is not an error; the shipped one runs instead. A file that *exists*
-/// and does not load is fatal, because it expressed an intention that has not been carried out.
+/// **Nothing is compiled in.** A protocol description, a catalog and a tool are configuration:
+/// they change without the binary changing, and a binary carrying a copy is a binary you rebuild
+/// to fix a wire format. So every one of them is read from the config directory at run time, and
+/// `make configs` is what puts them there.
 pub fn load() -> Result<Loaded, LuaError> {
     let mut engine = Engine::new();
     let mut apis: Vec<(String, String)> = Vec::new();
     let mut tools: Vec<(String, String)> = Vec::new();
     let mut stubs: Vec<(String, String)> = Vec::new();
 
-    // The protocol descriptions the adapter crate owns. Not in `config/` and not loadable, so
-    // they are the one thing that runs before the entry point.
-    for (name, source) in axum_lua::adapter::BUILTIN {
-        engine.run(source, name)?;
-        apis.push(((*name).to_owned(), (*source).to_owned()));
-    }
-
-    let entry = config_dir().map(|dir| dir.join("init.lua"));
-    match entry.as_ref().filter(|path| path.exists()) {
-        Some(path) => engine.run_file(path)?,
-        None => engine.run(SHIPPED_INIT, "init.lua")?,
-    }
-    // An entry point that named nothing is one written before there was anything to name --
-    // somebody's `init.lua` from an older install, holding their model and their palette and no
-    // `axum.load` lines. It gets the default set, so the upgrade does not present as "axum knows
-    // no models". The list and not the shipped file: running that would re-assign every setting
-    // the user had just made, and their model would silently become the shipped one.
-    if engine.peek_loads().is_empty() {
-        engine.load_all(SHIPPED.iter().map(|(path, _)| (*path).to_owned()));
-    }
+    let entry = config_dir()
+        .map(|dir| dir.join("init.lua"))
+        .filter(|path| path.exists())
+        .ok_or_else(|| LuaError::Io {
+            file: config_dir()
+                .map(|d| d.join("init.lua").display().to_string())
+                .unwrap_or_else(|| "init.lua".to_owned()),
+            source: std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "no configuration; run `make configs` to install it",
+            ),
+        })?;
+    engine.run_file(&entry)?;
 
     // Drained in rounds so a loaded file may load more, and the stubs of a round are installed
     // before its tools run: a tool description opens its sibling's stub as it loads.
@@ -84,19 +78,22 @@ pub fn load() -> Result<Loaded, LuaError> {
             };
             round.push((path, source));
         }
-        for (path, source) in round.iter().filter(|(p, _)| p.starts_with("stubs/")) {
+        for (path, source) in round.iter().filter(|(p, _)| kind(p) == Some("stubs")) {
             layer(&mut stubs, stem(path), source.clone());
         }
         engine.install_stubs(&stubs);
         for (path, source) in &round {
-            if path.starts_with("stubs/") {
-                continue;
-            }
-            engine.run(source, path)?;
-            if path.starts_with("apis/") {
-                layer(&mut apis, stem(path), source.clone());
-            } else if path.starts_with("tools/") {
-                layer(&mut tools, stem(path), source.clone());
+            match kind(path) {
+                Some("stubs") => continue,
+                Some("apis") => {
+                    engine.run(source, path)?;
+                    layer(&mut apis, stem(path), source.clone());
+                }
+                Some("tools") => {
+                    engine.run(source, path)?;
+                    layer(&mut tools, stem(path), source.clone());
+                }
+                _ => engine.run(source, path)?,
             }
         }
     }
@@ -206,13 +203,12 @@ fn declare(id: &str, spec: &serde_json::Value) -> Result<Provider, String> {
     serde_json::from_value(serde_json::Value::Object(object)).map_err(|e| e.to_string())
 }
 
-/// The built-in catalog alone, for when a user config is broken or irrelevant.
+/// The catalog alone, for when the rest of a config is broken or irrelevant.
 pub fn builtin() -> Result<Vec<Provider>, LuaError> {
     let mut engine = Engine::new();
-    engine.run(
-        shipped("providers.lua").unwrap_or_default(),
-        "providers.lua",
-    )?;
+    if let Some(source) = source_of("providers.lua") {
+        engine.run(&source, "providers.lua")?;
+    }
     engine.harvest();
     Ok(collect(engine.config(), Vec::new(), Vec::new(), Vec::new(), None)?.providers)
 }
@@ -261,9 +257,7 @@ pub fn catalog(loaded: &Loaded) -> axum_host::catalog::Catalog {
 }
 
 mod chosen;
-mod shipped;
 use chosen::{asked, chosen};
-use shipped::{SHIPPED, SHIPPED_INIT, shipped};
 mod settings;
 
 use settings::{grants, options, system};
@@ -356,11 +350,11 @@ fn watched_files() -> Vec<std::path::PathBuf> {
     };
     let mut out = Vec::new();
 
-    for kind in ["apis", "tools", "stubs", "peers"] {
-        out.extend(lua_files(&dir.join(kind)));
+    for group in ["apis", "tools", "stubs", "peers"] {
+        out.extend(lua_files(&dir.join(group)));
     }
 
-    for name in ["system.lua", "providers.lua", "init.lua"] {
+    for name in ["apis.lua", "tools.lua", "providers.lua", "init.lua"] {
         let path = dir.join(name);
         if path.exists() {
             out.push(path);
@@ -556,7 +550,10 @@ mod tests {
     fn with(extra: &str) -> Vec<Provider> {
         let mut engine = Engine::new();
         engine
-            .run(shipped("providers.lua").expect("shipped"), "providers.lua")
+            .run(
+                &crate::config::chosen::tests::checkout("providers.lua"),
+                "providers.lua",
+            )
             .expect("builtin");
         engine.run(extra, "user.lua").expect("user config");
         engine.harvest();
@@ -673,14 +670,17 @@ mod tests {
     }
 
     #[test]
-    fn the_compiled_in_protocols_are_carried_as_a_starting_point() {
-        let loaded = load().expect("the built-in configuration must load");
+    fn the_protocols_reach_the_worker() {
+        // Named for the file they came from, because the binary no longer knows what protocols
+        // exist — it hands the worker whatever the entry point loaded.
+        let loaded = load().expect("the installed configuration must load");
+        assert!(!loaded.apis.is_empty(), "nothing to speak with");
         assert!(
             loaded
                 .apis
                 .iter()
-                .any(|(name, _)| name == "openai-completions"),
-            "a fresh install must still speak"
+                .any(|(_, source)| source.contains("openai-completions")),
+            "the shipped dialects are among them"
         );
     }
 
@@ -759,21 +759,13 @@ mod staleness_tests {
     }
 }
 
-/// The source behind one `axum.load` path: the installed copy, else the shipped one.
+/// The source behind one `axum.load` path, read from the config directory.
 ///
-/// Disk first, so overriding one file overrides one file rather than obliging somebody to copy
-/// the whole tree. A path naming neither is skipped rather than fatal: a config may load a file
-/// it also ships, and a missing optional is not a broken configuration.
+/// A path that is not there is skipped rather than fatal: an entry point may load a file that is
+/// optional on this machine, and a missing optional is not a broken configuration.
 fn source_of(path: &str) -> Option<String> {
-    if let Some(dir) = config_dir() {
-        let installed = dir.join(path);
-        if installed.exists()
-            && let Ok(text) = std::fs::read_to_string(&installed)
-        {
-            return Some(text);
-        }
-    }
-    shipped(path).map(ToOwned::to_owned)
+    let file = config_dir()?.join(path);
+    std::fs::read_to_string(file).ok()
 }
 
 /// The name a loaded file registers under: its stem, without directory or extension.
@@ -782,4 +774,18 @@ fn stem(path: &str) -> String {
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_owned())
+}
+
+/// Which bucket a loaded path belongs to, if any.
+///
+/// By the first path component, so `apis.lua` and `apis/google.lua` land in the same place: the
+/// shipped tree keeps one file per kind, and somebody who prefers a file per protocol should not
+/// have to tell the host about it.
+fn kind(path: &str) -> Option<&'static str> {
+    for name in ["apis", "tools", "stubs"] {
+        if path == format!("{name}.lua") || path.starts_with(&format!("{name}/")) {
+            return Some(name);
+        }
+    }
+    None
 }

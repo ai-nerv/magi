@@ -88,7 +88,7 @@ fn workspace(name: &str, base_url: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("run")).expect("mkdir");
     std::fs::create_dir_all(dir.join("sessions")).expect("mkdir");
-    std::fs::create_dir_all(dir.join("config/axum")).expect("mkdir");
+    install_config(&dir.join("config/axum"));
     std::fs::write(
         dir.join("config/axum/providers.lua"),
         format!(
@@ -104,11 +104,12 @@ fn workspace(name: &str, base_url: &str) -> PathBuf {
     .expect("write providers");
     // A setting, not a declaration: choosing among what exists carries no authority, so this
     // could equally have gone in the project file.
-    std::fs::write(
-        dir.join("config/axum/init.lua"),
-        "axum.model = \"fake/m\"\n",
-    )
-    .expect("write init");
+    // Appended, not replaced: the entry point names what loads, and a test that overwrote it
+    // would be testing a config with no protocols in it.
+    let init = dir.join("config/axum/init.lua");
+    let mut source = std::fs::read_to_string(&init).expect("the installed entry point");
+    source.push_str("\naxum.model = \"fake/m\"\n");
+    std::fs::write(&init, source).expect("write init");
     dir
 }
 
@@ -524,4 +525,26 @@ fn stopping_when_nothing_runs_says_so_rather_than_failing() {
         String::from_utf8_lossy(&output.stdout)
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Copy the checkout's `config/` into a test's config directory.
+///
+/// The binary carries no configuration, so a test that isolates `XDG_CONFIG_HOME` has to install
+/// one — the same thing `make configs` does for a person. Without it there is no entry point, and
+/// every test fails identically at "no configuration".
+fn install_config(into: &Path) {
+    fn copy(from: &Path, to: &Path) {
+        std::fs::create_dir_all(to).expect("mkdir");
+        for entry in std::fs::read_dir(from).expect("read config") {
+            let path = entry.expect("entry").path();
+            let name = path.file_name().expect("named");
+            if path.is_dir() {
+                copy(&path, &to.join(name));
+            } else {
+                std::fs::copy(&path, to.join(name)).expect("copy");
+            }
+        }
+    }
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config");
+    copy(&source, into);
 }
