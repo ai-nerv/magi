@@ -346,7 +346,9 @@ fn report_pipe() -> anyhow::Result<(std::path::PathBuf, Receiver<String>)> {
 }
 
 /// Spawn one shell, and a thread turning its output into lines.
-fn spawn_shell() -> anyhow::Result<(Child, std::fs::File, Receiver<String>, std::path::PathBuf)> {
+fn spawn_shell(
+    nonce: &str,
+) -> anyhow::Result<(Child, std::fs::File, Receiver<String>, std::path::PathBuf)> {
     let (controller, device) = open_pty()?;
     // **A terminal on all three.** A shell writing to a pipe block-buffers, so nothing arrives
     // until it exits — which is why nothing came back at all once this ran the user's own shell
@@ -376,23 +378,36 @@ fn spawn_shell() -> anyhow::Result<(Child, std::fs::File, Receiver<String>, std:
         }
     });
 
-    // The first thing the shell is told, before any command can be sent.
+    // The first two things the shell is told, before any command can be sent.
+    //
+    // A function rather than three lines per call, because a shell with a history records
+    // everything it is fed as though somebody typed it — which is a feature: oslo keeps the
+    // `axum` profile's history and that is the log of what the agent did. Three lines of
+    // plumbing per command made that log unreadable. One line per call, holding the command
+    // itself, leaves a history you can search for what was actually run.
     let (path, incoming) = report_pipe()?;
     writeln!(to_shell, "exec {REPORT_FD}>'{}'", path.display())?;
+    writeln!(
+        to_shell,
+        "__axum() {{ printf '\\n__axum_{nonce}_%s__o\\n' \"$2\" >&{REPORT_FD}; \
+         {{ eval \"$1\" ; __axum_status=$? ; }} < /dev/null >&{REPORT_FD} 2>&{REPORT_FD}; \
+         printf '\\n__axum_{nonce}_%s__c%s\\n' \"$2\" \"$__axum_status\" >&{REPORT_FD}; }}"
+    )?;
     to_shell.flush()?;
     Ok((child, to_shell, incoming, path))
 }
 
 impl Session {
     fn start() -> anyhow::Result<Self> {
-        let (child, stdin, lines, fifo) = spawn_shell()?;
+        let nonce = nonce();
+        let (child, stdin, lines, fifo) = spawn_shell(&nonce)?;
         Ok(Self {
             child,
             stdin,
             lines,
             fifo,
             interrupted: Arc::new(AtomicBool::new(false)),
-            nonce: nonce(),
+            nonce,
             seq: 0,
             dead: false,
         })
@@ -400,7 +415,11 @@ impl Session {
 
     /// Replace the shell, keeping the interrupt flag the reader thread already holds.
     fn restart(&mut self) -> anyhow::Result<()> {
-        let (child, stdin, lines, fifo) = spawn_shell()?;
+        // A fresh marker, because a line from the abandoned shell arriving late must not be
+        // able to end a command in this one. Made before the shell, which bakes it into its
+        // helper so a call site carries only its sequence number.
+        let nonce = nonce();
+        let (child, stdin, lines, fifo) = spawn_shell(&nonce)?;
         let _ = self.child.kill();
         let _ = self.child.wait();
         let _ = std::fs::remove_file(&self.fifo);
@@ -408,9 +427,7 @@ impl Session {
         self.stdin = stdin;
         self.lines = lines;
         self.fifo = fifo;
-        // A fresh marker, because a line from the abandoned shell arriving late must not be
-        // able to end a command in this one.
-        self.nonce = nonce();
+        self.nonce = nonce;
         self.seq = 0;
         self.dead = false;
         Ok(())
@@ -445,12 +462,10 @@ impl Session {
         // instantly. Separate lines mean the markers are parsed apart from what they bracket,
         // and `eval` moves a bad command from a parse error to a runtime one, where its message
         // still reaches the person who wrote it.
+        // One line, and the command is the readable part of it. Three lines of plumbing per call
+        // is three lines in the history of a shell that keeps one.
         let quoted = command.replace('\'', r"'\''");
-        let script = format!(
-            "printf '\\n%s\\n' \"{open}\" >&{REPORT_FD}\n\
-             {{ eval '{quoted}' ; __axum_status=$? ; }} < /dev/null >&{REPORT_FD} 2>&{REPORT_FD}\n\
-             printf '\\n%s%s\\n' \"{close}\" \"$__axum_status\" >&{REPORT_FD}\n"
-        );
+        let script = format!("__axum '{quoted}' {}\n", self.seq);
         if write!(self.stdin, "{script}").is_err() || self.stdin.flush().is_err() {
             return ("the shell is not accepting input".to_owned(), true);
         }
@@ -687,44 +702,6 @@ mod stdin_tests {
     }
 }
 
-#[cfg(test)]
-mod which_shell_tests {
-    use super::*;
-
-    #[test]
-    fn a_shell_that_does_not_exist_is_not_used() {
-        // `$SHELL` records a login shell, which is not always a shell this machine has — a
-        // home directory carried between machines is the usual way that happens.
-        assert_eq!(shell_command_from(Some("/no/such/shell"), None), "sh");
-    }
-
-    #[test]
-    fn the_users_own_shell_wins_over_sh() {
-        assert_eq!(shell_command_from(Some("/bin/sh"), None), "/bin/sh");
-    }
-
-    #[test]
-    fn an_override_beats_the_login_shell() {
-        // `$AXUM_SHELL` exists so a session can differ from the login shell without changing it.
-        assert_eq!(
-            shell_command_from(Some("/bin/sh"), Some("/bin/sh")),
-            "/bin/sh"
-        );
-    }
-
-    #[test]
-    fn nothing_set_is_sh() {
-        assert_eq!(shell_command_from(None, None), "sh");
-    }
-
-    #[test]
-    fn the_name_is_what_the_model_is_told_it_is_running() {
-        assert_eq!(name_of("/usr/bin/oslo"), "oslo");
-        assert_eq!(name_of("sh"), "sh");
-    }
-}
-
-/// Remove terminal escape sequences from one line.
 ///
 /// A shell on a terminal writes colour, title and shell-integration codes into the same stream
 /// as its output. None of it is the command's, and a model handed `\u{1b}]3008;start=…` reads it
@@ -766,33 +743,5 @@ fn strip_escapes(line: &str) -> String {
 }
 
 #[cfg(test)]
-mod escape_tests {
-    use super::*;
-
-    #[test]
-    fn colour_is_removed_and_the_text_kept() {
-        assert_eq!(strip_escapes("\u{1b}[01;32mhello\u{1b}[00m"), "hello");
-    }
-
-    #[test]
-    fn shell_integration_codes_are_removed() {
-        // A model handed `]3008;start=…` reads it as data.
-        let noisy = "\u{1b}]3008;start=abc;cwd=/tmp\u{1b}\\hello";
-        assert_eq!(strip_escapes(noisy), "hello");
-    }
-
-    #[test]
-    fn an_osc_ending_in_bell_is_removed() {
-        assert_eq!(strip_escapes("\u{1b}]0;a title\u{7}text"), "text");
-    }
-
-    #[test]
-    fn plain_text_is_untouched() {
-        assert_eq!(strip_escapes("just output"), "just output");
-    }
-
-    #[test]
-    fn a_lone_escape_does_not_eat_the_line() {
-        assert_eq!(strip_escapes("a\u{1b}b"), "a");
-    }
-}
+#[path = "shell/choosing.rs"]
+mod choosing_tests;
