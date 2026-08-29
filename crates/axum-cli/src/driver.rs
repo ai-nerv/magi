@@ -47,6 +47,12 @@ pub async fn run(
     // daemon has already refused to start over it and said why.
     if let Ok(loaded) = crate::config::load() {
         crate::config::adopt_ui(&loaded);
+        // Worked out here because the answer needs the catalog, and the snapshot carries only
+        // whether there is a model — not why there is not. Same text the daemon refuses a prompt
+        // with, so meeting the problem at attach and meeting it at the first prompt say one thing.
+        if crate::config::backend(&loaded).is_none() {
+            app.no_model = Some(axum_host::no_model(&crate::config::catalog(&loaded)));
+        }
     }
     // Before anything else, because the answer to "why is my new tool not there" has to arrive
     // before the model is asked to use it. The daemon holds the tool set it was built with, and

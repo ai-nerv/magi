@@ -28,14 +28,31 @@ pub(super) fn chosen(
         .or_else(|| loaded.config.string("model").and_then(usable))
 }
 
+/// The name that was asked for, whether or not it can be used.
+///
+/// Not the same question as [`chosen`], and the difference is the whole of a bug. `chosen` answers
+/// "what will run", so it is `None` when the provider has no credential — and that is exactly the
+/// case the daemon's refusal exists to explain. Fed a `None`, it fell back to "No model is
+/// configured", which is false: one *is* configured, its key is not set, and saying so is the
+/// difference between a person setting a variable and a person believing the thing is broken.
+///
+/// So: what will actually run when something will, and otherwise the first name that was asked
+/// for, so `Catalog::unusable` has a name to give a reason about.
+pub(super) fn asked(loaded: &Loaded) -> Option<String> {
+    chosen(loaded)
+        .map(|(_, model)| model.qualified())
+        .or_else(|| remembered().model)
+        .or_else(|| loaded.config.string("model").map(ToOwned::to_owned))
+}
+
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::config::{BUILTIN, backend, builtin};
     use axum_lua::Engine;
 
     /// A catalog loaded the way the real thing loads it, with `config` layered over the top.
-    fn loaded(config: &str) -> Loaded {
+    pub(super) fn loaded(config: &str) -> Loaded {
         let mut engine = Engine::new();
         engine.run(BUILTIN, "providers.lua").expect("catalog");
         engine.run(config, "test").expect("config");
@@ -79,5 +96,38 @@ mod tests {
         let named = chosen(&loaded).map(|(_, model)| model.qualified());
         let running = backend(&loaded).map(|backend| backend.model.qualified());
         assert_eq!(named, running);
+    }
+}
+
+#[cfg(test)]
+mod asked_tests {
+    use super::tests::loaded;
+    use super::*;
+
+    #[test]
+    fn a_configured_model_is_named_even_when_its_provider_has_no_key() {
+        // The regression: pointing `Catalog::chosen` at what *runs* made it `None` in exactly
+        // the case the daemon's refusal exists to explain, and "No model is configured" came
+        // back on a machine whose `axum.model` was set and whose key merely was not.
+        let loaded = loaded(r#"axum.model = "anthropic/claude-opus-5""#);
+        let name = "anthropic/claude-opus-5";
+        let keyless = resolve(&loaded.providers, name).is_some_and(|(p, _)| !p.is_configured());
+        if !keyless {
+            return; // A machine with the key set has nothing to say here.
+        }
+        assert!(chosen(&loaded).is_none(), "the premise: it cannot be used");
+        assert_eq!(
+            asked(&loaded).as_deref(),
+            Some(name),
+            "but the refusal still has a name to give a reason about"
+        );
+    }
+
+    #[test]
+    fn what_runs_is_what_is_named_when_something_runs() {
+        let loaded = loaded(r#"axum.model = "openrouter/anthropic/claude-opus-5""#);
+        if let Some((_, model)) = chosen(&loaded) {
+            assert_eq!(asked(&loaded), Some(model.qualified()));
+        }
     }
 }

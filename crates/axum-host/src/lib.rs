@@ -388,17 +388,24 @@ async fn switch_thinking(
 
 /// Why there is no model, in the terms of the config that produced the situation.
 ///
+/// Public because the UI says the same thing at attach, and said it worse: a fixed "No model is
+/// configured" on screen while the daemon, on the first prompt, gave the real reason. Two answers
+/// to one question, and the one you met first was the wrong one.
+///
 /// "No model is configured" was the whole of what this said, and it was wrong in the common
 /// case: a model *is* configured, its provider's key is not set, and several other providers
 /// are ready and waiting. Somebody whose environment holds an OpenRouter key reads that message
 /// as OpenRouter being broken, because nothing in it mentions either fact.
-fn no_model(catalog: &crate::catalog::Catalog) -> String {
+#[must_use]
+pub fn no_model(catalog: &crate::catalog::Catalog) -> String {
     let chosen = catalog.chosen();
     let why = chosen.as_deref().and_then(|name| catalog.unusable(name));
     let ready = catalog.usable();
 
     let mut said = match (&chosen, &why) {
-        (Some(name), Some(reason)) => format!("`{name}` cannot be used: {reason}."),
+        // The reason already opens with the name, so prefixing it printed the model twice in
+        // one sentence.
+        (Some(_), Some(reason)) => format!("{reason}."),
         (Some(name), None) => format!("`{name}` is not a model this build knows about."),
         (None, _) => "No model is configured.".to_owned(),
     };
@@ -491,4 +498,47 @@ fn seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+#[cfg(test)]
+mod no_model_tests {
+    use crate::catalog::Catalog;
+
+    /// A catalog naming a model whose provider has no credential.
+    fn wanting(name: &str) -> Catalog {
+        let providers =
+            serde_json::from_value::<Vec<axum_provider::provider::Provider>>(serde_json::json!([{
+                "id": "paid", "name": "Paid Co", "api": "openai-completions",
+                "base_url": "https://paid.test/v1",
+                "auth": { "kind": "api-key", "vars": ["AXUM_TEST_NOT_SET"] },
+                "models": [{ "id": "x", "name": "X", "context_window": 1000, "max_tokens": 100 }]
+            }]))
+            .expect("providers");
+        Catalog {
+            chosen: Some(name.to_owned()),
+            providers,
+            ..Catalog::empty()
+        }
+    }
+
+    #[test]
+    fn a_configured_model_with_no_key_is_not_called_unconfigured() {
+        // What the UI met at attach was "No model is configured", on a machine whose
+        // `axum.model` was set and whose key merely was not. Two different problems, one
+        // sentence, and the sentence sent people to the wrong one.
+        let said = super::no_model(&wanting("paid/x"));
+        assert!(said.contains("AXUM_TEST_NOT_SET"), "{said}");
+        assert!(!said.contains("No model is configured"), "{said}");
+    }
+
+    #[test]
+    fn the_model_is_named_once() {
+        let said = super::no_model(&wanting("paid/x"));
+        assert_eq!(said.matches("paid/x").count(), 1, "{said}");
+    }
+
+    #[test]
+    fn nothing_chosen_is_still_nothing_configured() {
+        assert!(super::no_model(&Catalog::empty()).contains("No model is configured"));
+    }
 }

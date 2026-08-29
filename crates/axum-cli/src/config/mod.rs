@@ -258,14 +258,13 @@ pub fn catalog(loaded: &Loaded) -> axum_host::catalog::Catalog {
         options: options(loaded),
         system: system(loaded),
         grants: grants(loaded),
-        // The one the daemon will actually run, so the picker and the worker cannot disagree.
-        chosen: chosen(loaded).map(|(_, model)| model.qualified()),
+        chosen: asked(loaded),
         confine: loaded.config.boolean("confine").unwrap_or(false),
     }
 }
 
 mod chosen;
-use chosen::chosen;
+use chosen::{asked, chosen};
 mod settings;
 
 use settings::{grants, options, system};

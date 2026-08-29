@@ -87,6 +87,11 @@ pub struct App {
     /// so anything appended before the first snapshot is discarded by it. This is for things
     /// the UI knows at startup and the daemon does not.
     pending_notice: Option<String>,
+    /// What to say when the daemon reports no model, if the UI has worked out something better.
+    ///
+    /// The fixed sentence is a last resort: it claims nothing is configured, which is false in
+    /// the ordinary case of a configured model whose provider key is not set.
+    pub no_model: Option<String>,
     /// What the open permission prompt is about.
     ///
     /// Kept because a scope's label is written *in terms of the action* — "any `git` command",
@@ -158,6 +163,7 @@ impl App {
             picking: None,
             detail: axum_tui::transcript::Detail::Preview,
             pending_notice: None,
+            no_model: None,
             asking_about: axum_proto::permit::Action::Read {
                 path: String::new(),
             },
@@ -331,9 +337,10 @@ impl App {
                 // a model whose key nobody has set, and the whole of what it told you was
                 // `no-model` in a corner of the footer — true, and no help at all.
                 if unconfigured && empty && !self.choices.is_empty() {
-                    self.show_notice(
-                        "No model is configured. Type `/model` to choose one.".to_owned(),
-                    );
+                    let said = self.no_model.clone().unwrap_or_else(|| {
+                        "No model is configured. Type `/model` to choose one.".to_owned()
+                    });
+                    self.show_notice(said);
                 }
             }
             HarnessEvent::UserMessage { id, text, .. } => {
