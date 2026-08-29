@@ -96,7 +96,11 @@ mod tests {
         // The removals must not cost a config the things it is for.
         assert_ne!(probe("os.getenv"), "nil", "reading the environment is fine");
         assert_ne!(probe("os.time"), "nil");
-        assert_ne!(probe("load"), "nil", "the family's stubs are loaded chunks");
+        assert_ne!(
+            probe("load"),
+            "nil",
+            "the family's clients are loaded chunks"
+        );
         assert_ne!(probe("string.format"), "nil");
         assert_ne!(probe("table.concat"), "nil");
         assert_ne!(probe("axum.json.encode"), "nil");

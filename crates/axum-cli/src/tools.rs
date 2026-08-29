@@ -10,7 +10,7 @@ use axum_tools::Registry;
 pub fn print() -> Result<(), axum_lua::LuaError> {
     let loaded = crate::config::load()?;
     let mut engine = axum_lua::Engine::new();
-    engine.install_stubs(&loaded.stubs);
+    engine.install_clients(&loaded.clients);
     for (name, source) in &loaded.tools {
         engine.run(source, name)?;
     }

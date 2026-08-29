@@ -1,7 +1,7 @@
 //! Every model this daemon could talk to, and how to reach each one.
 //!
 //! A [`crate::turn::Backend`] names one model. Switching to another needs the parts a
-//! backend does *not* vary — the protocol descriptions, the tools, the stubs, the working
+//! backend does *not* vary — the protocol descriptions, the tools, the clients, the working
 //! directory — kept somewhere that outlives the choice. That is this.
 //!
 //! Held by the daemon rather than re-read from configuration on each switch, so `/model` picks
@@ -20,8 +20,8 @@ pub struct Catalog {
     pub apis: Vec<(String, String)>,
     /// Tool descriptions, as `(name, source)`.
     pub tools: Vec<(String, String)>,
-    /// The family's client stubs, as `(name, source)`.
-    pub stubs: Vec<(String, String)>,
+    /// The family's client clients, as `(name, source)`.
+    pub clients: Vec<(String, String)>,
     /// Where the session is rooted.
     pub cwd: std::path::PathBuf,
     /// Every provider that was declared.
@@ -51,7 +51,7 @@ impl Catalog {
         Self {
             apis: Vec::new(),
             tools: Vec::new(),
-            stubs: Vec::new(),
+            clients: Vec::new(),
             cwd: std::path::PathBuf::new(),
             providers: Vec::new(),
             options: axum_provider::api::Options::default(),
@@ -73,7 +73,7 @@ impl Catalog {
         provider.is_configured().then(|| Backend {
             apis: self.apis.clone(),
             tools: self.tools.clone(),
-            stubs: self.stubs.clone(),
+            clients: self.clients.clone(),
             cwd: self.cwd.clone(),
             provider: provider.clone(),
             model: model.clone(),
@@ -206,7 +206,7 @@ mod tests {
         Catalog {
             apis: Vec::new(),
             tools: Vec::new(),
-            stubs: Vec::new(),
+            clients: Vec::new(),
             cwd: std::env::temp_dir(),
             providers,
             options: axum_provider::api::Options::default(),

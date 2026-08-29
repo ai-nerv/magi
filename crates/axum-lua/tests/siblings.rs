@@ -10,8 +10,8 @@ use axum_lua::Engine;
 use axum_lua::peer::{SIBLINGS, call};
 use std::path::PathBuf;
 
-/// A sibling's stub, if its checkout is beside ours.
-fn stub_of(name: &str, relative: &str) -> Option<String> {
+/// A sibling's client, if its checkout is beside ours.
+fn client_of(name: &str, relative: &str) -> Option<String> {
     // Anchored to this crate, not the working directory: cargo runs a test from the package
     // root, so `..` is `crates/` and every sibling lookup silently found nothing.
     let tools = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -37,7 +37,7 @@ fn a_live_sibling_answers_verbs() {
     let mut talked_to = 0;
 
     for sibling in SIBLINGS {
-        let Some(stub) = stub_of(sibling.name, sibling.stub) else {
+        let Some(client) = client_of(sibling.name, sibling.client) else {
             continue;
         };
         if !is_live(sibling.name) {
@@ -48,20 +48,20 @@ fn a_live_sibling_answers_verbs() {
         let socket = axum_lua::peer::socket_of(sibling.name);
         let answer = call(
             &mut engine,
-            &stub,
+            &client,
             "verbs",
             socket.as_deref().map(|p| p.to_string_lossy()).as_deref(),
         )
         .expect("the call must run");
 
         // Not running is not failing. `is_live` looks for any socket under the sibling's
-        // runtime directory; the stub looks for the *particular* one it speaks to — `api@*` for
+        // runtime directory; the client looks for the *particular* one it speaks to — `api@*` for
         // hexe, `onix/oslo/*` for oslo. A mux that has exited leaves its pane sockets behind, so
         // the two disagree, and treating that as a failure tests whose machine it ran on rather
         // than whether the code works.
         if answer.contains("socket found") {
             eprintln!(
-                "{}: nothing listening for the stub to talk to",
+                "{}: nothing listening for the client to talk to",
                 sibling.name
             );
             continue;

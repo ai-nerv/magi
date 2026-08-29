@@ -21,8 +21,8 @@ use axum_tools::{Ops, Registry};
 pub struct Backend {
     /// Tool descriptions to run in the VM, as `(name, source)`.
     pub tools: Vec<(String, String)>,
-    /// The family's client stubs, so a Lua tool can talk to a sibling.
-    pub stubs: Vec<(String, String)>,
+    /// The family's client clients, so a Lua tool can talk to a sibling.
+    pub clients: Vec<(String, String)>,
     /// Where the session is rooted, which is what tools resolve paths against.
     pub cwd: std::path::PathBuf,
     /// Permissions a configuration granted before anybody was asked anything.

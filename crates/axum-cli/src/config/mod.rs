@@ -18,8 +18,8 @@ pub struct Loaded {
     pub config: Config,
     /// Every tool description that was run, as `(name, source)`.
     pub tools: Vec<(String, String)>,
-    /// The family's client stubs, as `(name, source)`.
-    pub stubs: Vec<(String, String)>,
+    /// The family's client clients, as `(name, source)`.
+    pub clients: Vec<(String, String)>,
     /// Every protocol description that was run, in order, as `(name, source)`.
     ///
     /// Kept so the daemon's worker can build its VM from exactly what the catalog was read
@@ -44,7 +44,7 @@ pub fn load() -> Result<Loaded, LuaError> {
     let mut engine = Engine::new();
     let mut apis: Vec<(String, String)> = Vec::new();
     let mut tools: Vec<(String, String)> = Vec::new();
-    let mut stubs: Vec<(String, String)> = Vec::new();
+    let mut clients: Vec<(String, String)> = Vec::new();
 
     let entry = config_dir()
         .map(|dir| dir.join("init.lua"))
@@ -60,8 +60,8 @@ pub fn load() -> Result<Loaded, LuaError> {
         })?;
     engine.run_file(&entry)?;
 
-    // Drained in rounds so a loaded file may load more, and the stubs of a round are installed
-    // before its tools run: a tool description opens its sibling's stub as it loads.
+    // Drained in rounds so a loaded file may load more, and the clients of a round are installed
+    // before its tools run: a tool description opens its sibling's client as it loads.
     let mut seen: BTreeSet<String> = BTreeSet::new();
     loop {
         let asked = engine.take_loads();
@@ -78,13 +78,13 @@ pub fn load() -> Result<Loaded, LuaError> {
             };
             round.push((path, source));
         }
-        for (path, source) in round.iter().filter(|(p, _)| kind(p) == Some("stubs")) {
-            layer(&mut stubs, stem(path), source.clone());
+        for (path, source) in round.iter().filter(|(p, _)| kind(p) == Some("clients")) {
+            layer(&mut clients, stem(path), source.clone());
         }
-        engine.install_stubs(&stubs);
+        engine.install_clients(&clients);
         for (path, source) in &round {
             match kind(path) {
-                Some("stubs") => continue,
+                Some("clients") => continue,
                 Some("apis") => {
                     engine.run(source, path)?;
                     layer(&mut apis, stem(path), source.clone());
@@ -128,7 +128,7 @@ pub fn load() -> Result<Loaded, LuaError> {
             eprintln!("axum: {refused}");
         }
     }
-    collect(engine.config(), apis, tools, stubs, machine.as_ref())
+    collect(engine.config(), apis, tools, clients, machine.as_ref())
 }
 
 /// Whether the working directory is one the machine's config vouched for.
@@ -165,7 +165,7 @@ fn collect(
     config: Config,
     apis: Vec<(String, String)>,
     tools: Vec<(String, String)>,
-    stubs: Vec<(String, String)>,
+    clients: Vec<(String, String)>,
     machine: Option<&Trusted>,
 ) -> Result<Loaded, LuaError> {
     let mut providers = Vec::new();
@@ -185,7 +185,7 @@ fn collect(
         config,
         apis,
         tools,
-        stubs,
+        clients,
         providers,
     })
 }
@@ -245,7 +245,7 @@ pub fn catalog(loaded: &Loaded) -> axum_host::catalog::Catalog {
     axum_host::catalog::Catalog {
         apis: loaded.apis.clone(),
         tools: loaded.tools.clone(),
-        stubs: loaded.stubs.clone(),
+        clients: loaded.clients.clone(),
         cwd: std::env::current_dir().unwrap_or_default(),
         providers: loaded.providers.clone(),
         options: options(loaded),
@@ -283,7 +283,7 @@ pub fn backend(loaded: &Loaded) -> Option<axum_host::turn::Backend> {
     Some(axum_host::turn::Backend {
         apis: loaded.apis.clone(),
         tools: loaded.tools.clone(),
-        stubs: loaded.stubs.clone(),
+        clients: loaded.clients.clone(),
         cwd: std::env::current_dir().unwrap_or_default(),
         provider: provider.clone(),
         model: model.clone(),
@@ -350,7 +350,7 @@ fn watched_files() -> Vec<std::path::PathBuf> {
     };
     let mut out = Vec::new();
 
-    for group in ["apis", "tools", "stubs", "peers"] {
+    for group in ["apis", "tools", "clients"] {
         out.extend(lua_files(&dir.join(group)));
     }
 
@@ -659,7 +659,7 @@ mod tests {
             config: Config::default(),
             apis: vec![("openai-completions".to_owned(), "-- edited".to_owned())],
             tools: Vec::new(),
-            stubs: Vec::new(),
+            clients: Vec::new(),
             providers: Vec::new(),
         };
         assert_eq!(
@@ -782,7 +782,7 @@ fn stem(path: &str) -> String {
 /// shipped tree keeps one file per kind, and somebody who prefers a file per protocol should not
 /// have to tell the host about it.
 fn kind(path: &str) -> Option<&'static str> {
-    for name in ["apis", "tools", "stubs"] {
+    for name in ["apis", "tools", "clients"] {
         if path == format!("{name}.lua") || path.starts_with(&format!("{name}/")) {
             return Some(name);
         }

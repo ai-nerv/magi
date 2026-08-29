@@ -236,7 +236,7 @@ async fn start_with_backend(name: &str, base_url: String) -> (PathBuf, PathBuf) 
     let backend = axum_host::turn::Backend {
         apis: axum_lua::adapter::shipped_apis().expect("the checkout's protocols"),
         tools: Vec::new(),
-        stubs: Vec::new(),
+        clients: Vec::new(),
         cwd: std::env::temp_dir(),
         provider: Provider {
             id: "fake".into(),
@@ -516,7 +516,7 @@ fn two_models() -> axum_host::catalog::Catalog {
     axum_host::catalog::Catalog {
         apis: axum_lua::adapter::shipped_apis().expect("the checkout's protocols"),
         tools: Vec::new(),
-        stubs: Vec::new(),
+        clients: Vec::new(),
         cwd: std::env::temp_dir(),
         providers,
         options: axum_provider::api::Options::default(),

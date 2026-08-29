@@ -71,7 +71,7 @@ pub(crate) mod tests {
             config: engine.config(),
             providers: builtin().expect("the built-in catalog must load"),
             tools: Vec::new(),
-            stubs: Vec::new(),
+            clients: Vec::new(),
             apis: Vec::new(),
         }
     }
@@ -190,6 +190,18 @@ mod entry_point {
     }
 
     #[test]
+    fn a_client_is_named_before_the_tool_that_loads_it() {
+        // A tool declares itself by loading its sibling's client library, so the order in the
+        // entry point is load-bearing rather than tidy.
+        let init = checkout("init.lua");
+        let client = init
+            .find("axum.load(\"clients/")
+            .expect("a client is loaded");
+        let tools = init.find("axum.load(\"tools").expect("tools are loaded");
+        assert!(client < tools);
+    }
+
+    #[test]
     fn a_protocol_is_named_before_the_catalog_that_picks_one() {
         // `api = "openai-completions"` in a provider is a name that has to already mean
         // something, so the order in the entry point is load-bearing rather than tidy.
@@ -208,7 +220,7 @@ mod entry_point {
         assert_eq!(kind("apis.lua"), Some("apis"));
         assert_eq!(kind("apis/google.lua"), Some("apis"));
         assert_eq!(kind("tools.lua"), Some("tools"));
-        assert_eq!(kind("stubs/oslo.lua"), Some("stubs"));
+        assert_eq!(kind("clients/oslo.lua"), Some("clients"));
         assert_eq!(kind("providers.lua"), None);
     }
 }

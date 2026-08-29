@@ -4,6 +4,9 @@
 -- assigned, descriptions go to a registrar, and the file returns nothing.
 
 -- What runs. Nothing is discovered by scanning: a file not named here does not load.
+-- Clients first — a tool loads its sibling's client library as it declares itself.
+axum.load("clients/hexe.lua")
+axum.load("clients/oslo.lua")
 axum.load("apis.lua")
 axum.load("providers.lua")
 axum.load("tools.lua")

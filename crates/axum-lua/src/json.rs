@@ -2,7 +2,7 @@
 //!
 //! A protocol description reads provider payloads, and every one of them is JSON. Lending a
 //! parser is cheaper and safer than each description carrying its own — the family's client
-//! stubs carry one only because they must run inside hosts that lend nothing.
+//! clients carry one only because they must run inside hosts that lend nothing.
 
 use crate::convert::{json_from_lua, lua_from_json};
 use luna::{Callback, CallbackReturn, Context, Table, Value};

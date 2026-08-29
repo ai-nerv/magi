@@ -90,7 +90,7 @@ fn backend(base_url: String) -> Backend {
         // Empty: this test builds its own adapter directly, and a worker is not involved.
         apis: Vec::new(),
         tools: Vec::new(),
-        stubs: Vec::new(),
+        clients: Vec::new(),
         cwd: std::env::temp_dir(),
         provider: Provider {
             id: "fake".into(),

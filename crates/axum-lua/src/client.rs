@@ -20,7 +20,7 @@ mod tests {
     use super::CLIENT;
     use crate::Engine;
 
-    /// Load the stub in axum's own VM and ask it something.
+    /// Load the client in axum's own VM and ask it something.
     fn probe(script: &str) -> String {
         let mut engine = Engine::new();
         let source = format!(
@@ -32,7 +32,7 @@ mod tests {
         );
         engine
             .run(&source, "probe.lua")
-            .expect("the stub must load");
+            .expect("the client must load");
         engine.harvest();
         engine
             .config()
@@ -43,7 +43,7 @@ mod tests {
 
     #[test]
     fn the_stub_loads_in_axums_own_vm() {
-        // The family's claim is that the file is copied, not ported. A stub that only ran in
+        // The family's claim is that the file is copied, not ported. A client that only ran in
         // the tool that wrote it would make that false the moment a sibling tried it.
         assert_eq!(probe("axum_client._NAME"), "axum");
     }

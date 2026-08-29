@@ -71,7 +71,7 @@ impl Worker {
             // here because it cannot cross a thread boundary, and this is also where a broken
             // description should surface.
             let mut engine = axum_lua::Engine::new();
-            engine.install_stubs(&backend.stubs);
+            engine.install_clients(&backend.clients);
             let mut broken = None;
             for (name, source) in &backend.apis {
                 if let Err(why) = engine.run(source, name) {

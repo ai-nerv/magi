@@ -1,12 +1,12 @@
-//! The directory lister the family's stubs use to find each other.
+//! The directory lister the family's clients use to find each other.
 //!
-//! A sibling's stub prefers `host.fs.ls(dir)` over shelling out to `io.popen`, because a
-//! sandboxed host may refuse the latter. Offering it is what lets hexe's and oslo's stubs
+//! A sibling's client prefers `host.fs.ls(dir)` over shelling out to `io.popen`, because a
+//! sandboxed host may refuse the latter. Offering it is what lets hexe's and oslo's clients
 //! discover their own sockets while running inside axum.
 //!
-//! **`fs.dir` is deliberately not offered.** A stub asks the host for "the directory my
+//! **`fs.dir` is deliberately not offered.** A client asks the host for "the directory my
 //! sockets live in", and any host that answers gets believed — so axum answering would send
-//! hexe's stub looking for hexe sockets in axum's directory. Listing is generic and safe to
+//! hexe's client looking for hexe sockets in axum's directory. Listing is generic and safe to
 //! lend; naming your own runtime directory is not.
 
 use luna::{Callback, CallbackReturn, Context, Table, Value};
@@ -23,7 +23,7 @@ pub fn table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
         let path = String::from_utf8_lossy(path.as_bytes()).into_owned();
 
         let out = Table::new(&ctx);
-        // An unreadable directory is an empty listing, not a raise: a stub probing several
+        // An unreadable directory is an empty listing, not a raise: a client probing several
         // candidate directories expects "nothing here", and most of them will not exist.
         if let Ok(entries) = std::fs::read_dir(&path) {
             let mut index = 1_i64;
@@ -34,7 +34,7 @@ pub fn table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
                     .set(ctx, "name", luna::String::from_slice(&ctx, name.as_bytes()))
                     .ok();
 
-                // Modification time, because the stub sorts by it to prefer the newest session.
+                // Modification time, because the client sorts by it to prefer the newest session.
                 // Absent rather than zero when the filesystem will not say: zero would sort as
                 // the oldest, which is a different claim from "unknown".
                 if let Some(mtime) = entry

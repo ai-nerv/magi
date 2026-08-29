@@ -1,8 +1,8 @@
 //! Calling out to a sibling.
 //!
-//! axum is a client here, not a server. It loads the sibling's own stub — oslo's `client.lua`,
+//! axum is a client here, not a server. It loads the sibling's own client — oslo's `client.lua`,
 //! hexe's `hexe.lua` — into its own VM, hands it the socket primitive, and calls a verb. The
-//! stub is plain Lua and is copied between tools, so this needs no per-sibling code: a new
+//! client is plain Lua and is copied between tools, so this needs no per-sibling code: a new
 //! sibling is a new file, not a new module.
 //!
 //! This is the direction that makes the family useful to axum. Spawning an agent in a shell is
@@ -16,27 +16,27 @@ use crate::{Engine, LuaError};
 pub struct Sibling {
     /// The tool's name, which is also its global and its socket directory.
     pub name: &'static str,
-    /// Where its stub lives, relative to the sibling's checkout.
-    pub stub: &'static str,
+    /// Where its client lives, relative to the sibling's checkout.
+    pub client: &'static str,
 }
 
 /// The siblings that speak this protocol.
 pub const SIBLINGS: &[Sibling] = &[
     Sibling {
         name: "hexe",
-        stub: "src/core/lua/hexe.lua",
+        client: "src/core/lua/hexe.lua",
     },
     Sibling {
         name: "oslo",
-        stub: "crates/oslo-runtime/src/lua/api/client.lua",
+        client: "crates/oslo-runtime/src/lua/api/client.lua",
     },
 ];
 
 /// The newest control socket a sibling is listening on, if any.
 ///
-/// Discovered here rather than left to the sibling's own stub. A stub looks for the family's
+/// Discovered here rather than left to the sibling's own client. A client looks for the family's
 /// globals to find a host that can list a directory, and its list names the siblings that
-/// existed when it was written — inside axum, hexe's stub finds neither `_G.hexe` nor
+/// existed when it was written — inside axum, hexe's client finds neither `_G.hexe` nor
 /// `_G.oslo` and falls through to shelling out. Handing it a path sidesteps a question it
 /// should not have to answer, and axum knows which session it means anyway.
 #[must_use]
@@ -64,23 +64,23 @@ pub fn socket_of(name: &str) -> Option<std::path::PathBuf> {
     found.into_iter().next().map(|(_, path)| path)
 }
 
-/// Load a sibling's stub and call one verb on it.
+/// Load a sibling's client and call one verb on it.
 ///
-/// The stub is given `__stream` explicitly rather than left to find it: a sibling's own
+/// The client is given `__stream` explicitly rather than left to find it: a sibling's own
 /// discovery looks for its own globals first, and inside axum those are not there.
 pub fn call(
     engine: &mut Engine,
-    stub: &str,
+    client: &str,
     verb: &str,
     socket: Option<&str>,
 ) -> Result<String, LuaError> {
-    // A bare string is a session NAME to these stubs, not a path; a path travels in a table.
+    // A bare string is a session NAME to these clients, not a path; a path travels in a table.
     // Passing the path as a string found nothing and reported it as "no socket", which is the
     // same message a genuinely absent daemon produces.
     let where_ = socket.map_or_else(|| "nil".to_owned(), |s| format!("{{ path = {s:?} }}"));
     let source = format!(
         r#"
-        local chunk = assert(load({stub:?}, "sibling.lua"))
+        local chunk = assert(load({client:?}, "sibling.lua"))
         local sibling = chunk(__stream)
         local peer, why = sibling.connect({where_})
         if not peer then
@@ -120,9 +120,9 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    /// A sibling's stub, if its checkout is beside ours.
-    fn stub_of(sibling: Sibling) -> Option<String> {
-        let path = PathBuf::from("..").join(sibling.name).join(sibling.stub);
+    /// A sibling's client, if its checkout is beside ours.
+    fn client_of(sibling: Sibling) -> Option<String> {
+        let path = PathBuf::from("..").join(sibling.name).join(sibling.client);
         std::fs::read_to_string(path).ok()
     }
 
@@ -131,20 +131,20 @@ mod tests {
         // The family's claim is that these files are copied, not ported. It is false the moment
         // one of them cannot run in a sibling's VM, and only a sibling can prove it.
         for sibling in SIBLINGS {
-            let Some(stub) = stub_of(*sibling) else {
+            let Some(client) = client_of(*sibling) else {
                 continue;
             };
             let mut engine = Engine::new();
             let source = format!(
                 r#"
-                local chunk = assert(load({stub:?}, "sibling.lua"))
+                local chunk = assert(load({client:?}, "sibling.lua"))
                 local m = chunk(__stream)
                 axum.answer = m._NAME
                 "#
             );
             engine
                 .run(&source, "load.lua")
-                .unwrap_or_else(|e| panic!("{}'s stub must load in axum: {e}", sibling.name));
+                .unwrap_or_else(|e| panic!("{}'s client must load in axum: {e}", sibling.name));
             engine.harvest();
             assert_eq!(engine.config().string("answer"), Some(sibling.name));
         }

@@ -218,12 +218,12 @@ impl Engine {
             // may also replace it wholesale.
             axum.set(ctx, "ui", Table::new(&ctx)).ok();
 
-            // The socket primitive, so the family's stubs run unchanged in this VM and axum can
-            // dial oslo and hexe. Named twice: `axum.stream` for a stub that knows this host,
+            // The socket primitive, so the family's clients run unchanged in this VM and axum can
+            // dial oslo and hexe. Named twice: `axum.stream` for a client that knows this host,
             // `__stream` for one that does not.
             let stream = crate::stream::table(ctx);
             axum.set(ctx, "stream", stream).ok();
-            // The lister a sibling's stub prefers over shelling out. See `fs` for why `fs.dir`
+            // The lister a sibling's client prefers over shelling out. See `fs` for why `fs.dir`
             // is not offered alongside it.
             let fs = crate::fs::table(ctx);
             axum.set(ctx, "fs", fs).ok();
@@ -440,23 +440,23 @@ impl Engine {
 }
 
 impl Engine {
-    /// Hand the VM the family's client stubs, as source.
+    /// Hand the VM the family's client clients, as source.
     ///
     /// Read by Rust and passed in rather than opened by the config, because `io` is not
     /// reachable from a config and should not be: a tool needing one file is not a reason to
     /// give every config the ability to open any.
     ///
-    /// `axum.stubs.hexe` is then a string a tool loads with `load(...)`, which is exactly how
-    /// the family says a sibling's stub should be consumed.
-    pub fn install_stubs(&mut self, stubs: &[(String, String)]) {
+    /// `axum.clients.hexe` is then a string a tool loads with `load(...)`, which is exactly how
+    /// the family says a sibling's client should be consumed.
+    pub fn install_clients(&mut self, clients: &[(String, String)]) {
         self.lua.enter(|ctx| {
             let table = Table::new(&ctx);
-            for (name, source) in stubs {
+            for (name, source) in clients {
                 let source = luna::String::from_slice(&ctx, source.as_bytes());
                 table.set(ctx, name.as_str(), source).ok();
             }
             if let Value::Table(axum) = ctx.get_global_value("axum") {
-                axum.set(ctx, "stubs", table).ok();
+                axum.set(ctx, "clients", table).ok();
             }
         });
     }

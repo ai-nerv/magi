@@ -163,7 +163,7 @@ mod ui_tests {
         Loaded {
             config: engine.config(),
             tools: Vec::new(),
-            stubs: Vec::new(),
+            clients: Vec::new(),
             apis: Vec::new(),
             providers: Vec::new(),
         }

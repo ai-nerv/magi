@@ -1,6 +1,6 @@
 //! `axum -p` and `axum --resume`, driving the real binary.
 //!
-//! Nothing is stubbed but the model: a local listener answers with recorded SSE, and
+//! Nothing is faked but the model: a local listener answers with recorded SSE, and
 //! everything else — the spawned daemon, the socket, the Lua config, the journal — is what a
 //! person invoking `axum` gets. The properties under test only exist at this level. That a
 //! one-shot leaves a resumable session, and that resuming picks up this directory's history,

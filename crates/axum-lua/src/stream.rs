@@ -1,6 +1,6 @@
-//! The socket primitive the client stubs need.
+//! The socket primitive the client clients need.
 //!
-//! Layer one of three: the stub carries framing and encoding in plain Lua, but it cannot open a
+//! Layer one of three: the client carries framing and encoding in plain Lua, but it cannot open a
 //! socket, so the host lends it one. A host native like any other — deliberately *not* a VM
 //! feature, so a VM that cannot load C modules needs no change to join the family.
 //!
@@ -22,7 +22,7 @@ use std::time::Duration;
 /// The most a single `recv` will be asked for.
 ///
 /// A peer that says a frame is enormous must not make us allocate for it before a byte of it
-/// has arrived. The stub asks in pieces anyway; this bounds a hostile answer.
+/// has arrived. The client asks in pieces anyway; this bounds a hostile answer.
 const MAX_RECV: usize = 16 * 1024 * 1024;
 
 /// A connected socket, shared between the handle's methods.
@@ -64,7 +64,7 @@ pub fn table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
     stream
 }
 
-/// A handle, as the stub expects: `send`, `recv`, `close`, called with `:`.
+/// A handle, as the client expects: `send`, `recv`, `close`, called with `:`.
 fn handle_table<'gc>(ctx: Context<'gc>, socket: Handle) -> Table<'gc> {
     let handle = Table::new(&ctx);
 
@@ -107,8 +107,8 @@ fn handle_table<'gc>(ctx: Context<'gc>, socket: Handle) -> Table<'gc> {
         };
         let mut buffer = vec![0_u8; want];
         match socket.read(&mut buffer) {
-            // A short read is ordinary, not an error: the stub asks again until it has the
-            // whole frame. Zero means the peer hung up, and the stub reads that as such.
+            // A short read is ordinary, not an error: the client asks again until it has the
+            // whole frame. Zero means the peer hung up, and the client reads that as such.
             Ok(read) => {
                 buffer.truncate(read);
                 let text = luna::String::from_slice(&ctx, &buffer);
@@ -123,7 +123,7 @@ fn handle_table<'gc>(ctx: Context<'gc>, socket: Handle) -> Table<'gc> {
     let held = Rc::clone(&socket);
     let close = Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
         // Dropping the stream is the close; taking it also makes a second close a no-op rather
-        // than an error, which a stub's cleanup path relies on.
+        // than an error, which a client's cleanup path relies on.
         held.borrow_mut().take();
         stack.replace(ctx, true);
         Ok(CallbackReturn::Return)
