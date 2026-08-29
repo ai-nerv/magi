@@ -28,6 +28,10 @@ use axum_proto::{
 
 use session::Session;
 use std::path::Path;
+
+/// How often an unattached daemon looks up to see whether it is still wanted.
+const IDLE_CHECK: std::time::Duration = std::time::Duration::from_secs(5);
+
 use std::sync::Arc;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
@@ -116,9 +120,35 @@ pub async fn serve_catalog(
             .map(|backend| worker::Worker::gated(backend, Some(Arc::clone(&approver))))
             .map(Arc::new),
     ));
+    // "Nobody is attached" is the subscriber count on the session's own channel, which is exactly
+    // the question: a UI is attached precisely when it is listening.
+    let watching = session.lock().await.publisher();
+    let idle_exit = catalog.idle_exit;
     let catalog = Arc::new(catalog);
+    let mut idle_since: Option<std::time::Instant> = None;
+    let mut sweep = tokio::time::interval(IDLE_CHECK);
+    sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        let (stream, _) = listener.accept().await?;
+        let stream = tokio::select! {
+            accepted = listener.accept() => accepted?.0,
+            _ = sweep.tick(), if !idle_exit.is_zero() => {
+                // Detaching is not ending a session: a UI that quits mid-turn can come back to
+                // the answer. But a daemon nobody is attached to, with nothing running, is a
+                // process kept alive for a conversation nobody is having — and one per
+                // directory per afternoon is how twenty-two of them end up running.
+                let busy = !matches!(session.lock().await.status(), AgentStatus::Idle);
+                if busy || watching.receiver_count() > 0 {
+                    idle_since = None;
+                    continue;
+                }
+                let since = *idle_since.get_or_insert_with(std::time::Instant::now);
+                if since.elapsed() >= idle_exit {
+                    eprintln!("axum host: nothing attached for {idle_exit:?}; stopping");
+                    return Ok(());
+                }
+                continue;
+            }
+        };
         // The daemon serves one user. A connection from any other uid is refused rather than
         // authenticated, because there is no case where it should be served.
         match PeerCred::of(&stream) {

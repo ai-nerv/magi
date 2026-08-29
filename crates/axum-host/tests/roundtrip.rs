@@ -525,6 +525,7 @@ fn two_models() -> axum_host::catalog::Catalog {
         confine: false,
         grants: Vec::new(),
         environ: std::collections::BTreeMap::new(),
+        idle_exit: std::time::Duration::ZERO,
         chosen: None,
     }
 }

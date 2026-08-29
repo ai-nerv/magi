@@ -45,6 +45,11 @@ axum.model = "anthropic/claude-sonnet-4-5"
 --   { verb = "run",   program = "git" },
 -- }
 
+-- How long a daemon stays up with nobody attached and nothing running, in seconds. Detaching
+-- is not ending a session, so this is a grace period rather than a hangup; 0 keeps it forever.
+--
+-- axum.idle_exit = 600
+
 -- Environment every process axum starts is given, on top of what it inherits. `OSLO_PROFILE`
 -- is set to "axum" whether or not this says so, and naming it here overrides that.
 --

@@ -295,3 +295,21 @@ mod environ_tests {
         assert!(!seen.contains_key("BAD"));
     }
 }
+
+/// How long a daemon stays up with nobody attached and nothing running.
+///
+/// ```lua
+/// axum.idle_exit = 600   -- seconds; 0 keeps it up forever
+/// ```
+///
+/// Ten minutes by default. Detaching is not ending a session — a UI that quits mid-turn should
+/// be able to come back to the answer — so this is a grace period, not a hangup. Without one, a
+/// daemon outlives every session that ever opened it and they accumulate one per directory.
+#[must_use]
+pub fn idle_exit(loaded: &Loaded) -> std::time::Duration {
+    let seconds = loaded.config.number("idle_exit").unwrap_or(600.0);
+    if seconds <= 0.0 {
+        return std::time::Duration::ZERO;
+    }
+    std::time::Duration::from_secs_f64(seconds)
+}

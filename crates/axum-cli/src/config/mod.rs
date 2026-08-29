@@ -252,6 +252,7 @@ pub fn catalog(loaded: &Loaded) -> axum_host::catalog::Catalog {
         system: system(loaded),
         grants: grants(loaded),
         environ: environ(loaded),
+        idle_exit: idle_exit(loaded),
         chosen: asked(loaded),
         confine: loaded.config.boolean("confine").unwrap_or(false),
     }
@@ -261,7 +262,7 @@ mod chosen;
 use chosen::{asked, chosen};
 mod settings;
 
-use settings::{grants, options, system};
+use settings::{grants, idle_exit, options, system};
 
 pub use settings::{adopt_ui, environ};
 

@@ -580,3 +580,43 @@ fn the_daemon_runs_under_the_axum_profile() {
     }
     teardown(&dir);
 }
+
+#[test]
+fn a_daemon_nobody_is_attached_to_stops_on_its_own() {
+    // The leak this closes: a `-p` run attaches, gets its answer and detaches, and the daemon
+    // stayed up for the rest of the afternoon. One per directory per session is how twenty-two
+    // of them end up running. Detaching still is not ending a session — the grace period is
+    // what makes reattaching possible — so the test sets a short one rather than none.
+    let dir = workspace("idle", &serve(stream("bye")));
+    let init = dir.join("config/axum/init.lua");
+    let mut source = std::fs::read_to_string(&init).expect("the entry point");
+    source.push_str("\naxum.idle_exit = 1\n");
+    std::fs::write(&init, source).expect("write");
+
+    let output = axum(&dir, &["--sessions", "sessions", "-p", "what is it"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let started: Vec<u32> = pid_files(&dir.join("run"))
+        .into_iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .filter_map(|pid| pid.trim().parse::<u32>().ok())
+        .collect();
+    assert!(!started.is_empty(), "a daemon was started");
+
+    // Its own clock, so this waits for the behaviour rather than for a fixed sleep.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let alive = |pid: u32| std::path::Path::new(&format!("/proc/{pid}")).exists();
+    while std::time::Instant::now() < deadline && started.iter().copied().any(alive) {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    let stragglers: Vec<u32> = started.iter().copied().filter(|p| alive(*p)).collect();
+    assert!(
+        stragglers.is_empty(),
+        "still running with nobody attached: {stragglers:?}"
+    );
+    teardown(&dir);
+}
