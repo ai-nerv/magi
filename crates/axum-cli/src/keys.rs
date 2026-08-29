@@ -38,6 +38,12 @@ pub enum Action {
     Redraw,
     /// A completion was taken, and the popup must stay closed until the next keystroke.
     Accepted,
+    /// A line came back from history, and the popup must not reopen over it.
+    ///
+    /// Its own action because recalling `/model` used to put the command menu back on screen,
+    /// and the menu owns the arrow keys — so the next Up moved the highlight instead of
+    /// reaching further back, and history stopped at the first slash command in it.
+    Recalled,
     /// Show tool results in full, or fold them back.
     ToggleDetail,
     /// A row was taken from an open selection list.
@@ -153,6 +159,14 @@ pub fn handle(
                 return Action::Redraw;
             }
             KeyCode::Up => {
+                // At the top of the menu, Up leaves it for history rather than wrapping round
+                // to the bottom. A menu that wraps is one you cannot walk out of, and typing
+                // `/` put it between the user and every earlier prompt they had.
+                if open.selected == 0 {
+                    *completion = None;
+                    editor.history_prev();
+                    return Action::Recalled;
+                }
                 open.prev();
                 return Action::Redraw;
             }
@@ -240,11 +254,11 @@ pub fn handle(
         }
         KeyCode::Up => {
             editor.history_prev();
-            Action::Redraw
+            Action::Recalled
         }
         KeyCode::Down => {
             editor.history_next();
-            Action::Redraw
+            Action::Recalled
         }
         KeyCode::Home => {
             editor.home();
@@ -293,15 +307,15 @@ fn accept(open: &Completion, editor: &mut Editor) {
     }
 }
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use axum_tui::complete;
 
-    fn press(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+    pub(super) fn press(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, modifiers)
     }
 
-    fn no_paths(_: &str) -> Vec<String> {
+    pub(super) fn no_paths(_: &str) -> Vec<String> {
         Vec::new()
     }
 
@@ -310,7 +324,7 @@ mod tests {
     }
 
     /// An editor holding `text`, with the completion popup its content would open.
-    fn with_popup(text: &str) -> (Editor, Option<Completion>) {
+    pub(super) fn with_popup(text: &str) -> (Editor, Option<Completion>) {
         let mut editor = Editor::new();
         editor.insert_str(text);
         let (_, col) = editor.cursor();
@@ -680,3 +694,6 @@ mod accept_tests {
         assert_eq!(action, Action::Command("/help".to_owned()));
     }
 }
+
+#[cfg(test)]
+mod history;
