@@ -143,8 +143,10 @@ pub async fn run(
                             );
                         // Noted before the match consumes it: a taken completion must not be
                         // recomputed, and the arms move the action's payload out.
-                        let accepted =
-                            action == Action::Accepted || action == Action::Dismissed;
+                        let accepted = matches!(
+                            action,
+                            Action::Accepted | Action::Dismissed | Action::Recalled
+                        );
                         match action {
                             Action::Quit => break,
                             Action::Submit(text) => {
@@ -261,7 +263,7 @@ pub async fn run(
                                     dirty = true;
                                 }
                             }
-                            Action::Redraw | Action::Accepted => dirty = true,
+                            Action::Redraw | Action::Accepted | Action::Recalled => dirty = true,
                             Action::Ignore => {}
                         }
                         // The popup is derived from the prompt, so it is recomputed after
@@ -272,6 +274,19 @@ pub async fn run(
                         if !accepted && app.picker.is_none() {
                             app.refresh_completion(&list_paths);
                         }
+                    }
+                    // The wheel, which is the only way most people scroll anything. Reported
+                    // only in alt mode, because that is the only mode that captures it.
+                    Event::Mouse(mouse) => {
+                        use crossterm::event::MouseEventKind;
+                        let rows = terminal_size().1;
+                        let view = rows.saturating_sub(ui::chrome_rows());
+                        match mouse.kind {
+                            MouseEventKind::ScrollUp => app.scrollback.scroll_up(3),
+                            MouseEventKind::ScrollDown => app.scrollback.scroll_down(3, view),
+                            _ => continue,
+                        }
+                        dirty = true;
                     }
                     Event::Paste(text) => {
                         app.editor.insert_str(&text);

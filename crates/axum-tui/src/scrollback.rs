@@ -124,16 +124,16 @@ fn page(height: u16) -> usize {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
-    fn filled(n: usize) -> Scrollback {
+    pub(super) fn filled(n: usize) -> Scrollback {
         let mut buffer = Scrollback::new();
         buffer.set_lines((0..n).map(|i| Line::from(format!("line{i}"))).collect());
         buffer
     }
 
-    fn texts(lines: &[Line<'_>]) -> Vec<String> {
+    pub(super) fn texts(lines: &[Line<'_>]) -> Vec<String> {
         lines
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
@@ -286,5 +286,41 @@ mod note_tests {
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("42"), "{text}");
         assert!(text.contains("shift+end"), "{text}");
+    }
+}
+
+/// What a wheel notch does, which is what the driver hands straight to these.
+#[cfg(test)]
+mod wheel {
+    use super::tests::{filled, texts};
+
+    #[test]
+    fn a_notch_up_leaves_the_tail_and_a_notch_back_returns_to_it() {
+        let mut buffer = filled(100);
+        buffer.view(10);
+        assert!(
+            buffer.is_following(),
+            "a fresh buffer sits at the newest line"
+        );
+        buffer.scroll_up(3);
+        assert!(
+            !buffer.is_following(),
+            "one notch is enough to stop following"
+        );
+        buffer.scroll_down(3, 10);
+        assert!(buffer.is_following(), "and enough to come back");
+    }
+
+    #[test]
+    fn a_wheel_spun_hard_stops_at_the_top_rather_than_running_off() {
+        let mut buffer = filled(30);
+        buffer.view(10);
+        for _ in 0..200 {
+            buffer.scroll_up(3);
+        }
+        let top = texts(buffer.view(10)).to_vec();
+        buffer.scroll_up(3);
+        assert_eq!(texts(buffer.view(10)), top, "the top is the top");
+        assert_eq!(top[0], "line0", "and it is the first line");
     }
 }

@@ -86,6 +86,12 @@ impl Session {
         execute!(out, crossterm::event::EnableBracketedPaste)?;
         if mode == Mode::Alt {
             execute!(out, EnterAlternateScreen)?;
+            // Only here. The alternate screen replaces the terminal's own scrollback, so the
+            // wheel has nothing to move unless this program moves it — without this the
+            // transcript simply could not be scrolled. Inline mode keeps the terminal's
+            // scrollback, so capturing there would take the wheel away from something that
+            // already works, and take selection and copy with it.
+            execute!(out, crossterm::event::EnableMouseCapture)?;
         }
 
         let enhanced = push_keyboard_enhancements(&mut out).unwrap_or(false);
@@ -128,6 +134,7 @@ impl Drop for Session {
             let _ = execute!(out, PopKeyboardEnhancementFlags);
         }
         if self.mode == Mode::Alt {
+            let _ = execute!(out, crossterm::event::DisableMouseCapture);
             let _ = execute!(out, LeaveAlternateScreen);
         }
         let _ = execute!(out, crossterm::event::DisableBracketedPaste);
@@ -164,5 +171,21 @@ mod tests {
     fn every_mode_names_itself_for_the_footer() {
         assert_eq!(Mode::Inline.label(), "inline");
         assert_eq!(Mode::Alt.label(), "alt");
+    }
+}
+
+/// The wheel, and why capture is per-mode.
+#[cfg(test)]
+mod wheel {
+    use super::Mode;
+
+    #[test]
+    fn only_the_alternate_screen_takes_the_mouse() {
+        // Alt mode replaces the terminal's own scrollback, so nothing moves the transcript
+        // unless this program moves it — that was the whole of "i cant scroll". Inline mode
+        // keeps the terminal's scrollback, and capturing there would take away a wheel that
+        // already works, along with drag-selection and copy.
+        assert_eq!(Mode::default(), Mode::Alt, "the mode that needs the wheel");
+        assert_ne!(Mode::Inline, Mode::Alt);
     }
 }
