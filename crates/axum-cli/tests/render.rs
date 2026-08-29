@@ -147,7 +147,7 @@ fn every_row_of_a_user_box_spans_the_full_width() {
 fn the_recorded_sample_replays_into_a_transcript() {
     let source = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/recordings/hello.jsonl"
+        "/tests/fixtures/hello.jsonl"
     ))
     .expect("sample recording");
 
@@ -241,7 +241,7 @@ fn a_footer_row_is_exactly_the_terminal_width() {
 fn visual() {
     let source = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/recordings/hello.jsonl"
+        "/tests/fixtures/hello.jsonl"
     ))
     .expect("sample recording");
     let mut entries: Vec<Entry> = Vec::new();

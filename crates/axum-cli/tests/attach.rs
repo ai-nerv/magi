@@ -20,7 +20,7 @@ async fn serve(name: &str) -> PathBuf {
     let _ = std::fs::remove_file(&path);
     let source = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../examples/recordings/hello.jsonl"
+        "/tests/fixtures/hello.jsonl"
     ))
     .expect("sample recording");
     let recording = Recording::parse(&source).expect("parse");

@@ -4,11 +4,6 @@
 -- assigned, descriptions go to a registrar, and the file returns nothing.
 
 -- What runs. Nothing is discovered by scanning: a file not named here does not load.
--- `axum.load` takes the installed copy if there is one and the shipped copy otherwise, so
--- replacing one file means replacing one file. Stubs first — a tool opens one as it loads.
-axum.load("stubs/axum.lua")
-axum.load("stubs/hexe.lua")
-axum.load("stubs/oslo.lua")
 axum.load("apis.lua")
 axum.load("providers.lua")
 axum.load("tools.lua")

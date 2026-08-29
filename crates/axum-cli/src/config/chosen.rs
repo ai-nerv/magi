@@ -190,13 +190,15 @@ mod entry_point {
     }
 
     #[test]
-    fn stubs_are_named_before_the_tools_that_open_them() {
-        // A tool description opens its sibling's stub as it loads, so the order in the entry
-        // point is load-bearing rather than tidy.
+    fn a_protocol_is_named_before_the_catalog_that_picks_one() {
+        // `api = "openai-completions"` in a provider is a name that has to already mean
+        // something, so the order in the entry point is load-bearing rather than tidy.
         let init = checkout("init.lua");
-        let stub = init.find("axum.load(\"stubs/").expect("a stub is loaded");
-        let tools = init.find("axum.load(\"tools").expect("tools are loaded");
-        assert!(stub < tools);
+        let apis = init.find("axum.load(\"apis").expect("protocols are loaded");
+        let catalog = init
+            .find("axum.load(\"providers")
+            .expect("the catalog is loaded");
+        assert!(apis < catalog);
     }
 
     #[test]

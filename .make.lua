@@ -127,7 +127,7 @@ make.recipe{
 -- The workspace ships one binary, `axum`, and every crate is a library behind it. Recipes name
 -- the binary rather than the library: `--lib` builds artifacts nobody runs.
 local BIN = "axum"
-local RECORDING = os.getenv("RECORDING") or "examples/recordings/hello.jsonl"
+local RECORDING = os.getenv("RECORDING") or "crates/axum-cli/tests/fixtures/hello.jsonl"
 
 -- Where a demo host listens. Under `$XDG_RUNTIME_DIR` because a Unix socket path must stay
 -- shorter than SUN_LEN, and a scratch directory path does not.

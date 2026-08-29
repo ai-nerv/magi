@@ -1,6 +1,6 @@
 //! Every peer, against the same definition of what a peer must do.
 //!
-//! Including one that shares no code with axum at all: `examples/peers/echo.c` was written
+//! Including one that shares no code with axum at all: `tests/fixtures/echo.c` was written
 //! from the documented wire format, in another language, with its own hand-rolled CBOR. That
 //! is the only check that says the protocol is written down rather than merely implemented —
 //! two peers built on the same Rust codec cannot disagree with the host, so they cannot show
@@ -124,7 +124,7 @@ fn a_peer_that_never_answers_is_reported() {
 
 /// Compile the C peer, or `None` if this machine has no compiler.
 fn build_c_peer(dir: &Path) -> Option<PathBuf> {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/peers/echo.c");
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/echo.c");
     let binary = dir.join("echo");
     for compiler in ["cc", "gcc", "clang"] {
         let built = std::process::Command::new(compiler)
