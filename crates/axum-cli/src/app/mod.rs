@@ -134,6 +134,12 @@ pub struct App {
     pub picking: Option<Picking>,
     /// How much of each tool result to show.
     pub detail: axum_tui::transcript::Detail,
+    /// Whether axum has taken the mouse from the terminal.
+    ///
+    /// False by default: the terminal keeps it, so dragging out a selection and copying work
+    /// the way they do in every other program. `ctrl+t` takes it, for the wheel and for
+    /// clicking a block open.
+    pub mouse: bool,
     /// Tool blocks showing the opposite of `detail`, because they were clicked.
     ///
     /// Membership rather than an absolute state, so the fold key still moves every block a
@@ -174,6 +180,7 @@ impl App {
             picker: None,
             picking: None,
             detail: axum_tui::transcript::Detail::Preview,
+            mouse: false,
             flipped: std::collections::BTreeSet::new(),
             owners: Vec::new(),
             live_rows: 0..0,

@@ -86,12 +86,6 @@ impl Session {
         execute!(out, crossterm::event::EnableBracketedPaste)?;
         if mode == Mode::Alt {
             execute!(out, EnterAlternateScreen)?;
-            // Only here. The alternate screen replaces the terminal's own scrollback, so the
-            // wheel has nothing to move unless this program moves it — without this the
-            // transcript simply could not be scrolled. Inline mode keeps the terminal's
-            // scrollback, so capturing there would take the wheel away from something that
-            // already works, and take selection and copy with it.
-            execute!(out, crossterm::event::EnableMouseCapture)?;
         }
 
         let enhanced = push_keyboard_enhancements(&mut out).unwrap_or(false);
@@ -187,5 +181,31 @@ mod wheel {
         // already works, along with drag-selection and copy.
         assert_eq!(Mode::default(), Mode::Alt, "the mode that needs the wheel");
         assert_ne!(Mode::Inline, Mode::Alt);
+    }
+}
+
+impl Session {
+    /// Take the mouse from the terminal, or give it back.
+    ///
+    /// **Off by default, and that is the whole design.** A capture is one switch: while axum
+    /// holds the mouse the terminal cannot run its own drag-selection, and selecting text is
+    /// something a terminal and a multiplexer already do well. Reimplementing it here — which is
+    /// what pi does, and what codex avoids with a toggle everybody files a bug about — buys a
+    /// worse version of something that already worked.
+    ///
+    /// So the mouse stays with the terminal, and this is the opt-in for the two things that
+    /// need it: the wheel, and clicking a tool block open.
+    ///
+    /// Nothing happens outside the alternate screen, which has no viewport of its own to scroll.
+    pub fn set_mouse(&mut self, holding: bool) {
+        if self.mode != Mode::Alt {
+            return;
+        }
+        let mut out = io::stdout();
+        let _ = if holding {
+            execute!(out, crossterm::event::EnableMouseCapture)
+        } else {
+            execute!(out, crossterm::event::DisableMouseCapture)
+        };
     }
 }

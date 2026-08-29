@@ -110,3 +110,37 @@ fn up_at_the_top_of_the_menu_leaves_it_for_history() {
     assert!(popup.is_none(), "the menu got out of the way");
     assert_eq!(editor.lines()[0], "an earlier prompt");
 }
+
+/// Handing the mouse back, so the terminal can do what a terminal does.
+#[cfg(test)]
+mod releasing_the_mouse {
+    use super::super::*;
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    #[test]
+    fn ctrl_t_asks_for_the_toggle() {
+        let mut editor = Editor::new();
+        let action = handle(
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+            &mut editor,
+            &mut None,
+            &mut None,
+            false,
+        );
+        assert_eq!(action, Action::ToggleMouse);
+        assert!(editor.is_blank(), "and does not type a `t`");
+    }
+
+    #[test]
+    fn a_plain_t_is_still_a_letter() {
+        let mut editor = Editor::new();
+        handle(
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
+            &mut editor,
+            &mut None,
+            &mut None,
+            false,
+        );
+        assert_eq!(editor.lines()[0], "t");
+    }
+}

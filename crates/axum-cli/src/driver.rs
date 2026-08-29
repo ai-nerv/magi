@@ -233,6 +233,14 @@ pub async fn run(
                                 }
                                 dirty = true;
                             }
+                            Action::ToggleMouse => {
+                                // Given back rather than reimplemented: dragging out a
+                                // selection is what a terminal is for, and axum holding the
+                                // mouse is the only reason it cannot.
+                                app.mouse = !app.mouse;
+                                session.set_mouse(app.mouse);
+                                dirty = true;
+                            }
                             Action::ToggleDetail => {
                                 // No notice. A view toggle is not something that happened in
                                 // the conversation, and one line per press left a transcript
@@ -518,6 +526,7 @@ fn footer_data(base: &FooterData, app: &App) -> FooterData {
         cwd: base.cwd.clone(),
         branch: base.branch.clone(),
         mode: base.mode,
+        mouse_held: app.mouse,
         model: app.model.as_ref().map_or_else(
             || axum_tui::glyph::no_model().to_owned(),
             |m| m.name.clone(),

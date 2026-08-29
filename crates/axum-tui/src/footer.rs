@@ -26,6 +26,12 @@ pub struct FooterData {
     pub model: String,
     /// Which backend is drawing, shown so the two are never confused for each other.
     pub mode: &'static str,
+    /// Whether axum has taken the mouse from the terminal.
+    ///
+    /// The departure from normal, so the derived default is the normal state — and said out
+    /// loud only when true, because that is the state where dragging stops selecting text and
+    /// the only other clue is that it stopped.
+    pub mouse_held: bool,
 }
 
 /// Abbreviate a token count the way Pi's `formatTokens` does.
@@ -141,6 +147,11 @@ pub fn render(data: &FooterData, width: u16) -> Vec<Line<'static>> {
     }
     if !data.mode.is_empty() {
         suffix.push_str(&format!(" · {}", data.mode));
+    }
+    // Only when it is off. A state that breaks clicking and the wheel has to be visible, and a
+    // state where everything works needs no announcement.
+    if data.mouse_held {
+        suffix.push_str(" · mouse");
     }
     let location = format!(
         "{}{suffix}",
@@ -410,5 +421,39 @@ mod model_fit_tests {
                 "width {width}: {row}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod mouse_note {
+    use super::*;
+
+    fn row(held: bool) -> String {
+        render(
+            &FooterData {
+                cwd: "~/work".into(),
+                mouse_held: held,
+                ..FooterData::default()
+            },
+            60,
+        )[0]
+        .spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect()
+    }
+
+    #[test]
+    fn the_ordinary_state_says_nothing() {
+        // The terminal has the mouse. That is how every other program behaves and needs no
+        // announcement.
+        assert!(!row(false).contains("mouse"), "{}", row(false));
+    }
+
+    #[test]
+    fn taking_the_mouse_says_so() {
+        // Otherwise the only evidence is that dragging stopped selecting, which reads as a
+        // broken terminal rather than a mode somebody turned on.
+        assert!(row(true).contains("mouse"), "{}", row(true));
     }
 }
