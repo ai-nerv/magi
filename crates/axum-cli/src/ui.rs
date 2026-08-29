@@ -74,9 +74,25 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData, mode
         )
         .min(rows.saturating_sub(metric::footer_rows() + metric::status_rows() + prompt_rows + 1));
 
-    let [live_area, status_area, prompt_area, popup_area, footer_area] = Layout::vertical([
+    // The "there is more below" rule sits directly on top of the prompt box, under the status
+    // line rather than above it. Drawn at the bottom of the transcript instead, it had the
+    // status row between it and the box — a blank row most of the time, which reads as the rule
+    // marking some other edge than the one you are about to type at.
+    // "Not following" is exactly "you have scrolled away from the newest output", which is when
+    // this is worth saying — and it avoids asking how much is below, which depends on a height
+    // this row is about to change.
+    let more_rows = u16::from(matches!(mode, Mode::Alt) && !app.scrollback.is_following());
+    let [
+        live_area,
+        status_area,
+        rule_area,
+        prompt_area,
+        popup_area,
+        footer_area,
+    ] = Layout::vertical([
         Constraint::Min(0),
         Constraint::Length(metric::status_rows()),
+        Constraint::Length(more_rows),
         Constraint::Length(prompt_rows),
         Constraint::Length(popup_rows),
         Constraint::Length(metric::footer_rows()),
@@ -106,15 +122,12 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData, mode
             let laid = transcript::laid_out(app.entries(), area.width, app.detail, &app.flipped);
             app.owners = laid.owners;
             app.scrollback.set_lines(laid.lines);
-            // Measured against the height the transcript will actually get, which is one row
-            // shorter per rule. Measuring against the full height and then taking a row for the
-            // rule pushes a line off the bottom that the rule then says nothing about.
-            let (above, below) = edges(app, live_area.height);
+            // Only the top edge takes a row out of the transcript; the bottom one has a slot of
+            // its own directly above the prompt.
+            let above = app.scrollback.hidden_above() > 0;
             let live_area = Rect {
                 y: live_area.y + u16::from(above),
-                height: live_area
-                    .height
-                    .saturating_sub(u16::from(above) + u16::from(below)),
+                height: live_area.height.saturating_sub(u16::from(above)),
                 ..live_area
             };
             let view = app.scrollback.view(live_area.height).to_vec();
@@ -141,16 +154,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData, mode
                     },
                 );
             }
-            if below {
-                frame.render_widget(
-                    Paragraph::new(status::more(area.width)),
-                    Rect {
-                        y: live_area.y + live_area.height,
-                        height: 1,
-                        ..live_area
-                    },
-                );
-            }
         }
     }
 
@@ -164,6 +167,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData, mode
         status_line.spans.extend(status::queued(app.queued));
     }
     frame.render_widget(Paragraph::new(status_line), status_area);
+    if more_rows > 0 {
+        frame.render_widget(Paragraph::new(status::more(area.width)), rule_area);
+    }
     frame.render_widget(Paragraph::new(prompt_lines), prompt_area);
 
     if let Some(picker) = &app.picker {
@@ -235,22 +241,6 @@ mod tests {
     }
 }
 
-/// Which edges the transcript continues past, at the height it would get with those rules drawn.
-///
-/// Settled by iterating rather than solved, because taking a row for a rule can be what removes
-/// the overflow that called for it: a transcript one line too tall for the screen needs a rule,
-/// and with the rule drawn it is two lines too tall, which still needs one. Two passes reach the
-/// fixed point for the only case that oscillates.
-fn edges(app: &App, height: u16) -> (bool, bool) {
-    let (mut above, mut below) = (false, false);
-    for _ in 0..2 {
-        let room = height.saturating_sub(u16::from(above) + u16::from(below));
-        above = app.scrollback.hidden_above() > 0;
-        below = app.scrollback.hidden_below(room) > 0;
-    }
-    (above, below)
-}
-
 /// The edge says the transcript continues, so "is this the end" is answered by looking rather
 /// than by reading a count somewhere else on the screen.
 #[cfg(test)]
@@ -318,6 +308,20 @@ mod continues_past_the_edge {
     fn scrolled_into_the_middle_marks_both_edges() {
         let rows = drawn(30, 10);
         assert_eq!(rules(&rows).len(), 2, "it runs off both ends: {rows:#?}");
+    }
+
+    #[test]
+    fn the_lower_rule_sits_directly_on_the_prompt_box() {
+        // Drawn at the bottom of the transcript it had the status row beneath it — blank most
+        // of the time, so the rule looked like it marked some edge other than the one you are
+        // about to type at.
+        let rows = drawn(30, 10);
+        let box_top = rows
+            .iter()
+            .position(|row| row.contains(char::from_u32(0x256D).expect("box corner")))
+            .expect("the prompt is on screen");
+        let lower = *rules(&rows).last().expect("a rule below");
+        assert_eq!(lower + 1, box_top, "nothing goes between them: {rows:#?}");
     }
 
     #[test]

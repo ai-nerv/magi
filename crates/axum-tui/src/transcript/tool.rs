@@ -75,6 +75,24 @@ pub(super) fn block(
         pad(Line::from(spans), width, style)
     }];
 
+    // Opened, the call shows what it was *given* as well as what it returned. Without this,
+    // expanding a `write` showed the line count it reported and never the file it wrote — the
+    // one thing a person opens a `write` block to read. The same goes for an `edit`'s
+    // replacement text and a `shell`'s full command: the summary beside the name is one line,
+    // and one line is not the argument.
+    if matches!(detail, Detail::Full) {
+        for line in arguments(args) {
+            out.push(pad(
+                Line::from(Span::styled(
+                    clip(&line, inner),
+                    style.fg(colour::tool_fold()),
+                )),
+                width,
+                style,
+            ));
+        }
+    }
+
     if let Some(result) = result {
         let body = result.output.trim_end();
         if !body.is_empty() {
@@ -406,11 +424,26 @@ mod detail_tests {
     }
 
     #[test]
-    fn a_short_result_reads_the_same_either_way() {
+    fn a_short_result_is_not_truncated_either_way() {
+        // These used to render identically. They no longer do: opening a call now also shows
+        // what it was given, because the summary beside the name is one line and a `write`
+        // opened to read the file it wrote was showing only the line count it reported.
+        // What still has to hold is that a short result loses nothing in preview.
         let short = long_result(3);
         let preview = text_of(&entry_lines(&short, 40, Detail::Preview));
         let full = text_of(&entry_lines(&short, 40, Detail::Full));
-        assert_eq!(preview, full);
+        for line in ["line 0", "line 1", "line 2"] {
+            assert!(preview.iter().any(|l| l.contains(line)), "{preview:?}");
+            assert!(full.iter().any(|l| l.contains(line)), "{full:?}");
+        }
+        assert!(
+            !preview.iter().any(|l| l.contains("more lines")),
+            "{preview:?}"
+        );
+        assert!(
+            full.iter().any(|l| l.contains("command: ls")),
+            "and open, it says what it was asked to run: {full:?}"
+        );
     }
 }
 
@@ -500,5 +533,123 @@ mod block_tests {
         assert_eq!(fg(None), Some(colour::tool_title()), "still running");
         assert_eq!(fg(Some(&ok)), Some(colour::tool_ok()));
         assert_eq!(fg(Some(&bad)), Some(colour::tool_failed()));
+    }
+}
+
+/// A call's arguments, as lines, for a block that has been opened.
+///
+/// One `key: value` per argument, and a value carrying newlines is laid out under its key rather
+/// than escaped onto one line — the whole reason to open a `write` is to read the file it wrote,
+/// and `"contents": "line\nline\nline"` is not reading it.
+fn arguments(args: &str) -> Vec<String> {
+    let Ok(serde_json::Value::Object(fields)) = serde_json::from_str::<serde_json::Value>(args)
+    else {
+        return args.lines().map(str::to_owned).collect();
+    };
+    let mut out = Vec::new();
+    for (key, value) in fields {
+        let text = match &value {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        if text.contains('\n') {
+            out.push(format!("{key}:"));
+            out.extend(text.lines().map(str::to_owned));
+        } else {
+            out.push(format!("{key}: {text}"));
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod opened {
+    use super::*;
+
+    fn text_of(lines: &[Line<'_>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+                    .trim()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    fn wrote() -> (String, axum_proto::ToolResult) {
+        (
+            serde_json::json!({
+                "path": "/tmp/hello.py",
+                "contents": "def hello():\n    return 42\n",
+            })
+            .to_string(),
+            axum_proto::ToolResult {
+                output: "wrote 2 lines".to_owned(),
+                is_error: false,
+            },
+        )
+    }
+
+    #[test]
+    fn an_opened_write_shows_the_file_it_wrote() {
+        let (args, result) = wrote();
+        let shown = text_of(&block("write", &args, Some(&result), 60, Detail::Full));
+        assert!(
+            shown.iter().any(|l| l.contains("def hello():")),
+            "the contents are the point: {shown:#?}"
+        );
+        assert!(shown.iter().any(|l| l.contains("return 42")), "{shown:#?}");
+    }
+
+    #[test]
+    fn a_folded_write_still_only_shows_its_summary() {
+        // The header flattens every argument onto one line, so the words do appear there. What
+        // must not appear is the file laid out as a file — that is what opening is for.
+        let (args, result) = wrote();
+        let shown = text_of(&block("write", &args, Some(&result), 60, Detail::Preview));
+        assert!(
+            !shown.iter().any(|l| l == "return 42"),
+            "folded is folded: {shown:#?}"
+        );
+        assert!(
+            shown.iter().any(|l| l.starts_with("write ")),
+            "the summary is still there: {shown:#?}"
+        );
+    }
+
+    #[test]
+    fn a_multi_line_value_is_laid_out_rather_than_escaped() {
+        let lines = arguments(r#"{"contents":"one\ntwo"}"#);
+        assert_eq!(lines, vec!["contents:", "one", "two"]);
+    }
+
+    #[test]
+    fn a_short_value_stays_on_its_key() {
+        assert_eq!(arguments(r#"{"path":"/tmp/x"}"#), vec!["path: /tmp/x"]);
+    }
+
+    #[test]
+    fn arguments_that_are_not_json_are_shown_as_they_arrived() {
+        // A truncated turn leaves half an object behind, and half an object is still worth
+        // reading — it is usually the evidence of what went wrong.
+        assert_eq!(
+            arguments("{\"path\": \"/tmp/x"),
+            vec!["{\"path\": \"/tmp/x"]
+        );
+    }
+
+    #[test]
+    fn an_opened_shell_shows_the_whole_command() {
+        let args =
+            serde_json::json!({ "command": "find . -name '*.rs' | xargs wc -l" }).to_string();
+        let shown = text_of(&block("shell", &args, None, 80, Detail::Full));
+        assert!(
+            shown.iter().any(|l| l.contains("xargs wc -l")),
+            "{shown:#?}"
+        );
     }
 }
