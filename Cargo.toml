@@ -1,17 +1,17 @@
 [workspace]
 members = [
-  "crates/axum-proto",
-  "crates/axum-provider",
-  "crates/axum-host",
-  "crates/axum-ipc",
-  "crates/axum-journal",
-  "crates/axum-lua",
-  "crates/axum-model",
-  "crates/axum-tui",
-  "crates/axum-cli",
-  "crates/axum-core",
-  "crates/axum-testkit",
-  "crates/axum-tools",
+  "crates/axon-proto",
+  "crates/axon-provider",
+  "crates/axon-host",
+  "crates/axon-ipc",
+  "crates/axon-journal",
+  "crates/axon-lua",
+  "crates/axon-model",
+  "crates/axon-tui",
+  "crates/axon-cli",
+  "crates/axon-core",
+  "crates/axon-testkit",
+  "crates/axon-tools",
 ]
 resolver = "3"
 
@@ -31,17 +31,17 @@ todo = "deny"
 unwrap_used = "deny"
 
 [workspace.dependencies]
-axum-host = { path = "crates/axum-host" }
-axum-core = { path = "crates/axum-core" }
-axum-ipc = { path = "crates/axum-ipc" }
-axum-journal = { path = "crates/axum-journal" }
-axum-lua = { path = "crates/axum-lua" }
-axum-model = { path = "crates/axum-model" }
-axum-proto = { path = "crates/axum-proto" }
-axum-provider = { path = "crates/axum-provider" }
-axum-testkit = { path = "crates/axum-testkit" }
-axum-tools = { path = "crates/axum-tools" }
-axum-tui = { path = "crates/axum-tui" }
+axon-host = { path = "crates/axon-host" }
+axon-core = { path = "crates/axon-core" }
+axon-ipc = { path = "crates/axon-ipc" }
+axon-journal = { path = "crates/axon-journal" }
+axon-lua = { path = "crates/axon-lua" }
+axon-model = { path = "crates/axon-model" }
+axon-proto = { path = "crates/axon-proto" }
+axon-provider = { path = "crates/axon-provider" }
+axon-testkit = { path = "crates/axon-testkit" }
+axon-tools = { path = "crates/axon-tools" }
+axon-tui = { path = "crates/axon-tui" }
 
 anyhow = "1.0"
 base64 = "0.22"

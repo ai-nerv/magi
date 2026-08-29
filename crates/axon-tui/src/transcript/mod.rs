@@ -1,0 +1,611 @@
+//! Transcript entries to styled lines.
+//!
+//! The shape is Pi's, block for block: a user message is a full-width padded box on
+//! `userMessageBg`; an assistant message is bare markdown preceded by one blank line; a tool
+//! call is a padded box whose background carries its outcome.
+
+use crate::colour;
+use crate::glyph;
+use crate::markdown;
+use axon_proto::{Entry, StopReason, ToolCallId};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use std::collections::BTreeSet;
+
+/// Horizontal padding inside a block, in cells. Pi's `outputPad`.
+mod tool;
+
+pub use tool::Detail;
+
+/// Render the whole transcript.
+#[must_use]
+pub fn render(entries: &[Entry], width: u16, detail: Detail) -> Vec<Line<'static>> {
+    laid_out(entries, width, detail, &BTreeSet::new()).lines
+}
+
+/// A rendered transcript, and which tool call each line came from.
+///
+/// The second half is what makes a click mean something. A row on the screen is a line in this
+/// list, and a line only belongs to a block if that block drew it — so the mapping is produced by
+/// the same pass that produces the lines, rather than by a second one that could disagree with it.
+pub struct Laid {
+    /// Every line, in transcript order.
+    pub lines: Vec<Line<'static>>,
+    /// For each line, the tool call it belongs to, if any.
+    pub owners: Vec<Option<ToolCallId>>,
+}
+
+/// Render the whole transcript, recording which block owns each line.
+///
+/// `flipped` names the tool calls showing the opposite of `detail`: a click toggles membership
+/// rather than storing a state, so the global fold key still moves every block that has not been
+/// clicked, and one that has keeps the answer the person gave it.
+#[must_use]
+pub fn laid_out(
+    entries: &[Entry],
+    width: u16,
+    detail: Detail,
+    flipped: &BTreeSet<ToolCallId>,
+) -> Laid {
+    let mut laid = Laid {
+        lines: Vec::new(),
+        owners: Vec::new(),
+    };
+    for entry in entries {
+        let id = match entry {
+            Entry::Tool { id, .. } => Some(id.clone()),
+            _ => None,
+        };
+        let shown = match &id {
+            Some(id) if flipped.contains(id) => detail.other(),
+            _ => detail,
+        };
+        let lines = entry_lines(entry, width, shown);
+        laid.owners.extend(std::iter::repeat_n(id, lines.len()));
+        laid.lines.extend(lines);
+    }
+    laid
+}
+
+/// Render one entry.
+#[must_use]
+pub fn entry_lines(entry: &Entry, width: u16, detail: Detail) -> Vec<Line<'static>> {
+    match entry {
+        Entry::User { text, .. } => user(text, width),
+        Entry::Assistant {
+            text,
+            thinking,
+            stop_reason,
+            error,
+            ..
+        } => assistant(text, thinking, *stop_reason, error.as_deref(), width),
+        Entry::Tool {
+            name, args, result, ..
+        } => tool::block(name, args, result.as_ref(), width, detail),
+        Entry::Notice { text } => notice(text, width),
+        Entry::Compaction { replaces, .. } => {
+            marker(&format!(" {replaces} earlier messages summarised "), width)
+        }
+        // `keeps` is a journal index, and printing it says nothing a reader can act on. What
+        // matters is that everything above the rule is still on the screen and no longer sent.
+        Entry::Branch { keeps, .. } => marker(
+            &if *keeps == 0 {
+                " rewound — nothing above is sent from here ".to_owned()
+            } else {
+                format!(" rewound — only the first {keeps} messages are sent from here ")
+            },
+            width,
+        ),
+    }
+}
+
+/// Something axon is saying, marked so it cannot be read as the model saying it.
+///
+/// A bar down the left and muted text: the same shape as a block quote, which is what this
+/// is — a voice that is not the conversation's.
+fn notice(text: &str, width: u16) -> Vec<Line<'static>> {
+    let style = Style::default().fg(colour::dim());
+    let inner = width.saturating_sub(crate::metric::block_pad() * 2 + 2);
+    let mut out = vec![Line::default()];
+    for line in markdown::render(text, inner, style) {
+        let mut spans = vec![Span::styled(
+            glyph::notice_rule(),
+            Style::default().fg(colour::muted()),
+        )];
+        spans.extend(line.spans);
+        out.push(indent(Line::from(spans)));
+    }
+    out
+}
+
+/// A labelled rule across the transcript.
+///
+/// Shown rather than hidden. The transcript above one of these is still there and still true,
+/// but what the model can see of it has changed — and a reader wondering why it forgot
+/// something, or why an exchange seems to have been undone, needs this line to be the answer.
+fn marker(label: &str, width: u16) -> Vec<Line<'static>> {
+    let label = label.to_owned();
+    let rule = usize::from(width).saturating_sub(label.chars().count());
+    vec![
+        Line::default(),
+        Line::from(vec![
+            Span::styled("─".repeat(rule / 2), Style::default().fg(colour::muted())),
+            Span::styled(label, Style::default().fg(colour::dim())),
+            Span::styled(
+                "─".repeat(rule.saturating_sub(rule / 2)),
+                Style::default().fg(colour::muted()),
+            ),
+        ]),
+    ]
+}
+
+/// A full-width box on `userMessageBg`, padded one cell on every side.
+fn user(text: &str, width: u16) -> Vec<Line<'static>> {
+    let style = Style::default()
+        .bg(colour::message_bg())
+        .fg(colour::message_text());
+    let inner = width.saturating_sub(crate::metric::block_pad() * 2);
+    let body = markdown::render(text, inner, style);
+
+    let mut out = vec![blank(width, style)];
+    for line in body {
+        out.push(pad(line, width, style));
+    }
+    out.push(blank(width, style));
+    out
+}
+
+/// Bare markdown with no background, preceded by one blank line.
+fn assistant(
+    text: &str,
+    thinking: &str,
+    stop_reason: Option<StopReason>,
+    error: Option<&str>,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let base = Style::default().fg(colour::text());
+    let inner = width.saturating_sub(crate::metric::block_pad() * 2);
+    let mut out = Vec::new();
+
+    if !thinking.trim().is_empty() || !text.trim().is_empty() {
+        out.push(Line::default());
+    }
+
+    if !thinking.trim().is_empty() {
+        let style = Style::default()
+            .fg(colour::thinking())
+            .add_modifier(Modifier::ITALIC);
+        for line in markdown::render(thinking.trim(), inner, style) {
+            out.push(indent(line));
+        }
+        if !text.trim().is_empty() {
+            out.push(Line::default());
+        }
+    }
+
+    if !text.trim().is_empty() {
+        for line in markdown::render(text.trim(), inner, base) {
+            out.push(indent(line));
+        }
+    }
+
+    // A truncated response is surfaced here even when tool calls follow, because a length stop
+    // can land before a call's arguments are complete and the tool block would show nothing.
+    match stop_reason {
+        // A limit, not a fault: the model did what it could within the budget it was given.
+        Some(StopReason::Length) => {
+            out.push(Line::default());
+            out.push(indent(Line::from(Span::styled(
+                "Response hit the length limit and stopped here.",
+                Style::default().fg(colour::warning()),
+            ))));
+        }
+        // Not an error. You pressed escape and it obeyed; saying so in red claims something
+        // went wrong, and "Operation aborted" is a machine's word for a key you just pressed.
+        Some(StopReason::Aborted) => {
+            out.push(Line::default());
+            out.push(indent(Line::from(Span::styled(
+                error.map_or_else(|| "Interrupted.".to_owned(), ToOwned::to_owned),
+                Style::default().fg(colour::dim()),
+            ))));
+        }
+        Some(StopReason::Error) => {
+            out.push(Line::default());
+            out.push(indent(Line::from(Span::styled(
+                format!("Error: {}", error.unwrap_or("Unknown error")),
+                Style::default().fg(colour::error()),
+            ))));
+        }
+        _ => {}
+    }
+
+    out
+}
+
+fn clip(text: &str, width: usize) -> String {
+    // Expanded before it is measured, because a tab is one character and several columns.
+    let text = crate::wrap::expand_tabs(text);
+    if text.chars().count() <= width {
+        return text;
+    }
+    text.chars()
+        .take(width.saturating_sub(1))
+        .collect::<String>()
+        + glyph::ellipsis()
+}
+
+/// A full-width line carrying only the background.
+fn blank(width: u16, style: Style) -> Line<'static> {
+    Line::from(Span::styled(" ".repeat(usize::from(width)), style))
+}
+
+/// Indent a line by [`crate::metric::block_pad()`] without a background.
+fn indent(line: Line<'static>) -> Line<'static> {
+    let mut spans = vec![Span::raw(
+        " ".repeat(usize::from(crate::metric::block_pad())),
+    )];
+    spans.extend(line.spans);
+    Line::from(spans)
+}
+
+/// Indent a line and extend its background to the full width.
+///
+/// The trailing fill is what makes a box read as a block rather than as ragged coloured text.
+fn pad(line: Line<'static>, width: u16, style: Style) -> Line<'static> {
+    let used: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+    let pad = usize::from(crate::metric::block_pad());
+    let trailing = usize::from(width).saturating_sub(used + pad);
+
+    let mut spans = vec![Span::styled(" ".repeat(pad), style)];
+    spans.extend(line.spans);
+    spans.push(Span::styled(" ".repeat(trailing), style));
+    Line::from(spans)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axon_proto::{MessageId, ToolCallId, ToolResult};
+
+    pub(super) fn text_of(lines: &[Line<'_>]) -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn a_user_message_is_a_padded_full_width_box() {
+        let entry = Entry::User {
+            id: MessageId::new("m1"),
+            text: "hello".into(),
+        };
+        let lines = entry_lines(&entry, 20, Detail::Preview);
+        let rendered = text_of(&lines);
+        assert_eq!(rendered.len(), 3, "blank, body, blank");
+        assert_eq!(rendered[1], " hello              ");
+        assert!(rendered.iter().all(|l| l.chars().count() == 20));
+    }
+
+    #[test]
+    fn an_assistant_message_has_no_background_fill() {
+        let entry = Entry::Assistant {
+            id: MessageId::new("m2"),
+            text: "sure".into(),
+            thinking: String::new(),
+            stop_reason: Some(StopReason::EndTurn),
+            error: None,
+            signatures: axon_proto::Signatures::default(),
+            usage: axon_proto::Usage::default(),
+        };
+        let rendered = text_of(&entry_lines(&entry, 20, Detail::Preview));
+        assert_eq!(rendered, vec!["", " sure"]);
+    }
+
+    #[test]
+    fn a_pending_tool_shows_its_name_and_args() {
+        let entry = Entry::Tool {
+            id: ToolCallId::new("t1"),
+            name: "read".into(),
+            args: r#"{"path": "a.rs"}"#.into(),
+            result: None,
+            thought_signature: None,
+        };
+        let rendered = text_of(&entry_lines(&entry, 40, Detail::Preview));
+        assert!(rendered[1].contains("read"), "{:?}", rendered[1]);
+        assert!(rendered[1].contains("a.rs"), "{:?}", rendered[1]);
+    }
+
+    #[test]
+    fn a_long_tool_result_is_previewed_with_a_remainder_count() {
+        let output = (0..25)
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let entry = Entry::Tool {
+            id: ToolCallId::new("t2"),
+            name: "bash".into(),
+            args: "{}".into(),
+            result: Some(ToolResult {
+                output,
+                is_error: false,
+            }),
+            thought_signature: None,
+        };
+        let rendered = text_of(&entry_lines(&entry, 40, Detail::Preview));
+        assert!(
+            rendered.iter().any(|l| l.contains("15 more lines")),
+            "{rendered:?}"
+        );
+    }
+
+    #[test]
+    fn a_truncated_response_says_so() {
+        let entry = Entry::Assistant {
+            id: MessageId::new("m3"),
+            text: "partial".into(),
+            thinking: String::new(),
+            stop_reason: Some(StopReason::Length),
+            error: None,
+            signatures: axon_proto::Signatures::default(),
+            usage: axon_proto::Usage::default(),
+        };
+        let rendered = text_of(&entry_lines(&entry, 40, Detail::Preview));
+        assert!(
+            rendered.iter().any(|l| l.contains("length limit")),
+            "{rendered:?}"
+        );
+    }
+
+    #[test]
+    fn an_errored_response_shows_the_message() {
+        let entry = Entry::Assistant {
+            id: MessageId::new("m4"),
+            text: String::new(),
+            thinking: String::new(),
+            stop_reason: Some(StopReason::Error),
+            error: Some("overloaded".into()),
+            signatures: axon_proto::Signatures::default(),
+            usage: axon_proto::Usage::default(),
+        };
+        let rendered = text_of(&entry_lines(&entry, 40, Detail::Preview));
+        assert!(
+            rendered.iter().any(|l| l.contains("Error: overloaded")),
+            "{rendered:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod tab_tests {
+    use super::*;
+    use axon_proto::{ToolCallId, ToolResult};
+
+    /// Every character the renderer would put in a cell.
+    fn cells(lines: &[Line<'static>]) -> String {
+        lines
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect()
+    }
+
+    #[test]
+    fn no_tab_reaches_the_buffer_from_tool_output() {
+        // Found against a real model, not in any test: `read` numbers lines with a tab, the
+        // buffer counted it as one column, the terminal moved the cursor to the next tab stop,
+        // and a character from the previous frame was left on screen at the gap.
+        let entry = Entry::Tool {
+            id: ToolCallId::new("t1"),
+            name: "read".into(),
+            args: "{}".into(),
+            result: Some(ToolResult {
+                output: "     1\tfn main() {\n     3\t}\n".into(),
+                is_error: false,
+            }),
+            thought_signature: None,
+        };
+        let rendered = cells(&entry_lines(&entry, 60, Detail::Preview));
+        assert!(!rendered.contains('\t'), "{rendered:?}");
+        assert!(rendered.contains("     3  }"), "{rendered:?}");
+    }
+
+    #[test]
+    fn no_tab_reaches_the_buffer_from_a_fenced_code_block() {
+        // A model quoting a Makefile or Go, which are indented with tabs.
+        let entry = Entry::Assistant {
+            id: axon_proto::MessageId::new("a1"),
+            text: "```\nbuild:\n\tcargo build\n```".into(),
+            thinking: String::new(),
+            stop_reason: None,
+            error: None,
+            signatures: axon_proto::Signatures::default(),
+            usage: axon_proto::Usage::default(),
+        };
+        let rendered = cells(&entry_lines(&entry, 60, Detail::Preview));
+        assert!(!rendered.contains('\t'), "{rendered:?}");
+        assert!(rendered.contains("    cargo build"), "{rendered:?}");
+    }
+}
+
+#[cfg(test)]
+mod notice_tests {
+    use super::*;
+
+    #[test]
+    fn a_notice_is_marked_so_it_reads_as_axon_and_not_the_model() {
+        // It used to be pushed as an assistant message, so `/help` output was — to anyone
+        // reading — the model printing a keybinding reference at you.
+        let lines = entry_lines(
+            &Entry::Notice {
+                text: "unknown command: /nope".to_owned(),
+            },
+            40,
+            Detail::Preview,
+        );
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(
+            rendered.iter().any(|l: &String| l.contains('│')),
+            "{rendered:?}"
+        );
+        assert!(
+            rendered
+                .iter()
+                .any(|l: &String| l.contains("unknown command")),
+            "{rendered:?}"
+        );
+    }
+
+    #[test]
+    fn a_notice_renders_its_markdown() {
+        // `/help` is markdown, and a notice is where it lands.
+        let lines = entry_lines(
+            &Entry::Notice {
+                text: "**Keys**\n\n- `enter` submit".to_owned(),
+            },
+            40,
+            Detail::Preview,
+        );
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(rendered.iter().any(|l: &String| l.contains("Keys")));
+        assert!(
+            !rendered.iter().any(|l: &String| l.contains("**")),
+            "the markers are rendered away: {rendered:?}"
+        );
+        assert!(rendered.iter().any(|l: &String| l.contains('•')));
+    }
+}
+
+#[cfg(test)]
+mod stop_tests {
+    use super::tests::text_of;
+    use super::*;
+    use axon_proto::MessageId;
+
+    fn stopped(reason: StopReason, error: Option<&str>) -> Entry {
+        Entry::Assistant {
+            id: MessageId::new("s"),
+            text: "half an answer".into(),
+            thinking: String::new(),
+            stop_reason: Some(reason),
+            error: error.map(ToOwned::to_owned),
+            signatures: axon_proto::Signatures::default(),
+            usage: axon_proto::Usage::default(),
+        }
+    }
+
+    #[test]
+    fn an_interrupt_reads_as_one() {
+        // "Operation aborted" is a machine's word for a key the reader just pressed.
+        let lines = text_of(&entry_lines(
+            &stopped(StopReason::Aborted, None),
+            40,
+            Detail::Preview,
+        ));
+        assert!(lines.iter().any(|l| l.contains("Interrupted")), "{lines:?}");
+        assert!(!lines.iter().any(|l| l.contains("aborted")), "{lines:?}");
+    }
+
+    #[test]
+    fn an_interrupt_is_not_coloured_as_a_failure() {
+        // Red claims something went wrong; the reader asked for this.
+        let rendered = entry_lines(&stopped(StopReason::Aborted, None), 40, Detail::Preview);
+        let note = rendered
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .find(|s| s.content.contains("Interrupted"))
+            .expect("the note");
+        assert_ne!(note.style.fg, Some(colour::error()));
+    }
+
+    #[test]
+    fn what_arrived_before_the_interrupt_is_kept() {
+        let lines = text_of(&entry_lines(
+            &stopped(StopReason::Aborted, None),
+            40,
+            Detail::Preview,
+        ));
+        assert!(
+            lines.iter().any(|l| l.contains("half an answer")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_real_failure_is_still_red() {
+        let rendered = entry_lines(
+            &stopped(StopReason::Error, Some("no route")),
+            40,
+            Detail::Preview,
+        );
+        let note = rendered
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .find(|s| s.content.contains("no route"))
+            .expect("the note");
+        assert_eq!(note.style.fg, Some(colour::error()));
+    }
+
+    #[test]
+    fn an_abort_that_came_with_a_reason_says_the_reason() {
+        let lines = text_of(&entry_lines(
+            &stopped(StopReason::Aborted, Some("the daemon went away")),
+            40,
+            Detail::Preview,
+        ));
+        assert!(
+            lines.iter().any(|l| l.contains("daemon went away")),
+            "{lines:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod branch_tests {
+    use super::tests::text_of;
+    use super::*;
+    use axon_proto::MessageId;
+
+    fn rewound(keeps: usize) -> Entry {
+        Entry::Branch {
+            id: MessageId::new("b"),
+            keeps,
+        }
+    }
+
+    #[test]
+    fn a_rewind_says_what_it_did_rather_than_where_it_landed() {
+        // "rewound to message 0" is a journal index. Nobody has one of those in mind.
+        let lines = text_of(&entry_lines(&rewound(0), 80, Detail::Preview));
+        let joined = lines.join(" ");
+        assert!(joined.contains("nothing above is sent"), "{joined}");
+        assert!(!joined.contains("message 0"), "{joined}");
+    }
+
+    #[test]
+    fn a_partial_rewind_says_how_much_it_kept() {
+        let lines = text_of(&entry_lines(&rewound(4), 80, Detail::Preview));
+        assert!(lines.join(" ").contains("first 4"), "{lines:?}");
+    }
+
+    #[test]
+    fn the_rule_still_spans_the_width() {
+        let lines = entry_lines(&rewound(2), 60, Detail::Preview);
+        let widest = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.chars().count())
+                    .sum::<usize>()
+            })
+            .max()
+            .unwrap_or(0);
+        assert_eq!(widest, 60);
+    }
+}

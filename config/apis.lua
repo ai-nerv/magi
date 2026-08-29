@@ -1,7 +1,7 @@
--- Every wire protocol axum speaks.
+-- Every wire protocol axon speaks.
 --
 -- Each block is one dialect and stands alone: a `do ... end` so its locals stay its own,
--- ending in the `axum.api` calls that register it. A vendor deviating inside a dialect says
+-- ending in the `axon.api` calls that register it. A vendor deviating inside a dialect says
 -- so in its `compat` block in `providers.lua`, not here.
 
 do -- openai-completions
@@ -30,7 +30,7 @@ do -- openai-completions
       elseif c.type == "tool_call" then
         tool_calls[#tool_calls + 1] = {
           id = c.id, type = "function",
-          ["function"] = { name = c.name, arguments = axum.json.encode(c.arguments or {}) },
+          ["function"] = { name = c.name, arguments = axon.json.encode(c.arguments or {}) },
         }
       elseif c.type == "tool_result" then
         local r = { role = "tool", tool_call_id = c.id, content = c.content }
@@ -144,7 +144,7 @@ do -- openai-completions
       }
     end
 
-    local ok, d = pcall(function() return axum.json.decode(event.data) end)
+    local ok, d = pcall(function() return axon.json.decode(event.data) end)
     if not ok or type(d) ~= "table" then return { scratch = state.scratch, usage = state.usage } end
 
     local scratch = state.scratch or {}
@@ -206,7 +206,7 @@ do -- openai-completions
     return { scratch = scratch, usage = usage, deltas = deltas }
   end
 
-  axum.api("openai-completions", M)
+  axon.api("openai-completions", M)
 end
 
 do -- openai-responses
@@ -225,7 +225,7 @@ do -- openai-responses
         elseif c.type == "tool_call" then
           calls[#calls + 1] = {
             type = "function_call", call_id = c.id, name = c.name,
-            arguments = axum.json.encode(c.arguments or {}),
+            arguments = axon.json.encode(c.arguments or {}),
           }
         elseif c.type == "tool_result" then
           results[#results + 1] = {
@@ -292,7 +292,7 @@ do -- openai-responses
   local INCOMPLETE = { max_output_tokens = "length" }
 
   function M.on_event(state, event)
-    local ok, d = pcall(function() return axum.json.decode(event.data) end)
+    local ok, d = pcall(function() return axon.json.decode(event.data) end)
     if not ok or type(d) ~= "table" then return { scratch = state.scratch, usage = state.usage } end
 
     local deltas, usage = {}, state.usage
@@ -360,7 +360,7 @@ do -- openai-responses
     if not key then return {} end
     return { authorization = "Bearer " .. key }
   end
-  axum.api("openai-responses", openai)
+  axon.api("openai-responses", openai)
 
   local azure = {}
   for k, v in pairs(M) do azure[k] = v end
@@ -373,7 +373,7 @@ do -- openai-responses
     if not key then return {} end
     return { ["api-key"] = key }
   end
-  axum.api("azure-openai-responses", azure)
+  axon.api("azure-openai-responses", azure)
 
   local codex = {}
   for k, v in pairs(M) do codex[k] = v end
@@ -384,7 +384,7 @@ do -- openai-responses
     -- provider declares `oauth` rather than naming a variable to export.
     return { authorization = "Bearer " .. key, ["openai-beta"] = "responses=experimental" }
   end
-  axum.api("openai-codex-responses", codex)
+  axon.api("openai-codex-responses", codex)
 end
 
 do -- anthropic-messages
@@ -500,7 +500,7 @@ do -- anthropic-messages
   }
 
   function M.on_event(state, event)
-    local ok, d = pcall(function() return axum.json.decode(event.data) end)
+    local ok, d = pcall(function() return axon.json.decode(event.data) end)
     if not ok or type(d) ~= "table" then return { scratch = state.scratch, usage = state.usage } end
 
     local deltas = {}
@@ -555,7 +555,7 @@ do -- anthropic-messages
     return { scratch = state.scratch, usage = usage, deltas = deltas }
   end
 
-  axum.api("anthropic-messages", M)
+  axon.api("anthropic-messages", M)
 end
 
 do -- google
@@ -657,7 +657,7 @@ do -- google
   }
 
   function M.on_event(state, event)
-    local ok, d = pcall(function() return axum.json.decode(event.data) end)
+    local ok, d = pcall(function() return axon.json.decode(event.data) end)
     if not ok or type(d) ~= "table" then return { scratch = state.scratch, usage = state.usage } end
 
     local deltas, usage = {}, state.usage
@@ -688,7 +688,7 @@ do -- google
           }
           deltas[#deltas + 1] = {
             kind = "tool_call_args",
-            arguments = axum.json.encode(p.functionCall.args or {}),
+            arguments = axon.json.encode(p.functionCall.args or {}),
           }
         elseif p.thought then
           deltas[#deltas + 1] = { kind = "thinking", thinking = p.text or "" }
@@ -724,7 +724,7 @@ do -- google
     if not key then return {} end
     return { ["x-goog-api-key"] = key }
   end
-  axum.api("google-generative-ai", gemini)
+  axon.api("google-generative-ai", gemini)
 
   local vertex = {}
   for k, v in pairs(M) do vertex[k] = v end
@@ -738,7 +738,7 @@ do -- google
     -- A short-lived access token from the credential chain, not an API key.
     return { authorization = "Bearer " .. key }
   end
-  axum.api("google-vertex", vertex)
+  axon.api("google-vertex", vertex)
 end
 
 do -- pi-messages
@@ -801,7 +801,7 @@ do -- pi-messages
   }
 
   function M.on_event(state, event)
-    local ok, d = pcall(function() return axum.json.decode(event.data) end)
+    local ok, d = pcall(function() return axon.json.decode(event.data) end)
     if not ok or type(d) ~= "table" then return { scratch = state.scratch, usage = state.usage } end
 
     local deltas, usage = {}, state.usage
@@ -837,5 +837,5 @@ do -- pi-messages
     return { scratch = state.scratch, usage = usage, deltas = deltas }
   end
 
-  axum.api("pi-messages", M)
+  axon.api("pi-messages", M)
 end

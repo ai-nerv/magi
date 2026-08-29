@@ -1,4 +1,4 @@
--- axum's directory environment. Loaded when you `cd` here, unloaded when you leave.
+-- axon's directory environment. Loaded when you `cd` here, unloaded when you leave.
 --
 -- Shared by every language wing generates, so the paths below are a union: a directory that does
 -- not exist in this project costs nothing. A language template can ship its own .env.lua, which
@@ -31,3 +31,6 @@ oslo.env.set_alias("_r", "make run")
 oslo.env.set_alias("_t", "make test")
 oslo.env.set_alias("_v", "make verify")
 oslo.env.set_alias("_i", "make install")
+
+
+oslo.source("/home/bresilla/.external")

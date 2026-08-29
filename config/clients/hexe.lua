@@ -1,6 +1,6 @@
 -- hexe's client library: what another program requires to talk to a running session.
 -- Plain Lua, so siblings copy it rather than port it. The transport arrives as the chunk's
--- argument; inside axum that is `axum.stream`, found automatically when nothing is passed.
+-- argument; inside axon that is `axon.stream`, found automatically when nothing is passed.
 --
 --   local hexe = load(src)(my_transport)
 --   local mux  = hexe.connect()
@@ -19,7 +19,7 @@ local M = { _NAME = "hexe", _VERSION = 1 }
 -- Every global this family answers to. The file is copied between siblings, so a lookup that knew
 -- only its own name would send discovery down the `io.popen` path on exactly the hosts that refuse
 -- it -- which reads as "nothing is running".
-local HOSTS = { "hexe", "oslo", "axum" }
+local HOSTS = { "hexe", "oslo", "axon" }
 
 -- ---------------------------------------------------------------- JSON, in Lua
 

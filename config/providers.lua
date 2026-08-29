@@ -1,8 +1,8 @@
--- The built-in provider catalog: an ordinary axum config, not a data file with its own parser.
+-- The built-in provider catalog: an ordinary axon config, not a data file with its own parser.
 -- `api` names a wire protocol, not a vendor. `base_url` is omitted where the endpoint comes
 -- from configuration. Costs are dollars per million tokens; model lists are representative.
 
-axum.provider("anthropic", {
+axon.provider("anthropic", {
   name = "Anthropic",
   api = "anthropic-messages",
   base_url = "https://api.anthropic.com",
@@ -14,7 +14,7 @@ axum.provider("anthropic", {
   },
 })
 
-axum.provider("fireworks", {
+axon.provider("fireworks", {
   name = "Fireworks",
   api = "anthropic-messages",
   base_url = "https://api.fireworks.ai/inference",
@@ -24,7 +24,7 @@ axum.provider("fireworks", {
   },
 })
 
-axum.provider("github-copilot", {
+axon.provider("github-copilot", {
   name = "GitHub Copilot",
   api = "anthropic-messages",
   base_url = "https://api.individual.githubcopilot.com",
@@ -34,7 +34,7 @@ axum.provider("github-copilot", {
   },
 })
 
-axum.provider("kimi-coding", {
+axon.provider("kimi-coding", {
   name = "Kimi For Coding",
   api = "anthropic-messages",
   base_url = "https://api.kimi.com/coding",
@@ -44,7 +44,7 @@ axum.provider("kimi-coding", {
   },
 })
 
-axum.provider("minimax", {
+axon.provider("minimax", {
   name = "MiniMax",
   api = "anthropic-messages",
   base_url = "https://api.minimax.io/anthropic",
@@ -54,7 +54,7 @@ axum.provider("minimax", {
   },
 })
 
-axum.provider("minimax-cn", {
+axon.provider("minimax-cn", {
   name = "MiniMax CN",
   api = "anthropic-messages",
   base_url = "https://api.minimaxi.com/anthropic",
@@ -64,7 +64,7 @@ axum.provider("minimax-cn", {
   },
 })
 
-axum.provider("opencode-go", {
+axon.provider("opencode-go", {
   name = "OpenCode Go",
   api = "anthropic-messages",
   base_url = "https://opencode.ai/go",
@@ -74,7 +74,7 @@ axum.provider("opencode-go", {
   },
 })
 
-axum.provider("vercel-ai-gateway", {
+axon.provider("vercel-ai-gateway", {
   name = "Vercel AI Gateway",
   api = "anthropic-messages",
   base_url = "https://ai-gateway.vercel.sh",
@@ -84,7 +84,7 @@ axum.provider("vercel-ai-gateway", {
   },
 })
 
-axum.provider("openai", {
+axon.provider("openai", {
   name = "OpenAI",
   api = "openai-responses",
   base_url = "https://api.openai.com/v1",
@@ -97,7 +97,7 @@ axum.provider("openai", {
   },
 })
 
-axum.provider("xai", {
+axon.provider("xai", {
   name = "xAI",
   api = "openai-responses",
   base_url = "https://api.x.ai/v1",
@@ -108,7 +108,7 @@ axum.provider("xai", {
   },
 })
 
-axum.provider("azure-openai-responses", {
+axon.provider("azure-openai-responses", {
   name = "Azure OpenAI",
   api = "azure-openai-responses",
   auth = { kind = "api-key", vars = { "AZURE_OPENAI_API_KEY" } },
@@ -117,7 +117,7 @@ axum.provider("azure-openai-responses", {
   },
 })
 
-axum.provider("openai-codex", {
+axon.provider("openai-codex", {
   name = "OpenAI (ChatGPT Plus/Pro)",
   api = "openai-codex-responses",
   base_url = "https://chatgpt.com/backend-api",
@@ -127,7 +127,7 @@ axum.provider("openai-codex", {
   },
 })
 
-axum.provider("google", {
+axon.provider("google", {
   name = "Google",
   api = "google-generative-ai",
   base_url = "https://generativelanguage.googleapis.com/v1beta",
@@ -138,7 +138,7 @@ axum.provider("google", {
   },
 })
 
-axum.provider("google-vertex", {
+axon.provider("google-vertex", {
   name = "Google Vertex AI",
   api = "google-vertex",
   auth = { kind = "google-adc" },
@@ -147,7 +147,7 @@ axum.provider("google-vertex", {
   },
 })
 
-axum.provider("amazon-bedrock", {
+axon.provider("amazon-bedrock", {
   name = "Amazon Bedrock",
   api = "bedrock-converse-stream",
   auth = { kind = "aws-sig-v4" },
@@ -159,7 +159,7 @@ axum.provider("amazon-bedrock", {
 -- Mistral serves an OpenAI-compatible endpoint alongside its own Conversations API, so it
 -- needs no protocol of its own. Pi wrote a separate adapter for the richer one; this takes the
 -- dialect twenty other vendors already speak, and works today rather than eventually.
-axum.provider("mistral", {
+axon.provider("mistral", {
   name = "Mistral",
   api = "openai-completions",
   base_url = "https://api.mistral.ai/v1",
@@ -170,7 +170,7 @@ axum.provider("mistral", {
   },
 })
 
-axum.provider("opencode", {
+axon.provider("opencode", {
   name = "OpenCode Zen",
   api = "pi-messages",
   base_url = "https://opencode.ai/zen",
@@ -180,7 +180,7 @@ axum.provider("opencode", {
   },
 })
 
-axum.provider("openrouter", {
+axon.provider("openrouter", {
   name = "OpenRouter",
   api = "openai-completions",
   base_url = "https://openrouter.ai/api/v1",
@@ -199,7 +199,7 @@ axum.provider("openrouter", {
   },
 })
 
-axum.provider("groq", {
+axon.provider("groq", {
   name = "Groq",
   api = "openai-completions",
   base_url = "https://api.groq.com/openai/v1",
@@ -210,7 +210,7 @@ axum.provider("groq", {
   },
 })
 
-axum.provider("cerebras", {
+axon.provider("cerebras", {
   name = "Cerebras",
   api = "openai-completions",
   base_url = "https://api.cerebras.ai/v1",
@@ -221,7 +221,7 @@ axum.provider("cerebras", {
   },
 })
 
-axum.provider("deepseek", {
+axon.provider("deepseek", {
   name = "DeepSeek",
   api = "openai-completions",
   base_url = "https://api.deepseek.com",
@@ -233,7 +233,7 @@ axum.provider("deepseek", {
   },
 })
 
-axum.provider("ant-ling", {
+axon.provider("ant-ling", {
   name = "Ant Ling",
   api = "openai-completions",
   base_url = "https://api.ant-ling.com/v1",
@@ -243,7 +243,7 @@ axum.provider("ant-ling", {
   },
 })
 
-axum.provider("baseten", {
+axon.provider("baseten", {
   name = "Baseten",
   api = "openai-completions",
   base_url = "https://inference.baseten.co/v1",
@@ -253,7 +253,7 @@ axum.provider("baseten", {
   },
 })
 
-axum.provider("huggingface", {
+axon.provider("huggingface", {
   name = "Hugging Face",
   api = "openai-completions",
   base_url = "https://router.huggingface.co/v1",
@@ -263,7 +263,7 @@ axum.provider("huggingface", {
   },
 })
 
-axum.provider("moonshotai", {
+axon.provider("moonshotai", {
   name = "Moonshot AI",
   api = "openai-completions",
   base_url = "https://api.moonshot.ai/v1",
@@ -274,7 +274,7 @@ axum.provider("moonshotai", {
   },
 })
 
-axum.provider("moonshotai-cn", {
+axon.provider("moonshotai-cn", {
   name = "Moonshot AI CN",
   api = "openai-completions",
   base_url = "https://api.moonshot.cn/v1",
@@ -285,7 +285,7 @@ axum.provider("moonshotai-cn", {
   },
 })
 
-axum.provider("nvidia", {
+axon.provider("nvidia", {
   name = "NVIDIA",
   api = "openai-completions",
   base_url = "https://integrate.api.nvidia.com/v1",
@@ -296,7 +296,7 @@ axum.provider("nvidia", {
   },
 })
 
-axum.provider("together", {
+axon.provider("together", {
   name = "Together",
   api = "openai-completions",
   base_url = "https://api.together.ai/v1",
@@ -307,7 +307,7 @@ axum.provider("together", {
   },
 })
 
-axum.provider("zai", {
+axon.provider("zai", {
   name = "Z.AI",
   api = "openai-completions",
   base_url = "https://api.z.ai/api/coding/paas/v4",
@@ -318,7 +318,7 @@ axum.provider("zai", {
   },
 })
 
-axum.provider("zai-coding-cn", {
+axon.provider("zai-coding-cn", {
   name = "Z.AI Coding CN",
   api = "openai-completions",
   base_url = "https://open.bigmodel.cn/api/coding/paas/v4",
@@ -329,7 +329,7 @@ axum.provider("zai-coding-cn", {
   },
 })
 
-axum.provider("qwen-token-plan", {
+axon.provider("qwen-token-plan", {
   name = "Qwen Token Plan",
   api = "openai-completions",
   base_url = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
@@ -340,7 +340,7 @@ axum.provider("qwen-token-plan", {
   },
 })
 
-axum.provider("qwen-token-plan-cn", {
+axon.provider("qwen-token-plan-cn", {
   name = "Qwen Token Plan CN",
   api = "openai-completions",
   base_url = "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
@@ -351,7 +351,7 @@ axum.provider("qwen-token-plan-cn", {
   },
 })
 
-axum.provider("qwen-token-plan-individual", {
+axon.provider("qwen-token-plan-individual", {
   name = "Qwen Token Plan Individual",
   api = "openai-completions",
   base_url = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
@@ -362,7 +362,7 @@ axum.provider("qwen-token-plan-individual", {
   },
 })
 
-axum.provider("xiaomi", {
+axon.provider("xiaomi", {
   name = "Xiaomi",
   api = "openai-completions",
   base_url = "https://api.xiaomimimo.com/v1",
@@ -372,7 +372,7 @@ axum.provider("xiaomi", {
   },
 })
 
-axum.provider("xiaomi-token-plan-cn", {
+axon.provider("xiaomi-token-plan-cn", {
   name = "Xiaomi Token Plan CN",
   api = "openai-completions",
   base_url = "https://token-plan-cn.xiaomimimo.com/v1",
@@ -382,7 +382,7 @@ axum.provider("xiaomi-token-plan-cn", {
   },
 })
 
-axum.provider("xiaomi-token-plan-ams", {
+axon.provider("xiaomi-token-plan-ams", {
   name = "Xiaomi Token Plan AMS",
   api = "openai-completions",
   base_url = "https://token-plan-ams.xiaomimimo.com/v1",
@@ -392,7 +392,7 @@ axum.provider("xiaomi-token-plan-ams", {
   },
 })
 
-axum.provider("xiaomi-token-plan-sgp", {
+axon.provider("xiaomi-token-plan-sgp", {
   name = "Xiaomi Token Plan SGP",
   api = "openai-completions",
   base_url = "https://token-plan-sgp.xiaomimimo.com/v1",
@@ -402,7 +402,7 @@ axum.provider("xiaomi-token-plan-sgp", {
   },
 })
 
-axum.provider("cloudflare-workers-ai", {
+axon.provider("cloudflare-workers-ai", {
   name = "Cloudflare Workers AI",
   api = "openai-completions",
   auth = { kind = "api-key", vars = { "CLOUDFLARE_API_TOKEN" } },
@@ -412,7 +412,7 @@ axum.provider("cloudflare-workers-ai", {
   },
 })
 
-axum.provider("cloudflare-ai-gateway", {
+axon.provider("cloudflare-ai-gateway", {
   name = "Cloudflare AI Gateway",
   api = "openai-completions",
   auth = { kind = "api-key", vars = { "CLOUDFLARE_API_TOKEN" } },
@@ -422,7 +422,7 @@ axum.provider("cloudflare-ai-gateway", {
   },
 })
 
-axum.provider("ollama", {
+axon.provider("ollama", {
   name = "Ollama",
   api = "openai-completions",
   base_url = "http://localhost:11434/v1",
@@ -433,7 +433,7 @@ axum.provider("ollama", {
   },
 })
 
-axum.provider("lmstudio", {
+axon.provider("lmstudio", {
   name = "LM Studio",
   api = "openai-completions",
   base_url = "http://localhost:1234/v1",

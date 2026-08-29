@@ -67,19 +67,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
-name = "axum-cli"
+name = "axon-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "axum-host",
- "axum-ipc",
- "axum-journal",
- "axum-lua",
- "axum-proto",
- "axum-provider",
- "axum-testkit",
- "axum-tools",
- "axum-tui",
+ "axon-host",
+ "axon-ipc",
+ "axon-journal",
+ "axon-lua",
+ "axon-proto",
+ "axon-provider",
+ "axon-testkit",
+ "axon-tools",
+ "axon-tui",
  "clap",
  "crossterm",
  "ignore",
@@ -92,26 +92,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "axum-core"
+name = "axon-core"
 version = "0.1.0"
 dependencies = [
- "axum-model",
- "axum-provider",
+ "axon-model",
+ "axon-provider",
  "serde_json",
 ]
 
 [[package]]
-name = "axum-host"
+name = "axon-host"
 version = "0.1.0"
 dependencies = [
- "axum-core",
- "axum-ipc",
- "axum-journal",
- "axum-lua",
- "axum-model",
- "axum-proto",
- "axum-provider",
- "axum-tools",
+ "axon-core",
+ "axon-ipc",
+ "axon-journal",
+ "axon-lua",
+ "axon-model",
+ "axon-proto",
+ "axon-provider",
+ "axon-tools",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -119,10 +119,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "axum-ipc"
+name = "axon-ipc"
 version = "0.1.0"
 dependencies = [
- "axum-proto",
+ "axon-proto",
  "ciborium",
  "rustix",
  "serde",
@@ -131,22 +131,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "axum-journal"
+name = "axon-journal"
 version = "0.1.0"
 dependencies = [
- "axum-proto",
+ "axon-proto",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
 ]
 
 [[package]]
-name = "axum-lua"
+name = "axon-lua"
 version = "0.1.0"
 dependencies = [
- "axum-model",
- "axum-provider",
- "axum-tools",
+ "axon-model",
+ "axon-provider",
+ "axon-tools",
  "luna",
  "serde",
  "serde_json",
@@ -154,7 +154,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "axum-model"
+name = "axon-model"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -162,20 +162,20 @@ dependencies = [
 ]
 
 [[package]]
-name = "axum-proto"
+name = "axon-proto"
 version = "0.1.0"
 dependencies = [
- "axum-model",
+ "axon-model",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
 ]
 
 [[package]]
-name = "axum-provider"
+name = "axon-provider"
 version = "0.1.0"
 dependencies = [
- "axum-model",
+ "axon-model",
  "base64",
  "bytes",
  "futures-util",
@@ -188,22 +188,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "axum-testkit"
+name = "axon-testkit"
 version = "0.1.0"
 dependencies = [
- "axum-ipc",
- "axum-proto",
+ "axon-ipc",
+ "axon-proto",
  "serde_json",
  "tokio",
 ]
 
 [[package]]
-name = "axum-tools"
+name = "axon-tools"
 version = "0.1.0"
 dependencies = [
- "axum-ipc",
- "axum-model",
- "axum-proto",
+ "axon-ipc",
+ "axon-model",
+ "axon-proto",
  "ignore",
  "serde",
  "serde_json",
@@ -211,10 +211,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "axum-tui"
+name = "axon-tui"
 version = "0.1.0"
 dependencies = [
- "axum-proto",
+ "axon-proto",
  "ratatui",
  "serde_json",
 ]

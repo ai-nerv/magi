@@ -16,13 +16,13 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            artifact: "axum-linux-amd64"
+            artifact: "axon-linux-amd64"
           - os: ubuntu-24.04-arm
-            artifact: "axum-linux-arm64"
+            artifact: "axon-linux-arm64"
           - os: macos-15-intel
-            artifact: "axum-macos-amd64"
+            artifact: "axon-macos-amd64"
           - os: macos-14
-            artifact: "axum-macos-arm64"
+            artifact: "axon-macos-arm64"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

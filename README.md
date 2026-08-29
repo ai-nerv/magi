@@ -1,4 +1,4 @@
-# axum
+# axon
 
 A coding agent for Linux.
 
@@ -12,9 +12,9 @@ A real agent: a model answers, tools run in their own processes, and the session
 and resumable. See `PLAN.md` for how it was built.
 
 ```sh
-make run          # axum, for real, in the current directory
-make install      # the static binary into $PREFIX/bin, so `axum` works anywhere
-make configs      # install config/ into ~/.config/axum, ready to edit
+make run          # axon, for real, in the current directory
+make install      # the static binary into $PREFIX/bin, so `axon` works anywhere
+make configs      # install config/ into ~/.config/axon, ready to edit
 make build        # the release binary, static where the toolchain allows it
 make verify       # fmt, check, test, clippy, gates, docs
 ```
@@ -22,7 +22,7 @@ make verify       # fmt, check, test, clippy, gates, docs
 **Both are needed.** `make configs` installs configuration; it does nothing for a binary you
 have not installed. `make configs` says so when the two are out of step.
 
-With no API keys set, `make run` says as much and `/model` lists every model axum knows with
+With no API keys set, `make run` says as much and `/model` lists every model axon knows with
 what each would need — so the first thing you do is choose one rather than read a config file.
 
 Two backends, one renderer. `alt` takes the alternate screen and owns the transcript, which is
@@ -33,7 +33,7 @@ whichever is active.
 
 `make run` starts a daemon for the working directory and attaches the UI to it over a Unix
 socket — two processes, as the architecture intends. Quitting the UI detaches; the turn keeps
-running, and `axum stop` ends the daemon.
+running, and `axon stop` ends the daemon.
 
 For working on the interface without a model, `make demo` replays a recorded session:
 
@@ -47,11 +47,11 @@ make ui           # the UI alone, attaching to it
 
 | Crate | Role |
 |---|---|
-| `axum-proto` | the wire contract: events, commands, envelope. No I/O |
-| `axum-ipc` | Unix socket transport, length-prefixed CBOR, `SO_PEERCRED` identity |
-| `axum-tui` | rendering: theme, markdown, transcript, editor, status, footer |
-| `axum-cli` | the UI process |
-| `axum-testkit` | fake harness and recordings |
+| `axon-proto` | the wire contract: events, commands, envelope. No I/O |
+| `axon-ipc` | Unix socket transport, length-prefixed CBOR, `SO_PEERCRED` identity |
+| `axon-tui` | rendering: theme, markdown, transcript, editor, status, footer |
+| `axon-cli` | the UI process |
+| `axon-testkit` | fake harness and recordings |
 
 ## Development
 
@@ -69,7 +69,7 @@ The gates are not advisory:
 | Gate | Rule |
 |---|---|
 | `gate-file-size` | no `.rs` over 800 lines |
-| `gate-proto-size` | `axum-proto` under 4,000 lines |
+| `gate-proto-size` | `axon-proto` under 4,000 lines |
 | `gate-reachable` | no crate unreachable from the binary |
 
 The gates are not advisory. They exist because Pi carries ~20,000 lines that nothing reaches
@@ -82,8 +82,8 @@ reasonable commit at a time.
 binary — no interpreter, no `NEEDED` entries, nothing to install alongside it:
 
 ```
-axum 0.1.0   2.15 MB
-binary  target/x86_64-unknown-linux-musl/release/axum
+axon 0.1.0   2.15 MB
+binary  target/x86_64-unknown-linux-musl/release/axon
 size    2.15 MB   2,249,400 bytes
 linking ✓ static   no runtime dependencies
 ```
@@ -98,7 +98,7 @@ turns a ten-second link into minutes.
 
 ## Configuration
 
-Everything axum knows about the outside world is Lua, and it all lives in `config/`:
+Everything axon knows about the outside world is Lua, and it all lives in `config/`:
 
 | | |
 |---|---|
@@ -106,14 +106,14 @@ Everything axum knows about the outside world is Lua, and it all lives in `confi
 | `config/providers.lua` | the catalog — which endpoints exist and what they offer |
 | `config/init.lua` | your settings, and anything you want to add |
 
-`make configs` copies them to `$XDG_CONFIG_HOME/axum/`, where axum reads them. The binary also
+`make configs` copies them to `$XDG_CONFIG_HOME/axon/`, where axon reads them. The binary also
 carries a copy, so a fresh install already speaks and already has a catalog — installing gives
 you the real files to edit, it does not turn anything on that was off.
 
 Layered, later winning by registration id:
 
 ```
-compiled-in defaults  →  ~/.config/axum/apis/*.lua  →  providers.lua  →  init.lua  →  ./.axum.lua
+compiled-in defaults  →  ~/.config/axon/apis/*.lua  →  providers.lua  →  init.lua  →  ./.axon.lua
 ```
 
 A provider or a protocol declared twice replaces rather than appends, which is what makes both
