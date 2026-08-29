@@ -86,6 +86,10 @@ impl Session {
         execute!(out, crossterm::event::EnableBracketedPaste)?;
         if mode == Mode::Alt {
             execute!(out, EnterAlternateScreen)?;
+            // Taken so a block can be opened by clicking its handle, and so the wheel scrolls.
+            // The cost is the terminal's own drag-selection: hold shift to get it back, or
+            // `ctrl+t` to hand the mouse over entirely.
+            execute!(out, crossterm::event::EnableMouseCapture)?;
         }
 
         let enhanced = push_keyboard_enhancements(&mut out).unwrap_or(false);

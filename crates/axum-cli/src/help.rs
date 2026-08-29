@@ -16,8 +16,8 @@ const KEYS: &str = "\
 - `tab` complete — `enter` runs the command — `↑/↓` move through the list
 - `pgup`/`pgdn` scroll — `shift+↑/↓` by a line — `shift+home/end` to the ends
 - `ctrl+o` show tool output in full, again to fold it back
-- `ctrl+t` take the mouse, for wheel scrolling and clicking a block open
-        (off by default, so dragging selects text the way your terminal always did)
+- `ctrl+t` hand the mouse to the terminal, so you can drag-select and copy
+- click a tool block, or its `»`, to open just that one
 - `ctrl+x` edit the prompt in `$EDITOR`
 - `ctrl+c` clear the prompt, again to quit — `ctrl+d` quit
 - `ctrl+a/e` line start/end — `ctrl+k/u` kill — `ctrl+y` yank

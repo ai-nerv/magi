@@ -129,6 +129,23 @@ pub(super) fn block(
         }
     }
 
+    // The handle, on its own row at the foot of the box. Clicking anywhere in the block works,
+    // but a block that can be opened has to *look* like one — a fold with no visible handle is a
+    // fold nobody finds, and the count of hidden lines only appears when there are lines to hide,
+    // which a `write` with a one-line result has none of.
+    out.push(pad(
+        Line::from(Span::styled(
+            match detail {
+                Detail::Preview => crate::glyph::expand(),
+                Detail::Full => crate::glyph::collapse(),
+            }
+            .to_owned(),
+            style.fg(colour::tool_fold()),
+        )),
+        width,
+        style,
+    ));
+
     out.push(blank(width, style));
     out
 }
@@ -651,5 +668,86 @@ mod opened {
             shown.iter().any(|l| l.contains("xargs wc -l")),
             "{shown:#?}"
         );
+    }
+}
+
+/// The handle at the foot of every block, and what it says about the block's state.
+#[cfg(test)]
+mod handle {
+    use super::*;
+
+    fn rows(detail: Detail) -> Vec<String> {
+        block(
+            "write",
+            r#"{"path":"/tmp/x","contents":"one\ntwo"}"#,
+            Some(&axum_proto::ToolResult {
+                output: "wrote /tmp/x".to_owned(),
+                is_error: false,
+            }),
+            50,
+            detail,
+        )
+        .iter()
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+                .trim()
+                .to_owned()
+        })
+        .collect()
+    }
+
+    #[test]
+    fn a_folded_block_offers_to_open() {
+        let shown = rows(Detail::Preview);
+        assert!(
+            shown.iter().any(|l| l == crate::glyph::expand()),
+            "nothing says this can be opened: {shown:#?}"
+        );
+    }
+
+    #[test]
+    fn an_open_block_offers_to_fold() {
+        let shown = rows(Detail::Full);
+        assert!(
+            shown.iter().any(|l| l == crate::glyph::collapse()),
+            "and nothing says it can be closed again: {shown:#?}"
+        );
+    }
+
+    #[test]
+    fn the_handle_is_there_even_when_nothing_was_hidden() {
+        // The "… N more lines" note only appears when the result was long enough to truncate.
+        // A `write` reports one line, so without this its block had no handle at all — which is
+        // exactly the block somebody wants to open, to read the file it wrote.
+        let shown = rows(Detail::Preview);
+        assert!(
+            !shown.iter().any(|l| l.contains("more lines")),
+            "the premise: nothing was truncated here: {shown:#?}"
+        );
+        assert!(shown.iter().any(|l| l == crate::glyph::expand()));
+    }
+
+    #[test]
+    fn the_handle_sits_at_the_foot_of_the_box() {
+        let shown = rows(Detail::Preview);
+        let at = shown
+            .iter()
+            .position(|l| l == crate::glyph::expand())
+            .expect("a handle");
+        assert_eq!(
+            at,
+            shown.len() - 2,
+            "last row before the padding: {shown:#?}"
+        );
+    }
+
+    #[test]
+    fn opening_a_block_still_shows_what_it_was_given() {
+        let shown = rows(Detail::Full);
+        assert!(shown.iter().any(|l| l == "one"), "{shown:#?}");
+        assert!(shown.iter().any(|l| l == "two"), "{shown:#?}");
     }
 }

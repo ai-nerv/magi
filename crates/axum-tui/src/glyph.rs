@@ -69,6 +69,8 @@ glyphs! {
     ellipsis = "…", "Where something was cut to fit.";
     bullet = "• ", "A markdown list item.";
     more_rule = "─ ", "Repeated along an edge the transcript continues past.";
+    expand = "»", "At the end of a folded tool block: click to open it.";
+    collapse = "«", "At the end of an open tool block: click to fold it.";
     quote_rule = "│ ", "Down the left of a block quote.";
     notice_rule = "│ ", "Down the left of something the UI itself is saying.";
     placeholder = "ask anything, or / for commands", "The prompt, before you type anything.";

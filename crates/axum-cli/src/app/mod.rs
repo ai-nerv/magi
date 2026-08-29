@@ -179,8 +179,10 @@ impl App {
             choices: Vec::new(),
             picker: None,
             picking: None,
+            // Folded. A transcript of whole build logs is not a transcript, and the handle at
+            // the foot of each block is how you open the one you care about.
             detail: axum_tui::transcript::Detail::Preview,
-            mouse: false,
+            mouse: true,
             flipped: std::collections::BTreeSet::new(),
             owners: Vec::new(),
             live_rows: 0..0,

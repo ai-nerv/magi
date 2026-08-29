@@ -82,6 +82,7 @@ fn a_conversation_renders_the_way_pi_lays_it_out() {
             "",                            // tool box: top padding
             " bash cargo test",            // tool box: header, values without their keys
             " test result: ok. 42 passed", // tool box: output
+            " »",                          // tool box: the handle that opens it
             "",                            // tool box: bottom padding
         ]
     );
