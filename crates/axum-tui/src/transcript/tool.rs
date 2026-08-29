@@ -60,19 +60,48 @@ pub(super) fn block(
     let style = Style::default().bg(colour::tool_bg());
     let inner = usize::from(width.saturating_sub(crate::metric::block_pad() * 2));
 
+    // The name in reverse: the outcome behind it, the box's own background in front. A coloured
+    // word states pending, done or failed; a coloured *label* states it at a glance, and reads as
+    // the tag on a block rather than as the first word of a sentence. The spaces are part of it —
+    // a reversed run tight against the text is a smudge.
+    let label = Style::default()
+        .bg(outcome)
+        .fg(colour::tool_bg())
+        .add_modifier(Modifier::BOLD);
+    // The handle rides the header, right-aligned, in the outcome's colour. It was a row of its
+    // own at the foot: correct, and in the wrong place — you decide whether to open a block from
+    // its title, not after reading to the end of what it is hiding.
+    let handle = match detail {
+        Detail::Preview => crate::glyph::expand(),
+        Detail::Full => crate::glyph::collapse(),
+    };
     let mut out = vec![blank(width, style), {
-        let mut spans = vec![Span::styled(
-            name.to_owned(),
-            style.fg(outcome).add_modifier(Modifier::BOLD),
-        )];
         let summary = summarize(args);
-        if !summary.is_empty() {
-            spans.push(Span::styled(
-                format!(" {summary}"),
-                style.fg(colour::tool_output()),
-            ));
-        }
-        pad(Line::from(spans), width, style)
+        let named = format!(" {name} ");
+        let beside = if summary.is_empty() {
+            String::new()
+        } else {
+            format!(" {summary}")
+        };
+        // Whatever is left between the two, so the handle sits on the right edge whatever the
+        // name and summary came to. Clipped rather than overflowed on a narrow screen.
+        let room = inner
+            .saturating_sub(named.chars().count() + handle.chars().count())
+            .max(1);
+        let beside = clip(&beside, room);
+        let gap = inner.saturating_sub(
+            named.chars().count() + beside.chars().count() + handle.chars().count(),
+        );
+        pad(
+            Line::from(vec![
+                Span::styled(named, label),
+                Span::styled(beside, style.fg(colour::tool_output())),
+                Span::styled(" ".repeat(gap), style),
+                Span::styled(handle.to_owned(), style.fg(outcome)),
+            ]),
+            width,
+            style,
+        )
     }];
 
     // Opened, the call shows what it was *given* as well as what it returned. Without this,
@@ -128,23 +157,6 @@ pub(super) fn block(
             }
         }
     }
-
-    // The handle, on its own row at the foot of the box. Clicking anywhere in the block works,
-    // but a block that can be opened has to *look* like one — a fold with no visible handle is a
-    // fold nobody finds, and the count of hidden lines only appears when there are lines to hide,
-    // which a `write` with a one-line result has none of.
-    out.push(pad(
-        Line::from(Span::styled(
-            match detail {
-                Detail::Preview => crate::glyph::expand(),
-                Detail::Full => crate::glyph::collapse(),
-            }
-            .to_owned(),
-            style.fg(colour::tool_fold()),
-        )),
-        width,
-        style,
-    ));
 
     out.push(blank(width, style));
     out
@@ -522,22 +534,31 @@ mod block_tests {
     }
 
     #[test]
-    fn the_whole_header_row_carries_the_block_background() {
-        // Without it the box is ragged coloured text rather than a block. The three tinted
-        // backgrounds collapsed into one when the palette became the terminal's, so this is now
-        // the only thing holding the shape together.
+    fn the_whole_header_row_carries_a_background() {
+        // Without it the box is ragged coloured text rather than a block. Every span has one;
+        // the name's is the outcome colour it is reversed out of, and everything else is the
+        // block's own.
         for span in header(None).spans {
-            assert_eq!(
-                span.style.bg,
-                Some(colour::menu_bg()),
+            assert!(
+                span.style.bg.is_some(),
                 "{:?} has no background",
                 span.content
             );
+            if !span.content.contains("shell") {
+                assert_eq!(
+                    span.style.bg,
+                    Some(colour::menu_bg()),
+                    "{:?} is not the block background",
+                    span.content
+                );
+            }
         }
     }
 
     #[test]
     fn the_name_says_what_happened() {
+        // The outcome moved from the name's foreground to its background when the name became
+        // a reversed label, so this asks the label what colour it is standing on.
         let ok = ToolResult {
             output: "hi".into(),
             is_error: false,
@@ -546,10 +567,18 @@ mod block_tests {
             is_error: true,
             ..ok.clone()
         };
-        let fg = |result: Option<&ToolResult>| header(result).spans[1].style.fg;
-        assert_eq!(fg(None), Some(colour::tool_title()), "still running");
-        assert_eq!(fg(Some(&ok)), Some(colour::tool_ok()));
-        assert_eq!(fg(Some(&bad)), Some(colour::tool_failed()));
+        let behind = |result: Option<&ToolResult>| {
+            header(result)
+                .spans
+                .iter()
+                .find(|s| s.content.contains("shell"))
+                .expect("the name")
+                .style
+                .bg
+        };
+        assert_eq!(behind(None), Some(colour::tool_title()), "still running");
+        assert_eq!(behind(Some(&ok)), Some(colour::tool_ok()));
+        assert_eq!(behind(Some(&bad)), Some(colour::tool_failed()));
     }
 }
 
@@ -671,83 +700,6 @@ mod opened {
     }
 }
 
-/// The handle at the foot of every block, and what it says about the block's state.
 #[cfg(test)]
-mod handle {
-    use super::*;
-
-    fn rows(detail: Detail) -> Vec<String> {
-        block(
-            "write",
-            r#"{"path":"/tmp/x","contents":"one\ntwo"}"#,
-            Some(&axum_proto::ToolResult {
-                output: "wrote /tmp/x".to_owned(),
-                is_error: false,
-            }),
-            50,
-            detail,
-        )
-        .iter()
-        .map(|l| {
-            l.spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect::<String>()
-                .trim()
-                .to_owned()
-        })
-        .collect()
-    }
-
-    #[test]
-    fn a_folded_block_offers_to_open() {
-        let shown = rows(Detail::Preview);
-        assert!(
-            shown.iter().any(|l| l == crate::glyph::expand()),
-            "nothing says this can be opened: {shown:#?}"
-        );
-    }
-
-    #[test]
-    fn an_open_block_offers_to_fold() {
-        let shown = rows(Detail::Full);
-        assert!(
-            shown.iter().any(|l| l == crate::glyph::collapse()),
-            "and nothing says it can be closed again: {shown:#?}"
-        );
-    }
-
-    #[test]
-    fn the_handle_is_there_even_when_nothing_was_hidden() {
-        // The "… N more lines" note only appears when the result was long enough to truncate.
-        // A `write` reports one line, so without this its block had no handle at all — which is
-        // exactly the block somebody wants to open, to read the file it wrote.
-        let shown = rows(Detail::Preview);
-        assert!(
-            !shown.iter().any(|l| l.contains("more lines")),
-            "the premise: nothing was truncated here: {shown:#?}"
-        );
-        assert!(shown.iter().any(|l| l == crate::glyph::expand()));
-    }
-
-    #[test]
-    fn the_handle_sits_at_the_foot_of_the_box() {
-        let shown = rows(Detail::Preview);
-        let at = shown
-            .iter()
-            .position(|l| l == crate::glyph::expand())
-            .expect("a handle");
-        assert_eq!(
-            at,
-            shown.len() - 2,
-            "last row before the padding: {shown:#?}"
-        );
-    }
-
-    #[test]
-    fn opening_a_block_still_shows_what_it_was_given() {
-        let shown = rows(Detail::Full);
-        assert!(shown.iter().any(|l| l == "one"), "{shown:#?}");
-        assert!(shown.iter().any(|l| l == "two"), "{shown:#?}");
-    }
-}
+#[path = "header.rs"]
+mod header_tests;

@@ -74,15 +74,16 @@ fn a_conversation_renders_the_way_pi_lays_it_out() {
     assert_eq!(
         rendered,
         vec![
-            "",                            // user box: top padding
-            " run the tests",              // user box: body
-            "",                            // user box: bottom padding
-            "",                            // assistant: leading blank
-            " Running them now.",          // assistant: body, indented
-            "",                            // tool box: top padding
-            " bash cargo test",            // tool box: header, values without their keys
+            "",                   // user box: top padding
+            " run the tests",     // user box: body
+            "",                   // user box: bottom padding
+            "",                   // assistant: leading blank
+            " Running them now.", // assistant: body, indented
+            "",                   // tool box: top padding
+            // tool box: the name reversed out as a label, then its arguments, then the
+            // handle that opens the block, held against the right edge.
+            "  bash  cargo test                        »",
             " test result: ok. 42 passed", // tool box: output
-            " »",                          // tool box: the handle that opens it
             "",                            // tool box: bottom padding
         ]
     );
