@@ -261,9 +261,9 @@ mod chosen;
 use chosen::{asked, chosen};
 mod settings;
 
-use settings::{environ, grants, options, system};
+use settings::{grants, options, system};
 
-pub use settings::adopt_ui;
+pub use settings::{adopt_ui, environ};
 
 /// What this directory chose last time it was used.
 #[must_use]

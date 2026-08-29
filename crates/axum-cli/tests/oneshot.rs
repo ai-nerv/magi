@@ -548,3 +548,35 @@ fn install_config(into: &Path) {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config");
     copy(&source, into);
 }
+
+#[test]
+fn the_daemon_runs_under_the_axum_profile() {
+    // The peer sets this for itself, which covers the shell. The daemon needs it too, for
+    // everything it starts that is not a peer — the `git` it asks about the branch, the `sh` a
+    // permission check runs — or half of what a session does falls outside the profile it is
+    // supposed to be recording under.
+    let dir = workspace("profile", &serve(stream("here")));
+    let output = axum(&dir, &["--sessions", "sessions", "-p", "what is it"]);
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let running: Vec<u32> = pid_files(&dir.join("run"))
+        .into_iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .filter_map(|pid| pid.trim().parse::<u32>().ok())
+        .collect();
+    assert!(!running.is_empty(), "a daemon was started");
+
+    for pid in running {
+        let environ = std::fs::read(format!("/proc/{pid}/environ")).expect("its environment");
+        let seen = String::from_utf8_lossy(&environ);
+        assert!(
+            seen.split('\0').any(|pair| pair == "OSLO_PROFILE=axum"),
+            "daemon {pid} is outside the profile"
+        );
+    }
+    teardown(&dir);
+}

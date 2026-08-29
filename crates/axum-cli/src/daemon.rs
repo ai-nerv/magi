@@ -98,6 +98,12 @@ pub fn log_path(socket: &Path) -> PathBuf {
 fn spawn(socket: &Path, sessions: Option<&Path>, resume: bool) -> Result<std::process::Child> {
     let exe = std::env::current_exe().context("finding the axum binary")?;
     let mut command = std::process::Command::new(exe);
+    // The daemon, and so everything it starts that is not a peer: the `git` it asks about the
+    // branch, the `sh` a permission check runs. A peer sets this for itself, which covers the
+    // shell; without it here, the rest of what a session runs is outside the profile it is
+    // supposed to be recording under.
+    let extra = crate::config::load().map(|loaded| crate::config::environ(&loaded));
+    axum_tools::environ::apply(&mut command, &extra.unwrap_or_default());
     command.arg("--socket").arg(socket).arg("host");
     if let Some(dir) = sessions {
         command.arg("--sessions").arg(dir);
