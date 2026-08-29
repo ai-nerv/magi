@@ -1,14 +1,5 @@
 -- What axum tells the model it is.
---
--- Every milestone up to here shipped without one: the model was handed tool schemas and
--- nothing else, so it did not know it was a coding agent, which directory it was in, or what
--- machine it was on. It behaved like a chat assistant that happened to have tools — asking
--- whether there was anything else it could help with after editing your source.
---
--- Assigned, not registered, because it is a value. axum appends two things it composes itself:
--- the facts about this session (directory, platform, date) which are not opinions, and the
--- project's own `AGENTS.md` if there is one. Replace this to change the instructions; those
--- two are always added.
+-- axum appends the session's facts (directory, platform, date) and the project's `AGENTS.md`.
 
 axum.system = [[
 You are axum, a coding agent working in a terminal alongside a person at their computer.

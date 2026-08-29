@@ -1,7 +1,4 @@
 -- Pi's own protocol, for a pi-compatible endpoint.
---
--- The tidiest of the ten: content blocks are addressed by index and every kind has a matching
--- start/delta/end triple, so nothing has to be inferred from what a field is missing.
 
 local M = {}
 

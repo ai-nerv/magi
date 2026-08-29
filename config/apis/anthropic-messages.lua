@@ -1,9 +1,4 @@
 -- Anthropic's Messages API.
---
--- A protocol is a description: where to post, what headers to send, how to shape a request, and
--- how to read one server-sent event. Nothing here is Rust, and adding a protocol needs no
--- rebuild — which matters because a private endpoint that speaks something slightly different
--- is a file, not a fork.
 
 local M = {}
 

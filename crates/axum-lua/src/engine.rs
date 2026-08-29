@@ -14,6 +14,13 @@ pub struct Config {
     pub settings: serde_json::Map<String, serde_json::Value>,
     /// Everything handed to a registrar, keyed by registrar then by identity.
     pub registered: Registered,
+    /// Files `axum.load` asked for, in the order it asked.
+    ///
+    /// Collected rather than run on the spot: running a chunk from inside a chunk is
+    /// re-entrancy the VM does not offer, and a queue the host drains gives the same ordering
+    /// with none of it. A file already asked for is not queued twice, so a diamond of loads
+    /// terminates.
+    pub loads: Vec<String>,
 }
 
 impl Config {
@@ -183,6 +190,26 @@ impl Engine {
                     Ok(CallbackReturn::Return)
                 });
                 axum.set(ctx, *registrar, callback).ok();
+            }
+
+            // The one way a config reaches another file. There is no auto-discovery behind it:
+            // `init.lua` is the entry point, and what it does not name does not run.
+            {
+                let held = Rc::clone(&config);
+                let load = Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
+                    let path: Value = stack.consume(ctx)?;
+                    let Value::String(path) = path else {
+                        return Err(raise(ctx, "axum.load: expects a path"));
+                    };
+                    let path = String::from_utf8_lossy(path.as_bytes()).into_owned();
+                    let mut held = held.borrow_mut();
+                    if !held.loads.contains(&path) {
+                        held.loads.push(path);
+                    }
+                    stack.replace(ctx, ());
+                    Ok(CallbackReturn::Return)
+                });
+                axum.set(ctx, "load", load).ok();
             }
 
             // Made here rather than left to the config, so `axum.ui.accent = 1` works without a
@@ -432,5 +459,38 @@ impl Engine {
                 axum.set(ctx, "stubs", table).ok();
             }
         });
+    }
+}
+
+impl Engine {
+    /// Files `axum.load` has asked for and this has not yet handed back.
+    ///
+    /// Drained rather than read, so a caller can run what it is given, let those files ask for
+    /// more, and come back for the rest until there is none.
+    pub fn take_loads(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.config.borrow_mut().loads)
+    }
+}
+
+impl Engine {
+    /// What `axum.load` has asked for so far, without taking it.
+    #[must_use]
+    pub fn peek_loads(&self) -> Vec<String> {
+        self.config.borrow().loads.clone()
+    }
+}
+
+impl Engine {
+    /// Queue files as if a config had asked for them.
+    ///
+    /// The host's way of supplying a default set. It goes through the same queue `axum.load`
+    /// writes to, so there is one path into the loader and one order to reason about.
+    pub fn load_all(&mut self, paths: impl IntoIterator<Item = String>) {
+        let mut held = self.config.borrow_mut();
+        for path in paths {
+            if !held.loads.contains(&path) {
+                held.loads.push(path);
+            }
+        }
     }
 }

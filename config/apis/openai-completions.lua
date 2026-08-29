@@ -1,8 +1,4 @@
 -- OpenAI's Chat Completions, and the twenty-odd vendors that copy it.
---
--- The protocol with the most identities behind it: most of the catalog speaks this, so most of
--- the catalog works the moment this file does. Where a vendor deviates it says so in its own
--- `compat` block rather than here — this describes the dialect, not the exceptions.
 
 local M = {}
 
@@ -16,10 +12,6 @@ function M.headers(key)
 end
 
 -- One neutral message as one or more Completions messages.
---
--- The shape differences from Anthropic, all in one place: tool results are their own role and
--- carry the call id; tool calls hang off the assistant message rather than being content;
--- reasoning has no block of its own and rides in `reasoning_content`.
 local function convert(m, out, compat)
   local text, tool_calls, results, reasoning = {}, {}, {}, nil
 
@@ -104,14 +96,6 @@ function M.request(model, ctx, opts)
   end
 
   -- Five vendors, five ways to ask for reasoning. The dialect is declared in the catalog.
-  --
-  -- `opts.thinking` is already settled by the time it arrives: absent when this model cannot
-  -- reason or cannot do the level that was asked for, and otherwise the exact word this model
-  -- wants. The host resolves it because the answer needs to tell "the model refuses this
-  -- level" from "the model has no opinion" — and in Lua a key with no value and no key at all
-  -- are the same thing.
-  -- A schema turns "reply with JSON" into a contract the provider enforces. The OpenAI family
-  -- spells it `response_format`; `strict` is what makes it a guarantee rather than a hint.
   if opts.schema then
     body.response_format = {
       type = "json_schema",
@@ -180,10 +164,6 @@ function M.on_event(state, event)
     -- Two spellings, because the dialects that added reasoning did not agree on one.
     -- DeepSeek and the copies of it say `reasoning_content`; OpenRouter says `reasoning`.
     -- Sending one vendor's request shape and reading only the other's reply shape is how
-    -- reasoning was asked for, answered, and thrown away without a word.
-    --
-    -- Only when it is a string: some replies also carry a `reasoning_details` array, and one
-    -- of them puts structured objects in `reasoning` itself.
     local reasoned = delta.reasoning_content
     if type(reasoned) ~= "string" or reasoned == "" then
       reasoned = type(delta.reasoning) == "string" and delta.reasoning or nil

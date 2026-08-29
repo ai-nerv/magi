@@ -1,32 +1,10 @@
 -- axum's client library: what another program requires to talk to a running agent.
+-- Plain Lua, so siblings copy it rather than port it. The transport arrives as the chunk's
+-- argument; inside axum that is `axum.stream`, found automatically when nothing is passed.
 --
 --   local axum = load(src)(my_transport)
 --   local agent = axum.connect()
 --   for _, s in ipairs(agent.sessions()) do print(s.id, s.cwd, s.status) end
---
--- Three ways to get `src`, and a sandboxed host can only use the first two: the `client` verb on
--- an already-open connection, a sibling's own stub (the framing and reply shape are shared), or
--- `io.popen("axum lua-api"):read("a")` where the host permits `io`.
---
--- Plain Lua on purpose. It runs unchanged in axum's own VM, in hexe's, in oslo's, in PUC Lua and in whatever
--- the next sibling embeds, so it is *copied* between tools rather than ported — and a fix to the
--- framing reaches every one of them. It is a sibling of oslo's `client.lua` and deliberately the
--- same shape; read that one and this one holds no surprises.
---
--- The only thing it cannot do itself is open a socket. That arrives as the chunk's argument:
---
---   load(src)(transport)     transport.connect(path, timeout_ms) -> handle
---                            handle:send(bytes) / handle:recv(n) / handle:close()
---
--- Inside axum that is `axum.stream`, and it is found automatically when nothing is passed.
---
--- **The surface is small on purpose.** It is not a mirror of the local API; it is the handful of
--- things another program has a real reason to ask a mux, and every one answers a question the
--- asker cannot answer for itself — a pane list scraped from CLI output is a guess, this is not.
---
--- What a session will actually let you do is decided at the far end, per call, by the access the
--- caller was granted (see docs/access.md). This file describes the vocabulary; it does not grant
--- anything.
 
 local transport = ...
 
@@ -224,10 +202,6 @@ local function be32(s)
 end
 
 --- Read exactly `n` bytes, however many reads that takes.
----
---- **A stream delivers what it likes.** One `recv` answering fewer bytes than asked for is
---- ordinary, not an error, and a client that treated it as the whole message would desynchronise
---- on the first reply large enough to be split.
 local function exactly(handle, n)
   local parts, have = {}, 0
   while have < n do
@@ -246,10 +220,6 @@ local Session = {}
 Session.__index = Session
 
 --- Send one call and wait for its answer.
----
---- axum serves one request per connection, so this reconnects each time. That is the server's
---- contract, not an accident: a control socket that held connections open would need a slot per
---- idle caller, and it has eight.
 function Session:call(name, ...)
   local args = { ... }
   local body = { call = name }
@@ -272,7 +242,6 @@ function Session:call(name, ...)
   -- `result` is a list of return values and `n` says how many, so one Lua call
   -- answers with what the remote one did. The same shape oslo's server uses:
   -- a client that unpacked a bare-value reply lost every record, string
-  -- and number it was handed.
   local values = reply.result or {}
   return table.unpack(values, 1, reply.n or #values)
 end
@@ -282,21 +251,6 @@ function Session:close()
 end
 
 -- The exposed surface, spelled out.
---
--- Written as a table rather than discovered at runtime so that reading this file tells you what a
--- peer can ask of your session. A surface you have to run something to learn is one nobody audits.
--- What another program has a real reason to ask a coding agent, and every one answers a question
--- the asker cannot answer for itself: which sessions exist and where they are rooted, what each is
--- doing right now, what it has said. A shell scraping `ps` is guessing; this is not.
---
--- **Read-only, deliberately.** There is no `prompt`, `submit` or `run` here. A coding agent
--- executes shell commands and edits files on the model's say-so, so a socket verb that hands it a
--- prompt is remote code execution wearing a friendlier name — and the fact that a person would
--- have typed the same thing does not make it the same thing when a peer types it. Anything that
--- causes work stays behind the local API, where the person who owns the session is the one asking.
---
--- `verbs` ships from the first version. One sibling having it and another not is how a family
--- stops being one, and it cannot be retrofitted quietly.
 local SURFACE = {
   "sessions", "session", "verbs",
   "status", "transcript", "cwd",
@@ -313,28 +267,6 @@ end
 -- ---------------------------------------------------------------- connecting
 
 --- Where a session's socket is, given what little the caller said.
----
---- `$AXUM_API_SOCKET` first, because a program axum started inherits it and means *that* session —
---- a plugin never has to guess. A session name picks one exactly. With neither, the newest socket
---- wins, which is right for the common case of one session and honest about being a guess when
---- there are several.
----
---- Answers a *list* of candidates, newest first, because a socket file is not a running session:
---- one left behind by a frontend that was killed looks exactly like a live one until something
---- connects. Trying them in turn is the only staleness check that cannot be raced.
---- Every `api@*.sock` under `dir`, newest first. Empty when nothing can list it.
----
---- Plain Lua cannot list a directory, so this asks the host two ways and gives up rather than
---- guessing.
----
---- **`io.popen` is the fallback, not the first choice.** It shells out, and a sandboxed host may
---- refuse it outright, so a host that can list a directory itself is asked first and the shell-out
---- is wrapped where it might not exist at all.
----
---- Whichever sibling we are running inside: this file is meant to be copied between them, so it
---- looks for any of the family's globals rather than only its own. Inside oslo `_G.axum` does not
---- exist, and checking only for that sent discovery straight to the `io.popen` oslo refuses —
---- which looked exactly like "no session is running".
 local function list_candidates(dir)
   local host
   for _, name in ipairs(HOSTS) do
@@ -365,10 +297,6 @@ local function list_candidates(dir)
 end
 
 --- The directory axum binds its control sockets in.
----
---- Mirrors axum's own socket directory: the default session binds straight under `<runtime>/axum`,
---- and only a NAMED instance gets a subdirectory. Appending "default" unconditionally looked
---- reasonable and found nothing at all.
 local function socket_dir()
   -- The host's own answer first: a sandboxed file has no `os.getenv`, and this is a path it can be
   -- handed rather than a reason to grant it every environment variable.
@@ -388,19 +316,6 @@ local function socket_dir()
 end
 
 --- Where a session's socket is, given what little the caller said.
----
---- `$AXUM_API_SOCKET` first, because a program axum started inherits it and means *that* session —
---- a plugin never has to guess. A name picks one. With neither, the newest socket wins, which is
---- right for the common case of one session and honest about being a guess when there are several.
----
---- Answers a *list*, newest first, because a socket file is not a running session: one left behind
---- by a frontend that was killed looks exactly like a live one until something connects. Trying
---- them in turn is the only staleness check that cannot be raced.
----
---- A name is tried as the file first, then against what each session CALLS itself. Those differ
---- more often than you would think: the file is named when the socket binds, and a session renamed
---- or reattached afterwards keeps the old file — so the name a caller read from `session().name`
---- may name no file at all.
 local function find(where)
   if type(where) == "table" and where.path then return { { path = where.path } } end
   local named = type(where) == "string" and where or nil
@@ -422,8 +337,6 @@ local function find(where)
 end
 
 --- Open a connection to a running axum.
----
---- `where` is nothing (find it), a session name, or `{ path = "…", timeout_ms = 5000 }`.
 function M.connect(where)
   if not transport then
     return nil, "no transport: pass one to the chunk, as load(src)(axum.stream)"
@@ -436,11 +349,6 @@ function M.connect(where)
   local timeout = type(where) == "table" and where.timeout_ms or nil
 
   -- Refuse our own session, when the host told us which that is.
-  --
-  -- A call to yourself from inside your own event loop cannot be answered: the
-  -- frontend is busy running the caller. It looks like a hang and ends in a
-  -- socket timeout, which says nothing about the cause. Inside axum, `ctx.*`
-  -- already reaches everything this library does, without a socket.
   local self_socket = _G.axum and _G.axum.__self_socket
   local last
   for _, candidate in ipairs(candidates) do
@@ -470,17 +378,6 @@ function M.connect(where)
 end
 
 --- Open a connection to the pane this code is running in.
----
---- A different door, not a filtered view of `connect()`: the pane's socket answers only for that
---- pane, and refuses by name anything about the session. A client cannot widen it, because the
---- narrowing is the listener's, decided when axum bound it.
----
---- Grants nothing to the caller it did not already have -- it IS the process in that pane -- but it
---- lets it ask axum precisely instead of parsing its own terminal, and it means a program handed
---- this path can be trusted with it.
----
---- `$AXUM_SESSION_API_SOCKET` is exported into every pane's shell. Nothing is listening on it while no
---- frontend is attached, which is the truth about a live API rather than a fault to hide.
 function M.connect_pane(opts)
   local path = os.getenv("AXUM_SESSION_API_SOCKET")
   if not path or path == "" then
@@ -496,16 +393,6 @@ end
 -- ---------------------------------------------------------------- one question
 
 --- A SYNCHRONOUS command runner, from whichever sibling we are loaded into.
----
---- `run(cmd, opts) -> { ok, code, stdout, stderr }`, answered before it returns. Deliberately not
---- the same thing as a statusbar's `exec`: that kind is asynchronous and cached -- it answers
---- `pending` first and the real result later -- which is right for painting a prompt and useless
---- for a request that has to be answered now.
----
---- A host that must not block is entitled to lend nothing here. A terminal multiplexer is the
---- clearest case: a spawn inside its frontend loop suspends every pane in the session for as long
---- as the child takes, so it lends no `run` and `fetch` over a spawn simply is not available in it.
---- Sockets still are.
 local function host_run()
   for _, name in ipairs(HOSTS) do
     local h = _G[name]
@@ -515,15 +402,6 @@ local function host_run()
 end
 
 --- A spawnable tool's descriptor, if it left one beside the sockets.
----
---- Discovery stays implicit, but what it finds is an ABSOLUTE path the tool wrote about itself --
---- never a name resolved through `$PATH`. Executing whatever answers to a name, on the failure path
---- where nothing was listening, is not the same risk as opening a socket something chose to create.
---- A tool whose state IS its process simply never writes one of these, so "do not spawn me" is a
---- fact this can check rather than a rule someone has to remember.
---- Where a named tool keeps its runtime files. The same shape as `socket_dir`, for a sibling
---- rather than for us -- a descriptor has to be findable by whoever is asking, not only by its
---- author, so it lives under the tool's own name and not under ours.
 local function tool_dir(tool)
   local runtime = os.getenv("XDG_RUNTIME_DIR")
   if runtime and runtime ~= "" then return runtime .. "/" .. tool end
@@ -546,16 +424,6 @@ local function descriptor(tool)
 end
 
 --- Ask one question and take the answer. No handle, nothing held, nothing to close.
----
---- `connect()` is a channel with a lifetime; this is not, and the difference is not an
---- implementation detail worth hiding behind one name. The verb says what the CALLER wanted, so a
---- tool that later grows a daemon breaks no call site.
----
---- Two ways to be answered, tried in that order:
----   * a socket, when one is listening -- ask without holding it;
----   * the tool's own `api` subcommand, for a tool that has no daemon and never will.
----
---- `where` is a session name, `{ tool = "name" }`, or nothing.
 function M.fetch(where, verb, ...)
   if type(verb) ~= "string" then return nil, "fetch needs a verb: fetch(where, 'name', ...)" end
 

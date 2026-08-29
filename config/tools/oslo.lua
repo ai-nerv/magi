@@ -1,14 +1,7 @@
--- `oslo`, as a LUA tool.
---
--- The same branch as `hexe` and for the same reason: the shell is already running and answers
--- over a socket, so this is a function rather than a process.
---
--- Note what it is *not*: this does not run commands. Asking oslo what it knows is a different
--- thing from asking it to do something, and the second is what `shell` is for — behind a
--- process boundary, where it belongs.
+-- `oslo`, as a Lua tool, for the same reason `hexe` is one: the shell is already running and
+-- answers over a socket. It does not run commands — that is what `shell` is for.
 
--- The stub arrives as source in `axum.stubs`, handed in by the host. A config cannot open
--- files -- `io` is not reachable -- and needing one stub is no reason to change that.
+-- The stub arrives as source in `axum.stubs`: a config cannot open files.
 local function client()
   local source = axum.stubs and axum.stubs.oslo
   if not source then return nil, "oslo's client stub is not installed; run `make configs`" end
@@ -21,9 +14,6 @@ end
 -- Discovery is the stub's. It was hand-rolled here because the stub could not list a directory
 -- from inside axum -- its list of hosts to ask named `oslo` and `hexe` and not the one it was
 -- running in -- and the workaround guessed a layout: `$XDG_RUNTIME_DIR/oslo/api@*.sock`, which is
--- hexe's shape, not oslo's. oslo puts its sockets in `$XDG_RUNTIME_DIR/onix/oslo/<id>.sock`, so
--- this tool had never once connected. `axum` is in the stub's host list now, so the stub's own
--- discovery works here, and it knows where oslo keeps its sockets because it is oslo's file.
 
 
 axum.tool("oslo", {

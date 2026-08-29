@@ -1,8 +1,4 @@
 -- OpenAI's Responses API, and the two hostings that differ only in where and how you knock.
---
--- Three registrations from one description: Azure serves the same protocol behind a deployment
--- URL and an api-key header, and the ChatGPT subscription backend behind a bearer token. The
--- body is identical, so writing it three times would be three chances to fix a bug twice.
 
 local M = {}
 

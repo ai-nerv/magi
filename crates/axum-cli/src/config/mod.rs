@@ -12,32 +12,6 @@ use axum_lua::{Config, Engine, LuaError};
 use axum_provider::provider::Provider;
 use std::collections::BTreeSet;
 
-/// The catalog axum ships, as Lua.
-const BUILTIN: &str = include_str!("../../../../config/providers.lua");
-
-/// What axum tells the model it is, as Lua.
-///
-/// Shipped as a file for the same reason the catalog is: a fresh binary has one, and the copy
-/// you can edit is the copy it uses.
-const BUILTIN_SYSTEM: &str = include_str!("../../../../config/system.lua");
-
-/// The tools axum ships, as Lua.
-///
-/// `bash` among them, declared as a process tool. Shipped rather than built in so that what a
-/// fresh install can do is written down in a file you can read and replace.
-const BUILTIN_TOOLS: &[(&str, &str)] = &[
-    ("shell", include_str!("../../../../config/tools/shell.lua")),
-    ("hexe", include_str!("../../../../config/tools/hexe.lua")),
-    ("oslo", include_str!("../../../../config/tools/oslo.lua")),
-];
-
-/// The family's client stubs, so a Lua tool can talk to a sibling without opening a file.
-const BUILTIN_STUBS: &[(&str, &str)] = &[
-    ("axum", include_str!("../../../../config/stubs/axum.lua")),
-    ("hexe", include_str!("../../../../config/stubs/hexe.lua")),
-    ("oslo", include_str!("../../../../config/stubs/oslo.lua")),
-];
-
 /// Everything the config files said, in one value.
 pub struct Loaded {
     /// Settings and registrations, as the config left them.
@@ -56,54 +30,74 @@ pub struct Loaded {
     pub providers: Vec<Provider>,
 }
 
-/// Run the built-in catalog, then every config file, and collect what they declared.
+/// Run `init.lua`, then everything it asked for, and collect what they declared.
 ///
-/// A missing user file is not an error: most people have no config, and the ones who do should
-/// not have to create an empty one in every project. A file that *exists* and does not load is
-/// fatal, because it expressed an intention that has not been carried out.
+/// **One entry point.** The host runs `init.lua` and nothing else by name; every other file is
+/// reached through `axum.load`, from `init.lua` or from a file it loaded. Nothing is discovered
+/// by scanning a directory, so a file that is not named does not run — which is the property a
+/// plugin mechanism will need later, and the one a scanner cannot offer.
+///
+/// A missing user `init.lua` is not an error; the shipped one runs instead. A file that *exists*
+/// and does not load is fatal, because it expressed an intention that has not been carried out.
 pub fn load() -> Result<Loaded, LuaError> {
     let mut engine = Engine::new();
-    // The compiled-in copies first, so a binary with no config directory still works.
     let mut apis: Vec<(String, String)> = Vec::new();
     let mut tools: Vec<(String, String)> = Vec::new();
     let mut stubs: Vec<(String, String)> = Vec::new();
+
+    // The protocol descriptions the adapter crate owns. Not in `config/` and not loadable, so
+    // they are the one thing that runs before the entry point.
     for (name, source) in axum_lua::adapter::BUILTIN {
         engine.run(source, name)?;
         apis.push(((*name).to_owned(), (*source).to_owned()));
     }
-    engine.run(BUILTIN_SYSTEM, "system.lua")?;
-    engine.run(BUILTIN, "providers.lua")?;
-    // Tool and stub descriptions ship the same way the catalog does, so a fresh install has
-    // the same tools an installed configuration would give it.
-    for (name, source) in BUILTIN_TOOLS {
-        tools.push(((*name).to_owned(), (*source).to_owned()));
+
+    let entry = config_dir().map(|dir| dir.join("init.lua"));
+    match entry.as_ref().filter(|path| path.exists()) {
+        Some(path) => engine.run_file(path)?,
+        None => engine.run(SHIPPED_INIT, "init.lua")?,
     }
-    for (name, source) in BUILTIN_STUBS {
-        stubs.push(((*name).to_owned(), (*source).to_owned()));
-    }
-    engine.install_stubs(&stubs);
-    for (name, source) in &tools {
-        engine.run(source, name)?;
+    // An entry point that named nothing is one written before there was anything to name --
+    // somebody's `init.lua` from an older install, holding their model and their palette and no
+    // `axum.load` lines. It gets the default set, so the upgrade does not present as "axum knows
+    // no models". The list and not the shipped file: running that would re-assign every setting
+    // the user had just made, and their model would silently become the shipped one.
+    if engine.peek_loads().is_empty() {
+        engine.load_all(SHIPPED.iter().map(|(path, _)| (*path).to_owned()));
     }
 
-    // Then whatever is installed, which overrides any of it by the ordinary rule that
-    // registration is keyed.
-    for path in installed_files() {
-        engine.run_file(&path)?;
-        // An installed file replaces its compiled-in namesake in what the worker is given, so
-        // the daemon speaks the protocol and offers the tool the user actually edited.
-        // Without this, `make configs` installs files that are read once and then ignored.
-        let Ok(source) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let name = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        if path.parent().is_some_and(|p| p.ends_with("apis")) {
-            layer(&mut apis, name, source);
-        } else if path.parent().is_some_and(|p| p.ends_with("tools")) {
-            layer(&mut tools, name, source);
+    // Drained in rounds so a loaded file may load more, and the stubs of a round are installed
+    // before its tools run: a tool description opens its sibling's stub as it loads.
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    loop {
+        let asked = engine.take_loads();
+        if asked.is_empty() {
+            break;
+        }
+        let mut round: Vec<(String, String)> = Vec::new();
+        for path in asked {
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+            let Some(source) = source_of(&path) else {
+                continue;
+            };
+            round.push((path, source));
+        }
+        for (path, source) in round.iter().filter(|(p, _)| p.starts_with("stubs/")) {
+            layer(&mut stubs, stem(path), source.clone());
+        }
+        engine.install_stubs(&stubs);
+        for (path, source) in &round {
+            if path.starts_with("stubs/") {
+                continue;
+            }
+            engine.run(source, path)?;
+            if path.starts_with("apis/") {
+                layer(&mut apis, stem(path), source.clone());
+            } else if path.starts_with("tools/") {
+                layer(&mut tools, stem(path), source.clone());
+            }
         }
     }
 
@@ -215,7 +209,10 @@ fn declare(id: &str, spec: &serde_json::Value) -> Result<Provider, String> {
 /// The built-in catalog alone, for when a user config is broken or irrelevant.
 pub fn builtin() -> Result<Vec<Provider>, LuaError> {
     let mut engine = Engine::new();
-    engine.run(BUILTIN, "providers.lua")?;
+    engine.run(
+        shipped("providers.lua").unwrap_or_default(),
+        "providers.lua",
+    )?;
     engine.harvest();
     Ok(collect(engine.config(), Vec::new(), Vec::new(), Vec::new(), None)?.providers)
 }
@@ -264,7 +261,9 @@ pub fn catalog(loaded: &Loaded) -> axum_host::catalog::Catalog {
 }
 
 mod chosen;
+mod shipped;
 use chosen::{asked, chosen};
+use shipped::{SHIPPED, SHIPPED_INIT, shipped};
 mod settings;
 
 use settings::{grants, options, system};
@@ -317,7 +316,7 @@ pub fn edited_since_start(socket: &std::path::Path) -> Vec<std::path::PathBuf> {
     else {
         return Vec::new();
     };
-    let mut watched = installed_files();
+    let mut watched = watched_files();
     if let Ok(cwd) = std::env::current_dir() {
         watched.push(cwd.join(".axum.lua"));
     }
@@ -346,21 +345,18 @@ fn newer_than(
 
 /// Files the installed config directory contributes, in the order they are applied.
 ///
-/// Protocols first, then the catalog, then the user's own file — because a provider names a
-/// protocol and a setting names a model, so each layer needs the one under it to already exist.
+/// Every installed file a session could have read, for the staleness check.
 ///
-/// The compiled-in copies run before any of this, so a fresh binary with no config directory
-/// still speaks and still has a catalog. Installing one with `make configs` gives you the same
-/// files to edit; it does not turn anything on that was off.
-fn installed_files() -> Vec<std::path::PathBuf> {
+/// Not what gets loaded — `init.lua` decides that, and only what it names runs. This is the
+/// wider net a "your config changed since this daemon started" warning wants: a file the user
+/// edited is worth mentioning whether or not their entry point currently reaches it.
+fn watched_files() -> Vec<std::path::PathBuf> {
     let Some(dir) = config_dir() else {
         return Vec::new();
     };
     let mut out = Vec::new();
 
-    // Every protocol and every tool. `tools/` is here because `make configs` installs those
-    // files so they can be edited, and for the whole of M3 nothing read them back.
-    for kind in ["apis", "tools"] {
+    for kind in ["apis", "tools", "stubs", "peers"] {
         out.extend(lua_files(&dir.join(kind)));
     }
 
@@ -559,7 +555,9 @@ mod tests {
     /// Run the built-in catalog with an extra config chunk layered over it.
     fn with(extra: &str) -> Vec<Provider> {
         let mut engine = Engine::new();
-        engine.run(BUILTIN, "providers.lua").expect("builtin");
+        engine
+            .run(shipped("providers.lua").expect("shipped"), "providers.lua")
+            .expect("builtin");
         engine.run(extra, "user.lua").expect("user config");
         engine.harvest();
         // `None`: these tests are about what a *machine* config can declare, so everything
@@ -729,7 +727,7 @@ mod staleness_tests {
 
     #[test]
     fn a_file_that_does_not_exist_is_not_a_change() {
-        // `installed_files` names what a config *could* have; most installs have some of it.
+        // `watched_files` names what a config *could* have; most installs have some of it.
         let dir = scratch("absent");
         let started = SystemTime::now() - Duration::from_secs(3600);
         assert!(newer_than(&[dir.join("nothing.lua")], started).is_empty());
@@ -759,4 +757,29 @@ mod staleness_tests {
         assert_eq!(newer_than(&[old, new.clone()], started), vec![new]);
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+/// The source behind one `axum.load` path: the installed copy, else the shipped one.
+///
+/// Disk first, so overriding one file overrides one file rather than obliging somebody to copy
+/// the whole tree. A path naming neither is skipped rather than fatal: a config may load a file
+/// it also ships, and a missing optional is not a broken configuration.
+fn source_of(path: &str) -> Option<String> {
+    if let Some(dir) = config_dir() {
+        let installed = dir.join(path);
+        if installed.exists()
+            && let Ok(text) = std::fs::read_to_string(&installed)
+        {
+            return Some(text);
+        }
+    }
+    shipped(path).map(ToOwned::to_owned)
+}
+
+/// The name a loaded file registers under: its stem, without directory or extension.
+fn stem(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_owned())
 }

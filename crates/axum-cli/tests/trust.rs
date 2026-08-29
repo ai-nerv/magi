@@ -128,6 +128,10 @@ axum.tool("mine", {
     )
     .expect("write");
 
+    // Named from the entry point, because nothing is discovered by scanning: a file the
+    // machine's `init.lua` does not load does not run, however it got into the directory.
+    machine(&dir, "init.lua", "axum.load(\"tools/mine.lua\")\n");
+
     let output = axum(&dir, &["tools"]);
     let listed = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -152,9 +156,9 @@ fn an_installed_tool_file_replaces_the_one_that_ships() {
     // found had no `ext` subcommand, the peer never started, and the config's claim stood.
     machine(
         &dir,
-        "tools/bash.lua",
+        "tools/shell.lua",
         r#"
-axum.tool("bash", {
+axum.tool("shell", {
   description = "A shell that is not a peer at all.",
   parameters = { type = "object" },
   transport = { kind = "lua" },
@@ -166,8 +170,8 @@ axum.tool("bash", {
     let listed = String::from_utf8_lossy(&output.stdout);
     let bash = listed
         .lines()
-        .find(|line| line.starts_with("bash"))
-        .expect("bash is offered");
+        .find(|line| line.starts_with("shell"))
+        .expect("shell is offered");
     assert!(
         bash.contains("lua"),
         "the installed file replaced the shipped process tool: {bash}"

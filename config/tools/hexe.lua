@@ -1,16 +1,7 @@
--- `hexe`, as a LUA tool.
---
--- The other branch. This one needs no process of its own: it asks a multiplexer that is
--- already running, over the socket the family shares. The VM already has what that takes —
--- `axum.stream` to open the socket and hexe's own client stub to speak its protocol — so the
--- whole tool is a function.
---
--- That is the distinction the two branches are for. `shell` needs isolation and a life of its
--- own; this needs a socket and twenty lines. Making both a process would waste one; making
--- both Lua would give the config layer a shell.
+-- `hexe`, as a Lua tool: it asks a multiplexer that is already running, over the socket the
+-- family shares. No process of its own, so the whole tool is a function.
 
--- The stub arrives as source in `axum.stubs`, handed in by the host. A config cannot open
--- files -- `io` is not reachable -- and needing one stub is no reason to change that.
+-- The stub arrives as source in `axum.stubs`: a config cannot open files.
 local function client()
   local source = axum.stubs and axum.stubs.hexe
   if not source then return nil, "hexe's client stub is not installed; run `make configs`" end
@@ -23,7 +14,6 @@ end
 -- Discovery is the stub's, for the same reason it is oslo's: `axum` is in the stub's host list
 -- now, so it can list the socket directory from in here rather than shelling out to a VM that
 -- refuses. What was hand-rolled here happened to match hexe's layout and so happened to work --
--- the identical code in the oslo tool guessed hexe's shape for oslo and never connected once.
 
 
 axum.tool("hexe", {

@@ -1,25 +1,10 @@
 -- oslo's client library: what another program requires to talk to a running shell.
+-- Plain Lua, so siblings copy it rather than port it. The transport arrives as the chunk's
+-- argument; inside axum that is `axum.stream`, found automatically when nothing is passed.
 --
---   local src  = io.popen("oslo lua-api"):read("a")
 --   local oslo = load(src)(my_transport)
 --   local sh   = oslo.connect()
 --   print(sh.env.get("PATH"))
---
--- Plain Lua on purpose. It runs unchanged in oslo's own VM, in ziglua, in PUC Lua and in whatever
--- the next sibling embeds, so it is *copied* between tools rather than ported — and a fix to the
--- framing reaches every one of them.
---
--- The only thing it cannot do itself is open a socket. That arrives as the chunk's argument:
---
---   load(src)(transport)     transport.connect(path, timeout_ms) -> handle
---                            handle:send(bytes) / handle:recv(n) / handle:close()
---
--- Inside oslo that is `oslo.stream`, and it is found automatically when nothing is passed.
---
--- **The surface is small on purpose.** It is not a mirror of `oslo.*`; it is the handful of things
--- another program has a real reason to ask a shell, and every one of them answers a question the
--- asker cannot answer for itself. Nothing here runs a command — see `oslo.live` on the server side
--- for why that is a decision and not an omission.
 
 local transport = ...
 
@@ -211,10 +196,6 @@ local function be32(s)
 end
 
 -- Read exactly `n` bytes, however many reads that takes.
---
--- **A stream delivers what it likes.** One `recv` answering fewer bytes than asked for is ordinary,
--- not an error, and a client that treated it as the whole message would desynchronise on the first
--- reply large enough to be split.
 local function exactly(handle, n)
   local parts, have = {}, 0
   while have < n do
@@ -260,18 +241,8 @@ end
 
 --- `verbs` -- every name this shell will answer, asked of the shell rather than assumed -- is
 --- reached through SURFACE below, like every other call: `sh.verbs()`.
----
---- There is deliberately no `Session:verbs` method. `attach` sets every SURFACE name as a field on
---- the instance, and a field shadows a method, so defining one would not give callers a second way
---- to call it -- it would only advertise a form that does not work. `sh:verbs()` passes the session
---- as the first argument and dies in the encoder with "cannot send a function", which says nothing
---- about the cause. Every verb is called with a dot.
 
 -- The exposed surface, spelled out.
---
--- Written as a table rather than discovered from `verbs()` above so that reading this file tells
--- you what a peer can do to your shell. A surface you have to run something to learn is one nobody
--- audits.
 local SURFACE = {
   "cwd", "session", "verbs",
   "env.get", "env.all", "env.set",
@@ -300,9 +271,6 @@ end
 
 
 -- Candidates from two sources, in order, without repeats.
---
--- The env var is one guess and the directory is the rest; a path that appears in both should be
--- tried once, because each attempt costs a connect timeout.
 local function append(first, rest)
   local seen = {}
   local out = {}
@@ -318,13 +286,6 @@ local function append(first, rest)
 end
 
 --- Where a shell's socket is, given what little the caller said.
----
---- `$OSLO_SOCK` first, because a process the shell started inherits it and means *that* shell. A
---- session id names one exactly. With neither, the newest socket wins, which is right for the
---- common case of one shell and honest about being a guess when there are several.
---- Answers a *list* of candidates, newest first, because a socket file is not a running shell: one
---- left behind by a shell that was killed looks exactly like a live one until something connects.
---- Trying them in turn is the only staleness check that cannot be raced.
 local function find(where)
   if type(where) == "table" and where.path then return { { path = where.path } } end
   local named = type(where) == "string" and where or nil
@@ -338,23 +299,12 @@ local function find(where)
   -- `$OSLO_SOCK` goes first and does not go alone. A process the shell started inherits it and
   -- means *that* shell, which is why it wins -- but it is inherited through every child of every
   -- process the shell ever started, so a long-lived one carries the path of a shell that exited
-  -- hours ago. Returned as the only candidate it made discovery fail outright whenever it was
-  -- stale, which is the case it exists to be right about.
   local candidates = {}
   local env = os.getenv("OSLO_SOCK")
   if env and env ~= "" then candidates[1] = { path = env } end
 
   -- No id and no env var: the newest socket in the directory. Plain Lua cannot list one, so this
   -- asks the host two ways and gives up rather than guessing.
-  --
-  -- **`io.popen` is the fallback, not the first choice.** It shells out, and oslo's own VM refuses
-  -- it outright — a client running *inside* a shell would raise here rather than answering. So a
-  -- host that can list a directory itself is asked first, and the shell-out is wrapped where it
-  -- might not exist at all.
-  -- Whichever sibling we are running inside. This file is copied between tools, so it looks for
-  -- any of the family's globals rather than only its own: inside hexe `_G.oslo` does not exist,
-  -- and checking only for that sent discovery straight to the `io.popen` below — which a sandboxed
-  -- host refuses, failing as "no oslo socket found" when one was running all along.
   local host
   for _, name in ipairs(FAMILY) do
     local candidate = _G[name]
@@ -383,8 +333,6 @@ local function find(where)
 end
 
 --- Open a connection to a running oslo.
----
---- `where` is nothing (find it), a session id, or `{ path = "…", timeout_ms = 5000 }`.
 function M.connect(where)
   if not transport then
     return nil, "no transport: pass one to the chunk, as load(src)(oslo.stream)"
@@ -409,16 +357,6 @@ end
 -- ---------------------------------------------------------------- one question
 
 --- A SYNCHRONOUS command runner, from whichever sibling we are loaded into.
----
---- `run(cmd, opts) -> { ok, code, stdout, stderr }`, answered before it returns. Deliberately not
---- the same thing as a statusbar's `exec`: that kind is asynchronous and cached -- it answers
---- `pending` first and the real result later -- which is right for painting a prompt and useless
---- for a request that has to be answered now.
----
---- A host that must not block is entitled to lend nothing here. A terminal multiplexer is the
---- clearest case: a spawn inside its frontend loop suspends every pane in the session for as long
---- as the child takes, so it lends no `run` and `fetch` over a spawn simply is not available in it.
---- Sockets still are.
 local function host_run()
   for _, name in ipairs(FAMILY) do
     local h = _G[name]
@@ -428,15 +366,6 @@ local function host_run()
 end
 
 --- A spawnable tool's descriptor, if it left one beside the sockets.
----
---- Discovery stays implicit, but what it finds is an ABSOLUTE path the tool wrote about itself --
---- never a name resolved through `$PATH`. Executing whatever answers to a name, on the failure path
---- where nothing was listening, is not the same risk as opening a socket something chose to create.
---- A tool whose state IS its process simply never writes one of these, so "do not spawn me" is a
---- fact this can check rather than a rule someone has to remember.
---- Where a named tool keeps its runtime files. The same shape as `socket_dir`, for a sibling
---- rather than for us -- a descriptor has to be findable by whoever is asking, not only by its
---- author, so it lives under the tool's own name and not under ours.
 local function tool_dir(tool)
   local runtime = os.getenv("XDG_RUNTIME_DIR")
   if runtime and runtime ~= "" then return runtime .. "/" .. tool end
@@ -459,16 +388,6 @@ local function descriptor(tool)
 end
 
 --- Ask one question and take the answer. No handle, nothing held, nothing to close.
----
---- `connect()` is a channel with a lifetime; this is not, and the difference is not an
---- implementation detail worth hiding behind one name. The verb says what the CALLER wanted, so a
---- tool that later grows a daemon breaks no call site.
----
---- Two ways to be answered, tried in that order:
----   * a socket, when one is listening -- ask without holding it;
----   * the tool's own `api` subcommand, for a tool that has no daemon and never will.
----
---- `where` is a session name, `{ tool = "name" }`, or nothing.
 function M.fetch(where, verb, ...)
   if type(verb) ~= "string" then return nil, "fetch needs a verb: fetch(where, 'name', ...)" end
 

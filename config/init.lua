@@ -1,22 +1,33 @@
--- axum's configuration.
+-- axum's configuration, and its only entry point.
 --
--- A program, not a data file: it can probe the machine it runs on, loop over a directory of
--- endpoints, and branch on what answers. Settings are assigned, descriptions are handed to a
--- registrar, and the file returns nothing.
---
--- Everything beside this file is loaded before it, so you can override any of it here:
---
---   apis/*.lua      the wire protocols — how to talk to an endpoint
---   providers.lua   the catalog — which endpoints exist and what they offer
---
--- Edit those directly, or leave them alone and add what you need here. `make configs` copies
--- this directory over the top again, so keep your own additions in a file of your own if you
--- expect to re-run it.
+-- A program, not a data file: it may probe the machine, loop, and branch. Settings are
+-- assigned, descriptions go to a registrar, and the file returns nothing.
+
+-- What runs. Nothing is discovered by scanning: a file not named here does not load.
+-- `axum.load` takes the installed copy if there is one and the shipped copy otherwise, so
+-- replacing one file means replacing one file.
+axum.load("stubs/axum.lua")
+axum.load("stubs/hexe.lua")
+axum.load("stubs/oslo.lua")
+
+axum.load("apis/openai-completions.lua")
+axum.load("apis/openai-responses.lua")
+axum.load("apis/anthropic-messages.lua")
+axum.load("apis/google.lua")
+axum.load("apis/pi-messages.lua")
+
+axum.load("providers.lua")
+axum.load("system.lua")
+
+axum.load("tools/shell.lua")
+axum.load("tools/hexe.lua")
+axum.load("tools/oslo.lua")
 
 -- Which model to use, as `axum models` prints it.
 axum.model = "anthropic/claude-sonnet-4-5"
 
--- An endpoint of your own needs no protocol of its own if it speaks a dialect axum knows:
+-- An endpoint of your own, if it speaks a dialect axum already knows. Registration is keyed,
+-- so declaring the same id twice replaces rather than appends.
 --
 -- axum.provider("my-box", {
 --   name = "My GPU box",
@@ -27,133 +38,83 @@ axum.model = "anthropic/claude-sonnet-4-5"
 --     { id = "qwen3-coder", name = "Qwen3 Coder", context_window = 262144, max_tokens = 32768 },
 --   },
 -- })
---
--- Registration is keyed, so declaring the same id twice replaces rather than appends — which
--- is what makes a loop over a directory of machines safe to re-run.
 
--- Whether `read`, `write` and `edit` refuse paths outside the session's directory.
---
--- Off. It was on, and the effect was a detour rather than safety: asked to edit a file in
--- /tmp, the model was told the path was outside the session and reached for the shell instead,
--- doing the same edit through a heredoc — no diff, no review, and through the one tool that
--- has no confinement at all. A rule only the careful tools obey moves work to the careless one.
---
--- Turn it on if you want the wall, but the thing that actually contains anything is running
--- the shell peer under `bwrap`: see `tools/bash-sandboxed.lua` in the examples.
+-- Whether `read`, `write` and `edit` refuse paths outside the session's directory. Off: it
+-- moved work to the shell, which has no confinement at all. `bwrap` in front of the shell peer
+-- is what actually contains anything.
 --
 -- axum.confine = true
 
--- Permissions granted in advance, so they are not asked about.
---
--- A tool that is about to read a file, write one, or run a command stops and asks — unless one
--- of these already covers it. That is on by default and not a mode you opt into: sandboxing
--- that has to be switched on is off for everybody who has not already thought about it, which
--- is everybody it was meant to protect.
---
--- Each rule is a verb (`read`, `write`, `run`, `reach`) and one width:
+-- Permissions granted in advance, so they are not asked about. Each rule is a verb — `read`,
+-- `write`, `run`, `reach` — and one width. A rule naming no width grants nothing.
 --
 --   anything = true        every action of that verb, anywhere
 --   directory = "/path"    that path and everything under it
 --   program = "git"        any command whose first word is this
---
--- A rule naming no width grants nothing, rather than being read as `anything`.
 --
 -- axum.allow = {
 --   { verb = "read",  directory = "/home/you/work" },
 --   { verb = "run",   program = "git" },
 -- }
 
+-- Directories whose `.axum.lua` is as trusted as this file. A project file may otherwise set
+-- settings but not declare a provider, a tool or a peer.
+--
+-- axum.trusted = { "/home/you/work" }
+
 -- ---------------------------------------------------------------------- the screen
 --
--- `axum.ui` is every visual decision the UI makes: what colour a thing is, what character it is
--- drawn with, how big it is, and how fast it moves. One flat table, and every name is optional —
--- what you do not mention keeps its built-in value.
+-- Everything the UI draws with is a setting under `axum.ui`. Three kinds:
 --
---   axum.ui.accent    = 1        -- a colour: an index into your terminal's palette
---   axum.ui.marker    = "▶ "     -- a glyph: whatever string you want drawn there
---   axum.ui.menu_rows = 12       -- a number
+-- COLOURS are palette indices, 0-255, and mean whatever your terminal says they mean:
 --
--- Nothing here is a hex value. A person who has set their terminal's colours has already said
--- what things should look like, and a program that answers again over the top is the one window
--- on the screen that does not match the others.
---
--- The defaults are the ordinary xterm reading, taken from the BRIGHT half of it: 9 bright red,
--- 10 bright green, 11 bright yellow, 14 bright cyan, and the top fifth of the 232-255 greyscale.
--- That is the half meant to be read off a dark background.
-
--- COLOURS. Roles that share a default are still separate names: `tool_output` and `md_quote`
--- happen to be the same grey and are not the same decision.
---
---   accent               spinners, list cursors, markdown bullets
---   success  warning  error
---   typed                the characters you have typed, inside a completion
+--   accent  success  warning  error  typed
 --   md_heading  md_code  md_code_block  md_quote
---   diff_added  diff_removed  diff_context
+--   diff_added  diff_added_bg  diff_removed  diff_removed_bg  diff_context
 --   tool_bg  tool_title  tool_ok  tool_failed  tool_output  tool_fold
---   menu_bg  menu_selected_bg  menu_selected
---   menu_detail  menu_detail_selected  menu_meta
---   border               the prompt's box with nothing lit
---   scan                 the brightest point of the light travelling along it
---   hint                 the prompt's own text, before you type
---   rule                 the rule down the side of a quotation
---   message_bg  message_text        something you said
+--   menu_bg  menu_selected_bg  menu_selected  menu_detail  menu_detail_selected  menu_meta
+--   border  scan  hint  rule
+--   message_rail  message_bg  message_text
 --   thinking  text  muted  dim
 --
--- `border` and `scan` are the two ends of a gradient: the light walks the indices between them,
--- so put them far enough apart to have something to walk.
-
--- GLYPHS. Any string. Width is your problem — a two-column glyph draws two columns, and a box
--- corner that does will not line up.
+-- `border` and `scan` are the ends of a gradient: the light walks the indices between them, so
+-- keep them far enough apart to have something to walk.
+--
+-- GLYPHS are any string, and width is your problem — a two-column glyph draws two columns:
 --
 --   corner_top_left  corner_top_right  corner_bottom_left  corner_bottom_right
 --   edge_horizontal  edge_vertical
---   marker  no_marker           in front of a list row, chosen and not
---   ellipsis  bullet
---   quote_rule  notice_rule
---   placeholder  placeholder_short   what the prompt says before you type
---   no_model            what the footer says when nothing is configured to answer
---   spinner             a list of frames: { "◐", "◓", "◑", "◒" }
-
--- NUMBERS. Rows, budgets, percentages and rates. Anything named `_share` is a percentage,
--- because Lua has one number type and `0.3` and `30` should not mean different things by
--- accident.
+--   marker  no_marker  ellipsis  bullet
+--   more_rule  expand  collapse  quote_rule  notice_rule
+--   placeholder  placeholder_short  no_model
+--   spinner            a list of frames: { "◐", "◓", "◑", "◒" }
+--
+-- NUMBERS are rows, budgets and rates. Anything named `_share` is a percentage. A value under
+-- its floor is raised rather than refused:
 --
 --   footer_rows  status_rows  prompt_min_rows
---   live_rows  live_share          the transcript region
---   prompt_share  prompt_min_lines
+--   live_rows  live_share  prompt_share  prompt_min_lines
 --   menu_rows  preview_lines  page_share
 --   block_pad  gutter  tab_width  column_gap  min_column
---   summary_budget  argument_floor      a tool call's arguments in a block header
---   frame_ms            milliseconds between frames
---   scan_speed          the border's light, as a percentage: 200 is twice as fast, 0 is still
---   scan_nose  scan_tail        cells lit ahead of the light and behind it
---   rest_pace  hold_pace  work_pace    cells per frame in each state, as a percentage
---
--- A value under a floor is raised rather than refused: zero rows of menu is not a preference.
+--   summary_budget  argument_floor
+--   frame_ms  scan_speed  scan_nose  scan_tail
+--   rest_pace  hold_pace  work_pace
 
--- A palette generated by lule is a different machine, and the colour defaults are all wrong on
--- it. Its slots 1-6 are the six most chromatic pigments of a wallpaper in chroma order — no hue
--- meaning, no dark-and-bright pairing, and `accent` and `cursor` both alias slot 1 — and its
--- 232-255 is not a greyscale but `black -> colour 0 -> accent -> colour 15 -> white`, which puts
--- your background at 236 and your foreground at 251. Uncomment for that:
+-- For a palette generated by lule, where 1-6 are pigments in chroma order rather than hues and
+-- 232-255 runs black → colour 0 → accent → colour 15 → white:
 --
 -- axum.ui = {
 --   accent = 1, success = 2, warning = 3, error = 9,
 --   md_heading = 5, md_code = 1, md_code_block = 2, md_quote = 250,
 --   diff_added = 2, diff_removed = 9, diff_context = 250,
 --   typed = 14,
---   -- 8 is the lighter of lule's two greys; 7 is the darker and too dark to read at length.
---   -- Everything above 249 is the run from your foreground to white, so it is neutral and bright.
 --   dim = 8, muted = 250, text = 252, thinking = 250, rule = 8, hint = 8,
 --   tool_title = 254, tool_ok = 2, tool_failed = 9, tool_output = 251, tool_fold = 8,
 --   menu_selected = 255, menu_detail = 250, menu_detail_selected = 255, menu_meta = 8,
 --   message_text = 254,
---   -- Above 236, because 232-236 runs black to your background: below it is a hole rather than
---   -- a surface. These sit high enough to read as raised.
+--   -- 232-236 is below your background: a surface there is a hole.
 --   tool_bg = 239, menu_bg = 239, menu_selected_bg = 242, message_bg = 242,
---   -- Two ends of a gradient, and they have to be far apart or there is no comet to see. Keep
---   -- the border LOW: 243-244 is your accent at full strength, so a border there glows and the
---   -- light moving along it disappears into its own frame. Down at 238 the frame is quiet and
---   -- the run climbs through the accent to white.
+--   -- Keep the border low: 243-244 is your accent at full strength, and a border there glows
+--   -- brightly enough that the light moving along it disappears into its own frame.
 --   border = 238, scan = 254,
 -- }

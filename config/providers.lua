@@ -1,22 +1,6 @@
--- The built-in provider catalog.
---
--- Not a data file with a parser of its own: this is an ordinary axum config, run through the
--- same VM and the same registrar as `~/.config/axum/init.lua`. A user file that declares
--- `axum.provider("groq", ...)` replaces this one's entry by the same rule that makes any
--- registration idempotent, and there is exactly one loading mechanism to understand.
---
--- Nothing in Rust knows any vendor's name, URL or environment variable. Adding a provider is a
--- call here, or in a user's own file, and needs no rebuild either way.
---
--- `api` names a wire protocol, not a vendor. Most entries speak `openai-completions`, and the
--- surprises are the point: Fireworks, GitHub Copilot, MiniMax, OpenCode Go and Vercel all speak
--- Anthropic's Messages API, while OpenAI itself speaks Responses.
---
--- `base_url` is omitted where the endpoint comes from configuration — a Bedrock region, an
--- Azure resource, a Vertex project, a Cloudflare account. Those declare `compat` explicitly,
--- because there is no host to infer a dialect from until they are configured.
---
--- Model lists are representative, not exhaustive. Costs are dollars per million tokens.
+-- The built-in provider catalog: an ordinary axum config, not a data file with its own parser.
+-- `api` names a wire protocol, not a vendor. `base_url` is omitted where the endpoint comes
+-- from configuration. Costs are dollars per million tokens; model lists are representative.
 
 axum.provider("anthropic", {
   name = "Anthropic",

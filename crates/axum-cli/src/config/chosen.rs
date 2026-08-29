@@ -48,13 +48,15 @@ pub(super) fn asked(loaded: &Loaded) -> Option<String> {
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
-    use crate::config::{BUILTIN, backend, builtin};
+    use crate::config::{backend, builtin, shipped};
     use axum_lua::Engine;
 
     /// A catalog loaded the way the real thing loads it, with `config` layered over the top.
     pub(super) fn loaded(config: &str) -> Loaded {
         let mut engine = Engine::new();
-        engine.run(BUILTIN, "providers.lua").expect("catalog");
+        engine
+            .run(shipped("providers.lua").expect("shipped"), "providers.lua")
+            .expect("catalog");
         engine.run(config, "test").expect("config");
         engine.harvest();
         Loaded {
@@ -129,5 +131,55 @@ mod asked_tests {
         if let Some((_, model)) = chosen(&loaded) {
             assert_eq!(asked(&loaded), Some(model.qualified()));
         }
+    }
+}
+
+/// One entry point, and what happens when it names nothing.
+#[cfg(test)]
+mod entry_point {
+    use super::tests::loaded;
+    use crate::config::{SHIPPED, SHIPPED_INIT, shipped};
+
+    #[test]
+    fn the_shipped_entry_point_names_every_shipped_file() {
+        // The two are kept in step by hand — the constant is the fallback for an old config, so
+        // a file in one and not the other is a file that loads for some people and not others.
+        for (path, _) in SHIPPED {
+            assert!(
+                SHIPPED_INIT.contains(&format!("axum.load(\"{path}\")")),
+                "init.lua never loads {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn stubs_are_named_before_the_tools_that_open_them() {
+        let order = |prefix: &str| {
+            SHIPPED
+                .iter()
+                .position(|(p, _)| p.starts_with(prefix))
+                .expect("present")
+        };
+        assert!(order("stubs/") < order("tools/"));
+    }
+
+    #[test]
+    fn every_shipped_path_resolves_to_a_source() {
+        for (path, _) in SHIPPED {
+            assert!(shipped(path).is_some(), "{path}");
+        }
+        assert!(shipped("apis/nothing.lua").is_none());
+    }
+
+    #[test]
+    fn an_old_entry_point_still_gets_a_catalog() {
+        // An `init.lua` predating `axum.load` names nothing. Left alone it would load no
+        // providers at all, and the upgrade would read as "axum knows no models".
+        let loaded = loaded("");
+        assert!(
+            loaded.providers.len() > 30,
+            "only {}",
+            loaded.providers.len()
+        );
     }
 }
