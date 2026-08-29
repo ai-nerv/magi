@@ -194,17 +194,6 @@ local function warn_if_install_is_behind()
   end
 end
 
--- Which backend the UI should draw with.
---
--- `--alt` is the default because a buffer we own is the only one a future feature can search,
--- select in, or jump through; `--inline` opts back into letting the terminal keep the history.
--- Passing both is a contradiction rather than a precedence puzzle, so it is refused.
-local function tui_mode(a)
-  assert(not (a.alt and a.inline), "pass --alt or --inline, not both")
-  if a.inline then return "inline" end
-  return "alt"
-end
-
 -- Build it, quietly enough to be a dependency of the recipes that just want to run it.
 local function build_binary(announce)
   if not has_musl_std() then
@@ -253,14 +242,11 @@ make.recipe{
   name = "demo",
   desc = "the UI against a canned recording — no model, no daemon, no tools",
   params = {
-    { "--alt", desc = "alt screen; axon owns the buffer and the history", flag = true },
-    { "--inline", desc = "inline viewport; the terminal keeps the history", flag = true },
     { "--recording", desc = "JSONL session to replay", default = RECORDING },
     { "--pace", desc = "milliseconds between events", default = "40" },
   },
   run = function(a)
     build_binary(false)
-    local mode = tui_mode(a)
     -- Two processes, as the architecture intends: the UI is a socket peer even in a demo.
     -- The host is killed on exit so a second `make run` is not refused a stale socket.
     local script = ([[
@@ -271,9 +257,9 @@ make.recipe{
       host=$!
       trap 'kill $host 2>/dev/null || true; rm -f "$socket"' EXIT INT TERM
       until [ -S "$socket" ]; do sleep 0.05; done
-      %s --socket "$socket" --tui %s
+      %s --socket "$socket"
     ]]):format(demo_socket(), binary_path(), a.recording or RECORDING,
-               a.pace or "40", binary_path(), mode)
+               a.pace or "40", binary_path())
     assert(oslo.run{ "sh", "-c", script }.ok, "the UI exited with an error")
   end,
 }
@@ -289,14 +275,12 @@ make.recipe{
   name = "run",
   desc = "axon, for real, in the current directory",
   params = {
-    { "--alt", desc = "alt screen; axon owns the buffer and the history", flag = true },
-    { "--inline", desc = "inline viewport; the terminal keeps the history", flag = true },
     { "--prompt", desc = "submit this on start, as `axon \"...\"` does" },
   },
   run = function(a)
     build_binary(false)
     local prompt = a.prompt and (" " .. string.format("%q", a.prompt)) or ""
-    sh.sh("-c", ("%s --tui %s%s"):format(binary_path(), tui_mode(a), prompt))
+    sh.sh("-c", ("%s%s"):format(binary_path(), prompt))
   end,
 }
 
@@ -304,14 +288,11 @@ make.recipe{
   name = "ui",
   desc = "the UI alone, against an already-running host",
   params = {
-    { "--alt", desc = "alt screen; axon owns the buffer and the history", flag = true },
-    { "--inline", desc = "inline viewport; the terminal keeps the history", flag = true },
     { "--socket", desc = "socket to attach to", default = demo_socket() },
   },
   run = function(a)
     build_binary(false)
-    sh.sh("-c", ("%s --socket %s --tui %s"):format(
-      binary_path(), a.socket or demo_socket(), tui_mode(a)))
+    sh.sh("-c", ("%s --socket %s"):format(binary_path(), a.socket or demo_socket()))
   end,
 }
 
