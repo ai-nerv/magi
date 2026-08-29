@@ -61,14 +61,19 @@ pub trait Ops: Send + Sync {
     /// it is about to do: "run this command" and "read this file" are different questions and a
     /// person can only answer the one they were actually asked.
     ///
+    /// `tool` is its own name, and is carried rather than derived from the action. The prompt
+    /// said "read wants to read ." for a `grep` call, because the verb was standing in for the
+    /// name — fine while `read` was the only thing that read, and a false sentence in a security
+    /// prompt the moment `grep`, `find` and `ls` arrived.
+    ///
     /// The default allows. Every `Ops` in the tree except [`Real`] is a test double, and a
     /// double that had to be taught about permissions would make every tool test a permissions
     /// test. `Real` is the one that gates.
     ///
     /// # Errors
     /// When it was refused, with a sentence the model reads as a result.
-    fn allow(&self, action: &axum_proto::permit::Action) -> Result<(), String> {
-        let _ = action;
+    fn allow(&self, tool: &str, action: &axum_proto::permit::Action) -> Result<(), String> {
+        let _ = (tool, action);
         Ok(())
     }
 }
@@ -215,14 +220,14 @@ impl Ops for Real {
     /// The answer is recorded before it is acted on, so a person asked once about a directory is
     /// not asked again about the next file in it — which is the difference between a permission
     /// prompt and a nuisance.
-    fn allow(&self, action: &axum_proto::permit::Action) -> Result<(), String> {
+    fn allow(&self, tool: &str, action: &axum_proto::permit::Action) -> Result<(), String> {
         let Some(gate) = &self.gate else {
             return Ok(());
         };
         if gate.ledger.lock().is_ok_and(|ledger| ledger.allows(action)) {
             return Ok(());
         }
-        let decision = gate.approver.ask(action.verb(), action);
+        let decision = gate.approver.ask(tool, action);
         if let Ok(mut ledger) = gate.ledger.lock() {
             ledger.remember(action, &decision);
         }
@@ -465,7 +470,7 @@ mod gate_tests {
         // permissions would make every tool test a permissions test.
         let dir = scratch("ungated");
         let ops = Real::new(dir.clone());
-        assert!(ops.allow(&Action::Read { path: "/x".into() }).is_ok());
+        assert!(ops.allow("t", &Action::Read { path: "/x".into() }).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -475,9 +480,12 @@ mod gate_tests {
         let approver = Scripted::new(vec![Decision::Deny]);
         let ops = Real::gated(dir.clone(), crate::permit::Ledger::new(), approver.clone());
         let why = ops
-            .allow(&Action::Read {
-                path: "/etc/shadow".into(),
-            })
+            .allow(
+                "t",
+                &Action::Read {
+                    path: "/etc/shadow".into(),
+                },
+            )
             .expect_err("refused");
         assert!(why.contains("not permitted"), "{why}");
         assert!(
@@ -500,9 +508,12 @@ mod gate_tests {
         }]);
         let ops = Real::gated(dir.clone(), crate::permit::Ledger::new(), approver.clone());
         for file in ["a.rs", "b.rs", "c.rs"] {
-            ops.allow(&Action::Read {
-                path: format!("/home/x/work/{file}"),
-            })
+            ops.allow(
+                "t",
+                &Action::Read {
+                    path: format!("/home/x/work/{file}"),
+                },
+            )
             .expect("allowed");
         }
         assert_eq!(approver.asked().len(), 1, "asked once, not three times");
@@ -522,14 +533,20 @@ mod gate_tests {
             Decision::Deny,
         ]);
         let ops = Real::gated(dir.clone(), crate::permit::Ledger::new(), approver.clone());
-        ops.allow(&Action::Read {
-            path: "/home/x/work/a".into(),
-        })
+        ops.allow(
+            "t",
+            &Action::Read {
+                path: "/home/x/work/a".into(),
+            },
+        )
         .expect("allowed");
         assert!(
-            ops.allow(&Action::Read {
-                path: "/home/x/secrets/a".into()
-            })
+            ops.allow(
+                "t",
+                &Action::Read {
+                    path: "/home/x/secrets/a".into()
+                }
+            )
             .is_err(),
             "a second directory is a second question"
         );
@@ -547,10 +564,13 @@ mod gate_tests {
             lifetime: Lifetime::Always,
         }]);
         let ops = Real::gated(dir.clone(), crate::permit::Ledger::new(), approver);
-        ops.allow(&Action::Run {
-            command: "git status".into(),
-            program: "git".into(),
-        })
+        ops.allow(
+            "t",
+            &Action::Run {
+                command: "git status".into(),
+                program: "git".into(),
+            },
+        )
         .expect("allowed");
         assert_eq!(ops.grants().len(), 1);
         let _ = std::fs::remove_dir_all(&dir);

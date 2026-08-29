@@ -408,7 +408,7 @@ impl Tool for ProcessTool {
         // "any `git` command" is the answer people actually want to give and they cannot give
         // it if the question was "may the shell tool run".
         if let Some(action) = self.action(arguments)
-            && let Err(why) = ops.allow(&action)
+            && let Err(why) = ops.allow(&self.name, &action)
         {
             return Output::error(why);
         }
