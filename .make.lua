@@ -422,11 +422,17 @@ make.recipe{
     -- Installed, then read back. axon loads its own configuration, so a file that will not run
     -- is worth knowing about now rather than the next time a daemon starts and quietly falls
     -- back to what it was compiled with.
+    --
+    -- Read back from the config directory rather than from wherever this was run. `.axon.lua` is
+    -- looked for in the working directory, so checking from inside a checkout also loaded that
+    -- checkout's project file and printed its refusals: three warnings about this repository, on
+    -- every install, saying nothing about what was installed.
     local binary = binary_path()
     if oslo.fs.stat(binary) then
       local home = dest:gsub("/" .. NAME .. "$", "")
+      local absolute = binary:sub(1, 1) == "/" and binary or (root .. "/" .. binary)
       local checked = oslo.run{ "sh", "-c",
-        ("XDG_CONFIG_HOME=%q %q models --all >/dev/null"):format(home, binary) }
+        ("cd %q && XDG_CONFIG_HOME=%q %q models --all >/dev/null"):format(dest, home, absolute) }
       assert(checked.ok, "the installed configuration does not load")
       print(dim("   it loads"))
     end
