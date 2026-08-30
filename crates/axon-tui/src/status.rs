@@ -305,17 +305,21 @@ mod queued_tests {
 
 /// A dashed rule across an edge the transcript continues past.
 ///
-/// The scroll note in the status line says how much is below, in words, in one place. That is
+/// The scroll note in the status line said how much was below, in words, in one place. That is
 /// the wrong shape for the question a reader actually has, which is "is this the end" — asked
 /// constantly, answered by glancing at the edge rather than by reading a number somewhere else.
 /// So the edge itself says it.
+///
+/// In the box's colour, not the quotation rule's. These two and the prompt box are the only
+/// lines axon draws around the whole width, and three edges in two colours reads as two kinds of
+/// edge when there is only one kind: here is where something stops.
 #[must_use]
 pub fn more(width: u16) -> Line<'static> {
     let dash = crate::glyph::more_rule();
     let repeats = usize::from(width) / dash.chars().count().max(1);
     Line::from(Span::styled(
         dash.repeat(repeats),
-        Style::default().fg(colour::rule()),
+        Style::default().fg(colour::border()),
     ))
 }
 
@@ -345,8 +349,10 @@ mod more_tests {
     }
 
     #[test]
-    fn it_is_drawn_in_the_rule_colour_so_it_never_competes_with_the_text() {
+    fn it_is_drawn_in_the_boxs_colour() {
+        // The prompt box and these two rules are the only full-width lines on the screen. In
+        // different colours they read as two kinds of edge, and there is only one kind.
         let rule = more(20);
-        assert_eq!(rule.spans[0].style.fg, Some(colour::rule()));
+        assert_eq!(rule.spans[0].style.fg, Some(colour::border()));
     }
 }
