@@ -35,7 +35,12 @@ const SUN_LEN: usize = 108;
 /// This briefly answered *whether* it had spawned, so a UI could stop only a daemon it had
 /// started. That distinction turned out to be the bug rather than the care: a daemon left by an
 /// earlier `-p` or a crash meant the UI attached, and then left the mess where it found it.
-pub async fn ensure(socket: &Path, sessions: Option<&Path>, resume: bool) -> Result<()> {
+pub async fn ensure(
+    socket: &Path,
+    sessions: Option<&Path>,
+    resume: bool,
+    environ: &std::collections::BTreeMap<String, String>,
+) -> Result<()> {
     if axon_ipc::connect(socket).await.is_ok() {
         return Ok(());
     }
@@ -49,7 +54,7 @@ pub async fn ensure(socket: &Path, sessions: Option<&Path>, resume: bool) -> Res
             socket.display()
         );
     }
-    let mut child = spawn(socket, sessions, resume)?;
+    let mut child = spawn(socket, sessions, resume, environ)?;
 
     let deadline = Instant::now() + STARTUP_TIMEOUT;
     while Instant::now() < deadline {
@@ -95,15 +100,22 @@ pub fn log_path(socket: &Path) -> PathBuf {
 /// The child is left running on purpose: it owns the session, and a UI that quits should be a
 /// detach rather than an end of the conversation. Its output goes nowhere because both callers
 /// own the terminal — a UI is drawing on it and a `-p` run is writing the answer to it.
-fn spawn(socket: &Path, sessions: Option<&Path>, resume: bool) -> Result<std::process::Child> {
+fn spawn(
+    socket: &Path,
+    sessions: Option<&Path>,
+    resume: bool,
+    environ: &std::collections::BTreeMap<String, String>,
+) -> Result<std::process::Child> {
     let exe = std::env::current_exe().context("finding the axon binary")?;
     let mut command = std::process::Command::new(exe);
     // The daemon, and so everything it starts that is not a peer: the `git` it asks about the
     // branch, the `sh` a permission check runs. A peer sets this for itself, which covers the
     // shell; without it here, the rest of what a session runs is outside the profile it is
     // supposed to be recording under.
-    let extra = crate::config::load().map(|loaded| crate::config::environ(&loaded));
-    axon_tools::environ::apply(&mut command, &extra.unwrap_or_default());
+    //
+    // Handed in rather than read here. Loading the configuration a second time in one process
+    // ran every file again and printed every refusal twice.
+    axon_tools::environ::apply(&mut command, environ);
     command.arg("--socket").arg(socket).arg("host");
     if let Some(dir) = sessions {
         command.arg("--sessions").arg(dir);
@@ -159,10 +171,13 @@ mod tests {
         let _listener = axon_ipc::bind(&path).await.expect("bind");
         // Returns from the first connect: a spawn here would race a second daemon onto a
         // socket that is already bound, and one of the two would serve nobody.
-        tokio::time::timeout(Duration::from_secs(1), ensure(&path, None, false))
-            .await
-            .expect("no spawn was attempted")
-            .expect("connected");
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            ensure(&path, None, false, &Default::default()),
+        )
+        .await
+        .expect("no spawn was attempted")
+        .expect("connected");
         let _ = std::fs::remove_file(&path);
     }
 
@@ -185,7 +200,7 @@ mod startup_tests {
         let long = std::env::temp_dir()
             .join("x".repeat(SUN_LEN))
             .join("a.sock");
-        let error = ensure(&long, None, false)
+        let error = ensure(&long, None, false, &Default::default())
             .await
             .expect_err("a path that cannot bind is not a wait");
         let text = error.to_string();
@@ -199,7 +214,7 @@ mod startup_tests {
             .join("y".repeat(SUN_LEN))
             .join("a.sock");
         let started = Instant::now();
-        let _ = ensure(&long, None, false).await;
+        let _ = ensure(&long, None, false, &Default::default()).await;
         assert!(
             started.elapsed() < Duration::from_secs(2),
             "it did not wait"
@@ -244,10 +259,13 @@ mod startup_more_tests {
         let path = dir.join("live.sock");
         let _listener = axon_ipc::bind(&path).await.expect("bind");
 
-        tokio::time::timeout(Duration::from_secs(1), ensure(&path, None, false))
-            .await
-            .expect("no spawn was attempted")
-            .expect("connected");
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            ensure(&path, None, false, &Default::default()),
+        )
+        .await
+        .expect("no spawn was attempted")
+        .expect("connected");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -257,6 +275,10 @@ mod startup_more_tests {
         let long = std::env::temp_dir()
             .join("z".repeat(SUN_LEN))
             .join("a.sock");
-        assert!(ensure(&long, None, false).await.is_err());
+        assert!(
+            ensure(&long, None, false, &Default::default())
+                .await
+                .is_err()
+        );
     }
 }

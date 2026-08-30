@@ -138,7 +138,12 @@ async fn main() -> Result<()> {
             let Some(prompt) = cli.prompt else {
                 anyhow::bail!("`-p` needs a prompt: axon -p \"…\"");
             };
-            daemon::ensure(&socket, cli.sessions.as_deref(), cli.resume).await?;
+            let environ = crate::config::load()
+                .ok()
+                .as_ref()
+                .map(crate::config::environ)
+                .unwrap_or_default();
+            daemon::ensure(&socket, cli.sessions.as_deref(), cli.resume, &environ).await?;
             let outcome = print::run(&socket, prompt).await?;
             if !outcome.text.is_empty() {
                 println!("{}", outcome.text);
@@ -154,8 +159,16 @@ async fn main() -> Result<()> {
         None => {
             // The return value is not kept: the UI stops this directory's daemon when it
             // exits whether it started it or adopted one that was already there.
-            daemon::ensure(&socket, cli.sessions.as_deref(), cli.resume).await?;
-            driver::run(&socket, cli.prompt, cli.sessions).await
+            // Loaded once, here. Every later reader is handed this one: a second `load` in the
+            // same process runs every configuration file again and repeats every refusal it
+            // printed the first time.
+            let loaded = crate::config::load().ok();
+            let environ = loaded
+                .as_ref()
+                .map(crate::config::environ)
+                .unwrap_or_default();
+            daemon::ensure(&socket, cli.sessions.as_deref(), cli.resume, &environ).await?;
+            driver::run(&socket, cli.prompt, cli.sessions, loaded, environ).await
         }
     }
 }

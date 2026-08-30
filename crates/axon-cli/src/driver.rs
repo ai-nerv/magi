@@ -33,6 +33,8 @@ pub async fn run(
     socket: &Path,
     prompt: Option<String>,
     sessions: Option<std::path::PathBuf>,
+    loaded: Option<crate::config::Loaded>,
+    environ: std::collections::BTreeMap<String, String>,
 ) -> Result<()> {
     let mut app = App::new();
     // The prompts from previous runs, so the arrow keys reach past this one.
@@ -42,13 +44,13 @@ pub async fn run(
     // the daemon is actually using — but nothing on the other end of the socket has an opinion
     // about how fast a border moves. A config that will not run leaves the built-in speed: the
     // daemon has already refused to start over it and said why.
-    if let Ok(loaded) = crate::config::load() {
-        crate::config::adopt_ui(&loaded);
+    if let Some(loaded) = &loaded {
+        crate::config::adopt_ui(loaded);
         // Worked out here because the answer needs the catalog, and the snapshot carries only
         // whether there is a model — not why there is not. Same text the daemon refuses a prompt
         // with, so meeting the problem at attach and meeting it at the first prompt say one thing.
-        if crate::config::backend(&loaded).is_none() {
-            app.no_model = Some(axon_host::no_model(&crate::config::catalog(&loaded)));
+        if crate::config::backend(loaded).is_none() {
+            app.no_model = Some(axon_host::no_model(&crate::config::catalog(loaded)));
         }
     }
     // Before anything else, because the answer to "why is my new tool not there" has to arrive
@@ -83,6 +85,7 @@ pub async fn run(
         event_tx,
         command_rx,
         sessions,
+        environ,
         app.cursor(),
         Arc::clone(&attached),
     ));
@@ -346,6 +349,7 @@ async fn connection_loop(
     events: mpsc::Sender<HarnessEvent>,
     mut commands: mpsc::Receiver<UiCommand>,
     sessions: Option<std::path::PathBuf>,
+    environ: std::collections::BTreeMap<String, String>,
     mut from_cursor: Cursor,
     attached: Arc<std::sync::atomic::AtomicBool>,
 ) {
@@ -363,7 +367,7 @@ async fn connection_loop(
             // the UI came back to a greeting, which is a worse failure than the hang this
             // replaced. The session being resumed is this directory's most recent, which is
             // precisely the one that just died.
-            match crate::daemon::ensure(&socket, sessions.as_deref(), true).await {
+            match crate::daemon::ensure(&socket, sessions.as_deref(), true, &environ).await {
                 // Nothing to record: the UI stops this directory's daemon on the way out
                 // whether it started it or adopted it.
                 Ok(_) => {}
