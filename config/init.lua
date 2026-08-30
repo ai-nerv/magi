@@ -70,7 +70,7 @@ axon.model = "anthropic/claude-sonnet-4-5"
 --   md_heading  md_code  md_code_block  md_quote
 --   diff_added  diff_added_bg  diff_removed  diff_removed_bg  diff_context
 --   tool_bg  tool_title  tool_ok  tool_failed  tool_output  tool_fold
---   menu_bg  menu_selected_bg  menu_selected  menu_detail  menu_detail_selected  menu_meta
+--   menu_selected_bg  menu_selected  menu_detail  menu_detail_selected  menu_meta
 --   border  scan  hint  rule
 --   message_rail  message_bg  message_text
 --   thinking  text  muted  dim
@@ -111,7 +111,7 @@ axon.model = "anthropic/claude-sonnet-4-5"
 --   menu_selected = 255, menu_detail = 250, menu_detail_selected = 255, menu_meta = 8,
 --   message_text = 254,
 --   -- 232-236 is below your background: a surface there is a hole.
---   tool_bg = 239, menu_bg = 239, menu_selected_bg = 242, message_bg = 242,
+--   tool_bg = 239, menu_selected_bg = 242, message_bg = 242,
 --   -- Keep the border low: 243-244 is your accent at full strength, and a border there glows
 --   -- brightly enough that the light moving along it disappears into its own frame.
 --   border = 238, scan = 254,
