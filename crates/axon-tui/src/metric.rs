@@ -82,6 +82,8 @@ metrics! {
     hold_pace: u16 = 200, 1, "Cells per frame with something typed, as a percentage.";
     work_pace: u16 = 400, 1, "Cells per frame while a turn runs, as a percentage.";
     decrypt_ms: u64 = 0, 0, "How long the opening scramble runs. Zero, the default, is no effect.";
+    flicker_odds: u16 = 0, 0, "One box character in this many glitches per window. Zero is off.";
+    flicker_ms: u64 = 120, 16, "How long one glitched character holds before it comes back.";
 }
 
 impl Default for Metrics {

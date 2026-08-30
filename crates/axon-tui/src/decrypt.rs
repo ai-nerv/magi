@@ -50,7 +50,7 @@ pub fn over(buffer: &mut Buffer, progress: f32) {
             if !scrambles(cell.symbol()) || resolved(x, y, progress) {
                 continue;
             }
-            cell.set_symbol(noise(x, y, tick));
+            cell.set_symbol(noise(x, y, tick, crate::glyph::decrypt_pool()));
         }
     }
 }
@@ -89,8 +89,7 @@ fn resolved(x: u16, y: u16, progress: f32) -> bool {
 const SPREAD: f32 = 0.85;
 
 /// One glyph of noise for a cell on a given tick.
-fn noise(x: u16, y: u16, tick: u64) -> &'static str {
-    let pool = crate::glyph::decrypt_pool();
+fn noise(x: u16, y: u16, tick: u64, pool: &'static str) -> &'static str {
     let count = pool.chars().count().max(1);
     let at = usize::try_from(mix(u64::from(x) ^ tick.rotate_left(17), u64::from(y) ^ tick) % 4096)
         .unwrap_or(0)
@@ -103,6 +102,53 @@ fn noise(x: u16, y: u16, tick: u64) -> &'static str {
         .nth(at + 1)
         .map_or(pool.len(), |(index, _)| index);
     &pool[start..end]
+}
+
+/// Glitch the occasional character inside `area`, briefly.
+///
+/// The opening scramble happens once and is over; this is the box never quite settling. A letter
+/// goes to a symbol for a beat and comes back as itself -- the same letter, not a new one, so it
+/// reads as interference rather than as the text changing under you.
+///
+/// Confined to an area because the transcript is not the place for it: a glitch in the middle of
+/// a tool result is indistinguishable from a tool that printed a glitch.
+///
+/// Off unless `axon.ui.flicker_odds` says otherwise, and skipped entirely while the opening
+/// scramble is still running -- two effects on the same cell is one effect nobody can read.
+pub fn flicker(buffer: &mut Buffer, area: ratatui::layout::Rect) {
+    let odds = u64::from(crate::metric::flicker_odds());
+    if odds == 0 || progress().is_some() {
+        return;
+    }
+    let Some(opened) = OPENED.get() else {
+        return;
+    };
+    // Quantised so a glitch holds for a beat instead of strobing at the frame rate. The window
+    // is what a cell rolls against, and the roll is the same for every frame inside it.
+    let held = crate::metric::flicker_ms().max(1);
+    let window = u64::try_from(opened.elapsed().as_millis()).unwrap_or(0) / held;
+    let area = area.intersection(buffer.area);
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if !glitched(x, y, window, odds) {
+                continue;
+            }
+            let cell = &mut buffer[(x, y)];
+            if !scrambles(cell.symbol()) {
+                continue;
+            }
+            cell.set_symbol(noise(x, y, window, crate::glyph::flicker_pool()));
+        }
+    }
+}
+
+/// Whether this cell is the one in `odds` that is glitching this window.
+fn glitched(x: u16, y: u16, window: u64, odds: u64) -> bool {
+    mix(
+        u64::from(x) ^ window.wrapping_mul(31),
+        u64::from(y) ^ window,
+    )
+    .is_multiple_of(odds)
 }
 
 /// A cheap deterministic hash, so the same cell scrambles the same way every run.
@@ -192,5 +238,64 @@ mod tests {
         for progress in [0.0, 0.3, 0.7, 0.99] {
             assert_eq!(scrambled("hello world", progress).chars().count(), 11);
         }
+    }
+}
+
+/// The box never quite settles: the occasional character glitches and comes back.
+#[cfg(test)]
+mod flicker_tests {
+    use super::*;
+
+    /// Which cells of a row `odds`-in-one glitch on `window`.
+    fn glitching(width: u16, window: u64, odds: u64) -> Vec<u16> {
+        (0..width)
+            .filter(|&x| glitched(x, 0, window, odds))
+            .collect()
+    }
+
+    #[test]
+    fn off_is_off() {
+        // Zero odds is the built-in, and it has to mean nothing happens rather than everything.
+        assert_eq!(BUILT_IN_ODDS, 0);
+    }
+
+    /// What a config that says nothing gets.
+    const BUILT_IN_ODDS: u16 = crate::metric::BUILT_IN.flicker_odds;
+
+    #[test]
+    fn it_is_rare() {
+        // The effect is a character catching now and then. A tenth of the box at once is not
+        // interference, it is a fault.
+        let hits: usize = (0..200)
+            .map(|window| glitching(60, window, 250).len())
+            .sum();
+        assert!(hits > 0, "nothing ever glitched");
+        assert!(hits < 200 * 60 / 20, "far too many: {hits} of {}", 200 * 60);
+    }
+
+    #[test]
+    fn a_glitch_holds_for_its_whole_window() {
+        // It is quantised so a character catches for a beat rather than strobing at the frame
+        // rate: every frame inside one window rolls the same way.
+        let first = glitching(60, 7, 40);
+        assert_eq!(first, glitching(60, 7, 40));
+    }
+
+    #[test]
+    fn and_then_moves_on() {
+        // Windows either side of one another must not agree, or the glitch is a dead pixel.
+        let same: usize = (0..64)
+            .filter(|&window| glitching(60, window, 40) == glitching(60, window + 1, 40))
+            .count();
+        assert!(same < 32, "it is stuck: {same} windows in 64 repeated");
+    }
+
+    #[test]
+    fn what_it_glitches_to_is_a_symbol_not_a_letter() {
+        let pool = crate::glyph::flicker_pool();
+        assert!(
+            !pool.chars().any(char::is_alphanumeric),
+            "a letter turning into a letter reads as the text changing: {pool:?}"
+        );
     }
 }

@@ -145,6 +145,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     if let Some(progress) = axon_tui::decrypt::progress() {
         axon_tui::decrypt::over(frame.buffer_mut(), progress);
     }
+    // The box only. A glitch in the middle of a tool result is indistinguishable from a tool
+    // that printed a glitch.
+    axon_tui::decrypt::flicker(frame.buffer_mut(), prompt_area);
 
     place_hardware_cursor(frame, app, prompt_area, rows);
 }
