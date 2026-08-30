@@ -85,7 +85,7 @@ pub fn fit_path(path: &str, width: usize) -> String {
 /// was on both is here: the directory and branch on the left, usage in the middle, the model on
 /// the right, and each is dropped in that order when the terminal cannot hold it.
 #[must_use]
-pub fn render(data: &FooterData, width: u16) -> Vec<Line<'static>> {
+pub fn render(data: &FooterData, status: &[Span<'static>], width: u16) -> Vec<Line<'static>> {
     let dim = Style::default().fg(colour::dim());
     let muted = Style::default().fg(colour::muted());
     let width = usize::from(width);
@@ -133,16 +133,24 @@ pub fn render(data: &FooterData, width: u16) -> Vec<Line<'static>> {
         _ => colour::dim(),
     };
 
-    // Usage on the left, model on the right, and nothing else. The working directory, the branch
-    // and the mouse state were here and are not facts anybody is reading a footer for: two of
-    // them never change while the session runs, and the third has the whole terminal to announce
-    // itself with.
-    let used = usage.chars().count() + model.chars().count();
+    // One row under the box, and everything that is said about the session is on it: what the
+    // agent is doing on the left, usage in the middle, the model on the right. The working
+    // directory, the branch and the mouse state had the left of this and are gone -- two of them
+    // never change while the session runs, and the third has the whole terminal to announce
+    // itself with. The status had a row of its own, which is one row of chrome for one word.
+    let said: usize = status.iter().map(|s| s.content.chars().count()).sum();
+    let used = said + usage.chars().count() + model.chars().count();
     let gap = width
         .saturating_sub(used)
         .max(usize::from(crate::metric::column_gap()));
+    let (left_gap, right_gap) = if usage.is_empty() {
+        (gap, 0)
+    } else {
+        (gap / 2, gap - gap / 2)
+    };
 
-    let mut spans = Vec::new();
+    let mut spans: Vec<Span<'static>> = status.to_vec();
+    spans.push(Span::styled(" ".repeat(left_gap), dim));
     if !usage.is_empty() {
         let split = usage.len() - context.len();
         if context.is_empty() {
@@ -151,8 +159,8 @@ pub fn render(data: &FooterData, width: u16) -> Vec<Line<'static>> {
             spans.push(Span::styled(usage[..split].to_owned(), dim));
             spans.push(Span::styled(context, Style::default().fg(context_color)));
         }
+        spans.push(Span::styled(" ".repeat(right_gap), dim));
     }
-    spans.push(Span::styled(" ".repeat(gap), dim));
     spans.push(Span::styled(model, muted));
 
     vec![Line::from(clip_spans(spans, width))]
@@ -209,16 +217,21 @@ mod tests {
     }
 
     #[test]
-    fn usage_is_the_only_thing_on_the_left() {
-        // The working directory, the branch and the mouse state were here. Two of them never
-        // change while the session runs, and the third has the whole terminal to announce itself.
+    fn what_the_agent_is_doing_has_the_left() {
+        // The working directory, the branch and the mouse state had it. Two of them never change
+        // while the session runs, and the third has the whole terminal to announce itself. The
+        // status took the row above the box, which is a row of chrome for one word.
         let data = FooterData {
             input_tokens: 1200,
             output_tokens: 340,
+            model: "m".into(),
             ..FooterData::default()
         };
-        let rendered = text_of(&render(&data, 60));
-        assert!(rendered[0].starts_with("↑1.2k ↓340"), "{:?}", rendered[0]);
+        let status = [Span::raw("⠋ thinking")];
+        let rendered = text_of(&render(&data, &status, 60));
+        assert!(rendered[0].starts_with("⠋ thinking"), "{:?}", rendered[0]);
+        assert!(rendered[0].contains("↑1.2k ↓340"), "{:?}", rendered[0]);
+        assert!(rendered[0].ends_with('m'), "{:?}", rendered[0]);
     }
 
     #[test]
@@ -229,7 +242,7 @@ mod tests {
             model: "claude-opus-5".into(),
             ..FooterData::default()
         };
-        let rendered = text_of(&render(&data, 40));
+        let rendered = text_of(&render(&data, &[], 40));
         assert!(rendered[0].ends_with("claude-opus-5"), "{:?}", rendered[0]);
         assert_eq!(rendered[0].chars().count(), 40);
     }
@@ -241,7 +254,7 @@ mod tests {
             context_percent: None,
             ..FooterData::default()
         };
-        let rendered = text_of(&render(&data, 40));
+        let rendered = text_of(&render(&data, &[], 40));
         assert!(rendered[0].contains("?/200k"), "{:?}", rendered[0]);
     }
 }
@@ -293,7 +306,7 @@ mod fit_tests {
             model: crate::glyph::no_model().into(),
             ..FooterData::default()
         };
-        let out = render(&data, 40);
+        let out = render(&data, &[], 40);
         assert!(!line_text(&out, 0).contains("?/"), "{}", line_text(&out, 0));
         assert!(
             line_text(&out, 0).contains(crate::glyph::no_model()),
@@ -307,7 +320,7 @@ mod model_fit_tests {
     use super::*;
 
     fn stats_row(data: &FooterData, width: u16) -> String {
-        render(data, width)[0]
+        render(data, &[], width)[0]
             .spans
             .iter()
             .map(|s| s.content.as_ref())

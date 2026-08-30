@@ -52,7 +52,6 @@ macro_rules! metrics {
 metrics! {
     // ------------------------------------------------------------ the rows
     footer_rows: u16 = 1, 0, "Rows the footer always occupies.";
-    status_rows: u16 = 1, 1, "Rows the status line always occupies, idle or not.";
     prompt_min_rows: u16 = 3, 3, "Rows the prompt claims holding a single line: rule, text, rule.";
     live_rows: u16 = 10, 1, "Live transcript rows to aim for, before the terminal's height.";
     live_share: u16 = 34, 5, "Most of the screen the live region may claim, as a percentage.";

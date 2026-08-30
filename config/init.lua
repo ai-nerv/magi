@@ -90,7 +90,7 @@ axon.model = "anthropic/claude-sonnet-4-5"
 -- NUMBERS are rows, budgets and rates. Anything named `_share` is a percentage. A value under
 -- its floor is raised rather than refused:
 --
---   footer_rows  status_rows  prompt_min_rows
+--   footer_rows  prompt_min_rows
 --   live_rows  live_share  prompt_share  prompt_min_lines
 --   menu_rows  preview_lines  page_share
 --   block_pad  gutter  tab_width  column_gap  min_column

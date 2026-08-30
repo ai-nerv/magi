@@ -17,10 +17,10 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::Paragraph;
 
-/// Rows the chrome below the transcript occupies at its smallest: status, prompt, footer.
+/// Rows the chrome below the transcript occupies at its smallest: the prompt and the footer.
 #[must_use]
 pub fn chrome_rows() -> u16 {
-    metric::status_rows() + metric::prompt_min_rows() + metric::footer_rows()
+    metric::prompt_min_rows() + metric::footer_rows()
 }
 
 /// Draw the live region.
@@ -53,7 +53,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     // The menu goes inside the box, so the box is as tall as the two of them together and there
     // is no second region under it. What it may not do is take the whole screen: one row of
     // transcript stays, or a list opened mid-turn hides the turn it is about.
-    let around = metric::footer_rows() + metric::status_rows() + more_rows + 1;
+    let around = metric::footer_rows() + more_rows + 1;
     let text_rows = prompt::text_rows(&app.editor, rows);
     let room = usize::from(rows.saturating_sub(around)).saturating_sub(text_rows + 3);
     let mut menu = app
@@ -68,13 +68,13 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
         .min(rows.saturating_sub(around - 1))
         .max(1);
 
-    // Above the box: the transcript and its edge rules, and nothing else. The status line used to
-    // sit between them, which put a row of chrome — blank most of the time — between what was
-    // said and the place you answer it.
-    let [live_area, prompt_area, status_area, footer_area] = Layout::vertical([
+    // Above the box: the transcript and its edge rules, and nothing else. Below it: one row, which
+    // the footer draws — what the agent is doing, then usage, then the model. The status line had
+    // a row of its own above the box, which is a row of chrome for one word, in the one place
+    // where nothing should stand between what was said and where you answer it.
+    let [live_area, prompt_area, footer_area] = Layout::vertical([
         Constraint::Min(0),
         Constraint::Length(prompt_rows),
-        Constraint::Length(metric::status_rows()),
         Constraint::Length(metric::footer_rows()),
     ])
     .areas(area);
@@ -136,10 +136,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     if !app.connected {
         status_line.spans.extend(status::queued(app.queued));
     }
-    frame.render_widget(Paragraph::new(status_line), status_area);
     frame.render_widget(Paragraph::new(prompt_lines), prompt_area);
     frame.render_widget(
-        Paragraph::new(footer::render(footer_data, area.width)),
+        Paragraph::new(footer::render(footer_data, &status_line.spans, area.width)),
         footer_area,
     );
 
