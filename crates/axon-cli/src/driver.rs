@@ -71,6 +71,9 @@ pub async fn run(
     let base_footer = local_footer();
 
     let mut session = Session::open()?;
+    // From here, not from the start of `main`: the clock is for the screen, and there is no
+    // screen until the alternate one is open.
+    axon_tui::decrypt::begin();
     let mut terminal_events = EventStream::new();
     let mut ticker = tokio::time::interval(Duration::from_millis(axon_tui::metric::frame_ms()));
 

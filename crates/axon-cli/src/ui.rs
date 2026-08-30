@@ -140,6 +140,12 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
         footer_area,
     );
 
+    // Last, over the finished screen: the effect is about the text arriving, and text that has
+    // not been drawn yet cannot arrive. Off unless `axon.ui.decrypt_ms` says otherwise.
+    if let Some(progress) = axon_tui::decrypt::progress() {
+        axon_tui::decrypt::over(frame.buffer_mut(), progress);
+    }
+
     place_hardware_cursor(frame, app, prompt_area, rows);
 }
 

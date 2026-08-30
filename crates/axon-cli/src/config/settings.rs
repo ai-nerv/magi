@@ -156,7 +156,7 @@ pub fn adopt_ui(loaded: &Loaded) {
 mod ui_tests {
     use super::*;
 
-    fn from_lua(source: &str) -> Loaded {
+    pub(super) fn from_lua(source: &str) -> Loaded {
         let mut engine = axon_lua::Engine::new();
         engine.run(source, "test").expect("the config must run");
         engine.harvest();
@@ -312,4 +312,48 @@ pub fn idle_exit(loaded: &Loaded) -> std::time::Duration {
         return std::time::Duration::ZERO;
     }
     std::time::Duration::from_secs_f64(seconds)
+}
+
+/// The opening scramble is off unless a config asks for it.
+#[cfg(test)]
+mod decrypt_tests {
+    use super::ui_tests::from_lua;
+    use super::*;
+
+    /// What `axon.ui` says, as the overlay would read it.
+    fn ui_of(loaded: &Loaded) -> serde_json::Value {
+        loaded
+            .config
+            .get("ui")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null)
+    }
+
+    #[test]
+    fn it_is_off_until_somebody_asks() {
+        // The whole point of an opt-in: a config that says nothing about it pays nothing for it.
+        assert_eq!(axon_tui::metric::BUILT_IN.decrypt_ms, 0);
+    }
+
+    #[test]
+    fn a_config_can_switch_it_on() {
+        let loaded = from_lua("axon.ui.decrypt_ms = 900");
+        let ui = ui_of(&loaded);
+        let mut metrics = axon_tui::metric::Metrics::default();
+        metrics.overlay(&|name| ui.get(name).and_then(serde_json::Value::as_u64));
+        assert_eq!(metrics.decrypt_ms, 900);
+    }
+
+    #[test]
+    fn and_choose_what_it_scrambles_with() {
+        let loaded = from_lua(r#"axon.ui.decrypt_pool = "01""#);
+        let ui = ui_of(&loaded);
+        let mut glyphs = axon_tui::glyph::Glyphs::default();
+        glyphs.overlay(&|name| {
+            ui.get(name)
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+        });
+        assert_eq!(glyphs.decrypt_pool, "01");
+    }
 }

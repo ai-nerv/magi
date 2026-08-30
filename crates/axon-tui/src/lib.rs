@@ -11,6 +11,7 @@
 pub mod border;
 pub mod colour;
 pub mod complete;
+pub mod decrypt;
 pub mod editor;
 pub mod footer;
 pub mod fuzzy;

@@ -78,6 +78,7 @@ glyphs! {
     placeholder = "ask anything, or / for commands", "The prompt, before you type anything.";
     placeholder_short = "/ for commands", "The same, on a screen too narrow for the whole of it.";
     no_model = "no-model", "What the footer says when nothing is configured to answer.";
+    decrypt_pool = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789#%&@$?*+=-<>/", "The characters the opening scramble draws from.";
 }
 
 /// The glyphs in force, set once before anything is drawn.

@@ -81,6 +81,7 @@ metrics! {
     rest_pace: u16 = 133, 1, "Cells per frame at rest, as a percentage.";
     hold_pace: u16 = 200, 1, "Cells per frame with something typed, as a percentage.";
     work_pace: u16 = 400, 1, "Cells per frame while a turn runs, as a percentage.";
+    decrypt_ms: u64 = 0, 0, "How long the opening scramble runs. Zero, the default, is no effect.";
 }
 
 impl Default for Metrics {
