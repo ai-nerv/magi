@@ -252,11 +252,18 @@ fn indent(line: Line<'static>) -> Line<'static> {
 ///
 /// The trailing fill is what makes a box read as a block rather than as ragged coloured text.
 fn pad(line: Line<'static>, width: u16, style: Style) -> Line<'static> {
-    let used: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
-    let pad = usize::from(crate::metric::block_pad());
-    let trailing = usize::from(width).saturating_sub(used + pad);
+    pad_by(line, width, style, usize::from(crate::metric::block_pad()))
+}
 
-    let mut spans = vec![Span::styled(" ".repeat(pad), style)];
+/// The same, at a chosen indent.
+///
+/// A tool block puts its output one step further in than its header, so the two are not one
+/// column of text under a coloured word.
+fn pad_by(line: Line<'static>, width: u16, style: Style, lead: usize) -> Line<'static> {
+    let used: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+    let trailing = usize::from(width).saturating_sub(used + lead);
+
+    let mut spans = vec![Span::styled(" ".repeat(lead), style)];
     spans.extend(line.spans);
     spans.push(Span::styled(" ".repeat(trailing), style));
     Line::from(spans)

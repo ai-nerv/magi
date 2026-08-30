@@ -6,7 +6,7 @@
 //! prose and an assistant message is prose, and this is a name, arguments, a body that may be
 //! a diff, and a decision about how much of it to show.
 
-use super::{blank, clip, pad};
+use super::{blank, clip, pad, pad_by};
 use crate::colour;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -37,6 +37,12 @@ impl Detail {
         }
     }
 }
+
+/// Columns the body sits in from the header.
+///
+/// A step rather than a second helping of [`crate::metric::block_pad`], which defaults to one:
+/// a single column is not an indent, it is a misalignment.
+const STEP: usize = 2;
 
 /// A padded box whose title states the outcome: pending, success, or error.
 ///
@@ -76,7 +82,13 @@ pub(super) fn block(
         Detail::Full => crate::glyph::collapse(),
     };
     let mut out = vec![blank(width, style), {
-        let summary = summarize(args);
+        // Opened, the header names only the first argument: the rest are listed in full a row
+        // below, and an `edit` header reading `src/main.rs, let x = 1;, let x = 2;` directly
+        // above `old  let x = 1;` says the same thing twice in two shapes.
+        let summary = match detail {
+            Detail::Preview => summarize(args),
+            Detail::Full => first_argument(args),
+        };
         let named = format!(" {name} ");
         let beside = if summary.is_empty() {
             String::new()
@@ -109,23 +121,45 @@ pub(super) fn block(
     // one thing a person opens a `write` block to read. The same goes for an `edit`'s
     // replacement text and a `shell`'s full command: the summary beside the name is one line,
     // and one line is not the argument.
+    // One step further in than the header, so the two are not one column of text under a
+    // coloured word. Everything the block holds sits at this indent: the arguments, the rule
+    // between them and the output, the output, and the note about what was left out.
+    let lead = usize::from(crate::metric::block_pad()) + STEP;
+    let body = usize::from(width).saturating_sub(lead + usize::from(crate::metric::block_pad()));
+    let mut given = 0;
     if matches!(detail, Detail::Full) {
         for line in arguments(args) {
-            out.push(pad(
+            given += 1;
+            out.push(pad_by(
                 Line::from(Span::styled(
-                    clip(&line, inner),
+                    clip(&line, body),
                     style.fg(colour::tool_fold()),
                 )),
                 width,
                 style,
+                lead,
             ));
         }
     }
 
     if let Some(result) = result {
-        let body = result.output.trim_end();
-        if !body.is_empty() {
-            let all: Vec<&str> = body.lines().collect();
+        let output = result.output.trim_end();
+        if !output.is_empty() {
+            // A rule where what the call was given ends and what it returned begins. Without it
+            // the arguments and the first lines of a diff are one run of text at one indent, and
+            // the reader has to know the tool to tell which is which.
+            if given > 0 {
+                out.push(pad_by(
+                    Line::from(Span::styled(
+                        crate::glyph::edge_horizontal().repeat(body),
+                        style.fg(colour::tool_fold()),
+                    )),
+                    width,
+                    style,
+                    lead,
+                ));
+            }
+            let all: Vec<&str> = output.lines().collect();
             let shown = match detail {
                 Detail::Preview => all.len().min(usize::from(crate::metric::preview_lines())),
                 Detail::Full => all.len(),
@@ -136,23 +170,24 @@ pub(super) fn block(
                 } else {
                     change_colour(line)
                 };
-                let clipped = clip(line, inner);
-                out.push(pad(
-                    Line::from(Span::styled(clipped, style.fg(fg))),
+                out.push(pad_by(
+                    Line::from(Span::styled(clip(line, body), style.fg(fg))),
                     width,
                     style,
+                    lead,
                 ));
             }
             // The affordance goes on the fold, because that is where a reader is
             // looking when they wonder where the rest went.
             if all.len() > shown {
-                out.push(pad(
+                out.push(pad_by(
                     Line::from(Span::styled(
                         format!("… {} more lines · ctrl+o", all.len() - shown),
                         style.fg(colour::tool_fold()),
                     )),
                     width,
                     style,
+                    lead,
                 ));
             }
         }
@@ -176,6 +211,14 @@ fn change_colour(line: &str) -> Color {
         Some(b'-') if !line.starts_with("---") => colour::diff_removed(),
         _ => colour::diff_context(),
     }
+}
+
+/// The first argument alone, for the header of a block that is already listing them all below.
+fn first_argument(args: &str) -> String {
+    let summary = summarize(args);
+    summary
+        .split_once(", ")
+        .map_or(summary.clone(), |(first, _)| first.to_owned())
 }
 
 /// A one-line summary of a tool's arguments for the block header.
@@ -470,7 +513,7 @@ mod detail_tests {
             "{preview:?}"
         );
         assert!(
-            full.iter().any(|l| l.contains("command: ls")),
+            full.iter().any(|l| l.contains("command  ls")),
             "and open, it says what it was asked to run: {full:?}"
         );
     }
@@ -592,17 +635,23 @@ fn arguments(args: &str) -> Vec<String> {
     else {
         return args.lines().map(str::to_owned).collect();
     };
+    // Padded to the longest, so the values start in one column. Three arguments whose names
+    // happen to be different lengths is three values at three indents, which reads as a list of
+    // unrelated things rather than as one call's inputs.
+    let column = fields.keys().map(|k| k.chars().count()).max().unwrap_or(0);
     let mut out = Vec::new();
     for (key, value) in fields {
         let text = match &value {
             serde_json::Value::String(s) => s.clone(),
             other => other.to_string(),
         };
+        // Two spaces rather than a colon. A colon after every key turns a short list of values
+        // into a column of punctuation, and the key is already the only word before the gap.
         if text.contains('\n') {
-            out.push(format!("{key}:"));
+            out.push(key.clone());
             out.extend(text.lines().map(str::to_owned));
         } else {
-            out.push(format!("{key}: {text}"));
+            out.push(format!("{key:column$}  {text}"));
         }
     }
     out
@@ -670,12 +719,14 @@ mod opened {
     #[test]
     fn a_multi_line_value_is_laid_out_rather_than_escaped() {
         let lines = arguments(r#"{"contents":"one\ntwo"}"#);
-        assert_eq!(lines, vec!["contents:", "one", "two"]);
+        assert_eq!(lines, vec!["contents", "one", "two"]);
     }
 
     #[test]
     fn a_short_value_stays_on_its_key() {
-        assert_eq!(arguments(r#"{"path":"/tmp/x"}"#), vec!["path: /tmp/x"]);
+        // Two spaces rather than a colon: a colon after every key turns a short list of values
+        // into a column of punctuation.
+        assert_eq!(arguments(r#"{"path":"/tmp/x"}"#), vec!["path  /tmp/x"]);
     }
 
     #[test]

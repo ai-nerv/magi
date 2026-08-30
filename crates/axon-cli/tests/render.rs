@@ -83,8 +83,10 @@ fn a_conversation_renders_the_way_pi_lays_it_out() {
             // tool box: the name reversed out as a label, then its arguments, then the
             // handle that opens the block, held against the right edge.
             "  bash  cargo test                        »",
-            " test result: ok. 42 passed", // tool box: output
-            "",                            // tool box: bottom padding
+            // The output sits a step in from the header, so the two are not one column of
+            // text under a coloured word.
+            "   test result: ok. 42 passed",
+            "", // tool box: bottom padding
         ]
     );
 }
