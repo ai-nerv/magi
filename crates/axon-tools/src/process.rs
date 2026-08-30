@@ -109,7 +109,9 @@ struct Peer {
     child: Child,
     /// Reports as they arrive, or the error that ended the stream.
     reports: Receiver<Result<ToolReport, String>>,
-    writer: FrameWriter<std::process::ChildStdin>,
+    /// The peer's stdin. `Option` so dropping it can close the pipe, which is how a peer is
+    /// asked to stop: it reads until its input ends, then runs its own cleanup.
+    writer: Option<FrameWriter<std::process::ChildStdin>>,
     /// Whatever the peer complained about on the way down.
     ///
     /// Kept because a peer that fails to start fails on the wire as "broken pipe", which says
@@ -118,6 +120,13 @@ struct Peer {
     /// user actually need.
     complaint: Arc<Mutex<String>>,
 }
+
+/// How long to let a peer finish after its input closes, and how often to look.
+///
+/// Short: this runs when a registry is torn down, and a peer that has not gone by then is one
+/// that is not going to. Long enough that the ordinary case — read EOF, clean up, exit — wins.
+const GOODBYE_TRIES: usize = 40;
+const GOODBYE_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 
 /// How a call ended.
 enum Ended {
@@ -219,7 +228,7 @@ impl ProcessTool {
         *self.peer.borrow_mut() = Some(Peer {
             child,
             reports: incoming,
-            writer: FrameWriter::new(stdin),
+            writer: Some(FrameWriter::new(stdin)),
             complaint,
         });
         Ok(())
@@ -328,6 +337,8 @@ impl ProcessTool {
             return Err("the peer is not running".to_owned());
         };
         peer.writer
+            .as_mut()
+            .ok_or("the peer is closing")?
             .write_blocking(&ToolRequest::Call {
                 id: id.clone(),
                 name: self.name.clone(),
@@ -383,11 +394,11 @@ impl ProcessTool {
                     if !asked_to_stop && cancel.is_cancelled() {
                         asked_to_stop = true;
                         deadline = Instant::now() + CANCEL_GRACE;
-                        if peer
-                            .writer
-                            .write_blocking(&ToolRequest::Cancel { id: id.clone() })
-                            .is_err()
-                        {
+                        if peer.writer.as_mut().is_none_or(|writer| {
+                            writer
+                                .write_blocking(&ToolRequest::Cancel { id: id.clone() })
+                                .is_err()
+                        }) {
                             return Ended::Lost("could not be told to stop".to_owned());
                         }
                     }
@@ -581,5 +592,33 @@ mod action_tests {
     #[test]
     fn an_empty_command_names_no_program() {
         assert_eq!(first_word("   "), "");
+    }
+}
+
+impl Drop for Peer {
+    /// Stop the peer, so it can stop whatever it started.
+    ///
+    /// A `Child` that is merely dropped is leaked: Rust neither kills nor reaps it. The peer
+    /// then outlives the registry that owned it, and so does anything it spawned — the shell
+    /// peer's own shell among them, which is how a test run left two and a half thousand
+    /// orphaned `bash` processes parented to init.
+    ///
+    /// Killed rather than asked, because the ask is "close its stdin" and stdin is owned by the
+    /// writer this cannot move out of. The shell peer's shell sits on a pty whose controller
+    /// dies with the peer, which is what takes it down in turn.
+    fn drop(&mut self) {
+        // Closing its input first, because that is how a peer is told to stop, and stopping is
+        // what lets its own cleanup run — the shell peer kills the shell it started there. A
+        // `Child` that is merely dropped is leaked: Rust neither kills nor reaps it.
+        self.writer = None;
+        for _ in 0..GOODBYE_TRIES {
+            match self.child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => std::thread::sleep(GOODBYE_POLL),
+                Err(_) => break,
+            }
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
