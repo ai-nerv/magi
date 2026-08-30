@@ -4,8 +4,9 @@
 //! the terminal. That is what the wheel, the scroll keys, the edge rule and clicking a block
 //! open are all written against.
 //!
-//! The stack below the transcript is Pi's, in Pi's order: status, then the bordered prompt with
-//! its autocomplete beneath it, then the footer.
+//! Below the transcript: the status line, then the prompt box — which holds whatever menu is
+//! open — then the footer. The two edge rules are the transcript's own, drawn against its top
+//! and bottom when it runs past them.
 
 use crate::app::App;
 
@@ -40,13 +41,13 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
         axon_tui::border::Scan::Holding
     };
 
-    // The "there is more below" rule sits directly on top of the prompt box, under the status
-    // line rather than above it. Drawn at the bottom of the transcript instead, it had the
-    // status row between it and the box — a blank row most of the time, which reads as the rule
-    // marking some other edge than the one you are about to type at.
+    // Both edge rules belong to the transcript and are drawn against it, top and bottom. The
+    // lower one had a row of its own down by the prompt, with the status line between it and
+    // the text it was about — and a rule with a blank row above it marks nothing.
+    //
     // "Not following" is exactly "you have scrolled away from the newest output", which is when
-    // this is worth saying — and it avoids asking how much is below, which depends on a height
-    // this row is about to change.
+    // the lower one is worth drawing. It says only that the transcript continues: a count of how
+    // much was asked for and is not wanted, and it depended on a height the row itself changes.
     let more_rows = u16::from(!app.scrollback.is_following());
 
     // The menu goes inside the box, so the box is as tall as the two of them together and there
@@ -67,10 +68,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
         .min(rows.saturating_sub(around - 1))
         .max(1);
 
-    let [live_area, status_area, rule_area, prompt_area, footer_area] = Layout::vertical([
+    let [live_area, status_area, prompt_area, footer_area] = Layout::vertical([
         Constraint::Min(0),
         Constraint::Length(metric::status_rows()),
-        Constraint::Length(more_rows),
         Constraint::Length(prompt_rows),
         Constraint::Length(metric::footer_rows()),
     ])
@@ -85,12 +85,14 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     let laid = transcript::laid_out(app.entries(), area.width, app.detail, &app.flipped);
     app.owners = laid.owners;
     app.scrollback.set_lines(laid.lines);
-    // Only the top edge takes a row out of the transcript; the bottom one has a slot of
-    // its own directly above the prompt.
+    // Each edge that has something past it takes a row out of the transcript for its rule, so
+    // both sit against the text rather than out in the chrome.
     let above = app.scrollback.hidden_above() > 0;
     let live_area = Rect {
         y: live_area.y + u16::from(above),
-        height: live_area.height.saturating_sub(u16::from(above)),
+        height: live_area
+            .height
+            .saturating_sub(u16::from(above) + more_rows),
         ..live_area
     };
     let view = app.scrollback.view(live_area.height).to_vec();
@@ -102,7 +104,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
         height: used.min(live_area.height),
         ..live_area
     };
-    let hidden_below = app.scrollback.hidden_below(live_area.height);
     // The rows the transcript actually landed on, which is what a click is measured
     // against. Bottom-anchored, so a short transcript does not start at the top.
     app.live_rows = anchored.y..anchored.y + anchored.height;
@@ -117,18 +118,22 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
             },
         );
     }
+    if more_rows > 0 {
+        frame.render_widget(
+            Paragraph::new(status::more(area.width)),
+            Rect {
+                y: live_area.y + live_area.height,
+                height: 1,
+                ..live_area
+            },
+        );
+    }
 
-    // Composed rather than passed in: the scroll note is a fact about where the reader is
-    // looking, which the status line has no business knowing how to compute.
     let mut status_line = status::working(app.status(), app.tick, app.connected, app.elapsed());
-    status_line.spans.extend(status::scrolled(hidden_below));
     if !app.connected {
         status_line.spans.extend(status::queued(app.queued));
     }
     frame.render_widget(Paragraph::new(status_line), status_area);
-    if more_rows > 0 {
-        frame.render_widget(Paragraph::new(status::more(area.width)), rule_area);
-    }
     frame.render_widget(Paragraph::new(prompt_lines), prompt_area);
     frame.render_widget(
         Paragraph::new(footer::render(footer_data, area.width)),
@@ -235,17 +240,24 @@ mod continues_past_the_edge {
     }
 
     #[test]
-    fn the_lower_rule_sits_directly_on_the_prompt_box() {
-        // Drawn at the bottom of the transcript it had the status row beneath it — blank most
-        // of the time, so the rule looked like it marked some edge other than the one you are
-        // about to type at.
+    fn the_lower_rule_sits_against_the_text_it_is_about() {
+        // It had a row of its own down by the prompt, with the status line between it and the
+        // transcript — and a rule with a blank row above it marks nothing.
         let rows = drawn(30, 10);
+        let lower = *rules(&rows).last().expect("a rule below");
+        let last = rows[..lower]
+            .iter()
+            .rposition(|row| !row.trim().is_empty())
+            .expect("something above it");
+        assert!(
+            lower - last <= 2,
+            "the rule drifted off the transcript: {rows:#?}"
+        );
         let box_top = rows
             .iter()
             .position(|row| row.contains(char::from_u32(0x256D).expect("box corner")))
             .expect("the prompt is on screen");
-        let lower = *rules(&rows).last().expect("a rule below");
-        assert_eq!(lower + 1, box_top, "nothing goes between them: {rows:#?}");
+        assert!(lower < box_top, "{rows:#?}");
     }
 
     #[test]

@@ -271,24 +271,6 @@ mod hidden_tests {
     }
 }
 
-#[cfg(test)]
-mod note_tests {
-    use crate::status;
-
-    #[test]
-    fn nothing_below_is_nothing_said() {
-        assert!(status::scrolled(0).is_empty());
-    }
-
-    #[test]
-    fn the_note_says_how_much_and_how_to_get_back() {
-        let spans = status::scrolled(42);
-        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text.contains("42"), "{text}");
-        assert!(text.contains("shift+end"), "{text}");
-    }
-}
-
 /// What a wheel notch does, which is what the driver hands straight to these.
 #[cfg(test)]
 mod wheel {
