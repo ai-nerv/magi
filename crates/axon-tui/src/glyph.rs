@@ -78,6 +78,7 @@ glyphs! {
     placeholder = "ask anything, or / for commands", "The prompt, before you type anything.";
     placeholder_short = "/ for commands", "The same, on a screen too narrow for the whole of it.";
     no_model = "no-model", "What the footer says when nothing is configured to answer.";
+    idle = "waiting", "What the footer says when the agent is doing nothing.";
     decrypt_pool = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789#%&@$?*+=-<>/", "The characters the opening scramble draws from.";
     flicker_pool = "#%&@$?*+=~^<>/", "The symbols a character glitches to and back from.";
     type_stages = "·*#", "What a character you have just typed passes through, in order.";

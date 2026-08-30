@@ -48,7 +48,13 @@ pub fn working(
         );
     }
     match status {
-        AgentStatus::Idle => Line::default(),
+        // Said rather than left blank. An empty left-hand column reads as a footer that has not
+        // loaded, and "nothing is happening" is a state worth naming -- it is the state you are
+        // in whenever it is your turn. No spinner: a turning frame beside it says work.
+        AgentStatus::Idle => Line::from(vec![Span::styled(
+            format!("   {}", crate::glyph::idle()),
+            Style::default().fg(colour::dim()),
+        )]),
         AgentStatus::Working { label } => spinner(label.clone(), tick, colour::accent(), elapsed),
         AgentStatus::Retrying {
             attempt,
@@ -129,9 +135,21 @@ mod tests {
     }
 
     #[test]
-    fn idle_renders_nothing() {
+    fn idle_says_so() {
+        // An empty left-hand column reads as a footer that has not loaded, and "nothing is
+        // happening" is the state you are in whenever it is your turn.
         let line = render(&AgentStatus::Idle, 0);
-        assert_eq!(text_of(&line), "");
+        assert_eq!(text_of(&line).trim(), crate::glyph::idle());
+    }
+
+    #[test]
+    fn idle_does_not_spin() {
+        // A turning frame beside a word says work is happening, which is the one thing this
+        // state means is not.
+        let still = text_of(&render(&AgentStatus::Idle, 0));
+        for tick in 1..8 {
+            assert_eq!(text_of(&render(&AgentStatus::Idle, tick)), still);
+        }
     }
 
     #[test]
@@ -193,10 +211,9 @@ mod connection_tests {
     }
 
     #[test]
-    fn a_connected_idle_session_still_says_nothing() {
-        // Two lines while idle so the layout does not jump; the words are the exception.
+    fn a_connected_idle_session_says_it_is_waiting() {
         let line = connected(&AgentStatus::Idle, 0, true);
-        assert_eq!(text(&line), "");
+        assert_eq!(text(&line).trim(), crate::glyph::idle());
     }
 }
 

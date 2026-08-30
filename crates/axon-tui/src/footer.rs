@@ -133,25 +133,27 @@ pub fn render(data: &FooterData, status: &[Span<'static>], width: u16) -> Vec<Li
         _ => colour::dim(),
     };
 
-    // One row under the box, and everything that is said about the session is on it: what the
-    // agent is doing on the left, usage in the middle, the model on the right. The working
-    // directory, the branch and the mouse state had the left of this and are gone -- two of them
-    // never change while the session runs, and the third has the whole terminal to announce
-    // itself with. The status had a row of its own, which is one row of chrome for one word.
-    let said: usize = status.iter().map(|s| s.content.chars().count()).sum();
-    let used = said + usage.chars().count() + model.chars().count();
-    let gap = width
-        .saturating_sub(used)
-        .max(usize::from(crate::metric::column_gap()));
-    let (left_gap, right_gap) = if usage.is_empty() {
-        (gap, 0)
-    } else {
-        (gap / 2, gap - gap / 2)
-    };
+    // One row under the box, and everything said about the session is on it: what the agent is
+    // doing on the left, usage in the middle, the model on the right. The working directory, the
+    // branch and the mouse state had the left of this and are gone -- two of them never change
+    // while the session runs, and the third has the whole terminal to announce itself with.
+    //
+    // Each is placed from the width alone. They were laid out one after another, which meant a
+    // change in the left-hand segment -- and it changes every time the agent starts or stops
+    // doing something -- slid the other two sideways. Three things that move whenever any one of
+    // them moves is a row nobody can read a number off.
+    let gap = usize::from(crate::metric::column_gap());
+    let model_at = width.saturating_sub(model.chars().count());
+    let usage_at = width.saturating_sub(usage.chars().count()) / 2;
 
-    let mut spans: Vec<Span<'static>> = status.to_vec();
-    spans.push(Span::styled(" ".repeat(left_gap), dim));
-    if !usage.is_empty() {
+    let mut spans: Vec<Span<'static>> = clip_spans(
+        status.to_vec(),
+        if usage.is_empty() { model_at } else { usage_at }.saturating_sub(gap),
+    );
+    let mut col: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+
+    if !usage.is_empty() && usage_at >= col {
+        spans.push(Span::styled(" ".repeat(usage_at - col), dim));
         let split = usage.len() - context.len();
         if context.is_empty() {
             spans.push(Span::styled(usage.clone(), dim));
@@ -159,7 +161,10 @@ pub fn render(data: &FooterData, status: &[Span<'static>], width: u16) -> Vec<Li
             spans.push(Span::styled(usage[..split].to_owned(), dim));
             spans.push(Span::styled(context, Style::default().fg(context_color)));
         }
-        spans.push(Span::styled(" ".repeat(right_gap), dim));
+        col = usage_at + usage.chars().count();
+    }
+    if model_at >= col {
+        spans.push(Span::styled(" ".repeat(model_at - col), dim));
     }
     spans.push(Span::styled(model, muted));
 
@@ -367,5 +372,71 @@ mod model_fit_tests {
                 "width {width}: {row}"
             );
         }
+    }
+}
+
+/// Each segment is placed from the width, so one changing does not move the others.
+#[cfg(test)]
+mod anchored {
+    use super::*;
+
+    fn data() -> FooterData {
+        FooterData {
+            input_tokens: 12_500,
+            output_tokens: 900,
+            context_percent: Some(6.2),
+            context_window: 200_000,
+            model: "openrouter/opus-5".into(),
+        }
+    }
+
+    /// Which column `needle` starts at, counted in characters rather than bytes.
+    fn column(row: &str, needle: &str) -> Option<usize> {
+        row.find(needle).map(|byte| row[..byte].chars().count())
+    }
+
+    /// The row rendered with `said` on the left.
+    fn row(said: &str) -> String {
+        let status = [Span::raw(said.to_owned())];
+        render(&data(), &status, 70)[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn what_the_agent_is_doing_does_not_move_the_numbers() {
+        // The complaint this answers: the usage and the model slid sideways every time the
+        // status changed, which is every time a turn starts or ends.
+        let short = row("waiting");
+        let long = row("⠋ Thinking  12s  esc to interrupt");
+        for row in [&short, &long] {
+            assert_eq!(row.chars().count(), 70, "{row:?}");
+        }
+        assert_eq!(
+            column(&short, "↑13k"),
+            column(&long, "↑13k"),
+            "usage moved:\n{short:?}\n{long:?}"
+        );
+        assert_eq!(
+            column(&short, "openrouter"),
+            column(&long, "openrouter"),
+            "the model moved:\n{short:?}\n{long:?}"
+        );
+    }
+
+    #[test]
+    fn the_model_is_against_the_right_edge() {
+        assert!(row("waiting").ends_with("openrouter/opus-5"));
+    }
+
+    #[test]
+    fn a_status_too_long_for_its_room_is_cut_rather_than_shoving() {
+        // It gets what is left of the row before the numbers, and no more.
+        let row = row(&"x".repeat(200));
+        assert_eq!(row.chars().count(), 70, "{row:?}");
+        assert!(row.contains("↑13k"), "the numbers survived: {row:?}");
+        assert!(row.ends_with("openrouter/opus-5"), "{row:?}");
     }
 }

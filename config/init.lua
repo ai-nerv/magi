@@ -84,7 +84,7 @@ axon.model = "anthropic/claude-sonnet-4-5"
 --   edge_horizontal  edge_vertical
 --   marker  no_marker  ellipsis  bullet
 --   more_rule  expand  collapse  quote_rule  notice_rule
---   placeholder  placeholder_short  no_model  decrypt_pool  flicker_pool  type_stages
+--   placeholder  placeholder_short  no_model  idle  decrypt_pool  flicker_pool  type_stages
 --   spinner            a list of frames: { "◐", "◓", "◑", "◒" }
 --
 -- NUMBERS are rows, budgets and rates. Anything named `_share` is a percentage. A value under
