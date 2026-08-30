@@ -215,14 +215,11 @@ fn the_recorded_sample_replays_into_a_transcript() {
 #[test]
 fn a_footer_row_is_exactly_the_terminal_width() {
     let data = FooterData {
-        cwd: "~/src/axon".into(),
-        branch: Some("develop".into()),
         input_tokens: 12_500,
         output_tokens: 900,
         context_percent: Some(6.2),
         context_window: 200_000,
         model: "claude-opus-5".into(),
-        mouse_held: false,
     };
     let lines = axon_tui::footer::render(&data, 70);
     let stats: usize = lines[0]

@@ -68,10 +68,13 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
         .min(rows.saturating_sub(around - 1))
         .max(1);
 
-    let [live_area, status_area, prompt_area, footer_area] = Layout::vertical([
+    // Above the box: the transcript and its edge rules, and nothing else. The status line used to
+    // sit between them, which put a row of chrome — blank most of the time — between what was
+    // said and the place you answer it.
+    let [live_area, prompt_area, status_area, footer_area] = Layout::vertical([
         Constraint::Min(0),
-        Constraint::Length(metric::status_rows()),
         Constraint::Length(prompt_rows),
+        Constraint::Length(metric::status_rows()),
         Constraint::Length(metric::footer_rows()),
     ])
     .areas(area);

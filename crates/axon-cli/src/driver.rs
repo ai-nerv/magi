@@ -68,8 +68,6 @@ pub async fn run(
             names.join(", ")
         ));
     }
-    let base_footer = local_footer();
-
     let mut session = Session::open()?;
     // From here, not from the start of `main`: the clock is for the screen, and there is no
     // screen until the alternate one is open.
@@ -118,7 +116,7 @@ pub async fn run(
         if dirty {
             let _ = session.terminal.autoresize();
             session.terminal.draw(|frame| {
-                let footer = footer_data(&base_footer, &app);
+                let footer = footer_data(&app);
                 app.queued = command_tx.max_capacity() - command_tx.capacity();
                 ui::draw(frame, &mut app, &footer);
             })?;
@@ -449,35 +447,14 @@ fn terminal_size() -> (u16, u16) {
     crossterm::terminal::size().unwrap_or((80, 24))
 }
 
-/// What the footer can say without asking anyone.
-///
-/// The working directory and the branch are facts about this process. Everything else — which
-/// model, how many tokens, how full the window is — belongs to the daemon, and is filled in by
-/// [`footer_data`] once it has told us.
-fn local_footer() -> FooterData {
-    let cwd = std::env::current_dir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
-    let home = std::env::var("HOME").ok();
-    FooterData {
-        cwd: axon_tui::footer::format_cwd(&cwd, home.as_deref()),
-        branch: git_branch(),
-        model: axon_tui::glyph::no_model().into(),
-        ..FooterData::default()
-    }
-}
-
 /// The footer as of now.
 ///
 /// Rebuilt each frame from what the daemon has reported rather than kept in step by hand: the
 /// numbers change on every delta, and a copy updated at each of the places that could change
 /// them is a copy that misses one.
-fn footer_data(base: &FooterData, app: &App) -> FooterData {
+fn footer_data(app: &App) -> FooterData {
     let window = app.model.as_ref().map_or(0, |m| m.context_window);
     FooterData {
-        cwd: base.cwd.clone(),
-        branch: base.branch.clone(),
-        mouse_held: app.mouse,
         model: app.model.as_ref().map_or_else(
             || axon_tui::glyph::no_model().to_owned(),
             |m| m.name.clone(),
@@ -494,18 +471,6 @@ fn footer_data(base: &FooterData, app: &App) -> FooterData {
             (used as f64 / window as f64) * 100.0
         }),
     }
-}
-
-fn git_branch() -> Option<String> {
-    let output = std::process::Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-        .filter(|b| !b.is_empty())
 }
 
 /// Whether a slash command asked the UI to exit.

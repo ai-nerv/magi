@@ -10,10 +10,6 @@ use ratatui::text::{Line, Span};
 /// What the footer displays. The UI owns none of this; the daemon reports it.
 #[derive(Debug, Clone, Default)]
 pub struct FooterData {
-    /// Working directory, already collapsed to `~` where applicable.
-    pub cwd: String,
-    /// Current git branch, if the working directory is a repository.
-    pub branch: Option<String>,
     /// Cumulative input tokens.
     pub input_tokens: u64,
     /// Cumulative output tokens.
@@ -24,12 +20,6 @@ pub struct FooterData {
     pub context_window: u64,
     /// Model id, as the provider names it.
     pub model: String,
-    /// Whether axon has taken the mouse from the terminal.
-    ///
-    /// The departure from normal, so the derived default is the normal state — and said out
-    /// loud only when true, because that is the state where dragging stops selecting text and
-    /// the only other clue is that it stopped.
-    pub mouse_held: bool,
 }
 
 /// Abbreviate a token count the way Pi's `formatTokens` does.
@@ -105,7 +95,7 @@ pub fn render(data: &FooterData, width: u16) -> Vec<Line<'static>> {
         &data.model,
         width.saturating_sub(usize::from(crate::metric::column_gap())),
     );
-    let mut room =
+    let room =
         width.saturating_sub(model.chars().count() + usize::from(crate::metric::column_gap()));
 
     // Then usage, which is short and changes every turn.
@@ -131,26 +121,10 @@ pub fn render(data: &FooterData, width: u16) -> Vec<Line<'static>> {
     }
     let usage = stats.join(" ");
     let usage = if usage.chars().count() + usize::from(crate::metric::column_gap()) <= room {
-        room -= usage.chars().count() + usize::from(crate::metric::column_gap());
         usage
     } else {
         String::new()
     };
-
-    // Whatever is left goes to the path, which is the part that can always be shortened.
-    let mut suffix = String::new();
-    if let Some(branch) = &data.branch {
-        suffix.push_str(&format!(" ({branch})"));
-    }
-    // Only when it is off. A state that breaks clicking and the wheel has to be visible, and a
-    // state where everything works needs no announcement.
-    if data.mouse_held {
-        suffix.push_str(" · mouse");
-    }
-    let location = format!(
-        "{}{suffix}",
-        fit_path(&data.cwd, room.saturating_sub(suffix.chars().count()))
-    );
 
     // Context pressure is the one thing in the footer worth breaking the dim palette for.
     let context_color = match data.context_percent {
@@ -159,18 +133,16 @@ pub fn render(data: &FooterData, width: u16) -> Vec<Line<'static>> {
         _ => colour::dim(),
     };
 
-    let used = location.chars().count() + usage.chars().count() + model.chars().count();
+    // Usage on the left, model on the right, and nothing else. The working directory, the branch
+    // and the mouse state were here and are not facts anybody is reading a footer for: two of
+    // them never change while the session runs, and the third has the whole terminal to announce
+    // itself with.
+    let used = usage.chars().count() + model.chars().count();
     let gap = width
         .saturating_sub(used)
         .max(usize::from(crate::metric::column_gap()));
-    let (left_gap, right_gap) = if usage.is_empty() {
-        (gap, 0)
-    } else {
-        (gap / 2, gap - gap / 2)
-    };
 
-    let mut spans = vec![Span::styled(location, dim)];
-    spans.push(Span::styled(" ".repeat(left_gap), dim));
+    let mut spans = Vec::new();
     if !usage.is_empty() {
         let split = usage.len() - context.len();
         if context.is_empty() {
@@ -179,8 +151,8 @@ pub fn render(data: &FooterData, width: u16) -> Vec<Line<'static>> {
             spans.push(Span::styled(usage[..split].to_owned(), dim));
             spans.push(Span::styled(context, Style::default().fg(context_color)));
         }
-        spans.push(Span::styled(" ".repeat(right_gap), dim));
     }
+    spans.push(Span::styled(" ".repeat(gap), dim));
     spans.push(Span::styled(model, muted));
 
     vec![Line::from(clip_spans(spans, width))]
@@ -237,24 +209,21 @@ mod tests {
     }
 
     #[test]
-    fn the_branch_follows_the_directory() {
+    fn usage_is_the_only_thing_on_the_left() {
+        // The working directory, the branch and the mouse state were here. Two of them never
+        // change while the session runs, and the third has the whole terminal to announce itself.
         let data = FooterData {
-            cwd: "~/src/axon".into(),
-            branch: Some("develop".into()),
+            input_tokens: 1200,
+            output_tokens: 340,
             ..FooterData::default()
         };
         let rendered = text_of(&render(&data, 60));
-        assert!(
-            rendered[0].starts_with("~/src/axon (develop)"),
-            "{:?}",
-            rendered[0]
-        );
+        assert!(rendered[0].starts_with("↑1.2k ↓340"), "{:?}", rendered[0]);
     }
 
     #[test]
     fn the_model_is_right_aligned() {
         let data = FooterData {
-            cwd: "~".into(),
             context_window: 200_000,
             context_percent: Some(12.5),
             model: "claude-opus-5".into(),
@@ -318,24 +287,6 @@ mod fit_tests {
     }
 
     #[test]
-    fn the_branch_survives_a_path_too_long_to_fit() {
-        // Fitting the whole line cut the branch off with it, and the branch is the half that
-        // changes.
-        let data = FooterData {
-            cwd: "/home/you/a/very/long/path/that/will/not/fit/at/all".into(),
-            branch: Some("develop".into()),
-            model: "m".into(),
-            ..FooterData::default()
-        };
-        let out = render(&data, 40);
-        assert!(
-            line_text(&out, 0).contains("(develop)"),
-            "{}",
-            line_text(&out, 0)
-        );
-    }
-
-    #[test]
     fn no_context_window_is_no_context_group() {
         // `?/0` is three characters of noise on exactly the screen a new person is reading.
         let data = FooterData {
@@ -394,7 +345,6 @@ mod model_fit_tests {
             input_tokens: 123_456,
             output_tokens: 654_321,
             context_window: 200_000,
-            context_percent: Some(88.8),
             ..FooterData::default()
         };
         for width in [20u16, 30, 40, 60, 100] {
@@ -404,39 +354,5 @@ mod model_fit_tests {
                 "width {width}: {row}"
             );
         }
-    }
-}
-
-#[cfg(test)]
-mod mouse_note {
-    use super::*;
-
-    fn row(held: bool) -> String {
-        render(
-            &FooterData {
-                cwd: "~/work".into(),
-                mouse_held: held,
-                ..FooterData::default()
-            },
-            60,
-        )[0]
-        .spans
-        .iter()
-        .map(|s| s.content.as_ref())
-        .collect()
-    }
-
-    #[test]
-    fn the_ordinary_state_says_nothing() {
-        // The terminal has the mouse. That is how every other program behaves and needs no
-        // announcement.
-        assert!(!row(false).contains("mouse"), "{}", row(false));
-    }
-
-    #[test]
-    fn taking_the_mouse_says_so() {
-        // Otherwise the only evidence is that dragging stopped selecting, which reads as a
-        // broken terminal rather than a mode somebody turned on.
-        assert!(row(true).contains("mouse"), "{}", row(true));
     }
 }
