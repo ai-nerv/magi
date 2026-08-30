@@ -84,6 +84,7 @@ metrics! {
     decrypt_ms: u64 = 0, 0, "How long the opening scramble runs. Zero, the default, is no effect.";
     flicker_odds: u16 = 0, 0, "One box character in this many glitches per window. Zero is off.";
     flicker_ms: u64 = 120, 16, "How long one glitched character holds before it comes back.";
+    type_reveal_ms: u64 = 0, 0, "How long a character you type takes to resolve. Zero is off.";
 }
 
 impl Default for Metrics {

@@ -18,7 +18,28 @@ pub struct Editor {
     history: Vec<String>,
     /// Position while walking `history`; `None` means "editing, not browsing".
     history_pos: Option<usize>,
+    /// Characters typed a moment ago, for the reveal in [`crate::prompt`].
+    typed: Vec<Typed>,
 }
+
+/// A character somebody has just typed: where it went, what it was, and when.
+///
+/// The character is kept as well as the position because an edit that moves text around leaves
+/// the positions pointing at somebody else's letters. Checking what is actually there is cheaper
+/// than invalidating this from every method that can shift a line.
+#[derive(Debug, Clone, Copy)]
+struct Typed {
+    row: usize,
+    col: usize,
+    ch: char,
+    at: std::time::Instant,
+}
+
+/// How long a typed character is remembered, whatever the reveal is set to.
+const REMEMBERED: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// How many are remembered at once, so a paste does not grow this without bound.
+const RECENT: usize = 64;
 
 impl Editor {
     /// An empty editor with one blank line.
@@ -95,6 +116,32 @@ impl Editor {
         self.lines[self.row].insert(byte, c);
         self.col += 1;
         self.history_pos = None;
+        self.note(c);
+    }
+
+    /// Remember that `c` was just typed, and forget anything too old to still be resolving.
+    fn note(&mut self, c: char) {
+        let at = std::time::Instant::now();
+        self.typed.retain(|t| at.duration_since(t.at) < REMEMBERED);
+        if self.typed.len() >= RECENT {
+            self.typed.remove(0);
+        }
+        self.typed.push(Typed {
+            row: self.row,
+            col: self.col - 1,
+            ch: c,
+            at,
+        });
+    }
+
+    /// How long ago the character at `row, col` was typed, if it still is what was typed there.
+    #[must_use]
+    pub fn typed_age(&self, row: usize, col: usize, ch: char) -> Option<std::time::Duration> {
+        self.typed
+            .iter()
+            .rev()
+            .find(|t| t.row == row && t.col == col && t.ch == ch)
+            .map(|t| t.at.elapsed())
     }
 
     /// Insert text, splitting on newlines. Used for bracketed paste.
