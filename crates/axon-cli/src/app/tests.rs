@@ -174,11 +174,11 @@ mod reduction {
         let none = |_: &str| Vec::new();
         app.editor.insert_str("/qu");
         app.refresh_completion(&none);
-        assert!(app.completion.is_some());
+        assert!(app.overlay.is_some());
         app.editor.clear();
         app.editor.insert_str("plain text");
         app.refresh_completion(&none);
-        assert!(app.completion.is_none());
+        assert!(app.overlay.is_none());
     }
 
     #[test]
@@ -441,7 +441,11 @@ mod picking {
     fn a_model_that_reasons_is_offered_every_level() {
         let mut app = app_with_a_reasoning_model();
         app.open_thinking_picker();
-        let picker = app.picker.as_ref().expect("a list");
+        let picker = app
+            .overlay
+            .as_ref()
+            .and_then(Overlay::list)
+            .expect("a list");
         assert!(
             picker.choices.iter().all(|c| c.ready),
             "{:?}",
@@ -473,7 +477,11 @@ mod picking {
             thinking: "off".into(),
         });
         app.open_thinking_picker();
-        let picker = app.picker.as_ref().expect("a list");
+        let picker = app
+            .overlay
+            .as_ref()
+            .and_then(Overlay::list)
+            .expect("a list");
         let ready: Vec<&str> = picker
             .choices
             .iter()
@@ -488,7 +496,11 @@ mod picking {
         let mut app = app_with_a_reasoning_model();
         app.thinking = "high".into();
         app.open_thinking_picker();
-        let picker = app.picker.as_ref().expect("a list");
+        let picker = app
+            .overlay
+            .as_ref()
+            .and_then(Overlay::list)
+            .expect("a list");
         assert_eq!(picker.current().expect("a row").value, "high");
     }
 }
@@ -655,8 +667,9 @@ mod stale_daemon {
         app.choices = vec![choice("openrouter/m", "set HOME", &["HOME"])];
         app.open_model_picker();
         let row = app
-            .picker
+            .overlay
             .as_ref()
+            .and_then(Overlay::list)
             .expect("a list")
             .current()
             .expect("a row");
@@ -678,8 +691,9 @@ mod stale_daemon {
         )];
         app.open_model_picker();
         let row = app
-            .picker
+            .overlay
             .as_ref()
+            .and_then(Overlay::list)
             .expect("a list")
             .current()
             .expect("a row");
@@ -693,8 +707,9 @@ mod stale_daemon {
         app.choices = vec![choice("local/m", "", &[])];
         app.open_model_picker();
         let row = app
-            .picker
+            .overlay
             .as_ref()
+            .and_then(Overlay::list)
             .expect("a list")
             .current()
             .expect("a row");

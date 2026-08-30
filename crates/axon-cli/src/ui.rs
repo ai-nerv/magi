@@ -11,7 +11,7 @@ use crate::app::App;
 
 use axon_tui::footer::{self, FooterData};
 use axon_tui::metric;
-use axon_tui::{complete, prompt, status, transcript};
+use axon_tui::{prompt, status, transcript};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::Paragraph;
@@ -39,24 +39,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     } else {
         axon_tui::border::Scan::Holding
     };
-    let prompt_lines = prompt::render(&app.editor, area.width, rows, app.scan_tick(), scan);
-    let prompt_rows = (prompt_lines.len() as u16)
-        .min(rows.saturating_sub(metric::footer_rows() + metric::status_rows() + 1))
-        .max(1);
-    // One overlay slot. The two never open together — a list is opened by a command, and
-    // running a command closes the popup that offered it.
-    let popup_rows = app
-        .picker
-        .as_ref()
-        .map_or_else(
-            || {
-                app.completion
-                    .as_ref()
-                    .map_or(0, complete::Completion::height)
-            },
-            axon_tui::picker::Picker::height,
-        )
-        .min(rows.saturating_sub(metric::footer_rows() + metric::status_rows() + prompt_rows + 1));
 
     // The "there is more below" rule sits directly on top of the prompt box, under the status
     // line rather than above it. Drawn at the bottom of the transcript instead, it had the
@@ -66,19 +48,30 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     // this is worth saying — and it avoids asking how much is below, which depends on a height
     // this row is about to change.
     let more_rows = u16::from(!app.scrollback.is_following());
-    let [
-        live_area,
-        status_area,
-        rule_area,
-        prompt_area,
-        popup_area,
-        footer_area,
-    ] = Layout::vertical([
+
+    // The menu goes inside the box, so the box is as tall as the two of them together and there
+    // is no second region under it. What it may not do is take the whole screen: one row of
+    // transcript stays, or a list opened mid-turn hides the turn it is about.
+    let around = metric::footer_rows() + metric::status_rows() + more_rows + 1;
+    let text_rows = prompt::text_rows(&app.editor, rows);
+    let room = usize::from(rows.saturating_sub(around)).saturating_sub(text_rows + 3);
+    let mut menu = app
+        .overlay
+        .as_ref()
+        .map(|open| open.render(area.width.saturating_sub(metric::gutter() + 1)))
+        .unwrap_or_default();
+    menu.truncate(room);
+    let prompt_lines = prompt::render(&app.editor, area.width, rows, app.scan_tick(), scan, &menu);
+    let prompt_rows = u16::try_from(prompt_lines.len())
+        .unwrap_or(u16::MAX)
+        .min(rows.saturating_sub(around - 1))
+        .max(1);
+
+    let [live_area, status_area, rule_area, prompt_area, footer_area] = Layout::vertical([
         Constraint::Min(0),
         Constraint::Length(metric::status_rows()),
         Constraint::Length(more_rows),
         Constraint::Length(prompt_rows),
-        Constraint::Length(popup_rows),
         Constraint::Length(metric::footer_rows()),
     ])
     .areas(area);
@@ -137,18 +130,6 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
         frame.render_widget(Paragraph::new(status::more(area.width)), rule_area);
     }
     frame.render_widget(Paragraph::new(prompt_lines), prompt_area);
-
-    if let Some(picker) = &app.picker {
-        frame.render_widget(
-            Paragraph::new(axon_tui::picker::render(picker, area.width)),
-            popup_area,
-        );
-    } else if let Some(popup) = &app.completion {
-        frame.render_widget(
-            Paragraph::new(complete::render(popup, area.width)),
-            popup_area,
-        );
-    }
     frame.render_widget(
         Paragraph::new(footer::render(footer_data, area.width)),
         footer_area,
@@ -277,5 +258,76 @@ mod continues_past_the_edge {
         for at in rules(&rows) {
             assert!(at < box_top, "a rule landed on the prompt: {rows:#?}");
         }
+    }
+}
+
+/// What opens under the prompt opens *inside* it.
+#[cfg(test)]
+mod inside_the_box {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    /// A screen with `/mo` typed and the menu that opens on it.
+    fn drawn() -> Vec<String> {
+        let mut app = App::new();
+        app.editor.insert_str("/mo");
+        app.refresh_completion(&|_| Vec::new());
+        assert!(app.overlay.is_some(), "the premise: `/mo` opens a menu");
+        let footer = FooterData::default();
+        let mut terminal = Terminal::new(TestBackend::new(60, 16)).expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app, &footer))
+            .expect("draw");
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .chunks(60)
+            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
+            .collect()
+    }
+
+    #[test]
+    fn every_row_of_the_menu_is_between_the_sides() {
+        let rows = drawn();
+        let menu: Vec<&String> = rows.iter().filter(|row| row.contains("/model")).collect();
+        assert!(!menu.is_empty(), "nothing was offered: {rows:#?}");
+        for row in menu {
+            assert!(row.starts_with('│'), "{row:?} is outside the box");
+            assert!(row.trim_end().ends_with('│'), "{row:?} is outside the box");
+        }
+    }
+
+    #[test]
+    fn a_rule_separates_the_text_from_what_it_opened() {
+        let rows = drawn();
+        let divider = rows
+            .iter()
+            .position(|row| row.starts_with('├'))
+            .expect("a divider");
+        let typed = rows
+            .iter()
+            .position(|row| row.contains("/mo "))
+            .expect("what was typed");
+        let offered = rows
+            .iter()
+            .position(|row| row.contains("/model"))
+            .expect("what it offered");
+        assert!(typed < divider && divider < offered, "{rows:#?}");
+    }
+
+    #[test]
+    fn the_box_closes_under_the_menu_rather_than_above_it() {
+        let rows = drawn();
+        let bottom = rows
+            .iter()
+            .position(|row| row.starts_with('╰'))
+            .expect("the box closes");
+        let offered = rows
+            .iter()
+            .position(|row| row.contains("/model"))
+            .expect("what it offered");
+        assert!(offered < bottom, "the menu fell out of the box: {rows:#?}");
     }
 }

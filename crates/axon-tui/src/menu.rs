@@ -3,10 +3,11 @@
 //! Shared by the completion popup and the pickers, because they are the same object seen twice
 //! and had drifted into two different-looking lists.
 //!
-//! The treatment is oslo's, which is the best of the family's: **a block, a bar, and a match.**
-//! A background behind every row is what makes a menu read as one object rather than as loose
-//! text under the prompt — there is no border, so the colour is the only thing saying where the
-//! list starts and stops. The row you are on takes a brighter background across the full width.
+//! The treatment is oslo's, less its block: **a bar and a match.** There was a background
+//! behind every row, which is what made the list read as one object while it floated under the
+//! prompt with nothing around it. It is drawn inside the prompt box now, and the box says where
+//! the list starts and stops; a second surface inside a frame is one edge too many. The row you
+//! are on keeps its bar across the full width, because that is selection and not decoration.
 //! And the characters you have already typed are painted differently from the ones each
 //! candidate adds, which is the single thing that makes a long list scannable: the eye is
 //! looking for what is *different* between forty rows that share a prefix.
@@ -36,7 +37,7 @@ pub fn row(r: &Row<'_>, typed: &str, width: u16) -> Line<'static> {
     let bg = if r.selected {
         colour::menu_selected_bg()
     } else {
-        colour::menu_bg()
+        ratatui::style::Color::Reset
     };
     let on = |style: Style| style.bg(bg);
 
@@ -79,7 +80,7 @@ pub fn row(r: &Row<'_>, typed: &str, width: u16) -> Line<'static> {
 /// A heading above a list: what it is, and where you are in it.
 #[must_use]
 pub fn heading(title: &str, note: &str, width: u16) -> Line<'static> {
-    let bg = colour::menu_bg();
+    let bg = ratatui::style::Color::Reset;
     let spans = vec![
         Span::styled(
             format!(" {title} "),
@@ -219,19 +220,24 @@ mod tests {
     }
 
     #[test]
-    fn every_row_carries_a_background_to_the_edge() {
-        // Without it a menu is loose text under the prompt; the colour is the only thing saying
-        // where the list starts and stops.
+    fn an_unpicked_row_paints_no_surface_of_its_own() {
+        // The prompt box is around it now, and a second surface inside a frame is one edge too
+        // many. The row is still padded to the full width so the bar, when it comes, reaches it.
         let line = row(&a_row("a/b", false), "", 40);
         assert_eq!(text(&line).chars().count(), 40);
-        assert!(line.spans.iter().all(|s| s.style.bg.is_some()));
+        assert!(
+            line.spans
+                .iter()
+                .all(|s| s.style.bg == Some(ratatui::style::Color::Reset)),
+            "something is painted behind an unpicked row"
+        );
     }
 
     #[test]
-    fn the_selected_row_is_a_different_block() {
+    fn the_selected_row_is_the_only_one_with_a_bar() {
         let plain = row(&a_row("a/b", false), "", 40);
         let picked = row(&a_row("a/b", true), "", 40);
-        assert_eq!(plain.spans[0].style.bg, Some(colour::menu_bg()));
+        assert_eq!(plain.spans[0].style.bg, Some(ratatui::style::Color::Reset));
         assert_eq!(picked.spans[0].style.bg, Some(colour::menu_selected_bg()));
         assert!(text(&picked).starts_with(glyph::marker()));
     }

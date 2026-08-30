@@ -94,7 +94,6 @@ palette! {
     tool_fold = 246, "The note saying how much of a result is not shown.";
 
     // ---------------------------------------------------------------- menus
-    menu_bg = 237, "Behind every row of a list, so it reads as one object.";
     menu_selected_bg = 241, "Behind the row you are on.";
     menu_selected = 255, "The row you are on.";
     menu_detail = 250, "What a row says about itself, beside its name.";
@@ -224,21 +223,18 @@ mod tests {
     }
 
     #[test]
-    #[expect(
-        clippy::assertions_on_constants,
-        reason = "the constants are the subject"
-    )]
     fn nothing_that_sits_on_the_screen_is_lost_in_it() {
         // A surface has to read as *on* the screen, and read as a surface rather than a shadow.
         // 232-236 is the bottom fifth of the greyscale: a block painted there is a hole on a
         // dark terminal, which is what the first pass at this drew.
-        for surface in [STOCK.tool_bg, STOCK.menu_bg, STOCK.message_bg, STOCK.border] {
+        for surface in [
+            STOCK.tool_bg,
+            STOCK.menu_selected_bg,
+            STOCK.message_bg,
+            STOCK.border,
+        ] {
             assert!(surface > 236, "{surface} is as good as black");
         }
-        assert!(
-            STOCK.menu_selected_bg > STOCK.menu_bg,
-            "a row beats its list"
-        );
     }
 
     #[test]

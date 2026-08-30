@@ -636,17 +636,17 @@ mod fluidity_tests {
     }
 
     #[test]
-    fn an_unselected_row_is_the_block_colour_not_the_bar_colour() {
-        // Every row carries a background now — that is what makes the list read as one object
-        // rather than as loose text. What marks the selection is that its background differs.
+    fn an_unselected_row_paints_nothing_and_the_selected_one_paints_a_bar() {
+        // The list is drawn inside the prompt box, so the box is what says where it starts and
+        // stops. All a row has to say for itself is whether it is the one you are on.
         let picker = Picker::new("Model", many(5), None);
         let rendered = render(&picker, 60);
         assert!(
             rendered[2]
                 .spans
                 .iter()
-                .all(|s| s.style.bg == Some(colour::menu_bg())),
-            "the block"
+                .all(|s| s.style.bg == Some(ratatui::style::Color::Reset)),
+            "nothing behind it"
         );
         assert!(
             rendered[1]

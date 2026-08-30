@@ -135,8 +135,7 @@ pub async fn run(
                             keys::handle(
                                 key,
                                 &mut app.editor,
-                                &mut app.completion,
-                                &mut app.picker,
+                                &mut app.overlay,
                                 busy,
                             );
                         // Noted before the match consumes it: a taken completion must not be
@@ -272,7 +271,12 @@ pub async fn run(
                         // key that just accepted one, which still matches what offered it.
                         // Not while a list is open: the popup is derived from the prompt, and
                         // the prompt is not what the arrows are about right now.
-                        if !accepted && app.picker.is_none() {
+                        if !accepted
+                            && !app
+                                .overlay
+                                .as_ref()
+                                .is_some_and(axon_tui::overlay::Overlay::is_picker)
+                        {
                             app.refresh_completion(&list_paths);
                         }
                     }

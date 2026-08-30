@@ -547,7 +547,7 @@ mod block_tests {
             if !span.content.contains("shell") {
                 assert_eq!(
                     span.style.bg,
-                    Some(colour::menu_bg()),
+                    Some(colour::tool_bg()),
                     "{:?} is not the block background",
                     span.content
                 );

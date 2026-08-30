@@ -18,7 +18,7 @@
 //! heads.
 //!
 //! **What it says.** The mode is the state, not decoration: at rest two comets drift the ring
-//! opposite each other; with something typed they leave the circuit and shuttle the long edges in
+//! opposite each other; with something typed they leave the circuit and shuttle the two sides in
 //! step, which is the shape of a thing waiting to be sent; while a turn runs they race.
 
 use crate::colour;
@@ -62,7 +62,7 @@ struct Head {
 pub enum Scan {
     /// Nothing typed, nothing running: two comets drifting the ring, slowly.
     Resting,
-    /// Something is in the prompt: two comets shuttling the long edges in step.
+    /// Something is in the prompt: two comets shuttling the two sides in step.
     Holding,
     /// A turn is running: the same circuit, at speed.
     Working,
@@ -160,7 +160,7 @@ fn ring_length(inner: usize, rows: usize) -> usize {
 ///
 /// **Always two.** One head reads as a stray highlight; two read as a mechanism. What differs
 /// between the modes is what the pair is doing — running the ring opposite each other, or
-/// shuttling the long edges in step — and how fast.
+/// shuttling the two sides in step — and how fast.
 fn heads(scan: Scan, tick: usize, inner: usize, rows: usize, ring: usize) -> Vec<Head> {
     if ring == 0 {
         return Vec::new();
@@ -176,28 +176,30 @@ fn heads(scan: Scan, tick: usize, inner: usize, rows: usize, ring: usize) -> Vec
         Scan::Resting | Scan::Working => {
             vec![forward(step % ring), forward((step + ring / 2) % ring)]
         }
-        // The two long edges, swept in step and reversing at the ends: a shuttle rather than a
+        // The two sides, swept in step and reversing at the ends: a shuttle rather than a
         // circuit, because something is waiting to be sent rather than travelling.
         //
-        // The bottom edge is walked anticlockwise -- the ring runs clockwise, so its leftmost
-        // cell is its *highest* index. Column `at` on the bottom is therefore
-        // `bottom_right + inner - at`, and getting that off by one put the lower light a cell
-        // ahead of the upper one for the whole sweep.
+        // The sides rather than the top and bottom. The box holds its menu now, so it is a tall
+        // thing on a wide screen and the top and bottom are the short way across it -- a sweep
+        // over four cells and back reads as a flicker. The sides are as long as the box is deep,
+        // and they grow when it opens.
+        //
+        // The left edge is walked anticlockwise -- the ring runs clockwise, so its topmost cell
+        // is its *highest* index. Row `at` on the left is therefore `ring - 1 - at`.
         Scan::Holding => {
-            let span = inner.max(1);
-            let at = bounce(step, span).min(inner.saturating_sub(1));
-            let out = rising(step, span);
-            let bottom_right = 1 + inner + 1 + rows;
-            // Mirrored directions, because the two are walking the same screen columns from
-            // opposite ends of the ring: the pair moves left together and the tails must too.
+            let span = rows.max(1);
+            let at = bounce(step, span).min(rows.saturating_sub(1));
+            let down = rising(step, span);
+            // Mirrored directions, because the two are walking the same screen rows from
+            // opposite ends of the ring: the pair moves down together and the tails must too.
             vec![
                 Head {
-                    at: 1 + at,
-                    forward: out,
+                    at: inner + 2 + at,
+                    forward: down,
                 },
                 Head {
-                    at: bottom_right + inner - at,
-                    forward: !out,
+                    at: ring - 1 - at,
+                    forward: !down,
                 },
             ]
         }
@@ -294,14 +296,14 @@ mod tests {
     fn every_running_mode_has_two_heads() {
         // One reads as a stray highlight; two read as a mechanism.
         for scan in [Scan::Resting, Scan::Holding, Scan::Working] {
-            let (top, bottom) = edges(40, 1, 0, scan);
-            let peaks = top
-                .spans
-                .iter()
-                .chain(bottom.spans.iter())
-                .filter(|s| s.style.fg == Some(colour::scan_at(1.0)))
-                .count();
-            assert_eq!(peaks, 2, "{scan:?} on a one-row box puts both on the edges");
+            let inner = 38;
+            let rows = 6;
+            let heads = heads(scan, 0, inner, rows, ring_length(inner, rows));
+            assert_eq!(heads.len(), 2, "{scan:?}");
+            assert_ne!(
+                heads[0].at, heads[1].at,
+                "{scan:?}: and not on top of each other"
+            );
         }
     }
 
@@ -403,20 +405,11 @@ mod tests {
     }
 
     #[test]
-    fn holding_lights_both_long_edges() {
+    fn holding_lights_both_sides() {
         // Two heads sweeping in step: the shape of something waiting to be sent.
-        let (top, bottom) = edges(30, 1, 0, Scan::Holding);
-        assert!(
-            top.spans
-                .iter()
-                .any(|s| s.style.fg != Some(colour::border()))
-        );
-        assert!(
-            bottom
-                .spans
-                .iter()
-                .any(|s| s.style.fg != Some(colour::border()))
-        );
+        let (left, right) = side(30, 6, 0, 0, Scan::Holding);
+        assert_ne!(left.style.fg, Some(colour::border()));
+        assert_ne!(right.style.fg, Some(colour::border()));
     }
 
     #[test]
@@ -452,46 +445,50 @@ mod tests {
 mod holding_tests {
     use super::*;
 
-    /// Which screen column of a rendered edge is brightest.
-    fn peak(line: &Line<'_>) -> Option<usize> {
-        line.spans
-            .iter()
-            .position(|s| s.style.fg == Some(colour::scan_at(1.0)))
+    /// Which row of a box `rows` deep each side is brightest on.
+    fn peaks(width: u16, rows: usize, tick: usize) -> (Option<usize>, Option<usize>) {
+        let lit = |span: &Span<'_>| span.style.fg == Some(colour::scan_at(1.0));
+        let mut left = None;
+        let mut right = None;
+        for row in 0..rows {
+            let (l, r) = side(width, rows, row, tick, Scan::Holding);
+            if lit(&l) {
+                left = Some(row);
+            }
+            if lit(&r) {
+                right = Some(row);
+            }
+        }
+        (left, right)
     }
 
     #[test]
-    fn the_two_lights_stay_in_the_same_column() {
-        // The bottom edge is walked anticlockwise, so its leftmost cell is its highest ring
-        // index. Getting that off by one put the lower light a cell ahead for the whole sweep.
+    fn the_two_lights_stay_in_the_same_row() {
+        // The left edge is walked anticlockwise, so its topmost cell is its highest ring index.
+        // Getting that off by one put one light a row ahead of the other for the whole sweep.
         for tick in 0..60 {
-            let (top, bottom) = edges(40, 1, tick, Scan::Holding);
-            let (Some(t), Some(b)) = (peak(&top), peak(&bottom)) else {
+            let (Some(l), Some(r)) = peaks(40, 6, tick) else {
                 continue;
             };
-            assert_eq!(t, b, "tick {tick}: top at {t}, bottom at {b}");
+            assert_eq!(l, r, "tick {tick}: left at {l}, right at {r}");
         }
     }
 
     #[test]
     fn both_lights_are_present_from_the_first_tick() {
-        let (top, bottom) = edges(40, 1, 0, Scan::Holding);
-        assert!(peak(&top).is_some(), "top lit at rest");
-        assert!(peak(&bottom).is_some(), "and so is the bottom");
+        let (left, right) = peaks(40, 6, 0);
+        assert!(left.is_some(), "left lit at rest");
+        assert!(right.is_some(), "and so is the right");
     }
 
     #[test]
-    fn the_sweep_turns_round_inside_the_edge() {
-        // It must not walk onto a corner and wrap: this is a shuttle, not a circuit.
-        let width = 20u16;
+    fn the_sweep_stays_between_the_corners() {
+        // It must not walk onto a corner and wrap: this is a shuttle, not a circuit. `side`
+        // only ever answers for a content row, so what this asserts is that a light is always
+        // on one of them -- never nowhere, which is where it would be if it had wrapped away.
         for tick in 0..80 {
-            let (top, _) = edges(width, 1, tick, Scan::Holding);
-            if let Some(at) = peak(&top) {
-                assert!(at >= 1, "tick {tick}: on the left corner");
-                assert!(
-                    at <= usize::from(width) - 2,
-                    "tick {tick}: on the right corner"
-                );
-            }
+            let (left, right) = peaks(20, 4, tick);
+            assert!(left.is_some() && right.is_some(), "tick {tick}: gone round");
         }
     }
 

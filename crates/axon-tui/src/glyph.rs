@@ -64,6 +64,8 @@ glyphs! {
     corner_bottom_right = "╯", "The prompt box's bottom-right corner.";
     edge_horizontal = "─", "The prompt box's top and bottom edges.";
     edge_vertical = "│", "The prompt box's sides.";
+    divider_left = "├", "Where the rule between the prompt and its menu meets the left side.";
+    divider_right = "┤", "The same, on the right.";
     marker = "❯ ", "In front of the row of a list you are on.";
     no_marker = "  ", "In front of every other row, so the names stay in one column.";
     ellipsis = "…", "Where something was cut to fit.";

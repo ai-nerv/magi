@@ -3,7 +3,7 @@
 //! Shift+Enter for a newline requires the Kitty keyboard protocol; without it a terminal
 //! reports both Enter and Shift+Enter identically and there is nothing to disambiguate.
 //!
-//! When a completion popup is open it takes the navigation keys first, so Tab, the arrows,
+//! When something is open under the prompt it takes the navigation keys first, so Tab, the arrows,
 //! Enter, and Escape mean "the popup" rather than "the prompt".
 
 use axon_tui::Editor;
@@ -76,30 +76,33 @@ pub enum Action {
     Ignore,
 }
 
-/// Apply a keypress to the editor and any open completion.
+/// Apply a keypress to the editor and whatever is open under it.
 ///
 /// `busy` gates submission: a prompt sent mid-turn would be a steering message, which is an
 /// M2 concern, so for now Enter during a turn does nothing.
-/// A selection list, when one is open, outranks the popup and the prompt for the navigation
-/// keys — for the same reason the popup outranks the prompt: while it is open it is what the
-/// arrows are about.
+/// A selection list outranks the prompt for the navigation keys, and so does a completion popup,
+/// for the same reason: while one is open it is what the arrows are about. They are one slot —
+/// see [`axon_tui::overlay::Overlay`] — but not one block of handling, because quit and interrupt
+/// go between them.
 pub fn handle(
     key: KeyEvent,
     editor: &mut Editor,
-    completion: &mut Option<Completion>,
-    picker: &mut Option<axon_tui::picker::Picker>,
+    overlay: &mut Option<axon_tui::overlay::Overlay>,
     busy: bool,
 ) -> Action {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
-    if let Some(open) = picker.as_mut() {
+    if let Some(open) = overlay
+        .as_mut()
+        .and_then(axon_tui::overlay::Overlay::picker)
+    {
         match key.code {
             KeyCode::Esc => {
                 // One escape closes the whole list, not one character of the query. Backspace
                 // is how you widen it; escape is how you leave.
-                *picker = None;
+                *overlay = None;
                 return Action::Dismissed;
             }
             // Typing narrows the list rather than reaching the prompt. Fifty-three rows is
@@ -129,7 +132,7 @@ pub fn handle(
                 // different row and not to retype the query that found this one.
                 return match open.take() {
                     Some(chosen) => {
-                        *picker = None;
+                        *overlay = None;
                         Action::Chose(chosen)
                     }
                     None => Action::Accepted,
@@ -143,7 +146,11 @@ pub fn handle(
     // dismissed menu they then have to escape from a second time.
     match key.code {
         KeyCode::Char('c') if ctrl => {
-            if completion.take().is_some() {
+            if overlay
+                .as_ref()
+                .is_some_and(axon_tui::overlay::Overlay::is_completion)
+            {
+                *overlay = None;
                 return Action::Redraw;
             }
             if editor.is_blank() {
@@ -159,10 +166,13 @@ pub fn handle(
         _ => {}
     }
 
-    if let Some(open) = completion.as_mut() {
+    if let Some(open) = overlay
+        .as_mut()
+        .and_then(axon_tui::overlay::Overlay::completion)
+    {
         match key.code {
             KeyCode::Esc => {
-                *completion = None;
+                *overlay = None;
                 return Action::Redraw;
             }
             KeyCode::Up => {
@@ -170,7 +180,7 @@ pub fn handle(
                 // to the bottom. A menu that wraps is one you cannot walk out of, and typing
                 // `/` put it between the user and every earlier prompt they had.
                 if open.selected == 0 {
-                    *completion = None;
+                    *overlay = None;
                     editor.history_prev();
                     return Action::Recalled;
                 }
@@ -183,7 +193,7 @@ pub fn handle(
             }
             KeyCode::Tab => {
                 accept(open, editor);
-                *completion = None;
+                *overlay = None;
                 // Not `Redraw`: the popup is recomputed from the prompt after every key, and
                 // what was just accepted still matches what offered it. Saying so keeps the
                 // caller from reopening the menu the user has this moment chosen from, which
@@ -198,7 +208,7 @@ pub fn handle(
                 // only completes: the line it belongs to is not finished yet.
                 let command = open.kind == Kind::Command;
                 accept(open, editor);
-                *completion = None;
+                *overlay = None;
                 if !command || busy {
                     return Action::Accepted;
                 }
@@ -327,16 +337,19 @@ pub(super) mod tests {
     }
 
     fn act(key: KeyEvent, editor: &mut Editor, busy: bool) -> Action {
-        handle(key, editor, &mut None, &mut None, busy)
+        handle(key, editor, &mut None, busy)
     }
 
     /// An editor holding `text`, with the completion popup its content would open.
-    pub(super) fn with_popup(text: &str) -> (Editor, Option<Completion>) {
+    pub(super) fn with_popup(text: &str) -> (Editor, Option<axon_tui::overlay::Overlay>) {
         let mut editor = Editor::new();
         editor.insert_str(text);
         let (_, col) = editor.cursor();
         let line = editor.lines()[0].clone();
-        (editor, complete::resolve(&line, col, &no_paths))
+        (
+            editor,
+            complete::resolve(&line, col, &no_paths).map(Into::into),
+        )
     }
 
     #[test]
@@ -542,7 +555,6 @@ pub(super) mod tests {
             press(KeyCode::Tab, KeyModifiers::NONE),
             &mut editor,
             &mut popup,
-            &mut None,
             false,
         );
         assert_eq!(editor.text(), "/quit");
@@ -558,7 +570,6 @@ pub(super) mod tests {
             press(KeyCode::Enter, KeyModifiers::NONE),
             &mut editor,
             &mut popup,
-            &mut None,
             false,
         );
         assert_eq!(action, Action::Command("/quit".into()));
@@ -573,7 +584,8 @@ pub(super) mod tests {
         editor.insert_str("look at @Car");
         let (_, col) = editor.cursor();
         let line = editor.lines()[0].clone();
-        let mut popup = complete::resolve(&line, col, &no_paths);
+        let mut popup: Option<axon_tui::overlay::Overlay> =
+            complete::resolve(&line, col, &no_paths).map(Into::into);
         if popup.is_none() {
             return;
         }
@@ -581,7 +593,6 @@ pub(super) mod tests {
             press(KeyCode::Enter, KeyModifiers::NONE),
             &mut editor,
             &mut popup,
-            &mut None,
             false,
         );
         assert_eq!(action, Action::Accepted, "completed, not submitted");
@@ -594,10 +605,15 @@ pub(super) mod tests {
             press(KeyCode::Down, KeyModifiers::NONE),
             &mut editor,
             &mut popup,
-            &mut None,
             false,
         );
-        assert_eq!(popup.as_ref().map(|p| p.selected), Some(1));
+        assert_eq!(
+            popup
+                .as_mut()
+                .and_then(axon_tui::overlay::Overlay::completion)
+                .map(|p| p.selected),
+            Some(1)
+        );
         assert_eq!(editor.text(), "/", "history did not move the buffer");
     }
 
@@ -608,7 +624,6 @@ pub(super) mod tests {
             press(KeyCode::Esc, KeyModifiers::NONE),
             &mut editor,
             &mut popup,
-            &mut None,
             true,
         );
         assert_eq!(action, Action::Redraw);
@@ -620,24 +635,26 @@ pub(super) mod tests {
         // Something may be waiting on the answer, and a list closed with `Accepted` told
         // nobody: the turn that asked stayed blocked until its own patience ran out.
         let mut editor = Editor::new();
-        let mut picker = Some(axon_tui::picker::Picker::new(
-            "read wants to read /etc/hosts",
-            vec![axon_tui::picker::Choice {
-                value: "just this once".to_owned(),
-                detail: String::new(),
-                ready: true,
-            }],
-            None,
-        ));
+        let mut overlay = Some(
+            axon_tui::picker::Picker::new(
+                "read wants to read /etc/hosts",
+                vec![axon_tui::picker::Choice {
+                    value: "just this once".to_owned(),
+                    detail: String::new(),
+                    ready: true,
+                }],
+                None,
+            )
+            .into(),
+        );
         let action = handle(
             press(KeyCode::Esc, KeyModifiers::NONE),
             &mut editor,
-            &mut None,
-            &mut picker,
+            &mut overlay,
             true,
         );
         assert_eq!(action, Action::Dismissed);
-        assert!(picker.is_none());
+        assert!(overlay.is_none());
     }
 
     #[test]
@@ -647,7 +664,6 @@ pub(super) mod tests {
             press(KeyCode::Char('c'), KeyModifiers::CONTROL),
             &mut editor,
             &mut popup,
-            &mut None,
             false,
         );
         assert!(popup.is_none());
@@ -658,7 +674,6 @@ pub(super) mod tests {
 #[cfg(test)]
 mod accept_tests {
     use super::*;
-    use axon_tui::complete::Completion;
 
     fn press(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -671,18 +686,13 @@ mod accept_tests {
         // offered it, can then never be submitted at all.
         let mut editor = Editor::new();
         editor.insert_str("/hel");
-        let mut completion = axon_tui::complete::resolve("/hel", 4, &|_| Vec::new());
-        assert!(completion.is_some(), "the popup is open");
+        let mut overlay: Option<axon_tui::overlay::Overlay> =
+            axon_tui::complete::resolve("/hel", 4, &|_| Vec::new()).map(Into::into);
+        assert!(overlay.is_some(), "the popup is open");
 
-        let action = handle(
-            press(KeyCode::Tab),
-            &mut editor,
-            &mut completion,
-            &mut None,
-            false,
-        );
+        let action = handle(press(KeyCode::Tab), &mut editor, &mut overlay, false);
         assert_eq!(action, Action::Accepted);
-        assert!(completion.is_none(), "and closed");
+        assert!(overlay.is_none(), "and closed");
         assert_eq!(editor.text(), "/help");
     }
 
@@ -690,14 +700,7 @@ mod accept_tests {
     fn enter_after_a_tab_submits_what_was_taken() {
         let mut editor = Editor::new();
         editor.insert_str("/help");
-        let mut none: Option<Completion> = None;
-        let action = handle(
-            press(KeyCode::Enter),
-            &mut editor,
-            &mut none,
-            &mut None,
-            false,
-        );
+        let action = handle(press(KeyCode::Enter), &mut editor, &mut None, false);
         assert_eq!(action, Action::Command("/help".to_owned()));
     }
 }

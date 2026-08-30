@@ -38,10 +38,32 @@ fn placeholder_spans(width: u16) -> Vec<Span<'static>> {
     ]
 }
 
-/// Render the prompt as a box.
+/// How many text rows the prompt shows right now, on a terminal `rows` tall.
+///
+/// Worked out here rather than by drawing and counting, because the caller has to know how tall
+/// the box will be before it can say how much room is left in it for a menu.
+#[must_use]
+pub fn text_rows(editor: &Editor, rows: u16) -> usize {
+    let max_visible = visible_rows(rows);
+    let total = editor.lines().len();
+    if total == 1 && editor.lines()[0].is_empty() {
+        return 1;
+    }
+    let (cursor_row, _) = editor.cursor();
+    let offset = cursor_row.saturating_sub(max_visible.saturating_sub(1));
+    let offset = offset.min(total.saturating_sub(max_visible.min(total)));
+    (offset + max_visible).min(total) - offset
+}
+
+/// Render the prompt as a box, with `menu` inside it under a divider.
 ///
 /// Was a rule above and a rule below, which is Pi's shape. A box says where the field is, and
 /// gives the scan somewhere to run: see [`crate::border`].
+///
+/// The menu goes *inside*. Drawn beneath the box it was a second object with a background of
+/// its own, sitting under the thing it belongs to; inside, the box is what says where it is and
+/// the rows need no colour behind them. `menu` is already `width - 3` wide — see
+/// [`crate::metric::gutter`] — and empty when nothing is open.
 ///
 /// `rows` is the terminal height, which sets how much of a long prompt is shown before the top
 /// and bottom edges start reporting what is scrolled out of view. `tick` drives the scan and
@@ -53,6 +75,7 @@ pub fn render(
     rows: u16,
     tick: usize,
     scan: crate::border::Scan,
+    menu: &[Line<'static>],
 ) -> Vec<Line<'static>> {
     let text_style = Style::default().fg(colour::text());
     let (cursor_row, cursor_col) = editor.cursor();
@@ -68,13 +91,15 @@ pub fn render(
 
     let blank = total == 1 && editor.lines()[0].is_empty();
     let shown = if blank { 1 } else { end - offset };
-    let (top, bottom) = crate::border::edges(width, shown, tick, scan);
+    // The divider is a content row like any other, so the sides stay on the ring and the scan
+    // runs past it rather than round a hole in the box.
+    let content = shown + if menu.is_empty() { 0 } else { 1 + menu.len() };
+    let (top, bottom) = crate::border::edges(width, content, tick, scan);
 
-    let mut out = Vec::with_capacity(shown + 2);
+    let mut out = Vec::with_capacity(content + 2);
     out.push(hidden(top, Direction::Up, offset));
 
     for row in 0..shown {
-        let (left, right) = crate::border::side(width, shown, row, tick, scan);
         let body = if blank {
             placeholder_spans(inner_width)
         } else {
@@ -86,15 +111,62 @@ pub fn render(
                 vec![Span::styled(text.clone(), text_style)]
             }
         };
-        let mut spans = vec![left, Span::raw(" ")];
-        spans.extend(pad(body, inner_width.saturating_sub(1)));
-        spans.push(right);
-        out.push(Line::from(spans));
+        out.push(framed(body, width, content, row, tick, scan));
+    }
+
+    if !menu.is_empty() {
+        out.push(divider(width, content, shown, tick, scan));
+        for (row, line) in menu.iter().enumerate() {
+            out.push(framed(
+                line.spans.clone(),
+                width,
+                content,
+                shown + 1 + row,
+                tick,
+                scan,
+            ));
+        }
     }
 
     let below = total.saturating_sub(end);
     out.push(hidden(bottom, Direction::Down, below));
     out
+}
+
+/// One content row between its two side bars.
+fn framed(
+    body: Vec<Span<'static>>,
+    width: u16,
+    content: usize,
+    row: usize,
+    tick: usize,
+    scan: crate::border::Scan,
+) -> Line<'static> {
+    let (left, right) = crate::border::side(width, content, row, tick, scan);
+    let mut spans = vec![left, Span::raw(" ")];
+    spans.extend(pad(body, width.saturating_sub(3)));
+    spans.push(right);
+    Line::from(spans)
+}
+
+/// The rule between the text and the menu.
+///
+/// Tees into the sides rather than floating between them, so the box reads as one frame with a
+/// shelf in it rather than as two boxes that happen to touch.
+fn divider(
+    width: u16,
+    content: usize,
+    row: usize,
+    tick: usize,
+    scan: crate::border::Scan,
+) -> Line<'static> {
+    let (left, right) = crate::border::side(width, content, row, tick, scan);
+    let rule = glyph::edge_horizontal().repeat(usize::from(width.saturating_sub(2)));
+    Line::from(vec![
+        Span::styled(glyph::divider_left().to_owned(), left.style),
+        Span::styled(rule, Style::default().fg(colour::border())),
+        Span::styled(glyph::divider_right().to_owned(), right.style),
+    ])
 }
 
 /// Pad a row out so the right-hand bar lands at the edge.
@@ -200,7 +272,14 @@ mod tests {
     fn an_empty_prompt_says_what_to_do_with_it() {
         // An empty box between two rules gives no way to tell a prompt waiting for input from
         // a screen that has hung, and no way to find the command list without being told.
-        let rendered = rows_of(&render(&Editor::new(), 40, 24, 0, crate::border::Scan::Off));
+        let rendered = rows_of(&render(
+            &Editor::new(),
+            40,
+            24,
+            0,
+            crate::border::Scan::Off,
+            &[],
+        ));
         assert_eq!(rendered.len(), 3, "top edge, text, bottom edge");
         assert!(rendered[1].contains("/ for commands"), "{:?}", rendered[1]);
     }
@@ -213,6 +292,7 @@ mod tests {
             24,
             0,
             crate::border::Scan::Off,
+            &[],
         ));
         assert!(!rendered[1].contains("commands"), "{:?}", rendered[1]);
         assert!(
@@ -230,6 +310,7 @@ mod tests {
             24,
             0,
             crate::border::Scan::Off,
+            &[],
         ));
         assert_eq!(
             rendered[1], "│ hello            │",
@@ -241,7 +322,7 @@ mod tests {
     fn the_cursor_cell_is_inverted_in_place() {
         let mut editor = editor_with("abc");
         editor.home();
-        let lines = render(&editor, 20, 24, 0, crate::border::Scan::Off);
+        let lines = render(&editor, 20, 24, 0, crate::border::Scan::Off, &[]);
         let cursor = lines[1]
             .spans
             .iter()
@@ -252,7 +333,7 @@ mod tests {
 
     #[test]
     fn a_cursor_at_the_end_inverts_an_added_space() {
-        let lines = render(&editor_with("ab"), 20, 24, 0, crate::border::Scan::Off);
+        let lines = render(&editor_with("ab"), 20, 24, 0, crate::border::Scan::Off, &[]);
         let cursor = lines[1]
             .spans
             .iter()
@@ -263,7 +344,7 @@ mod tests {
 
     #[test]
     fn the_rules_span_the_full_width() {
-        let lines = render(&editor_with("x"), 30, 24, 0, crate::border::Scan::Off);
+        let lines = render(&editor_with("x"), 30, 24, 0, crate::border::Scan::Off, &[]);
         for index in [0, lines.len() - 1] {
             let width: usize = lines[index]
                 .spans
@@ -286,6 +367,7 @@ mod tests {
             24,
             0,
             crate::border::Scan::Off,
+            &[],
         ));
         assert!(rendered[0].contains("↑"), "{:?}", rendered[0]);
         assert!(rendered[0].contains("more"), "{:?}", rendered[0]);
@@ -307,7 +389,7 @@ mod tests {
             editor.history_prev();
         }
         editor.set_text(&body);
-        let rendered = rows_of(&render(&editor, 40, 24, 0, crate::border::Scan::Off));
+        let rendered = rows_of(&render(&editor, 40, 24, 0, crate::border::Scan::Off, &[]));
         assert_eq!(rendered.len(), visible_rows(24) + 2, "rules plus text rows");
     }
 
@@ -325,7 +407,7 @@ mod narrow_tests {
     use super::*;
 
     fn row(width: u16) -> String {
-        render(&Editor::new(), width, 24, 0, crate::border::Scan::Off)[1]
+        render(&Editor::new(), width, 24, 0, crate::border::Scan::Off, &[])[1]
             .spans
             .iter()
             .map(|s| s.content.as_ref())

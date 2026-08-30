@@ -8,6 +8,14 @@ use super::tests::{no_paths, press, with_popup};
 use super::*;
 use axon_tui::complete;
 
+/// Which row of an open completion popup is highlighted.
+fn highlight(open: &mut Option<axon_tui::overlay::Overlay>) -> usize {
+    open.as_mut()
+        .and_then(axon_tui::overlay::Overlay::completion)
+        .expect("still open")
+        .selected
+}
+
 fn remembered() -> Editor {
     Editor::with_history(vec![
         "the oldest thing".to_owned(),
@@ -25,7 +33,6 @@ fn up_walks_back_through_earlier_prompts() {
             press(KeyCode::Up, KeyModifiers::NONE),
             &mut editor,
             &mut none,
-            &mut None,
             false
         ),
         Action::Recalled
@@ -46,7 +53,6 @@ fn a_recalled_line_does_not_reopen_the_menu_over_itself() {
             press(KeyCode::Up, KeyModifiers::NONE),
             &mut editor,
             &mut none,
-            &mut None,
             false,
         );
         assert_eq!(action, Action::Recalled, "the popup must not be rebuilt");
@@ -67,21 +73,22 @@ fn the_menu_still_owns_the_arrows_while_there_is_menu_left() {
         press(KeyCode::Down, KeyModifiers::NONE),
         &mut editor,
         &mut popup,
-        &mut None,
         false,
     );
     assert_eq!(action, Action::Redraw);
-    let open = popup.as_ref().expect("still open");
-    assert_eq!(open.selected, 1, "Down moved the highlight, not history");
+    assert_eq!(
+        highlight(&mut popup),
+        1,
+        "Down moved the highlight, not history"
+    );
     // And Up from there walks back up the menu rather than leaving it.
     handle(
         press(KeyCode::Up, KeyModifiers::NONE),
         &mut editor,
         &mut popup,
-        &mut None,
         false,
     );
-    assert_eq!(popup.as_ref().expect("still open").selected, 0);
+    assert_eq!(highlight(&mut popup), 0);
 }
 
 #[test]
@@ -92,18 +99,14 @@ fn up_at_the_top_of_the_menu_leaves_it_for_history() {
     editor.insert_str("/");
     let (_, col) = editor.cursor();
     let line = editor.lines()[0].clone();
-    let mut popup = complete::resolve(&line, col, &no_paths);
-    assert_eq!(
-        popup.as_ref().expect("open").selected,
-        0,
-        "starts at the top"
-    );
+    let mut popup: Option<axon_tui::overlay::Overlay> =
+        complete::resolve(&line, col, &no_paths).map(Into::into);
+    assert_eq!(highlight(&mut popup), 0, "starts at the top");
 
     let action = handle(
         press(KeyCode::Up, KeyModifiers::NONE),
         &mut editor,
         &mut popup,
-        &mut None,
         false,
     );
     assert_eq!(action, Action::Recalled);
@@ -124,7 +127,6 @@ mod releasing_the_mouse {
             KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
             &mut editor,
             &mut None,
-            &mut None,
             false,
         );
         assert_eq!(action, Action::ToggleMouse);
@@ -137,7 +139,6 @@ mod releasing_the_mouse {
         handle(
             KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
             &mut editor,
-            &mut None,
             &mut None,
             false,
         );

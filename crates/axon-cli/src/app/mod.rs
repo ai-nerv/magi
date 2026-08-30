@@ -5,6 +5,7 @@
 
 use axon_proto::{AgentStatus, Cursor, Entry, HarnessEvent, MessageId, ToolCallId};
 use axon_tui::Editor;
+use axon_tui::overlay::Overlay;
 use axon_tui::scrollback::Scrollback;
 
 /// Add two token counts.
@@ -61,8 +62,7 @@ pub struct App {
     pub editor: Editor,
     /// The transcript, which axon owns: the alternate screen has no terminal history to defer to.
     pub scrollback: Scrollback,
-    /// The open completion popup, if any.
-    pub completion: Option<axon_tui::complete::Completion>,
+
     /// Whether the socket is currently up.
     pub connected: bool,
     /// When the current turn started, for the elapsed clock.
@@ -110,8 +110,13 @@ pub struct App {
     model_reasons: bool,
     /// Everything the daemon says this session could switch to.
     pub choices: Vec<axon_proto::ModelChoice>,
-    /// The open selection list, if any.
-    pub picker: Option<axon_tui::picker::Picker>,
+    /// What is open under the prompt: a list, a completion popup, or nothing.
+    ///
+    /// One slot rather than two. They were never open together — a list is opened by a command,
+    /// and running a command closes the popup that offered it — and holding that apart in a
+    /// comment while every reader checked both fields is how the two drifted into two heights,
+    /// two draw calls and two looks.
+    pub overlay: Option<Overlay>,
     /// What that list is choosing.
     ///
     /// Held beside the list rather than inside it, because the list is a generic widget and
@@ -156,13 +161,12 @@ impl App {
             status: AgentStatus::Idle,
             editor: Editor::new(),
             scrollback: Scrollback::new(),
-            completion: None,
             connected: false,
             model: None,
             thinking: "off".to_owned(),
             model_reasons: false,
             choices: Vec::new(),
-            picker: None,
+            overlay: None,
             picking: None,
             // Folded. A transcript of whole build logs is not a transcript, and the handle at
             // the foot of each block is how you open the one you care about.
@@ -421,11 +425,14 @@ impl App {
                         ready: true,
                     }))
                     .collect();
-                self.picker = Some(axon_tui::picker::Picker::new(
-                    format!("{tool} wants to {} {}", action.verb(), action.subject()),
-                    choices,
-                    None,
-                ));
+                self.overlay = Some(
+                    axon_tui::picker::Picker::new(
+                        format!("{tool} wants to {} {}", action.verb(), action.subject()),
+                        choices,
+                        None,
+                    )
+                    .into(),
+                );
                 self.asking_about = action;
                 self.picking = Some(Picking::Permission { id, offers });
             }
@@ -568,7 +575,7 @@ impl App {
                     .to_owned(),
             );
         }
-        self.picker = Some(picker);
+        self.overlay = Some(picker.into());
         self.picking = Some(Picking::Model);
     }
 
@@ -598,11 +605,9 @@ impl App {
                 ready: reasons || *value == "off",
             })
             .collect();
-        self.picker = Some(axon_tui::picker::Picker::new(
-            "Thinking",
-            choices,
-            Some(self.thinking.as_str()),
-        ));
+        self.overlay = Some(
+            axon_tui::picker::Picker::new("Thinking", choices, Some(self.thinking.as_str())).into(),
+        );
         self.picking = Some(Picking::Thinking);
     }
 
@@ -623,7 +628,7 @@ impl App {
     pub fn refresh_completion(&mut self, list_paths: &dyn Fn(&str) -> Vec<String>) {
         let (row, col) = self.editor.cursor();
         let line = self.editor.lines()[row].clone();
-        self.completion = axon_tui::complete::resolve(&line, col, list_paths);
+        self.overlay = axon_tui::complete::resolve(&line, col, list_paths).map(Into::into);
     }
 
     fn assistant_mut(&mut self, id: &MessageId) -> Option<&mut Entry> {
@@ -677,11 +682,9 @@ impl App {
                 ready: true,
             })
             .collect();
-        self.picker = Some(axon_tui::picker::Picker::new(
-            "Continue which session?",
-            choices.clone(),
-            None,
-        ));
+        self.overlay = Some(
+            axon_tui::picker::Picker::new("Continue which session?", choices.clone(), None).into(),
+        );
         self.picking = Some(Picking::Session {
             rows: choices
                 .iter()

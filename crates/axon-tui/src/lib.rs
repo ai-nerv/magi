@@ -20,6 +20,7 @@ pub mod markdown;
 pub mod menu;
 pub mod metric;
 
+pub mod overlay;
 pub mod picker;
 pub mod prompt;
 pub mod scrollback;
