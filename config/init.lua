@@ -123,30 +123,39 @@ axon.ui.flicker_ms   = 120
 -- where the joke is. Add your own, delete the ones that stop being funny; an empty list leaves
 -- the prompt blank. A line too long for the screen falls back to `placeholder_short`.
 axon.ui.placeholders = {
-  "let's rewrite npm in ~~Python~~ Rust",
-  "this'll take ~~an afternoon~~ a quarter",
-  "it's a ~~quick fix~~ full rewrite",
-  "I'll just add ~~one dependency~~ four hundred",
-  "a ~~temporary~~ permanent workaround",
-  "I'll document it ~~today~~ eventually",
-  "it works on ~~production~~ my machine",
-  "we need ~~microservices~~ one file",
-  "ship it ~~Friday~~ whenever",
-  "~~TODO~~ FIXME",
-  "the tests are ~~passing~~ commented out",
-  "we'll fix it in ~~the next sprint~~ the postmortem",
-  "this is ~~self-documenting~~ undocumented",
-  "let's ~~not~~ add another abstraction layer",
-  "the bug is in ~~my code~~ the compiler",
-  "I understand this ~~regex~~ nothing",
-  "it's not a bug, it's ~~a feature~~ Tuesday",
-  "we're ~~almost~~ nowhere near done",
-  "just one more ~~refactor~~ rewrite",
-  "the deploy is ~~automated~~ a shell script I wrote",
-  "I've ~~read~~ skimmed the docs",
-  "this scales to ~~a million users~~ my laptop",
-  "let's ~~discuss~~ argue about tabs",
-  "the estimate is ~~two days~~ a lie",
+  -- The work
+  "first we need to build a ~~tool~~ tool to build the tool",
+  "the scaffolding is ~~temporary~~ the building",
+  "this is a ~~prototype~~ load-bearing prototype",
+  "I'll build it ~~properly~~ twice",
+  "first the ~~feature~~ build system",
+  "we're ~~building~~ assembling this out of npm",
+  "let's build it ~~in-house~~ out of four dependencies",
+  "I'm making a ~~library~~ folder called utils",
+
+  -- The ground it stands on
+  "we're building on ~~solid ground~~ someone's weekend project",
+  "the foundation is ~~poured~~ a TODO from March",
+  "let's start ~~fresh~~ from a template nobody read",
+  "the architecture is ~~designed~~ whatever compiled first",
+  "the build is ~~reproducible~~ on this laptop",
+
+  -- What we said we'd make
+  "the spec is ~~written down~~ in someone's head",
+  "the roadmap is ~~a plan~~ a list of wishes",
+  "we'll build the real one ~~next quarter~~ eventually",
+  "let's cut scope to ~~the essentials~~ whatever already works",
+  "the demo is ~~working~~ three hardcoded strings",
+  "it's ~~done~~ done except the parts that matter",
+
+  -- Making it nice
+  "let's make it ~~extensible~~ hard to change in one place",
+  "this abstraction ~~saves time~~ needs an abstraction",
+  "we're making it ~~simple~~ simple to describe",
+  "I'm ~~designing~~ redesigning the schema",
+  "let's ~~generalise~~ wait until it happens twice",
+  "I'll make it fast ~~now~~ after it works",
+  "we're ~~shipping~~ shipping and watching the graphs",
 }
 
 -- And what you type arriving: each character shows as the first of `type_stages`, passes through
