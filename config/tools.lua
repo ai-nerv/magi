@@ -245,3 +245,36 @@ do -- grep
     end,
   })
 end
+
+do -- aeon
+  -- The memory layer, if it is installed and running. aeon publishes its own tool descriptors --
+  -- `remember`, `recall`, `forget` -- so the vocabulary is written once, in aeon, rather than
+  -- copied here to drift.
+  local function client()
+    local source = axon.clients and axon.clients.aeon
+    if not source then return nil, "aeon's client library is not installed" end
+    local chunk, why = load(source, "aeon.lua")
+    if not chunk then return nil, why end
+    return chunk(axon.stream)
+  end
+
+  -- Asked at load, because a tool has to exist before the model is told what it may call. aeon
+  -- being absent is the ordinary case, not an error: nothing is registered and the session runs
+  -- without memory, which is what every session did before aeon existed.
+  local aeon = select(1, client())
+  local asked, offered = pcall(function() return aeon and aeon.tools() end)
+  if asked and offered then
+    for _, t in ipairs(offered) do
+      axon.tool(t.name, {
+        description = t.description,
+        parameters = t.parameters,
+        transport = { kind = "lua" },
+        run = function(args)
+          local answer, why = aeon.fetch({ tool = "aeon" }, t.verb, args)
+          if not answer then return { content = tostring(why), is_error = true } end
+          return { content = axon.json.encode(answer) }
+        end,
+      })
+    end
+  end
+end
