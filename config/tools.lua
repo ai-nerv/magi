@@ -145,3 +145,100 @@ do -- oslo
     end,
   })
 end
+
+do -- grep
+  -- `rg` rather than a shell string: axon does the quoting, ignore files are honoured, and the
+  -- cap binds whether or not the model asked for one.
+  axon.tool("grep", {
+    description = [[
+  Search file contents for a regular expression. Returns `path:line:text`, one match a line.
+
+  Honours .gitignore and skips binary files. Results are capped; narrow the pattern or the path
+  rather than raising the limit.]],
+
+    parameters = {
+      type = "object",
+      properties = {
+        pattern = { type = "string", description = "The regular expression to search for." },
+        path = { type = "string", description = "Where to search. Defaults to the session's directory." },
+        glob = { type = "string", description = "Only search files matching this glob, e.g. `*.rs`." },
+        limit = {
+          type = "integer", minimum = 1, maximum = 500, default = 100,
+          description = "Most matches to return.",
+        },
+      },
+      required = { "pattern" },
+    },
+
+    -- Every optional argument is written `--flag={name}` so that flag and value drop together
+    -- when it is absent. A bare `--flag` left behind is read as malformed, not as unset.
+    transport = {
+      kind = "command",
+      command = "rg",
+      args = {
+        "--line-number", "--no-heading", "--color=never", "--max-columns=500",
+        "--max-count={limit}",
+        "--glob={glob}",
+        "--regexp={pattern}",
+        "{path}",
+      },
+      timeout = 30,
+    },
+  })
+end
+
+do -- find
+  axon.tool("find", {
+    description = [[
+  Find files and directories by name. Returns one path a line.
+
+  Honours .gitignore. Results are capped; narrow the glob or the path rather than raising it.]],
+
+    parameters = {
+      type = "object",
+      properties = {
+        glob = { type = "string", description = "Name pattern, e.g. `*.rs` or `Cargo.toml`." },
+        path = { type = "string", description = "Where to look. Defaults to the session's directory." },
+        limit = {
+          type = "integer", minimum = 1, maximum = 5000, default = 1000,
+          description = "Most paths to return.",
+        },
+      },
+    },
+
+    -- `--glob` is a boolean and the pattern is positional, so an absent glob leaves the flag
+    -- behind with nothing to match, which is fd's own way of saying "everything".
+    transport = {
+      kind = "command",
+      command = "fd",
+      args = {
+        "--color=never", "--glob",
+        "--max-results={limit}",
+        "{glob}",
+        "--search-path={path}",
+      },
+      timeout = 30,
+    },
+  })
+end
+
+do -- ls
+  axon.tool("ls", {
+    description = [[
+  List a directory. Returns one entry a line, with a trailing `/` on directories.]],
+
+    parameters = {
+      type = "object",
+      properties = {
+        path = { type = "string", description = "The directory. Defaults to the session's directory." },
+      },
+    },
+
+    transport = {
+      kind = "command",
+      command = "ls",
+      args = { "-1", "-p", "-A", "--color=never", "{path}" },
+      timeout = 10,
+    },
+  })
+end

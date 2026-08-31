@@ -111,6 +111,16 @@ fn object(
                 out.insert(name.clone(), walk(&under(path, name), given, rule, wrong));
             }
         }
+        // A declared default is filled in for a field nobody sent. Without this a cap a tool
+        // declares only binds when the model happens to ask for it, which is the calls that
+        // needed it least.
+        for (name, rule) in properties {
+            if !out.contains_key(name)
+                && let Some(default) = rule.get("default")
+            {
+                out.insert(name.clone(), default.clone());
+            }
+        }
     }
     Value::Object(out)
 }
@@ -360,5 +370,51 @@ mod tests {
         // What a truncated call and a confused model both produce.
         let why = check(&Value::Null, &schema()).expect_err("not an object");
         assert_eq!(why, "arguments: expected an object, got nothing");
+    }
+}
+
+/// A declared default is filled in for a field nobody sent.
+#[cfg(test)]
+mod default_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn schema() -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "pattern": { "type": "string" },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 500, "default": 100 },
+            },
+            "required": ["pattern"],
+        })
+    }
+
+    #[test]
+    fn a_missing_field_takes_its_default() {
+        // A cap a tool declares has to bind on the calls that did not ask for it -- which are
+        // exactly the calls that needed it.
+        let checked = check(&json!({ "pattern": "TODO" }), &schema()).expect("valid");
+        assert_eq!(checked.get("limit"), Some(&json!(100)));
+    }
+
+    #[test]
+    fn a_field_that_was_sent_keeps_what_was_sent() {
+        let checked = check(&json!({ "pattern": "x", "limit": 5 }), &schema()).expect("valid");
+        assert_eq!(checked.get("limit"), Some(&json!(5)));
+    }
+
+    #[test]
+    fn a_property_with_no_default_stays_absent() {
+        // Not filled with null: an absent optional argument must stay absent, because that is
+        // what drops its flag from a command tool's argument vector.
+        let checked = check(&json!({ "pattern": "x" }), &schema()).expect("valid");
+        assert!(!checked.as_object().expect("object").contains_key("path"));
+    }
+
+    #[test]
+    fn a_default_does_not_rescue_a_required_field() {
+        // Required is about what the caller must say, not about what the schema can supply.
+        assert!(check(&json!({}), &schema()).is_err());
     }
 }

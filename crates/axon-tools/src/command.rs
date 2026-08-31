@@ -250,9 +250,11 @@ fn collect(handle: std::thread::JoinHandle<String>) -> String {
 /// A template is a literal, except that `{name}` takes the value of the call's `name` argument.
 /// Three rules, and each is here because the alternative is worse:
 ///
-/// - A template that is **exactly** `{name}` and whose argument is absent is dropped entirely.
-///   `--max-count={limit}` with no `limit` must not become `--max-count=`, which most programs
-///   read as a malformed flag rather than as an absent one.
+/// - A template naming an argument the call did not send is dropped **whole**, flag and all.
+///   `--max-count={limit}` with no `limit` must not become `--max-count=`: most programs read a
+///   flag with an empty value as malformed rather than as unset, and the one that does not reads
+///   it as a value of "". This holds however the placeholder is written — the rule is about the
+///   argument being absent, not about where in the template it sits.
 /// - A template that is exactly `{name}` and whose argument is an array becomes one argument per
 ///   element, so a list of paths is a list of paths.
 /// - Values are never interpreted. This is an argument vector, not a command line: nothing here
@@ -271,9 +273,20 @@ pub fn render(templates: &[String], arguments: &serde_json::Value) -> Vec<String
             }
             continue;
         }
+        if embedded(template)
+            .iter()
+            .any(|name| !given(arguments, name))
+        {
+            continue;
+        }
         out.push(substitute(template, arguments));
     }
     out
+}
+
+/// Whether the call actually carries a value for `name`.
+fn given(arguments: &serde_json::Value, name: &str) -> bool {
+    !matches!(arguments.get(name), None | Some(serde_json::Value::Null))
 }
 
 /// The name in a template that is nothing but one placeholder.
@@ -363,9 +376,31 @@ mod render_tests {
     }
 
     #[test]
-    fn an_absent_optional_argument_drops_its_flag() {
-        // `--max-count=` is read by most programs as a malformed flag rather than an absent one.
+    fn an_absent_bare_placeholder_is_dropped() {
         assert!(rendered(&["{limit}"], &json!({})).is_empty());
+    }
+
+    #[test]
+    fn an_absent_argument_takes_its_flag_with_it() {
+        // The one that got `rg` a `--glob=` with nothing after it. `--max-count=` is read by
+        // most programs as malformed rather than as unset, and by the rest as a value of "".
+        assert!(rendered(&["--max-count={limit}"], &json!({})).is_empty());
+        assert!(rendered(&["--glob={glob}"], &json!({ "pattern": "x" })).is_empty());
+    }
+
+    #[test]
+    fn a_null_argument_counts_as_absent() {
+        // A model that sends `{"glob": null}` has said nothing, not said empty.
+        assert!(rendered(&["--glob={glob}"], &json!({ "glob": null })).is_empty());
+    }
+
+    #[test]
+    fn a_template_naming_two_arguments_needs_both() {
+        assert!(rendered(&["{a}-{b}"], &json!({ "a": "x" })).is_empty());
+        assert_eq!(
+            rendered(&["{a}-{b}"], &json!({ "a": "x", "b": "y" })),
+            ["x-y"]
+        );
     }
 
     #[test]
