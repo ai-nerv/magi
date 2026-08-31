@@ -36,16 +36,24 @@ pub async fn run(
     loaded: Option<crate::config::Loaded>,
     environ: std::collections::BTreeMap<String, String>,
 ) -> Result<()> {
+    // **Before anything reads a setting.** `colour`, `glyph` and `metric` each hold their table
+    // in a `OnceLock` that the first *read* fills with the built-in defaults, and `adopt` after
+    // that is a no-op. `App::new` reads one — it needs a line for the empty prompt — so building
+    // it first threw the whole configured `axon.ui` away, silently, and left the box repeating
+    // the one placeholder compiled into the binary.
+    //
+    // Read here rather than taken from the daemon, because this is about the screen in front of
+    // the person reading it. A model or a tool set has to come from the daemon — it is what the
+    // daemon is actually using — but nothing on the other end of the socket has an opinion about
+    // how fast a border moves.
+    if let Some(loaded) = &loaded {
+        crate::config::adopt_ui(loaded);
+    }
+
     let mut app = App::new();
     // The prompts from previous runs, so the arrow keys reach past this one.
     app.editor = axon_tui::Editor::with_history(crate::history::load());
-    // Read here rather than taken from the daemon, because this one is about the screen in front
-    // of the person reading it. A model or a tool set has to come from the daemon — it is what
-    // the daemon is actually using — but nothing on the other end of the socket has an opinion
-    // about how fast a border moves. A config that will not run leaves the built-in speed: the
-    // daemon has already refused to start over it and said why.
     if let Some(loaded) = &loaded {
-        crate::config::adopt_ui(loaded);
         // Worked out here because the answer needs the catalog, and the snapshot carries only
         // whether there is a model — not why there is not. Same text the daemon refuses a prompt
         // with, so meeting the problem at attach and meeting it at the first prompt say one thing.

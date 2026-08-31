@@ -22,29 +22,46 @@ pub fn visible_rows(rows: u16) -> usize {
 ///
 /// Dimmer than the text, deliberately. A placeholder in the same colour as what you type reads
 /// as something already in the box, and the first thing anybody does is try to delete it.
-fn placeholder_spans(width: u16, hint: &str) -> Vec<Span<'static>> {
-    let mut spans = vec![Span::styled(
-        " ",
-        Style::default()
-            .fg(colour::text())
-            .add_modifier(Modifier::REVERSED),
-    )];
+fn placeholder_spans(width: u16, hint: &str, caret: Option<usize>) -> Vec<Span<'static>> {
     // A narrow screen gets the short one, and a very narrow one gets nothing: a placeholder cut
-    // in half is not a shorter joke, it is a line that looks broken.
-    if hint.chars().count() >= usize::from(width) {
-        let short = glyph::placeholder_short();
-        if short.chars().count() < usize::from(width) {
-            spans.push(Span::styled(
-                short.to_owned(),
-                Style::default().fg(colour::hint()),
-            ));
-        }
-        return spans;
+    // in half is not a shorter line, it is one that looks broken.
+    let hint = if hint.chars().count() < usize::from(width) {
+        hint
+    } else if glyph::placeholder_short().chars().count() < usize::from(width) {
+        glyph::placeholder_short()
+    } else {
+        ""
+    };
+
+    let dim = Style::default().fg(colour::hint());
+    // The real cursor, on the first letter rather than in front of it. It is where typing would
+    // land, and typing lands on column zero whatever the box happens to be saying.
+    let block = Style::default()
+        .fg(colour::text())
+        .add_modifier(Modifier::REVERSED);
+    // The second one, where the box is editing itself. Dimmer, because it is not yours: two
+    // cursors of equal weight is a screen with two places to type.
+    let writing = dim.add_modifier(Modifier::REVERSED);
+
+    let mut spans = Vec::new();
+    let letters: Vec<char> = hint.chars().collect();
+    if letters.is_empty() {
+        return vec![Span::styled(" ", block)];
     }
-    spans.push(Span::styled(
-        hint.to_owned(),
-        Style::default().fg(colour::hint()),
-    ));
+    for (at, letter) in letters.iter().enumerate() {
+        let style = if at == 0 {
+            block
+        } else if caret == Some(at) {
+            writing
+        } else {
+            dim
+        };
+        spans.push(Span::styled(letter.to_string(), style));
+    }
+    // Past the last letter, which is where a caret sits while text is being added to the end.
+    if caret == Some(letters.len()) {
+        spans.push(Span::styled(" ", writing));
+    }
     spans
 }
 
@@ -87,7 +104,7 @@ pub fn render(
     tick: usize,
     scan: crate::border::Scan,
     menu: &[Line<'static>],
-    placeholder: &str,
+    saying: crate::tease::Saying<'_>,
 ) -> Vec<Line<'static>> {
     let text_style = Style::default().fg(colour::text());
     let (cursor_row, cursor_col) = editor.cursor();
@@ -113,7 +130,7 @@ pub fn render(
 
     for row in 0..shown {
         let body = if blank {
-            placeholder_spans(inner_width, placeholder)
+            placeholder_spans(inner_width, saying.text, saying.caret)
         } else {
             let index = offset + row;
             let text = resolving(editor, index);
@@ -318,7 +335,10 @@ mod tests {
             0,
             crate::border::Scan::Off,
             &[],
-            "what are we making?",
+            crate::tease::Saying {
+                text: "what are we making?",
+                caret: None,
+            },
         ));
         assert_eq!(rendered.len(), 3, "top edge, text, bottom edge");
         let said = rendered[1].trim().trim_matches('│').trim();
@@ -334,7 +354,10 @@ mod tests {
             0,
             crate::border::Scan::Off,
             &[],
-            "",
+            crate::tease::Saying {
+                text: "",
+                caret: None,
+            },
         ));
         assert!(!rendered[1].contains("commands"), "{:?}", rendered[1]);
         assert!(
@@ -353,7 +376,10 @@ mod tests {
             0,
             crate::border::Scan::Off,
             &[],
-            "",
+            crate::tease::Saying {
+                text: "",
+                caret: None,
+            },
         ));
         assert_eq!(
             rendered[1], "│ hello            │",
@@ -365,7 +391,18 @@ mod tests {
     fn the_cursor_cell_is_inverted_in_place() {
         let mut editor = editor_with("abc");
         editor.home();
-        let lines = render(&editor, 20, 24, 0, crate::border::Scan::Off, &[], "");
+        let lines = render(
+            &editor,
+            20,
+            24,
+            0,
+            crate::border::Scan::Off,
+            &[],
+            crate::tease::Saying {
+                text: "",
+                caret: None,
+            },
+        );
         let cursor = lines[1]
             .spans
             .iter()
@@ -383,7 +420,10 @@ mod tests {
             0,
             crate::border::Scan::Off,
             &[],
-            "",
+            crate::tease::Saying {
+                text: "",
+                caret: None,
+            },
         );
         let cursor = lines[1]
             .spans
@@ -402,7 +442,10 @@ mod tests {
             0,
             crate::border::Scan::Off,
             &[],
-            "",
+            crate::tease::Saying {
+                text: "",
+                caret: None,
+            },
         );
         for index in [0, lines.len() - 1] {
             let width: usize = lines[index]
@@ -427,7 +470,10 @@ mod tests {
             0,
             crate::border::Scan::Off,
             &[],
-            "",
+            crate::tease::Saying {
+                text: "",
+                caret: None,
+            },
         ));
         assert!(rendered[0].contains("↑"), "{:?}", rendered[0]);
         assert!(rendered[0].contains("more"), "{:?}", rendered[0]);
@@ -456,7 +502,10 @@ mod tests {
             0,
             crate::border::Scan::Off,
             &[],
-            "",
+            crate::tease::Saying {
+                text: "",
+                caret: None,
+            },
         ));
         assert_eq!(rendered.len(), visible_rows(24) + 2, "rules plus text rows");
     }
@@ -482,7 +531,10 @@ mod narrow_tests {
             0,
             crate::border::Scan::Off,
             &[],
-            hint,
+            crate::tease::Saying {
+                text: hint,
+                caret: None,
+            },
         )[1]
         .spans
         .iter()
@@ -608,14 +660,14 @@ mod placeholder_tests {
     #[test]
     fn a_screen_too_narrow_for_the_line_says_something_shorter() {
         // Half a line reads as a rendering fault. The short hint stands in instead.
-        let narrow = placeholder_spans(12, "a line far too long for twelve columns");
+        let narrow = placeholder_spans(12, "a line far too long for twelve columns", None);
         let text: String = narrow.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.chars().count() <= 12, "{text:?}");
     }
 
     #[test]
     fn a_line_that_fits_is_drawn_whole() {
-        let spans = placeholder_spans(40, "let's build something");
+        let spans = placeholder_spans(40, "let's build something", None);
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.ends_with("let's build something"), "{text:?}");
     }
@@ -624,12 +676,79 @@ mod placeholder_tests {
     fn nothing_is_struck_through_any_more() {
         // The correction is performed by `crate::tease` -- written, then taken back -- rather
         // than drawn with both halves on screen at once.
-        let spans = placeholder_spans(60, "the scaffolding is temporary");
+        let spans = placeholder_spans(60, "the scaffolding is temporary", None);
         assert!(
             spans
                 .iter()
                 .all(|s| !s.style.add_modifier.contains(Modifier::CROSSED_OUT)),
             "something is still drawn struck"
         );
+    }
+}
+
+/// One cursor is yours and does not move; the other is the box editing itself.
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+
+    /// `(char, reversed)` for each cell of the placeholder row.
+    fn cells(hint: &str, caret: Option<usize>) -> Vec<(String, bool)> {
+        placeholder_spans(60, hint, caret)
+            .into_iter()
+            .map(|s| {
+                (
+                    s.content.into_owned(),
+                    s.style.add_modifier.contains(Modifier::REVERSED),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_real_cursor_sits_on_the_first_letter() {
+        // Not in front of it. It marks where typing would land, and typing lands on column
+        // zero whatever the box happens to be saying.
+        let row = cells("build", None);
+        assert_eq!(row[0], ("b".to_owned(), true), "{row:?}");
+        assert_eq!(row[1], ("u".to_owned(), false), "{row:?}");
+    }
+
+    #[test]
+    fn the_real_cursor_stays_put_wherever_the_other_one_is() {
+        // The white block is yours. A cursor that wandered off while the box amused itself
+        // would be telling you your text was going somewhere else.
+        for caret in [None, Some(1), Some(3), Some(5)] {
+            let row = cells("build", caret);
+            assert!(row[0].1, "the first cell lost its cursor at {caret:?}");
+        }
+    }
+
+    #[test]
+    fn the_writing_cursor_is_where_the_editing_is() {
+        let row = cells("build", Some(3));
+        assert!(row[3].1, "nothing marked at three: {row:?}");
+        assert!(!row[2].1, "and only there: {row:?}");
+        assert!(!row[4].1, "{row:?}");
+    }
+
+    #[test]
+    fn it_can_sit_past_the_last_letter() {
+        // Which is where it is while text is being added to the end -- most of the time.
+        let row = cells("build", Some(5));
+        assert_eq!(row.len(), 6, "a cell was not added for it: {row:?}");
+        assert_eq!(row[5], (" ".to_owned(), true));
+    }
+
+    #[test]
+    fn resting_shows_only_your_own() {
+        let row = cells("build", None);
+        assert_eq!(row.iter().filter(|(_, on)| *on).count(), 1);
+    }
+
+    #[test]
+    fn an_empty_line_still_has_a_cursor() {
+        // A box with nothing in it and no cursor reads as a screen that has hung.
+        let row = cells("", None);
+        assert_eq!(row, vec![(" ".to_owned(), true)]);
     }
 }

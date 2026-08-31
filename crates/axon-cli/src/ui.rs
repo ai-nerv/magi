@@ -72,7 +72,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
         app.scan_tick(),
         scan,
         &menu,
-        app.tease.shown(),
+        app.tease.saying(),
     );
     let prompt_rows = u16::try_from(prompt_lines.len())
         .unwrap_or(u16::MAX)
