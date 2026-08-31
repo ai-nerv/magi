@@ -125,6 +125,13 @@ pub struct App {
     pub picking: Option<Picking>,
     /// How much of each tool result to show.
     pub detail: axon_tui::transcript::Detail,
+    /// Which placeholder the empty prompt is showing.
+    ///
+    /// Held here rather than in the renderer because it changes on an event -- the prompt
+    /// emptying -- and not on a frame. See [`App::settle_prompt`].
+    pub placeholder: usize,
+    /// Whether the prompt was empty when it was last looked at.
+    was_blank: bool,
     /// The text being dragged over, or the last drag that finished.
     ///
     /// Kept after the button comes up so the highlight stays until the next click, which is how
@@ -170,6 +177,8 @@ impl App {
             // Folded. A transcript of whole build logs is not a transcript, and the handle at
             // the foot of each block is how you open the one you care about.
             detail: axon_tui::transcript::Detail::Preview,
+            placeholder: axon_tui::pick::first(axon_tui::glyph::placeholders().len()),
+            was_blank: true,
             selection: None,
             flipped: std::collections::BTreeSet::new(),
             owners: Vec::new(),
@@ -184,6 +193,20 @@ impl App {
             tick: 0,
             scan_phase: 0,
         }
+    }
+
+    /// Note whether the prompt is empty, and pick a new placeholder if it just became so.
+    ///
+    /// On the transition, not on the state: a new line every frame the box happens to be empty
+    /// would be a flicker, and the same line forever is furniture. Both ways a prompt empties
+    /// come through here -- submitted, and deleted back to nothing.
+    pub fn settle_prompt(&mut self) {
+        let blank = self.editor.is_blank();
+        if blank && !self.was_blank {
+            self.placeholder =
+                axon_tui::pick::another(self.placeholder, axon_tui::glyph::placeholders().len());
+        }
+        self.was_blank = blank;
     }
 
     /// Advance both clocks by one frame.
@@ -695,3 +718,71 @@ impl App {
 }
 
 mod folding;
+
+/// The empty prompt does not show the same line twice running.
+#[cfg(test)]
+mod settling {
+    use super::App;
+
+    #[test]
+    fn deleting_back_to_nothing_picks_a_new_line() {
+        // The complaint this answers: one line sat there all session, so it stopped being a
+        // joke and became a label.
+        let mut app = App::new();
+        app.settle_prompt();
+        let first = app.placeholder;
+
+        app.editor.insert_str("something");
+        app.settle_prompt();
+        assert_eq!(app.placeholder, first, "typing does not change it");
+
+        app.editor.clear();
+        app.settle_prompt();
+        assert_ne!(app.placeholder, first, "emptying does");
+    }
+
+    #[test]
+    fn a_submitted_prompt_leaves_a_new_one_behind() {
+        // The other way a prompt empties, and the one that happens every turn.
+        let mut app = App::new();
+        app.editor.insert_str("a question");
+        app.settle_prompt();
+        let before = app.placeholder;
+        app.editor.submit();
+        app.settle_prompt();
+        assert_ne!(app.placeholder, before);
+    }
+
+    #[test]
+    fn sitting_empty_does_not_keep_rerolling() {
+        // Drawn on every frame, so a line that changed while the box merely *was* empty would
+        // change sixty times a second.
+        let mut app = App::new();
+        app.settle_prompt();
+        let showing = app.placeholder;
+        for _ in 0..100 {
+            app.settle_prompt();
+        }
+        assert_eq!(app.placeholder, showing);
+    }
+
+    #[test]
+    fn typing_and_deleting_repeatedly_keeps_moving() {
+        let mut app = App::new();
+        app.settle_prompt();
+        let mut seen = vec![app.placeholder];
+        for _ in 0..6 {
+            app.editor.insert_str("x");
+            app.settle_prompt();
+            app.editor.clear();
+            app.settle_prompt();
+            let now = app.placeholder;
+            assert_ne!(
+                Some(&now),
+                seen.last(),
+                "the same line came back immediately"
+            );
+            seen.push(now);
+        }
+    }
+}

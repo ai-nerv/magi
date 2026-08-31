@@ -22,14 +22,14 @@ pub fn visible_rows(rows: u16) -> usize {
 ///
 /// Dimmer than the text, deliberately. A placeholder in the same colour as what you type reads
 /// as something already in the box, and the first thing anybody does is try to delete it.
-fn placeholder_spans(width: u16) -> Vec<Span<'static>> {
+fn placeholder_spans(width: u16, at: usize) -> Vec<Span<'static>> {
     let mut spans = vec![Span::styled(
         " ",
         Style::default()
             .fg(colour::text())
             .add_modifier(Modifier::REVERSED),
     )];
-    let hint = chosen();
+    let hint = chosen(at);
     // A narrow screen gets the short one, and a very narrow one gets nothing: a placeholder cut
     // in half is not a shorter joke, it is a line that looks broken.
     if hint.chars().count() >= usize::from(width) {
@@ -46,25 +46,17 @@ fn placeholder_spans(width: u16) -> Vec<Span<'static>> {
     spans
 }
 
-/// This session's placeholder, chosen once.
+/// The placeholder at `at`, wrapping so any index is a line.
 ///
-/// Once, not per frame: a line that changed sixty times a second would be unreadable, and one
-/// that changed when you deleted the last character would be worse -- it would look like the
-/// box had done something.
-fn chosen() -> &'static str {
-    static PICK: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+/// Which one is the caller's to remember, not this module's. It changes when the prompt empties
+/// -- see [`crate::pick`] -- and a renderer holding that decision in a `OnceLock` could only ever
+/// show one a session.
+fn chosen(at: usize) -> &'static str {
     let list = glyph::placeholders();
     if list.is_empty() {
         return "";
     }
-    let at = *PICK.get_or_init(|| {
-        // The clock, because there is no rng here and none is worth a dependency for this.
-        let seed = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.subsec_nanos() as usize);
-        seed % list.len()
-    });
-    list.get(at).map_or("", String::as_str)
+    list.get(at % list.len()).map_or("", String::as_str)
 }
 
 /// Split a placeholder on its `~~struck~~` run.
@@ -115,7 +107,8 @@ pub fn text_rows(editor: &Editor, rows: u16) -> usize {
 ///
 /// `rows` is the terminal height, which sets how much of a long prompt is shown before the top
 /// and bottom edges start reporting what is scrolled out of view. `tick` drives the scan and
-/// `scan` says what it should be doing.
+/// `scan` says what it should be doing. `placeholder` is which line the empty box shows, which
+/// the caller remembers because it changes when the prompt empties rather than per frame.
 #[must_use]
 pub fn render(
     editor: &Editor,
@@ -124,6 +117,7 @@ pub fn render(
     tick: usize,
     scan: crate::border::Scan,
     menu: &[Line<'static>],
+    placeholder: usize,
 ) -> Vec<Line<'static>> {
     let text_style = Style::default().fg(colour::text());
     let (cursor_row, cursor_col) = editor.cursor();
@@ -149,7 +143,7 @@ pub fn render(
 
     for row in 0..shown {
         let body = if blank {
-            placeholder_spans(inner_width)
+            placeholder_spans(inner_width, placeholder)
         } else {
             let index = offset + row;
             let text = resolving(editor, index);
@@ -353,6 +347,7 @@ mod tests {
             0,
             crate::border::Scan::Off,
             &[],
+            0,
         ));
         assert_eq!(rendered.len(), 3, "top edge, text, bottom edge");
         // Whatever this session picked, or the short hint when it will not fit -- not a
@@ -370,6 +365,7 @@ mod tests {
             0,
             crate::border::Scan::Off,
             &[],
+            0,
         ));
         assert!(!rendered[1].contains("commands"), "{:?}", rendered[1]);
         assert!(
@@ -388,6 +384,7 @@ mod tests {
             0,
             crate::border::Scan::Off,
             &[],
+            0,
         ));
         assert_eq!(
             rendered[1], "│ hello            │",
@@ -399,7 +396,7 @@ mod tests {
     fn the_cursor_cell_is_inverted_in_place() {
         let mut editor = editor_with("abc");
         editor.home();
-        let lines = render(&editor, 20, 24, 0, crate::border::Scan::Off, &[]);
+        let lines = render(&editor, 20, 24, 0, crate::border::Scan::Off, &[], 0);
         let cursor = lines[1]
             .spans
             .iter()
@@ -410,7 +407,15 @@ mod tests {
 
     #[test]
     fn a_cursor_at_the_end_inverts_an_added_space() {
-        let lines = render(&editor_with("ab"), 20, 24, 0, crate::border::Scan::Off, &[]);
+        let lines = render(
+            &editor_with("ab"),
+            20,
+            24,
+            0,
+            crate::border::Scan::Off,
+            &[],
+            0,
+        );
         let cursor = lines[1]
             .spans
             .iter()
@@ -421,7 +426,15 @@ mod tests {
 
     #[test]
     fn the_rules_span_the_full_width() {
-        let lines = render(&editor_with("x"), 30, 24, 0, crate::border::Scan::Off, &[]);
+        let lines = render(
+            &editor_with("x"),
+            30,
+            24,
+            0,
+            crate::border::Scan::Off,
+            &[],
+            0,
+        );
         for index in [0, lines.len() - 1] {
             let width: usize = lines[index]
                 .spans
@@ -445,6 +458,7 @@ mod tests {
             0,
             crate::border::Scan::Off,
             &[],
+            0,
         ));
         assert!(rendered[0].contains("↑"), "{:?}", rendered[0]);
         assert!(rendered[0].contains("more"), "{:?}", rendered[0]);
@@ -466,7 +480,15 @@ mod tests {
             editor.history_prev();
         }
         editor.set_text(&body);
-        let rendered = rows_of(&render(&editor, 40, 24, 0, crate::border::Scan::Off, &[]));
+        let rendered = rows_of(&render(
+            &editor,
+            40,
+            24,
+            0,
+            crate::border::Scan::Off,
+            &[],
+            0,
+        ));
         assert_eq!(rendered.len(), visible_rows(24) + 2, "rules plus text rows");
     }
 
@@ -484,11 +506,19 @@ mod narrow_tests {
     use super::*;
 
     fn row(width: u16) -> String {
-        render(&Editor::new(), width, 24, 0, crate::border::Scan::Off, &[])[1]
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect()
+        render(
+            &Editor::new(),
+            width,
+            24,
+            0,
+            crate::border::Scan::Off,
+            &[],
+            0,
+        )[1]
+        .spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect()
     }
 
     #[test]
@@ -675,7 +705,7 @@ mod placeholder_tests {
 
     #[test]
     fn a_screen_too_narrow_for_the_line_says_something_shorter() {
-        let narrow = placeholder_spans(12);
+        let narrow = placeholder_spans(12, 0);
         let text: String = narrow.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.chars().count() <= 12, "{text:?}");
     }

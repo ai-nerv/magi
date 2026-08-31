@@ -22,6 +22,7 @@ pub mod menu;
 pub mod metric;
 
 pub mod overlay;
+pub mod pick;
 pub mod picker;
 pub mod prompt;
 pub mod scrollback;

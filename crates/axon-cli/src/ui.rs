@@ -26,6 +26,9 @@ pub fn chrome_rows() -> u16 {
 /// Draw the live region.
 pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     let area = frame.area();
+    // Before anything is measured: an emptied prompt gets a new placeholder, and the one it
+    // gets is what this frame draws.
+    app.settle_prompt();
 
     let rows = area.height;
 
@@ -62,7 +65,15 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
         .map(|open| open.render(area.width.saturating_sub(metric::gutter() + 1)))
         .unwrap_or_default();
     menu.truncate(room);
-    let prompt_lines = prompt::render(&app.editor, area.width, rows, app.scan_tick(), scan, &menu);
+    let prompt_lines = prompt::render(
+        &app.editor,
+        area.width,
+        rows,
+        app.scan_tick(),
+        scan,
+        &menu,
+        app.placeholder,
+    );
     let prompt_rows = u16::try_from(prompt_lines.len())
         .unwrap_or(u16::MAX)
         .min(rows.saturating_sub(around - 1))
