@@ -117,11 +117,37 @@ axon.ui.decrypt_pool = "01"
 axon.ui.flicker_odds = 3000
 axon.ui.flicker_ms   = 120
 
--- What the empty prompt says. One is picked a session. A `~~struck~~` run is drawn crossed out
--- and whatever follows it is the correction, which is where the joke is. Replace the list to
--- write your own; an empty list leaves the prompt blank.
+-- What the empty prompt says. One is picked a session.
 --
--- axon.ui.placeholders = { "let's rewrite npm in ~~Python~~ Rust" }
+-- A `~~struck~~` run is drawn crossed out and whatever follows it is the correction, which is
+-- where the joke is. Add your own, delete the ones that stop being funny; an empty list leaves
+-- the prompt blank. A line too long for the screen falls back to `placeholder_short`.
+axon.ui.placeholders = {
+  "let's rewrite npm in ~~Python~~ Rust",
+  "this'll take ~~an afternoon~~ a quarter",
+  "it's a ~~quick fix~~ full rewrite",
+  "I'll just add ~~one dependency~~ four hundred",
+  "a ~~temporary~~ permanent workaround",
+  "I'll document it ~~today~~ eventually",
+  "it works on ~~production~~ my machine",
+  "we need ~~microservices~~ one file",
+  "ship it ~~Friday~~ whenever",
+  "~~TODO~~ FIXME",
+  "the tests are ~~passing~~ commented out",
+  "we'll fix it in ~~the next sprint~~ the postmortem",
+  "this is ~~self-documenting~~ undocumented",
+  "let's ~~not~~ add another abstraction layer",
+  "the bug is in ~~my code~~ the compiler",
+  "I understand this ~~regex~~ nothing",
+  "it's not a bug, it's ~~a feature~~ Tuesday",
+  "we're ~~almost~~ nowhere near done",
+  "just one more ~~refactor~~ rewrite",
+  "the deploy is ~~automated~~ a shell script I wrote",
+  "I've ~~read~~ skimmed the docs",
+  "this scales to ~~a million users~~ my laptop",
+  "let's ~~discuss~~ argue about tabs",
+  "the estimate is ~~two days~~ a lie",
+}
 
 -- And what you type arriving: each character shows as the first of `type_stages`, passes through
 -- the rest, and lands as the letter, all within `type_reveal_ms`. Zero, the built-in, is off.

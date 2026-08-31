@@ -365,3 +365,62 @@ mod decrypt_tests {
         assert_eq!(glyphs.decrypt_pool, "01");
     }
 }
+
+/// The empty prompt's placeholders, which live in the configuration rather than in the binary.
+#[cfg(test)]
+mod placeholder_tests {
+    use super::ui_tests::from_lua;
+    use crate::config::chosen::tests::checkout;
+
+    /// Every line `config/init.lua` offers the empty prompt.
+    fn shipped() -> Vec<String> {
+        let loaded = from_lua(&checkout("init.lua"));
+        loaded
+            .config
+            .get("ui")
+            .and_then(|ui| ui.get("placeholders"))
+            .and_then(|v| v.as_array())
+            .map(|lines| {
+                lines
+                    .iter()
+                    .filter_map(|l| l.as_str().map(ToOwned::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn there_are_enough_of_them_to_not_repeat_soon() {
+        let lines = shipped();
+        assert!(lines.len() >= 20, "only {} shipped", lines.len());
+    }
+
+    #[test]
+    fn every_one_is_a_second_thought() {
+        // The joke is the correction. A line with nothing struck out forgot to be the thing
+        // this list is for, and reads as a stray hint somebody left in.
+        for line in shipped() {
+            let Some((_, rest)) = line.split_once("~~") else {
+                panic!("{line:?} has nothing struck out");
+            };
+            let Some((out, after)) = rest.split_once("~~") else {
+                panic!("{line:?} opens a strike it never closes");
+            };
+            assert!(!out.trim().is_empty(), "{line:?} strikes out nothing");
+            assert!(
+                !after.trim().is_empty(),
+                "{line:?} strikes something out and puts nothing in its place"
+            );
+        }
+    }
+
+    #[test]
+    fn none_of_them_is_too_long_for_an_ordinary_terminal() {
+        // A line wider than the box falls back to the short hint, which is correct and also
+        // means the line is never seen. Eighty columns less the box and its padding.
+        for line in shipped() {
+            let shown = line.replace("~~", "").chars().count();
+            assert!(shown <= 76, "{line:?} is {shown} columns");
+        }
+    }
+}

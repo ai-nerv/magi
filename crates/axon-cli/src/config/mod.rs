@@ -258,7 +258,7 @@ pub fn catalog(loaded: &Loaded) -> axon_host::catalog::Catalog {
     }
 }
 
-mod chosen;
+pub(crate) mod chosen;
 use chosen::{asked, chosen};
 mod settings;
 

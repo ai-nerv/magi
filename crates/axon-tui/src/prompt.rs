@@ -662,11 +662,6 @@ mod placeholder_tests {
     }
 
     #[test]
-    fn there_are_enough_of_them_to_not_repeat_soon() {
-        assert!(crate::glyph::placeholders().len() >= 20);
-    }
-
-    #[test]
     fn the_placeholder_is_dimmer_than_what_you_type() {
         // A placeholder in the text colour reads as something already in the box, and the first
         // thing anybody does is try to delete it.
