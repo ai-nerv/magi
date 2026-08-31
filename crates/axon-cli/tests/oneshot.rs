@@ -620,3 +620,96 @@ fn a_daemon_nobody_is_attached_to_stops_on_its_own() {
     );
     teardown(&dir);
 }
+
+/// A fake model that calls `shell`, then answers whatever it is told about the result.
+///
+/// `shell` is gated on every call, which is the point: the question has to be answered by
+/// somebody, and in `-p` there is nobody.
+fn serve_shell_then(answer: &'static str) -> String {
+    const HEAD: &str = "event: message_start\n\
+        data: {\"message\":{\"usage\":{\"input_tokens\":4,\"output_tokens\":0}}}\n\n";
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+    std::thread::spawn(move || {
+        for (served, socket) in listener.incoming().enumerate() {
+            let Ok(mut socket) = socket else { return };
+            std::thread::spawn(move || {
+                let mut reader = BufReader::new(socket.try_clone().expect("clone"));
+                let mut line = String::new();
+                let mut length = 0usize;
+                while reader.read_line(&mut line).unwrap_or(0) > 0 {
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = v.trim().parse().unwrap_or(0);
+                    }
+                    line.clear();
+                }
+                let mut sink = vec![0u8; length];
+                let _ = std::io::Read::read_exact(&mut reader, &mut sink);
+
+                let body = if served == 0 {
+                    format!(
+                        "{HEAD}event: content_block_start\n\
+                         data: {{\"index\":0,\"content_block\":{{\"type\":\"tool_use\",\
+                         \"id\":\"c1\",\"name\":\"shell\",\"input\":{{}}}}}}\n\n\
+                         event: content_block_delta\n\
+                         data: {{\"index\":0,\"delta\":{{\"type\":\"input_json_delta\",\
+                         \"partial_json\":\"{{\\\"command\\\":\\\"echo hi\\\"}}\"}}}}\n\n\
+                         event: message_delta\n\
+                         data: {{\"delta\":{{\"stop_reason\":\"tool_use\"}},\
+                         \"usage\":{{\"output_tokens\":5}}}}\n\n"
+                    )
+                } else {
+                    format!(
+                        "{HEAD}event: content_block_start\n\
+                         data: {{\"index\":0,\"content_block\":{{\"type\":\"text\"}}}}\n\n\
+                         event: content_block_delta\n\
+                         data: {{\"index\":0,\"delta\":{{\"type\":\"text_delta\",\
+                         \"text\":\"{answer}\"}}}}\n\n\
+                         event: message_delta\n\
+                         data: {{\"delta\":{{\"stop_reason\":\"end_turn\"}},\
+                         \"usage\":{{\"output_tokens\":5}}}}\n\n"
+                    )
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(response.as_bytes());
+            });
+        }
+    });
+    format!("http://127.0.0.1:{port}")
+}
+
+#[test]
+fn a_permission_question_nobody_can_answer_ends_the_run_rather_than_hanging() {
+    // The defect: a `-p` run attaches, so the daemon has somebody to ask and stops the turn on
+    // the question. Print mode ignored `PermissionAsked` and waited for events that could not
+    // arrive, so the run hung until it was killed -- with the call committed to the journal,
+    // `result: null`, and nothing on screen saying what it was waiting for.
+    //
+    // Answered `Deny`, not `Allow`: `-p` is what goes in a pipeline, and a run nobody is
+    // watching is the wrong place to widen what a tool may do. `axon.allow` is how a person
+    // says in advance what an unattended run may do.
+    let dir = workspace("declined", &serve_shell_then("I could not run it."));
+    let output = axon(&dir, &["--sessions", "sessions", "-p", "run echo hi"]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not permitted"),
+        "it should say why it stopped: {stderr}"
+    );
+    assert!(
+        output.status.success(),
+        "a refusal is an answer, not a crash: {stderr}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "I could not run it.",
+        "the model was told, and said so"
+    );
+}

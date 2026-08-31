@@ -96,6 +96,31 @@ pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
                 awaiting_tools = true;
             }
             HarnessEvent::ToolCallStarted { name, .. } => eprintln!("· {name}"),
+            // Nobody is at the keyboard. Answered rather than ignored: the daemon stops the
+            // turn on this question and waits for the answer, so a `-p` run that ignored it
+            // hung until it was killed -- with the call committed to the journal, `result:
+            // null`, and no way to tell from the outside what it was waiting for.
+            //
+            // Denied rather than allowed, because `-p` is what goes in a pipeline and a run
+            // nobody is watching is the wrong place to widen what a tool may do. `axon.allow`
+            // is how a person says in advance what an unattended run may do; anything it does
+            // not cover is refused here, and the model is told so it can say so.
+            HarnessEvent::PermissionAsked {
+                id, tool, action, ..
+            } => {
+                eprintln!(
+                    "· {tool} was not permitted to {} {} -- nothing is attached to ask, and \
+                     `axon.allow` does not cover it",
+                    action.verb(),
+                    action.subject()
+                );
+                writer
+                    .write(&UiCommand::Permit {
+                        id,
+                        decision: axon_proto::permit::Decision::Deny,
+                    })
+                    .await?;
+            }
             HarnessEvent::Error { message, .. } => {
                 error = Some(message);
                 break;
