@@ -140,9 +140,15 @@ mod tests {
     }
 
     #[test]
-    fn opening_a_block_still_shows_what_it_was_given() {
+    fn opening_a_block_does_not_repeat_what_the_header_said() {
+        // A block used to list its arguments when opened, above a rule, above the output. For an
+        // `edit` that is the same thing twice -- `old` and `new`, then a diff of `old` and `new`.
+        // The summary beside the name is what the call was given, and once is enough.
         let shown = rows(Detail::Full);
-        assert!(shown.iter().any(|l| l == "one"), "{shown:#?}");
-        assert!(shown.iter().any(|l| l == "two"), "{shown:#?}");
+        assert!(!shown.iter().any(|l| l == "one"), "{shown:#?}");
+        assert!(
+            !shown.iter().any(|l| l.starts_with('─')),
+            "no rule: {shown:#?}"
+        );
     }
 }

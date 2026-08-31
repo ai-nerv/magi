@@ -87,13 +87,7 @@ pub(super) fn block(
     // band. Three calls in a row then read as a single wall of grey with headings in it rather
     // than as three things that happened.
     let mut out = vec![blank(width, Style::default()), {
-        // Opened, the header names only the first argument: the rest are listed in full a row
-        // below, and an `edit` header reading `src/main.rs, let x = 1;, let x = 2;` directly
-        // above `old  let x = 1;` says the same thing twice in two shapes.
-        let summary = match detail {
-            Detail::Preview => summarize(args),
-            Detail::Full => first_argument(args),
-        };
+        let summary = summarize(args);
         let named = format!(" {name} ");
         let beside = if summary.is_empty() {
             String::new()
@@ -119,49 +113,20 @@ pub(super) fn block(
         )
     }];
 
-    // Opened, the call shows what it was *given* as well as what it returned. Without this,
-    // expanding a `write` showed the line count it reported and never the file it wrote — the
-    // one thing a person opens a `write` block to read. The same goes for an `edit`'s
-    // replacement text and a `shell`'s full command: the summary beside the name is one line,
-    // and one line is not the argument.
     // One step further in than the header, so the two are not one column of text under a
-    // coloured word. Everything the block holds sits at this indent: the arguments, the rule
-    // between them and the output, the output, and the note about what was left out.
+    // coloured word.
+    //
+    // What a call was *given* is not listed here. It was, briefly: opening a block showed its
+    // arguments and then a rule and then the output. For an `edit` that is the same thing twice --
+    // `old` and `new`, then a diff of `old` and `new` -- and for everything else it is a header
+    // repeated a row below the header. The summary beside the name is what the call was given;
+    // one line of it is enough, and a block that says it twice reads as a stutter.
     let lead = usize::from(crate::metric::block_pad()) + STEP;
     let body = usize::from(width).saturating_sub(lead + usize::from(crate::metric::block_pad()));
-    let mut given = 0;
-    if matches!(detail, Detail::Full) {
-        for line in arguments(args) {
-            given += 1;
-            out.push(pad_by(
-                Line::from(Span::styled(
-                    clip(&line, body),
-                    style.fg(colour::tool_fold()),
-                )),
-                width,
-                style,
-                lead,
-            ));
-        }
-    }
 
     if let Some(result) = result {
         let output = result.output.trim_end();
         if !output.is_empty() {
-            // A rule where what the call was given ends and what it returned begins. Without it
-            // the arguments and the first lines of a diff are one run of text at one indent, and
-            // the reader has to know the tool to tell which is which.
-            if given > 0 {
-                out.push(pad_by(
-                    Line::from(Span::styled(
-                        crate::glyph::edge_horizontal().repeat(body),
-                        style.fg(colour::tool_fold()),
-                    )),
-                    width,
-                    style,
-                    lead,
-                ));
-            }
             let all: Vec<&str> = output.lines().collect();
             let shown = match detail {
                 Detail::Preview => all.len().min(usize::from(crate::metric::preview_lines())),
@@ -214,14 +179,6 @@ fn change_colour(line: &str) -> Color {
         Some(b'-') if !line.starts_with("---") => colour::diff_removed(),
         _ => colour::diff_context(),
     }
-}
-
-/// The first argument alone, for the header of a block that is already listing them all below.
-fn first_argument(args: &str) -> String {
-    let summary = summarize(args);
-    summary
-        .split_once(", ")
-        .map_or(summary.clone(), |(first, _)| first.to_owned())
 }
 
 /// A one-line summary of a tool's arguments for the block header.
@@ -516,8 +473,8 @@ mod detail_tests {
             "{preview:?}"
         );
         assert!(
-            full.iter().any(|l| l.contains("command  ls")),
-            "and open, it says what it was asked to run: {full:?}"
+            full.iter().any(|l| l.contains("ls")),
+            "and the header still names what it ran: {full:?}"
         );
     }
 }
@@ -630,132 +587,6 @@ mod block_tests {
         assert_eq!(behind(None), Some(colour::tool_title()), "still running");
         assert_eq!(behind(Some(&ok)), Some(colour::tool_ok()));
         assert_eq!(behind(Some(&bad)), Some(colour::tool_failed()));
-    }
-}
-
-/// A call's arguments, as lines, for a block that has been opened.
-///
-/// One `key: value` per argument, and a value carrying newlines is laid out under its key rather
-/// than escaped onto one line — the whole reason to open a `write` is to read the file it wrote,
-/// and `"contents": "line\nline\nline"` is not reading it.
-fn arguments(args: &str) -> Vec<String> {
-    let Ok(serde_json::Value::Object(fields)) = serde_json::from_str::<serde_json::Value>(args)
-    else {
-        return args.lines().map(str::to_owned).collect();
-    };
-    // Padded to the longest, so the values start in one column. Three arguments whose names
-    // happen to be different lengths is three values at three indents, which reads as a list of
-    // unrelated things rather than as one call's inputs.
-    let column = fields.keys().map(|k| k.chars().count()).max().unwrap_or(0);
-    let mut out = Vec::new();
-    for (key, value) in fields {
-        let text = match &value {
-            serde_json::Value::String(s) => s.clone(),
-            other => other.to_string(),
-        };
-        // Two spaces rather than a colon. A colon after every key turns a short list of values
-        // into a column of punctuation, and the key is already the only word before the gap.
-        if text.contains('\n') {
-            out.push(key.clone());
-            out.extend(text.lines().map(str::to_owned));
-        } else {
-            out.push(format!("{key:column$}  {text}"));
-        }
-    }
-    out
-}
-
-#[cfg(test)]
-mod opened {
-    use super::*;
-
-    fn text_of(lines: &[Line<'_>]) -> Vec<String> {
-        lines
-            .iter()
-            .map(|l| {
-                l.spans
-                    .iter()
-                    .map(|s| s.content.as_ref())
-                    .collect::<String>()
-                    .trim()
-                    .to_owned()
-            })
-            .collect()
-    }
-
-    fn wrote() -> (String, axon_proto::ToolResult) {
-        (
-            serde_json::json!({
-                "path": "/tmp/hello.py",
-                "contents": "def hello():\n    return 42\n",
-            })
-            .to_string(),
-            axon_proto::ToolResult {
-                output: "wrote 2 lines".to_owned(),
-                is_error: false,
-            },
-        )
-    }
-
-    #[test]
-    fn an_opened_write_shows_the_file_it_wrote() {
-        let (args, result) = wrote();
-        let shown = text_of(&block("write", &args, Some(&result), 60, Detail::Full));
-        assert!(
-            shown.iter().any(|l| l.contains("def hello():")),
-            "the contents are the point: {shown:#?}"
-        );
-        assert!(shown.iter().any(|l| l.contains("return 42")), "{shown:#?}");
-    }
-
-    #[test]
-    fn a_folded_write_still_only_shows_its_summary() {
-        // The header flattens every argument onto one line, so the words do appear there. What
-        // must not appear is the file laid out as a file — that is what opening is for.
-        let (args, result) = wrote();
-        let shown = text_of(&block("write", &args, Some(&result), 60, Detail::Preview));
-        assert!(
-            !shown.iter().any(|l| l == "return 42"),
-            "folded is folded: {shown:#?}"
-        );
-        assert!(
-            shown.iter().any(|l| l.starts_with("write ")),
-            "the summary is still there: {shown:#?}"
-        );
-    }
-
-    #[test]
-    fn a_multi_line_value_is_laid_out_rather_than_escaped() {
-        let lines = arguments(r#"{"contents":"one\ntwo"}"#);
-        assert_eq!(lines, vec!["contents", "one", "two"]);
-    }
-
-    #[test]
-    fn a_short_value_stays_on_its_key() {
-        // Two spaces rather than a colon: a colon after every key turns a short list of values
-        // into a column of punctuation.
-        assert_eq!(arguments(r#"{"path":"/tmp/x"}"#), vec!["path  /tmp/x"]);
-    }
-
-    #[test]
-    fn arguments_that_are_not_json_are_shown_as_they_arrived() {
-        // A truncated turn leaves half an object behind, and half an object is still worth
-        // reading — it is usually the evidence of what went wrong.
-        assert_eq!(
-            arguments("{\"path\": \"/tmp/x"),
-            vec!["{\"path\": \"/tmp/x"]
-        );
-    }
-
-    #[test]
-    fn an_opened_shell_shows_the_whole_command() {
-        let args =
-            serde_json::json!({ "command": "find . -name '*.rs' | xargs wc -l" }).to_string();
-        let shown = text_of(&block("shell", &args, None, 80, Detail::Full));
-        assert!(
-            shown.iter().any(|l| l.contains("xargs wc -l")),
-            "{shown:#?}"
-        );
     }
 }
 

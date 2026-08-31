@@ -32,7 +32,12 @@ use std::io::{self, IsTerminal, Stdout, Write};
 const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
 
 /// Give the mouse back.
-const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1000l";
+///
+/// Every mode, not only the two [`MOUSE_ON`] asks for. A run that was killed before it could tear
+/// down leaves whatever it had set still set, and a terminal left in `?1003h` by an older build
+/// reports motion to a program that never asked for it and will not select text. Sent on the way
+/// in as well as the way out, so a session starts from a known state whatever the last one did.
+const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 
 /// A terminal in raw mode, restored on drop.
 pub struct Session {
@@ -57,9 +62,9 @@ impl Session {
         let mut out = io::stdout();
         execute!(out, crossterm::event::EnableBracketedPaste)?;
         execute!(out, EnterAlternateScreen)?;
-        // Buttons and the wheel only, so dragging out a selection still belongs to the terminal.
-        // See [`MOUSE_ON`].
-        write!(out, "{MOUSE_ON}")?;
+        // Released rather than taken, and released explicitly: a terminal a killed run left in
+        // a tracking mode is one nothing here set and nothing here would clear. See [`MOUSE_OFF`].
+        write!(out, "{MOUSE_OFF}")?;
         out.flush()?;
 
         let enhanced = push_keyboard_enhancements(&mut out).unwrap_or(false);
@@ -110,8 +115,8 @@ impl Session {
     ///
     /// Held by default so the wheel scrolls and a block opens under the pointer. What is asked
     /// for is buttons and the wheel, not motion, so the terminal keeps drag-selection either
-    /// way -- see [`MOUSE_ON`]. Handing it back entirely is for the emulator that reports a
-    /// selection drag as a button press anyway.
+    /// way — see [`MOUSE_ON`] — but a captured mouse defeats selection in some emulators however
+    /// little it asks for, so nothing is captured until this says so.
     pub fn set_mouse(&mut self, holding: bool) {
         let mut out = io::stdout();
         let _ = write!(out, "{}", if holding { MOUSE_ON } else { MOUSE_OFF });
