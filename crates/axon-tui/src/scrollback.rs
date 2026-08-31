@@ -39,6 +39,16 @@ impl Scrollback {
         self.lines = lines;
     }
 
+    /// One line of the transcript, for a caller that has to know what is drawn where.
+    ///
+    /// A click is answered by what is under it rather than by a second list saying what ought
+    /// to be: the fold handle is wherever the renderer put it, and asking the line is how that
+    /// stays true when the renderer changes its mind.
+    #[must_use]
+    pub fn line(&self, at: usize) -> Option<&Line<'static>> {
+        self.lines.get(at)
+    }
+
     /// How many lines the transcript holds.
     #[must_use]
     pub fn len(&self) -> usize {
