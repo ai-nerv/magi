@@ -145,6 +145,14 @@ pub fn adopt_ui(loaded: &Loaded) {
             glyphs.spinner = drawn;
         }
     }
+    // The same, and an empty list *is* obeyed here: a person who wants a blank prompt has said
+    // something, and a placeholder is not load-bearing the way a spinner frame is.
+    if let Some(lines) = ui.get("placeholders").and_then(|v| v.as_array()) {
+        glyphs.placeholders = lines
+            .iter()
+            .filter_map(|p| p.as_str().map(ToOwned::to_owned))
+            .collect();
+    }
     axon_tui::glyph::adopt(glyphs);
 
     let mut metrics = axon_tui::metric::Metrics::default();

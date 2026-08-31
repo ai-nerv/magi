@@ -108,7 +108,7 @@ palette! {
     // from an already-bright frame and the scan vanished into its own border.
     border = 240, "The prompt's border with nothing lit, and the floor of its scan.";
     scan = 255, "The brightest point of the light travelling along the border.";
-    hint = 246, "The prompt's own text, before you type anything.";
+    hint = 241, "The empty prompt's placeholder. Well under the text, so it reads as a label rather than as something you wrote.";
     rule = 245, "The rule above and below a quotation.";
 
     // ------------------------------------------------------------ the rest
@@ -251,10 +251,15 @@ mod tests {
             STOCK.tool_fold,
             STOCK.md_quote,
             STOCK.thinking,
-            STOCK.hint,
         ] {
             assert!(weight >= 246, "{weight} is too dark to read comfortably");
         }
+        // `hint` is deliberately not in that list. Every other weight here is text somebody
+        // reads; the placeholder is a label they are meant to look past, and one as bright as
+        // what they type reads as something already in the box.
+        let hint = STOCK.hint;
+        assert!(hint < 246, "the placeholder is as loud as the text: {hint}");
+        assert!(hint > 236, "and not a hole in the screen: {hint}");
     }
 
     #[test]

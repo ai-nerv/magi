@@ -18,23 +18,71 @@ pub fn visible_rows(rows: u16) -> usize {
         .max(usize::from(crate::metric::prompt_min_lines()))
 }
 
-/// The blank prompt: the cursor, then the hint, dimmed.
+/// The blank prompt: the cursor, then whatever this session's placeholder is.
+///
+/// Dimmer than the text, deliberately. A placeholder in the same colour as what you type reads
+/// as something already in the box, and the first thing anybody does is try to delete it.
 fn placeholder_spans(width: u16) -> Vec<Span<'static>> {
-    let hint = if glyph::placeholder().chars().count() < usize::from(width) {
-        glyph::placeholder()
-    } else if glyph::placeholder_short().chars().count() < usize::from(width) {
-        glyph::placeholder_short()
-    } else {
-        ""
+    let mut spans = vec![Span::styled(
+        " ",
+        Style::default()
+            .fg(colour::text())
+            .add_modifier(Modifier::REVERSED),
+    )];
+    let hint = chosen();
+    // A narrow screen gets the short one, and a very narrow one gets nothing: a placeholder cut
+    // in half is not a shorter joke, it is a line that looks broken.
+    if hint.chars().count() >= usize::from(width) {
+        let short = glyph::placeholder_short();
+        if short.chars().count() < usize::from(width) {
+            spans.push(Span::styled(
+                short.to_owned(),
+                Style::default().fg(colour::hint()),
+            ));
+        }
+        return spans;
+    }
+    spans.extend(struck(hint));
+    spans
+}
+
+/// This session's placeholder, chosen once.
+///
+/// Once, not per frame: a line that changed sixty times a second would be unreadable, and one
+/// that changed when you deleted the last character would be worse -- it would look like the
+/// box had done something.
+fn chosen() -> &'static str {
+    static PICK: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let list = glyph::placeholders();
+    if list.is_empty() {
+        return "";
+    }
+    let at = *PICK.get_or_init(|| {
+        // The clock, because there is no rng here and none is worth a dependency for this.
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos() as usize);
+        seed % list.len()
+    });
+    list.get(at).map_or("", String::as_str)
+}
+
+/// Split a placeholder on its `~~struck~~` run.
+///
+/// The struck half stays legible under the line: the joke is the correction, and a correction
+/// you cannot read the first half of is not one.
+fn struck(text: &str) -> Vec<Span<'static>> {
+    let dim = Style::default().fg(colour::hint());
+    let Some((before, rest)) = text.split_once("~~") else {
+        return vec![Span::styled(text.to_owned(), dim)];
+    };
+    let Some((out, after)) = rest.split_once("~~") else {
+        return vec![Span::styled(text.to_owned(), dim)];
     };
     vec![
-        Span::styled(
-            " ",
-            Style::default()
-                .fg(colour::text())
-                .add_modifier(Modifier::REVERSED),
-        ),
-        Span::styled(hint, Style::default().fg(colour::hint())),
+        Span::styled(before.to_owned(), dim),
+        Span::styled(out.to_owned(), dim.add_modifier(Modifier::CROSSED_OUT)),
+        Span::styled(after.to_owned(), dim),
     ]
 }
 
@@ -307,7 +355,10 @@ mod tests {
             &[],
         ));
         assert_eq!(rendered.len(), 3, "top edge, text, bottom edge");
-        assert!(rendered[1].contains("/ for commands"), "{:?}", rendered[1]);
+        // Whatever this session picked, or the short hint when it will not fit -- not a
+        // particular line, because which one comes up is the point of having a list.
+        let said = rendered[1].trim().trim_matches('│').trim();
+        assert!(!said.is_empty(), "the box says nothing: {:?}", rendered[1]);
     }
 
     #[test]
@@ -442,11 +493,21 @@ mod narrow_tests {
 
     #[test]
     fn a_narrow_prompt_shortens_the_hint_rather_than_cutting_it() {
-        // `ask anything, or / for comman` is a rendering bug on the screen, and the half it
-        // loses is the half that says what to press.
+        // A placeholder cut in half is not a shorter line, it is one that looks broken. The
+        // session's placeholder is a joke of any length, so a narrow screen falls back to the
+        // short hint instead of trimming whichever one came up.
         let line = row(20);
         assert!(line.chars().count() <= 20, "{line:?}");
-        assert!(line.contains("/ for commands"), "{line:?}");
+        // Either the session's line fits, or the short hint stood in for it. What must never
+        // happen is half a line: `ask anything, or / for comman` reads as a rendering fault.
+        let said = line.trim().trim_matches('│').trim();
+        let whole = crate::glyph::placeholders()
+            .iter()
+            .any(|p| p.replace("~~", "").trim() == said);
+        assert!(
+            whole || said == crate::glyph::placeholder_short() || said.is_empty(),
+            "{said:?} is neither a whole line nor the short hint"
+        );
     }
 
     #[test]
@@ -456,8 +517,18 @@ mod narrow_tests {
     }
 
     #[test]
-    fn a_wide_prompt_keeps_the_full_hint() {
-        assert!(row(80).contains("ask anything"), "{:?}", row(80));
+    fn a_wide_prompt_shows_this_session_s_placeholder() {
+        // Whichever it picked, with the `~~` markers consumed rather than printed.
+        let line = row(80);
+        assert!(!line.contains("~~"), "the markers leaked: {line:?}");
+        let shown = line.trim().trim_matches('│').trim();
+        assert!(!shown.is_empty(), "{line:?}");
+        assert!(
+            crate::glyph::placeholders()
+                .iter()
+                .any(|p| p.replace("~~", "").trim() == shown),
+            "{shown:?} is not one of the list"
+        );
     }
 }
 
@@ -527,5 +598,90 @@ mod resolving_tests {
             editor.typed_age(0, 1, 'h').is_none(),
             "not by position alone"
         );
+    }
+}
+
+/// The empty prompt says something, and says it as a placeholder.
+#[cfg(test)]
+mod placeholder_tests {
+    use super::*;
+
+    fn spans_of(text: &str) -> Vec<(String, bool)> {
+        struck(text)
+            .into_iter()
+            .map(|s| {
+                (
+                    s.content.into_owned(),
+                    s.style.add_modifier.contains(Modifier::CROSSED_OUT),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_correction_is_three_spans_and_only_the_middle_is_struck() {
+        assert_eq!(
+            spans_of("ship it ~~Friday~~ whenever"),
+            vec![
+                ("ship it ".to_owned(), false),
+                ("Friday".to_owned(), true),
+                (" whenever".to_owned(), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_line_with_no_correction_is_left_whole() {
+        assert_eq!(
+            spans_of("just a hint"),
+            vec![("just a hint".to_owned(), false)]
+        );
+    }
+
+    #[test]
+    fn an_unclosed_marker_is_text_rather_than_a_panic() {
+        // A config author's typo should cost them a stray `~~`, not the prompt.
+        assert_eq!(
+            spans_of("half a ~~thought"),
+            vec![("half a ~~thought".to_owned(), false)]
+        );
+    }
+
+    #[test]
+    fn every_shipped_placeholder_has_a_correction_in_it() {
+        // The joke is the second thought. One without a struck run is a line that forgot to be
+        // the thing this list is for.
+        for line in crate::glyph::placeholders() {
+            let parts = struck(line);
+            assert_eq!(parts.len(), 3, "{line:?} has nothing struck out");
+            assert!(
+                parts[1].style.add_modifier.contains(Modifier::CROSSED_OUT),
+                "{line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn there_are_enough_of_them_to_not_repeat_soon() {
+        assert!(crate::glyph::placeholders().len() >= 20);
+    }
+
+    #[test]
+    fn the_placeholder_is_dimmer_than_what_you_type() {
+        // A placeholder in the text colour reads as something already in the box, and the first
+        // thing anybody does is try to delete it.
+        assert!(
+            colour::palette().hint < colour::palette().text,
+            "the hint is not dimmer: {} against {}",
+            colour::palette().hint,
+            colour::palette().text
+        );
+    }
+
+    #[test]
+    fn a_screen_too_narrow_for_the_line_says_something_shorter() {
+        let narrow = placeholder_spans(12);
+        let text: String = narrow.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.chars().count() <= 12, "{text:?}");
     }
 }

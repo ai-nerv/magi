@@ -29,6 +29,12 @@ macro_rules! glyphs {
             /// An empty one is refused on the way in, because a spinner with no frames is a
             /// division by zero at the one moment somebody is watching the screen.
             pub spinner: Vec<String>,
+            /// What the empty prompt says, one of which is shown a session.
+            ///
+            /// A `~~struck~~` run is drawn crossed out, and whatever follows it is the
+            /// correction -- the joke is the second thought, so the first has to still be
+            /// legible under the line.
+            pub placeholders: Vec<String>,
         }
 
         impl Default for Glyphs {
@@ -36,6 +42,7 @@ macro_rules! glyphs {
                 Self {
                     $($name: $default.to_owned(),)*
                     spinner: SPINNER.iter().map(|f| (*f).to_owned()).collect(),
+                    placeholders: PLACEHOLDERS.iter().map(|p| (*p).to_owned()).collect(),
                 }
             }
         }
@@ -111,12 +118,50 @@ pub fn spinner(tick: usize) -> &'static str {
     &frames[tick % frames.len()]
 }
 
+/// Every placeholder the empty prompt may show.
+#[must_use]
+pub fn placeholders() -> &'static [String] {
+    &glyphs().placeholders
+}
+
 /// How many frames the spinner has.
 #[must_use]
 pub fn spinner_frames() -> usize {
     glyphs().spinner.len()
 }
 
+///
+/// Every one is a second thought: something struck out and replaced, because that is the shape
+/// of the joke and the shape of the work. `~~x~~ y` renders `x` crossed out and `y` after it.
+///
+/// The old placeholder named `/` and was right once. A person who has used the thing twice does
+/// not need telling, and a line that never changes is a line nobody reads after the third time.
+const PLACEHOLDERS: [&str; 24] = [
+    "let's rewrite npm in ~~Python~~ Rust",
+    "this'll take ~~an afternoon~~ a quarter",
+    "it's a ~~quick fix~~ full rewrite",
+    "I'll just add ~~one dependency~~ four hundred",
+    "a ~~temporary~~ permanent workaround",
+    "I'll document it ~~today~~ eventually",
+    "it works on ~~production~~ my machine",
+    "we need ~~microservices~~ one file",
+    "ship it ~~Friday~~ whenever",
+    "~~TODO~~ FIXME",
+    "the tests are ~~passing~~ commented out",
+    "we'll fix it in ~~the next sprint~~ the postmortem",
+    "this is ~~self-documenting~~ undocumented",
+    "let's ~~not~~ add another abstraction layer",
+    "the bug is in ~~my code~~ the compiler",
+    "I understand this ~~regex~~ nothing",
+    "it's not a bug, it's ~~a feature~~ Tuesday",
+    "we're ~~almost~~ nowhere near done",
+    "just one more ~~refactor~~ rewrite",
+    "the deploy is ~~automated~~ a shell script I wrote",
+    "I've ~~read~~ skimmed the docs",
+    "this scales to ~~a million users~~ my laptop",
+    "let's ~~discuss~~ argue about tabs",
+    "the estimate is ~~two days~~ a lie",
+];
 #[cfg(test)]
 mod tests {
     use super::*;

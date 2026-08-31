@@ -84,8 +84,9 @@ axon.model = "anthropic/claude-sonnet-4-5"
 --   edge_horizontal  edge_vertical
 --   marker  no_marker  ellipsis  bullet
 --   more_rule  expand  collapse  quote_rule  notice_rule
---   placeholder  placeholder_short  no_model  idle  decrypt_pool  flicker_pool  type_stages
---   spinner            a list of frames: { "◐", "◓", "◑", "◒" }
+--   placeholder_short  no_model  idle  decrypt_pool  flicker_pool  type_stages
+--   spinner       a list of frames: { "◐", "◓", "◑", "◒" }
+--   placeholders  a list of lines, one shown a session (see below)
 --
 -- NUMBERS are rows, budgets and rates. Anything named `_share` is a percentage. A value under
 -- its floor is raised rather than refused:
@@ -115,6 +116,12 @@ axon.ui.decrypt_pool = "01"
 --
 axon.ui.flicker_odds = 3000
 axon.ui.flicker_ms   = 120
+
+-- What the empty prompt says. One is picked a session. A `~~struck~~` run is drawn crossed out
+-- and whatever follows it is the correction, which is where the joke is. Replace the list to
+-- write your own; an empty list leaves the prompt blank.
+--
+-- axon.ui.placeholders = { "let's rewrite npm in ~~Python~~ Rust" }
 
 -- And what you type arriving: each character shows as the first of `type_stages`, passes through
 -- the rest, and lands as the letter, all within `type_reveal_ms`. Zero, the built-in, is off.
