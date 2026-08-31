@@ -17,6 +17,8 @@ use std::time::{Duration, Instant};
 enum Phase {
     /// Showing something and not moving. The instant is when that stops.
     Resting(Instant),
+    /// Walking out to the end of the line before touching anything.
+    Reaching,
     /// Taking back what is there, a character at a time.
     Erasing,
     /// Writing the line as first thought, including the word it will regret.
@@ -27,6 +29,8 @@ enum Phase {
     Unwriting,
     /// Writing what it meant.
     Correcting,
+    /// Walking back to the start, having finished.
+    Leaving,
 }
 
 /// What the empty box is saying, and where it is editing itself.
@@ -54,6 +58,13 @@ pub struct Tease {
     after: String,
     /// Which line of the list is being performed.
     line: usize,
+    /// Where the writing cursor is, as a character index into `shown`.
+    ///
+    /// Its own position rather than "the end of the text", so it can be somewhere the text is
+    /// not: it walks out to the end before the first character is deleted and walks home when
+    /// the line is finished. A cursor that appeared at the end and vanished from it read as two
+    /// jumps, and a jump is something happening to the box rather than the box doing something.
+    caret: usize,
     /// When the last character moved, so the pace is time and not frame rate.
     stepped: Instant,
 }
@@ -70,6 +81,7 @@ impl Tease {
             struck: String::new(),
             after: String::new(),
             line: 0,
+            caret: 0,
             stepped: now,
         }
     }
@@ -101,7 +113,7 @@ impl Tease {
     pub fn caret(&self) -> Option<usize> {
         match self.phase {
             Phase::Resting(_) => None,
-            _ => Some(self.shown.chars().count()),
+            _ => Some(self.caret.min(self.shown.chars().count())),
         }
     }
 
@@ -112,6 +124,7 @@ impl Tease {
     pub fn interrupt(&mut self, opener: &str) {
         self.shown = opener.to_owned();
         self.phase = Phase::Resting(Instant::now() + patience());
+        self.caret = 0;
         self.stepped = Instant::now();
     }
 
@@ -134,7 +147,8 @@ impl Tease {
                 self.prefix = prefix;
                 self.struck = struck;
                 self.after = after;
-                self.phase = Phase::Erasing;
+                self.phase = Phase::Reaching;
+                self.caret = 0;
                 self.stepped = now;
                 true
             }
@@ -157,16 +171,27 @@ impl Tease {
         }
         self.stepped = now;
         match self.phase {
+            // Out to the end of the line before anything is touched, a cell at a time. This is
+            // the walk that used to be a jump.
+            Phase::Reaching => {
+                if self.caret < self.shown.chars().count() {
+                    self.caret += 1;
+                } else {
+                    self.phase = Phase::Erasing;
+                }
+            }
             Phase::Erasing => {
                 if self.shown.pop().is_none() {
                     self.phase = Phase::Writing;
                 }
+                self.caret = self.shown.chars().count();
             }
             Phase::Writing => {
                 let target = format!("{}{}", self.prefix, self.struck);
                 if !grow(&mut self.shown, &target) {
                     self.phase = Phase::Doubting(now + doubt());
                 }
+                self.caret = self.shown.chars().count();
             }
             Phase::Unwriting => {
                 if self.shown.chars().count() <= self.prefix.chars().count() {
@@ -174,10 +199,20 @@ impl Tease {
                 } else {
                     self.shown.pop();
                 }
+                self.caret = self.shown.chars().count();
             }
             Phase::Correcting => {
                 let target = format!("{}{}", self.prefix, self.after);
                 if !grow(&mut self.shown, &target) {
+                    self.phase = Phase::Leaving;
+                }
+                self.caret = self.shown.chars().count();
+            }
+            // And home again, rather than blinking out from wherever it finished.
+            Phase::Leaving => {
+                if self.caret > 0 {
+                    self.caret -= 1;
+                } else {
                     self.phase = Phase::Resting(now + patience());
                 }
             }
@@ -337,5 +372,81 @@ mod repeating {
         for pair in seen.windows(2) {
             assert_ne!(pair[0], pair[1], "the same line twice running: {seen:?}");
         }
+    }
+}
+
+/// The writing cursor travels; it does not appear where it is needed.
+#[cfg(test)]
+mod travelling {
+    use super::*;
+
+    /// Every caret position the box passes through, in order, driven at full speed.
+    fn journey(steps: usize) -> Vec<Option<usize>> {
+        let lines = vec!["abcd ~~ef~~ gh".to_owned(), "ijkl ~~mn~~ op".to_owned()];
+        let mut tease = Tease::new("opener");
+        let mut seen = vec![tease.caret()];
+        for _ in 0..steps {
+            // Rest and doubt are wall-clock; stepped over so the walk is what is measured.
+            tease.phase = match tease.phase {
+                Phase::Resting(_) => Phase::Resting(Instant::now()),
+                Phase::Doubting(_) => Phase::Doubting(Instant::now()),
+                other => other,
+            };
+            tease.stepped = Instant::now() - Duration::from_secs(1);
+            tease.advance(&lines);
+            let now = tease.caret();
+            if seen.last() != Some(&now) {
+                seen.push(now);
+            }
+        }
+        seen
+    }
+
+    #[test]
+    fn it_never_moves_more_than_one_cell_at_a_time() {
+        // The complaint this answers: it appeared at the end of the line and vanished from it.
+        // A jump is something happening to the box; a walk is the box doing something.
+        let seen = journey(4000);
+        for pair in seen.windows(2) {
+            let (Some(from), Some(to)) = (pair[0], pair[1]) else {
+                continue;
+            };
+            assert!(
+                from.abs_diff(to) <= 1,
+                "it jumped from {from} to {to}: {seen:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn it_walks_out_from_the_start_rather_than_appearing_at_the_end() {
+        let seen = journey(4000);
+        let first = seen
+            .iter()
+            .flatten()
+            .next()
+            .copied()
+            .expect("it started somewhere");
+        assert_eq!(first, 0, "it did not start at the beginning: {seen:?}");
+    }
+
+    #[test]
+    fn it_walks_home_before_it_rests() {
+        // The last thing before it disappears is a zero, not wherever the line happened to end.
+        let seen = journey(4000);
+        let mut last_seen = None;
+        for (at, caret) in seen.iter().enumerate() {
+            if caret.is_none() && at > 0 {
+                last_seen = seen[at - 1];
+                break;
+            }
+        }
+        assert_eq!(last_seen, Some(0), "it vanished mid-line: {seen:?}");
+    }
+
+    #[test]
+    fn it_is_hidden_while_the_box_rests() {
+        let tease = Tease::new("opener");
+        assert_eq!(tease.caret(), None);
     }
 }
