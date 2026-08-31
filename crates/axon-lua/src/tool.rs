@@ -50,6 +50,24 @@ pub enum Transport {
         #[serde(default)]
         env: std::collections::BTreeMap<String, String>,
     },
+    /// An ordinary program axon runs, with arguments built from the call.
+    ///
+    /// Not a peer: the child is any unix tool and axon reads what it printed. This is how a config
+    /// declares `grep`, `find` or `jq` without a peer to write or a shell string to quote. There is
+    /// no shell -- see [`axon_tools::command::render`] for what an argument is and is not.
+    Command {
+        /// The program to run.
+        command: String,
+        /// Its arguments, each a literal or `{name}` naming a declared property.
+        #[serde(default, deserialize_with = "lua_list")]
+        args: Vec<String>,
+        /// Environment for this program, beside what every process axon starts already gets.
+        #[serde(default)]
+        env: std::collections::BTreeMap<String, String>,
+        /// Seconds it may run before it is killed.
+        #[serde(default)]
+        timeout: Option<u64>,
+    },
 }
 
 /// A tool as a config declared it.
@@ -153,6 +171,41 @@ pub fn install(
                     &name,
                     &declaration,
                 )));
+            }
+            Transport::Command {
+                command,
+                args,
+                env,
+                timeout,
+            } => {
+                let tool = axon_tools::command::CommandTool::new(
+                    &name,
+                    &declaration.description,
+                    declaration.parameters.clone(),
+                    command,
+                    args.clone(),
+                )
+                .with_env(
+                    environ
+                        .iter()
+                        .chain(env)
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect(),
+                );
+                let tool = match timeout {
+                    Some(seconds) => tool.with_timeout(*seconds),
+                    None => tool,
+                };
+                // A placeholder naming a property the schema does not declare can never be
+                // filled, so the argument silently vanishes at every call. Caught here, where
+                // there is somebody to tell, rather than at the call where there is not.
+                if let Some(unknown) = undeclared(&tool, &declaration.parameters) {
+                    eprintln!(
+                        "axon: the tool {name:?} was not registered: its arguments name {unknown:?}, which it does not declare"
+                    );
+                    continue;
+                }
+                registry.register(Box::new(tool));
             }
             Transport::Process { command, args, env } => {
                 registry.register(Box::new(
@@ -362,5 +415,129 @@ mod tests {
         let echo = declared.iter().find(|t| t.name == "echo").expect("echo");
         assert_eq!(echo.description, "Say it back.");
         assert_eq!(echo.parameters["type"], "object");
+    }
+}
+
+/// A placeholder in a command's arguments that its schema never declares.
+///
+/// `{limit}` against a schema with no `limit` property can never be filled, so the argument
+/// disappears from every call and the tool quietly runs unbounded. The declaration is wrong, and
+/// the config author is the only one who can fix it.
+fn undeclared(
+    tool: &axon_tools::command::CommandTool,
+    parameters: &serde_json::Value,
+) -> Option<String> {
+    let declared = parameters.get("properties").and_then(|p| p.as_object());
+    tool.placeholders()
+        .into_iter()
+        .find(|name| !declared.is_some_and(|properties| properties.contains_key(name)))
+}
+
+/// A config can declare a tool that is an ordinary program.
+#[cfg(test)]
+mod command_transport {
+    use super::*;
+
+    /// The transport a declaration parses into.
+    fn transport(lua: &str) -> Result<Transport, String> {
+        let mut engine = Engine::new();
+        engine.run(lua, "test.lua").map_err(|e| e.to_string())?;
+        engine.harvest();
+        let (_, spec) = engine
+            .tools()
+            .into_iter()
+            .next()
+            .ok_or("nothing was declared")?;
+        let declaration: Declaration =
+            serde_json::from_value(spec).map_err(|why| why.to_string())?;
+        Ok(declaration.transport)
+    }
+
+    #[test]
+    fn a_command_declaration_parses() {
+        let parsed = transport(
+            r#"axon.tool("say", {
+                 description = "prints",
+                 parameters = { type = "object" },
+                 transport = { kind = "command", command = "echo", args = { "hi" } },
+               })"#,
+        )
+        .expect("it parses");
+        assert_eq!(
+            parsed,
+            Transport::Command {
+                command: "echo".to_owned(),
+                args: vec!["hi".to_owned()],
+                env: std::collections::BTreeMap::new(),
+                timeout: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_timeout_is_carried() {
+        let parsed = transport(
+            r#"axon.tool("slow", {
+                 transport = { kind = "command", command = "sleep", args = {}, timeout = 5 },
+               })"#,
+        )
+        .expect("it parses");
+        assert!(matches!(
+            parsed,
+            Transport::Command {
+                timeout: Some(5),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn the_three_transports_are_told_apart_by_kind() {
+        // One registry, three ways in, and the turn loop cannot tell them apart afterwards.
+        assert!(matches!(
+            transport(r#"axon.tool("a", { transport = { kind = "lua" } })"#),
+            Ok(Transport::Lua)
+        ));
+        assert!(matches!(
+            transport(r#"axon.tool("a", { transport = { kind = "process", command = "x" } })"#),
+            Ok(Transport::Process { .. })
+        ));
+        assert!(matches!(
+            transport(r#"axon.tool("a", { transport = { kind = "command", command = "x" } })"#),
+            Ok(Transport::Command { .. })
+        ));
+    }
+
+    #[test]
+    fn a_placeholder_the_schema_does_not_declare_is_refused() {
+        let tool = axon_tools::command::CommandTool::new(
+            "grep",
+            "",
+            serde_json::json!({
+                "type": "object",
+                "properties": { "pattern": { "type": "string" } }
+            }),
+            "rg",
+            vec!["{pattern}".to_owned(), "{limit}".to_owned()],
+        );
+        assert_eq!(
+            undeclared(&tool, &tool.parameters()),
+            Some("limit".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_declaration_whose_placeholders_all_exist_is_accepted() {
+        let tool = axon_tools::command::CommandTool::new(
+            "grep",
+            "",
+            serde_json::json!({
+                "type": "object",
+                "properties": { "pattern": { "type": "string" } }
+            }),
+            "rg",
+            vec!["{pattern}".to_owned()],
+        );
+        assert_eq!(undeclared(&tool, &tool.parameters()), None);
     }
 }
