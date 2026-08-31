@@ -18,16 +18,27 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::{Terminal, TerminalOptions, Viewport};
 use std::io::{self, IsTerminal, Stdout, Write};
 
-/// Give the mouse to the terminal, and keep it there.
+/// Ask for button presses and the wheel, and nothing else.
 ///
-/// axon never asks for mouse reporting. Mouse tracking is one terminal-wide switch: an
-/// application that turns it on stops the terminal selecting text *everywhere*, whether or not
-/// it uses the events, and selecting text out of a transcript is worth more than a wheel and a
-/// clickable handle put together.
+/// **Not `EnableMouseCapture`.** That sets `?1003h` — *any-event* tracking, which reports every
+/// motion of the pointer whether a button is down or not. axon reads three things: wheel up,
+/// wheel down, and a press on a block's fold handle. `?1000h` reports all three and nothing more,
+/// so the terminal is asked for as little as will do. `?1006h` asks for SGR coordinates, without
+/// which a click past column 223 cannot be expressed.
 ///
-/// Sent on the way in as well as the way out, and clearing every mode rather than one: a run
-/// killed before it could tear down leaves whatever it had set still set, and a terminal left in
-/// `?1003h` by an older build is one nothing here would otherwise clear.
+/// **Selecting text is the terminal's bypass, not ours.** Every terminal that implements mouse
+/// reporting also implements a modifier that suppresses it, so a drag reaches the terminal's own
+/// selection instead of the application: xterm and most emulators use shift, and a multiplexer
+/// may use its own — hexe takes it from `mouse.selection_override`, which is ctrl or alt. This is
+/// how every full-screen program that wants both works, neovim included. An application that
+/// declines the mouse to protect selection is solving it in the one place it cannot be solved.
+const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
+
+/// Give it back.
+///
+/// Every mode, not only the two [`MOUSE_ON`] asks for, and sent on the way in as well as the way
+/// out: a run killed before it could tear down leaves whatever it had set still set, and a
+/// terminal left in `?1003h` by an older build is one nothing here would otherwise clear.
 const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 
 /// A terminal in raw mode, restored on drop.
@@ -53,9 +64,10 @@ impl Session {
         let mut out = io::stdout();
         execute!(out, crossterm::event::EnableBracketedPaste)?;
         execute!(out, EnterAlternateScreen)?;
-        // Released rather than taken, and released explicitly: a terminal a killed run left in
-        // a tracking mode is one nothing here set and nothing here would clear. See [`MOUSE_OFF`].
-        write!(out, "{MOUSE_OFF}")?;
+        // Cleared first, because a killed run leaves its modes set and `?1003h` from an older
+        // build is one nothing here would otherwise undo. Then asked for the two that a fold
+        // handle and a wheel need. See [`MOUSE_ON`] for why selecting text is unaffected.
+        write!(out, "{MOUSE_OFF}{MOUSE_ON}")?;
         out.flush()?;
 
         let enhanced = push_keyboard_enhancements(&mut out).unwrap_or(false);
