@@ -181,7 +181,12 @@ end
 --
 -- Below `binary_path` on purpose: it needs `BIN` and `binary_path`, and a `local` declared later
 -- in the file is a different variable from the global this would otherwise read.
+-- Set while `install` is running, because every warning below is "run `make install`" and
+-- printing that to somebody who is running it is noise that reads as a failure.
+local installing = false
+
 local function warn_if_install_is_behind()
+  if installing then return end
   local installed = PREFIX .. "/bin/" .. BIN
   if not oslo.fs.stat(installed) then
     print(dim("   nothing is installed yet — run `make install`"))
@@ -315,8 +320,13 @@ make.recipe{
 make.recipe{
   name = "install",
   desc = ("install the static binary to %s/bin, and config/ where it reads it"):format(PREFIX),
-  deps = { "build" },
+  -- Built here rather than through `deps`, so the flag is set before anything can warn. A
+  -- dependency runs first, and what it printed was "run `make install`" to somebody already
+  -- running it -- which reads as a failure at the top of a run that then succeeds.
   run = function()
+    installing = true
+    build_binary(true)
+    report(binary_path())
     local bin = PREFIX .. "/bin"
     assert(oslo.run{ "mkdir", "-p", bin }.ok, "could not create " .. bin)
     assert(oslo.run{ "install", "-m", "755", binary_path(), bin .. "/" .. BIN }.ok,
