@@ -29,12 +29,16 @@ macro_rules! glyphs {
             /// An empty one is refused on the way in, because a spinner with no frames is a
             /// division by zero at the one moment somebody is watching the screen.
             pub spinner: Vec<String>,
-            /// What the empty prompt says, one of which is shown a session.
+            /// What the empty prompt writes to itself once it has been left alone.
             ///
-            /// A `~~struck~~` run is drawn crossed out, and whatever follows it is the
-            /// correction -- the joke is the second thought, so the first has to still be
-            /// legible under the line.
+            /// `a ~~b~~ c` means "write `a b`, take the `b` back, write `c`" -- performed a
+            /// character at a time rather than drawn struck through. See [`crate::tease`].
             pub placeholders: Vec<String>,
+            /// What the empty prompt says before any of that.
+            ///
+            /// Plain, and nothing to read twice: this is the line somebody sees when they sit
+            /// down, and a joke in that position is a joke in the way.
+            pub openers: Vec<String>,
         }
 
         impl Default for Glyphs {
@@ -43,6 +47,7 @@ macro_rules! glyphs {
                     $($name: $default.to_owned(),)*
                     spinner: SPINNER.iter().map(|f| (*f).to_owned()).collect(),
                     placeholders: PLACEHOLDERS.iter().map(|p| (*p).to_owned()).collect(),
+                    openers: OPENERS.iter().map(|o| (*o).to_owned()).collect(),
                 }
             }
         }
@@ -118,10 +123,16 @@ pub fn spinner(tick: usize) -> &'static str {
     &frames[tick % frames.len()]
 }
 
-/// Every placeholder the empty prompt may show.
+/// Every line the empty prompt may perform once it is left alone.
 #[must_use]
 pub fn placeholders() -> &'static [String] {
     &glyphs().placeholders
+}
+
+/// Every line the empty prompt may open with.
+#[must_use]
+pub fn openers() -> &'static [String] {
+    &glyphs().openers
 }
 
 /// How many frames the spinner has.
@@ -130,38 +141,18 @@ pub fn spinner_frames() -> usize {
     glyphs().spinner.len()
 }
 
+/// What the empty prompt performs when no configuration says otherwise.
 ///
-/// Every one is a second thought: something struck out and replaced, because that is the shape
-/// of the joke and the shape of the work. `~~x~~ y` renders `x` crossed out and `y` after it.
+/// One line, not a list. **The list lives in `config/init.lua`**, which is the point: a line that
+/// stops being funny should be deletable without a compiler. This is the floor under a machine
+/// with no config at all, and it carries the `~~` marker so the performance has something to do.
+const PLACEHOLDERS: [&str; 1] = ["first we need to build a ~~tool~~ tool to build the tool"];
+
+/// What the empty prompt opens with when no configuration says otherwise.
 ///
-/// The old placeholder named `/` and was right once. A person who has used the thing twice does
-/// not need telling, and a line that never changes is a line nobody reads after the third time.
-const PLACEHOLDERS: [&str; 24] = [
-    "let's rewrite npm in ~~Python~~ Rust",
-    "this'll take ~~an afternoon~~ a quarter",
-    "it's a ~~quick fix~~ full rewrite",
-    "I'll just add ~~one dependency~~ four hundred",
-    "a ~~temporary~~ permanent workaround",
-    "I'll document it ~~today~~ eventually",
-    "it works on ~~production~~ my machine",
-    "we need ~~microservices~~ one file",
-    "ship it ~~Friday~~ whenever",
-    "~~TODO~~ FIXME",
-    "the tests are ~~passing~~ commented out",
-    "we'll fix it in ~~the next sprint~~ the postmortem",
-    "this is ~~self-documenting~~ undocumented",
-    "let's ~~not~~ add another abstraction layer",
-    "the bug is in ~~my code~~ the compiler",
-    "I understand this ~~regex~~ nothing",
-    "it's not a bug, it's ~~a feature~~ Tuesday",
-    "we're ~~almost~~ nowhere near done",
-    "just one more ~~refactor~~ rewrite",
-    "the deploy is ~~automated~~ a shell script I wrote",
-    "I've ~~read~~ skimmed the docs",
-    "this scales to ~~a million users~~ my laptop",
-    "let's ~~discuss~~ argue about tabs",
-    "the estimate is ~~two days~~ a lie",
-];
+/// Plain, and the list lives in the configuration too. This is what somebody reads when they sit
+/// down: it should say what the box is for and then get out of the way.
+const OPENERS: [&str; 1] = ["let's build something"];
 #[cfg(test)]
 mod tests {
     use super::*;

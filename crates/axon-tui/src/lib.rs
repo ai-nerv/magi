@@ -29,6 +29,7 @@ pub mod scrollback;
 pub mod select;
 pub mod status;
 pub mod table;
+pub mod tease;
 pub mod transcript;
 pub mod wrap;
 

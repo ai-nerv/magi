@@ -84,6 +84,9 @@ metrics! {
     flicker_odds: u16 = 0, 0, "One box character in this many glitches per window. Zero is off.";
     flicker_ms: u64 = 120, 16, "How long one glitched character holds before it comes back.";
     type_reveal_ms: u64 = 0, 0, "How long a character you type takes to resolve. Zero is off.";
+    tease_after_ms: u64 = 30_000, 0, "Idle time before the empty prompt starts writing to itself. Zero is off.";
+    tease_step_ms: u64 = 45, 1, "How long one character of that takes.";
+    tease_doubt_ms: u64 = 900, 0, "How long the word it regrets sits there before it is taken back.";
 }
 
 impl Default for Metrics {

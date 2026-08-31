@@ -22,14 +22,13 @@ pub fn visible_rows(rows: u16) -> usize {
 ///
 /// Dimmer than the text, deliberately. A placeholder in the same colour as what you type reads
 /// as something already in the box, and the first thing anybody does is try to delete it.
-fn placeholder_spans(width: u16, at: usize) -> Vec<Span<'static>> {
+fn placeholder_spans(width: u16, hint: &str) -> Vec<Span<'static>> {
     let mut spans = vec![Span::styled(
         " ",
         Style::default()
             .fg(colour::text())
             .add_modifier(Modifier::REVERSED),
     )];
-    let hint = chosen(at);
     // A narrow screen gets the short one, and a very narrow one gets nothing: a placeholder cut
     // in half is not a shorter joke, it is a line that looks broken.
     if hint.chars().count() >= usize::from(width) {
@@ -42,44 +41,11 @@ fn placeholder_spans(width: u16, at: usize) -> Vec<Span<'static>> {
         }
         return spans;
     }
-    spans.extend(struck(hint));
+    spans.push(Span::styled(
+        hint.to_owned(),
+        Style::default().fg(colour::hint()),
+    ));
     spans
-}
-
-/// The placeholder at `at`, wrapping so any index is a line.
-///
-/// Which one is the caller's to remember, not this module's. It changes when the prompt empties
-/// -- see [`crate::pick`] -- and a renderer holding that decision in a `OnceLock` could only ever
-/// show one a session.
-fn chosen(at: usize) -> &'static str {
-    let list = glyph::placeholders();
-    if list.is_empty() {
-        return "";
-    }
-    list.get(at % list.len()).map_or("", String::as_str)
-}
-
-/// Split a placeholder on its `~~struck~~` run.
-///
-/// Three spans: what came before, the struck half, and the correction in italic. The struck half
-/// stays legible under the line -- a correction you cannot read the first half of is not one --
-/// and the italic is what makes the second half read as the second thought rather than as more
-/// of the same sentence.
-fn struck(text: &str) -> Vec<Span<'static>> {
-    let dim = Style::default().fg(colour::hint());
-    let Some((before, rest)) = text.split_once("~~") else {
-        return vec![Span::styled(text.to_owned(), dim)];
-    };
-    let Some((out, after)) = rest.split_once("~~") else {
-        return vec![Span::styled(text.to_owned(), dim)];
-    };
-    vec![
-        Span::styled(before.to_owned(), dim),
-        Span::styled(out.to_owned(), dim.add_modifier(Modifier::CROSSED_OUT)),
-        // The correction leans. Struck text and plain text either side reads as one line with a
-        // mistake in it; struck text and *italic* reads as a second thought, which is the joke.
-        Span::styled(after.to_owned(), dim.add_modifier(Modifier::ITALIC)),
-    ]
 }
 
 /// How many text rows the prompt shows right now, on a terminal `rows` tall.
@@ -121,7 +87,7 @@ pub fn render(
     tick: usize,
     scan: crate::border::Scan,
     menu: &[Line<'static>],
-    placeholder: usize,
+    placeholder: &str,
 ) -> Vec<Line<'static>> {
     let text_style = Style::default().fg(colour::text());
     let (cursor_row, cursor_col) = editor.cursor();
@@ -343,7 +309,8 @@ mod tests {
     #[test]
     fn an_empty_prompt_says_what_to_do_with_it() {
         // An empty box between two rules gives no way to tell a prompt waiting for input from
-        // a screen that has hung, and no way to find the command list without being told.
+        // a screen that has hung. What it says is the caller's -- see `crate::tease` -- and it
+        // is drawn where the cursor is not.
         let rendered = rows_of(&render(
             &Editor::new(),
             40,
@@ -351,13 +318,11 @@ mod tests {
             0,
             crate::border::Scan::Off,
             &[],
-            0,
+            "what are we making?",
         ));
         assert_eq!(rendered.len(), 3, "top edge, text, bottom edge");
-        // Whatever this session picked, or the short hint when it will not fit -- not a
-        // particular line, because which one comes up is the point of having a list.
         let said = rendered[1].trim().trim_matches('│').trim();
-        assert!(!said.is_empty(), "the box says nothing: {:?}", rendered[1]);
+        assert_eq!(said, "what are we making?");
     }
 
     #[test]
@@ -369,7 +334,7 @@ mod tests {
             0,
             crate::border::Scan::Off,
             &[],
-            0,
+            "",
         ));
         assert!(!rendered[1].contains("commands"), "{:?}", rendered[1]);
         assert!(
@@ -388,7 +353,7 @@ mod tests {
             0,
             crate::border::Scan::Off,
             &[],
-            0,
+            "",
         ));
         assert_eq!(
             rendered[1], "│ hello            │",
@@ -400,7 +365,7 @@ mod tests {
     fn the_cursor_cell_is_inverted_in_place() {
         let mut editor = editor_with("abc");
         editor.home();
-        let lines = render(&editor, 20, 24, 0, crate::border::Scan::Off, &[], 0);
+        let lines = render(&editor, 20, 24, 0, crate::border::Scan::Off, &[], "");
         let cursor = lines[1]
             .spans
             .iter()
@@ -418,7 +383,7 @@ mod tests {
             0,
             crate::border::Scan::Off,
             &[],
-            0,
+            "",
         );
         let cursor = lines[1]
             .spans
@@ -437,7 +402,7 @@ mod tests {
             0,
             crate::border::Scan::Off,
             &[],
-            0,
+            "",
         );
         for index in [0, lines.len() - 1] {
             let width: usize = lines[index]
@@ -462,7 +427,7 @@ mod tests {
             0,
             crate::border::Scan::Off,
             &[],
-            0,
+            "",
         ));
         assert!(rendered[0].contains("↑"), "{:?}", rendered[0]);
         assert!(rendered[0].contains("more"), "{:?}", rendered[0]);
@@ -491,7 +456,7 @@ mod tests {
             0,
             crate::border::Scan::Off,
             &[],
-            0,
+            "",
         ));
         assert_eq!(rendered.len(), visible_rows(24) + 2, "rules plus text rows");
     }
@@ -509,7 +474,7 @@ mod tests {
 mod narrow_tests {
     use super::*;
 
-    fn row(width: u16) -> String {
+    fn row(width: u16, hint: &str) -> String {
         render(
             &Editor::new(),
             width,
@@ -517,7 +482,7 @@ mod narrow_tests {
             0,
             crate::border::Scan::Off,
             &[],
-            0,
+            hint,
         )[1]
         .spans
         .iter()
@@ -527,42 +492,30 @@ mod narrow_tests {
 
     #[test]
     fn a_narrow_prompt_shortens_the_hint_rather_than_cutting_it() {
-        // A placeholder cut in half is not a shorter line, it is one that looks broken. The
-        // session's placeholder is a joke of any length, so a narrow screen falls back to the
-        // short hint instead of trimming whichever one came up.
-        let line = row(20);
+        // A line cut in half is not a shorter line, it is one that looks broken. What the box is
+        // writing can be any length, so a narrow screen falls back to the short hint.
+        let line = row(20, "a line far too long for twenty columns");
         assert!(line.chars().count() <= 20, "{line:?}");
-        // Either the session's line fits, or the short hint stood in for it. What must never
-        // happen is half a line: `ask anything, or / for comman` reads as a rendering fault.
         let said = line.trim().trim_matches('│').trim();
-        let whole = crate::glyph::placeholders()
-            .iter()
-            .any(|p| p.replace("~~", "").trim() == said);
         assert!(
-            whole || said == crate::glyph::placeholder_short() || said.is_empty(),
-            "{said:?} is neither a whole line nor the short hint"
+            said == crate::glyph::placeholder_short() || said.is_empty(),
+            "{said:?} is neither the short hint nor nothing"
         );
     }
 
     #[test]
     fn a_prompt_with_no_room_at_all_says_nothing() {
-        let line = row(6);
+        let line = row(6, "anything at all");
         assert!(line.chars().count() <= 6, "{line:?}");
     }
 
     #[test]
-    fn a_wide_prompt_shows_this_session_s_placeholder() {
-        // Whichever it picked, with the `~~` markers consumed rather than printed.
-        let line = row(80);
-        assert!(!line.contains("~~"), "the markers leaked: {line:?}");
+    fn a_wide_prompt_draws_what_it_was_handed() {
+        // The renderer chooses nothing now. What the box is saying is the caller's business --
+        // see `crate::tease` -- and this draws it.
+        let line = row(80, "let's scan the project");
         let shown = line.trim().trim_matches('│').trim();
-        assert!(!shown.is_empty(), "{line:?}");
-        assert!(
-            crate::glyph::placeholders()
-                .iter()
-                .any(|p| p.replace("~~", "").trim() == shown),
-            "{shown:?} is not one of the list"
-        );
+        assert_eq!(shown, "let's scan the project");
     }
 }
 
@@ -640,65 +593,6 @@ mod resolving_tests {
 mod placeholder_tests {
     use super::*;
 
-    /// Each span as `(text, struck, italic)`.
-    fn spans_of(text: &str) -> Vec<(String, bool, bool)> {
-        struck(text)
-            .into_iter()
-            .map(|s| {
-                (
-                    s.content.into_owned(),
-                    s.style.add_modifier.contains(Modifier::CROSSED_OUT),
-                    s.style.add_modifier.contains(Modifier::ITALIC),
-                )
-            })
-            .collect()
-    }
-
-    #[test]
-    fn the_middle_is_struck_and_the_correction_leans() {
-        // Struck text with plain text either side reads as one sentence with a mistake in it.
-        // The italic is what makes the second half a second thought.
-        assert_eq!(
-            spans_of("ship it ~~Friday~~ whenever"),
-            vec![
-                ("ship it ".to_owned(), false, false),
-                ("Friday".to_owned(), true, false),
-                (" whenever".to_owned(), false, true),
-            ]
-        );
-    }
-
-    #[test]
-    fn a_line_with_no_correction_is_left_whole() {
-        assert_eq!(
-            spans_of("just a hint"),
-            vec![("just a hint".to_owned(), false, false)]
-        );
-    }
-
-    #[test]
-    fn an_unclosed_marker_is_text_rather_than_a_panic() {
-        // A config author's typo should cost them a stray `~~`, not the prompt.
-        assert_eq!(
-            spans_of("half a ~~thought"),
-            vec![("half a ~~thought".to_owned(), false, false)]
-        );
-    }
-
-    #[test]
-    fn every_shipped_placeholder_has_a_correction_in_it() {
-        // The joke is the second thought. One without a struck run is a line that forgot to be
-        // the thing this list is for.
-        for line in crate::glyph::placeholders() {
-            let parts = struck(line);
-            assert_eq!(parts.len(), 3, "{line:?} has nothing struck out");
-            assert!(
-                parts[1].style.add_modifier.contains(Modifier::CROSSED_OUT),
-                "{line:?}"
-            );
-        }
-    }
-
     #[test]
     fn the_placeholder_is_dimmer_than_what_you_type() {
         // A placeholder in the text colour reads as something already in the box, and the first
@@ -713,8 +607,29 @@ mod placeholder_tests {
 
     #[test]
     fn a_screen_too_narrow_for_the_line_says_something_shorter() {
-        let narrow = placeholder_spans(12, 0);
+        // Half a line reads as a rendering fault. The short hint stands in instead.
+        let narrow = placeholder_spans(12, "a line far too long for twelve columns");
         let text: String = narrow.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.chars().count() <= 12, "{text:?}");
+    }
+
+    #[test]
+    fn a_line_that_fits_is_drawn_whole() {
+        let spans = placeholder_spans(40, "let's build something");
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.ends_with("let's build something"), "{text:?}");
+    }
+
+    #[test]
+    fn nothing_is_struck_through_any_more() {
+        // The correction is performed by `crate::tease` -- written, then taken back -- rather
+        // than drawn with both halves on screen at once.
+        let spans = placeholder_spans(60, "the scaffolding is temporary");
+        assert!(
+            spans
+                .iter()
+                .all(|s| !s.style.add_modifier.contains(Modifier::CROSSED_OUT)),
+            "something is still drawn struck"
+        );
     }
 }

@@ -141,6 +141,10 @@ pub async fn run(
             Some(Ok(event)) = terminal_events.next() => {
                 match event {
                     Event::Key(key) if key.kind == crossterm::event::KeyEventKind::Press => {
+                        // Somebody is here. Whatever the box was writing to itself, it stops and
+                        // starts its wait over -- including on the keys that leave the prompt
+                        // empty, which is most of them at this point.
+                        app.tease.interrupt(crate::app::opener());
                         let busy = app.is_busy();
                         let action =
                             keys::handle(

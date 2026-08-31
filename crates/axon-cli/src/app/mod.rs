@@ -125,11 +125,11 @@ pub struct App {
     pub picking: Option<Picking>,
     /// How much of each tool result to show.
     pub detail: axon_tui::transcript::Detail,
-    /// Which placeholder the empty prompt is showing.
+    /// The empty prompt writing to itself.
     ///
-    /// Held here rather than in the renderer because it changes on an event -- the prompt
-    /// emptying -- and not on a frame. See [`App::settle_prompt`].
-    pub placeholder: usize,
+    /// Held here rather than in the renderer because it moves on a clock and on what the person
+    /// is doing, neither of which a draw call knows about. See [`App::settle_prompt`].
+    pub tease: axon_tui::tease::Tease,
     /// Whether the prompt was empty when it was last looked at.
     was_blank: bool,
     /// The text being dragged over, or the last drag that finished.
@@ -177,7 +177,7 @@ impl App {
             // Folded. A transcript of whole build logs is not a transcript, and the handle at
             // the foot of each block is how you open the one you care about.
             detail: axon_tui::transcript::Detail::Preview,
-            placeholder: axon_tui::pick::first(axon_tui::glyph::placeholders().len()),
+            tease: axon_tui::tease::Tease::new(opener()),
             was_blank: true,
             selection: None,
             flipped: std::collections::BTreeSet::new(),
@@ -195,16 +195,17 @@ impl App {
         }
     }
 
-    /// Note whether the prompt is empty, and pick a new placeholder if it just became so.
+    /// Move the empty prompt on, and put it back to an opener when somebody types.
     ///
-    /// On the transition, not on the state: a new line every frame the box happens to be empty
-    /// would be a flicker, and the same line forever is furniture. Both ways a prompt empties
-    /// come through here -- submitted, and deleted back to nothing.
+    /// A prompt that has just emptied -- deleted back to nothing, or submitted -- starts its
+    /// wait over with a fresh opener. A prompt with something in it shows no placeholder at all,
+    /// so there is nothing to advance.
     pub fn settle_prompt(&mut self) {
         let blank = self.editor.is_blank();
-        if blank && !self.was_blank {
-            self.placeholder =
-                axon_tui::pick::another(self.placeholder, axon_tui::glyph::placeholders().len());
+        if blank != self.was_blank {
+            self.tease.interrupt(opener());
+        } else if blank {
+            self.tease.advance(axon_tui::glyph::placeholders());
         }
         self.was_blank = blank;
     }
@@ -719,70 +720,18 @@ impl App {
 
 mod folding;
 
-/// The empty prompt does not show the same line twice running.
-#[cfg(test)]
-mod settling {
-    use super::App;
-
-    #[test]
-    fn deleting_back_to_nothing_picks_a_new_line() {
-        // The complaint this answers: one line sat there all session, so it stopped being a
-        // joke and became a label.
-        let mut app = App::new();
-        app.settle_prompt();
-        let first = app.placeholder;
-
-        app.editor.insert_str("something");
-        app.settle_prompt();
-        assert_eq!(app.placeholder, first, "typing does not change it");
-
-        app.editor.clear();
-        app.settle_prompt();
-        assert_ne!(app.placeholder, first, "emptying does");
+/// A line for the box to open with.
+///
+/// Drawn fresh each time the prompt empties, so sitting down twice does not read the same twice.
+pub(crate) fn opener() -> &'static str {
+    let list = axon_tui::glyph::openers();
+    if list.is_empty() {
+        return "";
     }
-
-    #[test]
-    fn a_submitted_prompt_leaves_a_new_one_behind() {
-        // The other way a prompt empties, and the one that happens every turn.
-        let mut app = App::new();
-        app.editor.insert_str("a question");
-        app.settle_prompt();
-        let before = app.placeholder;
-        app.editor.submit();
-        app.settle_prompt();
-        assert_ne!(app.placeholder, before);
-    }
-
-    #[test]
-    fn sitting_empty_does_not_keep_rerolling() {
-        // Drawn on every frame, so a line that changed while the box merely *was* empty would
-        // change sixty times a second.
-        let mut app = App::new();
-        app.settle_prompt();
-        let showing = app.placeholder;
-        for _ in 0..100 {
-            app.settle_prompt();
-        }
-        assert_eq!(app.placeholder, showing);
-    }
-
-    #[test]
-    fn typing_and_deleting_repeatedly_keeps_moving() {
-        let mut app = App::new();
-        app.settle_prompt();
-        let mut seen = vec![app.placeholder];
-        for _ in 0..6 {
-            app.editor.insert_str("x");
-            app.settle_prompt();
-            app.editor.clear();
-            app.settle_prompt();
-            let now = app.placeholder;
-            assert_ne!(
-                Some(&now),
-                seen.last(),
-                "the same line came back immediately"
-            );
-            seen.push(now);
-        }
-    }
+    list.get(axon_tui::pick::first(list.len()))
+        .map_or("", String::as_str)
 }
+
+#[cfg(test)]
+#[path = "opening.rs"]
+mod opening_tests;

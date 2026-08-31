@@ -117,11 +117,23 @@ axon.ui.decrypt_pool = "01"
 axon.ui.flicker_odds = 3000
 axon.ui.flicker_ms   = 120
 
--- What the empty prompt says. One is picked a session.
+-- What the box says when you sit down. Plain, and read once: a joke in this position is a joke
+-- in the way. A fresh one each time the prompt empties.
+axon.ui.openers = {
+  "let's build something",
+  "what are we making?",
+  "let's scan the project",
+  "where shall we start?",
+  "what needs doing?",
+  "let's have a look",
+  "describe the change",
+  "what is broken?",
+}
+
+-- What it writes to itself once you have left it alone for `tease_after_ms`.
 --
--- A `~~struck~~` run is drawn crossed out and whatever follows it is the correction, which is
--- where the joke is. Add your own, delete the ones that stop being funny; an empty list leaves
--- the prompt blank. A line too long for the screen falls back to `placeholder_short`.
+-- `a ~~b~~ c` is performed, not drawn: it writes `a b`, reads it back for a moment, deletes the
+-- `b` a character at a time, and writes `c` in its place. Watching it happen is the joke.
 axon.ui.placeholders = {
   -- The work
   "first we need to build a ~~tool~~ tool to build the tool",
