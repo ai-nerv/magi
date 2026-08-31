@@ -61,8 +61,10 @@ fn chosen(at: usize) -> &'static str {
 
 /// Split a placeholder on its `~~struck~~` run.
 ///
-/// The struck half stays legible under the line: the joke is the correction, and a correction
-/// you cannot read the first half of is not one.
+/// Three spans: what came before, the struck half, and the correction in italic. The struck half
+/// stays legible under the line -- a correction you cannot read the first half of is not one --
+/// and the italic is what makes the second half read as the second thought rather than as more
+/// of the same sentence.
 fn struck(text: &str) -> Vec<Span<'static>> {
     let dim = Style::default().fg(colour::hint());
     let Some((before, rest)) = text.split_once("~~") else {
@@ -74,7 +76,9 @@ fn struck(text: &str) -> Vec<Span<'static>> {
     vec![
         Span::styled(before.to_owned(), dim),
         Span::styled(out.to_owned(), dim.add_modifier(Modifier::CROSSED_OUT)),
-        Span::styled(after.to_owned(), dim),
+        // The correction leans. Struck text and plain text either side reads as one line with a
+        // mistake in it; struck text and *italic* reads as a second thought, which is the joke.
+        Span::styled(after.to_owned(), dim.add_modifier(Modifier::ITALIC)),
     ]
 }
 
@@ -636,26 +640,30 @@ mod resolving_tests {
 mod placeholder_tests {
     use super::*;
 
-    fn spans_of(text: &str) -> Vec<(String, bool)> {
+    /// Each span as `(text, struck, italic)`.
+    fn spans_of(text: &str) -> Vec<(String, bool, bool)> {
         struck(text)
             .into_iter()
             .map(|s| {
                 (
                     s.content.into_owned(),
                     s.style.add_modifier.contains(Modifier::CROSSED_OUT),
+                    s.style.add_modifier.contains(Modifier::ITALIC),
                 )
             })
             .collect()
     }
 
     #[test]
-    fn a_correction_is_three_spans_and_only_the_middle_is_struck() {
+    fn the_middle_is_struck_and_the_correction_leans() {
+        // Struck text with plain text either side reads as one sentence with a mistake in it.
+        // The italic is what makes the second half a second thought.
         assert_eq!(
             spans_of("ship it ~~Friday~~ whenever"),
             vec![
-                ("ship it ".to_owned(), false),
-                ("Friday".to_owned(), true),
-                (" whenever".to_owned(), false),
+                ("ship it ".to_owned(), false, false),
+                ("Friday".to_owned(), true, false),
+                (" whenever".to_owned(), false, true),
             ]
         );
     }
@@ -664,7 +672,7 @@ mod placeholder_tests {
     fn a_line_with_no_correction_is_left_whole() {
         assert_eq!(
             spans_of("just a hint"),
-            vec![("just a hint".to_owned(), false)]
+            vec![("just a hint".to_owned(), false, false)]
         );
     }
 
@@ -673,7 +681,7 @@ mod placeholder_tests {
         // A config author's typo should cost them a stray `~~`, not the prompt.
         assert_eq!(
             spans_of("half a ~~thought"),
-            vec![("half a ~~thought".to_owned(), false)]
+            vec![("half a ~~thought".to_owned(), false, false)]
         );
     }
 
