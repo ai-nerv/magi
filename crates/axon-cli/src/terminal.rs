@@ -18,25 +18,16 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::{Terminal, TerminalOptions, Viewport};
 use std::io::{self, IsTerminal, Stdout, Write};
 
-/// Ask the terminal to report button presses and the wheel, and nothing else.
+/// Give the mouse to the terminal, and keep it there.
 ///
-/// **Not `EnableMouseCapture`.** That sets `?1003h` — *any-event* tracking, which reports every
-/// motion of the pointer whether a button is down or not. A terminal in that mode hands the
-/// application the whole mouse, and dragging out a selection stops working; several emulators
-/// stop honouring shift-to-bypass as well, which leaves no way to select text at all.
+/// axon never asks for mouse reporting. Mouse tracking is one terminal-wide switch: an
+/// application that turns it on stops the terminal selecting text *everywhere*, whether or not
+/// it uses the events, and selecting text out of a transcript is worth more than a wheel and a
+/// clickable handle put together.
 ///
-/// axon reads three events — wheel up, wheel down, and a left press on a block's handle — and
-/// `?1000h` reports all three. Drag and motion are what it does not need and what selection does,
-/// so they stay with the terminal. `?1006h` asks for SGR coordinates, without which a click past
-/// column 223 cannot be expressed.
-const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
-
-/// Give the mouse back.
-///
-/// Every mode, not only the two [`MOUSE_ON`] asks for. A run that was killed before it could tear
-/// down leaves whatever it had set still set, and a terminal left in `?1003h` by an older build
-/// reports motion to a program that never asked for it and will not select text. Sent on the way
-/// in as well as the way out, so a session starts from a known state whatever the last one did.
+/// Sent on the way in as well as the way out, and clearing every mode rather than one: a run
+/// killed before it could tear down leaves whatever it had set still set, and a terminal left in
+/// `?1003h` by an older build is one nothing here would otherwise clear.
 const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 
 /// A terminal in raw mode, restored on drop.
@@ -107,19 +98,5 @@ impl Drop for Session {
         let _ = execute!(out, crossterm::event::DisableBracketedPaste);
         let _ = disable_raw_mode();
         let _ = self.terminal.show_cursor();
-    }
-}
-
-impl Session {
-    /// Take the mouse from the terminal, or give it back.
-    ///
-    /// Held by default so the wheel scrolls and a block opens under the pointer. What is asked
-    /// for is buttons and the wheel, not motion, so the terminal keeps drag-selection either
-    /// way — see [`MOUSE_ON`] — but a captured mouse defeats selection in some emulators however
-    /// little it asks for, so nothing is captured until this says so.
-    pub fn set_mouse(&mut self, holding: bool) {
-        let mut out = io::stdout();
-        let _ = write!(out, "{}", if holding { MOUSE_ON } else { MOUSE_OFF });
-        let _ = out.flush();
     }
 }

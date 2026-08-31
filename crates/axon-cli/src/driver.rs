@@ -231,14 +231,6 @@ pub async fn run(
                                 }
                                 dirty = true;
                             }
-                            Action::ToggleMouse => {
-                                // Given back rather than reimplemented: dragging out a
-                                // selection is what a terminal is for, and axon holding the
-                                // mouse is the only reason it cannot.
-                                app.mouse = !app.mouse;
-                                session.set_mouse(app.mouse);
-                                dirty = true;
-                            }
                             Action::ToggleDetail => {
                                 // No notice. A view toggle is not something that happened in
                                 // the conversation, and one line per press left a transcript
@@ -281,8 +273,11 @@ pub async fn run(
                             app.refresh_completion(&list_paths);
                         }
                     }
-                    // The wheel, which is the only way most people scroll anything. Reported
-                    // only in alt mode, because that is the only mode that captures it.
+                    // axon never turns mouse reporting on -- a terminal that has handed the mouse
+                    // to an application stops selecting text everywhere. These arrive only if
+                    // something between here and the terminal sends them anyway, and a
+                    // multiplexer that does its own selection may well. Answered rather than
+                    // dropped: the events are free, and refusing them buys nothing back.
                     Event::Mouse(mouse) => {
                         use crossterm::event::MouseEventKind;
                         let rows = terminal_size().1;

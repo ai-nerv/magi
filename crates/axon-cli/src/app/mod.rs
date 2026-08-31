@@ -125,18 +125,6 @@ pub struct App {
     pub picking: Option<Picking>,
     /// How much of each tool result to show.
     pub detail: axon_tui::transcript::Detail,
-    /// Whether axon has taken the mouse from the terminal.
-    ///
-    /// **False.** A terminal that has handed the mouse to an application cannot run its own
-    /// drag-selection, and which modes defeat it is the emulator's business, not ours: asking
-    /// for less than every-motion helped in some and not in others. Selecting text is the thing
-    /// people do with a transcript most often, and it is worth more than the wheel. `ctrl+t`
-    /// takes the mouse when clicking a block open is what you want.
-    ///
-    /// False by default: the terminal keeps it, so dragging out a selection and copying work
-    /// the way they do in every other program. `ctrl+t` takes it, for the wheel and for
-    /// clicking a block open.
-    pub mouse: bool,
     /// Tool blocks showing the opposite of `detail`, because they were clicked.
     ///
     /// Membership rather than an absolute state, so the fold key still moves every block a
@@ -177,7 +165,6 @@ impl App {
             // Folded. A transcript of whole build logs is not a transcript, and the handle at
             // the foot of each block is how you open the one you care about.
             detail: axon_tui::transcript::Detail::Preview,
-            mouse: false,
             flipped: std::collections::BTreeSet::new(),
             owners: Vec::new(),
             live_rows: 0..0,

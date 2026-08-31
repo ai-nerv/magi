@@ -116,12 +116,16 @@ fn up_at_the_top_of_the_menu_leaves_it_for_history() {
 
 /// Handing the mouse back, so the terminal can do what a terminal does.
 #[cfg(test)]
-mod releasing_the_mouse {
+mod the_mouse_is_the_terminals {
     use super::super::*;
     use crossterm::event::{KeyCode, KeyModifiers};
 
     #[test]
-    fn ctrl_t_asks_for_the_toggle() {
+    fn ctrl_t_is_not_a_binding() {
+        // There was one, for taking the mouse. Nothing takes the mouse now -- an application
+        // that turns on tracking stops the terminal selecting text everywhere -- so the mode it
+        // switched between no longer exists, and a key for it was a key to get back what should
+        // never have been taken.
         let mut editor = Editor::new();
         let action = handle(
             KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
@@ -129,8 +133,7 @@ mod releasing_the_mouse {
             &mut None,
             false,
         );
-        assert_eq!(action, Action::ToggleMouse);
-        assert!(editor.is_blank(), "and does not type a `t`");
+        assert_eq!(action, Action::Ignore);
     }
 
     #[test]
