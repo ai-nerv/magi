@@ -256,11 +256,20 @@ impl ProcessTool {
     }
 
     /// Stop the peer, so the next call starts a fresh one.
+    ///
+    /// Taken and dropped rather than killed. [`Peer::drop`] closes the peer's stdin and gives it
+    /// a moment to stop, which is what lets the peer run its own cleanup -- the shell peer kills
+    /// the shell it started there. Killing it here reached the same `Peer::drop` afterwards, but
+    /// by then the peer was already dead of SIGKILL and had run nothing: every session leaked the
+    /// shell it had opened, and a machine that had been running axon for a day carried a thousand
+    /// orphaned shells parented to init.
+    ///
+    /// Taken out of the cell first, so the borrow is released before the wait: `Peer::drop`
+    /// blocks for up to a second, and a tool holding its own `RefCell` for that long is a
+    /// deadlock waiting for a second caller.
     fn drop_peer(&self) {
-        if let Some(mut peer) = self.peer.borrow_mut().take() {
-            let _ = peer.child.kill();
-            let _ = peer.child.wait();
-        }
+        let peer = self.peer.borrow_mut().take();
+        drop(peer);
     }
 
     /// What this tool currently believes it offers.

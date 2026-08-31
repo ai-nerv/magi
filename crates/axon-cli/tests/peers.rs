@@ -547,3 +547,122 @@ fn two_calls_to_one_peer_still_take_their_turn() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A peer is given the chance to clean up after itself, rather than shot where it stands.
+mod goodbye {
+    use super::*;
+
+    /// Whether a process is still there.
+    fn alive(pid: u32) -> bool {
+        std::path::Path::new(&format!("/proc/{pid}")).exists()
+    }
+
+    /// Every process whose environment carries `mark`.
+    ///
+    /// Found by its environment rather than by parentage: cargo runs the tests of one binary as
+    /// threads of one process, so every peer every other test started is a sibling of this
+    /// one's and a scan by parent picks up whichever answered first.
+    fn marked(mark: &str) -> Vec<u32> {
+        let needle = format!("AXON_PEER_MARK={mark}");
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
+            .filter(|pid| {
+                std::fs::read(format!("/proc/{pid}/environ"))
+                    .map(|raw| {
+                        String::from_utf8_lossy(&raw)
+                            .split('\0')
+                            .any(|pair| pair == needle)
+                    })
+                    .unwrap_or(false)
+            })
+            .collect()
+    }
+
+    /// The children of `pid`, by scanning `/proc`. Linux-only, which this project is.
+    fn children_of(pid: u32) -> Vec<u32> {
+        let Ok(entries) = std::fs::read_dir("/proc") else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
+            .filter(|each| {
+                let Ok(stat) = std::fs::read_to_string(format!("/proc/{each}/stat")) else {
+                    return false;
+                };
+                // The command name is field two, in parentheses, and may hold spaces.
+                // Everything after the last `)` is fixed-width: state, then the parent.
+                stat.rsplit_once(')')
+                    .and_then(|(_, rest)| rest.split_whitespace().nth(1))
+                    .and_then(|parent| parent.parse::<u32>().ok())
+                    == Some(pid)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_shell_a_peer_started_goes_with_it() {
+        // The defect: `drop_peer` sent SIGKILL and *then* ran `Peer::drop`, so the careful
+        // goodbye -- close its stdin, give it a moment -- ran on a process that was already
+        // dead. The shell peer never reached its own cleanup, so every session leaked the
+        // shell it had opened. A machine running axon for a day carried a thousand of them,
+        // parented to init, until `fork` started failing.
+        let mark = format!("goodbye-{}", std::process::id());
+        let (_, ops, _dir) = session_raw("goodbye");
+        let mut registry = Registry::new();
+        registry.register(Box::new(
+            axon_tools::process::ProcessTool::new(
+                "bash",
+                "Run a shell command.",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": { "command": { "type": "string" } },
+                    "required": ["command"],
+                }),
+                env!("CARGO_BIN_EXE_axon"),
+                vec!["ext".into(), "shell".into()],
+            )
+            .with_env(
+                [("AXON_PEER_MARK".to_owned(), mark.clone())]
+                    .into_iter()
+                    .collect(),
+            ),
+        ));
+
+        let out = registry.call(
+            "bash",
+            &serde_json::json!({ "command": "echo hi" }),
+            &ops,
+            &Uncancelled,
+        );
+        assert!(!out.is_error, "the peer answered: {:?}", out.content);
+
+        // The mark reaches the shell too -- it inherits the peer's environment -- so the peer is
+        // the marked process that is also this process's child.
+        let mine = children_of(std::process::id());
+        let peers: Vec<u32> = marked(&mark)
+            .into_iter()
+            .filter(|pid| mine.contains(pid))
+            .collect();
+        assert_eq!(peers.len(), 1, "exactly this test's peer: {peers:?}");
+        let peer = peers[0];
+        let shell = children_of(peer);
+        assert!(!shell.is_empty(), "the peer started a shell");
+
+        drop(registry);
+
+        // The peer is given a second to stop; its shell goes with it.
+        for _ in 0..40 {
+            if !alive(peer) && shell.iter().all(|pid| !alive(*pid)) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let left: Vec<u32> = shell.into_iter().filter(|pid| alive(*pid)).collect();
+        panic!("the peer's shell outlived it: {left:?}");
+    }
+}
