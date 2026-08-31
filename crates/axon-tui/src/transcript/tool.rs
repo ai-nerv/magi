@@ -74,14 +74,19 @@ pub(super) fn block(
         .bg(outcome)
         .fg(colour::tool_bg())
         .add_modifier(Modifier::BOLD);
-    // The handle rides the header, right-aligned, in the outcome's colour. It was a row of its
-    // own at the foot: correct, and in the wrong place — you decide whether to open a block from
-    // its title, not after reading to the end of what it is hiding.
+    // The handle rides the header, right-aligned, and reversed the way the name is. In the
+    // outcome's foreground it was a lone bright glyph at the far end of an empty row, reading as
+    // debris rather than as the other end of the same header; as a chip it pairs with the name
+    // and the row has two ends that belong together.
     let handle = match detail {
         Detail::Preview => crate::glyph::expand(),
         Detail::Full => crate::glyph::collapse(),
     };
-    let mut out = vec![blank(width, style), {
+    // A plain row, not a grey one: this is the gap *between* blocks, and painted with the
+    // block's own background it joined the previous block's bottom padding into one two-row
+    // band. Three calls in a row then read as a single wall of grey with headings in it rather
+    // than as three things that happened.
+    let mut out = vec![blank(width, Style::default()), {
         // Opened, the header names only the first argument: the rest are listed in full a row
         // below, and an `edit` header reading `src/main.rs, let x = 1;, let x = 2;` directly
         // above `old  let x = 1;` says the same thing twice in two shapes.
@@ -97,19 +102,17 @@ pub(super) fn block(
         };
         // Whatever is left between the two, so the handle sits on the right edge whatever the
         // name and summary came to. Clipped rather than overflowed on a narrow screen.
-        let room = inner
-            .saturating_sub(named.chars().count() + handle.chars().count())
-            .max(1);
+        // Three, not one: the handle is a chip with a space either side now.
+        let worn = handle.chars().count() + 2;
+        let room = inner.saturating_sub(named.chars().count() + worn).max(1);
         let beside = clip(&beside, room);
-        let gap = inner.saturating_sub(
-            named.chars().count() + beside.chars().count() + handle.chars().count(),
-        );
+        let gap = inner.saturating_sub(named.chars().count() + beside.chars().count() + worn);
         pad(
             Line::from(vec![
                 Span::styled(named, label),
                 Span::styled(beside, style.fg(colour::tool_output())),
                 Span::styled(" ".repeat(gap), style),
-                Span::styled(handle.to_owned(), style.fg(outcome)),
+                Span::styled(format!(" {handle} "), label),
             ]),
             width,
             style,
@@ -578,16 +581,21 @@ mod block_tests {
 
     #[test]
     fn the_whole_header_row_carries_a_background() {
-        // Without it the box is ragged coloured text rather than a block. Every span has one;
-        // the name's is the outcome colour it is reversed out of, and everything else is the
-        // block's own.
+        // Without it the box is ragged coloured text rather than a block. Every span has one.
+        // Two are reversed out of the outcome colour — the name at one end and the fold handle
+        // at the other — and everything between them is the block's own.
+        let reversed = |content: &str| {
+            content.contains("shell")
+                || content.contains(crate::glyph::expand())
+                || content.contains(crate::glyph::collapse())
+        };
         for span in header(None).spans {
             assert!(
                 span.style.bg.is_some(),
                 "{:?} has no background",
                 span.content
             );
-            if !span.content.contains("shell") {
+            if !reversed(&span.content) {
                 assert_eq!(
                     span.style.bg,
                     Some(colour::tool_bg()),
@@ -754,3 +762,7 @@ mod opened {
 #[cfg(test)]
 #[path = "header.rs"]
 mod header_tests;
+
+#[cfg(test)]
+#[path = "handle.rs"]
+mod handle_tests;

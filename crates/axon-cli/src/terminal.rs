@@ -18,6 +18,22 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::{Terminal, TerminalOptions, Viewport};
 use std::io::{self, IsTerminal, Stdout, Write};
 
+/// Ask the terminal to report button presses and the wheel, and nothing else.
+///
+/// **Not `EnableMouseCapture`.** That sets `?1003h` — *any-event* tracking, which reports every
+/// motion of the pointer whether a button is down or not. A terminal in that mode hands the
+/// application the whole mouse, and dragging out a selection stops working; several emulators
+/// stop honouring shift-to-bypass as well, which leaves no way to select text at all.
+///
+/// axon reads three events — wheel up, wheel down, and a left press on a block's handle — and
+/// `?1000h` reports all three. Drag and motion are what it does not need and what selection does,
+/// so they stay with the terminal. `?1006h` asks for SGR coordinates, without which a click past
+/// column 223 cannot be expressed.
+const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1006h";
+
+/// Give the mouse back.
+const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1000l";
+
 /// A terminal in raw mode, restored on drop.
 pub struct Session {
     /// The ratatui terminal, kept live for the duration of the UI.
@@ -41,10 +57,10 @@ impl Session {
         let mut out = io::stdout();
         execute!(out, crossterm::event::EnableBracketedPaste)?;
         execute!(out, EnterAlternateScreen)?;
-        // Taken so a block can be opened by clicking its handle, and so the wheel scrolls. The
-        // cost is the terminal's own drag-selection: hold shift to get it back, or `ctrl+t` to
-        // hand the mouse over entirely.
-        execute!(out, crossterm::event::EnableMouseCapture)?;
+        // Buttons and the wheel only, so dragging out a selection still belongs to the terminal.
+        // See [`MOUSE_ON`].
+        write!(out, "{MOUSE_ON}")?;
+        out.flush()?;
 
         let enhanced = push_keyboard_enhancements(&mut out).unwrap_or(false);
 
@@ -81,7 +97,7 @@ impl Drop for Session {
         if self.enhanced {
             let _ = execute!(out, PopKeyboardEnhancementFlags);
         }
-        let _ = execute!(out, crossterm::event::DisableMouseCapture);
+        let _ = write!(out, "{MOUSE_OFF}");
         let _ = execute!(out, LeaveAlternateScreen);
         let _ = execute!(out, crossterm::event::DisableBracketedPaste);
         let _ = disable_raw_mode();
@@ -92,15 +108,13 @@ impl Drop for Session {
 impl Session {
     /// Take the mouse from the terminal, or give it back.
     ///
-    /// A capture is one switch: while axon holds the mouse the terminal cannot run its own
-    /// drag-selection. Held by default so the wheel scrolls and a block opens under the pointer;
-    /// handed back on request, because selecting text is something a terminal already does well.
+    /// Held by default so the wheel scrolls and a block opens under the pointer. What is asked
+    /// for is buttons and the wheel, not motion, so the terminal keeps drag-selection either
+    /// way -- see [`MOUSE_ON`]. Handing it back entirely is for the emulator that reports a
+    /// selection drag as a button press anyway.
     pub fn set_mouse(&mut self, holding: bool) {
         let mut out = io::stdout();
-        let _ = if holding {
-            execute!(out, crossterm::event::EnableMouseCapture)
-        } else {
-            execute!(out, crossterm::event::DisableMouseCapture)
-        };
+        let _ = write!(out, "{}", if holding { MOUSE_ON } else { MOUSE_OFF });
+        let _ = out.flush();
     }
 }

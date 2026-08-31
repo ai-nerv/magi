@@ -82,7 +82,9 @@ fn a_conversation_renders_the_way_pi_lays_it_out() {
             "",                   // tool box: top padding
             // tool box: the name reversed out as a label, then its arguments, then the
             // handle that opens the block, held against the right edge.
-            "  bash  cargo test                        »",
+            // The handle is reversed the way the name is, a chip with a space either side, so
+            // it sits one column further in than a bare glyph did.
+            "  bash  cargo test                       »",
             // The output sits a step in from the header, so the two are not one column of
             // text under a coloured word.
             "   test result: ok. 42 passed",
