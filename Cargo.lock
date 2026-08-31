@@ -80,6 +80,7 @@ dependencies = [
  "axon-testkit",
  "axon-tools",
  "axon-tui",
+ "base64",
  "clap",
  "crossterm",
  "ignore",
