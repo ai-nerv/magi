@@ -125,6 +125,11 @@ pub struct App {
     pub picking: Option<Picking>,
     /// How much of each tool result to show.
     pub detail: axon_tui::transcript::Detail,
+    /// The text being dragged over, or the last drag that finished.
+    ///
+    /// Kept after the button comes up so the highlight stays until the next click, which is how
+    /// a person checks they got what they meant before pasting it.
+    pub selection: Option<axon_tui::select::Selection>,
     /// Tool blocks showing the opposite of `detail`, because they were clicked.
     ///
     /// Membership rather than an absolute state, so the fold key still moves every block a
@@ -165,6 +170,7 @@ impl App {
             // Folded. A transcript of whole build logs is not a transcript, and the handle at
             // the foot of each block is how you open the one you care about.
             detail: axon_tui::transcript::Detail::Preview,
+            selection: None,
             flipped: std::collections::BTreeSet::new(),
             owners: Vec::new(),
             live_rows: 0..0,

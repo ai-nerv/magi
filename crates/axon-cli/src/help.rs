@@ -17,8 +17,7 @@ const KEYS: &str = "\
 - `pgup`/`pgdn` scroll — `shift+↑/↓` by a line — `shift+home/end` to the ends
 - `ctrl+o` show tool output in full, again to fold it back
 - click a block's `»` to open just that one
-- to select text, hold your terminal's bypass while you drag: shift in most, and
-  whatever `mouse.selection_override` names in hexe (ctrl or alt)
+- drag to select; it is copied when you let go
 - `ctrl+x` edit the prompt in `$EDITOR`
 - `ctrl+c` clear the prompt, again to quit — `ctrl+d` quit
 - `ctrl+a/e` line start/end — `ctrl+k/u` kill — `ctrl+y` yank

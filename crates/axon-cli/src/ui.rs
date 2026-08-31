@@ -150,6 +150,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     // The box only. A glitch in the middle of a tool result is indistinguishable from a tool
     // that printed a glitch.
     axon_tui::decrypt::flicker(frame.buffer_mut(), prompt_area);
+    // Last of all, over everything: a selection is about what is on the screen, and a highlight
+    // drawn before the effects would be the one thing they could scribble on.
+    if let Some(selection) = app.selection {
+        axon_tui::select::over(frame.buffer_mut(), selection);
+    }
 
     place_hardware_cursor(frame, app, prompt_area, rows);
 }

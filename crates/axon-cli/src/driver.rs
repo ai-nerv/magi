@@ -104,6 +104,9 @@ pub async fn run(
     }
 
     let mut dirty = true;
+    // Set by a mouse release, acted on after the next draw: the text a selection covers is read
+    // back out of the frame it was drawn into, so there has to be a frame.
+    let mut copied: Option<axon_tui::select::Selection> = None;
     loop {
         // Read each pass rather than tracked here: the connection lives in another task, and
         // this is the one thing about it the screen has to show.
@@ -121,6 +124,13 @@ pub async fn run(
                 ui::draw(frame, &mut app, &footer);
             })?;
             dirty = false;
+            if let Some(sel) = copied.take() {
+                let area = session.terminal.get_frame().area();
+                let text = axon_tui::select::text(session.terminal.current_buffer_mut(), sel, area);
+                if !text.is_empty() {
+                    crate::clipboard::put(&text);
+                }
+            }
         }
 
         tokio::select! {
@@ -288,9 +298,36 @@ pub async fn run(
                             // A tool block opens and closes under the pointer. Ctrl+O still
                             // moves the whole transcript at once; this is for the one result
                             // you actually want to read, which is usually not the newest.
+                            // The handle first: it is the one thing on screen that is a button,
+                            // and a press on it is a press on it rather than the start of a
+                            // one-character selection.
                             MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                                app.selection = None;
                                 if !app.toggle_at(mouse.row, mouse.column, terminal_size().0) {
+                                    app.selection =
+                                        Some(axon_tui::select::Selection::begin(mouse.row, mouse.column));
+                                }
+                            }
+                            MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
+                                if let Some(sel) = app.selection.as_mut() {
+                                    sel.drag_to(mouse.row, mouse.column);
+                                } else {
                                     continue;
+                                }
+                            }
+                            // Copied on release, because that is when a person has finished
+                            // choosing. Through OSC 52, which is the clipboard a terminal will
+                            // accept through a multiplexer and over ssh alike.
+                            MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
+                                let Some(sel) = app.selection.as_mut() else {
+                                    continue;
+                                };
+                                sel.drag_to(mouse.row, mouse.column);
+                                sel.finish();
+                                if sel.is_empty() {
+                                    app.selection = None;
+                                } else {
+                                    copied = app.selection;
                                 }
                             }
                             _ => continue,
