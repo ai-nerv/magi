@@ -13,7 +13,7 @@
 //! This module decides. It does not ask: that needs a UI on the other end of a socket, and a
 //! decision procedure that cannot be tested without one is a decision procedure nobody trusts.
 
-use axon_proto::permit::{Action, Decision, Grant, Lifetime, Scope};
+pub use axon_proto::permit::{Action, Decision, Grant, Lifetime, Scope};
 
 /// Every standing permission this session has.
 #[derive(Debug, Default, Clone)]

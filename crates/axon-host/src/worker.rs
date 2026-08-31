@@ -94,18 +94,24 @@ impl Worker {
             axon_lua::tool::install(std::rc::Rc::clone(&engine), &mut registry, &backend.environ);
             // Gated when there is somebody to ask. The ledger starts with whatever the
             // configuration already granted, so a rule written down is not a question asked.
-            let ops = match (&approver, backend.confine) {
-                (Some(approver), _) => axon_tools::ops::Real::gated(
+            let ops: std::rc::Rc<dyn axon_tools::Ops> = match (&approver, backend.confine) {
+                (Some(approver), _) => std::rc::Rc::new(axon_tools::ops::Real::gated(
                     backend.cwd.clone(),
                     axon_tools::permit::Ledger::with(backend.grants.clone()),
                     std::sync::Arc::clone(approver),
-                ),
-                (None, true) => axon_tools::ops::Real::confined(backend.cwd.clone()),
-                (None, false) => axon_tools::ops::Real::new(backend.cwd.clone()),
+                )),
+                (None, true) => {
+                    std::rc::Rc::new(axon_tools::ops::Real::confined(backend.cwd.clone()))
+                }
+                (None, false) => std::rc::Rc::new(axon_tools::ops::Real::new(backend.cwd.clone())),
             };
+            // Lent to the VM so `axon.shell` has a seam to go through. The same `Ops` every
+            // other tool acts through, so a Lua tool that runs a command is gated exactly as the
+            // shell peer is.
+            engine.borrow_mut().attach_ops(std::rc::Rc::clone(&ops));
             // Before the first turn, so the schema the model is given is the one the peers
             // actually implement rather than the one a config file claimed for them.
-            registry.probe(&ops);
+            registry.probe(&*ops);
 
             let built = axon_lua::adapter::LuaAdapter::from_shared(
                 std::rc::Rc::clone(&engine),
@@ -131,12 +137,12 @@ impl Worker {
                                 &adapter,
                                 &client,
                                 &registry,
-                                &ops,
+                                &*ops,
                             )
                             .await;
                         }
                         Work::Declare => {
-                            declare(&job.session, &backend, &adapter, &client, &ops).await;
+                            declare(&job.session, &backend, &adapter, &client, &*ops).await;
                         }
                     }
                     let _ = job.done.send(());
@@ -188,10 +194,8 @@ async fn declare(
     backend: &Backend,
     adapter: &dyn axon_provider::api::Adapter,
     client: &Client,
-    ops: &axon_tools::ops::Real,
+    ops: &dyn axon_tools::Ops,
 ) {
-    use axon_tools::Ops;
-
     // Said, not journalled. `Entry::Notice` is the UI's own device -- the protocol says the
     // daemon never authors one -- and a transcript replayed later should hold the conversation
     // rather than a proposal that was answered at the time. `Refused` is the existing path for

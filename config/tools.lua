@@ -146,47 +146,6 @@ do -- oslo
   })
 end
 
-do -- grep
-  -- `rg` rather than a shell string: axon does the quoting, ignore files are honoured, and the
-  -- cap binds whether or not the model asked for one.
-  axon.tool("grep", {
-    description = [[
-  Search file contents for a regular expression. Returns `path:line:text`, one match a line.
-
-  Honours .gitignore and skips binary files. Results are capped; narrow the pattern or the path
-  rather than raising the limit.]],
-
-    parameters = {
-      type = "object",
-      properties = {
-        pattern = { type = "string", description = "The regular expression to search for." },
-        path = { type = "string", description = "Where to search. Defaults to the session's directory." },
-        glob = { type = "string", description = "Only search files matching this glob, e.g. `*.rs`." },
-        limit = {
-          type = "integer", minimum = 1, maximum = 500, default = 100,
-          description = "Most matches to return.",
-        },
-      },
-      required = { "pattern" },
-    },
-
-    -- Every optional argument is written `--flag={name}` so that flag and value drop together
-    -- when it is absent. A bare `--flag` left behind is read as malformed, not as unset.
-    transport = {
-      kind = "command",
-      command = "rg",
-      args = {
-        "--line-number", "--no-heading", "--color=never", "--max-columns=500",
-        "--max-count={limit}",
-        "--glob={glob}",
-        "--regexp={pattern}",
-        "{path}",
-      },
-      timeout = 30,
-    },
-  })
-end
-
 do -- find
   axon.tool("find", {
     description = [[
@@ -240,5 +199,49 @@ do -- ls
       args = { "-1", "-p", "-A", "--color=never", "{path}" },
       timeout = 10,
     },
+  })
+end
+
+do -- grep
+  -- What the `command` transport cannot express: choosing the program at call time. `rg` honours
+  -- ignore files and is faster; `grep` is everywhere. Both go through the same gate.
+  local function search(pattern, path, limit)
+    local where = path or "."
+    local out, err = axon.shell(
+      ("rg --line-number --no-heading --color=never --max-count=%d --regexp=%q %q")
+        :format(limit, pattern, where))
+    if out and out ~= "" then return out end
+    -- `rg` absent, or nothing matched. `grep` tells the two apart by trying.
+    return axon.shell(
+      ("grep -rnI --exclude-dir=.git --max-count=%d -e %q %q")
+        :format(limit, pattern, where)) or (err or "no matches")
+  end
+
+  axon.tool("grep", {
+    description = [[
+  Search file contents, preferring ripgrep and falling back to grep.
+
+  Honours .gitignore when ripgrep is available. Returns `path:line:text`, one match a line.]],
+
+    parameters = {
+      type = "object",
+      properties = {
+        pattern = { type = "string", description = "The pattern to search for." },
+        path = { type = "string", description = "Where to search. Defaults to the session's directory." },
+        limit = {
+          type = "integer", minimum = 1, maximum = 500, default = 100,
+          description = "Most matches to return.",
+        },
+      },
+      required = { "pattern" },
+    },
+
+    transport = { kind = "lua" },
+
+    run = function(args)
+      local found = search(args.pattern, args.path, args.limit or 100)
+      if not found or found == "" then return { content = "no matches" } end
+      return { content = found }
+    end,
   })
 end

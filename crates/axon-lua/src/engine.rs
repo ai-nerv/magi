@@ -95,6 +95,10 @@ impl Registered {
 pub struct Engine {
     lua: Lua,
     config: Rc<RefCell<Config>>,
+    /// The session's `Ops`, for [`crate::shell`]. Empty in every path but a real session.
+    lent: crate::shell::Lent,
+    /// Whether a tool's `run` is on the stack, which is the only time `axon.shell` answers.
+    inside: crate::shell::Inside,
 }
 
 impl Default for Engine {
@@ -110,6 +114,8 @@ impl Engine {
         let mut engine = Self {
             lua: Lua::full(),
             config: Rc::new(RefCell::new(Config::default())),
+            lent: Rc::new(RefCell::new(None)),
+            inside: Rc::new(std::cell::Cell::new(false)),
         };
         engine.install();
         // After install, so a removal cannot be undone by something the installer adds.
@@ -163,6 +169,8 @@ impl Engine {
     /// settings, and only the value it finished with is the one it meant.
     fn install(&mut self) {
         let config = Rc::clone(&self.config);
+        let lent = Rc::clone(&self.lent);
+        let inside = Rc::clone(&self.inside);
         self.lua.enter(|ctx| {
             let axon = Table::new(&ctx);
 
@@ -227,6 +235,10 @@ impl Engine {
             // is not offered alongside it.
             let fs = crate::fs::table(ctx);
             axon.set(ctx, "fs", fs).ok();
+            // Running a command, through the same gate the shell peer goes through. Answers
+            // only while a tool's `run` is on the stack -- see [`crate::shell`].
+            let shell = crate::shell::callback(ctx, Rc::clone(&lent), Rc::clone(&inside));
+            axon.set(ctx, "shell", shell).ok();
             // Every protocol description reads JSON payloads; lending one parser beats each
             // of them carrying its own.
             let json = crate::json::table(ctx);
@@ -429,7 +441,10 @@ impl Engine {
                __axon_tool_result = answer\n\
              end"
         );
-        self.run(&source, "tool.lua").ok()?;
+        self.inside_a_tool().set(true);
+        let ran = self.run(&source, "tool.lua");
+        self.inside_a_tool().set(false);
+        ran.ok()?;
 
         let mut out = None;
         self.lua.enter(|ctx| {
@@ -492,5 +507,24 @@ impl Engine {
                 held.loads.push(path);
             }
         }
+    }
+}
+
+impl Engine {
+    /// Lend this VM the session's `Ops`, so `axon.shell` has a seam to go through.
+    ///
+    /// Once, by the daemon, after the gate is built. Every other path — `axon tools`, a config
+    /// being read, a test — lends nothing, and `axon.shell` says so rather than running.
+    pub fn attach_ops(&mut self, ops: Rc<dyn axon_tools::Ops>) {
+        *self.lent.borrow_mut() = Some(ops);
+    }
+
+    /// Whether a tool's `run` is on the stack, which is the only time `axon.shell` answers.
+    ///
+    /// A config file is read by the same VM. One that could spawn while it was being *read*
+    /// would be a worse hole than the one `axon.shell` closes, so the window is exactly the
+    /// call and nothing else.
+    fn inside_a_tool(&self) -> &crate::shell::Inside {
+        &self.inside
     }
 }

@@ -559,9 +559,11 @@ impl ProcessTool {
 
 /// The program a command line runs, for the "any `git` command" answer.
 ///
+/// Shared with the Lua shell native, which asks the same question about the same kind of string.
+///
 /// Leading environment assignments are stepped over: `FOO=1 git status` is a `git` command, and
 /// a person offered "any `FOO=1` command" would rightly not know what they were being asked.
-fn first_word(command: &str) -> String {
+pub fn first_word(command: &str) -> String {
     command
         .split_whitespace()
         .find(|word| !word.contains('=') || word.starts_with('/'))

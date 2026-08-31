@@ -45,6 +45,7 @@ mod fs;
 mod json;
 pub mod peer;
 mod sandbox;
+mod shell;
 mod stream;
 pub mod tool;
 
