@@ -134,6 +134,11 @@ pub struct App {
     /// Held here rather than in the renderer because it moves on a clock and on what the person
     /// is doing, neither of which a draw call knows about. See [`App::settle_prompt`].
     pub tease: axon_tui::tease::Tease,
+    /// The scramble a newly opened list lands with.
+    ///
+    /// A field rather than a static, unlike the opening one: the screen opens once and a list
+    /// opens every time you ask for a model or answer a permission.
+    pub landing: axon_tui::decrypt::Landing,
     /// Whether the prompt was empty when it was last looked at.
     was_blank: bool,
     /// The text being dragged over, or the last drag that finished.
@@ -183,6 +188,7 @@ impl App {
             detail: axon_tui::transcript::Detail::Preview,
             identity: crate::identity::Identity::here(None),
             tease: axon_tui::tease::Tease::new(opener()),
+            landing: axon_tui::decrypt::Landing::default(),
             was_blank: true,
             selection: None,
             flipped: std::collections::BTreeSet::new(),

@@ -60,6 +60,14 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     let badge = app.identity.full();
     let text_rows = prompt::text_rows(&app.editor, rows, area.width, &badge);
     let room = usize::from(rows.saturating_sub(around)).saturating_sub(text_rows + 3);
+    // Keyed on the title, so a permission ask and a model list are two openings while the same
+    // list narrowing under a query is one. A completion popup has no title and never lands.
+    app.landing.showing(
+        app.overlay
+            .as_ref()
+            .and_then(|open| open.list())
+            .map(|list| list.title.as_str()),
+    );
     let mut menu = app
         .overlay
         .as_ref()
@@ -160,7 +168,23 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     // Last, over the finished screen: the effect is about the text arriving, and text that has
     // not been drawn yet cannot arrive. Off unless `axon.ui.decrypt_ms` says otherwise.
     if let Some(progress) = axon_tui::decrypt::progress() {
-        axon_tui::decrypt::over(frame.buffer_mut(), progress);
+        axon_tui::decrypt::over(frame.buffer_mut(), area, progress);
+    }
+    // And again over a list that has just opened, on its rows alone. A model list, a permission
+    // ask and a session picker all arrive the same way the screen did — the box is already
+    // there, and the choices land into it.
+    if let Some(progress) = app.landing.progress() {
+        let rows = u16::try_from(menu.len()).unwrap_or(0);
+        let top = prompt_area.y + prompt_area.height.saturating_sub(1 + rows);
+        axon_tui::decrypt::over(
+            frame.buffer_mut(),
+            Rect {
+                y: top,
+                height: rows,
+                ..prompt_area
+            },
+            progress,
+        );
     }
     // The box only. A glitch in the middle of a tool result is indistinguishable from a tool
     // that printed a glitch.

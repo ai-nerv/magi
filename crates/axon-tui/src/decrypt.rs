@@ -41,9 +41,9 @@ pub fn progress() -> Option<f32> {
 }
 
 /// Scramble what has not resolved yet, in place.
-pub fn over(buffer: &mut Buffer, progress: f32) {
+pub fn over(buffer: &mut Buffer, area: ratatui::layout::Rect, progress: f32) {
     let tick = (progress * FLICKERS).round() as u64;
-    let area = buffer.area;
+    let area = area.intersection(buffer.area);
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
             let cell = &mut buffer[(x, y)];
@@ -52,6 +52,45 @@ pub fn over(buffer: &mut Buffer, progress: f32) {
             }
             cell.set_symbol(noise(x, y, tick, crate::glyph::decrypt_pool()));
         }
+    }
+}
+
+/// A scramble that can start again, for something that opens after the session has.
+///
+/// The opening effect is one clock in a `OnceLock`, because the screen opens once. A list does
+/// not: `/model`, then a permission ask, then `/model` again, and each one wants the text to
+/// land the same way. So this is a clock the caller holds and restarts, keyed on what is open.
+///
+/// It is keyed on the *title* rather than on a list being open at all, because a completion
+/// popup refilters on every keystroke and re-scrambling as you type is not an effect, it is a
+/// fault. Two different lists are two openings; the same list narrowing is one.
+#[derive(Debug, Default)]
+pub struct Landing {
+    /// When the thing now open opened, or `None` when nothing is.
+    at: Option<Instant>,
+    /// What was open last frame, to notice when it is not the same thing.
+    was: Option<String>,
+}
+
+impl Landing {
+    /// Say what is open this frame, and start the clock when it is something new.
+    pub fn showing(&mut self, what: Option<&str>) {
+        if self.was.as_deref() == what {
+            return;
+        }
+        self.was = what.map(ToOwned::to_owned);
+        self.at = what.map(|_| Instant::now());
+    }
+
+    /// How far through its scramble the thing open is, or `None` when there is nothing to do.
+    #[must_use]
+    pub fn progress(&self) -> Option<f32> {
+        let over = Duration::from_millis(crate::metric::decrypt_ms());
+        if over.is_zero() {
+            return None;
+        }
+        let elapsed = self.at?.elapsed();
+        (elapsed < over).then(|| elapsed.as_secs_f32() / over.as_secs_f32())
     }
 }
 
@@ -172,7 +211,8 @@ mod tests {
         let width = u16::try_from(text.chars().count()).expect("a short line");
         let mut buffer = Buffer::empty(Rect::new(0, 0, width, 1));
         buffer.set_string(0, 0, text, ratatui::style::Style::default());
-        over(&mut buffer, progress);
+        let area = buffer.area;
+        over(&mut buffer, area, progress);
         (0..width)
             .map(|x| buffer[(x, 0)].symbol().to_owned())
             .collect()
@@ -297,5 +337,52 @@ mod flicker_tests {
             !pool.chars().any(char::is_alphanumeric),
             "a letter turning into a letter reads as the text changing: {pool:?}"
         );
+    }
+}
+
+/// A list opening is its own scramble, and the same list narrowing is not.
+#[cfg(test)]
+mod landing_tests {
+    use super::*;
+
+    #[test]
+    fn nothing_open_lands_nothing() {
+        let mut landing = Landing::default();
+        landing.showing(None);
+        assert!(landing.at.is_none(), "there is nothing to scramble");
+    }
+
+    #[test]
+    fn the_same_list_twice_running_only_starts_once() {
+        let mut landing = Landing::default();
+        landing.showing(Some("model"));
+        let started = landing.at.expect("a list opened");
+        landing.showing(Some("model"));
+        assert_eq!(
+            landing.at.expect("still open"),
+            started,
+            "narrowing a list is not opening one"
+        );
+    }
+
+    #[test]
+    fn a_different_list_starts_again() {
+        let mut landing = Landing::default();
+        landing.showing(Some("model"));
+        let started = landing.at.expect("a list opened");
+        landing.showing(Some("allow this?"));
+        assert!(
+            landing.at.expect("still open") > started,
+            "a permission ask after a model list is a second opening"
+        );
+    }
+
+    #[test]
+    fn closing_a_list_stops_the_clock() {
+        let mut landing = Landing::default();
+        landing.showing(Some("model"));
+        landing.showing(None);
+        assert!(landing.at.is_none(), "nothing is open to land");
+        assert!(landing.progress().is_none(), "so there is no progress");
     }
 }
