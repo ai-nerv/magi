@@ -32,6 +32,7 @@ pub mod status;
 pub mod table;
 pub mod tease;
 pub mod transcript;
+pub mod vim;
 pub mod wrap;
 
 pub use editor::Editor;

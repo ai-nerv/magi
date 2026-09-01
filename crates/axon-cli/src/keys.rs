@@ -6,9 +6,12 @@
 //! When something is open under the prompt it takes the navigation keys first, so Tab, the arrows,
 //! Enter, and Escape mean "the popup" rather than "the prompt".
 
+mod modal;
+
 use axon_tui::Editor;
 use axon_tui::complete::{Completion, Kind};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+pub use modal::Modal;
 
 /// A movement of the transcript view.
 ///
@@ -69,6 +72,13 @@ pub enum Action {
     ExternalEdit,
     /// Move the transcript view.
     Scroll(Scroll),
+    /// Start a search of the transcript.
+    Search,
+    /// Go to the next or previous match.
+    Match {
+        /// Forwards through the transcript, or backwards.
+        forward: bool,
+    },
     /// Nothing happened.
     Ignore,
 }
@@ -86,6 +96,7 @@ pub fn handle(
     editor: &mut Editor,
     overlay: &mut Option<axon_tui::overlay::Overlay>,
     busy: bool,
+    modal: &mut Modal,
 ) -> Action {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
@@ -137,6 +148,13 @@ pub fn handle(
             }
             _ => {}
         }
+    }
+
+    // Normal mode, before anything that could take a character as text. Nothing below this
+    // point is reached with a bare letter while the prompt is in normal mode, which is the
+    // whole of what modal means: `i` is a command until it is told to be an `i`.
+    if !modal.mode.is_insert() && overlay.is_none() {
+        return modal::normal(key, editor, modal, busy);
     }
 
     // Quit and interrupt outrank the popup: a user reaching for them wants out, not a
@@ -228,7 +246,13 @@ pub fn handle(
         KeyCode::Up if shift => Action::Scroll(Scroll::LineUp),
         KeyCode::Down if shift => Action::Scroll(Scroll::LineDown),
 
-        KeyCode::Esc if busy => Action::Interrupt,
+        // Out of insert mode, and only that. Interrupting a turn is the *second* escape, from
+        // normal mode, because a key that both left a mode and cancelled a turn would cancel
+        // one every time somebody finished typing.
+        KeyCode::Esc => {
+            modal.normal(editor);
+            Action::Redraw
+        }
 
         KeyCode::Enter if shift => {
             editor.newline();
@@ -323,6 +347,7 @@ fn accept(open: &Completion, editor: &mut Editor) {
 pub(super) mod tests {
     use super::*;
     use axon_tui::complete;
+    use axon_tui::vim::Mode;
 
     pub(super) fn press(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, modifiers)
@@ -333,7 +358,14 @@ pub(super) mod tests {
     }
 
     fn act(key: KeyEvent, editor: &mut Editor, busy: bool) -> Action {
-        handle(key, editor, &mut None, busy)
+        handle(key, editor, &mut None, busy, &mut typing())
+    }
+
+    /// A prompt already in insert mode, which is what everything below the modal tests is about.
+    pub(super) fn typing() -> Modal {
+        let mut modal = Modal::default();
+        modal.insert();
+        modal
     }
 
     /// An editor holding `text`, with the completion popup its content would open.
@@ -417,18 +449,46 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn escape_interrupts_only_while_busy() {
+    fn escape_leaves_insert_mode_before_it_interrupts_anything() {
+        // Two escapes, and they mean different things. A key that both left a mode and
+        // cancelled a turn would cancel one every time somebody finished typing a sentence.
         let mut editor = Editor::new();
+        let mut modal = typing();
         assert_eq!(
-            act(press(KeyCode::Esc, KeyModifiers::NONE), &mut editor, true),
-            Action::Interrupt
+            handle(
+                press(KeyCode::Esc, KeyModifiers::NONE),
+                &mut editor,
+                &mut None,
+                true,
+                &mut modal,
+            ),
+            Action::Redraw,
+            "the first one only leaves insert mode"
+        );
+        assert_eq!(modal.mode, Mode::Normal);
+        assert_eq!(
+            handle(
+                press(KeyCode::Esc, KeyModifiers::NONE),
+                &mut editor,
+                &mut None,
+                true,
+                &mut modal,
+            ),
+            Action::Interrupt,
+            "and the second one, from normal mode, interrupts"
         );
         assert_eq!(
-            act(press(KeyCode::Esc, KeyModifiers::NONE), &mut editor, false),
-            Action::Ignore
+            handle(
+                press(KeyCode::Esc, KeyModifiers::NONE),
+                &mut editor,
+                &mut None,
+                false,
+                &mut modal,
+            ),
+            Action::Redraw,
+            "with nothing running there is nothing to interrupt"
         );
     }
-
     #[test]
     fn ctrl_c_clears_the_buffer_and_never_leaves() {
         // It used to quit on an empty prompt, which is the same keystroke as clearing one and
@@ -563,6 +623,7 @@ pub(super) mod tests {
             &mut editor,
             &mut popup,
             false,
+            &mut typing(),
         );
         assert_eq!(editor.text(), ":quit");
         assert!(popup.is_none(), "accepting closes the popup");
@@ -578,6 +639,7 @@ pub(super) mod tests {
             &mut editor,
             &mut popup,
             false,
+            &mut typing(),
         );
         assert_eq!(action, Action::Command(":quit".into()));
         assert_eq!(editor.text(), "", "and the prompt is spent");
@@ -601,6 +663,7 @@ pub(super) mod tests {
             &mut editor,
             &mut popup,
             false,
+            &mut typing(),
         );
         assert_eq!(action, Action::Accepted, "completed, not submitted");
     }
@@ -613,6 +676,7 @@ pub(super) mod tests {
             &mut editor,
             &mut popup,
             false,
+            &mut typing(),
         );
         assert_eq!(
             popup
@@ -632,6 +696,7 @@ pub(super) mod tests {
             &mut editor,
             &mut popup,
             true,
+            &mut typing(),
         );
         assert_eq!(action, Action::Redraw);
         assert!(popup.is_none());
@@ -659,6 +724,7 @@ pub(super) mod tests {
             &mut editor,
             &mut overlay,
             true,
+            &mut typing(),
         );
         assert_eq!(action, Action::Dismissed);
         assert!(overlay.is_none());
@@ -672,6 +738,7 @@ pub(super) mod tests {
             &mut editor,
             &mut popup,
             false,
+            &mut typing(),
         );
         assert!(popup.is_none());
         assert_eq!(editor.text(), ":qu", "the buffer is untouched");
@@ -680,6 +747,7 @@ pub(super) mod tests {
 
 #[cfg(test)]
 mod accept_tests {
+    use super::tests::typing;
     use super::*;
 
     fn press(code: KeyCode) -> KeyEvent {
@@ -697,7 +765,13 @@ mod accept_tests {
             axon_tui::complete::resolve(":hel", 4, &|_| Vec::new()).map(Into::into);
         assert!(overlay.is_some(), "the popup is open");
 
-        let action = handle(press(KeyCode::Tab), &mut editor, &mut overlay, false);
+        let action = handle(
+            press(KeyCode::Tab),
+            &mut editor,
+            &mut overlay,
+            false,
+            &mut typing(),
+        );
         assert_eq!(action, Action::Accepted);
         assert!(overlay.is_none(), "and closed");
         assert_eq!(editor.text(), ":help");
@@ -707,7 +781,13 @@ mod accept_tests {
     fn enter_after_a_tab_submits_what_was_taken() {
         let mut editor = Editor::new();
         editor.insert_str(":help");
-        let action = handle(press(KeyCode::Enter), &mut editor, &mut None, false);
+        let action = handle(
+            press(KeyCode::Enter),
+            &mut editor,
+            &mut None,
+            false,
+            &mut typing(),
+        );
         assert_eq!(action, Action::Command(":help".to_owned()));
     }
 }

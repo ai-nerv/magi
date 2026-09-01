@@ -43,8 +43,10 @@ pub struct Saying<'a> {
     pub text: &'a str,
     /// Where the box is editing its own placeholder, or `None` while it rests.
     pub caret: Option<usize>,
-    /// Which session this is: `project/role/id`, drawn down the right.
+    /// Which session this is, or its usage: drawn down the right.
     pub badge: &'a str,
+    /// Which mode the prompt is in, drawn on its bottom edge.
+    pub mode: crate::vim::Mode,
 }
 
 /// The empty prompt's performance.
@@ -101,6 +103,7 @@ impl Tease {
             text: &self.shown,
             caret: self.caret(),
             badge: "",
+            mode: crate::vim::Mode::default(),
         }
     }
 

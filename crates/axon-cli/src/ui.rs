@@ -92,6 +92,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     let saying = if effort.is_empty() {
         axon_tui::tease::Saying {
             badge: &badge,
+            mode: app.modal.mode,
             ..app.tease.saying()
         }
     } else {
@@ -99,6 +100,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
             text: &effort,
             caret: None,
             badge: &badge,
+            mode: app.modal.mode,
         }
     };
     let prompt_lines = prompt::render(
@@ -131,7 +133,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     // An empty session draws nothing. There was a greeting here — a name, the model, the
     // directory and four key hints — and it was right for somebody meeting the thing for the
     // first time and wrong for everybody after that. The prompt's own placeholder still names
-    // `/`, which is the one line of it worth keeping.
+    // `:`, which is the one line of it worth keeping.
     let laid = transcript::laid_out(app.entries(), area.width, app.detail, &app.flipped);
     app.owners = laid.owners;
     app.scrollback.set_lines(laid.lines);

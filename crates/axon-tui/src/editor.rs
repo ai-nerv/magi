@@ -206,6 +206,96 @@ impl Editor {
         self.col = 0;
     }
 
+    /// Move the cursor one line up, keeping as much of its column as the line has.
+    pub fn up(&mut self) {
+        if self.row > 0 {
+            self.row -= 1;
+            self.col = self.col.min(self.lines[self.row].chars().count());
+        }
+    }
+
+    /// Move the cursor one line down, keeping as much of its column as the line has.
+    pub fn down(&mut self) {
+        if self.row + 1 < self.lines.len() {
+            self.row += 1;
+            self.col = self.col.min(self.lines[self.row].chars().count());
+        }
+    }
+
+    /// Move to the first character on the line that is not a space.
+    pub fn first_word(&mut self) {
+        self.col = self.lines[self.row]
+            .chars()
+            .position(|c| !c.is_whitespace())
+            .unwrap_or(0);
+    }
+
+    /// Move to the last line.
+    pub fn last_line(&mut self) {
+        self.row = self.lines.len() - 1;
+        self.col = self.col.min(self.lines[self.row].chars().count());
+    }
+
+    /// Move to the first line.
+    pub fn first_line(&mut self) {
+        self.row = 0;
+        self.col = self.col.min(self.lines[self.row].chars().count());
+    }
+
+    /// Delete the character under the cursor.
+    ///
+    /// Nothing at the end of a line: `x` in vim does not join lines, and a delete that
+    /// silently pulled the next line up would be a different operator wearing the same key.
+    pub fn delete_char(&mut self) {
+        let byte = self.byte_offset();
+        if byte < self.lines[self.row].len() {
+            self.lines[self.row].remove(byte);
+        }
+        // Off the end after deleting the last character, which is where `x` leaves you.
+        self.col = self.col.min(self.lines[self.row].chars().count());
+    }
+
+    /// Delete the whole line, into the kill ring.
+    ///
+    /// The last line is emptied rather than removed: a buffer with no lines has no cursor
+    /// position, and every method here indexes `lines[row]`.
+    pub fn delete_line(&mut self) {
+        self.kill_ring = std::mem::take(&mut self.lines[self.row]);
+        if self.lines.len() > 1 {
+            self.lines.remove(self.row);
+            self.row = self.row.min(self.lines.len() - 1);
+        }
+        self.col = 0;
+    }
+
+    /// Open a blank line below the cursor and put the cursor on it.
+    pub fn open_below(&mut self) {
+        self.lines.insert(self.row + 1, String::new());
+        self.row += 1;
+        self.col = 0;
+    }
+
+    /// Open a blank line above the cursor and put the cursor on it.
+    pub fn open_above(&mut self) {
+        self.lines.insert(self.row, String::new());
+        self.col = 0;
+    }
+
+    /// How many lines the buffer holds.
+    #[must_use]
+    pub fn height(&self) -> usize {
+        self.lines.len()
+    }
+
+    /// Pull the cursor back off the end of the line.
+    ///
+    /// Normal mode sits *on* a character rather than between two, so the column one past the
+    /// end — where insert mode legitimately puts it — is not a place it can rest.
+    pub fn settle(&mut self) {
+        let last = self.lines[self.row].chars().count();
+        self.col = self.col.min(last.saturating_sub(1));
+    }
+
     /// Move to the end of the line.
     pub fn end(&mut self) {
         self.col = self.lines[self.row].chars().count();

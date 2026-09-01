@@ -141,6 +141,8 @@ pub struct App {
     pub landing: axon_tui::decrypt::Landing,
     /// The footer's trace, and everything that has scrolled past on it.
     pub trace: axon_tui::beacon::Trace,
+    /// Which mode the prompt is in, and any half-typed command waiting on its second key.
+    pub modal: crate::keys::Modal,
     /// Whether the prompt was empty when it was last looked at.
     was_blank: bool,
     /// The text being dragged over, or the last drag that finished.
@@ -192,6 +194,7 @@ impl App {
             tease: axon_tui::tease::Tease::new(opener()),
             landing: axon_tui::decrypt::Landing::default(),
             trace: axon_tui::beacon::Trace::default(),
+            modal: crate::keys::Modal::default(),
             was_blank: true,
             selection: None,
             flipped: std::collections::BTreeSet::new(),

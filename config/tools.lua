@@ -246,29 +246,29 @@ do -- grep
   })
 end
 
-do -- aeon
-  -- The memory layer, if it is installed and running. aeon publishes its own tool descriptors --
-  -- `remember`, `recall`, `forget` -- so the vocabulary is written once, in aeon, rather than
+do -- memo
+  -- The memory layer, if it is installed and running. memo publishes its own tool descriptors --
+  -- `remember`, `recall`, `forget` -- so the vocabulary is written once, in memo, rather than
   -- copied here to drift.
   local function client()
-    local source = axon.clients and axon.clients.aeon
-    if not source then return nil, "aeon's client library is not installed" end
-    local chunk, why = load(source, "aeon.lua")
+    local source = axon.clients and axon.clients.memo
+    if not source then return nil, "memo's client library is not installed" end
+    local chunk, why = load(source, "memo.lua")
     if not chunk then return nil, why end
     return chunk(axon.stream)
   end
 
-  -- Asked at load, because a tool has to exist before the model is told what it may call. aeon
+  -- Asked at load, because a tool has to exist before the model is told what it may call. memo
   -- being absent is the ordinary case, not an error: nothing is registered and the session runs
-  -- without memory, which is what every session did before aeon existed.
-  local aeon = select(1, client())
+  -- without memory, which is what every session did before memo existed.
+  local memo = select(1, client())
 
-  -- The last context aeon handed over. A recall that comes back with an injection id is aeon
+  -- The last context memo handed over. A recall that comes back with an injection id is memo
   -- saying "these went into your model's context, tell me what you did with them" -- and this
   -- is the only place that id is held, because nothing else in axon needs to know it exists.
   local injection = nil
 
-  local asked, offered = pcall(function() return aeon and aeon.tools() end)
+  local asked, offered = pcall(function() return memo and memo.tools() end)
   if asked and offered then
     for _, t in ipairs(offered) do
       axon.tool(t.name, {
@@ -276,10 +276,10 @@ do -- aeon
         parameters = t.parameters,
         transport = { kind = "lua" },
         run = function(args)
-          local answer, why = aeon.fetch({ tool = "aeon" }, t.verb, args)
+          local answer, why = memo.fetch({ tool = "memo" }, t.verb, args)
           if not answer then return { content = tostring(why), is_error = true } end
           -- Kept, and stripped from what the model sees. The id is bookkeeping between axon
-          -- and aeon; putting it in the context would spend tokens on a handle the model can
+          -- and memo; putting it in the context would spend tokens on a handle the model can
           -- do nothing with, and invite it to make one up.
           if type(answer) == "table" and answer.injection then
             injection = answer.injection
@@ -291,30 +291,30 @@ do -- aeon
     end
   end
 
-  -- Close the loop. Every tool that finishes after aeon handed something over is reported back:
-  -- what ran, and whether it worked. aeon decides for itself whether the action followed any of
+  -- Close the loop. Every tool that finishes after memo handed something over is reported back:
+  -- what ran, and whether it worked. memo decides for itself whether the action followed any of
   -- the memories it gave -- axon does not guess, because a harness claiming a match it did not
   -- verify is asserting an analysis rather than reporting an action.
   --
-  -- Nothing here is required. With aeon absent, or its ledger off, `injection` stays nil and
+  -- Nothing here is required. With memo absent, or its ledger off, `injection` stays nil and
   -- this never fires; the session runs exactly as it did before.
-  axon.watch("aeon-outcome", {
+  axon.watch("memo-outcome", {
     run = function(event)
-      if not aeon or not injection then return end
+      if not memo or not injection then return end
       if event.tool == "recall" or event.tool == "remember" then return end
 
-      -- What the tool was actually asked to do, as one string. aeon hashes it and keeps the
+      -- What the tool was actually asked to do, as one string. memo hashes it and keeps the
       -- digest; the arguments themselves never leave this VM.
       local args = event.arguments or {}
       local action = args.command or args.path or args.query or ""
 
-      local used = aeon.fetch({ tool = "aeon" }, "used", injection, {
+      local used = memo.fetch({ tool = "memo" }, "used", injection, {
         tool = event.tool,
         action = action,
       })
       if not used or not used.action then return end
 
-      aeon.fetch({ tool = "aeon" }, "outcome", used.action, {
+      memo.fetch({ tool = "memo" }, "outcome", used.action, {
         kind = event.is_error and "failed" or "succeeded",
       })
     end,

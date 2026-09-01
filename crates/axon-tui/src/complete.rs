@@ -76,7 +76,7 @@ impl Completion {
 
 /// The commands M0 can honour.
 ///
-/// Colon, not slash. `/` is search -- of the transcript now and of aeon's memory later -- and
+/// Colon, not slash. `/` is search -- of the transcript now and of memo's memory later -- and
 /// a prefix cannot mean both.
 ///
 /// Deliberately short. Pi has 28 and a collision policy per surface; every command added here

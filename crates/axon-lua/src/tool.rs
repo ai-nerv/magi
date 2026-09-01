@@ -550,7 +550,7 @@ mod command_transport {
 /// A Lua function told when a tool finishes.
 ///
 /// The seam a memory layer needs and axon's Rust should not know about. axon reports *that a
-/// tool ran and whether it worked*; what to do with that — report it to aeon, count it, ignore
+/// tool ran and whether it worked*; what to do with that — report it to memo, count it, ignore
 /// it — is a configuration's business, and lives in Lua beside the client it would use.
 ///
 /// Failures are swallowed on purpose. A watcher that raised would turn observing a tool call

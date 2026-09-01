@@ -4,7 +4,7 @@
 //! beginning with `/` opens the command menu, the menu owns the arrows, and history stopped
 //! dead at the first slash command in it — including one it had just recalled.
 
-use super::tests::{no_paths, press, with_popup};
+use super::tests::{no_paths, press, typing, with_popup};
 use super::*;
 use axon_tui::complete;
 
@@ -33,7 +33,8 @@ fn up_walks_back_through_earlier_prompts() {
             press(KeyCode::Up, KeyModifiers::NONE),
             &mut editor,
             &mut none,
-            false
+            false,
+            &mut typing(),
         ),
         Action::Recalled
     );
@@ -54,6 +55,7 @@ fn a_recalled_line_does_not_reopen_the_menu_over_itself() {
             &mut editor,
             &mut none,
             false,
+            &mut typing(),
         );
         assert_eq!(action, Action::Recalled, "the popup must not be rebuilt");
         seen.push(editor.lines()[0].clone());
@@ -74,6 +76,7 @@ fn the_menu_still_owns_the_arrows_while_there_is_menu_left() {
         &mut editor,
         &mut popup,
         false,
+        &mut typing(),
     );
     assert_eq!(action, Action::Redraw);
     assert_eq!(
@@ -87,6 +90,7 @@ fn the_menu_still_owns_the_arrows_while_there_is_menu_left() {
         &mut editor,
         &mut popup,
         false,
+        &mut typing(),
     );
     assert_eq!(highlight(&mut popup), 0);
 }
@@ -108,6 +112,7 @@ fn up_at_the_top_of_the_menu_leaves_it_for_history() {
         &mut editor,
         &mut popup,
         false,
+        &mut typing(),
     );
     assert_eq!(action, Action::Recalled);
     assert!(popup.is_none(), "the menu got out of the way");
@@ -117,6 +122,7 @@ fn up_at_the_top_of_the_menu_leaves_it_for_history() {
 /// Handing the mouse back, so the terminal can do what a terminal does.
 #[cfg(test)]
 mod the_mouse_is_the_terminals {
+    use super::super::tests::typing;
     use super::super::*;
     use crossterm::event::{KeyCode, KeyModifiers};
 
@@ -132,6 +138,7 @@ mod the_mouse_is_the_terminals {
             &mut editor,
             &mut None,
             false,
+            &mut typing(),
         );
         assert_eq!(action, Action::Ignore);
     }
@@ -144,6 +151,7 @@ mod the_mouse_is_the_terminals {
             &mut editor,
             &mut None,
             false,
+            &mut typing(),
         );
         assert_eq!(editor.lines()[0], "t");
     }

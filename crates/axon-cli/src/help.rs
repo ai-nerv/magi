@@ -12,7 +12,9 @@ const KEYS: &str = "\
 **Keys**
 
 - `enter` submit — `shift+enter` newline
-- `esc` interrupt a running turn
+- `esc` leave insert mode — again in normal mode to interrupt a running turn
+- `i a I A o O` insert — `h j k l` move — `w b 0 ^ $` — `x dd D C p`
+- `j k` scroll the transcript while the prompt is one line — `gg G` its ends
 - `tab` complete — `enter` runs the command — `↑/↓` move through the list
 - `pgup`/`pgdn` scroll — `shift+↑/↓` by a line — `shift+home/end` to the ends
 - `ctrl+o` show tool output in full, again to fold it back

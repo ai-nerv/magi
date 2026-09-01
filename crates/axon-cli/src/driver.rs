@@ -157,13 +157,13 @@ pub async fn run(
                         // empty, which is most of them at this point.
                         app.tease.interrupt(crate::app::opener());
                         let busy = app.is_busy();
-                        let action =
-                            keys::handle(
-                                key,
-                                &mut app.editor,
-                                &mut app.overlay,
-                                busy,
-                            );
+                        let action = keys::handle(
+                            key,
+                            &mut app.editor,
+                            &mut app.overlay,
+                            busy,
+                            &mut app.modal,
+                        );
                         // Noted before the match consumes it: a taken completion must not be
                         // recomputed, and the arms move the action's payload out.
                         let accepted = matches!(
@@ -186,6 +186,9 @@ pub async fn run(
                                 }
                                 dirty = true;
                             }
+                            // Search is the next thing to be built; until it is, these move
+                            // nothing and say nothing rather than pretending to.
+                            Action::Search | Action::Match { .. } => {}
                             Action::Interrupt => {
                                 let _ = command_tx.send(UiCommand::Interrupt).await;
                                 dirty = true;

@@ -182,7 +182,7 @@ pub fn render(
     }
 
     let below = total_rows.saturating_sub(end);
-    out.push(hidden(bottom, Direction::Down, below));
+    out.push(tagged(hidden(bottom, Direction::Down, below), saying.mode));
     out
 }
 
@@ -383,6 +383,7 @@ mod tests {
                 text: "what are we making?",
                 caret: None,
                 badge: "",
+                mode: crate::vim::Mode::default(),
             },
         ));
         assert_eq!(rendered.len(), 3, "top edge, text, bottom edge");
@@ -559,6 +560,7 @@ mod narrow_tests {
                 text: hint,
                 caret: None,
                 badge: "",
+                mode: crate::vim::Mode::default(),
             },
         )[1]
         .spans
@@ -709,4 +711,46 @@ mod placeholder_tests {
             "something is still drawn struck"
         );
     }
+}
+
+/// Write the mode onto the bottom edge of the box.
+///
+/// On the border, like the "N more" caption above it, and on the bottom because the top edge
+/// already has one. Three letters, always the same three columns wide, so the frame does not
+/// move when the mode does.
+///
+/// It is not optional. The prompt opens in normal mode and refuses text until told otherwise,
+/// and a modal editor that does not say which mode it is in is a broken keyboard.
+fn tagged(edge: Line<'static>, mode: crate::vim::Mode) -> Line<'static> {
+    let label = format!(" {} ", mode.tag());
+    let width: usize = edge.spans.iter().map(|s| s.content.chars().count()).sum();
+    if label.chars().count() + 4 > width {
+        return edge;
+    }
+    // Insert mode is the one worth noticing, because it is the one where a keystroke changes
+    // something. Normal mode sits at the same level as the border it is written on.
+    let style = Style::default().fg(if mode.is_insert() {
+        colour::accent()
+    } else {
+        colour::border()
+    });
+    // Written over the columns it covers rather than spliced between spans. The edge is a
+    // handful of spans whose boundaries move as the scan travels along it, so cutting at a span
+    // index cuts somewhere different every frame -- which is how the first version of this ate
+    // the bottom-right corner.
+    let mut columns: Vec<Span<'static>> = edge
+        .spans
+        .into_iter()
+        .flat_map(|span| {
+            let style = span.style;
+            span.content
+                .chars()
+                .map(|c| Span::styled(c.to_string(), style))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    for (at, c) in label.chars().enumerate() {
+        columns[2 + at] = Span::styled(c.to_string(), style);
+    }
+    Line::from(columns)
 }
