@@ -129,7 +129,7 @@ fn default_api() -> Api {
     Api::OpenAiCompletions
 }
 
-fn default_input() -> Vec<Modality> {
+pub fn default_input() -> Vec<Modality> {
     vec![Modality::Text]
 }
 

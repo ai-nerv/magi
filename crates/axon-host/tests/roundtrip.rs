@@ -246,6 +246,7 @@ async fn start_with_backend(name: &str, base_url: String) -> (PathBuf, PathBuf) 
             auth: Auth::None,
             compat: None,
             models: vec![model.clone()],
+            discover: false,
         },
         model,
         options: axon_provider::api::Options::default(),

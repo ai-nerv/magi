@@ -109,13 +109,15 @@ axon.tool("mine", {
 fn a_project_may_still_choose_among_what_the_machine_offers() {
     // The useful half, and the half that carries no authority: picking a model.
     let dir = workspace("choose");
-    project(&dir, "axon.model = \"ollama/llama3.3\"\n");
+    // A model the catalog *declares*, not one it discovers: `ollama` asks a local server what
+    // it has, and a test that needs one running is a test that fails on a build machine.
+    project(&dir, "axon.model = \"deepseek/deepseek-chat\"\n");
     let output = axon(&dir, &["models", "--all"]);
     let listed = String::from_utf8_lossy(&output.stdout);
     assert!(
         listed
             .lines()
-            .any(|l| l.starts_with('*') && l.contains("ollama/llama3.3")),
+            .any(|l| l.starts_with('*') && l.contains("deepseek/deepseek-chat")),
         "the project's choice is honoured: {listed}"
     );
     let _ = std::fs::remove_dir_all(&dir);

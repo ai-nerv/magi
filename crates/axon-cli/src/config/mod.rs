@@ -128,7 +128,13 @@ pub fn load() -> Result<Loaded, LuaError> {
             eprintln!("axon: {refused}");
         }
     }
-    collect(engine.config(), apis, tools, clients, machine.as_ref())
+    let mut loaded = collect(engine.config(), apis, tools, clients, machine.as_ref())?;
+    // Here rather than in `collect`, which `builtin` also uses. `builtin` is the catalog on its
+    // own, for when the rest of a config is broken -- a fallback that reaches the network is a
+    // fallback that hangs, and it is what the tests read, which would make them ask the internet
+    // what they are asserting about.
+    catalog::discover(&mut loaded.providers);
+    Ok(loaded)
 }
 
 /// Whether the working directory is one the machine's config vouched for.
@@ -260,6 +266,7 @@ pub fn catalog(loaded: &Loaded) -> axon_host::catalog::Catalog {
 
 pub(crate) mod chosen;
 use chosen::{asked, chosen};
+mod catalog;
 mod settings;
 
 use settings::{grants, idle_exit, options, system};
@@ -450,249 +457,40 @@ impl Trusted {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use axon_provider::model::Api;
-    use std::collections::BTreeSet;
-
-    fn catalog() -> Vec<Provider> {
-        builtin().expect("the built-in catalog must load")
-    }
-
-    #[test]
-    fn the_builtin_catalog_is_a_config_file_that_runs() {
-        assert!(catalog().len() >= 40, "only {}", catalog().len());
-    }
-
-    #[test]
-    fn the_catalog_covers_every_protocol() {
-        let apis: BTreeSet<Api> = catalog().iter().map(|p| p.api).collect();
-        for api in Api::all() {
-            assert!(apis.contains(&api), "nothing speaks {}", api.as_str());
-        }
-    }
-
-    #[test]
-    fn most_providers_share_one_adapter() {
-        let providers = catalog();
-        let shared = providers
-            .iter()
-            .filter(|p| p.api == Api::OpenAiCompletions)
-            .count();
-        assert!(
-            shared * 2 > providers.len(),
-            "only {shared} of {} route through openai-completions",
-            providers.len()
-        );
-    }
-
-    #[test]
-    fn provider_ids_are_unique() {
-        let providers = catalog();
-        let ids: BTreeSet<&str> = providers.iter().map(|p| p.id.as_str()).collect();
-        assert_eq!(
-            ids.len(),
-            providers.len(),
-            "a duplicate id shadows a provider"
-        );
-    }
-
-    #[test]
-    fn every_provider_offers_at_least_one_model() {
-        for p in catalog() {
-            assert!(!p.models.is_empty(), "{} offers nothing", p.id);
-        }
-    }
-
-    #[test]
-    fn every_model_is_stamped_with_its_provider_and_api() {
-        for p in catalog() {
-            for m in &p.models {
-                assert_eq!(m.provider, p.id, "{} claims {}", m.id, m.provider);
-                assert_eq!(m.api, p.api, "{} speaks the wrong protocol", m.id);
-            }
-        }
-    }
-
-    #[test]
-    fn context_windows_are_plausible() {
-        for p in catalog() {
-            for m in &p.models {
-                assert!(
-                    m.context_window >= 4096,
-                    "{} has {}",
-                    m.id,
-                    m.context_window
-                );
-                assert!(
-                    m.max_tokens <= m.context_window,
-                    "{} would exceed its own window",
-                    m.id
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn a_provider_without_a_fixed_base_url_declares_its_dialect() {
-        // Detection by hostname was removed with the vendor knowledge it needed. A provider
-        // whose endpoint comes from configuration has no host to infer from, so it must say.
-        for p in catalog() {
-            if p.base_url.is_none() && p.api == Api::OpenAiCompletions {
-                assert!(
-                    p.compat.is_some(),
-                    "{} has no base_url and no dialect",
-                    p.id
-                );
-            }
-        }
-    }
-
-    /// Run the built-in catalog with an extra config chunk layered over it.
-    fn with(extra: &str) -> Vec<Provider> {
-        let mut engine = Engine::new();
-        engine
-            .run(
-                &crate::config::chosen::tests::checkout("providers.lua"),
-                "providers.lua",
-            )
-            .expect("builtin");
-        engine.run(extra, "user.lua").expect("user config");
-        engine.harvest();
-        // `None`: these tests are about what a *machine* config can declare, so everything
-        // they run counts as the machine's own and there is no boundary to enforce.
-        collect(engine.config(), Vec::new(), Vec::new(), Vec::new(), None)
-            .expect("collect")
-            .providers
-    }
-
-    #[test]
-    fn a_user_config_can_add_a_provider() {
-        let before = catalog().len();
-        let providers = with(
-            r#"
-            axon.provider("my-proxy", {
-              api = "openai-completions",
-              base_url = "http://10.0.0.2:8080/v1",
-              auth = { kind = "none" },
-              models = { { id = "m", name = "M", context_window = 8192, max_tokens = 4096 } },
-            })
-            "#,
-        );
-        assert_eq!(providers.len(), before + 1);
-        assert!(providers.iter().any(|p| p.id == "my-proxy"));
-    }
-
-    #[test]
-    fn a_user_config_replaces_a_builtin_in_place() {
-        let before = catalog().len();
-        let position = catalog()
-            .iter()
-            .position(|p| p.id == "groq")
-            .expect("groq is built in");
-        let providers = with(
-            r#"
-            axon.provider("groq", {
-              name = "Groq via proxy",
-              api = "openai-completions",
-              base_url = "http://localhost:9000/v1",
-              auth = { kind = "none" },
-              models = { { id = "m", name = "M", context_window = 8192, max_tokens = 4096 } },
-            })
-            "#,
-        );
-        assert_eq!(providers.len(), before, "an override is not an addition");
-        assert_eq!(providers[position].name, "Groq via proxy");
-        assert_eq!(providers[position].models.len(), 1, "replaced, not merged");
-    }
-
-    #[test]
-    fn a_config_may_declare_providers_in_a_loop() {
-        // The reason the config is a program: one statement, several machines.
-        let providers = with(
-            r#"
-            for _, box in ipairs({ "alpha", "beta", "gamma" }) do
-              axon.provider("gpu-" .. box, {
-                api = "openai-completions",
-                base_url = "http://" .. box .. ".local:8000/v1",
-                auth = { kind = "none" },
-                models = { { id = "m", name = "M", context_window = 8192, max_tokens = 4096 } },
-              })
-            end
-            "#,
-        );
-        for box_ in ["alpha", "beta", "gamma"] {
-            assert!(providers.iter().any(|p| p.id == format!("gpu-{box_}")));
-        }
-    }
-
-    #[test]
-    fn the_registration_name_becomes_the_id() {
-        let p = declare(
-            "my-box",
-            &serde_json::json!({ "api": "openai-completions", "auth": { "kind": "none" },
-                                 "models": [{ "id": "m", "name": "M",
-                                              "context_window": 8192, "max_tokens": 4096 }] }),
-        )
-        .expect("a provider");
-        assert_eq!(p.id, "my-box");
-        assert_eq!(p.name, "my-box", "a config should not repeat itself");
-    }
-
-    #[test]
-    fn a_declaration_cannot_claim_an_id_it_was_not_registered_under() {
-        let p = declare(
-            "real",
-            &serde_json::json!({ "id": "pretend", "api": "openai-completions",
-                                 "auth": { "kind": "none" },
-                                 "models": [{ "id": "m", "name": "M",
-                                              "context_window": 8192, "max_tokens": 4096 }] }),
-        )
-        .expect("a provider");
-        assert_eq!(p.id, "real", "the registrar decides the name");
-    }
-
-    #[test]
-    fn an_installed_protocol_reaches_the_backend_not_just_the_listing() {
-        // The bug this pins: an edited `apis/*.lua` changed what `axon models` printed and
-        // nothing the daemon actually did, because the worker rebuilt its VM from the
-        // compiled-in copies.
-        let loaded = Loaded {
-            config: Config::default(),
-            apis: vec![("openai-completions".to_owned(), "-- edited".to_owned())],
-            tools: Vec::new(),
-            clients: Vec::new(),
-            providers: Vec::new(),
-        };
-        assert_eq!(
-            loaded.apis.first().map(|(_, source)| source.as_str()),
-            Some("-- edited"),
-            "what was loaded is what the worker is handed"
-        );
-    }
-
-    #[test]
-    fn the_protocols_reach_the_worker() {
-        // Named for the file they came from, because the binary no longer knows what protocols
-        // exist — it hands the worker whatever the entry point loaded.
-        let loaded = load().expect("the installed configuration must load");
-        assert!(!loaded.apis.is_empty(), "nothing to speak with");
-        assert!(
-            loaded
-                .apis
-                .iter()
-                .any(|(_, source)| source.contains("openai-completions")),
-            "the shipped dialects are among them"
-        );
-    }
-
-    #[test]
-    fn a_malformed_declaration_says_what_is_wrong() {
-        let error = declare("x", &serde_json::json!({ "api": "nonsense" })).expect_err("must fail");
-        assert!(!error.is_empty());
-    }
+/// The source behind one `axon.load` path, read from the config directory.
+///
+/// A path that is not there is skipped rather than fatal: an entry point may load a file that is
+/// optional on this machine, and a missing optional is not a broken configuration.
+fn source_of(path: &str) -> Option<String> {
+    let file = config_dir()?.join(path);
+    std::fs::read_to_string(file).ok()
 }
+
+/// The name a loaded file registers under: its stem, without directory or extension.
+fn stem(path: &str) -> String {
+    std::path::Path::new(path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_owned())
+}
+
+/// Which bucket a loaded path belongs to, if any.
+///
+/// By the first path component, so `apis.lua` and `apis/google.lua` land in the same place: the
+/// shipped tree keeps one file per kind, and somebody who prefers a file per protocol should not
+/// have to tell the host about it.
+fn kind(path: &str) -> Option<&'static str> {
+    for name in ["apis", "tools", "clients"] {
+        if path == format!("{name}.lua") || path.starts_with(&format!("{name}/")) {
+            return Some(name);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+#[path = "catalog_tests.rs"]
+mod catalog_tests;
 
 #[cfg(test)]
 mod staleness_tests {
@@ -760,35 +558,4 @@ mod staleness_tests {
         assert_eq!(newer_than(&[old, new.clone()], started), vec![new]);
         let _ = std::fs::remove_dir_all(&dir);
     }
-}
-
-/// The source behind one `axon.load` path, read from the config directory.
-///
-/// A path that is not there is skipped rather than fatal: an entry point may load a file that is
-/// optional on this machine, and a missing optional is not a broken configuration.
-fn source_of(path: &str) -> Option<String> {
-    let file = config_dir()?.join(path);
-    std::fs::read_to_string(file).ok()
-}
-
-/// The name a loaded file registers under: its stem, without directory or extension.
-fn stem(path: &str) -> String {
-    std::path::Path::new(path)
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.to_owned())
-}
-
-/// Which bucket a loaded path belongs to, if any.
-///
-/// By the first path component, so `apis.lua` and `apis/google.lua` land in the same place: the
-/// shipped tree keeps one file per kind, and somebody who prefers a file per protocol should not
-/// have to tell the host about it.
-fn kind(path: &str) -> Option<&'static str> {
-    for name in ["apis", "tools", "clients"] {
-        if path == format!("{name}.lua") || path.starts_with(&format!("{name}/")) {
-            return Some(name);
-        }
-    }
-    None
 }

@@ -100,6 +100,7 @@ fn backend(base_url: String) -> Backend {
             auth: Auth::None,
             compat: None,
             models: vec![model.clone()],
+            discover: false,
         },
         model,
         options: Options::default(),

@@ -134,7 +134,17 @@ pub struct Provider {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compat: Option<crate::compat::Compat>,
     /// What it offers.
+    ///
+    /// Empty is allowed, and means "ask": see `discover`.
+    #[serde(default)]
     pub models: Vec<Model>,
+    /// Whether to ask the provider what it offers rather than be told here.
+    ///
+    /// A hand-written catalog is stale the day it is written -- OpenRouter alone offers four
+    /// hundred models. What comes back is cached, never written into the configuration: a file
+    /// somebody wrote is not a file a program rewrites.
+    #[serde(default)]
+    pub discover: bool,
 }
 
 impl Provider {
@@ -178,6 +188,8 @@ struct ProviderDecl {
     compat: Option<crate::compat::Compat>,
     #[serde(default)]
     models: Vec<Model>,
+    #[serde(default)]
+    discover: bool,
 }
 
 impl From<ProviderDecl> for Provider {
@@ -190,6 +202,7 @@ impl From<ProviderDecl> for Provider {
             auth,
             compat,
             mut models,
+            discover,
         } = decl;
         for model in &mut models {
             model.provider.clone_from(&id);
@@ -207,6 +220,7 @@ impl From<ProviderDecl> for Provider {
             auth,
             compat,
             models,
+            discover,
         }
     }
 }

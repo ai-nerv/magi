@@ -75,6 +75,7 @@ dependencies = [
  "axon-ipc",
  "axon-journal",
  "axon-lua",
+ "axon-model",
  "axon-proto",
  "axon-provider",
  "axon-testkit",
