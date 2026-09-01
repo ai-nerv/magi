@@ -21,7 +21,7 @@
 //! refused loudly — a stranger who can tell the difference between "refused" and "no such
 //! instance" has learned something about a session that is not theirs.
 
-use super::wire::Message;
+use super::wire::{Message, Sort};
 use super::{Address, Kind, Reach, TOOL};
 use axon_tools::{Cancel, Ops, Output, Tool};
 use serde_json::{Value, json};
@@ -31,40 +31,91 @@ use serde_json::{Value, json};
 /// Extensive on purpose. The narrow version — send, and stop — makes a model that wants to know
 /// whether a sibling is even alive send it a message and wait to see what happens.
 const VERBS: &[(&str, &str)] = &[
-    ("help", "list these verbs and what each one takes"),
+    // Knowing where you are. A subagent that does not know it is one cannot behave like one.
+    ("help", "list these verbs and what each takes"),
+    (
+        "whoami",
+        "this session's own name, who started it, and what it started",
+    ),
     (
         "list",
-        "every instance currently listening, and how it relates to this one",
+        "every instance listening, and how each relates to this one",
     ),
-    ("about", "who an instance is: its project, role and id"),
+    (
+        "about",
+        "who an instance is: project, role, id, and its parent",
+    ),
     (
         "status",
-        "whether an instance is working, for how long, and how much is waiting for it",
+        "whether an instance is working, for how long, and what is waiting for it",
     ),
     (
         "verbs",
-        "what an instance itself says it can answer, asked of it rather than assumed",
+        "what an instance says it can answer, asked of it rather than assumed",
+    ),
+    // Saying things. `send` returns at once; `ask` waits for the answer.
+    ("send", "put a note in an instance's inbox and carry on"),
+    ("ask", "ask an instance a question and wait for its answer"),
+    (
+        "reply",
+        "answer a question that was asked of this session, quoting its id",
+    ),
+    ("announce", "send the same note to every instance listening"),
+    // Asking for something. The difference between these and `send` is what the far end does
+    // when it arrives, which is why they are verbs rather than a wording choice.
+    (
+        "attention",
+        "tell an instance you need it — the one message allowed to interrupt a turn",
     ),
     (
-        "send",
-        "put a message in an instance's inbox and return at once",
+        "trouble",
+        "report that something is wrong and this session cannot go on",
     ),
     (
-        "ask",
-        "send a message and wait for the instance to answer it",
+        "handoff",
+        "give a piece of work to an instance: it is theirs now, not copied",
     ),
+    // Not treading on each other. Advisory: axon records a claim, it does not enforce one.
+    (
+        "claim",
+        "say this session is taking a piece of work, so others leave it alone",
+    ),
+    ("release", "say it is finished with, or was never started"),
+    ("claims", "what every instance has said it is working on"),
+    // Reading what came back.
     (
         "inbox",
         "what has been sent to this session and not yet acted on",
     ),
     (
         "history",
-        "what has passed between this session and one instance",
+        "everything that has passed between this session and one instance",
     ),
+    // Lifetime.
     (
         "stop",
-        "end an instance this session started — ignored by anything it did not",
+        "end an instance this session started — refused for any it did not",
     ),
+];
+
+/// Which verbs need an instance named, and which do not.
+///
+/// A table rather than a condition per verb, because the third one written by hand disagreed
+/// with the schema and the model was told `whoami` needed a `who`.
+const ALONE: &[&str] = &[
+    "help", "whoami", "list", "inbox", "claims", "announce", "trouble", "reply",
+];
+
+/// Which verbs need something said.
+const SPEAKS: &[&str] = &[
+    "send",
+    "ask",
+    "reply",
+    "announce",
+    "attention",
+    "trouble",
+    "handoff",
+    "claim",
 ];
 
 /// What the tool needs from the session in order to answer.
@@ -133,7 +184,20 @@ impl Tool for Agent {
                 },
                 "message": {
                     "type": "string",
-                    "description": "what to say, for `send` and `ask`.",
+                    "description": "what to say. Needed by send, ask, reply, announce, \
+                                    attention, trouble, handoff and claim.",
+                },
+                "about": {
+                    "type": "string",
+                    "description": "the id of the message being answered or released. \
+                                    Required by `reply`; `inbox` lists the ids.",
+                },
+                "sort": {
+                    "type": "string",
+                    "enum": ["note", "question", "answer", "attention", "claim", "release",
+                             "handoff", "trouble"],
+                    "description": "for `send` only, what kind of message it is. The other \
+                                    verbs each mean one already. Defaults to note.",
                 },
             },
             "required": ["verb"],
@@ -142,13 +206,35 @@ impl Tool for Agent {
 
     fn run(&self, arguments: &Value, _ops: &dyn Ops, _cancel: &dyn Cancel) -> Output {
         let verb = arguments.get("verb").and_then(Value::as_str).unwrap_or("");
+        if verb.is_empty() {
+            return Output::error(format!(
+                "{TOOL} needs a verb. Call it with `verb: \"help\"` to see them."
+            ));
+        }
+        if !VERBS.iter().any(|(name, _)| *name == verb) {
+            return Output::error(format!(
+                "`{verb}` is not one of {TOOL}'s verbs. Call it with `verb: \"help\"`."
+            ));
+        }
+        // What a verb needs is a table, not a condition per verb: the third one written by hand
+        // disagreed with the schema and told the model `whoami` wanted a `who`.
+        let said = arguments.get("message").and_then(Value::as_str);
+        if SPEAKS.contains(&verb) && said.is_none_or(str::is_empty) {
+            return Output::error(format!("`{verb}` needs `message` — what to say."));
+        }
+        if verb == "reply" && arguments.get("about").is_none() {
+            return Output::error(
+                "`reply` needs `about` — the id of the message being answered. `inbox` lists them."
+                    .to_owned(),
+            );
+        }
         match verb {
             "help" => Output::ok(help(&self.standing)),
+            "whoami" => Output::ok(whoami(&self.standing)),
             "inbox" => Output::ok(inbox(&self.standing)),
-            // Everything else names an instance, and saying which is missing beats a schema
-            // error the model has to guess its way out of.
-            "" => Output::error(format!(
-                "{TOOL} needs a verb. Call it with `verb: \"help\"` to see them."
+            _ if ALONE.contains(&verb) => Output::ok(format!(
+                "`{verb}` is understood but not yet carried out: the socket call it makes is \
+                 not wired into the turn loop."
             )),
             _ => match arguments.get("who").and_then(Value::as_str) {
                 Some(who) => reach(verb, who, arguments, &self.standing),
@@ -184,12 +270,51 @@ fn inbox(standing: &Standing) -> String {
     if standing.inbox.is_empty() {
         return "Nothing has been sent to this session.".to_owned();
     }
+    // Marked rather than sorted. Order is when things arrived, which is what makes a
+    // conversation readable; the mark is what makes the urgent one findable in it.
     let rows: Vec<String> = standing
         .inbox
         .iter()
-        .map(|message| format!("- from `{}`: {}", message.from, message.text))
+        .map(|message| {
+            let mark = if message.sort.interrupts() { "! " } else { "" };
+            let owed = if message.sort.expects_an_answer() {
+                format!(" — answer with `reply`, `about: \"{}\"`", message.id)
+            } else {
+                String::new()
+            };
+            format!(
+                "- {mark}`{}` [{}] {}{owed}",
+                message.from,
+                serde_json::to_value(message.sort)
+                    .ok()
+                    .and_then(|v| v.as_str().map(ToOwned::to_owned))
+                    .unwrap_or_else(|| "note".to_owned()),
+                message.text
+            )
+        })
         .collect();
     rows.join("\n")
+}
+
+/// What sort of message a verb sends.
+///
+/// The verb *is* the sort, for everything but `send` — which takes one, because "put this in
+/// their inbox" is the general case and the others are it with a meaning attached.
+fn sorted(verb: &str, arguments: &Value) -> Sort {
+    match verb {
+        "ask" => Sort::Question,
+        "reply" => Sort::Answer,
+        "attention" => Sort::Attention,
+        "trouble" => Sort::Trouble,
+        "handoff" => Sort::Handoff,
+        "claim" => Sort::Claim,
+        "release" => Sort::Release,
+        _ => arguments
+            .get("sort")
+            .and_then(Value::as_str)
+            .and_then(Sort::read)
+            .unwrap_or(Sort::Note),
+    }
 }
 
 /// Everything that needs an instance to act on.
@@ -226,17 +351,23 @@ fn reach(verb: &str, who: &str, arguments: &Value, standing: &Standing) -> Outpu
     if matches!(verb, "send" | "ask") && arguments.get("message").is_none() {
         return Output::error(format!("`{verb}` needs `message` — what to say."));
     }
+    let wanted = Wanted {
+        verb: verb.to_owned(),
+        who: address.written(),
+        sort: sorted(verb, arguments),
+        message: arguments
+            .get("message")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        about: arguments
+            .get("about")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+    };
     Output::ok(format!(
-        "queued: {verb} {}",
-        Wanted {
-            verb: verb.to_owned(),
-            who: address.written(),
-            message: arguments
-                .get("message")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned),
-        }
-        .who
+        "`{}` is understood but not yet carried out: the socket call it makes is not wired into \
+         the turn loop.",
+        wanted.verb
     ))
 }
 
@@ -250,8 +381,12 @@ pub struct Wanted {
     pub verb: String,
     /// Which instance, written out.
     pub who: String,
+    /// What kind of message it carries.
+    pub sort: Sort,
     /// What to say, for the verbs that say something.
     pub message: Option<String>,
+    /// The message being answered or released, for the verbs that quote one.
+    pub about: Option<String>,
 }
 
 /// The tool refuses what it should and asks for what it needs.
@@ -382,5 +517,195 @@ mod tests {
         let out = call(json!({"verb": "inbox"}), standing);
         assert!(out.content.contains("axon/main/gamma"), "{}", out.content);
         assert!(out.content.contains("the parser is fixed"));
+    }
+}
+
+/// This session's own name and place.
+///
+/// A subagent that does not know it is one cannot behave like one: it will not think to raise
+/// `attention` at a parent it does not know it has, and it will try to `stop` siblings it has
+/// no authority over. This is the first thing such a session should ask.
+fn whoami(standing: &Standing) -> String {
+    let mut said = format!("This session is `{}`.", standing.me);
+    match &standing.parent {
+        Some(who) => said.push_str(&format!(
+            " It was started by `{who}`, which is the only session that can stop it — and the \
+             one to raise `attention` at when this session needs a decision it cannot make."
+        )),
+        None => said.push_str(
+            " Nothing started it, so it is a root session: no parent to escalate to, and \
+             nothing can stop it from outside.",
+        ),
+    }
+    if standing.forked.is_empty() {
+        said.push_str(" It has started nothing, so there is nothing it may stop.");
+    } else {
+        said.push_str(&format!(
+            " It started {}, which it may stop: {}.",
+            standing.forked.len(),
+            standing
+                .forked
+                .iter()
+                .map(|child| format!("`{child}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    said
+}
+
+/// The wider surface: what each verb needs, and what it means when it lands.
+#[cfg(test)]
+mod surface_tests {
+    use super::*;
+
+    fn standing() -> Standing {
+        Standing {
+            me: "axon/main/alpha".to_owned(),
+            parent: None,
+            forked: Vec::new(),
+            inbox: Vec::new(),
+        }
+    }
+
+    fn call(arguments: Value, standing: Standing) -> Output {
+        Agent { standing }.run(
+            &arguments,
+            &axon_tools::ops::Real::new(std::path::PathBuf::from(".")),
+            &axon_tools::Uncancelled,
+        )
+    }
+
+    #[test]
+    fn every_verb_either_needs_an_instance_or_is_listed_as_not_needing_one() {
+        // The table and the dispatch drift the moment either is edited, and the drift shows up
+        // as the model being told `whoami` wants a `who`.
+        for (verb, _) in VERBS {
+            let out = call(
+                json!({"verb": verb, "message": "x", "about": "y"}),
+                standing(),
+            );
+            let wants_who = out.is_error && out.content.contains("needs `who`");
+            assert_eq!(
+                wants_who,
+                !ALONE.contains(verb),
+                "{verb}: needs an instance = {wants_who}, listed as alone = {}",
+                ALONE.contains(verb)
+            );
+        }
+    }
+
+    #[test]
+    fn a_verb_that_says_something_refuses_to_say_nothing() {
+        for verb in SPEAKS {
+            let out = call(json!({"verb": verb, "who": "gamma"}), standing());
+            assert!(out.is_error, "{verb} sent an empty message");
+            assert!(out.content.contains("message"), "{verb}: {}", out.content);
+        }
+    }
+
+    #[test]
+    fn a_reply_has_to_say_what_it_is_answering() {
+        // Without it the far end has an answer and no idea to what, which is worse than no
+        // answer: it reads as an unprompted assertion.
+        let out = call(json!({"verb": "reply", "message": "yes"}), standing());
+        assert!(out.is_error);
+        assert!(out.content.contains("about"), "{}", out.content);
+        assert!(out.content.contains("inbox"), "and where to find the id");
+    }
+
+    #[test]
+    fn a_root_session_is_told_it_has_nobody_to_escalate_to() {
+        // A subagent that does not know it is one will not raise `attention` at a parent it
+        // does not know it has. A root that thinks it has one will wait for an answer forever.
+        let said = call(json!({"verb": "whoami"}), standing()).content;
+        assert!(said.contains("root session"), "{said}");
+
+        let mut child = standing();
+        child.parent = Some("axon/main/root".to_owned());
+        let said = call(json!({"verb": "whoami"}), child).content;
+        assert!(said.contains("axon/main/root"), "{said}");
+        assert!(said.contains("attention"), "and what to do with it: {said}");
+    }
+
+    #[test]
+    fn whoami_says_what_it_may_stop() {
+        let mut standing = standing();
+        standing.forked.push("axon/main/gamma".to_owned());
+        let said = call(json!({"verb": "whoami"}), standing).content;
+        assert!(said.contains("axon/main/gamma"), "{said}");
+        assert!(said.contains("may stop"), "{said}");
+    }
+
+    #[test]
+    fn the_verb_is_the_sort_for_everything_but_send() {
+        // `attention` and `send` travel identically and mean different things to whoever reads
+        // them. If the verb did not set the sort, every one of them would arrive as a note.
+        for (verb, want) in [
+            ("ask", Sort::Question),
+            ("reply", Sort::Answer),
+            ("attention", Sort::Attention),
+            ("trouble", Sort::Trouble),
+            ("handoff", Sort::Handoff),
+            ("claim", Sort::Claim),
+            ("release", Sort::Release),
+        ] {
+            assert_eq!(sorted(verb, &json!({})), want, "{verb}");
+        }
+        assert_eq!(sorted("send", &json!({})), Sort::Note, "the general case");
+        assert_eq!(
+            sorted("send", &json!({"sort": "attention"})),
+            Sort::Attention,
+            "which can be told what it is"
+        );
+    }
+
+    #[test]
+    fn only_a_cry_for_help_interrupts() {
+        // An inbox that interrupts for every note is an inbox nobody leaves switched on.
+        for sort in [Sort::Attention, Sort::Trouble] {
+            assert!(sort.interrupts(), "{sort:?} should reach a busy session");
+        }
+        for sort in [Sort::Note, Sort::Question, Sort::Answer, Sort::Claim] {
+            assert!(!sort.interrupts(), "{sort:?} should wait");
+        }
+    }
+
+    #[test]
+    fn the_inbox_marks_what_is_urgent_and_what_is_owed_an_answer() {
+        let mut standing = standing();
+        standing.inbox.push(Message::new("axon/main/beta", "fyi"));
+        standing.inbox.push(Message::sent(
+            "axon/main/gamma",
+            "which parser?",
+            Sort::Question,
+            None,
+        ));
+        standing.inbox.push(Message::sent(
+            "axon/main/delta",
+            "I am stuck",
+            Sort::Attention,
+            None,
+        ));
+        let said = call(json!({"verb": "inbox"}), standing).content;
+        assert!(
+            said.contains("! `axon/main/delta`"),
+            "urgent unmarked: {said}"
+        );
+        assert!(
+            said.contains("`reply`"),
+            "no way back to the question: {said}"
+        );
+        assert!(said.contains("[question]"), "sorts are not shown: {said}");
+    }
+
+    #[test]
+    fn a_message_can_be_answered_by_the_id_the_inbox_showed() {
+        // The id has to survive the round trip, or `reply` quotes something nobody has.
+        let message = Message::sent("axon/main/gamma", "which parser?", Sort::Question, None);
+        let text = serde_json::to_string(&message).expect("encodes");
+        let back: Message = serde_json::from_str(&text).expect("decodes");
+        assert_eq!(back.id, message.id);
+        assert_eq!(back.sort, Sort::Question);
     }
 }

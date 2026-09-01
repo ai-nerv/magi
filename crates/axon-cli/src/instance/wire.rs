@@ -100,37 +100,124 @@ impl Reply {
 /// where one tool can be asked what it speaks and another cannot has stopped being a family.
 pub const VERBS: &[(&str, &str)] = &[
     ("verbs", "what this instance answers"),
-    ("identity", "its project, role and id"),
-    ("status", "whether it is working, and for how long"),
-    ("inbox", "messages it has been sent and not yet read"),
-    ("tell", "put a message in its inbox"),
-    ("stop", "end it — a fork only, never a peer"),
+    ("identity", "its project, role, id and who started it"),
+    (
+        "status",
+        "whether it is working, for how long, and what is waiting",
+    ),
+    ("inbox", "messages it has been sent and not yet acted on"),
+    ("tell", "put a message of any sort in its inbox"),
+    ("stop", "end it — only from the session that started it"),
 ];
+
+/// What a message is for.
+///
+/// One inbox, sorted by what each thing is, rather than a channel per kind. A worker that has
+/// to poll five queues to find out what is happening will poll four of them and miss the fifth,
+/// and the one it misses is always the urgent one.
+///
+/// The sort is what makes a surface out of a pipe: `attention` and `note` travel identically and
+/// mean entirely different things to whoever reads them, and only the sender knows which it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Sort {
+    /// Something worth knowing, wanting nothing back.
+    #[default]
+    Note,
+    /// A question, which expects an [`Sort::Answer`] quoting its id.
+    Question,
+    /// An answer to a question, with `about` naming it.
+    Answer,
+    /// "I need you." The one that is allowed to interrupt.
+    Attention,
+    /// "I am taking this piece of work."
+    Claim,
+    /// "I am done with it, or I never started."
+    Release,
+    /// "This is yours now" — a piece of work moved, not copied.
+    Handoff,
+    /// Something is wrong and the sender cannot go on.
+    Trouble,
+}
+
+impl Sort {
+    /// Read what somebody wrote, or `None` if it is not one of these.
+    #[must_use]
+    pub fn read(name: &str) -> Option<Self> {
+        Some(match name {
+            "note" => Self::Note,
+            "question" => Self::Question,
+            "answer" => Self::Answer,
+            "attention" => Self::Attention,
+            "claim" => Self::Claim,
+            "release" => Self::Release,
+            "handoff" => Self::Handoff,
+            "trouble" => Self::Trouble,
+            _ => return None,
+        })
+    }
+
+    /// Whether this is meant to reach somebody who is mid-turn.
+    ///
+    /// Only two things are: being asked for help, and being told something has gone wrong.
+    /// Everything else waits, because an inbox that interrupts for every note is an inbox
+    /// nobody leaves switched on.
+    #[must_use]
+    pub fn interrupts(self) -> bool {
+        matches!(self, Self::Attention | Self::Trouble)
+    }
+
+    /// Whether the sender is waiting for something back.
+    #[must_use]
+    pub fn expects_an_answer(self) -> bool {
+        matches!(self, Self::Question)
+    }
+}
 
 /// A message from one instance to another.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Message {
+    /// This message, so an answer can quote it.
+    pub id: String,
     /// Who sent it, as `project/role/id`.
     pub from: String,
+    /// What kind of thing it is.
+    #[serde(default)]
+    pub sort: Sort,
     /// What they said.
     pub text: String,
+    /// The message this one is about, for an answer or a release.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub about: Option<String>,
     /// When, in milliseconds since the epoch.
     pub at: u64,
 }
 
 impl Message {
-    /// A message from `from` saying `text`, stamped now.
+    /// A plain note from `from`.
     #[must_use]
     pub fn new(from: &str, text: &str) -> Self {
+        Self::sent(from, text, Sort::Note, None)
+    }
+
+    /// A message of any sort, stamped now.
+    #[must_use]
+    pub fn sent(from: &str, text: &str, sort: Sort, about: Option<String>) -> Self {
+        let at = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |since| since.as_millis()),
+        )
+        .unwrap_or(0);
         Self {
+            // The clock plus the sender, which is unique enough for something two processes
+            // exchange and short enough for a model to quote back without mistyping it.
+            id: format!("{}-{at:x}", &from.replace('/', "-")),
             from: from.to_owned(),
+            sort,
             text: text.to_owned(),
-            at: u64::try_from(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |since| since.as_millis()),
-            )
-            .unwrap_or(0),
+            about,
+            at,
         }
     }
 }
