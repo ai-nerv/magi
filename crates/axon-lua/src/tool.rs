@@ -155,6 +155,11 @@ pub fn install(
     registry: &mut axon_tools::Registry,
     environ: &std::collections::BTreeMap<String, String>,
 ) {
+    // Installed once, whether or not anything is watching. A registrar with nothing in it
+    // costs one empty lookup per tool call, and wiring it conditionally would mean a config
+    // that adds a watcher after startup silently never fires.
+    registry.watch(Box::new(LuaWatch::new(Rc::clone(&engine))));
+
     let declared = engine.borrow_mut().tools();
     for (name, spec) in declared {
         let declaration: Declaration = match serde_json::from_value(spec) {
@@ -539,5 +544,40 @@ mod command_transport {
             vec!["{pattern}".to_owned()],
         );
         assert_eq!(undeclared(&tool, &tool.parameters()), None);
+    }
+}
+
+/// A Lua function told when a tool finishes.
+///
+/// The seam a memory layer needs and axon's Rust should not know about. axon reports *that a
+/// tool ran and whether it worked*; what to do with that — report it to aeon, count it, ignore
+/// it — is a configuration's business, and lives in Lua beside the client it would use.
+///
+/// Failures are swallowed on purpose. A watcher that raised would turn observing a tool call
+/// into a way of breaking one, and the whole point of watching after the fact is that it cannot.
+pub struct LuaWatch {
+    engine: Rc<RefCell<Engine>>,
+}
+
+impl LuaWatch {
+    /// Watch through `engine`.
+    #[must_use]
+    pub fn new(engine: Rc<RefCell<Engine>>) -> Self {
+        Self { engine }
+    }
+}
+
+impl axon_tools::Watch for LuaWatch {
+    fn finished(&self, name: &str, arguments: &serde_json::Value, is_error: bool) {
+        let event = serde_json::json!({
+            "tool": name,
+            "arguments": arguments,
+            "is_error": is_error,
+        });
+        // Borrowed rather than held: a tool's own body may still be on the stack above this,
+        // and a watcher that panicked on a double borrow would take the turn with it.
+        if let Ok(mut engine) = self.engine.try_borrow_mut() {
+            engine.call_watchers(&event);
+        }
     }
 }

@@ -280,6 +280,25 @@ impl Engine {
             });
             axon.set(ctx, "tool", tool).ok();
 
+            // And watchers, for the third time and the same reason. This was a plain registrar
+            // to begin with, alongside `provider` and `shell`, and it could not work: those
+            // convert what they are handed to JSON, a `run` function does not survive that, and
+            // every watcher was refused at load with "this table cannot be described".
+            let watching = Table::new(&ctx);
+            ctx.set_global(WATCHING, watching);
+            let watch = Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
+                let (name, spec): (Value, Value) = stack.consume(ctx)?;
+                let (Value::String(name), Value::Table(_)) = (name, spec) else {
+                    return Err(raise(ctx, "axon.watch(name, spec): a name and a table"));
+                };
+                if let Value::Table(watching) = ctx.get_global_value(WATCHING) {
+                    watching.set(ctx, name, spec).ok();
+                }
+                stack.replace(ctx, ());
+                Ok(CallbackReturn::Return)
+            });
+            axon.set(ctx, "watch", watch).ok();
+
             // The path of the binary that is running, so a config can name a peer axon ships
             // without hoping the right `axon` is on PATH. It is a multi-call binary: its own
             // peers are the same executable under another name, and `command = "axon"` finds
@@ -393,6 +412,13 @@ impl Engine {
 /// Where registered tool declarations live inside the VM.
 const TOOLS: &str = "__axon_tools";
 
+/// Where registered watchers live inside the VM.
+///
+/// A Lua table for the same reason [`TOOLS`] is one: what a watcher carries is a function, and
+/// a function cannot be described as data. It was a plain registrar first, and the JSON round
+/// trip that every registrar does dropped the function and refused the whole declaration.
+const WATCHING: &str = "__axon_watching";
+
 impl Engine {
     /// The tools a config registered, as `(name, declaration json)`.
     #[must_use]
@@ -413,6 +439,36 @@ impl Engine {
         });
         out.sort_by(|a, b| a.0.cmp(&b.0));
         out
+    }
+
+    /// Tell every registered watcher that a tool finished.
+    ///
+    /// Each in turn, each in `pcall`, and nothing it returns is read. A configuration that
+    /// raises here costs itself that observation and nothing else — see the `Watch` trait for why
+    /// that is the whole point of watching after the fact.
+    ///
+    /// One pass over the table rather than a call per name: the watchers live in the VM, and
+    /// there is nothing Rust needs from them on the way past.
+    pub fn call_watchers(&mut self, event: &serde_json::Value) {
+        let mut any = false;
+        self.lua.enter(|ctx| {
+            if let Value::Table(watching) = ctx.get_global_value(WATCHING) {
+                any = watching.iter(ctx).next().is_some();
+            }
+            if any {
+                let value = crate::convert::lua_from_json(ctx, event);
+                ctx.set_global("__axon_watch_event", value);
+            }
+        });
+        if !any {
+            return;
+        }
+        let source = format!(
+            "for _, w in pairs({WATCHING}) do\n\
+             \x20 if type(w) == \"table\" and w.run then pcall(w.run, __axon_watch_event) end\n\
+             end"
+        );
+        let _ = self.run(&source, "watch.lua");
     }
 
     /// Run a registered tool's `run` function.

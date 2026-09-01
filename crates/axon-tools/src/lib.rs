@@ -25,7 +25,7 @@ pub mod schema;
 
 pub use cancel::{Cancel, Uncancelled};
 pub use ops::{Ops, Shell};
-pub use registry::{Prepared, Registry, Sending, Tool};
+pub use registry::{Prepared, Registry, Sending, Tool, Watch};
 
 use serde::{Deserialize, Serialize};
 

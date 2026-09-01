@@ -81,6 +81,22 @@ pub enum Sending {
 #[derive(Default)]
 pub struct Registry {
     tools: BTreeMap<String, Box<dyn Tool>>,
+    watching: Vec<Box<dyn Watch>>,
+}
+
+/// Something told about every tool that finishes.
+///
+/// Both completion paths report here, so a watcher sees the same events whether a call ran
+/// inline or was started early and waited for. It is told *after* the fact and its answer is
+/// ignored: a watcher that could change a result would be a tool wearing a different name, and
+/// one that could fail would be a way for observation to break the thing observed.
+///
+/// Not `Send + Sync`, for the same reason [`Tool`] is not: the interesting watchers live in the
+/// same VM the Lua tools do, and demanding the bounds would force an `unsafe impl` asserting
+/// what the single-threaded design already guarantees.
+pub trait Watch {
+    /// A tool finished.
+    fn finished(&self, name: &str, arguments: &serde_json::Value, is_error: bool);
 }
 
 impl Registry {
@@ -88,6 +104,22 @@ impl Registry {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Be told when a tool finishes.
+    ///
+    /// For anything that needs to know what actually happened rather than what was asked for —
+    /// a memory layer recording whether acting on what it suggested worked, say. Several
+    /// watchers may be added; each is told in turn, and none can affect the result.
+    pub fn watch(&mut self, watcher: Box<dyn Watch>) {
+        self.watching.push(watcher);
+    }
+
+    /// Tell every watcher, and let none of them matter.
+    fn finished(&self, name: &str, arguments: &serde_json::Value, is_error: bool) {
+        for watcher in &self.watching {
+            watcher.finished(name, arguments, is_error);
+        }
     }
 
     /// Add a tool, replacing any of the same name.
@@ -170,6 +202,7 @@ impl Registry {
                     }
                 };
                 let output = tool.run(&arguments, ops, cancel);
+                self.finished(name, &arguments, output.is_error);
                 Output {
                     content: crate::bound::apply(name, output.content),
                     is_error: output.is_error,
@@ -256,6 +289,7 @@ impl Registry {
     #[must_use]
     pub fn finish(&self, prepared: Prepared, ops: &dyn Ops, cancel: &dyn Cancel) -> Output {
         let Prepared { name, state } = prepared;
+        let mut ran = serde_json::Value::Null;
         let output = match state {
             State::Answered(output) => return output,
             State::Sent => match self.get(&name) {
@@ -263,10 +297,15 @@ impl Registry {
                 None => Output::error(format!("{name} is gone")),
             },
             State::Inline(arguments) => match self.get(&name) {
-                Some(tool) => tool.run(&arguments, ops, cancel),
+                Some(tool) => {
+                    let output = tool.run(&arguments, ops, cancel);
+                    ran = arguments;
+                    output
+                }
                 None => Output::error(format!("{name} is gone")),
             },
         };
+        self.finished(&name, &ran, output.is_error);
         Output {
             content: crate::bound::apply(&name, output.content),
             is_error: output.is_error,
