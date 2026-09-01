@@ -20,6 +20,12 @@ use std::collections::VecDeque;
 use std::ops::Range;
 use std::time::{Duration, Instant};
 
+/// How many lines back it remembers having shown.
+///
+/// Enough to walk out of a family of three or four before coming round again, and not so many
+/// that a short pool runs out of things it is allowed to say.
+const RECALLED: usize = 6;
+
 /// One step of a performance.
 ///
 /// Every act is a moment on screen, which is why each carries its own duration rather than
@@ -91,6 +97,11 @@ pub struct Tease {
     marked: Option<Range<usize>>,
     /// What is left to play.
     script: VecDeque<Act>,
+    /// The lines already shown, newest last.
+    ///
+    /// Without this it never leaves: picking the closest line to the one on screen and nothing
+    /// else means two lines in a family point at each other and it swaps between them forever.
+    seen: VecDeque<String>,
     /// When the act at the front of the script started.
     since: Instant,
 }
@@ -105,6 +116,7 @@ impl Tease {
             block: false,
             marked: None,
             script: VecDeque::new(),
+            seen: VecDeque::from([opener.to_owned()]),
             since: Instant::now(),
         }
     }
@@ -134,14 +146,7 @@ impl Tease {
     /// second place to type, and there is only one.
     #[must_use]
     pub fn caret(&self) -> Option<usize> {
-        self.script
-            .is_empty()
-            .then_some(self.caret)
-            .xor(Some(0))
-            .and(
-                // A resting box shows no ghost. Anything else does, wherever it has got to.
-                (!self.script.is_empty()).then_some(self.caret),
-            )
+        (!self.script.is_empty()).then_some(self.caret)
     }
 
     /// Somebody typed. Stop, and start the wait over with `opener` on screen.
@@ -152,6 +157,7 @@ impl Tease {
         self.marked = None;
         self.script.clear();
         self.since = Instant::now();
+        self.remember(opener.to_owned());
     }
 
     /// Play whatever is due, and say whether anything changed.
@@ -167,7 +173,9 @@ impl Tease {
             if self.since.elapsed() < after {
                 return false;
             }
-            self.script = perform(&self.shown, pick(lines, &self.shown), self.caret);
+            let next = pick(lines, &self.shown, &self.seen).to_owned();
+            self.script = perform(&self.shown, &next, self.caret);
+            self.remember(next);
             self.since = Instant::now();
             return !self.script.is_empty();
         };
@@ -178,6 +186,17 @@ impl Tease {
         self.play(&act);
         self.since = Instant::now();
         true
+    }
+
+    /// Note that a line has been shown, and forget the oldest once too many are held.
+    fn remember(&mut self, line: String) {
+        if line.is_empty() {
+            return;
+        }
+        self.seen.push_back(line);
+        while self.seen.len() > RECALLED {
+            self.seen.pop_front();
+        }
     }
 
     /// Carry out one act.
@@ -250,11 +269,27 @@ fn words(line: &str) -> Vec<&str> {
 /// write another — and that only happens when two lines share an opening and an ending. Scored,
 /// so a pool of unrelated lines still works and simply retypes more of itself, while a pool with
 /// families in it finds them without anybody having to group them.
-fn pick<'a>(lines: &'a [String], not: &str) -> &'a str {
-    let choices: Vec<&'a String> = lines.iter().filter(|line| line.as_str() != not).collect();
+fn pick<'a>(lines: &'a [String], not: &str, seen: &VecDeque<String>) -> &'a str {
+    // Anything not shown lately. Without this it picks the closest line to the one on screen,
+    // and the closest line to *that* is the one it came from -- so a family of two points at
+    // itself and the box swaps between them until somebody types.
+    let fresh: Vec<&'a String> = lines
+        .iter()
+        .filter(|line| line.as_str() != not && !seen.contains(line))
+        .collect();
+    // Everything has been said recently, which on a short pool happens quickly. Anything but the
+    // line already up will do.
+    let choices: Vec<&'a String> = if fresh.is_empty() {
+        lines.iter().filter(|line| line.as_str() != not).collect()
+    } else {
+        fresh
+    };
     if choices.is_empty() {
         return "";
     }
+    // Among those, the one it can make the smallest edit into. The whole point of the engine is
+    // the middle edit -- walk to a word, take it, write another -- and that only happens when
+    // two lines share an opening and an ending.
     let mine = words(not);
     let best = choices
         .iter()
@@ -598,12 +633,13 @@ mod picking_tests {
 
     #[test]
     fn it_prefers_a_line_it_can_edit_into() {
+        let none = VecDeque::new();
         // The whole point of the engine. Picking at random would retype the line most of the
         // time, and the middle edit -- walk, mark, cut, type -- would almost never be seen.
         let lines = pool();
         for _ in 0..8 {
             assert_eq!(
-                pick(&lines, "the scaffolding is temporary"),
+                pick(&lines, "the scaffolding is temporary", &none),
                 "the scaffolding is the building"
             );
         }
@@ -613,15 +649,16 @@ mod picking_tests {
     fn it_still_answers_when_nothing_is_close() {
         // A pool of unrelated lines is not an error; it just means more retyping.
         let lines = vec!["alpha beta".to_owned()];
-        assert_eq!(pick(&lines, "gamma delta"), "alpha beta");
+        assert_eq!(pick(&lines, "gamma delta", &VecDeque::new()), "alpha beta");
     }
 
     #[test]
     fn it_never_offers_the_line_already_up() {
         let lines = pool();
+        let none = VecDeque::new();
         for _ in 0..8 {
             assert_ne!(
-                pick(&lines, "the scaffolding is temporary"),
+                pick(&lines, "the scaffolding is temporary", &none),
                 "the scaffolding is temporary"
             );
         }
@@ -632,5 +669,88 @@ mod picking_tests {
         assert_eq!(kinship(&["a", "b", "c"], &["a", "x", "c"]), 2);
         assert_eq!(kinship(&["a", "b"], &["x", "y"]), 0);
         assert_eq!(kinship(&["a", "b"], &["a", "b"]), 2, "and does not double");
+    }
+}
+
+/// It moves on, and what it changes is in the middle.
+#[cfg(test)]
+mod wandering_tests {
+    use super::*;
+
+    fn pool() -> Vec<String> {
+        [
+            "this is a temporary fix that will outlive us all",
+            "this is a permanent fix that will outlive us all",
+            "this is a clever fix that will outlive us all",
+            "the roadmap is a list of wishes, sorted by hope",
+            "the roadmap is a list of bugs, sorted by hope",
+        ]
+        .iter()
+        .map(|line| (*line).to_owned())
+        .collect()
+    }
+
+    /// The lines it walks through, following its own choices.
+    fn walked(steps: usize) -> Vec<String> {
+        let lines = pool();
+        let mut shown = lines[0].clone();
+        let mut seen: VecDeque<String> = VecDeque::from([shown.clone()]);
+        let mut out = vec![shown.clone()];
+        for _ in 0..steps {
+            let next = pick(&lines, &shown, &seen).to_owned();
+            let mut tease = Tease::new(&shown);
+            for act in perform(&shown, &next, 0) {
+                tease.play(&act);
+            }
+            shown = tease.shown().to_owned();
+            seen.push_back(shown.clone());
+            while seen.len() > RECALLED {
+                seen.pop_front();
+            }
+            out.push(shown.clone());
+        }
+        out
+    }
+
+    #[test]
+    fn it_does_not_get_stuck_between_two_lines() {
+        // The bug this exists for. Picking the closest line and nothing else means the closest
+        // line to *that* is the one it came from, so a family of two points at itself and the
+        // box swaps between them until somebody types.
+        let walk = walked(6);
+        let mut distinct = walk.clone();
+        distinct.sort();
+        distinct.dedup();
+        assert!(
+            distinct.len() >= 4,
+            "it only ever said {} different things: {walk:#?}",
+            distinct.len()
+        );
+    }
+
+    #[test]
+    fn every_line_it_lands_on_is_one_from_the_pool() {
+        // Whatever route it takes, the acts have to add up to a line somebody wrote.
+        let lines = pool();
+        for said in walked(6) {
+            assert!(lines.contains(&said), "{said:?} is not in the pool");
+        }
+    }
+
+    #[test]
+    fn what_changes_has_words_on_both_sides_of_it() {
+        // "a word in the middle", which is the whole ask. A family whose lines differ only at
+        // the end can only ever have its tail retyped, and the walk has nothing to walk past.
+        let lines = pool();
+        for from in &lines {
+            let to = pick(&lines, from, &VecDeque::new());
+            let (cut, _) = difference(&words(from), &words(to));
+            let total = words(from).len();
+            assert!(cut.start > 0, "{from:?} into {to:?} changes the first word");
+            assert!(
+                cut.end < total,
+                "{from:?} into {to:?} changes the last word"
+            );
+        }
     }
 }

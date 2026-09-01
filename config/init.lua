@@ -157,59 +157,53 @@ axon.ui.openers = {
 -- and the one it is going to, walks there with `w`, shows you the words it is taking, takes
 -- them, and types the replacement -- which is a vim lesson disguised as a joke.
 --
--- Written in families that share an opening and an ending on purpose: the closer two lines are,
--- the smaller the edit and the more it looks like somebody working rather than retyping. It
--- picks the closest line it can reach from the one on screen, so a family is found without
--- anything here having to group them.
+-- Written in families that share an opening **and an ending**, so what changes is in the middle
+-- of the line and the cursor has somewhere to walk to and something to walk past. A family whose
+-- lines only differ at the end is a family it can only ever retype the tail of. It picks the
+-- closest line it has not shown lately, so a family is found and then left without anything here
+-- having to group them.
 axon.ui.placeholders = {
-  -- What we are making
-  "first we need to build a tool",
-  "first we need to build a tool to build the tool",
-  "first we need to write the tool down",
-  "first we need to name the tool",
+  -- How long it will last
+  "this is a temporary fix that will outlive us all",
+  "this is a permanent fix that will outlive us all",
+  "this is a clever fix that will outlive us all",
+  "this is a small fix that will outlive us all",
 
-  -- The ground it stands on
-  "the scaffolding is temporary",
-  "the scaffolding is the building",
-  "the scaffolding is load-bearing",
-  "the foundation is poured",
-  "the foundation is a TODO from March",
-  "the foundation is someone's weekend project",
+  -- Where it works
+  "the tests pass on my machine, which is the important one",
+  "the build works on my machine, which is the important one",
+  "the demo runs on my machine, which is the important one",
 
-  -- How it was built
-  "this is a prototype",
-  "this is a load-bearing prototype",
-  "this is a prototype in production",
-  "the architecture is designed",
-  "the architecture is whatever compiled first",
-  "the architecture is four dependencies in a trenchcoat",
+  -- What explains it
+  "the docs explain what it used to do, more or less",
+  "the tests explain what it used to do, more or less",
+  "the names explain what it used to do, more or less",
+  "the comments explain what it used to do, more or less",
 
-  -- What we said we would make
-  "the spec is written down",
-  "the spec is in someone's head",
-  "the spec is the tests",
-  "the roadmap is a plan",
-  "the roadmap is a list of wishes",
-  "the roadmap is last quarter with the dates moved",
+  -- When it will be done
+  "we are two weeks from done, as we have been all quarter",
+  "we are three days from done, as we have been all quarter",
+  "we are one commit from done, as we have been all quarter",
 
-  -- Making it nice
-  "let's make it extensible",
-  "let's make it hard to change in one place",
-  "let's make it simple to describe",
-  "let's generalise this",
-  "let's generalise this after it happens twice",
-  "let's cut scope to the essentials",
-  "let's cut scope to whatever already works",
+  -- What holds it up
+  "the scaffolding is temporary, and load-bearing",
+  "the scaffolding is permanent, and load-bearing",
+  "the scaffolding is documented, and load-bearing",
 
-  -- Shipping
-  "the build is reproducible",
-  "the build is reproducible on this laptop",
-  "the demo is working",
-  "the demo is three hardcoded strings",
-  "it's done",
-  "it's done except the parts that matter",
-  "we're shipping",
-  "we're shipping and watching the graphs",
+  -- What we will do about it
+  "I will clean this up before anybody reads it",
+  "I will write this up before anybody reads it",
+  "I will think this through before anybody reads it",
+
+  -- What it is made of
+  "it is four dependencies in a trenchcoat, and it ships",
+  "it is three shell scripts in a trenchcoat, and it ships",
+  "it is one regex in a trenchcoat, and it ships",
+
+  -- What the plan says
+  "the roadmap is a list of wishes, sorted by hope",
+  "the roadmap is a list of bugs, sorted by hope",
+  "the roadmap is a list of names, sorted by hope",
 }
 
 -- And what you type arriving: each character shows as the first of `type_stages`, passes through
