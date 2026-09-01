@@ -3,14 +3,16 @@
 //! The other half of the mirror. Every axon binds this, so being asked and asking are the same
 //! session in two directions rather than a supervisor and a worker with different vocabularies.
 //!
-//! Nothing here decides anything: it frames bytes and hands the call to
-//! [`super::answering::answer`], which is where the permission check and the vocabulary live.
-//! What this file owns is the parts that only go wrong under a real socket — a connection that
-//! serves one call and dies, a peer that reads slowly, a socket left behind by a crash.
+//! Nothing here decides anything: it frames bytes, works out where the caller sits in the tree,
+//! and hands both to [`super::answering::answer`], which is where the permission check and the
+//! vocabulary live. What this file owns is the parts that only go wrong under a real socket — a
+//! connection that serves one call and dies, a peer that reads slowly, a socket left behind by
+//! a crash.
 
 use super::answering::{About, Then, answer};
+use super::policy::Whom;
 use super::wire::{Call, Message, Reply};
-use super::{Kind, inside};
+use super::{inside, whom};
 use std::path::Path;
 use tokio::sync::mpsc;
 
@@ -41,7 +43,8 @@ pub struct Serving {
 /// cannot be reached because a previous one crashed.
 pub async fn serve(path: &Path, serving: Serving) -> std::io::Result<()> {
     if !inside(path) {
-        // Belt and braces: the path is built from a name, and a name is not a promise.
+        // Belt and braces: the path is built from a project name, and a project name is the
+        // working directory's, which can be anything.
         return Err(std::io::Error::other("that is not an instance socket"));
     }
     if let Some(parent) = path.parent() {
@@ -56,14 +59,16 @@ pub async fn serve(path: &Path, serving: Serving) -> std::io::Result<()> {
         let Ok((stream, _)) = listener.accept().await else {
             continue;
         };
+        // Another user's process gets nothing at all, whatever it says about itself. Everything
+        // finer than that is a relation, and a relation is read off the directory.
+        if !ours(&stream) {
+            continue;
+        }
         // Refused rather than queued: a caller told "busy" now can ask again, while one held in
         // an accept queue waits on a session that may be blocked for a whole turn.
         let Ok(permit) = std::sync::Arc::clone(&held).try_acquire_owned() else {
             continue;
         };
-        // Whoever is at the other end decides what they may do. Taken from the kernel rather
-        // than from anything the caller says about itself.
-        let kind = whose(&stream);
         let serving = Serving {
             about: serving.about.clone(),
             arrived: serving.arrived.clone(),
@@ -71,7 +76,7 @@ pub async fn serve(path: &Path, serving: Serving) -> std::io::Result<()> {
         };
         tokio::spawn(async move {
             let _permit = permit;
-            let _ = talk(stream, serving, kind).await;
+            let _ = talk(stream, serving).await;
         });
     }
 }
@@ -81,7 +86,7 @@ pub async fn serve(path: &Path, serving: Serving) -> std::io::Result<()> {
 /// It keeps serving after replying. Closing after one is a tempting simplification and it means
 /// a client that holds a connection — the obvious way to write one — dies on its *second* call
 /// with a broken pipe.
-async fn talk(stream: tokio::net::UnixStream, serving: Serving, kind: Kind) -> std::io::Result<()> {
+async fn talk(stream: tokio::net::UnixStream, serving: Serving) -> std::io::Result<()> {
     let (read, write) = stream.into_split();
     let mut reader = axon_ipc::FrameReader::new(read);
     let mut writer = axon_ipc::FrameWriter::new(write);
@@ -99,7 +104,11 @@ async fn talk(stream: tokio::net::UnixStream, serving: Serving, kind: Kind) -> s
             Err(_) => return Ok(()),
         };
         let about = serving.about.borrow().clone();
-        let (reply, then) = answer(&call, &about, kind);
+        // Looked up per call rather than once per connection: a session that forks a child
+        // mid-conversation has a new child, and a connection held open would go on answering
+        // with the tree as it stood when it was opened.
+        let caller = placed(call.from.as_deref(), &about);
+        let (reply, then) = answer(&call, &about, caller.as_ref());
         writer
             .write(&reply)
             .await
@@ -117,18 +126,37 @@ async fn talk(stream: tokio::net::UnixStream, serving: Serving, kind: Kind) -> s
     }
 }
 
-/// What the far end is allowed to be.
+/// Whether the far end is this user at all.
 ///
-/// Only a process running as this user is a fork; anything else is a peer and may ask and
-/// nothing more. Taken from `SO_PEERCRED`, never from a number the caller sent — the whole
-/// point of asking the kernel is that the answer is not the caller's to choose.
+/// Taken from `SO_PEERCRED`, never from anything the caller sent — the whole point of asking the
+/// kernel is that the answer is not the caller's to choose. It is also the *only* thing the
+/// kernel can settle: every session in a project runs as one user, so which of them is calling
+/// is a question `SO_PEERCRED` cannot answer, and that one is answered by the directory and by
+/// the secret instead.
+fn ours(stream: &tokio::net::UnixStream) -> bool {
+    axon_ipc::PeerCred::of(stream).is_ok_and(|cred| cred.is_same_user())
+}
+
+/// Where a caller sits in the tree, from the name it gave.
 ///
-/// This is the floor, not the finished rule. Once forks are actually started, the parent will
-/// know which pids it spawned and this becomes "a fork is one I started"; until then the
-/// permission model is enforced and the set it is enforced over is generous.
-fn whose(stream: &tokio::net::UnixStream) -> Kind {
-    axon_ipc::PeerCred::of(stream)
-        .ok()
-        .filter(|cred| cred.is_same_user())
-        .map_or(Kind::Peer, |_| Kind::Fork)
+/// The name is the caller's; the *place* is not. Once the name is read, the parent that decides
+/// what it may do is looked up in the project directory, so a session cannot claim to be
+/// somebody's child and be believed.
+///
+/// A name from another project resolves to a stranger rather than to nothing, so the policy
+/// refuses it as `elsewhere` and the refusal can say which wall it met. `None` is kept for a
+/// caller that said nothing at all, which is a different mistake and gets a different answer.
+fn placed(from: Option<&str>, about: &About) -> Option<Whom> {
+    let (project, id) = from?.split_once('/')?;
+    if project.is_empty() || id.is_empty() {
+        return None;
+    }
+    if project != about.me.project {
+        return Some(Whom {
+            project: project.to_owned(),
+            id: id.to_owned(),
+            parent: None,
+        });
+    }
+    Some(whom(project, id))
 }

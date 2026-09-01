@@ -49,6 +49,15 @@ pub async fn run(
     if let Some(loaded) = &loaded {
         crate::config::adopt_ui(loaded);
     }
+    // Same trap, same shape: the first read of the policy fills it with the default, and the
+    // socket is bound a few lines below.
+    if let Some(talk) = loaded
+        .as_ref()
+        .and_then(|l| l.config.string("agent_talk"))
+        .and_then(crate::instance::policy::Talk::read)
+    {
+        crate::instance::policy::adopt(talk);
+    }
 
     let mut app = App::new();
     // Named after the config is adopted, so `axon.project` is read rather than the folder.
@@ -107,12 +116,18 @@ pub async fn run(
     {
         let (about_tx, about_rx) = tokio::sync::watch::channel(crate::instance::answering::About {
             me: app.identity.clone(),
+            parent: crate::instance::parent(),
+            token: crate::instance::token(),
             busy: false,
             working_for: 0,
             inbox: Vec::new(),
         });
         let (arrived_tx, arrived_rx) = tokio::sync::mpsc::channel(64);
         let (stopped_tx, stopped_rx) = tokio::sync::mpsc::channel(1);
+        // Left beside the socket so the tree can be read off the directory: a session that
+        // finds this one there can tell whose subagent it is without asking it, and without
+        // trusting what it would have said.
+        crate::instance::announce(&app.identity);
         let at = crate::instance::listening_at(&app.identity);
         tokio::spawn(async move {
             let _ = crate::instance::serving::serve(
@@ -430,6 +445,8 @@ pub async fn run(
                     }
                     let _ = about.send(crate::instance::answering::About {
                         me: app.identity.clone(),
+                        parent: crate::instance::parent(),
+                        token: crate::instance::token(),
                         busy: app.is_busy(),
                         working_for: app.elapsed().map_or(0, |since| since.as_secs()),
                         inbox: app.inbox.clone(),
@@ -439,6 +456,10 @@ pub async fn run(
             }
         }
     }
+
+    // The note beside the socket goes when the session does. A stale one would make a main
+    // that reuses the id look like somebody's subagent, and the reader believes the file.
+    crate::instance::forget(&app.identity);
 
     // The daemon this UI started goes with it.
     //

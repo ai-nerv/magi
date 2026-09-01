@@ -1,19 +1,21 @@
 //! Telling the model an instance was named.
 //!
-//! `$main/delta` in a prompt does not send anything. It appends a note saying that instance
-//! exists, what is known about it, and that there is a tool for reaching it — and then the
-//! model decides what "tell it to stop" meant and calls the tool, or does not.
+//! `$iota-mu` in a prompt does not send anything. It appends a note saying that instance exists,
+//! how it stands to this session, what has already passed between them, and that there is a tool
+//! for reaching it — and then the model decides what "tell it to stop" meant and calls the tool,
+//! or does not.
 //!
 //! That order matters and it is the whole design. A harness that delivered the message itself
-//! would be deciding what the sentence meant: whether "ask $gamma about the parser" is a
+//! would be deciding what the sentence meant: whether "ask $iota-mu about the parser" is a
 //! question to relay, a plan to make first, or a thing to do after reading a file. Naming an
 //! instance is a *fact given to the model*, exactly like naming a file is.
 //!
 //! What is appended is bounded and it is not a system prompt. It is the smallest thing that
-//! turns a name into something callable: who they are, what they were last known to be doing,
-//! what has already passed between you, and the name of the tool.
+//! turns a name into something callable: who they are, how they stand to you, whether they can
+//! be reached at all, what has already been said, and the name of the tool.
 
-use super::Address;
+use super::policy::{self, Relation};
+use super::{Address, Reach};
 use crate::app::App;
 
 /// How many earlier messages with an instance are worth repeating.
@@ -36,7 +38,8 @@ pub fn augment(text: &str, app: &App) -> String {
     for name in named {
         let Some(address) = Address::read(&name) else {
             said.push(format!(
-                "`${name}` is not a name an instance can have, so nothing answers to it."
+                "`${name}` is not a name an instance can have, so nothing answers to it. \
+                 Names are `id` or `project/id`."
             ));
             continue;
         };
@@ -55,17 +58,29 @@ pub fn augment(text: &str, app: &App) -> String {
 /// What is known about one instance, as a paragraph the model can act on.
 fn brief(address: &Address, app: &App) -> String {
     let whole = address.against(&app.identity);
+    let me = app.whom();
+    // Through the same [`Standing`](super::tool::Standing) the tool will use, so the briefing
+    // and the refusal can never disagree about where somebody sits. A model told it may stop a
+    // session and then refused when it tries has been lied to by the harness.
+    let relation = app.standing().stands(&whole);
     let mut said = format!(
-        "`{}` is another axon, addressed as `{}`.",
+        "`{}` is another axon, addressed as `{}`. It is {}.",
         whole.full(),
-        address.written()
+        address.written(),
+        relation.named()
     );
-    if app.parent.as_deref() == Some(whole.full().as_str()) {
-        said.push_str(" It started this session, so it is the parent here.");
-    } else if app.forked.iter().any(|child| *child == whole.full()) {
+    // Said before anything else about it, because a model that reads the history and then meets
+    // a refusal has spent the turn planning something it was never going to be allowed to do.
+    if !policy::may(&me, relation, Reach::Ask) {
+        said.push_str(" This session cannot reach it: ");
+        said.push_str(&policy::refusal(&me, relation, Reach::Ask));
+        said.push('.');
+        return said;
+    }
+    if relation == Relation::Child {
         said.push_str(" This session started it, so it can be stopped as well as asked.");
     } else {
-        said.push_str(" It was not started by this session, so it can be asked and told things but not stopped.");
+        said.push_str(" It can be asked and told things, but not stopped.");
     }
     let passed: Vec<String> = app
         .inbox
@@ -93,8 +108,7 @@ mod tests {
         let mut app = App::new();
         app.identity = crate::identity::Identity {
             project: "axon".to_owned(),
-            role: "main".to_owned(),
-            id: "alpha".to_owned(),
+            id: "alpha-rho".to_owned(),
         };
         app
     }
@@ -112,37 +126,36 @@ mod tests {
     fn naming_one_keeps_the_prompt_and_adds_to_it() {
         // The prompt is the model's to answer. Naming an instance is a fact given to it, not a
         // replacement for what somebody typed.
-        let said = augment("tell $gamma to stop", &app());
-        assert!(said.starts_with("tell $gamma to stop"), "{said}");
-        assert!(said.contains("axon/main/gamma"), "{said}");
+        let said = augment("tell $beta-nu to stop", &app());
+        assert!(said.starts_with("tell $beta-nu to stop"), "{said}");
+        assert!(said.contains("axon/beta-nu"), "{said}");
     }
 
     #[test]
     fn it_names_the_tool_rather_than_doing_anything() {
         // The point of the whole file. The model decides what "tell it to stop" meant.
-        let said = augment("tell $gamma to stop", &app());
+        let said = augment("tell $beta-nu to stop", &app());
         assert!(said.contains(super::super::TOOL), "{said}");
     }
 
     #[test]
-    fn it_says_whether_this_session_may_stop_it() {
+    fn it_says_how_the_named_one_stands_to_this_session() {
         // Otherwise the model tries, is refused, and spends a turn finding out something the
         // harness knew before it asked.
-        let mut app = app();
-        let said = augment("ask $delta", &app);
+        let said = augment("ask $beta-nu", &app());
+        assert!(said.contains("another instance's main"), "{said}");
         assert!(said.contains("not stopped"), "{said}");
-
-        app.forked.push("axon/main/delta".to_owned());
-        let said = augment("ask $delta", &app);
-        assert!(said.contains("stopped as well as asked"), "{said}");
     }
 
     #[test]
-    fn it_says_when_the_named_one_is_the_parent() {
+    fn one_it_cannot_reach_says_so_instead_of_its_history() {
+        // A model that reads the history and then meets a refusal has spent the turn planning
+        // something it was never going to be allowed to do.
         let mut app = app();
-        app.parent = Some("axon/main/root".to_owned());
-        let said = augment("ask $root", &app);
-        assert!(said.contains("parent"), "{said}");
+        app.identity.project = "somewhere-with-no-runtime-dir".to_owned();
+        app.parent = Some("beta-nu".to_owned());
+        let said = augment("ask $other/tau-chi", &app);
+        assert!(said.contains("cannot reach"), "{said}");
     }
 
     #[test]
@@ -151,9 +164,9 @@ mod tests {
         // as though it were the last.
         let mut app = app();
         for text in ["first", "second", "third"] {
-            app.inbox.push(Message::new("axon/main/gamma", text));
+            app.inbox.push(Message::new("axon/beta-nu", text));
         }
-        let said = augment("what did $gamma want", &app);
+        let said = augment("what did $beta-nu want", &app);
         let first = said.find("first").expect("the first is there");
         let third = said.find("third").expect("the third is there");
         assert!(first < third, "they came back backwards: {said}");
@@ -162,13 +175,11 @@ mod tests {
     #[test]
     fn only_that_instance_s_messages_are_repeated() {
         let mut app = app();
-        app.inbox
-            .push(Message::new("axon/main/gamma", "from gamma"));
-        app.inbox
-            .push(Message::new("axon/main/delta", "from delta"));
-        let said = augment("what did $gamma want", &app);
-        assert!(said.contains("from gamma"), "{said}");
-        assert!(!said.contains("from delta"), "it leaked another's: {said}");
+        app.inbox.push(Message::new("axon/beta-nu", "from beta"));
+        app.inbox.push(Message::new("axon/gamma-xi", "from gamma"));
+        let said = augment("what did $beta-nu want", &app);
+        assert!(said.contains("from beta"), "{said}");
+        assert!(!said.contains("from gamma"), "it leaked another's: {said}");
     }
 
     #[test]
@@ -177,9 +188,9 @@ mod tests {
         let mut app = app();
         for at in 0..50 {
             app.inbox
-                .push(Message::new("axon/main/gamma", &format!("message {at}")));
+                .push(Message::new("axon/beta-nu", &format!("message {at}")));
         }
-        let said = augment("what did $gamma want", &app);
+        let said = augment("what did $beta-nu want", &app);
         assert!(!said.contains("message 0"), "it pasted the whole exchange");
         assert!(said.contains("message 49"), "it dropped the newest");
     }

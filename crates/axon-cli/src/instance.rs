@@ -1,36 +1,47 @@
-//! Naming another axon, and what you are allowed to do to it.
+//! Naming another axon, and where it lives.
 //!
-//! `$gamma` and `$main/delta` are both instances and they are not the same kind of thing. One
-//! you forked and one you found, and the difference decides what the verbs mean rather than
-//! being a note in the documentation:
+//! # The layout
 //!
-//! | | | |
-//! |---|---|---|
-//! | `$gamma` | a **fork** | you started it: ask it, tell it, stop it |
-//! | `$main/delta` | a **peer** | somebody else's: ask it, tell it, and that is all |
+//! ```text
+//! $XDG_RUNTIME_DIR/axon/
+//!   axon/                  <- one directory per project
+//!     alpha-rho            <- a socket, named by the id and nothing else
+//!     iota-mu
+//!     iota-mu.parent       <- "alpha-rho": who started it
+//!   other-project/
+//!     beta-nu
+//! ```
 //!
-//! Both can be *spoken to*. A message lands in an inbox and the session it belongs to decides
-//! what to do with it, which is not control -- it is the same thing a person does with a message.
-//! What separates the two is the one act the far end cannot decline: a peer that could be stopped
-//! by anything that learned its name is a session somebody loses while they are typing into it.
+//! A project directory, and inside it a socket per session named by its id. No role in the
+//! path, because a role is not part of a name — see [`crate::identity`]. Sessions in different
+//! projects are not refused each other, they are *not in each other's directory*, which is the
+//! project wall from [`policy`] enforced by the filesystem rather than by a check somebody could
+//! forget to write.
 //!
-//! So [`Kind`] is not decoration: [`Reach::allows`] is the one place that answers "may I", and
-//! every verb goes through it.
+//! The `.parent` file beside a subagent's socket says who started it. That is what makes the
+//! tree legible: a session that finds `iota-mu` in the directory can tell it is behind
+//! `alpha-rho`'s door without asking it, and without trusting what it would have said.
 //!
-//! # What is here and what is not
+//! # What a caller's name is worth
 //!
-//! Addressing and permission. The supervision — starting a fork, watching it, reaping it — is
-//! not written yet, and neither is the routing that turns `tell $gamma to stop` into a message.
-//! What exists is the half both of those need first: a name that parses, a socket path it
-//! resolves to, and a rule about who may do what.
+//! Every call says who is making it, and for `ask` and `tell` that claim is taken at face
+//! value. It has to be: everything here runs as one user in one directory, so any process that
+//! can open the socket could open it claiming anything, and a check that cannot be enforced is
+//! worse than none — it reads like security to whoever comes along next.
+//!
+//! `stop` is the exception, because it is the one act the far end cannot decline. It carries the
+//! secret handed to the session in [`TOKEN`] when it was started, which only whoever started it
+//! ever held. A session nobody started holds none, so nothing can stop it.
 
 pub mod answering;
 pub mod briefing;
+pub mod policy;
 pub mod serving;
 pub mod tool;
 pub mod wire;
 
 use crate::identity::Identity;
+use policy::Whom;
 use std::path::{Path, PathBuf};
 
 /// What the model calls the tool that reaches other instances.
@@ -45,23 +56,26 @@ pub const TOOL: &str = "agent";
 /// starts a shell that starts another axon still knows where it came from.
 pub const PARENT: &str = "AXON_PARENT";
 
+/// The variable carrying the secret that makes a `stop` honourable.
+///
+/// Minted by the parent, handed to the child, held by both and by nobody else.
+pub const TOKEN: &str = "AXON_TOKEN";
+
 /// Who started this session, if anybody did.
 ///
-/// `None` for one somebody started at a terminal, which is most of them. The whole of the
-/// authority to stop a session: a `stop` is honoured when it comes from this name and ignored
-/// otherwise, so a notification from a stranger costs nothing.
+/// `None` for one somebody started at a terminal, which is most of them — and a session with no
+/// parent is a *main*, which is the whole of what that word means here.
 #[must_use]
 pub fn parent() -> Option<String> {
     std::env::var(PARENT).ok().filter(|name| !name.is_empty())
 }
 
-/// How you came by an instance, which is what decides what you may do to it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
-    /// You forked it. It is yours: ask it, steer it, stop it.
-    Fork,
-    /// Somebody else started it. Ask it, and nothing else.
-    Peer,
+/// The secret this session was started with, if it was started by another.
+#[must_use]
+pub fn token() -> Option<String> {
+    std::env::var(TOKEN)
+        .ok()
+        .filter(|secret| !secret.is_empty())
 }
 
 /// What a caller is asking to do.
@@ -76,81 +90,49 @@ pub enum Reach {
 }
 
 impl Reach {
-    /// Whether this may be done to an instance of `kind`.
-    ///
-    /// The whole of the permission model, in one place, so a verb added later cannot quietly
-    /// forget to check. A peer is *queryable* and nothing more: it belongs to whoever started
-    /// it, and a session that any process knowing its name can end is a session somebody loses
-    /// while they are typing into it.
+    /// The verb, for saying so in a refusal.
     #[must_use]
-    pub fn allows(self, kind: Kind) -> bool {
-        match kind {
-            Kind::Fork => true,
-            // A peer can be spoken to. Telling something a message is not controlling it: it
-            // lands in an inbox and the session it belongs to decides what to do with it, the
-            // same way a person reads a message and answers or does not. Ending a session is
-            // the one thing the far end does not get to decline, and that is why it is the one
-            // thing a peer is refused.
-            Kind::Peer => self != Self::Stop,
-        }
-    }
-
-    /// Why it was refused, for saying so.
-    #[must_use]
-    pub fn refusal(self, address: &Address) -> String {
-        let verb = match self {
+    pub fn named(self) -> &'static str {
+        match self {
             Self::Ask => "ask",
             Self::Tell => "tell",
             Self::Stop => "stop",
-        };
-        format!(
-            "{} is a peer, not a fork: you can ask it and tell it things, but not {verb} it",
-            address.written()
-        )
+        }
     }
 }
 
 /// Another instance, by name.
 ///
-/// The full form is `project/role/id`, the same three parts the prompt box wears, and the short
-/// forms fill in from whoever is asking: `$delta` is a sibling in this project and role, and
-/// `$main/delta` names the role because there will be more than one.
+/// `$iota-mu` is one in this project; `$axon/iota-mu` names the project as well. The second
+/// form parses and then loses: [`policy`] refuses anything outside the asker's own project, and
+/// the directory it would have to be found in is not one this session lists. It reads rather
+/// than being rejected as a typo so the refusal can say *why*.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Address {
     /// Which project, or `None` to mean the asker's own.
     pub project: Option<String>,
-    /// Which role, or `None` to mean the asker's own.
-    pub role: Option<String>,
     /// Which instance. Always given: this is the part that names one.
     pub id: String,
 }
 
 impl Address {
-    /// Read `$gamma`, `$main/delta` or `$axon/main/delta`.
+    /// Read `$iota-mu` or `$axon/iota-mu`.
     ///
     /// The sigil is optional so this reads what the trigger hands over as well as what somebody
-    /// wrote. Answers `None` for anything with no id in it, because an address that names no
-    /// instance is not a short form of anything.
+    /// wrote. Answers `None` for anything with no id in it, and for three parts — that shape was
+    /// `project/role/id` before roles left names, and reading it now would resolve an old name
+    /// to a session that is not the one it meant.
     #[must_use]
     pub fn read(written: &str) -> Option<Self> {
         let body = written.strip_prefix('$').unwrap_or(written);
         let parts: Vec<&str> = body.split('/').filter(|part| !part.is_empty()).collect();
-        // Read from the right: the last part is always the id, and what comes before it fills
-        // in from the outside. `a/b/c/d` is not a deeper address, it is a typo.
         match parts.as_slice() {
             [id] => Some(Self {
                 project: None,
-                role: None,
                 id: (*id).to_owned(),
             }),
-            [role, id] => Some(Self {
-                project: None,
-                role: Some((*role).to_owned()),
-                id: (*id).to_owned(),
-            }),
-            [project, role, id] => Some(Self {
+            [project, id] => Some(Self {
                 project: Some((*project).to_owned()),
-                role: Some((*role).to_owned()),
                 id: (*id).to_owned(),
             }),
             _ => None,
@@ -165,15 +147,11 @@ impl Address {
             out.push_str(project);
             out.push('/');
         }
-        if let Some(role) = &self.role {
-            out.push_str(role);
-            out.push('/');
-        }
         out.push_str(&self.id);
         out
     }
 
-    /// The full three-part name, filling the gaps in from whoever is asking.
+    /// The full name, filling the project in from whoever is asking.
     #[must_use]
     pub fn against(&self, asker: &Identity) -> Identity {
         Identity {
@@ -181,19 +159,27 @@ impl Address {
                 .project
                 .clone()
                 .unwrap_or_else(|| asker.project.clone()),
-            role: self.role.clone().unwrap_or_else(|| asker.role.clone()),
             id: self.id.clone(),
         }
     }
 }
 
+/// The directory a project's sockets live in.
+#[must_use]
+pub fn home(project: &str) -> PathBuf {
+    runtime().join("axon").join(safe(project))
+}
+
 /// Where a socket for `me` is put, so an instance can be reached by name.
 #[must_use]
 pub fn listening_at(me: &Identity) -> PathBuf {
-    runtime()
-        .join("axon")
-        .join("instances")
-        .join(format!("{}.sock", safe(&me.full())))
+    home(&me.project).join(safe(&me.id))
+}
+
+/// Where the note saying who started `me` is put.
+#[must_use]
+pub fn kin_at(me: &Identity) -> PathBuf {
+    home(&me.project).join(format!("{}.parent", safe(&me.id)))
 }
 
 /// The directory sockets live in.
@@ -203,13 +189,14 @@ fn runtime() -> PathBuf {
         .unwrap_or_else(std::env::temp_dir)
 }
 
-/// Flatten a name into one path segment.
+/// Flatten one name into one path segment.
 ///
-/// `project/role/id` has slashes in it and a socket path is a filename. Anything that is not a
-/// letter, digit, dash or underscore becomes a dash, so a project called `../etc` cannot name a
-/// socket outside the directory this chose.
+/// A project is the working directory's name and a directory can be called anything, including
+/// `..`. Anything that is not a letter, digit, dash or underscore becomes a dash, so a project
+/// called `../../etc` cannot name a directory outside the one this chose.
 fn safe(name: &str) -> String {
-    name.chars()
+    let flattened: String = name
+        .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
                 c
@@ -217,42 +204,107 @@ fn safe(name: &str) -> String {
                 '-'
             }
         })
-        .collect()
+        .collect();
+    // A name of nothing would name the parent directory itself.
+    if flattened.is_empty() {
+        "-".to_owned()
+    } else {
+        flattened
+    }
 }
 
-/// Every instance currently listening.
+/// Leave the note saying who started this session, so the tree can be read off the directory.
+///
+/// A main writes none, and that absence is what says it is one.
+pub fn announce(me: &Identity) {
+    let Some(parent) = parent() else { return };
+    let path = kin_at(me);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, parent);
+}
+
+/// Take the note back down.
+pub fn forget(me: &Identity) {
+    let _ = std::fs::remove_file(kin_at(me));
+}
+
+/// What is known about a session in `project`, read off the directory.
+///
+/// Read rather than asked, so a session cannot describe its own place in the tree. The answer is
+/// the same whether it is running, busy, or wedged.
+#[must_use]
+pub fn whom(project: &str, id: &str) -> Whom {
+    let kin = home(project).join(format!("{}.parent", safe(id)));
+    Whom {
+        project: project.to_owned(),
+        id: id.to_owned(),
+        parent: std::fs::read_to_string(kin)
+            .ok()
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty()),
+    }
+}
+
+/// Every session currently listening in `project`.
 ///
 /// Read from the directory rather than from a registry somebody has to keep up to date: a
 /// process that died did not get to remove itself from a list, and a socket file that nothing
 /// answers is discovered on the first call rather than trusted forever.
+///
+/// Only this project's, because there is no argument for any other and no way to ask for one.
 #[must_use]
-pub fn listening() -> Vec<String> {
-    let dir = runtime().join("axon").join("instances");
-    let Ok(entries) = std::fs::read_dir(&dir) else {
+pub fn listening(project: &str) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(home(project)) else {
         return Vec::new();
     };
     let mut out: Vec<String> = entries
         .flatten()
-        .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            name.strip_suffix(".sock").map(ToOwned::to_owned)
-        })
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        // The `.parent` notes sit beside the sockets. An id is two Greek words and a dash, so
+        // anything with a dot in it is not one.
+        .filter(|name| !name.contains('.') && !name.is_empty())
         .collect();
     out.sort();
     out
 }
 
+/// Everyone `me` may actually reach, with how they stand to it.
+///
+/// The list the model is shown. Filtered here rather than at the point of calling, so a session
+/// is never told about something it would then be refused — which reads as a broken tool.
+#[must_use]
+pub fn reachable(me: &Whom) -> Vec<(Whom, policy::Relation)> {
+    listening(&me.project)
+        .into_iter()
+        .filter(|id| *id != me.id)
+        .map(|id| {
+            let them = whom(&me.project, &id);
+            let relation = policy::between(me, &them);
+            (them, relation)
+        })
+        .filter(|(_, relation)| policy::may(me, *relation, Reach::Ask))
+        .collect()
+}
+
 /// Whether a path is one this process may listen on.
 ///
 /// Belt and braces against [`safe`]: a socket path is built from a name that came off a wire,
-/// and a name is not a promise.
+/// and a name is not a promise. Two levels below the runtime root and no more, so neither half
+/// can climb.
 #[must_use]
 pub fn inside(path: &Path) -> bool {
+    let root = runtime().join("axon");
     path.parent()
-        .is_some_and(|parent| parent == runtime().join("axon").join("instances"))
+        .and_then(Path::parent)
+        .is_some_and(|grand| grand == root)
+        && path
+            .components()
+            .all(|part| part.as_os_str() != std::ffi::OsStr::new(".."))
 }
 
-/// A name parses, resolves and cannot escape the directory it belongs in.
+/// A name parses, resolves, and cannot escape the project it belongs to.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,97 +312,114 @@ mod tests {
     fn asker() -> Identity {
         Identity {
             project: "axon".to_owned(),
-            role: "main".to_owned(),
-            id: "alpha".to_owned(),
+            id: "alpha-rho".to_owned(),
         }
     }
 
     #[test]
-    fn a_bare_name_is_a_sibling() {
-        let address = Address::read("$gamma").expect("an address");
-        assert_eq!(address.id, "gamma");
-        assert_eq!(address.against(&asker()).full(), "axon/main/gamma");
+    fn a_bare_name_is_somebody_in_this_project() {
+        let address = Address::read("$iota-mu").expect("an address");
+        assert_eq!(address.id, "iota-mu");
+        assert_eq!(address.against(&asker()).full(), "axon/iota-mu");
     }
 
     #[test]
-    fn a_two_part_name_gives_the_role() {
-        let address = Address::read("$main/delta").expect("an address");
-        assert_eq!(address.role.as_deref(), Some("main"));
-        assert_eq!(address.against(&asker()).full(), "axon/main/delta");
-    }
-
-    #[test]
-    fn a_three_part_name_gives_everything() {
-        let address = Address::read("$other/review/eta").expect("an address");
-        assert_eq!(address.against(&asker()).full(), "other/review/eta");
+    fn a_two_part_name_gives_the_project() {
+        let address = Address::read("$other/beta-nu").expect("an address");
+        assert_eq!(address.project.as_deref(), Some("other"));
+        assert_eq!(address.against(&asker()).full(), "other/beta-nu");
     }
 
     #[test]
     fn the_sigil_is_optional_so_a_trigger_token_reads_the_same() {
-        assert_eq!(Address::read("gamma"), Address::read("$gamma"));
+        assert_eq!(Address::read("iota-mu"), Address::read("$iota-mu"));
     }
 
     #[test]
     fn an_address_that_names_nobody_is_not_an_address() {
         assert_eq!(Address::read("$"), None);
         assert_eq!(Address::read(""), None);
-        assert_eq!(Address::read("$a/b/c/d"), None, "four parts is a typo");
+    }
+
+    #[test]
+    fn the_old_three_part_shape_is_not_read_as_a_name() {
+        // `project/role/id` was the shape before roles left names. Reading it now would resolve
+        // to `role/id` or `project/id` and reach a session that is not the one it meant.
+        assert_eq!(Address::read("$axon/main/delta"), None);
     }
 
     #[test]
     fn what_was_written_comes_back_out() {
-        for written in ["$gamma", "$main/delta", "$other/review/eta"] {
+        for written in ["$iota-mu", "$other/beta-nu"] {
             let address = Address::read(written).expect("an address");
             assert_eq!(address.written(), written);
         }
     }
 
     #[test]
-    fn a_fork_may_be_stopped_and_a_peer_may_not() {
-        // The whole permission model, and the line is drawn at the one act the far end cannot
-        // decline. A message lands in an inbox and the session decides what to do with it; a
-        // session any process knowing its name can end is one somebody loses while typing.
-        for reach in [Reach::Ask, Reach::Tell, Reach::Stop] {
-            assert!(reach.allows(Kind::Fork), "{reach:?} on your own fork");
-        }
-        assert!(Reach::Ask.allows(Kind::Peer), "asking is always allowed");
-        assert!(
-            Reach::Tell.allows(Kind::Peer),
-            "a peer you did not fork can still be spoken to"
+    fn a_socket_is_named_by_the_id_and_nothing_else() {
+        let path = listening_at(&asker());
+        assert_eq!(path.file_name().expect("a name"), "alpha-rho");
+        assert_eq!(
+            path.parent()
+                .expect("a project")
+                .file_name()
+                .expect("a name"),
+            "axon"
         );
-        assert!(!Reach::Stop.allows(Kind::Peer), "but not ended");
     }
 
     #[test]
-    fn a_refusal_says_which_instance_and_what_was_wanted() {
-        let address = Address::read("$main/delta").expect("an address");
-        let said = Reach::Stop.refusal(&address);
-        assert!(said.contains("$main/delta"), "{said}");
-        assert!(said.contains("stop"), "{said}");
+    fn each_project_gets_its_own_directory() {
+        // The project wall, put in the filesystem: another project's sessions are not refused,
+        // they are somewhere this one never lists.
+        let mine = home("axon");
+        let theirs = home("other");
+        assert_ne!(mine, theirs);
+        assert_eq!(mine.parent(), theirs.parent());
     }
 
     #[test]
-    fn a_name_cannot_climb_out_of_the_directory() {
-        // The reason names are flattened rather than joined. `project/role/id` has slashes in
-        // it and a socket path is a filename, and this name comes off a wire.
+    fn a_project_name_cannot_climb_out_of_the_runtime_directory() {
+        // A project is the working directory's name, and a directory can be called `..`.
         let escaping = Identity {
             project: "../../etc".to_owned(),
-            role: "..".to_owned(),
-            id: "passwd".to_owned(),
+            id: "../passwd".to_owned(),
         };
         let path = listening_at(&escaping);
         assert!(inside(&path), "it escaped to {path:?}");
-        assert!(
-            !path.to_string_lossy().contains(".."),
-            "it kept the climb: {path:?}"
-        );
-        let name = path.file_name().expect("a name").to_string_lossy();
-        assert!(!name.contains('/'), "{name}");
+        assert!(!path.to_string_lossy().contains(".."), "{path:?}");
+    }
+
+    #[test]
+    fn a_name_of_nothing_does_not_name_the_directory_above() {
+        assert_eq!(safe(""), "-");
+        assert_eq!(safe("///"), "---");
+    }
+
+    #[test]
+    fn the_parent_note_sits_beside_the_socket_and_is_not_mistaken_for_one() {
+        let kin = kin_at(&asker());
+        assert_eq!(kin.parent(), listening_at(&asker()).parent());
+        let name = kin
+            .file_name()
+            .expect("a name")
+            .to_string_lossy()
+            .into_owned();
+        assert!(name.contains('.'), "{name} would be listed as a session");
+    }
+
+    #[test]
+    fn a_session_with_no_note_beside_it_is_a_main() {
+        // Absence is the whole of what makes one, so the fallback has to be that and not an
+        // error: a directory that cannot be read must not turn a main into a subagent.
+        let unknown = whom("no-such-project-here", "iota-mu");
+        assert!(unknown.is_main());
     }
 
     #[test]
     fn listening_answers_nothing_rather_than_failing_with_no_directory() {
-        // Nothing has forked yet, which is every session until one does.
-        let _ = listening();
+        // Nothing has started here yet, which is every project until something does.
+        assert!(listening("no-such-project-here").is_empty());
     }
 }

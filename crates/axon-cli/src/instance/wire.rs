@@ -27,13 +27,28 @@
 use serde::{Deserialize, Serialize};
 
 /// One call, as it arrives.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+///
+/// `call` and `args` are the family shape and nothing else belongs in them. `from` and `token`
+/// are axon`s own, and both are optional so a sibling tool poking the socket with `socat` still
+/// gets an answer to `verbs` rather than a parse error.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct Call {
     /// Which verb.
     pub call: String,
     /// Its arguments, in order.
     #[serde(default)]
     pub args: Vec<serde_json::Value>,
+    /// Who is calling, as `project/id`.
+    ///
+    /// Taken at face value for everything but `stop`. It has to be: this is one user talking to
+    /// itself in one directory, and a check that cannot be enforced reads like security to
+    /// whoever comes along next. What it buys is a *relation* — the answer to "may I" is worked
+    /// out from the directory, not from anything else in this frame.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// The secret handed down at spawn, for the one verb that needs proof.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
 }
 
 /// One reply, as it goes back.
@@ -100,14 +115,21 @@ impl Reply {
 /// where one tool can be asked what it speaks and another cannot has stopped being a family.
 pub const VERBS: &[(&str, &str)] = &[
     ("verbs", "what this instance answers"),
-    ("identity", "its project, role, id and who started it"),
+    ("identity", "its project, id and who started it"),
+    (
+        "kin",
+        "how the caller stands to it: parent, child, sibling, main, cousin",
+    ),
     (
         "status",
         "whether it is working, for how long, and what is waiting",
     ),
     ("inbox", "messages it has been sent and not yet acted on"),
     ("tell", "put a message of any sort in its inbox"),
-    ("stop", "end it — only from the session that started it"),
+    (
+        "stop",
+        "end it — only from the session that started it, with the secret it was given",
+    ),
 ];
 
 /// What a message is for.
@@ -179,7 +201,7 @@ impl Sort {
 pub struct Message {
     /// This message, so an answer can quote it.
     pub id: String,
-    /// Who sent it, as `project/role/id`.
+    /// Who sent it, as `project/id`.
     pub from: String,
     /// What kind of thing it is.
     #[serde(default)]
@@ -195,6 +217,10 @@ pub struct Message {
 
 impl Message {
     /// A plain note from `from`.
+    ///
+    /// Only tests build one this way. Everything real arrives over the socket, where the sort is
+    /// part of what was sent and the sender is worked out rather than given.
+    #[cfg(test)]
     #[must_use]
     pub fn new(from: &str, text: &str) -> Self {
         Self::sent(from, text, Sort::Note, None)
@@ -309,8 +335,8 @@ mod tests {
     #[test]
     fn a_message_remembers_who_sent_it() {
         // A message with no sender cannot be replied to, which is the whole point of mirroring.
-        let message = Message::new("axon/main/alpha", "stop what you are doing");
-        assert_eq!(message.from, "axon/main/alpha");
+        let message = Message::new("axon/alpha-rho", "stop what you are doing");
+        assert_eq!(message.from, "axon/alpha-rho");
         assert!(message.at > 0, "and when it was sent");
     }
 }

@@ -60,6 +60,16 @@ axon.model = "anthropic/claude-sonnet-4-5"
 --
 -- axon.trusted = { "/home/you/work" }
 
+-- How far one session may reach another. Sessions in different projects never can, at any
+-- setting; this only widens things inside one project.
+--
+--   "mains"     two sessions started at a terminal can talk to each other, and a subagent can
+--               talk to whoever started it. Nothing else. This is the default.
+--   "instance"  and subagents of the same parent can talk to each other.
+--   "project"   and anything in the project can reach anything else in it.
+--
+-- axon.agent_talk = "mains"
+
 -- ---------------------------------------------------------------------- the screen
 --
 -- Everything the UI draws with is a setting under `axon.ui`. Three kinds:

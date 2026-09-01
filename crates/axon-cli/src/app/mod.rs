@@ -125,7 +125,7 @@ pub struct App {
     pub picking: Option<Picking>,
     /// How much of each tool result to show.
     pub detail: axon_tui::transcript::Detail,
-    /// What this session calls itself: `project/role/id`.
+    /// What this session calls itself: `project/id`.
     ///
     /// Shown in the prompt box, and about to be the address another session reaches it at.
     pub identity: crate::identity::Identity,
@@ -145,10 +145,12 @@ pub struct App {
     pub modal: crate::keys::Modal,
     /// What other instances have sent and nobody has read yet.
     pub inbox: Vec<crate::instance::wire::Message>,
-    /// Who started this session, if anybody did.
+    /// Who started this session, if anybody did. `None` makes it a main.
     pub parent: Option<String>,
     /// Instances this session started, which are the ones it may stop.
     pub forked: Vec<String>,
+    /// The secret handed to each of them, so this session can stop the ones it started.
+    pub minted: std::collections::BTreeMap<String, String>,
     /// Whether the prompt was empty when it was last looked at.
     was_blank: bool,
     /// The text being dragged over, or the last drag that finished.
@@ -204,6 +206,7 @@ impl App {
             inbox: Vec::new(),
             parent: crate::instance::parent(),
             forked: Vec::new(),
+            minted: std::collections::BTreeMap::new(),
             was_blank: true,
             selection: None,
             flipped: std::collections::BTreeSet::new(),
@@ -685,7 +688,7 @@ impl App {
         // rather than from a list kept up to date, because an instance that died did not get to
         // remove itself from one.
         let resolved = axon_tui::complete::resolve_with(&line, col, list_paths, &|_| {
-            crate::instance::listening()
+            crate::instance::listening(&self.identity.project)
         });
         self.overlay = resolved
             .filter(|found| {
@@ -709,6 +712,7 @@ impl App {
     }
 }
 
+mod kin;
 #[cfg(test)]
 mod retracting;
 #[cfg(test)]

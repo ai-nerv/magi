@@ -16,13 +16,22 @@
 //! # Stopping is the one that needs authority
 //!
 //! Everything here can be done to anything listening except `stop`. A session is stopped by the
-//! session that started it and by nothing else: a child learns its parent's name from
-//! [`super::PARENT`] at spawn, and a `stop` from any other name is **ignored** rather than
-//! refused loudly — a stranger who can tell the difference between "refused" and "no such
-//! instance" has learned something about a session that is not theirs.
+//! session that started it and by nothing else — and "is" is not something a caller gets to
+//! claim. A child is handed a secret in [`super::TOKEN`] at spawn, and a `stop` that cannot
+//! quote it back is refused however convincing the name on it was.
+//!
+//! # Two walls, and what the model is shown
+//!
+//! `list` shows what this session can actually reach, never everything that exists. A model
+//! told about a cousin it will then be refused spends the turn planning around a wall it was
+//! never going to get through; see [`super::policy`] for where the walls are.
 
+pub mod saying;
+
+use super::policy::{self, Relation, Whom};
 use super::wire::{Message, Sort};
-use super::{Address, Kind, Reach, TOOL};
+use super::{Address, Reach, TOOL};
+use crate::identity::Identity;
 use axon_tools::{Cancel, Ops, Output, Tool};
 use serde_json::{Value, json};
 
@@ -43,7 +52,7 @@ const VERBS: &[(&str, &str)] = &[
     ),
     (
         "about",
-        "who an instance is: project, role, id, and its parent",
+        "who an instance is: project, id, and who started it",
     ),
     (
         "status",
@@ -130,23 +139,51 @@ pub struct Standing {
     pub parent: Option<String>,
     /// What it started, which is what it may stop.
     pub forked: Vec<String>,
+    /// The secret handed to each of them at spawn, which a `stop` has to quote back.
+    pub minted: std::collections::BTreeMap<String, String>,
     /// What has arrived.
     pub inbox: Vec<Message>,
 }
 
 impl Standing {
-    /// How this session may treat `whole`.
-    ///
-    /// A fork is one *this session started*. Nothing else is, whatever it says about itself —
-    /// which is the point: the answer comes from what this session remembers doing, never from
-    /// the far end's description of itself.
+    /// Where this session sits in the tree.
     #[must_use]
-    pub fn kind(&self, whole: &str) -> Kind {
-        if self.forked.iter().any(|child| child == whole) {
-            Kind::Fork
-        } else {
-            Kind::Peer
+    pub fn whom(&self) -> Whom {
+        let (project, id) = self.me.split_once('/').unwrap_or_default();
+        Whom {
+            project: project.to_owned(),
+            id: id.to_owned(),
+            parent: self.parent.clone(),
         }
+    }
+
+    /// This session as an identity, for filling the project into a short name.
+    #[must_use]
+    pub fn identity(&self) -> Identity {
+        let whom = self.whom();
+        Identity {
+            project: whom.project,
+            id: whom.id,
+        }
+    }
+
+    /// How `them` stands to this session.
+    ///
+    /// What this session *started* comes first and is not up for discussion. The rest is read
+    /// off the project directory, never from what the far end says about itself — a session
+    /// that could describe its own place in the tree could describe itself as somebody's child.
+    /// A child that declined to leave its note beside its socket would otherwise have made
+    /// itself unstoppable by forgetting who its parent was.
+    #[must_use]
+    pub fn stands(&self, them: &Identity) -> Relation {
+        let me = self.whom();
+        if me.project != them.project {
+            return Relation::Elsewhere;
+        }
+        if self.forked.iter().any(|child| *child == them.full()) {
+            return Relation::Child;
+        }
+        policy::between(&me, &super::whom(&them.project, &them.id))
     }
 }
 
@@ -163,9 +200,9 @@ impl Tool for Agent {
 
     fn description(&self) -> &str {
         "Talk to other axon instances. `verb: \"help\"` lists everything this can do. \
-         Instances are named `project/role/id`, and a short name fills the rest in from this \
-         session — `gamma` is a sibling, `main/delta` names the role. Use `list` to find out \
-         who is there before assuming a name."
+         Instances are named `id` or `project/id`, and a bare id means one in this project. \
+         Use `list` to find out who is there and what may be done to each, rather than \
+         assuming a name."
     }
 
     fn parameters(&self) -> Value {
@@ -179,8 +216,8 @@ impl Tool for Agent {
                 },
                 "who": {
                     "type": "string",
-                    "description": "which instance, as `gamma`, `main/delta` or \
-                                    `project/role/id`. Not needed by `help`, `list` or `inbox`.",
+                    "description": "which instance, as `iota-mu` or `project/iota-mu`. \
+                                    Not needed by `help`, `list` or `inbox`.",
                 },
                 "message": {
                     "type": "string",
@@ -229,9 +266,10 @@ impl Tool for Agent {
             );
         }
         match verb {
-            "help" => Output::ok(help(&self.standing)),
-            "whoami" => Output::ok(whoami(&self.standing)),
-            "inbox" => Output::ok(inbox(&self.standing)),
+            "help" => Output::ok(saying::help(&self.standing)),
+            "whoami" => Output::ok(saying::whoami(&self.standing)),
+            "list" => Output::ok(saying::list(&self.standing)),
+            "inbox" => Output::ok(saying::inbox(&self.standing)),
             _ if ALONE.contains(&verb) => Output::ok(format!(
                 "`{verb}` is understood but not yet carried out: the socket call it makes is \
                  not wired into the turn loop."
@@ -242,58 +280,6 @@ impl Tool for Agent {
             },
         }
     }
-}
-
-/// Every verb, as the model should read it.
-fn help(standing: &Standing) -> String {
-    let rows: Vec<String> = VERBS
-        .iter()
-        .map(|(name, does)| format!("- `{name}` — {does}"))
-        .collect();
-    format!(
-        "This session is `{me}`{born}.\n\n`{TOOL}` verbs:\n\n{rows}\n\nInstances are named \
-         `project/role/id`. A short name fills the rest in from this session: `gamma` is a \
-         sibling in the same project and role, `main/delta` names the role.\n\nAnything \
-         listening can be asked and sent to. Only an instance this session started can be \
-         stopped.",
-        me = standing.me,
-        born = standing
-            .parent
-            .as_ref()
-            .map_or(String::new(), |who| format!(", started by `{who}`")),
-        rows = rows.join("\n")
-    )
-}
-
-/// What has been sent here.
-fn inbox(standing: &Standing) -> String {
-    if standing.inbox.is_empty() {
-        return "Nothing has been sent to this session.".to_owned();
-    }
-    // Marked rather than sorted. Order is when things arrived, which is what makes a
-    // conversation readable; the mark is what makes the urgent one findable in it.
-    let rows: Vec<String> = standing
-        .inbox
-        .iter()
-        .map(|message| {
-            let mark = if message.sort.interrupts() { "! " } else { "" };
-            let owed = if message.sort.expects_an_answer() {
-                format!(" — answer with `reply`, `about: \"{}\"`", message.id)
-            } else {
-                String::new()
-            };
-            format!(
-                "- {mark}`{}` [{}] {}{owed}",
-                message.from,
-                serde_json::to_value(message.sort)
-                    .ok()
-                    .and_then(|v| v.as_str().map(ToOwned::to_owned))
-                    .unwrap_or_else(|| "note".to_owned()),
-                message.text
-            )
-        })
-        .collect();
-    rows.join("\n")
 }
 
 /// What sort of message a verb sends.
@@ -325,8 +311,7 @@ fn sorted(verb: &str, arguments: &Value) -> Sort {
 fn reach(verb: &str, who: &str, arguments: &Value, standing: &Standing) -> Output {
     let Some(address) = Address::read(who) else {
         return Output::error(format!(
-            "`{who}` is not a name an instance can have. Names are `id`, `role/id` or \
-             `project/role/id`."
+            "`{who}` is not a name an instance can have. Names are `id` or `project/id`."
         ));
     };
     if !VERBS.iter().any(|(name, _)| *name == verb) {
@@ -339,14 +324,14 @@ fn reach(verb: &str, who: &str, arguments: &Value, standing: &Standing) -> Outpu
     // trusted with its own permissions.
     let wanted = match verb {
         "stop" => Reach::Stop,
-        "send" | "ask" => Reach::Tell,
+        _ if SPEAKS.contains(&verb) => Reach::Tell,
         _ => Reach::Ask,
     };
-    if !wanted.allows(standing.kind(who)) {
-        return Output::error(format!(
-            "{}. It can still be asked and sent to.",
-            wanted.refusal(&address)
-        ));
+    let me = standing.whom();
+    let whole = address.against(&standing.identity());
+    let relation = standing.stands(&whole);
+    if !policy::may(&me, relation, wanted) {
+        return Output::error(policy::refusal(&me, relation, wanted));
     }
     if matches!(verb, "send" | "ask") && arguments.get("message").is_none() {
         return Output::error(format!("`{verb}` needs `message` — what to say."));
@@ -363,6 +348,12 @@ fn reach(verb: &str, who: &str, arguments: &Value, standing: &Standing) -> Outpu
             .get("about")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned),
+        // Attached here rather than looked up when the call is made, because this is where it is
+        // known which session is being reached. Only a `stop` carries one; everything else is
+        // answered on the strength of the name alone.
+        token: (wanted == Reach::Stop)
+            .then(|| standing.minted.get(&whole.full()).cloned())
+            .flatten(),
     };
     Output::ok(format!(
         "`{}` is understood but not yet carried out: the socket call it makes is not wired into \
@@ -387,6 +378,8 @@ pub struct Wanted {
     pub message: Option<String>,
     /// The message being answered or released, for the verbs that quote one.
     pub about: Option<String>,
+    /// The secret the far end was started with, for the one verb that has to prove itself.
+    pub token: Option<String>,
 }
 
 /// The tool refuses what it should and asks for what it needs.
@@ -396,9 +389,10 @@ mod tests {
 
     fn standing() -> Standing {
         Standing {
-            me: "axon/main/alpha".to_owned(),
+            me: "axon/alpha-rho".to_owned(),
             parent: None,
             forked: Vec::new(),
+            minted: std::collections::BTreeMap::new(),
             inbox: Vec::new(),
         }
     }
@@ -417,7 +411,7 @@ mod tests {
         let out = call(json!({"verb": "help"}), standing());
         assert!(!out.is_error);
         assert!(
-            out.content.contains("axon/main/alpha"),
+            out.content.contains("axon/alpha-rho"),
             "it never says who we are"
         );
         for (verb, _) in VERBS {
@@ -461,28 +455,48 @@ mod tests {
     fn stopping_something_this_session_did_not_start_is_refused_here() {
         // Refused before the round trip, so the model is told what it may do instead of
         // spending a turn discovering it.
-        let out = call(json!({"verb": "stop", "who": "main/delta"}), standing());
+        let out = call(json!({"verb": "stop", "who": "beta-nu"}), standing());
         assert!(out.is_error);
-        assert!(out.content.contains("peer"), "{}", out.content);
-        assert!(out.content.contains("ask it"), "and what it can do instead");
+        assert!(out.content.contains("started"), "{}", out.content);
     }
 
     #[test]
-    fn stopping_a_fork_is_allowed() {
+    fn stopping_something_this_session_started_is_allowed() {
         let mut standing = standing();
-        standing.forked.push("gamma".to_owned());
-        let out = call(json!({"verb": "stop", "who": "gamma"}), standing);
+        standing.forked.push("axon/iota-mu".to_owned());
+        let out = call(json!({"verb": "stop", "who": "iota-mu"}), standing);
         assert!(!out.is_error, "{}", out.content);
     }
 
     #[test]
-    fn a_fork_is_what_this_session_started_and_not_what_a_name_looks_like() {
+    fn a_child_is_what_this_session_started_and_not_what_a_name_looks_like() {
         // The authority comes from what this session remembers doing, never from the far end's
-        // description of itself.
+        // description of itself. A child that declined to leave its note beside its socket
+        // would otherwise have made itself unstoppable by forgetting who its parent was.
         let mut standing = standing();
-        standing.forked.push("axon/main/gamma".to_owned());
-        assert_eq!(standing.kind("axon/main/gamma"), Kind::Fork);
-        assert_eq!(standing.kind("axon/main/delta"), Kind::Peer);
+        standing.forked.push("axon/iota-mu".to_owned());
+        let child = Identity {
+            project: "axon".to_owned(),
+            id: "iota-mu".to_owned(),
+        };
+        let stranger = Identity {
+            project: "axon".to_owned(),
+            id: "beta-nu".to_owned(),
+        };
+        assert_eq!(standing.stands(&child), Relation::Child);
+        assert_ne!(standing.stands(&stranger), Relation::Child);
+    }
+
+    #[test]
+    fn nothing_in_another_project_is_a_child_however_it_was_recorded() {
+        // The project wall wins over local memory, so a stale entry cannot reach across it.
+        let mut standing = standing();
+        standing.forked.push("other/iota-mu".to_owned());
+        let across = Identity {
+            project: "other".to_owned(),
+            id: "iota-mu".to_owned(),
+        };
+        assert_eq!(standing.stands(&across), Relation::Elsewhere);
     }
 
     #[test]
@@ -505,7 +519,7 @@ mod tests {
     fn a_name_nothing_can_have_says_what_a_name_looks_like() {
         let out = call(json!({"verb": "status", "who": "a/b/c/d"}), standing());
         assert!(out.is_error);
-        assert!(out.content.contains("project/role/id"), "{}", out.content);
+        assert!(out.content.contains("project/id"), "{}", out.content);
     }
 
     #[test]
@@ -521,39 +535,6 @@ mod tests {
 }
 
 /// This session's own name and place.
-///
-/// A subagent that does not know it is one cannot behave like one: it will not think to raise
-/// `attention` at a parent it does not know it has, and it will try to `stop` siblings it has
-/// no authority over. This is the first thing such a session should ask.
-fn whoami(standing: &Standing) -> String {
-    let mut said = format!("This session is `{}`.", standing.me);
-    match &standing.parent {
-        Some(who) => said.push_str(&format!(
-            " It was started by `{who}`, which is the only session that can stop it — and the \
-             one to raise `attention` at when this session needs a decision it cannot make."
-        )),
-        None => said.push_str(
-            " Nothing started it, so it is a root session: no parent to escalate to, and \
-             nothing can stop it from outside.",
-        ),
-    }
-    if standing.forked.is_empty() {
-        said.push_str(" It has started nothing, so there is nothing it may stop.");
-    } else {
-        said.push_str(&format!(
-            " It started {}, which it may stop: {}.",
-            standing.forked.len(),
-            standing
-                .forked
-                .iter()
-                .map(|child| format!("`{child}`"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-    said
-}
-
 /// The wider surface: what each verb needs, and what it means when it lands.
 #[cfg(test)]
 mod surface_tests {
@@ -561,9 +542,10 @@ mod surface_tests {
 
     fn standing() -> Standing {
         Standing {
-            me: "axon/main/alpha".to_owned(),
+            me: "axon/alpha-rho".to_owned(),
             parent: None,
             forked: Vec::new(),
+            minted: std::collections::BTreeMap::new(),
             inbox: Vec::new(),
         }
     }
