@@ -66,10 +66,33 @@ thiserror = "2.0"
 tokio-stream = "0.1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "time", "sync", "signal"] }
 
-# Asserted rather than left to defaults, the way Tau pins its release profile: a build that
-# silently switches to fat LTO and one codegen unit turns a 10-second link into minutes.
+# Pinned rather than left to defaults, the way Tau pins its release profile.
+#
+# **Fat LTO, one codegen unit.** This is the size setting: it was `thin` and sixteen, and the
+# comment here used to warn that changing it "turns a 10-second link into minutes". That was
+# measured and it is true -- a rebuild goes from 7s to 44s -- and it is worth it, because the
+# same change takes 1.9MB off a 9.8MB binary. `make debug` is what an inner loop should use;
+# this profile is what people install.
 [profile.release]
-codegen-units = 16
-lto = "thin"
+codegen-units = 1
+lto = "fat"
 panic = "abort"
 strip = "symbols"
+
+# Optimised for size, not speed, because none of these is ever in a hot loop.
+#
+# Argument parsing runs once, before the UI exists. The recorded-session harness runs only under
+# `axon fake-host`, which is the demo. The rest are type definitions with a little code attached.
+# Anything that runs per-frame, per-token or per-tool call is deliberately not on this list.
+[profile.release.package.clap_builder]
+opt-level = "z"
+[profile.release.package.clap]
+opt-level = "z"
+[profile.release.package.clap_lex]
+opt-level = "z"
+[profile.release.package.axon-testkit]
+opt-level = "z"
+[profile.release.package.axon-proto]
+opt-level = "z"
+[profile.release.package.axon-model]
+opt-level = "z"

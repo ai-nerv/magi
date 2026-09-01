@@ -25,7 +25,6 @@ axon-testkit.workspace = true
 axon-tui.workspace = true
 clap.workspace = true
 crossterm.workspace = true
-ignore.workspace = true
 ratatui.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
