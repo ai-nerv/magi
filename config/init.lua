@@ -118,7 +118,7 @@ axon.model = "anthropic/claude-sonnet-4-5"
 -- by one where it has to be.
 --
 axon.ui.footer_pad   = 3
-axon.ui.beacon_ms    = 1000
+axon.ui.beacon_ms    = 2000
 axon.ui.beacon_cells = 9
 
 -- The opening scramble: text lands as noise and resolves into itself over `decrypt_ms`

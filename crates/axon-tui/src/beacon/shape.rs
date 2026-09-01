@@ -268,15 +268,23 @@ mod tests {
     fn a_signal_starts_from_its_own_beginning() {
         // A heartbeat that starts mid-spike is a glitch arriving, not a beat.
         let mut trace = wound(Mood::Asking, 200);
-        trace.advance(Mood::Working, 400, COLUMNS);
-        assert!(
-            trace.at > 0,
-            "nothing was written on a frame two hundred behind"
-        );
-        let written = &trace.written[trace.written.len() - trace.at.min(4)..];
-        assert!(
-            written.iter().all(|h| *h == LINE),
-            "the beat did not start on the baseline: {written:?}"
+        // Far enough in to have written something, and not so far that the beat has come round.
+        // Measured off `at`, which counts what this signal has written, rather than off an index
+        // into the tape -- the tape is trimmed as it grows and any index into it goes stale.
+        // One advance first, because until the new signal has been written once `at` is still
+        // the old one's count and a loop guarded on it never runs.
+        let mut tick = 200;
+        trace.advance(Mood::Working, tick, COLUMNS);
+        while trace.at < 4 && tick < 400 {
+            tick += 1;
+            trace.advance(Mood::Working, tick, COLUMNS);
+        }
+        assert!(trace.at >= 4, "nothing was written in two hundred frames");
+        let since = &trace.written[trace.written.len() - trace.at..];
+        assert_eq!(
+            since,
+            &HEARTBEAT[..trace.at],
+            "the beat did not start at the start of the beat"
         );
     }
 
