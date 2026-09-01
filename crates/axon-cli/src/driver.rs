@@ -115,6 +115,10 @@ pub async fn run(
     }
 
     let mut dirty = true;
+    // What shape the terminal was last told to draw its cursor in. Insert mode is a bar and
+    // normal mode a block, which is the one cue that says which mode you are in without
+    // looking away from what you are typing.
+    let mut shown = axon_tui::vim::Mode::Insert;
     // Set by a mouse release, acted on after the next draw: the text a selection covers is read
     // back out of the frame it was drawn into, so there has to be a frame.
     let mut copied: Option<axon_tui::select::Selection> = None;
@@ -135,6 +139,12 @@ pub async fn run(
                 ui::draw(frame, &mut app, &footer);
             })?;
             dirty = false;
+            // After the frame, and only when it has changed: the shape is the terminal's own
+            // cursor, so it outlives a redraw and does not need setting on every one.
+            if shown != app.modal.mode {
+                shown = app.modal.mode;
+                let _ = crossterm::execute!(std::io::stdout(), crate::terminal::shape(shown));
+            }
             if let Some(sel) = copied.take() {
                 let area = session.terminal.get_frame().area();
                 let text = axon_tui::select::text(session.terminal.current_buffer_mut(), sel, area);

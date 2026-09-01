@@ -104,9 +104,28 @@ impl Drop for Session {
             let _ = execute!(out, PopKeyboardEnhancementFlags);
         }
         let _ = write!(out, "{MOUSE_OFF}");
+        // Whatever shape the modes left it in is axon's, not the terminal's, and a shell that
+        // came back with a bar cursor would have been given one by us.
+        let _ = execute!(out, crossterm::cursor::SetCursorStyle::DefaultUserShape);
         let _ = execute!(out, LeaveAlternateScreen);
         let _ = execute!(out, crossterm::event::DisableBracketedPaste);
         let _ = disable_raw_mode();
         let _ = self.terminal.show_cursor();
+    }
+}
+
+/// The shape the terminal draws its own cursor in, for a mode.
+///
+/// A block sits on a character and a bar sits between two, which is exactly the difference
+/// between the modes: normal mode acts on what is under the cursor, insert mode puts the next
+/// character where the cursor is. Steady rather than blinking in both, because the prompt box
+/// already has a scan travelling round it and two things pulsing in one corner of the screen is
+/// one too many.
+#[must_use]
+pub fn shape(mode: axon_tui::vim::Mode) -> crossterm::cursor::SetCursorStyle {
+    if mode.is_insert() {
+        crossterm::cursor::SetCursorStyle::SteadyBar
+    } else {
+        crossterm::cursor::SetCursorStyle::SteadyBlock
     }
 }

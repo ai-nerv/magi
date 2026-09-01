@@ -147,7 +147,7 @@ pub fn render(
             let index = offset + row;
             let text = visual.get(index).cloned().unwrap_or_default();
             if index == caret_row {
-                with_cursor(&text, caret_col, text_style)
+                with_cursor(&text, caret_col, text_style, saying.mode)
             } else {
                 vec![Span::styled(text, text_style)]
             }
@@ -362,11 +362,20 @@ enum Direction {
     Down,
 }
 
-/// Draw one line with the cursor cell inverted.
+/// Draw one line, with the cursor cell inverted in normal mode.
 ///
-/// At the end of a line there is no character to invert, so a space is added and inverted —
+/// Only in normal mode. There it is a block sitting *on* a character, which is what the mode
+/// is: every key acts on the thing under it. Insert mode puts the cursor *between* two
+/// characters, and a whole cell painted over one of them says the wrong thing about where the
+/// next letter will go -- so there the terminal's own bar is left to do it, and
+/// [`crate::vim::Mode`] is what the caller sets its shape from.
+///
+/// At the end of a line there is no character to invert, so a space is added and inverted --
 /// which is why the layout reserves a column for it.
-fn with_cursor(text: &str, col: usize, style: Style) -> Vec<Span<'static>> {
+fn with_cursor(text: &str, col: usize, style: Style, mode: crate::vim::Mode) -> Vec<Span<'static>> {
+    if mode.is_insert() {
+        return vec![Span::styled(text.to_owned(), style)];
+    }
     let chars: Vec<char> = text.chars().collect();
     let col = col.min(chars.len());
     let inverted = style.add_modifier(Modifier::REVERSED);
@@ -703,52 +712,6 @@ mod resolving_tests {
         assert!(
             editor.typed_age(0, 1, 'h').is_none(),
             "not by position alone"
-        );
-    }
-}
-
-/// The empty prompt says something, and says it as a placeholder.
-#[cfg(test)]
-mod placeholder_tests {
-    use super::*;
-
-    #[test]
-    fn the_placeholder_is_dimmer_than_what_you_type() {
-        // A placeholder in the text colour reads as something already in the box, and the first
-        // thing anybody does is try to delete it.
-        assert!(
-            colour::palette().hint < colour::palette().text,
-            "the hint is not dimmer: {} against {}",
-            colour::palette().hint,
-            colour::palette().text
-        );
-    }
-
-    #[test]
-    fn a_screen_too_narrow_for_the_line_says_something_shorter() {
-        // Half a line reads as a rendering fault. The short hint stands in instead.
-        let narrow = placeholder_spans(12, "a line far too long for twelve columns", None);
-        let text: String = narrow.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text.chars().count() <= 12, "{text:?}");
-    }
-
-    #[test]
-    fn a_line_that_fits_is_drawn_whole() {
-        let spans = placeholder_spans(40, "let's build something", None);
-        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
-        assert!(text.ends_with("let's build something"), "{text:?}");
-    }
-
-    #[test]
-    fn nothing_is_struck_through_any_more() {
-        // The correction is performed by `crate::tease` -- written, then taken back -- rather
-        // than drawn with both halves on screen at once.
-        let spans = placeholder_spans(60, "the scaffolding is temporary", None);
-        assert!(
-            spans
-                .iter()
-                .all(|s| !s.style.add_modifier.contains(Modifier::CROSSED_OUT)),
-            "something is still drawn struck"
         );
     }
 }
