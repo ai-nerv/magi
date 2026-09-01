@@ -1,7 +1,7 @@
 //! The footer.
 //!
 //! Two dim lines, as Pi renders them: the working directory with the git branch, then usage
-//! stats on the left with the model right-aligned.
+//! stats on the left with the session name right-aligned.
 
 use crate::colour;
 use ratatui::style::Style;
@@ -18,8 +18,12 @@ pub struct FooterData {
     pub context_percent: Option<f64>,
     /// Size of the context window, in tokens.
     pub context_window: u64,
-    /// Model id, as the provider names it.
-    pub model: String,
+    /// What this session calls itself: `project/role/id`.
+    ///
+    /// The right of the footer, where the model used to be. The two changed places: the model is
+    /// what you check mid-turn and belongs against the box you are typing into, and a name that
+    /// does not change for the life of the session belongs out at the edge.
+    pub identity: String,
 }
 
 /// Abbreviate a token count the way Pi's `formatTokens` does.
@@ -82,7 +86,7 @@ pub fn fit_path(path: &str, width: usize) -> String {
 ///
 /// **One line.** It was two — the directory on its own row above the stats — and two rows of
 /// dim text under the prompt is a lot of screen for something you glance at. Everything that
-/// was on both is here: the directory and branch on the left, usage in the middle, the model on
+/// was on both is here: the directory and branch on the left, usage in the middle, the session name on
 /// the right, and each is dropped in that order when the terminal cannot hold it.
 #[must_use]
 pub fn render(data: &FooterData, status: &[Span<'static>], width: u16) -> Vec<Line<'static>> {
@@ -90,13 +94,13 @@ pub fn render(data: &FooterData, status: &[Span<'static>], width: u16) -> Vec<Li
     let muted = Style::default().fg(colour::muted());
     let width = usize::from(width);
 
-    // Right first: the model is the thing you check, so it is the last to go.
-    let model = fit_path(
-        &data.model,
+    // Right first: the session name is fixed-width for the whole run, so it is the last to go.
+    let named = fit_path(
+        &data.identity,
         width.saturating_sub(usize::from(crate::metric::column_gap())),
     );
     let room =
-        width.saturating_sub(model.chars().count() + usize::from(crate::metric::column_gap()));
+        width.saturating_sub(named.chars().count() + usize::from(crate::metric::column_gap()));
 
     // Then usage, which is short and changes every turn.
     let mut stats = Vec::new();
@@ -134,7 +138,7 @@ pub fn render(data: &FooterData, status: &[Span<'static>], width: u16) -> Vec<Li
     };
 
     // One row under the box, and everything said about the session is on it: what the agent is
-    // doing on the left, usage in the middle, the model on the right. The working directory, the
+    // doing on the left, usage in the middle, the session name on the right. The working directory, the
     // branch and the mouse state had the left of this and are gone -- two of them never change
     // while the session runs, and the third has the whole terminal to announce itself with.
     //
@@ -143,12 +147,12 @@ pub fn render(data: &FooterData, status: &[Span<'static>], width: u16) -> Vec<Li
     // doing something -- slid the other two sideways. Three things that move whenever any one of
     // them moves is a row nobody can read a number off.
     let gap = usize::from(crate::metric::column_gap());
-    let model_at = width.saturating_sub(model.chars().count());
+    let name_at = width.saturating_sub(named.chars().count());
     let usage_at = width.saturating_sub(usage.chars().count()) / 2;
 
     let mut spans: Vec<Span<'static>> = clip_spans(
         status.to_vec(),
-        if usage.is_empty() { model_at } else { usage_at }.saturating_sub(gap),
+        if usage.is_empty() { name_at } else { usage_at }.saturating_sub(gap),
     );
     let mut col: usize = spans.iter().map(|s| s.content.chars().count()).sum();
 
@@ -163,10 +167,10 @@ pub fn render(data: &FooterData, status: &[Span<'static>], width: u16) -> Vec<Li
         }
         col = usage_at + usage.chars().count();
     }
-    if model_at >= col {
-        spans.push(Span::styled(" ".repeat(model_at - col), dim));
+    if name_at >= col {
+        spans.push(Span::styled(" ".repeat(name_at - col), dim));
     }
-    spans.push(Span::styled(model, muted));
+    spans.push(Span::styled(named, muted));
 
     vec![Line::from(clip_spans(spans, width))]
 }
@@ -229,7 +233,7 @@ mod tests {
         let data = FooterData {
             input_tokens: 1200,
             output_tokens: 340,
-            model: "m".into(),
+            identity: "m".into(),
             ..FooterData::default()
         };
         let status = [Span::raw("⠋ thinking")];
@@ -240,15 +244,19 @@ mod tests {
     }
 
     #[test]
-    fn the_model_is_right_aligned() {
+    fn the_session_name_is_right_aligned() {
         let data = FooterData {
             context_window: 200_000,
             context_percent: Some(12.5),
-            model: "claude-opus-5".into(),
+            identity: "axum/main/alpha".into(),
             ..FooterData::default()
         };
         let rendered = text_of(&render(&data, &[], 40));
-        assert!(rendered[0].ends_with("claude-opus-5"), "{:?}", rendered[0]);
+        assert!(
+            rendered[0].ends_with("axum/main/alpha"),
+            "{:?}",
+            rendered[0]
+        );
         assert_eq!(rendered[0].chars().count(), 40);
     }
 
@@ -308,20 +316,20 @@ mod fit_tests {
     fn no_context_window_is_no_context_group() {
         // `?/0` is three characters of noise on exactly the screen a new person is reading.
         let data = FooterData {
-            model: crate::glyph::no_model().into(),
+            identity: "axum/main/alpha".into(),
             ..FooterData::default()
         };
         let out = render(&data, &[], 40);
         assert!(!line_text(&out, 0).contains("?/"), "{}", line_text(&out, 0));
         assert!(
-            line_text(&out, 0).contains(crate::glyph::no_model()),
-            "the model still shows"
+            line_text(&out, 0).contains("axum/main/alpha"),
+            "the session name still shows"
         );
     }
 }
 
 #[cfg(test)]
-mod model_fit_tests {
+mod name_fit_tests {
     use super::*;
 
     fn stats_row(data: &FooterData, width: u16) -> String {
@@ -333,33 +341,33 @@ mod model_fit_tests {
     }
 
     #[test]
-    fn a_long_model_keeps_the_part_that_names_it() {
+    fn a_long_name_keeps_the_part_that_names_it() {
         // Right-aligned text is cut on the left by the terminal and on the right by us; either
-        // way `openrouter/deepseek/deepseek-v3.2` must not become `openrouter/deepseek`.
+        // way `a-long-project/main/alpha` must not become `a-long-project/main`.
         let data = FooterData {
-            model: "openrouter/deepseek/deepseek-v3.2".into(),
+            identity: "a-long-project/main/alpha".into(),
             context_window: 164_000,
             context_percent: Some(0.0),
             ..FooterData::default()
         };
         let row = stats_row(&data, 30);
-        assert!(row.contains("deepseek-v3.2"), "{row}");
+        assert!(row.contains("alpha"), "{row}");
         assert!(row.chars().count() <= 30, "{row}");
     }
 
     #[test]
-    fn a_model_that_fits_is_left_alone() {
+    fn a_name_that_fits_is_left_alone() {
         let data = FooterData {
-            model: "ollama/llama3.3".into(),
+            identity: "axum/main/beta".into(),
             ..FooterData::default()
         };
-        assert!(stats_row(&data, 80).contains("ollama/llama3.3"));
+        assert!(stats_row(&data, 80).contains("axum/main/beta"));
     }
 
     #[test]
     fn the_line_never_outgrows_the_terminal() {
         let data = FooterData {
-            model: "a-very-long-provider/a-very-long-family/a-very-long-model-name".into(),
+            identity: "a-very-long-project-name/a-very-long-role/a-very-long-id".into(),
             input_tokens: 123_456,
             output_tokens: 654_321,
             context_window: 200_000,
@@ -386,7 +394,7 @@ mod anchored {
             output_tokens: 900,
             context_percent: Some(6.2),
             context_window: 200_000,
-            model: "openrouter/opus-5".into(),
+            identity: "axum/main/alpha".into(),
         }
     }
 
@@ -407,7 +415,7 @@ mod anchored {
 
     #[test]
     fn what_the_agent_is_doing_does_not_move_the_numbers() {
-        // The complaint this answers: the usage and the model slid sideways every time the
+        // The complaint this answers: the usage and the right-hand column slid sideways every time the
         // status changed, which is every time a turn starts or ends.
         let short = row("waiting");
         let long = row("⠋ Thinking  12s  esc to interrupt");
@@ -422,13 +430,13 @@ mod anchored {
         assert_eq!(
             column(&short, "openrouter"),
             column(&long, "openrouter"),
-            "the model moved:\n{short:?}\n{long:?}"
+            "the session name moved:\n{short:?}\n{long:?}"
         );
     }
 
     #[test]
-    fn the_model_is_against_the_right_edge() {
-        assert!(row("waiting").ends_with("openrouter/opus-5"));
+    fn the_session_name_is_against_the_right_edge() {
+        assert!(row("waiting").ends_with("axum/main/alpha"));
     }
 
     #[test]
@@ -437,6 +445,6 @@ mod anchored {
         let row = row(&"x".repeat(200));
         assert_eq!(row.chars().count(), 70, "{row:?}");
         assert!(row.contains("↑13k"), "the numbers survived: {row:?}");
-        assert!(row.ends_with("openrouter/opus-5"), "{row:?}");
+        assert!(row.ends_with("axum/main/alpha"), "{row:?}");
     }
 }

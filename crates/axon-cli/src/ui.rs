@@ -57,7 +57,14 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     // is no second region under it. What it may not do is take the whole screen: one row of
     // transcript stays, or a list opened mid-turn hides the turn it is about.
     let around = metric::footer_rows() + more_rows + 1;
-    let badge = app.identity.full();
+    // The box wears the model and the footer wears the session name, which is the way round
+    // that matches how often you look at each. Cut to a third of the width first: the strip is
+    // reserved on every row, so a sixty-character model id would take the box with it.
+    let named = app.model.as_ref().map_or_else(
+        || axon_tui::glyph::no_model().to_owned(),
+        |model| model.name.clone(),
+    );
+    let badge = footer::fit_path(&named, usize::from(area.width) / 3);
     let text_rows = prompt::text_rows(&app.editor, rows, area.width, &badge);
     let room = usize::from(rows.saturating_sub(around)).saturating_sub(text_rows + 3);
     // Keyed on what is open, so a permission ask after a model list is a second opening while

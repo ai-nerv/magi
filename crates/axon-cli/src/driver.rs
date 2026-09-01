@@ -502,10 +502,7 @@ fn terminal_size() -> (u16, u16) {
 fn footer_data(app: &App) -> FooterData {
     let window = app.model.as_ref().map_or(0, |m| m.context_window);
     FooterData {
-        model: app.model.as_ref().map_or_else(
-            || axon_tui::glyph::no_model().to_owned(),
-            |m| m.name.clone(),
-        ),
+        identity: app.identity.full(),
         input_tokens: app.usage().prompt_tokens(),
         output_tokens: app.usage().output,
         context_window: window,
