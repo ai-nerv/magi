@@ -379,11 +379,9 @@ make.recipe{
     -- and named, so one edited file froze forever and every later fix to it silently never
     -- arrived. Three bugs were diagnosed twice because of it.
     --
-    -- What that guard was actually protecting against is still real -- `rsync -a` preserves the
-    -- source's mtime, so an overwritten config came back looking untouched -- so the answer is
-    -- a copy, not a refusal: anything that differs is saved beside itself as `.bak` and then
-    -- written. Nothing is lost and nothing is stale. `--keep` is the old behaviour, for editing
-    -- the installed copy on purpose.
+    -- `--keep` is the old refusal, for editing the installed copy on purpose. There was a `.bak`
+    -- beside anything overwritten for a while, and it went: a directory that grows a second copy
+    -- of every file you edit is litter, and the version worth recovering is in git anyway.
     --
     -- Directories are walked file by file, and without `--delete`: a tool you wrote into
     -- `tools/` is not litter.
@@ -391,16 +389,12 @@ make.recipe{
       return oslo.run{ "cmp", "-s", a, b }.ok
     end
 
-    local synced, saved, kept = 0, {}, {}
+    local synced, kept = 0, {}
     local function install_file(src, dir, name)
       local dst = dir .. "/" .. name
-      if oslo.fs.stat(dst) and not same(src, dst) then
-        if a.keep then
-          kept[#kept + 1] = dst
-          return
-        end
-        sh.rsync("-a", dst, dst .. ".bak")
-        saved[#saved + 1] = dst
+      if a.keep and oslo.fs.stat(dst) and not same(src, dst) then
+        kept[#kept + 1] = dst
+        return
       end
       sh.mkdir("-p", dir)
       sh.rsync("-a", src, dst)
@@ -429,12 +423,6 @@ make.recipe{
     end
     print(oslo.ui.style("✓ ", { fg = "green" }) ..
           ("%d file%s -> %s"):format(synced, synced == 1 and "" or "s", dest))
-    if #saved > 0 then
-      print(dim(("   %d differed and %s saved as .bak beside %s")
-                  :format(#saved, #saved == 1 and "was" or "were",
-                          #saved == 1 and "it" or "them")))
-      for _, path in ipairs(saved) do print(dim("   " .. path .. ".bak")) end
-    end
     if #kept > 0 then
       print(oslo.ui.style("!  ", { fg = "yellow" }) ..
             ("%d file%s left alone because you asked with --keep:")
