@@ -165,7 +165,7 @@ pub async fn run(
                         // Somebody is here. Whatever the box was writing to itself, it stops and
                         // starts its wait over -- including on the keys that leave the prompt
                         // empty, which is most of them at this point.
-                        app.tease.interrupt(crate::app::opener());
+                        app.tease.interrupt();
                         let busy = app.is_busy();
                         let action = keys::handle(
                             key,

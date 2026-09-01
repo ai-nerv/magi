@@ -35,7 +35,7 @@ mod settling {
     #[test]
     fn typing_puts_the_opener_back() {
         let mut app = App::new();
-        app.tease.interrupt("mid-performance");
+        app.tease.restart("mid-performance");
         app.editor.insert_str("a question");
         app.settle_prompt();
         assert!(

@@ -157,15 +157,27 @@ impl Tease {
         Some(self.caret.min(self.shown.chars().count()))
     }
 
-    /// Somebody typed. Stop, and start the wait over with `opener` on screen.
-    pub fn interrupt(&mut self, opener: &str) {
-        self.shown = opener.to_owned();
-        self.caret = 0;
-        self.block = false;
+    /// Somebody touched a key. Stop where it stands and start the wait over.
+    ///
+    /// The line does not change. This is called on *every* keystroke, and it used to put a fresh
+    /// opener up each time -- so pressing escape, or `i`, or an arrow, rewrote the placeholder
+    /// under you for no reason anybody could see. Stopping is not the same as starting again.
+    pub fn interrupt(&mut self) {
         self.marked = None;
         self.script.clear();
+        self.block = true;
         self.since = Instant::now();
         self.holding = Duration::ZERO;
+    }
+
+    /// Put a different line up and start over.
+    ///
+    /// For when the prompt has actually emptied or filled -- sitting down, or sending something
+    /// -- which is when a new line is worth reading and a keystroke is not.
+    pub fn restart(&mut self, opener: &str) {
+        self.shown = opener.to_owned();
+        self.caret = 0;
+        self.interrupt();
         self.remember(opener.to_owned());
     }
 
@@ -620,11 +632,37 @@ mod tests {
 
     #[test]
     fn a_touched_prompt_stops_it_where_it_stands() {
+        // Stops, and does not start again. Every keystroke reaches this, and it used to put a
+        // fresh line up each time -- so escape, or `i`, or an arrow rewrote the placeholder
+        // under you for no reason anybody could see.
+        let mut tease = Tease::new("one two three");
+        tease.script = perform("one two three", "one four three", 0);
+        tease.play(&Act::Jump {
+            to: 4,
+            over: Duration::ZERO,
+        });
+        tease.interrupt();
+        assert_eq!(
+            tease.shown(),
+            "one two three",
+            "the line changed under them"
+        );
+        assert_eq!(
+            tease.caret(),
+            Some(4),
+            "and the ghost stays where it got to"
+        );
+        assert!(tease.script.is_empty(), "but it has stopped");
+    }
+
+    #[test]
+    fn an_emptied_prompt_does_get_a_new_line() {
+        // Which is the other half of it: sitting down or sending something is worth a fresh
+        // line to read, and a keystroke is not.
         let mut tease = Tease::new("one");
-        tease.script = perform("one", "two", 0);
-        tease.interrupt("something else");
+        tease.restart("something else");
         assert_eq!(tease.shown(), "something else");
-        assert_eq!(tease.caret(), Some(0), "and the ghost is back at the start");
+        assert_eq!(tease.caret(), Some(0));
     }
 
     #[test]

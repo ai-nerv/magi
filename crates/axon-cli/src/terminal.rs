@@ -116,15 +116,20 @@ impl Drop for Session {
 
 /// The shape the terminal draws its own cursor in, for a mode.
 ///
-/// A block sits on a character and a bar sits between two, which is exactly the difference
-/// between the modes: normal mode acts on what is under the cursor, insert mode puts the next
-/// character where the cursor is. Steady rather than blinking in both, because the prompt box
-/// already has a scan travelling round it and two things pulsing in one corner of the screen is
-/// one too many.
+/// A block sits on a character and an underline sits below the one the next letter will push
+/// along, which is exactly the difference between the modes: normal mode acts on what is under
+/// the cursor, insert mode puts the next character where the cursor is.
+///
+/// An underline rather than a bar, and the ghost cursor wears the same pair for the same reason:
+/// a bar wants a column *between* two cells and a terminal grid has not got one, so the two
+/// cursors on this screen would have been drawn by different rules and looked it.
+///
+/// Steady rather than blinking in both, because the prompt box already has a scan travelling
+/// round it and two things pulsing in one corner of the screen is one too many.
 #[must_use]
 pub fn shape(mode: axon_tui::vim::Mode) -> crossterm::cursor::SetCursorStyle {
     if mode.is_insert() {
-        crossterm::cursor::SetCursorStyle::SteadyBar
+        crossterm::cursor::SetCursorStyle::SteadyUnderScore
     } else {
         crossterm::cursor::SetCursorStyle::SteadyBlock
     }

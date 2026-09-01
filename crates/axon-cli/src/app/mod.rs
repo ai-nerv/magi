@@ -220,7 +220,7 @@ impl App {
     pub fn settle_prompt(&mut self) {
         let blank = self.editor.is_blank();
         if blank != self.was_blank {
-            self.tease.interrupt(opener());
+            self.tease.restart(opener());
         } else if blank {
             self.tease.advance(axon_tui::glyph::placeholders());
         }
