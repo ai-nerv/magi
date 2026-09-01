@@ -114,8 +114,8 @@ axon.ui.decrypt_pool = "01"
 -- `flicker_odds` is one in N, so a BIGGER number is rarer. 3000 is a character every few
 -- seconds; 250 is a fidget.
 --
-axon.ui.flicker_odds = 3000
-axon.ui.flicker_ms   = 120
+axon.ui.flicker_odds = 800
+axon.ui.flicker_ms   = 180
 
 -- What the box says when you sit down. Plain, and read once: a joke in this position is a joke
 -- in the way. A fresh one each time the prompt empties.

@@ -12,7 +12,7 @@ use crate::app::App;
 
 use axon_tui::footer::{self, FooterData};
 use axon_tui::metric;
-use axon_tui::{prompt, status, transcript};
+use axon_tui::{fold, prompt, status, transcript};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::Paragraph;
@@ -57,7 +57,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     // is no second region under it. What it may not do is take the whole screen: one row of
     // transcript stays, or a list opened mid-turn hides the turn it is about.
     let around = metric::footer_rows() + more_rows + 1;
-    let text_rows = prompt::text_rows(&app.editor, rows);
+    let badge = app.identity.full();
+    let text_rows = prompt::text_rows(&app.editor, rows, area.width, &badge);
     let room = usize::from(rows.saturating_sub(around)).saturating_sub(text_rows + 3);
     let mut menu = app
         .overlay
@@ -72,7 +73,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
         app.scan_tick(),
         scan,
         &menu,
-        app.tease.saying(),
+        axon_tui::tease::Saying {
+            badge: &badge,
+            ..app.tease.saying()
+        },
     );
     let prompt_rows = u16::try_from(prompt_lines.len())
         .unwrap_or(u16::MAX)
@@ -167,18 +171,20 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
         axon_tui::select::over(frame.buffer_mut(), selection);
     }
 
-    place_hardware_cursor(frame, app, prompt_area, rows);
+    place_hardware_cursor(frame, app, prompt_area, rows, &badge);
 }
 
 /// Park the terminal cursor on the same cell the inverted block is drawn on.
 ///
 /// The visible cursor is the inverted cell; this is for the terminal's own benefit â an IME
 /// candidate window and a screen reader both follow the hardware cursor, not the colours.
-fn place_hardware_cursor(frame: &mut Frame<'_>, app: &App, area: Rect, rows: u16) {
+fn place_hardware_cursor(frame: &mut Frame<'_>, app: &App, area: Rect, rows: u16, badge: &str) {
     if area.height < 2 {
         return;
     }
-    let (cursor_row, cursor_col) = app.editor.cursor();
+    // Where the caret lands once the text is folded, not where it sits in a logical line. A long
+    // line is several rows now, and the two answers differ by however many times it wrapped.
+    let (cursor_row, cursor_col) = fold::caret(&app.editor, area.width, badge);
     let visible = prompt::visible_rows(rows);
     let offset = cursor_row.saturating_sub(visible.saturating_sub(1));
 

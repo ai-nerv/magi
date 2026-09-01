@@ -22,7 +22,11 @@ pub fn visible_rows(rows: u16) -> usize {
 ///
 /// Dimmer than the text, deliberately. A placeholder in the same colour as what you type reads
 /// as something already in the box, and the first thing anybody does is try to delete it.
-fn placeholder_spans(width: u16, hint: &str, caret: Option<usize>) -> Vec<Span<'static>> {
+pub(crate) fn placeholder_spans(
+    width: u16,
+    hint: &str,
+    caret: Option<usize>,
+) -> Vec<Span<'static>> {
     // A narrow screen gets the short one, and a very narrow one gets nothing: a placeholder cut
     // in half is not a shorter line, it is one that looks broken.
     let hint = if hint.chars().count() < usize::from(width) {
@@ -70,14 +74,16 @@ fn placeholder_spans(width: u16, hint: &str, caret: Option<usize>) -> Vec<Span<'
 /// Worked out here rather than by drawing and counting, because the caller has to know how tall
 /// the box will be before it can say how much room is left in it for a menu.
 #[must_use]
-pub fn text_rows(editor: &Editor, rows: u16) -> usize {
-    let max_visible = visible_rows(rows);
-    let total = editor.lines().len();
-    if total == 1 && editor.lines()[0].is_empty() {
+pub fn text_rows(editor: &Editor, rows: u16, width: u16, badge: &str) -> usize {
+    if editor.lines().len() == 1 && editor.lines()[0].is_empty() {
         return 1;
     }
-    let (cursor_row, _) = editor.cursor();
-    let offset = cursor_row.saturating_sub(max_visible.saturating_sub(1));
+    // Folded rows, not logical lines. A caller sizing the box from logical lines gives a
+    // three-line prompt one row and then draws three into it.
+    let (visual, caret, _) = crate::fold::fold_all(editor, crate::fold::text_room(width, badge));
+    let total = visual.len().max(1);
+    let max_visible = visible_rows(rows);
+    let offset = caret.saturating_sub(max_visible.saturating_sub(1));
     let offset = offset.min(total.saturating_sub(max_visible.min(total)));
     (offset + max_visible).min(total) - offset
 }
@@ -106,19 +112,21 @@ pub fn render(
     menu: &[Line<'static>],
     saying: crate::tease::Saying<'_>,
 ) -> Vec<Line<'static>> {
+    let badge = saying.badge;
     let text_style = Style::default().fg(colour::text());
-    let (cursor_row, cursor_col) = editor.cursor();
-    // Two columns of the width belong to the sides now.
-    let inner_width = width.saturating_sub(2);
+    // What is left for text once the sides, the padding and the badge's strip are taken out.
+    let room = crate::fold::text_room(width, badge);
+    let blank = editor.lines().len() == 1 && editor.lines()[0].is_empty();
 
+    // Folded first, then scrolled over the *folded* rows. Scrolling over logical lines and
+    // drawing folded ones disagree about how far down the cursor is, which puts it off screen
+    // exactly when a line is long enough to need wrapping.
+    let (visual, caret_row, caret_col) = crate::fold::fold_all(editor, room);
+    let total_rows = visual.len().max(1);
     let max_visible = visible_rows(rows);
-    let total = editor.lines().len();
-    // Scrolled to keep the cursor in view, exactly as Pi's editor does.
-    let offset = cursor_row.saturating_sub(max_visible.saturating_sub(1));
-    let offset = offset.min(total.saturating_sub(max_visible.min(total)));
-    let end = (offset + max_visible).min(total);
-
-    let blank = total == 1 && editor.lines()[0].is_empty();
+    let offset = caret_row.saturating_sub(max_visible.saturating_sub(1));
+    let offset = offset.min(total_rows.saturating_sub(max_visible.min(total_rows)));
+    let end = (offset + max_visible).min(total_rows);
     let shown = if blank { 1 } else { end - offset };
     // The divider is a content row like any other, so the sides stay on the ring and the scan
     // runs past it rather than round a hole in the box.
@@ -130,34 +138,50 @@ pub fn render(
 
     for row in 0..shown {
         let body = if blank {
-            placeholder_spans(inner_width, saying.text, saying.caret)
+            placeholder_spans(
+                u16::try_from(room).unwrap_or(u16::MAX),
+                saying.text,
+                saying.caret,
+            )
         } else {
             let index = offset + row;
-            let text = resolving(editor, index);
-            if index == cursor_row {
-                with_cursor(&text, cursor_col, text_style)
+            let text = visual.get(index).cloned().unwrap_or_default();
+            if index == caret_row {
+                with_cursor(&text, caret_col, text_style)
             } else {
                 vec![Span::styled(text, text_style)]
             }
         };
-        out.push(framed(body, width, content, row, tick, scan));
+        out.push(framed(
+            body,
+            width,
+            content,
+            row,
+            tick,
+            scan,
+            &crate::fold::strip(badge, shown, row),
+        ));
     }
 
     if !menu.is_empty() {
         out.push(divider(width, content, shown, tick, scan));
         for (row, line) in menu.iter().enumerate() {
+            let at = shown + 1 + row;
             out.push(framed(
                 line.spans.clone(),
                 width,
                 content,
-                shown + 1 + row,
+                at,
                 tick,
                 scan,
+                // No strip: the badge belongs to the box you type in, and a list opened under
+                // it is not that. Centred over the text rows alone for the same reason.
+                &[],
             ));
         }
     }
 
-    let below = total.saturating_sub(end);
+    let below = total_rows.saturating_sub(end);
     out.push(hidden(bottom, Direction::Down, below));
     out
 }
@@ -168,7 +192,7 @@ pub fn render(
 /// lands as what was typed. Off unless `axon.ui.type_reveal_ms` says otherwise, and the same
 /// width throughout: the box is around this, and text that changes width under a border is worse
 /// than no effect at all.
-fn resolving(editor: &Editor, row: usize) -> String {
+pub(crate) fn resolving(editor: &Editor, row: usize) -> String {
     let text = &editor.lines()[row];
     let over = crate::metric::type_reveal_ms();
     let stages: Vec<char> = crate::glyph::type_stages().chars().collect();
@@ -196,10 +220,18 @@ fn framed(
     row: usize,
     tick: usize,
     scan: crate::border::Scan,
+    tail: &[Span<'static>],
 ) -> Line<'static> {
     let (left, right) = crate::border::side(width, content, row, tick, scan);
+    let worn: usize = tail.iter().map(|s| s.content.chars().count()).sum();
     let mut spans = vec![left, Span::raw(" ")];
-    spans.extend(pad(body, width.saturating_sub(3)));
+    spans.extend(pad(
+        body,
+        width
+            .saturating_sub(3)
+            .saturating_sub(u16::try_from(worn).unwrap_or(0)),
+    ));
+    spans.extend(tail.iter().cloned());
     spans.push(right);
     Line::from(spans)
 }
@@ -338,6 +370,7 @@ mod tests {
             crate::tease::Saying {
                 text: "what are we making?",
                 caret: None,
+                badge: "",
             },
         ));
         assert_eq!(rendered.len(), 3, "top edge, text, bottom edge");
@@ -354,10 +387,7 @@ mod tests {
             0,
             crate::border::Scan::Off,
             &[],
-            crate::tease::Saying {
-                text: "",
-                caret: None,
-            },
+            crate::tease::Saying::default(),
         ));
         assert!(!rendered[1].contains("commands"), "{:?}", rendered[1]);
         assert!(
@@ -376,10 +406,7 @@ mod tests {
             0,
             crate::border::Scan::Off,
             &[],
-            crate::tease::Saying {
-                text: "",
-                caret: None,
-            },
+            crate::tease::Saying::default(),
         ));
         assert_eq!(
             rendered[1], "│ hello            │",
@@ -398,10 +425,7 @@ mod tests {
             0,
             crate::border::Scan::Off,
             &[],
-            crate::tease::Saying {
-                text: "",
-                caret: None,
-            },
+            crate::tease::Saying::default(),
         );
         let cursor = lines[1]
             .spans
@@ -420,10 +444,7 @@ mod tests {
             0,
             crate::border::Scan::Off,
             &[],
-            crate::tease::Saying {
-                text: "",
-                caret: None,
-            },
+            crate::tease::Saying::default(),
         );
         let cursor = lines[1]
             .spans
@@ -442,10 +463,7 @@ mod tests {
             0,
             crate::border::Scan::Off,
             &[],
-            crate::tease::Saying {
-                text: "",
-                caret: None,
-            },
+            crate::tease::Saying::default(),
         );
         for index in [0, lines.len() - 1] {
             let width: usize = lines[index]
@@ -470,10 +488,7 @@ mod tests {
             0,
             crate::border::Scan::Off,
             &[],
-            crate::tease::Saying {
-                text: "",
-                caret: None,
-            },
+            crate::tease::Saying::default(),
         ));
         assert!(rendered[0].contains("↑"), "{:?}", rendered[0]);
         assert!(rendered[0].contains("more"), "{:?}", rendered[0]);
@@ -502,10 +517,7 @@ mod tests {
             0,
             crate::border::Scan::Off,
             &[],
-            crate::tease::Saying {
-                text: "",
-                caret: None,
-            },
+            crate::tease::Saying::default(),
         ));
         assert_eq!(rendered.len(), visible_rows(24) + 2, "rules plus text rows");
     }
@@ -534,6 +546,7 @@ mod narrow_tests {
             crate::tease::Saying {
                 text: hint,
                 caret: None,
+                badge: "",
             },
         )[1]
         .spans
@@ -683,72 +696,5 @@ mod placeholder_tests {
                 .all(|s| !s.style.add_modifier.contains(Modifier::CROSSED_OUT)),
             "something is still drawn struck"
         );
-    }
-}
-
-/// One cursor is yours and does not move; the other is the box editing itself.
-#[cfg(test)]
-mod cursor_tests {
-    use super::*;
-
-    /// `(char, reversed)` for each cell of the placeholder row.
-    fn cells(hint: &str, caret: Option<usize>) -> Vec<(String, bool)> {
-        placeholder_spans(60, hint, caret)
-            .into_iter()
-            .map(|s| {
-                (
-                    s.content.into_owned(),
-                    s.style.add_modifier.contains(Modifier::REVERSED),
-                )
-            })
-            .collect()
-    }
-
-    #[test]
-    fn the_real_cursor_sits_on_the_first_letter() {
-        // Not in front of it. It marks where typing would land, and typing lands on column
-        // zero whatever the box happens to be saying.
-        let row = cells("build", None);
-        assert_eq!(row[0], ("b".to_owned(), true), "{row:?}");
-        assert_eq!(row[1], ("u".to_owned(), false), "{row:?}");
-    }
-
-    #[test]
-    fn the_real_cursor_stays_put_wherever_the_other_one_is() {
-        // The white block is yours. A cursor that wandered off while the box amused itself
-        // would be telling you your text was going somewhere else.
-        for caret in [None, Some(1), Some(3), Some(5)] {
-            let row = cells("build", caret);
-            assert!(row[0].1, "the first cell lost its cursor at {caret:?}");
-        }
-    }
-
-    #[test]
-    fn the_writing_cursor_is_where_the_editing_is() {
-        let row = cells("build", Some(3));
-        assert!(row[3].1, "nothing marked at three: {row:?}");
-        assert!(!row[2].1, "and only there: {row:?}");
-        assert!(!row[4].1, "{row:?}");
-    }
-
-    #[test]
-    fn it_can_sit_past_the_last_letter() {
-        // Which is where it is while text is being added to the end -- most of the time.
-        let row = cells("build", Some(5));
-        assert_eq!(row.len(), 6, "a cell was not added for it: {row:?}");
-        assert_eq!(row[5], (" ".to_owned(), true));
-    }
-
-    #[test]
-    fn resting_shows_only_your_own() {
-        let row = cells("build", None);
-        assert_eq!(row.iter().filter(|(_, on)| *on).count(), 1);
-    }
-
-    #[test]
-    fn an_empty_line_still_has_a_cursor() {
-        // A box with nothing in it and no cursor reads as a screen that has hung.
-        let row = cells("", None);
-        assert_eq!(row, vec![(" ".to_owned(), true)]);
     }
 }

@@ -125,6 +125,10 @@ pub struct App {
     pub picking: Option<Picking>,
     /// How much of each tool result to show.
     pub detail: axon_tui::transcript::Detail,
+    /// What this session calls itself: `project/role/id`.
+    ///
+    /// Shown in the prompt box, and about to be the address another session reaches it at.
+    pub identity: crate::identity::Identity,
     /// The empty prompt writing to itself.
     ///
     /// Held here rather than in the renderer because it moves on a clock and on what the person
@@ -177,6 +181,7 @@ impl App {
             // Folded. A transcript of whole build logs is not a transcript, and the handle at
             // the foot of each block is how you open the one you care about.
             detail: axon_tui::transcript::Detail::Preview,
+            identity: crate::identity::Identity::here(None),
             tease: axon_tui::tease::Tease::new(opener()),
             was_blank: true,
             selection: None,

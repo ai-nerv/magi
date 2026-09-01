@@ -33,16 +33,18 @@ enum Phase {
     Leaving,
 }
 
-/// What the empty box is saying, and where it is editing itself.
+/// What the box says about itself, beside whatever you have typed into it.
 ///
-/// One value because they are one fact: the caret is an index into the text, and a renderer
-/// handed them separately can be handed a caret for a line it is not drawing.
-#[derive(Debug, Clone, Copy)]
+/// One value because a renderer handed these separately can be handed a caret for a line it is
+/// not drawing, or a badge whose width nothing reserved.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Saying<'a> {
-    /// The line as it stands this frame.
+    /// The placeholder as it stands this frame, empty once anything is typed.
     pub text: &'a str,
-    /// Where the box is editing, or `None` while it rests.
+    /// Where the box is editing its own placeholder, or `None` while it rests.
     pub caret: Option<usize>,
+    /// Which session this is: `project/role/id`, drawn down the right.
+    pub badge: &'a str,
 }
 
 /// The empty prompt's performance.
@@ -98,6 +100,7 @@ impl Tease {
         Saying {
             text: &self.shown,
             caret: self.caret(),
+            badge: "",
         }
     }
 

@@ -13,6 +13,7 @@ pub mod colour;
 pub mod complete;
 pub mod decrypt;
 pub mod editor;
+pub mod fold;
 pub mod footer;
 pub mod fuzzy;
 pub mod glyph;

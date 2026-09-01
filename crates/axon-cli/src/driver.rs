@@ -51,6 +51,9 @@ pub async fn run(
     }
 
     let mut app = App::new();
+    // Named after the config is adopted, so `axon.project` is read rather than the folder.
+    app.identity =
+        crate::identity::Identity::here(loaded.as_ref().and_then(|l| l.config.string("project")));
     // The prompts from previous runs, so the arrow keys reach past this one.
     app.editor = axon_tui::Editor::with_history(crate::history::load());
     if let Some(loaded) = &loaded {
