@@ -8,17 +8,15 @@
 //!
 //! So: braille. Nine cells are eighteen dot columns by four dot rows — a seventy-two pixel
 //! display in the width of a short word. `axon.ui.beacon_cells` sets it, and the default is odd
-//! on purpose: **every animation here is symmetric about the middle**, and a display with an
-//! even number of cells has no middle to be symmetric about. The first version of this was a
-//! comet with its tail on one side, and a lopsided thing sliding past reads as broken.
+//! so the shapes that are built around a middle have one to be built around.
 //!
 //! **Every column carries a heat as well as a shape**, and the cells are coloured from it. The
 //! dots say where the energy is and the colour says how much: the core of a scanner is accent
 //! and its fringes fall away to the border grey the prompt box is drawn in.
 //!
-//! **Nothing here moves at a constant rate.** A scanner that crosses at one speed and turns
+//! **The scanner does not move at a constant rate.** One that crosses at one speed and turns
 //! round instantly is a rectangle going back and forth; one that eases into the turn is a
-//! machine. The easing is one cosine, and every state that travels uses it.
+//! machine. That is one cosine, in `swing`.
 //!
 //! Nothing here is a clock, either. Every animation is a phase from the frame counter and the
 //! two settings that bracket it, so a state runs at the rate `axon.ui.beacon_ms` asks for
@@ -49,15 +47,15 @@ fn columns() -> usize {
 /// both are exactly when a person stares at the footer wondering why nothing is happening.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mood {
-    /// Nothing typed, nothing running. Rings going out from the middle, slowly.
+    /// Nothing typed, nothing running. A slow wave, going nowhere in particular.
     Resting,
-    /// Something is in the prompt and not sent yet. A standing wave, plucked.
+    /// Something is in the prompt and not sent yet. The wave picks up.
     Holding,
     /// A turn is running. A scanner crossing and coming back, easing into each turn.
     Working,
     /// A list or a permission is open and it is your move. A breath, in and out.
     Asking,
-    /// The daemon is not there. A flat line breaking open from the middle.
+    /// The daemon is not there. A flat line with the signal dropping out of it.
     Away,
 }
 
@@ -177,133 +175,122 @@ fn swing(phase: f32) -> f32 {
 /// colours to find out.
 fn draw(mood: Mood, phase: f32) -> Shape {
     match mood {
-        Mood::Resting => ripple(phase),
-        Mood::Holding => standing(phase),
+        Mood::Resting => wave(phase, 0.8, 1.2),
+        Mood::Holding => wave(phase, 1.6, 1.5),
         Mood::Working => scanner(phase),
         Mood::Asking => breath(phase),
-        Mood::Away => breaking(phase),
+        Mood::Away => dropout(phase),
     }
 }
 
-/// Where the middle of the display is, in dot columns.
-fn middle() -> f32 {
-    (columns() as f32 - 1.0) / 2.0
-}
-
-/// How brightly a column `away` from something reaching `width` should burn.
+/// A sine drifting right, `height` rows tall and `waves` of it across the display.
 ///
-/// Linear, and zero past the edge of it. Falloff is what gives a shape a core and a fringe
-/// instead of a hard edge, and it is the same in every direction — which is what keeps all of
-/// this symmetric.
-fn falloff(away: f32, width: f32) -> f32 {
-    if width <= 0.0 {
-        return 0.0;
+/// Drawn as a joined line rather than a dot per column: the same reason an oscilloscope draws
+/// one. Unjoined, a wave with any real amplitude is a scatter of dots that reads as noise. The
+/// heat is how high the line has climbed, so the crests are the lit part and the troughs sit
+/// back in the border grey — which is what gives a wave only two rows tall anything to read.
+fn wave(phase: f32, height: f32, waves: f32) -> Shape {
+    let at = |x: usize| {
+        let turn = phase + x as f32 / columns() as f32 * waves;
+        (turn * std::f32::consts::TAU).sin()
+    };
+    let middle = (ROWS as f32 - 1.0) / 2.0;
+    let mut shape = trace(|x| middle + at(x) * height / 2.0);
+    for x in 0..columns() {
+        shape.heat[x] = at(x).mul_add(0.5, 0.5);
     }
-    (1.0 - away / width).max(0.0)
+    shape
 }
 
 /// A scanner crossing and coming back, with a fringe either side of its core.
 ///
-/// The one everybody knows. It was a comet with its tail on one side, which is a shape that
-/// looks wrong going one way and right going the other; this is symmetric about its own core,
-/// so it looks the same in both directions and only the direction changes. Eased by `swing`,
-/// so it slows into each wall and comes back out of it.
+/// The one everybody knows, and the one thing on this display that was replaced rather than
+/// kept. It was a comet: a head with its tail on one side, which is a shape that looks right
+/// going one way and wrong going the other, and grew a hard triangular edge as it went. This is
+/// symmetric about its own core, so it looks the same in both directions and only the direction
+/// changes.
+///
+/// Eased by [`swing`], which is the other half of it: a linear sweep arrives at the wall at full
+/// speed and reverses in a single frame, and nothing physical does that. This one slows into
+/// each turn and comes back out of it.
 fn scanner(phase: f32) -> Shape {
     let mut shape = Shape::blank();
     let span = columns() as f32 - 1.0;
     let core = swing(phase) * span;
     let reach = (columns() as f32 / 4.0).max(1.5);
     for x in 0..columns() {
-        shape.light(x, falloff((x as f32 - core).abs(), reach));
-    }
-    shape
-}
-
-/// Rings going out from the middle and off both ends.
-///
-/// Symmetric by construction: a column is as bright as its distance from the middle says, and
-/// two columns the same distance out are the same brightness. Slow, and never very bright --
-/// this is the state where nothing is happening, and it should be possible to ignore.
-fn ripple(phase: f32) -> Shape {
-    let mut shape = Shape::blank();
-    let middle = middle();
-    let front = phase * (middle + 2.0);
-    for x in 0..columns() {
-        let out = (x as f32 - middle).abs();
-        shape.light(x, falloff((out - front).abs(), 2.5) * 0.7);
-    }
-    shape
-}
-
-/// A standing wave, plucked: tallest in the middle, pinned at both ends, breathing in place.
-///
-/// Something is typed and not sent. It is not travelling anywhere, because neither are you --
-/// what it has instead is amplitude, and the difference between this and the ripple at a glance
-/// is that this one stays still and gets louder.
-fn standing(phase: f32) -> Shape {
-    let mut shape = Shape::blank();
-    let span = (columns() as f32 - 1.0).max(1.0);
-    let loud = swing(phase).mul_add(0.75, 0.25);
-    for x in 0..columns() {
-        // A half sine over the width, so it is pinned at both ends and peaks in the middle.
-        let along = (x as f32 / span * std::f32::consts::PI).sin();
-        shape.light(x, along * loud);
+        let away = (x as f32 - core).abs();
+        // Linear falloff from the core, the same in both directions: a core and a fringe rather
+        // than a block with a hard edge, which is what makes it read as a lamp.
+        shape.light(x, (1.0 - away / reach).max(0.0));
     }
     shape
 }
 
 /// A bar in the middle breathing out to the edges and back.
 ///
-/// Everything else here travels or oscillates; this grows in place, which is the one thing that
-/// does not read as progress — and that is the point, because nothing is progressing, it is
-/// your move. Deliberately unlike the scanner: a person glancing down needs to know whether
-/// they are waiting on the machine or it is waiting on them, and that is the whole job of the
-/// difference between something crossing and something breathing.
+/// Symmetric on purpose. Everything else here travels, and a thing that grows in place is the
+/// one shape that does not read as progress — which is the point: nothing is progressing, it is
+/// your move. The heat is the breath itself rather than the distance from the middle, so the
+/// whole display brightens as it opens instead of the edges always being the cold part.
 fn breath(phase: f32) -> Shape {
     let mut shape = Shape::blank();
     let open = swing(phase);
-    let middle = middle();
     // Never all the way shut. A frame with nothing lit reads as the UI having died, which is
     // the one thing none of these states mean -- so it bottoms out at the two middle columns.
-    let reach = (open * (middle + 1.0)).max(0.5);
+    let reach = (open * columns() as f32 / 2.0).max(0.5);
+    let middle = (columns() as f32 - 1.0) / 2.0;
     for x in 0..columns() {
         let out = (x as f32 - middle).abs();
         if out > reach {
             continue;
         }
-        // Tapered towards the edges of the breath rather than flat across it. Flat, a wide
-        // breath is a solid block of braille for a third of its cycle, which is a lot of ink
-        // for "waiting on you" and stops looking like breathing at all.
-        shape.light(x, falloff(out, reach + 1.5) * open.mul_add(0.45, 0.55));
+        let tall = ROWS.saturating_sub(out as usize).max(1);
+        for row in 0..tall {
+            shape.dots[x][ROWS - 1 - row] = true;
+        }
+        shape.heat[x] = open;
     }
     shape
 }
 
-/// A flat line breaking open from the middle, both ways at once.
+/// A flat line with a gap travelling through it.
 ///
-/// A dead line would do as well for "there is no daemon", except that a dead line is also what
-/// a hung display looks like. The break moving is what says the UI is still running and it is
-/// the other end that is missing, and it opens symmetrically so it reads as the line parting
-/// rather than as something travelling along it.
-fn breaking(phase: f32) -> Shape {
+/// A dead line would do as well for "there is no daemon", except that a dead line is also what a
+/// hung display looks like. The gap moving is the part that says the UI is still running and it
+/// is the other end that is missing. The columns either side of the break are the hot ones, so
+/// it reads as an arc across the gap rather than as a line with a bite out of it.
+fn dropout(phase: f32) -> Shape {
     let mut shape = Shape::blank();
-    let middle = middle();
-    // Parts and comes back together rather than opening and snapping shut, and never fully
-    // either way: at its narrowest the two middle columns are missing, at its widest the two
-    // outermost survive. A frame with no gap is a working line and a frame with nothing lit is
-    // a dead UI, and this state is neither.
-    let open = swing(phase).mul_add(middle - 1.5, 1.0);
+    let gap = (phase * columns() as f32) as usize % columns();
+    let after = (gap + 1) % columns();
     for x in 0..columns() {
-        let out = (x as f32 - middle).abs();
-        if out < open {
+        if x == gap || x == after {
             continue;
         }
-        // Hottest right at the break, which is the part that is moving.
-        shape.light(x, falloff(out - open, 2.0).mul_add(0.7, 0.3));
+        shape.dots[x][ROWS - 2] = true;
+        let beside = x == (gap + columns() - 1) % columns() || x == (after + 1) % columns();
+        shape.heat[x] = if beside { 1.0 } else { 0.0 };
     }
     shape
 }
 
+/// Light a joined line through the height `at` gives for each column.
+fn trace(at: impl Fn(usize) -> f32) -> Shape {
+    let mut shape = Shape::blank();
+    let row_of = |height: f32| {
+        let clamped = height.round().clamp(0.0, ROWS as f32 - 1.0);
+        ROWS - 1 - clamped as usize
+    };
+    for x in 0..columns() {
+        let here = row_of(at(x));
+        let previous = row_of(at(if x == 0 { columns() - 1 } else { x - 1 }));
+        for row in here.min(previous)..=here.max(previous) {
+            shape.dots[x][row] = true;
+        }
+    }
+    shape
+}
 /// One braille cell of the display.
 fn cell_of(dots: &[[bool; ROWS]], cell: usize) -> char {
     // Braille numbers its dots 1-2-3-7 down the left and 4-5-6-8 down the right, which is not
@@ -367,47 +354,6 @@ mod tests {
         }
     }
 
-    /// The states that stay put. The scanner travels, so it is symmetric about its own core
-    /// instead -- see `the_scanner_is_symmetric_about_its_core`.
-    const STATIONARY: [Mood; 4] = [Mood::Resting, Mood::Holding, Mood::Asking, Mood::Away];
-
-    #[test]
-    fn every_stationary_state_is_symmetric_about_the_middle() {
-        // The reason the cell count is odd. A shape with its weight on one side looks wrong
-        // going one way and right going the other, which is what the comet before this did.
-        for mood in STATIONARY {
-            for step in 0..STEPS {
-                let shape = draw(mood, step as f32 / STEPS as f32);
-                let last = columns() - 1;
-                for x in 0..columns() / 2 {
-                    assert_eq!(
-                        shape.dots[x],
-                        shape.dots[last - x],
-                        "{mood:?} at step {step}: column {x} is not mirrored"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn the_scanner_is_symmetric_about_its_core() {
-        // It cannot be symmetric about the display's middle, because it crosses it. What it can
-        // be -- and what the comet before it was not -- is the same shape either side of its own
-        // core, so it looks identical going left as going right. Sampled where the swing puts
-        // the core on the middle, which is the one phase where the two tests are the same test.
-        for at in [0.25, 0.75] {
-            let shape = scanner(at);
-            let last = columns() - 1;
-            for x in 0..columns() / 2 {
-                assert_eq!(
-                    shape.dots[x],
-                    shape.dots[last - x],
-                    "at {at} the core is centred but column {x} is not mirrored"
-                );
-            }
-        }
-    }
     #[test]
     fn every_state_moves() {
         // A display that draws the same cells every frame is a picture, and the one thing this
@@ -435,8 +381,8 @@ mod tests {
 
     #[test]
     fn the_states_do_not_all_draw_the_same_thing() {
-        // Told apart at a glance is the requirement, and one pair especially: waiting on the
-        // machine and the machine waiting on you must not look alike.
+        // Told apart at a glance is the requirement. Two states that draw the same shape at the
+        // same moment are one state with two names.
         for (index, mood) in EVERY.iter().enumerate() {
             for other in &EVERY[index + 1..] {
                 assert!(
@@ -453,10 +399,9 @@ mod tests {
         // and a person reads this out of the corner of an eye.
         for step in 0..STEPS {
             let at = step as f32 / STEPS as f32;
-            let working = draw(Mood::Working, at);
-            let asking = draw(Mood::Asking, at);
             assert_ne!(
-                working.dots, asking.dots,
+                draw(Mood::Working, at).dots,
+                draw(Mood::Asking, at).dots,
                 "at step {step} the scanner and the breath draw the same thing"
             );
         }
@@ -490,6 +435,24 @@ mod tests {
     }
 
     #[test]
+    fn the_scanner_is_symmetric_about_its_core() {
+        // The one thing that changed, and the reason it changed. The comet before it had its
+        // tail on one side, which looks right going one way and wrong going the other. Sampled
+        // where the swing puts the core on the middle, so the display's own middle is the core's.
+        for at in [0.25, 0.75] {
+            let shape = scanner(at);
+            let last = columns() - 1;
+            for x in 0..columns() / 2 {
+                assert_eq!(
+                    shape.dots[x],
+                    shape.dots[last - x],
+                    "at {at} the core is centred but column {x} is not mirrored"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn the_scanner_slows_into_its_turns() {
         // A linear sweep hits the wall at full speed and reverses in one frame, which nothing
         // physical does. Measured as distance covered: least at the ends, most in the middle.
@@ -519,8 +482,7 @@ mod tests {
             .map(|(x, _)| x)
             .expect("a lit column");
         for x in 0..columns() {
-            let out = x.abs_diff(hottest);
-            if out < 2 {
+            if x.abs_diff(hottest) < 2 {
                 continue;
             }
             let inner = if x > hottest { x - 1 } else { x + 1 };
@@ -533,23 +495,19 @@ mod tests {
     }
 
     #[test]
-    fn the_standing_wave_stays_where_it_is() {
-        // The difference from the ripple at a glance: this one does not travel, it gets louder.
-        // Its tallest column is the middle at every point in the cycle.
-        let middle = columns() / 2;
+    fn the_breath_is_symmetric() {
+        // It grows in place rather than travelling, which is the one shape here that does not
+        // read as progress -- because nothing is progressing, it is your move.
         for step in 0..STEPS {
-            let shape = standing(step as f32 / STEPS as f32);
-            let peak = shape
-                .heat
-                .iter()
-                .enumerate()
-                .max_by(|a, b| a.1.total_cmp(b.1))
-                .map(|(x, _)| x)
-                .expect("a lit column");
-            assert!(
-                peak.abs_diff(middle) <= 1,
-                "step {step}: the peak wandered to {peak}"
-            );
+            let shape = breath(step as f32 / STEPS as f32);
+            let last = columns() - 1;
+            for x in 0..columns() / 2 {
+                assert_eq!(
+                    shape.dots[x],
+                    shape.dots[last - x],
+                    "step {step} column {x} is not mirrored"
+                );
+            }
         }
     }
 
@@ -565,11 +523,11 @@ mod tests {
     }
 
     #[test]
-    fn the_break_always_has_a_gap_in_it() {
-        // The break moving is what says the UI is still running and it is the other end that is
+    fn the_dropout_always_has_a_gap_in_it() {
+        // The gap moving is what says the UI is still running and it is the other end that is
         // missing. A line with no gap is just a line.
-        for step in 1..STEPS {
-            let shape = breaking(step as f32 / STEPS as f32);
+        for step in 0..STEPS {
+            let shape = dropout(step as f32 / STEPS as f32);
             assert!(
                 shape
                     .dots
@@ -592,20 +550,17 @@ mod tests {
     }
 
     #[test]
-    fn a_bar_grows_out_from_the_line_it_starts_on() {
-        // Vertically centred rather than growing off the floor: the display is built around a
-        // middle, and a bar that grows one way is the same lopsidedness in the other axis.
-        let mut shape = Shape::blank();
-        shape.light(0, 0.1);
-        assert_eq!(
-            shape.dots[0].iter().filter(|lit| **lit).count(),
-            1,
-            "the faintest is one dot"
-        );
-        shape.light(1, 1.0);
-        assert!(
-            shape.dots[1].iter().all(|lit| *lit),
-            "and the brightest is the whole column"
-        );
+    fn a_wave_is_a_joined_line() {
+        // Unjoined, a wave with any real amplitude is a scatter of dots that reads as noise.
+        let shape = wave(0.0, 3.0, 1.5);
+        for x in 0..columns() {
+            let lit: Vec<usize> = (0..ROWS).filter(|row| shape.dots[x][*row]).collect();
+            assert!(!lit.is_empty(), "column {x} is empty");
+            assert_eq!(
+                lit.last().expect("lit") - lit[0] + 1,
+                lit.len(),
+                "column {x} has a hole in it: {lit:?}"
+            );
+        }
     }
 }
