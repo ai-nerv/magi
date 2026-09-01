@@ -401,24 +401,52 @@ mod placeholder_tests {
     }
 
     #[test]
-    fn every_one_is_a_second_thought() {
-        // The joke is the correction. A line with nothing struck out forgot to be the thing
-        // this list is for, and reads as a stray hint somebody left in.
-        for line in shipped() {
-            let Some((_, rest)) = line.split_once("~~") else {
-                panic!("{line:?} has nothing struck out");
-            };
-            let Some((out, after)) = rest.split_once("~~") else {
-                panic!("{line:?} opens a strike it never closes");
-            };
-            assert!(!out.trim().is_empty(), "{line:?} strikes out nothing");
+    fn every_one_has_a_relative_it_can_be_edited_into() {
+        // The engine walks to the words that differ, shows them, takes them and types the
+        // replacement. A line with nothing near it in the pool can only be retyped whole, which
+        // is the one performance that teaches nothing -- so every line needs a family.
+        let lines = shipped();
+        let words = |line: &str| -> Vec<String> {
+            line.split_whitespace().map(ToOwned::to_owned).collect()
+        };
+        for line in &lines {
+            let mine = words(line);
+            let closest = lines
+                .iter()
+                .filter(|other| *other != line)
+                .map(|other| {
+                    let theirs = words(other);
+                    let head = mine
+                        .iter()
+                        .zip(theirs.iter())
+                        .take_while(|(a, b)| a == b)
+                        .count();
+                    let tail = mine
+                        .iter()
+                        .rev()
+                        .zip(theirs.iter().rev())
+                        .take_while(|(a, b)| a == b)
+                        .take(mine.len().min(theirs.len()).saturating_sub(head))
+                        .count();
+                    head + tail
+                })
+                .max()
+                .unwrap_or(0);
             assert!(
-                !after.trim().is_empty(),
-                "{line:?} strikes something out and puts nothing in its place"
+                closest >= 2,
+                "{line:?} shares less than two words with anything else in the pool"
             );
         }
     }
 
+    #[test]
+    fn none_of_them_carry_the_markup_the_old_engine_used() {
+        // `a ~~b~~ c` was the format when the correction was written out by hand. The engine
+        // works the difference out for itself now, and a stray `~~` would be typed literally.
+        for line in shipped() {
+            assert!(!line.contains("~~"), "{line:?} still has strike markers");
+        }
+    }
     #[test]
     fn none_of_them_is_too_long_for_an_ordinary_terminal() {
         // A line wider than the box falls back to the short hint, which is correct and also

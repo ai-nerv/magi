@@ -98,9 +98,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     } else {
         axon_tui::tease::Saying {
             text: &effort,
-            caret: None,
             badge: &badge,
             mode: app.modal.mode,
+            ..Default::default()
         }
     };
     let prompt_lines = prompt::render(

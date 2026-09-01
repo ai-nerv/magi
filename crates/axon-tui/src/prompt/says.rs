@@ -22,14 +22,14 @@ mod placeholder_tests {
     #[test]
     fn a_screen_too_narrow_for_the_line_says_something_shorter() {
         // Half a line reads as a rendering fault. The short hint stands in instead.
-        let narrow = placeholder_spans(12, "a line far too long for twelve columns", None);
+        let narrow = placeholder_spans(12, &crate::tease::Saying { text: "a line far too long for twelve columns", ..Default::default() });
         let text: String = narrow.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.chars().count() <= 12, "{text:?}");
     }
 
     #[test]
     fn a_line_that_fits_is_drawn_whole() {
-        let spans = placeholder_spans(40, "let's build something", None);
+        let spans = placeholder_spans(40, &crate::tease::Saying { text: "let's build something", ..Default::default() });
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.ends_with("let's build something"), "{text:?}");
     }
@@ -38,7 +38,7 @@ mod placeholder_tests {
     fn nothing_is_struck_through_any_more() {
         // The correction is performed by `crate::tease` -- written, then taken back -- rather
         // than drawn with both halves on screen at once.
-        let spans = placeholder_spans(60, "the scaffolding is temporary", None);
+        let spans = placeholder_spans(60, &crate::tease::Saying { text: "the scaffolding is temporary", ..Default::default() });
         assert!(
             spans
                 .iter()

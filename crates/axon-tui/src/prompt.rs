@@ -24,13 +24,12 @@ pub fn visible_rows(rows: u16) -> usize {
 /// as something already in the box, and the first thing anybody does is try to delete it.
 pub(crate) fn placeholder_spans(
     width: u16,
-    hint: &str,
-    caret: Option<usize>,
+    saying: &crate::tease::Saying<'_>,
 ) -> Vec<Span<'static>> {
     // A narrow screen gets the short one, and a very narrow one gets nothing: a placeholder cut
     // in half is not a shorter line, it is one that looks broken.
-    let hint = if hint.chars().count() < usize::from(width) {
-        hint
+    let hint = if saying.text.chars().count() < usize::from(width) {
+        saying.text
     } else if glyph::placeholder_short().chars().count() < usize::from(width) {
         glyph::placeholder_short()
     } else {
@@ -45,7 +44,10 @@ pub(crate) fn placeholder_spans(
         .add_modifier(Modifier::REVERSED);
     // The second one, where the box is editing itself. Dimmer, because it is not yours: two
     // cursors of equal weight is a screen with two places to type.
-    let writing = dim.add_modifier(Modifier::REVERSED);
+    let ghost = dim.add_modifier(Modifier::REVERSED);
+    // What it is about to take out. The same inversion as the ghost, because it *is* the ghost
+    // -- a block cursor over several characters is what a selection looks like.
+    let marked = ghost;
 
     let mut spans = Vec::new();
     let letters: Vec<char> = hint.chars().collect();
@@ -55,16 +57,25 @@ pub(crate) fn placeholder_spans(
     for (at, letter) in letters.iter().enumerate() {
         let style = if at == 0 {
             block
-        } else if caret == Some(at) {
-            writing
+        } else if saying
+            .marked
+            .as_ref()
+            .is_some_and(|span| span.contains(&at))
+        {
+            marked
+        } else if saying.caret == Some(at) && saying.block {
+            // A block only where the ghost is miming normal mode. A bar sits *between* two
+            // characters and has nothing to paint, so there it is left to the space it earns
+            // below -- the same rule the real cursor follows.
+            ghost
         } else {
             dim
         };
         spans.push(Span::styled(letter.to_string(), style));
     }
     // Past the last letter, which is where a caret sits while text is being added to the end.
-    if caret == Some(letters.len()) {
-        spans.push(Span::styled(" ", writing));
+    if saying.caret == Some(letters.len()) {
+        spans.push(Span::styled(" ", ghost));
     }
     spans
 }
@@ -138,11 +149,7 @@ pub fn render(
 
     for row in 0..shown {
         let body = if blank {
-            placeholder_spans(
-                u16::try_from(room).unwrap_or(u16::MAX),
-                saying.text,
-                saying.caret,
-            )
+            placeholder_spans(u16::try_from(room).unwrap_or(u16::MAX), &saying)
         } else {
             let index = offset + row;
             let text = visual.get(index).cloned().unwrap_or_default();
@@ -433,6 +440,8 @@ mod tests {
                 caret: None,
                 badge: "",
                 mode: crate::vim::Mode::default(),
+                block: false,
+                marked: None,
             },
         ));
         assert_eq!(rendered.len(), 3, "top edge, text, bottom edge");
@@ -610,6 +619,8 @@ mod narrow_tests {
                 caret: None,
                 badge: "",
                 mode: crate::vim::Mode::default(),
+                block: false,
+                marked: None,
             },
         )[1]
         .spans

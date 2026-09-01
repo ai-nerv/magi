@@ -1,458 +1,636 @@
-//! The empty prompt, typing to itself.
+//! The box writing to itself.
 //!
-//! A placeholder is read once and then it is furniture. This is the other way round: the box
-//! sits with a plain opener until you have left it alone long enough to be looking elsewhere,
-//! and then it writes a line, thinks better of one word, deletes that word and puts another in.
+//! An empty prompt sits there long enough and starts editing its own placeholder: it walks the
+//! line, picks out a word or two, takes them out and writes different ones. It stops the instant
+//! anybody touches a key.
 //!
-//! **The correction is performed, not drawn.** An earlier version struck the word out with
-//! `CROSSED_OUT` and left both halves on screen. Watching it happen is the joke; a line that
-//! arrives already corrected is a line with punctuation in it.
+//! **It edits the way you would.** The ghost cursor is a bar while it is typing and a block when
+//! it is not, it moves by words rather than sliding along a character at a time, and a change
+//! shows you what it is about to take before it takes it. Not decoration: the prompt is a modal
+//! editor, and the one thing that teaches a modal editor is watching one being used.
 //!
-//! It stops the instant you touch the keyboard, and starts its wait over.
+//! # The engine
+//!
+//! A performance is a queue of [`Act`]s, each with a duration, played in order — so adding
+//! something new is adding a variant and the place that writes one into a script. Nothing here
+//! knows what a phrase is *about*; [`perform`] works out the difference between two lines and
+//! writes the script that turns one into the other, and everything else just plays it.
 
+use std::collections::VecDeque;
+use std::ops::Range;
 use std::time::{Duration, Instant};
 
-/// What the box is doing.
+/// One step of a performance.
+///
+/// Every act is a moment on screen, which is why each carries its own duration rather than
+/// taking one from a setting here: a keystroke and a pause to read are different lengths of
+/// time and the difference between them is the whole rhythm of the thing.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Phase {
-    /// Showing something and not moving. The instant is when that stops.
-    Resting(Instant),
-    /// Walking out to the end of the line before touching anything.
-    Reaching,
-    /// Taking back what is there, a character at a time.
-    Erasing,
-    /// Writing the line as first thought, including the word it will regret.
-    Writing,
-    /// The regrettable word is on screen and being read. The instant is when the doubt lands.
-    Doubting(Instant),
-    /// Taking that word back.
-    Unwriting,
-    /// Writing what it meant.
-    Correcting,
-    /// Walking back to the start, having finished.
-    Leaving,
+pub enum Act {
+    /// Do nothing, and be seen doing nothing.
+    Rest(Duration),
+    /// Change the ghost cursor's shape: a block for normal mode, a bar for insert.
+    ///
+    /// The *ghost's* shape. The prompt's own mode is not touched — this is a mime of one, and a
+    /// box that changed the mode you were in to show you something would be a trap.
+    Shape { block: bool, over: Duration },
+    /// Put the ghost cursor here, in one jump, the way `w` and `b` move.
+    Jump { to: usize, over: Duration },
+    /// Invert a span, so what is about to go is visible before it goes.
+    Mark { span: Range<usize>, over: Duration },
+    /// Take the marked span out.
+    Cut(Duration),
+    /// Add one character at the cursor.
+    Put { letter: char, over: Duration },
+}
+
+impl Act {
+    /// How long this act is on screen.
+    fn over(&self) -> Duration {
+        match self {
+            Self::Rest(over)
+            | Self::Shape { over, .. }
+            | Self::Jump { over, .. }
+            | Self::Mark { over, .. }
+            | Self::Cut(over)
+            | Self::Put { over, .. } => *over,
+        }
+    }
 }
 
 /// What the box says about itself, beside whatever you have typed into it.
 ///
 /// One value because a renderer handed these separately can be handed a caret for a line it is
 /// not drawing, or a badge whose width nothing reserved.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Saying<'a> {
     /// The placeholder as it stands this frame, empty once anything is typed.
     pub text: &'a str,
     /// Where the box is editing its own placeholder, or `None` while it rests.
     pub caret: Option<usize>,
+    /// Whether that cursor is a block, as it is when the box is not typing.
+    pub block: bool,
+    /// The span the box is about to take out, if it is showing you one.
+    pub marked: Option<Range<usize>>,
     /// Which session this is, or its usage: drawn down the right.
     pub badge: &'a str,
-    /// Which mode the prompt is in, drawn on its bottom edge.
+    /// Which mode the prompt is in, drawn on its top edge.
     pub mode: crate::vim::Mode,
 }
 
-/// The empty prompt's performance.
+/// The box, and what it is in the middle of doing to itself.
+#[derive(Debug)]
 pub struct Tease {
-    /// What the box shows this frame.
+    /// The line as it stands.
     shown: String,
-    phase: Phase,
-    /// Everything before the word that gets replaced.
-    prefix: String,
-    /// The word it writes and then takes back.
-    struck: String,
-    /// What it puts there instead.
-    after: String,
-    /// Which line of the list is being performed.
-    line: usize,
-    /// Where the writing cursor is, as a character index into `shown`.
-    ///
-    /// Its own position rather than "the end of the text", so it can be somewhere the text is
-    /// not: it walks out to the end before the first character is deleted and walks home when
-    /// the line is finished. A cursor that appeared at the end and vanished from it read as two
-    /// jumps, and a jump is something happening to the box rather than the box doing something.
+    /// Where the ghost cursor is, in characters.
     caret: usize,
-    /// When the last character moved, so the pace is time and not frame rate.
-    stepped: Instant,
+    /// Whether that cursor is a block.
+    block: bool,
+    /// The span currently inverted.
+    marked: Option<Range<usize>>,
+    /// What is left to play.
+    script: VecDeque<Act>,
+    /// When the act at the front of the script started.
+    since: Instant,
 }
 
 impl Tease {
-    /// A box showing `opener`, with nothing to do for a while.
+    /// A box showing `opener` and doing nothing yet.
     #[must_use]
     pub fn new(opener: &str) -> Self {
-        let now = Instant::now();
         Self {
             shown: opener.to_owned(),
-            phase: Phase::Resting(now + patience()),
-            prefix: String::new(),
-            struck: String::new(),
-            after: String::new(),
-            line: 0,
             caret: 0,
-            stepped: now,
+            block: false,
+            marked: None,
+            script: VecDeque::new(),
+            since: Instant::now(),
         }
     }
 
-    /// What to draw.
+    /// The line as it stands.
     #[must_use]
     pub fn shown(&self) -> &str {
         &self.shown
     }
 
-    /// What to draw and where it is editing, together.
+    /// What to draw this frame.
     #[must_use]
     pub fn saying(&self) -> Saying<'_> {
         Saying {
             text: &self.shown,
             caret: self.caret(),
+            block: self.block,
+            marked: self.marked.clone(),
             badge: "",
             mode: crate::vim::Mode::default(),
         }
     }
 
-    /// Where the editing is happening, as a character index into [`Tease::shown`].
+    /// Where the ghost cursor is, or `None` while nothing is going on.
     ///
-    /// `None` while it is resting, because nothing is being edited and a caret parked on a line
-    /// nobody is writing is just a second cursor to explain.
-    ///
-    /// Always the end of what is written: erasing shortens it, writing lengthens it, and taking
-    /// a word back shortens it to the word. That is why it reads as jumping to the end and then
-    /// walking back into the sentence -- it is not aiming anywhere, it is where the work is.
+    /// Nothing to show while it rests: a second cursor sitting on an untouched placeholder is a
+    /// second place to type, and there is only one.
     #[must_use]
     pub fn caret(&self) -> Option<usize> {
-        match self.phase {
-            Phase::Resting(_) => None,
-            _ => Some(self.caret.min(self.shown.chars().count())),
-        }
+        self.script
+            .is_empty()
+            .then_some(self.caret)
+            .xor(Some(0))
+            .and(
+                // A resting box shows no ghost. Anything else does, wherever it has got to.
+                (!self.script.is_empty()).then_some(self.caret),
+            )
     }
 
-    /// Somebody is at the keyboard. Put the opener back and start waiting again.
-    ///
-    /// Mid-word if that is where it was: a performance that insisted on finishing after you had
-    /// started typing would be arguing with you.
+    /// Somebody typed. Stop, and start the wait over with `opener` on screen.
     pub fn interrupt(&mut self, opener: &str) {
         self.shown = opener.to_owned();
-        self.phase = Phase::Resting(Instant::now() + patience());
         self.caret = 0;
-        self.stepped = Instant::now();
+        self.block = false;
+        self.marked = None;
+        self.script.clear();
+        self.since = Instant::now();
     }
 
-    /// Move it on if enough time has passed. Says whether anything changed.
+    /// Play whatever is due, and say whether anything changed.
     ///
-    /// `lines` is the list to draw the next line from, and it is passed rather than held so a
-    /// configuration reloaded under a running UI is read rather than remembered.
+    /// Called every frame. When the script runs out it waits `axon.ui.tease_after_ms` and then
+    /// writes a new one, changing the line into another from `lines`.
     pub fn advance(&mut self, lines: &[String]) -> bool {
-        if patience().is_zero() || lines.is_empty() {
+        let after = Duration::from_millis(crate::metric::tease_after_ms());
+        if after.is_zero() {
             return false;
         }
-        let now = Instant::now();
-        match self.phase.clone() {
-            Phase::Resting(until) => {
-                if now < until {
-                    return false;
-                }
-                self.line = crate::pick::another(self.line, lines.len());
-                let (prefix, struck, after) = split(&lines[self.line]);
-                self.prefix = prefix;
-                self.struck = struck;
-                self.after = after;
-                self.phase = Phase::Reaching;
-                self.caret = 0;
-                self.stepped = now;
-                true
+        let Some(act) = self.script.front() else {
+            if self.since.elapsed() < after {
+                return false;
             }
-            Phase::Doubting(until) => {
-                if now < until {
-                    return false;
-                }
-                self.phase = Phase::Unwriting;
-                self.stepped = now;
-                true
-            }
-            _ => self.step(now),
-        }
-    }
-
-    /// One character, if the pace allows it.
-    fn step(&mut self, now: Instant) -> bool {
-        if now.duration_since(self.stepped) < pace() {
+            self.script = perform(&self.shown, pick(lines, &self.shown), self.caret);
+            self.since = Instant::now();
+            return !self.script.is_empty();
+        };
+        if self.since.elapsed() < act.over() {
             return false;
         }
-        self.stepped = now;
-        match self.phase {
-            // Out to the end of the line before anything is touched, a cell at a time. This is
-            // the walk that used to be a jump.
-            Phase::Reaching => {
-                if self.caret < self.shown.chars().count() {
-                    self.caret += 1;
-                } else {
-                    self.phase = Phase::Erasing;
-                }
-            }
-            Phase::Erasing => {
-                if self.shown.pop().is_none() {
-                    self.phase = Phase::Writing;
-                }
-                self.caret = self.shown.chars().count();
-            }
-            Phase::Writing => {
-                let target = format!("{}{}", self.prefix, self.struck);
-                if !grow(&mut self.shown, &target) {
-                    self.phase = Phase::Doubting(now + doubt());
-                }
-                self.caret = self.shown.chars().count();
-            }
-            Phase::Unwriting => {
-                if self.shown.chars().count() <= self.prefix.chars().count() {
-                    self.phase = Phase::Correcting;
-                } else {
-                    self.shown.pop();
-                }
-                self.caret = self.shown.chars().count();
-            }
-            Phase::Correcting => {
-                let target = format!("{}{}", self.prefix, self.after);
-                if !grow(&mut self.shown, &target) {
-                    self.phase = Phase::Leaving;
-                }
-                self.caret = self.shown.chars().count();
-            }
-            // And home again, rather than blinking out from wherever it finished.
-            Phase::Leaving => {
-                if self.caret > 0 {
-                    self.caret -= 1;
-                } else {
-                    self.phase = Phase::Resting(now + patience());
-                }
-            }
-            Phase::Resting(_) | Phase::Doubting(_) => {}
-        }
+        let act = self.script.pop_front().expect("checked above");
+        self.play(&act);
+        self.since = Instant::now();
         true
     }
+
+    /// Carry out one act.
+    fn play(&mut self, act: &Act) {
+        match act {
+            Act::Rest(_) => {}
+            Act::Shape { block, .. } => self.block = *block,
+            Act::Jump { to, .. } => {
+                self.caret = (*to).min(self.shown.chars().count());
+                self.marked = None;
+            }
+            Act::Mark { span, .. } => {
+                let end = span.end.min(self.shown.chars().count());
+                self.marked = Some(span.start.min(end)..end);
+                self.caret = span.start;
+            }
+            Act::Cut(_) => {
+                if let Some(span) = self.marked.take() {
+                    let kept: String = self
+                        .shown
+                        .chars()
+                        .enumerate()
+                        .filter(|(at, _)| !span.contains(at))
+                        .map(|(_, c)| c)
+                        .collect();
+                    self.shown = kept;
+                    self.caret = span.start.min(self.shown.chars().count());
+                }
+            }
+            Act::Put { letter, .. } => {
+                let byte = self
+                    .shown
+                    .char_indices()
+                    .nth(self.caret)
+                    .map_or(self.shown.len(), |(index, _)| index);
+                self.shown.insert(byte, *letter);
+                self.caret += 1;
+            }
+        }
+    }
 }
 
-/// Add the next character of `target` to `shown`. False when there is none left.
-fn grow(shown: &mut String, target: &str) -> bool {
-    let Some(next) = target.chars().nth(shown.chars().count()) else {
-        return false;
-    };
-    shown.push(next);
-    true
-}
-
-/// Split a line into what stays, what is taken back, and what replaces it.
+/// Where each word of `line` starts, and where the last one ends.
 ///
-/// `a ~~b~~ c` is "write `a b`, take back `b`, write `c`". A line with no marker is written and
-/// left alone, which is how a plain line can sit in the same list.
+/// Word starts are what `w` and `b` land on, so this is the whole of what the ghost cursor is
+/// allowed to stop at while it is walking.
 #[must_use]
-pub fn split(line: &str) -> (String, String, String) {
-    let Some((prefix, rest)) = line.split_once("~~") else {
-        return (line.to_owned(), String::new(), String::new());
-    };
-    let Some((struck, after)) = rest.split_once("~~") else {
-        return (line.to_owned(), String::new(), String::new());
-    };
-    (
-        prefix.to_owned(),
-        struck.to_owned(),
-        after.trim_start().to_owned(),
+pub fn steps(line: &str) -> Vec<usize> {
+    let mut out = vec![0];
+    let mut was_space = false;
+    for (at, c) in line.chars().enumerate() {
+        if was_space && !c.is_whitespace() {
+            out.push(at);
+        }
+        was_space = c.is_whitespace();
+    }
+    out.push(line.chars().count());
+    out.dedup();
+    out
+}
+
+/// Split a line into its words.
+fn words(line: &str) -> Vec<&str> {
+    line.split_whitespace().collect()
+}
+
+/// Pick a line to change into, preferring one this line can be *edited* into.
+///
+/// Not at random. The whole point of the engine is the middle edit — walk to a word, take it,
+/// write another — and that only happens when two lines share an opening and an ending. Scored,
+/// so a pool of unrelated lines still works and simply retypes more of itself, while a pool with
+/// families in it finds them without anybody having to group them.
+fn pick<'a>(lines: &'a [String], not: &str) -> &'a str {
+    let choices: Vec<&'a String> = lines.iter().filter(|line| line.as_str() != not).collect();
+    if choices.is_empty() {
+        return "";
+    }
+    let mine = words(not);
+    let best = choices
+        .iter()
+        .map(|line| kinship(&mine, &words(line)))
+        .max()
+        .unwrap_or(0);
+    let close: Vec<&'a String> = choices
+        .into_iter()
+        .filter(|line| kinship(&mine, &words(line)) == best)
+        .collect();
+    // Turned by the clock rather than random: a pool of two picked at random shows the same
+    // line twice a quarter of the time, which reads as a stutter rather than as chance.
+    let turn = usize::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_millis() % 1_000_000),
     )
+    .unwrap_or(0);
+    close[turn % close.len()]
 }
 
-/// How long the box is left alone before it starts.
-fn patience() -> Duration {
-    Duration::from_millis(crate::metric::tease_after_ms())
+/// How many words two lines share at the start and the end.
+///
+/// What a middle edit is measured in: the higher this is, the less has to be retyped and the
+/// more the change looks like somebody editing rather than starting again.
+fn kinship(from: &[&str], to: &[&str]) -> usize {
+    let head = from
+        .iter()
+        .zip(to.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let tail = from
+        .iter()
+        .rev()
+        .zip(to.iter().rev())
+        .take_while(|(a, b)| a == b)
+        .take(from.len().min(to.len()).saturating_sub(head))
+        .count();
+    head + tail
 }
 
-/// How long one character takes.
-fn pace() -> Duration {
-    Duration::from_millis(crate::metric::tease_step_ms().max(1))
+/// Which words differ between two lines, as a range of word indices into each.
+///
+/// The common start and the common end are left alone, so what comes back is the middle that
+/// actually changed. That is what makes this an *edit* rather than a retype: `let us build
+/// something` into `let us scan something` differs in one word, and the performance is one `cw`.
+#[must_use]
+pub fn difference(from: &[&str], to: &[&str]) -> (Range<usize>, Range<usize>) {
+    let head = from
+        .iter()
+        .zip(to.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let tail = from
+        .iter()
+        .rev()
+        .zip(to.iter().rev())
+        .take_while(|(a, b)| a == b)
+        .take(from.len().min(to.len()) - head)
+        .count();
+    (head..from.len() - tail, head..to.len() - tail)
 }
 
-/// How long the regrettable word sits there being read.
-fn doubt() -> Duration {
-    Duration::from_millis(crate::metric::tease_doubt_ms())
+/// Write the script that turns one line into another.
+///
+/// The shape of it, in order: stand up straight, walk to the word that changes, show what is
+/// going, take it, then type. Each of those is one or more [`Act`]s, and adding a flourish means
+/// adding one here rather than teaching a state machine a new state.
+#[must_use]
+pub fn perform(from: &str, to: &str, caret: usize) -> VecDeque<Act> {
+    let mut script = VecDeque::new();
+    if to.is_empty() || from == to {
+        return script;
+    }
+    let step = Duration::from_millis(crate::metric::tease_step_ms().max(1));
+    let look = Duration::from_millis(crate::metric::tease_doubt_ms());
+    let (theirs, ours) = (words(from), words(to));
+    let (cut, write) = difference(&theirs, &ours);
+
+    // A block, because what follows is a motion and motions happen in normal mode. The ghost
+    // says which mode it is miming; the prompt's own mode is untouched.
+    script.push_back(Act::Shape {
+        block: true,
+        over: step * 4,
+    });
+
+    // Walk there a word at a time, the way `w` and `b` do. Sliding the cursor character by
+    // character would be a different editor.
+    let stops = steps(from);
+    let target = word_at(from, cut.start);
+    for stop in walk(&stops, caret, target) {
+        script.push_back(Act::Jump {
+            to: stop,
+            over: step * 2,
+        });
+    }
+
+    // `cw`, or `c2w`, or however many words are going. Shown first, and held long enough to be
+    // read: a change that deletes before you have seen what it deleted is a glitch.
+    let span = span_of(from, cut.clone());
+    if !span.is_empty() {
+        script.push_back(Act::Mark {
+            span: span.clone(),
+            over: look.max(step * 6),
+        });
+        script.push_back(Act::Cut(step * 2));
+    }
+
+    // And a bar, because what follows is typing.
+    script.push_back(Act::Shape {
+        block: false,
+        over: step * 2,
+    });
+    // A cut runs to the start of the next word, so it takes the space after itself with it. The
+    // replacement owes that space back, or `build` becoming `scan` leaves `scansomething`.
+    let mut replacement = ours[write.clone()].join(" ");
+    if !write.is_empty() && cut.end < theirs.len() {
+        replacement.push(' ');
+    }
+    for letter in replacement.chars() {
+        script.push_back(Act::Put { letter, over: step });
+    }
+    script.push_back(Act::Rest(look));
+    script
 }
 
+/// The character index where word `index` starts.
+fn word_at(line: &str, index: usize) -> usize {
+    let stops = steps(line);
+    *stops.get(index).unwrap_or(stops.last().unwrap_or(&0))
+}
+
+/// The characters covered by a range of words, including the space after them.
+fn span_of(line: &str, words: Range<usize>) -> Range<usize> {
+    if words.is_empty() {
+        let at = word_at(line, words.start);
+        return at..at;
+    }
+    let start = word_at(line, words.start);
+    let stops = steps(line);
+    let end = *stops
+        .get(words.end)
+        .unwrap_or(stops.last().unwrap_or(&start));
+    start..end.max(start)
+}
+
+/// The stops between where the cursor is and where it is going, in order.
+///
+/// Forwards or backwards, one word at a time, so the walk is visible. A cursor that arrives
+/// without having travelled has not shown you a motion, it has shown you a jump cut.
+fn walk(stops: &[usize], from: usize, to: usize) -> Vec<usize> {
+    let at = stops.iter().position(|stop| *stop >= from).unwrap_or(0);
+    let want = stops.iter().position(|stop| *stop >= to).unwrap_or(0);
+    if at <= want {
+        stops[at.min(stops.len())..=want.min(stops.len() - 1)].to_vec()
+    } else {
+        let mut back: Vec<usize> = stops[want..=at.min(stops.len() - 1)].to_vec();
+        back.reverse();
+        back
+    }
+}
+
+/// A performance is a script, and the script is what one line has to do to become another.
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn a_line_splits_into_what_stays_what_goes_and_what_replaces_it() {
-        let (prefix, struck, after) = split("the scaffolding is ~~temporary~~ the building");
-        assert_eq!(prefix, "the scaffolding is ");
-        assert_eq!(struck, "temporary");
-        assert_eq!(after, "the building");
+    fn a_word_walk_stops_where_w_would() {
+        // Word starts, and the end of the line. Nothing between them is a place `w` stops.
+        assert_eq!(steps("let us build"), vec![0, 4, 7, 12]);
+        assert_eq!(steps(""), vec![0]);
+        assert_eq!(steps("one"), vec![0, 3]);
     }
 
     #[test]
-    fn a_line_with_no_marker_is_written_and_left_alone() {
-        // So a plain opener can sit in the same list without a special case.
-        let (prefix, struck, after) = split("let's build something");
-        assert_eq!(prefix, "let's build something");
-        assert!(struck.is_empty() && after.is_empty());
+    fn only_the_middle_that_changed_is_touched() {
+        // The whole point of editing rather than retyping. Two lines that share their opening
+        // and their ending differ in the middle, and that is what a `cw` is for.
+        let from = vec!["let", "us", "build", "something"];
+        let to = vec!["let", "us", "scan", "something"];
+        assert_eq!(difference(&from, &to), (2..3, 2..3));
     }
 
     #[test]
-    fn an_unclosed_marker_is_text_rather_than_a_panic() {
-        let (prefix, struck, _) = split("half a ~~thought");
-        assert_eq!(prefix, "half a ~~thought");
-        assert!(struck.is_empty());
+    fn two_words_going_is_one_change_of_two_words() {
+        let from = vec!["let", "us", "build", "a", "thing"];
+        let to = vec!["let", "us", "read", "thing"];
+        let (cut, write) = difference(&from, &to);
+        assert_eq!(cut.len(), 2, "`build a` goes");
+        assert_eq!(write.len(), 1, "and `read` arrives");
     }
 
     #[test]
-    fn it_opens_with_what_it_was_given_and_does_not_move() {
-        let tease = Tease::new("let's build something");
-        assert_eq!(tease.shown(), "let's build something");
+    fn lines_with_nothing_in_common_are_replaced_whole() {
+        let from = vec!["alpha", "beta"];
+        let to = vec!["gamma", "delta"];
+        assert_eq!(difference(&from, &to), (0..2, 0..2));
     }
 
     #[test]
-    fn a_keystroke_puts_the_opener_back() {
-        // Whatever it was mid-way through writing. A performance that insisted on finishing
-        // would be arguing with somebody who has started typing.
-        let mut tease = Tease::new("first");
-        tease.shown = "half a lin".to_owned();
-        tease.phase = Phase::Writing;
-        tease.interrupt("second");
-        assert_eq!(tease.shown(), "second");
-        assert!(matches!(tease.phase, Phase::Resting(_)));
+    fn the_walk_is_one_word_at_a_time_in_either_direction() {
+        // A cursor that arrives without having travelled has shown you a jump cut, not a motion.
+        let stops = vec![0, 4, 7, 12];
+        assert_eq!(walk(&stops, 0, 7), vec![0, 4, 7]);
+        assert_eq!(walk(&stops, 12, 4), vec![12, 7, 4], "and backwards");
     }
 
     #[test]
-    fn growing_stops_at_the_end_of_the_target() {
-        let mut shown = "abc".to_owned();
-        assert!(!grow(&mut shown, "abc"));
-        assert_eq!(shown, "abc");
-        assert!(grow(&mut shown, "abcd"));
-        assert_eq!(shown, "abcd");
+    fn a_script_stands_up_walks_shows_cuts_and_types() {
+        // The shape of the whole thing, in order. Adding a flourish later means adding an act
+        // to this list, not teaching a state machine another state.
+        let script = perform("let us build something", "let us scan something", 0);
+        let kinds: Vec<&str> = script
+            .iter()
+            .map(|act| match act {
+                Act::Rest(_) => "rest",
+                Act::Shape { block: true, .. } => "block",
+                Act::Shape { .. } => "bar",
+                Act::Jump { .. } => "jump",
+                Act::Mark { .. } => "mark",
+                Act::Cut(_) => "cut",
+                Act::Put { .. } => "put",
+            })
+            .collect();
+        assert_eq!(kinds.first(), Some(&"block"), "a motion needs normal mode");
+        assert!(kinds.contains(&"jump"), "it walks there");
+        let mark = kinds.iter().position(|k| *k == "mark").expect("it marks");
+        let cut = kinds.iter().position(|k| *k == "cut").expect("it cuts");
+        assert!(mark < cut, "and shows what is going before it goes");
+        let bar = kinds.iter().position(|k| *k == "bar").expect("then a bar");
+        assert!(cut < bar, "which is what typing happens in");
+        assert!(
+            kinds.iter().skip(bar).any(|k| *k == "put"),
+            "and then it types"
+        );
     }
 
     #[test]
-    fn growing_counts_characters_rather_than_bytes() {
-        // A line with an apostrophe or an accent in it would otherwise write half a character.
-        let mut shown = String::new();
-        let target = "café";
-        for _ in 0..4 {
-            assert!(grow(&mut shown, target));
+    fn what_it_shows_is_what_it_takes() {
+        // The marked span has to be the words that are going. Marking anything else is telling
+        // you one thing and doing another, which is worse than not marking at all.
+        let script = perform("let us build something", "let us scan something", 0);
+        let marked = script
+            .iter()
+            .find_map(|act| match act {
+                Act::Mark { span, .. } => Some(span.clone()),
+                _ => None,
+            })
+            .expect("it marks");
+        let taken: String = "let us build something"
+            .chars()
+            .skip(marked.start)
+            .take(marked.len())
+            .collect();
+        assert_eq!(taken.trim(), "build");
+    }
+
+    #[test]
+    fn playing_the_script_makes_the_other_line() {
+        // The measurement that matters: whatever the acts are, what comes out the far end is
+        // the line it was asked for.
+        let mut tease = Tease::new("let us build something");
+        for act in perform("let us build something", "let us scan something", 0) {
+            tease.play(&act);
         }
-        assert_eq!(shown, "café");
-        assert!(!grow(&mut shown, target));
+        assert_eq!(tease.shown(), "let us scan something");
+    }
+
+    #[test]
+    fn it_edits_the_middle_rather_than_the_end() {
+        let mut tease = Tease::new("open the door slowly");
+        for act in perform("open the door slowly", "open the window slowly", 0) {
+            tease.play(&act);
+        }
+        assert_eq!(tease.shown(), "open the window slowly");
+    }
+
+    #[test]
+    fn a_line_with_nothing_in_common_still_arrives() {
+        let mut tease = Tease::new("alpha beta");
+        for act in perform("alpha beta", "gamma delta", 0) {
+            tease.play(&act);
+        }
+        assert_eq!(tease.shown(), "gamma delta");
+    }
+
+    #[test]
+    fn the_cursor_is_a_block_while_it_moves_and_a_bar_while_it_types() {
+        // The one thing this is teaching. A ghost that typed with a block cursor would be
+        // miming a mode the prompt does not have.
+        let mut tease = Tease::new("let us build something");
+        let script = perform("let us build something", "let us scan something", 0);
+        let mut block_while_jumping = true;
+        let mut bar_while_putting = true;
+        for act in script {
+            tease.play(&act);
+            match act {
+                Act::Jump { .. } => block_while_jumping &= tease.block,
+                Act::Put { .. } => bar_while_putting &= !tease.block,
+                _ => {}
+            }
+        }
+        assert!(block_while_jumping, "it moved with a bar cursor");
+        assert!(bar_while_putting, "it typed with a block cursor");
+    }
+
+    #[test]
+    fn a_touched_prompt_stops_it_where_it_stands() {
+        let mut tease = Tease::new("one");
+        tease.script = perform("one", "two", 0);
+        tease.interrupt("something else");
+        assert_eq!(tease.shown(), "something else");
+        assert!(tease.caret().is_none(), "and no ghost is left on screen");
+    }
+
+    #[test]
+    fn nothing_is_shown_while_it_rests() {
+        // A second cursor on an untouched placeholder is a second place to type, and there is
+        // only one.
+        let tease = Tease::new("resting");
+        assert!(tease.caret().is_none());
     }
 }
 
-/// Two performances running are two different lines.
+/// It chooses the line it can make the smallest edit into.
 #[cfg(test)]
-mod repeating {
+mod picking_tests {
     use super::*;
 
-    /// Drive it until it has finished `want` performances, collecting which line each used.
-    fn performed(want: usize) -> Vec<usize> {
-        let lines: Vec<String> = (0..8).map(|n| format!("a{n} ~~b{n}~~ c{n}")).collect();
-        let mut tease = Tease::new("opener");
-        let mut seen = Vec::new();
-        // Rest and doubt are wall-clock, so they are stepped over rather than waited out.
-        for _ in 0..100_000 {
-            if let Phase::Resting(_) | Phase::Doubting(_) = tease.phase {
-                tease.phase = match tease.phase {
-                    Phase::Resting(_) => Phase::Resting(Instant::now()),
-                    _ => Phase::Doubting(Instant::now()),
-                };
-            }
-            tease.stepped = Instant::now() - Duration::from_secs(1);
-            let was = tease.line;
-            tease.advance(&lines);
-            if tease.line != was || (seen.is_empty() && !tease.prefix.is_empty()) {
-                seen.push(tease.line);
-                if seen.len() == want {
-                    return seen;
-                }
-            }
-        }
-        seen
+    fn pool() -> Vec<String> {
+        [
+            "the scaffolding is temporary",
+            "the scaffolding is the building",
+            "we're shipping and watching the graphs",
+        ]
+        .iter()
+        .map(|line| (*line).to_owned())
+        .collect()
     }
 
     #[test]
-    fn one_performance_does_not_follow_another_with_the_same_line() {
-        // The complaint this answers: it wrote the same sentence again. "Repeat" meant come
-        // back with something else, not come back with that.
-        let seen = performed(6);
-        assert!(seen.len() >= 6, "it stopped performing: {seen:?}");
-        for pair in seen.windows(2) {
-            assert_ne!(pair[0], pair[1], "the same line twice running: {seen:?}");
-        }
-    }
-}
-
-/// The writing cursor travels; it does not appear where it is needed.
-#[cfg(test)]
-mod travelling {
-    use super::*;
-
-    /// Every caret position the box passes through, in order, driven at full speed.
-    fn journey(steps: usize) -> Vec<Option<usize>> {
-        let lines = vec!["abcd ~~ef~~ gh".to_owned(), "ijkl ~~mn~~ op".to_owned()];
-        let mut tease = Tease::new("opener");
-        let mut seen = vec![tease.caret()];
-        for _ in 0..steps {
-            // Rest and doubt are wall-clock; stepped over so the walk is what is measured.
-            tease.phase = match tease.phase {
-                Phase::Resting(_) => Phase::Resting(Instant::now()),
-                Phase::Doubting(_) => Phase::Doubting(Instant::now()),
-                other => other,
-            };
-            tease.stepped = Instant::now() - Duration::from_secs(1);
-            tease.advance(&lines);
-            let now = tease.caret();
-            if seen.last() != Some(&now) {
-                seen.push(now);
-            }
-        }
-        seen
-    }
-
-    #[test]
-    fn it_never_moves_more_than_one_cell_at_a_time() {
-        // The complaint this answers: it appeared at the end of the line and vanished from it.
-        // A jump is something happening to the box; a walk is the box doing something.
-        let seen = journey(4000);
-        for pair in seen.windows(2) {
-            let (Some(from), Some(to)) = (pair[0], pair[1]) else {
-                continue;
-            };
-            assert!(
-                from.abs_diff(to) <= 1,
-                "it jumped from {from} to {to}: {seen:?}"
+    fn it_prefers_a_line_it_can_edit_into() {
+        // The whole point of the engine. Picking at random would retype the line most of the
+        // time, and the middle edit -- walk, mark, cut, type -- would almost never be seen.
+        let lines = pool();
+        for _ in 0..8 {
+            assert_eq!(
+                pick(&lines, "the scaffolding is temporary"),
+                "the scaffolding is the building"
             );
         }
     }
 
     #[test]
-    fn it_walks_out_from_the_start_rather_than_appearing_at_the_end() {
-        let seen = journey(4000);
-        let first = seen
-            .iter()
-            .flatten()
-            .next()
-            .copied()
-            .expect("it started somewhere");
-        assert_eq!(first, 0, "it did not start at the beginning: {seen:?}");
+    fn it_still_answers_when_nothing_is_close() {
+        // A pool of unrelated lines is not an error; it just means more retyping.
+        let lines = vec!["alpha beta".to_owned()];
+        assert_eq!(pick(&lines, "gamma delta"), "alpha beta");
     }
 
     #[test]
-    fn it_walks_home_before_it_rests() {
-        // The last thing before it disappears is a zero, not wherever the line happened to end.
-        let seen = journey(4000);
-        let mut last_seen = None;
-        for (at, caret) in seen.iter().enumerate() {
-            if caret.is_none() && at > 0 {
-                last_seen = seen[at - 1];
-                break;
-            }
+    fn it_never_offers_the_line_already_up() {
+        let lines = pool();
+        for _ in 0..8 {
+            assert_ne!(
+                pick(&lines, "the scaffolding is temporary"),
+                "the scaffolding is temporary"
+            );
         }
-        assert_eq!(last_seen, Some(0), "it vanished mid-line: {seen:?}");
     }
 
     #[test]
-    fn it_is_hidden_while_the_box_rests() {
-        let tease = Tease::new("opener");
-        assert_eq!(tease.caret(), None);
+    fn kinship_counts_both_ends() {
+        assert_eq!(kinship(&["a", "b", "c"], &["a", "x", "c"]), 2);
+        assert_eq!(kinship(&["a", "b"], &["x", "y"]), 0);
+        assert_eq!(kinship(&["a", "b"], &["a", "b"]), 2, "and does not double");
     }
 }

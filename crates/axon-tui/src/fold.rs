@@ -110,15 +110,23 @@ mod cursor_tests {
 
     /// `(char, reversed)` for each cell of the placeholder row.
     fn cells(hint: &str, caret: Option<usize>) -> Vec<(String, bool)> {
-        crate::prompt::placeholder_spans(60, hint, caret)
-            .into_iter()
-            .map(|s| {
-                (
-                    s.content.into_owned(),
-                    s.style.add_modifier.contains(Modifier::REVERSED),
-                )
-            })
-            .collect()
+        crate::prompt::placeholder_spans(
+            60,
+            &crate::tease::Saying {
+                text: hint,
+                caret,
+                block: true,
+                ..Default::default()
+            },
+        )
+        .into_iter()
+        .map(|s| {
+            (
+                s.content.into_owned(),
+                s.style.add_modifier.contains(Modifier::REVERSED),
+            )
+        })
+        .collect()
     }
 
     #[test]

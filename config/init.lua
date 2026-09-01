@@ -153,42 +153,63 @@ axon.ui.openers = {
 
 -- What it writes to itself once you have left it alone for `tease_after_ms`.
 --
--- `a ~~b~~ c` is performed, not drawn: it writes `a b`, reads it back for a moment, deletes the
--- `b` a character at a time, and writes `c` in its place. Watching it happen is the joke.
+-- Plain lines, not markup. It works out for itself which words differ between the one on screen
+-- and the one it is going to, walks there with `w`, shows you the words it is taking, takes
+-- them, and types the replacement -- which is a vim lesson disguised as a joke.
+--
+-- Written in families that share an opening and an ending on purpose: the closer two lines are,
+-- the smaller the edit and the more it looks like somebody working rather than retyping. It
+-- picks the closest line it can reach from the one on screen, so a family is found without
+-- anything here having to group them.
 axon.ui.placeholders = {
-  -- The work
-  "first we need to build a ~~tool~~ tool to build the tool",
-  "the scaffolding is ~~temporary~~ the building",
-  "this is a ~~prototype~~ load-bearing prototype",
-  "I'll build it ~~properly~~ twice",
-  "first the ~~feature~~ build system",
-  "we're ~~building~~ assembling this out of npm",
-  "let's build it ~~in-house~~ out of four dependencies",
-  "I'm making a ~~library~~ folder called utils",
+  -- What we are making
+  "first we need to build a tool",
+  "first we need to build a tool to build the tool",
+  "first we need to write the tool down",
+  "first we need to name the tool",
 
   -- The ground it stands on
-  "we're building on ~~solid ground~~ someone's weekend project",
-  "the foundation is ~~poured~~ a TODO from March",
-  "let's start ~~fresh~~ from a template nobody read",
-  "the architecture is ~~designed~~ whatever compiled first",
-  "the build is ~~reproducible~~ on this laptop",
+  "the scaffolding is temporary",
+  "the scaffolding is the building",
+  "the scaffolding is load-bearing",
+  "the foundation is poured",
+  "the foundation is a TODO from March",
+  "the foundation is someone's weekend project",
 
-  -- What we said we'd make
-  "the spec is ~~written down~~ in someone's head",
-  "the roadmap is ~~a plan~~ a list of wishes",
-  "we'll build the real one ~~next quarter~~ eventually",
-  "let's cut scope to ~~the essentials~~ whatever already works",
-  "the demo is ~~working~~ three hardcoded strings",
-  "it's ~~done~~ done except the parts that matter",
+  -- How it was built
+  "this is a prototype",
+  "this is a load-bearing prototype",
+  "this is a prototype in production",
+  "the architecture is designed",
+  "the architecture is whatever compiled first",
+  "the architecture is four dependencies in a trenchcoat",
+
+  -- What we said we would make
+  "the spec is written down",
+  "the spec is in someone's head",
+  "the spec is the tests",
+  "the roadmap is a plan",
+  "the roadmap is a list of wishes",
+  "the roadmap is last quarter with the dates moved",
 
   -- Making it nice
-  "let's make it ~~extensible~~ hard to change in one place",
-  "this abstraction ~~saves time~~ needs an abstraction",
-  "we're making it ~~simple~~ simple to describe",
-  "I'm ~~designing~~ redesigning the schema",
-  "let's ~~generalise~~ wait until it happens twice",
-  "I'll make it fast ~~now~~ after it works",
-  "we're ~~shipping~~ shipping and watching the graphs",
+  "let's make it extensible",
+  "let's make it hard to change in one place",
+  "let's make it simple to describe",
+  "let's generalise this",
+  "let's generalise this after it happens twice",
+  "let's cut scope to the essentials",
+  "let's cut scope to whatever already works",
+
+  -- Shipping
+  "the build is reproducible",
+  "the build is reproducible on this laptop",
+  "the demo is working",
+  "the demo is three hardcoded strings",
+  "it's done",
+  "it's done except the parts that matter",
+  "we're shipping",
+  "we're shipping and watching the graphs",
 }
 
 -- And what you type arriving: each character shows as the first of `type_stages`, passes through
