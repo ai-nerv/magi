@@ -74,21 +74,24 @@ impl Completion {
     }
 }
 
-/// The slash commands M0 can honour.
+/// The commands M0 can honour.
+///
+/// Colon, not slash. `/` is search -- of the transcript now and of aeon's memory later -- and
+/// a prefix cannot mean both.
 ///
 /// Deliberately short. Pi has 28 and a collision policy per surface; every command added here
 /// is a capability the daemon must eventually answer for.
 #[must_use]
 pub fn commands() -> Vec<Candidate> {
     [
-        ("/help", "show keybindings and commands"),
-        ("/clear", "start a fresh conversation"),
-        ("/model", "the model, or /model <name> to switch"),
-        ("/permissions", "ask the model what it needs, and decide"),
-        ("/resume", "continue a session from this directory"),
-        ("/rewind", "undo the last exchange, or /rewind N"),
-        ("/think", "how much reasoning to ask for"),
-        ("/quit", "exit axon"),
+        (":help", "show keybindings and commands"),
+        (":clear", "start a fresh conversation"),
+        (":model", "the model, or :model <name> to switch"),
+        (":permissions", "ask the model what it needs, and decide"),
+        (":resume", "continue a session from this directory"),
+        (":rewind", "undo the last exchange, or :rewind N"),
+        (":think", "how much reasoning to ask for"),
+        (":quit", "exit axon, and :q for the same"),
     ]
     .iter()
     .map(|(value, detail)| Candidate {
@@ -109,20 +112,20 @@ pub fn resolve(
 ) -> Option<Completion> {
     let before: String = line.chars().take(col).collect();
 
-    if let Some(query) = before.strip_prefix('/')
+    if let Some(query) = before.strip_prefix(':')
         && !query.contains(char::is_whitespace)
     {
         {
             let all = commands();
             let values: Vec<String> = all.iter().map(|c| c.value.clone()).collect();
-            let ranked = fuzzy::filter(&format!("/{query}"), &values);
+            let ranked = fuzzy::filter(&format!(":{query}"), &values);
             let candidates = ranked
                 .into_iter()
                 .filter_map(|v| all.iter().find(|c| &c.value == v).cloned())
                 .collect::<Vec<_>>();
             return (!candidates.is_empty()).then_some(Completion {
                 kind: Kind::Command,
-                typed: format!("/{query}"),
+                typed: format!(":{query}"),
                 candidates,
                 selected: 0,
                 token_start: 0,
@@ -221,16 +224,16 @@ mod tests {
     }
 
     #[test]
-    fn a_bare_slash_offers_every_command() {
-        let c = resolve("/", 1, &no_paths).expect("completion");
+    fn a_bare_colon_offers_every_command() {
+        let c = resolve(":", 1, &no_paths).expect("completion");
         assert_eq!(c.kind, Kind::Command);
         assert_eq!(c.candidates.len(), commands().len());
     }
 
     #[test]
     fn typing_narrows_the_command_list() {
-        let c = resolve("/qu", 3, &no_paths).expect("completion");
-        assert_eq!(c.current().map(|c| c.value.as_str()), Some("/quit"));
+        let c = resolve(":qu", 3, &no_paths).expect("completion");
+        assert_eq!(c.current().map(|c| c.value.as_str()), Some(":quit"));
     }
 
     #[test]
@@ -240,7 +243,7 @@ mod tests {
 
     #[test]
     fn a_command_with_an_argument_closes_the_palette() {
-        assert!(resolve("/model gpt", 10, &no_paths).is_none());
+        assert!(resolve(":model gpt", 10, &no_paths).is_none());
     }
 
     #[test]
@@ -263,7 +266,7 @@ mod tests {
 
     #[test]
     fn selection_wraps_in_both_directions() {
-        let mut c = resolve("/", 1, &no_paths).expect("completion");
+        let mut c = resolve(":", 1, &no_paths).expect("completion");
         let last = c.candidates.len() - 1;
         c.prev();
         assert_eq!(c.selected, last);
@@ -293,7 +296,7 @@ mod tests {
 
     #[test]
     fn every_overlay_row_fills_the_width() {
-        let c = resolve("/", 1, &no_paths).expect("completion");
+        let c = resolve(":", 1, &no_paths).expect("completion");
         for line in render(&c, 50) {
             let width: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
             assert_eq!(width, 50);
@@ -313,7 +316,7 @@ mod clip_tests {
             kind: Kind::Command,
             typed: String::new(),
             candidates: vec![Candidate {
-                value: "/x".to_owned(),
+                value: ":x".to_owned(),
                 detail: "a description far longer than the space available for it".to_owned(),
             }],
             selected: 0,
@@ -331,7 +334,7 @@ mod clip_tests {
             kind: Kind::Command,
             typed: String::new(),
             candidates: vec![Candidate {
-                value: "/x".to_owned(),
+                value: ":x".to_owned(),
                 detail: "anything".to_owned(),
             }],
             selected: 0,

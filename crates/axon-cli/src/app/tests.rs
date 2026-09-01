@@ -172,7 +172,7 @@ mod reduction {
     fn the_popup_follows_the_prompt() {
         let mut app = App::new();
         let none = |_: &str| Vec::new();
-        app.editor.insert_str("/qu");
+        app.editor.insert_str(":qu");
         app.refresh_completion(&none);
         assert!(app.overlay.is_some());
         app.editor.clear();
@@ -367,7 +367,7 @@ mod onboarding_tests {
         let mut app = App::new();
         app.apply(snapshot(None, Vec::new()));
         assert_eq!(notices(&app).len(), 1);
-        assert!(notices(&app)[0].contains("/model"));
+        assert!(notices(&app)[0].contains(":model"));
     }
 
     #[test]

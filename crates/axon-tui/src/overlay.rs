@@ -74,7 +74,7 @@ impl Overlay {
         match self {
             Self::Picker(picker) => &picker.title,
             Self::Completion(popup) => match popup.kind {
-                crate::complete::Kind::Command => "/",
+                crate::complete::Kind::Command => ":",
                 crate::complete::Kind::Path => "@",
             },
         }
@@ -130,7 +130,7 @@ mod key_tests {
     #[test]
     fn the_slash_menu_has_a_key_of_its_own() {
         // It had none, so pressing `/` opened a menu that never landed.
-        assert_eq!(popup(crate::complete::Kind::Command).key(), "/");
+        assert_eq!(popup(crate::complete::Kind::Command).key(), ":");
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //! itself. The commands are not: they come from the same list the completion popup offers, so
 //! the two cannot say different things — which they already had, twice.
 
-/// The keys `/help` lists.
+/// The keys `:help` lists.
 ///
 /// Written out because a key binding is a `match` arm and a match cannot describe itself. The
 /// commands are not: see [`text`].
@@ -19,15 +19,15 @@ const KEYS: &str = "\
 - click a block's `»` to open just that one
 - drag to select; it is copied when you let go
 - `ctrl+x` edit the prompt in `$EDITOR`
-- `ctrl+c` clear the prompt, again to quit — `ctrl+d` quit
+- `ctrl+c` clear the prompt — `:q` to leave, and nothing else leaves
 - `ctrl+a/e` line start/end — `ctrl+k/u` kill — `ctrl+y` yank
 - `alt+←/→` word motion — `↑/↓` prompt history";
 
-/// What `/help` prints.
+/// What `:help` prints.
 ///
 /// The command list is built from the same one the completion popup offers, rather than
 /// written out beside it. Two lists drift the moment either is edited, and this pair already
-/// had: `/model` and `/rewind` were both offered by the popup and absent from the help of the
+/// had: `:model` and `:rewind` were both offered by the popup and absent from the help of the
 /// commit that added them.
 pub fn text() -> String {
     let commands = axon_tui::complete::commands()
@@ -44,7 +44,7 @@ mod help_tests {
 
     #[test]
     fn every_command_the_popup_offers_is_in_the_help() {
-        // The pair had already drifted: `/model` and `/rewind` were both offered and both
+        // The pair had already drifted: `:model` and `:rewind` were both offered and both
         // missing from the help of the commit that added them.
         let text = text();
         for candidate in axon_tui::complete::commands() {

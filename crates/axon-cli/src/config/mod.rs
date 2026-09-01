@@ -241,7 +241,7 @@ pub fn resolve<'a>(
     providers.iter().find_map(|p| p.model(name).map(|m| (p, m)))
 }
 
-/// Everything the daemon could talk to, so `/model` has something to pick among.
+/// Everything the daemon could talk to, so `:model` has something to pick among.
 ///
 /// Built once at start rather than re-read on each switch: a session should keep answering
 /// with what it was started with, and picking up an edit made since would leave a person

@@ -386,9 +386,9 @@ mod inside_the_box {
     /// A screen with `/mo` typed and the menu that opens on it.
     fn drawn() -> Vec<String> {
         let mut app = App::new();
-        app.editor.insert_str("/mo");
+        app.editor.insert_str(":mo");
         app.refresh_completion(&|_| Vec::new());
-        assert!(app.overlay.is_some(), "the premise: `/mo` opens a menu");
+        assert!(app.overlay.is_some(), "the premise: `:mo` opens a menu");
         let footer = FooterData::default();
         let mut terminal = Terminal::new(TestBackend::new(60, 16)).expect("test terminal");
         terminal
@@ -406,7 +406,7 @@ mod inside_the_box {
     #[test]
     fn every_row_of_the_menu_is_between_the_sides() {
         let rows = drawn();
-        let menu: Vec<&String> = rows.iter().filter(|row| row.contains("/model")).collect();
+        let menu: Vec<&String> = rows.iter().filter(|row| row.contains(":model")).collect();
         assert!(!menu.is_empty(), "nothing was offered: {rows:#?}");
         for row in menu {
             assert!(row.starts_with('│'), "{row:?} is outside the box");
@@ -423,11 +423,11 @@ mod inside_the_box {
             .expect("a divider");
         let typed = rows
             .iter()
-            .position(|row| row.contains("/mo "))
+            .position(|row| row.contains(":mo "))
             .expect("what was typed");
         let offered = rows
             .iter()
-            .position(|row| row.contains("/model"))
+            .position(|row| row.contains(":model"))
             .expect("what it offered");
         assert!(typed < divider && divider < offered, "{rows:#?}");
     }
@@ -441,7 +441,7 @@ mod inside_the_box {
             .expect("the box closes");
         let offered = rows
             .iter()
-            .position(|row| row.contains("/model"))
+            .position(|row| row.contains(":model"))
             .expect("what it offered");
         assert!(offered < bottom, "the menu fell out of the box: {rows:#?}");
     }

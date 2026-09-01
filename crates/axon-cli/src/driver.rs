@@ -171,7 +171,6 @@ pub async fn run(
                             Action::Accepted | Action::Dismissed | Action::Recalled
                         );
                         match action {
-                            Action::Quit => break,
                             Action::Submit(text) => {
                                 crate::history::remember(&text);
                                 let _ = command_tx.send(UiCommand::SubmitPrompt { text }).await;
@@ -532,30 +531,30 @@ enum Control {
     Send(UiCommand),
 }
 
-/// Run a slash command.
+/// Run a colon command.
 ///
 /// Every command here is answered locally. Anything that needs the daemon becomes a
 /// [`UiCommand`] instead, so the set of things the UI can do alone stays visible in one match.
 fn run_command(input: &str, app: &mut App) -> Control {
     match input.split_whitespace().next().unwrap_or_default() {
-        "/quit" => Control::Quit,
+        ":quit" | ":q" => Control::Quit,
         // Both halves, because the name promises both. Clearing only the view left the model
         // remembering everything while the footer reported an empty context -- the screen and
         // the token count both lying, in the same direction, at the same time. The branch is
         // journalled, so the record of what was said survives what the model is shown.
-        "/clear" => {
+        ":clear" => {
             app.clear_view();
             Control::Send(UiCommand::Branch { keeps: Some(0) })
         }
-        "/help" => {
+        ":help" => {
             app.show_help();
             Control::Continue
         }
         // With a name it is the daemon's to do: only it knows the catalog this session
         // started with and whether the name reaches anything. Without one, the answer is
         // already on screen — the footer says which model is answering — so this says it
-        // again in words, which is what somebody typing `/model` is asking for.
-        "/model" => match input.split_whitespace().nth(1) {
+        // again in words, which is what somebody typing `:model` is asking for.
+        ":model" => match input.split_whitespace().nth(1) {
             Some(name) => Control::Send(UiCommand::SetModel {
                 name: name.to_owned(),
             }),
@@ -567,9 +566,9 @@ fn run_command(input: &str, app: &mut App) -> Control {
                 Control::Continue
             }
         },
-        // Same shape as `/model`: a list rather than a sentence, because the useful reply to
+        // Same shape as `:model`: a list rather than a sentence, because the useful reply to
         // "how much reasoning" is the set of answers and which of them this model can give.
-        "/think" => match input.split_whitespace().nth(1) {
+        ":think" => match input.split_whitespace().nth(1) {
             Some(level) => Control::Send(UiCommand::SetThinking {
                 level: level.to_owned(),
             }),
@@ -580,21 +579,21 @@ fn run_command(input: &str, app: &mut App) -> Control {
         },
         // The daemon's, because it holds the conversation the question is about and the
         // provider that answers it.
-        "/permissions" => Control::Send(UiCommand::DeclareNeeds),
+        ":permissions" => Control::Send(UiCommand::DeclareNeeds),
         // A list rather than a flag. `--resume` continues this directory's most recent session
         // and there was no way to reach any of the others, which is most of them.
-        "/resume" => {
+        ":resume" => {
             app.open_session_picker();
             Control::Continue
         }
         // Rewinding is the daemon's to work out: it holds the session, and which messages are
         // still live is a question about the session rather than about what is on screen.
-        "/rewind" => match input.split_whitespace().nth(1) {
+        ":rewind" => match input.split_whitespace().nth(1) {
             None => Control::Send(UiCommand::Branch { keeps: None }),
             Some(n) => match n.parse() {
                 Ok(keeps) => Control::Send(UiCommand::Branch { keeps: Some(keeps) }),
                 Err(_) => {
-                    app.show_notice(format!("/rewind takes a number, not {n:?}"));
+                    app.show_notice(format!(":rewind takes a number, not {n:?}"));
                     Control::Continue
                 }
             },

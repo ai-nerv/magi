@@ -14,10 +14,10 @@ use ratatui::text::{Line, Span};
 
 /// The keys worth knowing before there is any transcript to act on.
 const HINTS: &[(&str, &str)] = &[
-    ("/", "commands"),
+    (":", "commands"),
     ("@", "a file"),
     ("↵", "send"),
-    ("^c", "quit"),
+    (":q", "quit"),
 ];
 
 /// Render the greeting for a session that has nothing in it yet.
@@ -56,7 +56,7 @@ pub fn render(model: &str, cwd: &str, width: u16) -> Vec<Line<'static>> {
     }
     out.push(Line::from(""));
 
-    // Whole pairs only. A line cut mid-hint drops `^c quit` without saying it did, and the
+    // Whole pairs only. A line cut mid-hint drops `:q quit` without saying it did, and the
     // key a stuck reader most needs is the one at the end.
     let mut hints: Vec<Span<'static>> = Vec::new();
     let mut used = 0usize;
@@ -108,7 +108,7 @@ mod tests {
         // The complaint that started this was not being able to reach the model list.
         let out = render("m", "/w", 80);
         let text = text_of(&out);
-        assert!(text.contains("/ commands"), "{text}");
+        assert!(text.contains(": commands"), "{text}");
     }
 
     #[test]
@@ -146,7 +146,7 @@ mod narrow_tests {
 
     #[test]
     fn hints_are_dropped_whole_rather_than_cut() {
-        // A line cut mid-hint drops `^c quit` without saying it did.
+        // A line cut mid-hint drops `:q quit` without saying it did.
         let row = hints_row(30);
         assert!(row.chars().count() <= 30, "{row:?}");
         for fragment in ["quit", "send", "a file"] {
@@ -159,9 +159,9 @@ mod narrow_tests {
 
     #[test]
     fn the_first_hint_is_the_one_that_survives() {
-        // `/` is the key that finds everything else.
+        // `:` is the key that finds everything else.
         let row = hints_row(14);
-        assert!(row.contains("/ commands"), "{row:?}");
+        assert!(row.contains(": commands"), "{row:?}");
     }
 
     #[test]

@@ -42,27 +42,27 @@ fn screen(line: &str, col: usize, width: u16, paths: &dyn Fn(&str) -> Vec<String
 
 #[test]
 fn the_command_palette_marks_the_selection_and_shows_details() {
-    let rendered = screen("/", 1, 50, &no_paths);
+    let rendered = screen(":", 1, 50, &no_paths);
     assert_eq!(
         rendered,
         vec![
-            "❯ /help         show keybindings and commands",
-            "  /clear        start a fresh conversation",
-            "  /model        the model, or /model <name> to swi",
-            "  /permissions  ask the model what it needs, and d",
-            "  /resume       continue a session from this direc",
-            "  /rewind       undo the last exchange, or /rewind",
-            "  /think        how much reasoning to ask for",
-            "  /quit         exit axon",
+            "❯ :help         show keybindings and commands",
+            "  :clear        start a fresh conversation",
+            "  :model        the model, or :model <name> to swi",
+            "  :permissions  ask the model what it needs, and d",
+            "  :resume       continue a session from this direc",
+            "  :rewind       undo the last exchange, or :rewind",
+            "  :think        how much reasoning to ask for",
+            "  :quit         exit axon, and :q for the same",
         ]
     );
 }
 
 #[test]
 fn typing_narrows_the_palette_to_one_row() {
-    let rendered = screen("/cl", 3, 50, &no_paths);
+    let rendered = screen(":cl", 3, 50, &no_paths);
     assert_eq!(rendered.len(), 1);
-    assert!(rendered[0].starts_with("❯ /clear"), "{rendered:?}");
+    assert!(rendered[0].starts_with("❯ :clear"), "{rendered:?}");
 }
 
 #[test]
@@ -86,7 +86,7 @@ fn the_popup_never_exceeds_its_row_budget() {
 
 #[test]
 fn details_share_one_column_regardless_of_value_length() {
-    let rendered = screen("/", 1, 50, &no_paths);
+    let rendered = screen(":", 1, 50, &no_paths);
     let columns: Vec<usize> = rendered
         .iter()
         .map(|row| {

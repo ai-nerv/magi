@@ -40,7 +40,7 @@ pub enum Action {
     Accepted,
     /// A line came back from history, and the popup must not reopen over it.
     ///
-    /// Its own action because recalling `/model` used to put the command menu back on screen,
+    /// Its own action because recalling `:model` used to put the command menu back on screen,
     /// and the menu owns the arrow keys — so the next Up moved the highlight instead of
     /// reaching further back, and history stopped at the first slash command in it.
     Recalled,
@@ -61,7 +61,7 @@ pub enum Action {
     Dismissed,
     /// Send this prompt.
     Submit(String),
-    /// Run this slash command.
+    /// Run this colon command.
     Command(String),
     /// Interrupt the running turn.
     Interrupt,
@@ -69,8 +69,6 @@ pub enum Action {
     ExternalEdit,
     /// Move the transcript view.
     Scroll(Scroll),
-    /// Leave.
-    Quit,
     /// Nothing happened.
     Ignore,
 }
@@ -144,6 +142,9 @@ pub fn handle(
     // Quit and interrupt outrank the popup: a user reaching for them wants out, not a
     // dismissed menu they then have to escape from a second time.
     match key.code {
+        // Neither of these leaves any more. `:q` is the way out, and a key that quits on an
+        // empty prompt is a key that quits when you meant to clear one -- which is the same
+        // keystroke, told apart only by what happened to be in the box.
         KeyCode::Char('c') if ctrl => {
             if overlay
                 .as_ref()
@@ -152,13 +153,10 @@ pub fn handle(
                 *overlay = None;
                 return Action::Redraw;
             }
-            if editor.is_blank() {
-                return Action::Quit;
-            }
             editor.clear();
             return Action::Redraw;
         }
-        KeyCode::Char('d') if ctrl && editor.is_blank() => return Action::Quit,
+        KeyCode::Char('d') if ctrl && editor.is_blank() => return Action::Ignore,
         KeyCode::Char('x') if ctrl => return Action::ExternalEdit,
         KeyCode::Char('o') if ctrl => return Action::ToggleDetail,
         _ => {}
@@ -195,13 +193,13 @@ pub fn handle(
                 // Not `Redraw`: the popup is recomputed from the prompt after every key, and
                 // what was just accepted still matches what offered it. Saying so keeps the
                 // caller from reopening the menu the user has this moment chosen from, which
-                // left every exact-match command -- `/help`, `/quit` -- impossible to submit.
+                // left every exact-match command -- `:help`, `:quit` -- impossible to submit.
                 return Action::Accepted;
             }
             KeyCode::Enter => {
                 // Tab completes; Enter runs. A palette where enter only fills the box asks
                 // for the key twice to reach one command, and reads as a menu that does
-                // nothing -- which is what `/model` looked like for as long as this was
+                // nothing -- which is what `:model` looked like for as long as this was
                 // shared with Tab. A path completion is not a command, so there enter still
                 // only completes: the line it belongs to is not finished yet.
                 let command = open.kind == Kind::Command;
@@ -211,7 +209,7 @@ pub fn handle(
                     return Action::Accepted;
                 }
                 return match editor.submit() {
-                    Some(text) if text.starts_with('/') => Action::Command(text),
+                    Some(text) if text.starts_with(':') => Action::Command(text),
                     Some(text) => Action::Submit(text),
                     None => Action::Accepted,
                 };
@@ -241,7 +239,7 @@ pub fn handle(
                 return Action::Ignore;
             }
             match editor.submit() {
-                Some(text) if text.starts_with('/') => Action::Command(text),
+                Some(text) if text.starts_with(':') => Action::Command(text),
                 Some(text) => Action::Submit(text),
                 None => Action::Ignore,
             }
@@ -381,14 +379,14 @@ pub(super) mod tests {
     #[test]
     fn a_slash_prefixed_prompt_submits_as_a_command() {
         let mut editor = Editor::new();
-        editor.insert_str("/quit");
+        editor.insert_str(":quit");
         assert_eq!(
             act(
                 press(KeyCode::Enter, KeyModifiers::NONE),
                 &mut editor,
                 false
             ),
-            Action::Command("/quit".into())
+            Action::Command(":quit".into())
         );
     }
 
@@ -432,7 +430,9 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn ctrl_c_clears_a_full_buffer_and_quits_an_empty_one() {
+    fn ctrl_c_clears_the_buffer_and_never_leaves() {
+        // It used to quit on an empty prompt, which is the same keystroke as clearing one and
+        // told apart only by what happened to be in the box. `:q` is the way out now.
         let mut editor = Editor::new();
         editor.insert_str("draft");
         assert_eq!(
@@ -450,10 +450,19 @@ pub(super) mod tests {
                 &mut editor,
                 false
             ),
-            Action::Quit
+            Action::Redraw,
+            "a second one on an empty prompt still does not leave"
+        );
+        assert_eq!(
+            act(
+                press(KeyCode::Char('d'), KeyModifiers::CONTROL),
+                &mut editor,
+                false
+            ),
+            Action::Ignore,
+            "and neither does ctrl+d"
         );
     }
-
     #[test]
     fn ctrl_x_opens_the_external_editor() {
         let mut editor = Editor::new();
@@ -547,30 +556,30 @@ pub(super) mod tests {
 
     #[test]
     fn tab_accepts_the_highlighted_completion() {
-        let (mut editor, mut popup) = with_popup("/qu");
-        assert!(popup.is_some(), "a slash query opens the palette");
+        let (mut editor, mut popup) = with_popup(":qu");
+        assert!(popup.is_some(), "a colon query opens the palette");
         handle(
             press(KeyCode::Tab, KeyModifiers::NONE),
             &mut editor,
             &mut popup,
             false,
         );
-        assert_eq!(editor.text(), "/quit");
+        assert_eq!(editor.text(), ":quit");
         assert!(popup.is_none(), "accepting closes the popup");
     }
 
     #[test]
     fn enter_runs_the_command_the_palette_offered() {
         // Two presses to reach one command reads as a palette that does nothing, which is
-        // what `/model` looked like for as long as enter merely filled the box.
-        let (mut editor, mut popup) = with_popup("/qu");
+        // what `:model` looked like for as long as enter merely filled the box.
+        let (mut editor, mut popup) = with_popup(":qu");
         let action = handle(
             press(KeyCode::Enter, KeyModifiers::NONE),
             &mut editor,
             &mut popup,
             false,
         );
-        assert_eq!(action, Action::Command("/quit".into()));
+        assert_eq!(action, Action::Command(":quit".into()));
         assert_eq!(editor.text(), "", "and the prompt is spent");
     }
 
@@ -598,7 +607,7 @@ pub(super) mod tests {
 
     #[test]
     fn the_arrows_move_the_highlight_while_a_popup_is_open() {
-        let (mut editor, mut popup) = with_popup("/");
+        let (mut editor, mut popup) = with_popup(":");
         handle(
             press(KeyCode::Down, KeyModifiers::NONE),
             &mut editor,
@@ -612,12 +621,12 @@ pub(super) mod tests {
                 .map(|p| p.selected),
             Some(1)
         );
-        assert_eq!(editor.text(), "/", "history did not move the buffer");
+        assert_eq!(editor.text(), ":", "history did not move the buffer");
     }
 
     #[test]
     fn escape_dismisses_a_popup_before_it_interrupts() {
-        let (mut editor, mut popup) = with_popup("/");
+        let (mut editor, mut popup) = with_popup(":");
         let action = handle(
             press(KeyCode::Esc, KeyModifiers::NONE),
             &mut editor,
@@ -657,7 +666,7 @@ pub(super) mod tests {
 
     #[test]
     fn ctrl_c_dismisses_a_popup_before_it_clears_the_buffer() {
-        let (mut editor, mut popup) = with_popup("/qu");
+        let (mut editor, mut popup) = with_popup(":qu");
         handle(
             press(KeyCode::Char('c'), KeyModifiers::CONTROL),
             &mut editor,
@@ -665,7 +674,7 @@ pub(super) mod tests {
             false,
         );
         assert!(popup.is_none());
-        assert_eq!(editor.text(), "/qu", "the buffer is untouched");
+        assert_eq!(editor.text(), ":qu", "the buffer is untouched");
     }
 }
 
@@ -680,26 +689,26 @@ mod accept_tests {
     #[test]
     fn tab_taking_a_completion_says_so_rather_than_asking_for_a_redraw() {
         // The driver recomputes the popup after every key. Told only "redraw", it reopens the
-        // menu on the thing just chosen from it -- and `/help`, whose name is exactly what
+        // menu on the thing just chosen from it -- and `:help`, whose name is exactly what
         // offered it, can then never be submitted at all.
         let mut editor = Editor::new();
-        editor.insert_str("/hel");
+        editor.insert_str(":hel");
         let mut overlay: Option<axon_tui::overlay::Overlay> =
-            axon_tui::complete::resolve("/hel", 4, &|_| Vec::new()).map(Into::into);
+            axon_tui::complete::resolve(":hel", 4, &|_| Vec::new()).map(Into::into);
         assert!(overlay.is_some(), "the popup is open");
 
         let action = handle(press(KeyCode::Tab), &mut editor, &mut overlay, false);
         assert_eq!(action, Action::Accepted);
         assert!(overlay.is_none(), "and closed");
-        assert_eq!(editor.text(), "/help");
+        assert_eq!(editor.text(), ":help");
     }
 
     #[test]
     fn enter_after_a_tab_submits_what_was_taken() {
         let mut editor = Editor::new();
-        editor.insert_str("/help");
+        editor.insert_str(":help");
         let action = handle(press(KeyCode::Enter), &mut editor, &mut None, false);
-        assert_eq!(action, Action::Command("/help".to_owned()));
+        assert_eq!(action, Action::Command(":help".to_owned()));
     }
 }
 

@@ -19,7 +19,7 @@ fn highlight(open: &mut Option<axon_tui::overlay::Overlay>) -> usize {
 fn remembered() -> Editor {
     Editor::with_history(vec![
         "the oldest thing".to_owned(),
-        "/model".to_owned(),
+        ":model".to_owned(),
         "the newest thing".to_owned(),
     ])
 }
@@ -43,7 +43,7 @@ fn up_walks_back_through_earlier_prompts() {
 #[test]
 fn a_recalled_line_does_not_reopen_the_menu_over_itself() {
     // `Recalled` rather than `Redraw` is the whole fix: the driver rebuilds the popup from
-    // the prompt after every key *except* these, so recalling `/model` leaves the menu shut
+    // the prompt after every key *except* these, so recalling `:model` leaves the menu shut
     // and the next Up is still history's.
     let mut editor = remembered();
     let mut none = None;
@@ -60,14 +60,14 @@ fn a_recalled_line_does_not_reopen_the_menu_over_itself() {
     }
     assert_eq!(
         seen,
-        vec!["the newest thing", "/model", "the oldest thing"],
+        vec!["the newest thing", ":model", "the oldest thing"],
         "history walks straight past the slash command"
     );
 }
 
 #[test]
 fn the_menu_still_owns_the_arrows_while_there_is_menu_left() {
-    let (mut editor, mut popup) = with_popup("/");
+    let (mut editor, mut popup) = with_popup(":");
     assert!(popup.is_some(), "the premise: `/` opens the menu");
     let action = handle(
         press(KeyCode::Down, KeyModifiers::NONE),
@@ -96,7 +96,7 @@ fn up_at_the_top_of_the_menu_leaves_it_for_history() {
     // It used to wrap to the bottom, which made the menu a wall: typing `/` put it between
     // the user and every earlier prompt, with no key that got past it.
     let mut editor = Editor::with_history(vec!["an earlier prompt".to_owned()]);
-    editor.insert_str("/");
+    editor.insert_str(":");
     let (_, col) = editor.cursor();
     let line = editor.lines()[0].clone();
     let mut popup: Option<axon_tui::overlay::Overlay> =

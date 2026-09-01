@@ -87,8 +87,8 @@ glyphs! {
     collapse = "«", "At the end of an open tool block: click to fold it.";
     quote_rule = "│ ", "Down the left of a block quote.";
     notice_rule = "│ ", "Down the left of something the UI itself is saying.";
-    placeholder = "ask anything, or / for commands", "The prompt, before you type anything.";
-    placeholder_short = "/ for commands", "The same, on a screen too narrow for the whole of it.";
+    placeholder = "ask anything, or : for commands", "The prompt, before you type anything.";
+    placeholder_short = ": for commands", "The same, on a screen too narrow for the whole of it.";
     no_model = "no-model", "What the footer says when nothing is configured to answer.";
     decrypt_pool = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789#%&@$?*+=-<>/", "The characters the opening scramble draws from.";
     flicker_pool = "#%&@$?*+=~^<>/", "The symbols a character glitches to and back from.";

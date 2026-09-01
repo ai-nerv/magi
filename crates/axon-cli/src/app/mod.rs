@@ -368,7 +368,7 @@ impl App {
                 // `no-model` in a corner of the footer — true, and no help at all.
                 if unconfigured && empty && !self.choices.is_empty() {
                     let said = self.no_model.clone().unwrap_or_else(|| {
-                        "No model is configured. Type `/model` to choose one.".to_owned()
+                        "No model is configured. Type `:model` to choose one.".to_owned()
                     });
                     self.show_notice(said);
                 }
@@ -544,7 +544,7 @@ impl App {
 
     /// Append a local notice to the transcript.
     ///
-    /// Notices are UI-side only and never reach the journal: `/help` output is not something
+    /// Notices are UI-side only and never reach the journal: `:help` output is not something
     /// a future session should replay, and the daemon never authored it.
     pub fn show_notice(&mut self, text: String) {
         self.entries.push(Entry::Notice { text });
