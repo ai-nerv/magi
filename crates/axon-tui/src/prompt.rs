@@ -41,11 +41,21 @@ pub(crate) fn placeholder_spans(
     };
 
     let dim = Style::default().fg(colour::hint());
-    // The real cursor, on the first letter rather than in front of it. It is where typing would
-    // land, and typing lands on column zero whatever the box happens to be saying.
-    let real = Style::default()
-        .fg(colour::text())
-        .add_modifier(Modifier::REVERSED);
+    // Your own cursor, on the first letter rather than in front of it: typing lands on column
+    // zero whatever the box happens to be saying.
+    //
+    // Painted only in normal mode. In insert mode the terminal draws it as an underline, and a
+    // block painted into the same cell sits on top of that and says the other mode -- which is
+    // what an empty prompt did for every character you had not typed yet. `with_cursor` has
+    // followed this rule since the shapes were added; this is the same rule for the one path
+    // that has no text to draw it into.
+    let mine = if saying.mode.is_insert() {
+        dim
+    } else {
+        Style::default()
+            .fg(colour::text())
+            .add_modifier(Modifier::REVERSED)
+    };
     // The ghost, where the box is editing itself. Dimmer than yours, because it is not yours:
     // two cursors of equal weight is a screen with two places to type.
     //
@@ -66,7 +76,7 @@ pub(crate) fn placeholder_spans(
     let mut spans = Vec::new();
     let letters: Vec<char> = hint.chars().collect();
     if letters.is_empty() {
-        return vec![Span::styled(" ", real)];
+        return vec![Span::styled(" ", mine)];
     }
     for (at, letter) in letters.iter().enumerate() {
         let style = if saying
@@ -78,7 +88,7 @@ pub(crate) fn placeholder_spans(
         } else if saying.caret == Some(at) {
             ghost
         } else if at == 0 {
-            real
+            mine
         } else {
             dim
         };

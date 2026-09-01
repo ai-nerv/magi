@@ -208,3 +208,64 @@ mod ghost_tests {
         }
     }
 }
+
+/// Your own cursor on an empty prompt wears the shape of the mode you are in.
+#[cfg(test)]
+mod mine_tests {
+    use super::*;
+    use crate::tease::Saying;
+    use crate::vim::Mode;
+
+    /// The modifiers on column zero, once drawn.
+    fn first(mode: Mode) -> Modifier {
+        placeholder_spans(
+            60,
+            &Saying {
+                text: "ask anything",
+                mode,
+                ..Default::default()
+            },
+        )
+        .first()
+        .map(|span| span.style.add_modifier)
+        .unwrap_or_else(Modifier::empty)
+    }
+
+    #[test]
+    fn normal_mode_paints_a_block_there() {
+        assert!(first(Mode::Normal).contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn insert_mode_leaves_it_to_the_terminal() {
+        // The bug this exists for. An empty prompt painted a block on column zero whatever the
+        // mode was, so insert mode showed a block sitting on top of the terminal's underline --
+        // saying the other mode, on every character you had not typed yet.
+        for mode in [Mode::Insert, Mode::Command] {
+            assert!(
+                !first(mode).contains(Modifier::REVERSED),
+                "{mode:?} painted a block over the terminal's cursor"
+            );
+        }
+    }
+
+    #[test]
+    fn an_empty_placeholder_follows_the_same_rule() {
+        // The other path out of this function: nothing to say, so nothing to draw it into.
+        let drawn = |mode| {
+            placeholder_spans(
+                2,
+                &Saying {
+                    text: "far too long for two columns",
+                    mode,
+                    ..Default::default()
+                },
+            )
+            .first()
+            .map(|span| span.style.add_modifier)
+            .unwrap_or_else(Modifier::empty)
+        };
+        assert!(drawn(Mode::Normal).contains(Modifier::REVERSED));
+        assert!(!drawn(Mode::Insert).contains(Modifier::REVERSED));
+    }
+}
