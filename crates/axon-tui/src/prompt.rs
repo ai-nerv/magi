@@ -5,6 +5,10 @@
 //! into the line with inverse video rather than parked with the terminal's own cursor, which
 //! is what lets the block scroll and wrap without the cursor drifting off it.
 
+#[cfg(test)]
+#[path = "prompt/says.rs"]
+mod says_tests;
+
 use crate::colour;
 use crate::editor::Editor;
 use crate::glyph;
@@ -39,35 +43,42 @@ pub(crate) fn placeholder_spans(
     let dim = Style::default().fg(colour::hint());
     // The real cursor, on the first letter rather than in front of it. It is where typing would
     // land, and typing lands on column zero whatever the box happens to be saying.
-    let block = Style::default()
+    let real = Style::default()
         .fg(colour::text())
         .add_modifier(Modifier::REVERSED);
-    // The second one, where the box is editing itself. Dimmer, because it is not yours: two
-    // cursors of equal weight is a screen with two places to type.
-    let ghost = dim.add_modifier(Modifier::REVERSED);
-    // What it is about to take out. The same inversion as the ghost, because it *is* the ghost
-    // -- a block cursor over several characters is what a selection looks like.
-    let marked = ghost;
+    // The ghost, where the box is editing itself. Dimmer than yours, because it is not yours:
+    // two cursors of equal weight is a screen with two places to type.
+    //
+    // Two shapes, and it is always one of them. A block over the character it is on, the way
+    // normal mode sits on what it acts on; an underline while it is typing, because a bar
+    // belongs *between* two cells and a cell grid has no between -- reversing the next character
+    // instead would draw a block and say the wrong mode. It used to draw nothing at all in that
+    // case, so the ghost disappeared for the whole of the typing, which is most of the show.
+    let ghost = if saying.block {
+        dim.add_modifier(Modifier::REVERSED)
+    } else {
+        dim.add_modifier(Modifier::UNDERLINED)
+    };
+    // What it is about to take out: the same inversion as the block, because that is what a
+    // block cursor over several characters is.
+    let marked = dim.add_modifier(Modifier::REVERSED);
 
     let mut spans = Vec::new();
     let letters: Vec<char> = hint.chars().collect();
     if letters.is_empty() {
-        return vec![Span::styled(" ", block)];
+        return vec![Span::styled(" ", real)];
     }
     for (at, letter) in letters.iter().enumerate() {
-        let style = if at == 0 {
-            block
-        } else if saying
+        let style = if saying
             .marked
             .as_ref()
             .is_some_and(|span| span.contains(&at))
         {
             marked
-        } else if saying.caret == Some(at) && saying.block {
-            // A block only where the ghost is miming normal mode. A bar sits *between* two
-            // characters and has nothing to paint, so there it is left to the space it earns
-            // below -- the same rule the real cursor follows.
+        } else if saying.caret == Some(at) {
             ghost
+        } else if at == 0 {
+            real
         } else {
             dim
         };

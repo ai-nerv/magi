@@ -6,6 +6,10 @@
 //! When something is open under the prompt it takes the navigation keys first, so Tab, the arrows,
 //! Enter, and Escape mean "the popup" rather than "the prompt".
 
+#[cfg(test)]
+#[path = "keys/accept.rs"]
+mod accept_tests;
+
 mod modal;
 
 use axon_tui::Editor;

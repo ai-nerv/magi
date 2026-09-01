@@ -495,7 +495,7 @@ make.recipe{
   name = "gates",
   desc = "the architectural gates",
   run = function()
-    local names = { "gate-file-size", "gate-proto-size", "gate-reachable" }
+    local names = { "gate-file-size", "gate-modules", "gate-proto-size", "gate-reachable" }
     local failed = {}
     for _, name in ipairs(names) do
       local result = oslo.run{ "sh", "scripts/" .. name .. ".sh", capture = true }
