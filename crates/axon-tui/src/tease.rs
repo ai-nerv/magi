@@ -424,14 +424,14 @@ pub fn perform(from: &str, to: &str, caret: usize) -> VecDeque<Act> {
         });
     }
 
-    // `cw`, or `c2w`, or however many words are going. Shown first, and held three times the
+    // `cw`, or `c2w`, or however many words are going. Shown first, and held twice the
     // pause anything else here takes: it is the one moment worth looking at, and a change that
     // deletes before you have read what it deleted is a glitch rather than an edit.
     let span = span_of(from, cut.clone());
     if !span.is_empty() {
         script.push_back(Act::Mark {
             span: span.clone(),
-            over: (look * 3).max(step * 18),
+            over: (look * 2).max(step * 12),
         });
         script.push_back(Act::Cut(step * 2));
     }
