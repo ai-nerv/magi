@@ -20,7 +20,7 @@ pub fn text_room(width: u16, badge: &str) -> usize {
     let strip = if badge.is_empty() {
         0
     } else {
-        badge.chars().count() + 1
+        badge.chars().count() + 3
     };
     usize::from(width).saturating_sub(3 + strip)
 }
@@ -184,19 +184,20 @@ pub(crate) fn strip(badge: &str, rows: usize, row: usize) -> Vec<Span<'static>> 
     if badge.is_empty() {
         return Vec::new();
     }
-    // A space before it, so the text never touches it even when the line is full.
-    let worn = badge.chars().count() + 1;
+    // A padded space each side of the name, inverted along with it so it reads as one block, and
+    // a plain one after so the block does not sit against the border.
+    let worn = badge.chars().count() + 3;
     if row != rows / 2 {
         return vec![Span::raw(" ".repeat(worn))];
     }
     vec![
-        Span::raw(" "),
         Span::styled(
-            badge.to_owned(),
+            format!(" {badge} "),
             Style::default()
                 .fg(colour::hint())
                 .add_modifier(Modifier::REVERSED),
         ),
+        Span::raw(" "),
     ]
 }
 
@@ -270,7 +271,8 @@ mod badge_tests {
         // A margin only on the badge's own row would let the text above it run the full width,
         // and the block would reflow every time the prompt grew past a line.
         let rows = rows_with("one\ntwo\nthree", 50);
-        let wide = NAME.chars().count();
+        let wide = NAME.chars().count() + 3;
+        let worn = format!(" {NAME}  ");
         for row in &rows[1..rows.len() - 1] {
             // The strip is the last `wide` columns before the right border.
             let cells: Vec<char> = row.chars().collect();
@@ -278,7 +280,7 @@ mod badge_tests {
                 .iter()
                 .collect();
             assert!(
-                strip == NAME || strip.chars().all(|c| c == ' '),
+                strip == worn || strip.chars().all(|c| c == ' '),
                 "{strip:?} is neither the badge nor empty"
             );
         }

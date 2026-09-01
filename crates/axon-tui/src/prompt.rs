@@ -258,7 +258,19 @@ fn divider(
 
 /// Pad a row out so the right-hand bar lands at the edge.
 fn pad(mut spans: Vec<Span<'static>>, width: u16) -> Vec<Span<'static>> {
-    let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    // A folded row keeps the space it broke on, so it can stand one column past the width it was
+    // folded at. Invisible on its own, but it shoves whatever follows — the badge — off the end.
+    let mut used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    while used > usize::from(width) {
+        let Some(last) = spans.last_mut() else { break };
+        if !last.content.ends_with(' ') {
+            break;
+        }
+        let mut text = last.content.to_string();
+        text.pop();
+        last.content = text.into();
+        used -= 1;
+    }
     let room = usize::from(width).saturating_sub(used);
     if room > 0 {
         spans.push(Span::raw(" ".repeat(room)));
