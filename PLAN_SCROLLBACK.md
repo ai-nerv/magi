@@ -67,10 +67,11 @@ What axon sends. Everything but `cursor` is optional, and `raw` is the one that 
 
 ```jsonc
 {
+  "entry":  "e-7a1f",        // which message this block is part of. Blocks share it.
   "cursor": 41,              // axon's own numbering. memo never renumbers.
   "at":     1756600000,      // unix seconds. defaults to memo's clock.
   "role":   "assistant",     // user | assistant | tool
-  "kind":   "prose",         // prose | thinking | tool_result | summary
+  "kind":   "prose",         // prose | thinking | tool_call | tool_result | summary
   "text":   "…",             // for quoting and for search. NOT the record.
   "tool":   "shell",         // when it is one
 
@@ -93,14 +94,30 @@ record — losing it costs a nicer diagnostic, not a session.
 `Record` is `{"record":"entry","cursor":N,"entry":{…}}`, and `Entry` is internally tagged on
 `type`, snake_case. Six variants, and only five of them ever reach here:
 
-| `Entry` | `role` | `kind` | `text` |
-|---|---|---|---|
-| `User { id, text }` | `user` | `prose` | `text` |
-| `Assistant { text, thinking, stop_reason, … }` | `assistant` | `prose` | `text` |
-| `Tool { name, args, result }` | `tool` | `tool_result` | `result.output` |
-| `Branch { keeps }` | `assistant` | `summary` | `""` |
-| `Compaction { summary, replaces }` | `assistant` | `summary` | `summary` |
-| `Notice { text }` | — | — | **never sent.** Its own doc says it is never journalled: it is one UI's commentary, not the conversation. |
+**One block, one turn.** An `Assistant` entry carries prose, possibly a thought, and possibly
+several tool calls. Each becomes its own turn at its own cursor, and they share an `entry` — the
+entry's own `id`. That is what lets a span address one tool call rather than only the message
+around it, and it is what stops a bounded read handing back an assistant turn without the call
+it made: memo drops a leading part-message rather than showing a fragment of one.
+
+| `Entry` | blocks | `role` | `kind` | `text` |
+|---|---|---|---|---|
+| `User { id, text }` | one | `user` | `prose` | `text` |
+| `Assistant { thinking, … }` | one, if present | `assistant` | `thinking` | `thinking` |
+| `Assistant { text, … }` | one, if non-empty | `assistant` | `prose` | `text` |
+| `Assistant { calls }` | **one per call** | `assistant` | `tool_call` | the command or a rendering of the arguments |
+| `Tool { name, args, result }` | one | `tool` | `tool_result` | `result.output` |
+| `Branch { keeps }` | one | `assistant` | `summary` | `""` |
+| `Compaction { summary, replaces }` | one | `assistant` | `summary` | `summary` |
+| `Notice { text }` | — | — | — | **never sent.** Its own doc says it is never journalled: it is one UI's commentary, not the conversation. |
+
+**`entry` is the entry's `id`**, on every block of it. A turn that is its own message may leave
+it out; a plain `User` turn does.
+
+**`raw` goes on the first block only.** Restoring reassembles *messages*, not blocks, so the
+record belongs to the message — written once, and `replay --raw` emits it once. The other blocks
+exist to be read and addressed, never to be restored from. A turn memo was given no record for
+is skipped on replay rather than invented, which is what makes this work without a second rule.
 
 Everything the table drops — `id`, `signatures`, `usage`, `thought_signature`, `stop_reason`,
 `keeps`, `replaces` — rides in `raw` and comes back intact. The table is only what memo needs to
