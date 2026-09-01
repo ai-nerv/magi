@@ -132,7 +132,7 @@ mod tests {
         // cells say the same thing without asking to be read at all.
         let said = text_of(&render(&AgentStatus::Idle, 0));
         assert!(all_braille(&said), "{said:?}");
-        assert_eq!(said.chars().count(), crate::beacon::CELLS);
+        assert_eq!(said.chars().count(), crate::beacon::cells());
     }
 
     #[test]
@@ -154,7 +154,7 @@ mod tests {
         };
         let said = text_of(&render(&status, 0));
         assert!(all_braille(&said), "{said:?}");
-        assert_eq!(said.chars().count(), crate::beacon::CELLS);
+        assert_eq!(said.chars().count(), crate::beacon::cells());
     }
 
     #[test]
