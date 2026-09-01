@@ -1,10 +1,10 @@
-//! What each state puts on the wire, and the beam that draws it.
+//! What each state puts on the wire.
 //!
 //! The display is one instrument — a monitor — and the states differ in the signal running
-//! through it, not in what kind of thing they are. A beam sweeps left to right drawing the trace
-//! and wiping what was there, the way an ECG does, so every signal moves even when the signal
-//! itself is flat. That is the whole reason a flat line works here at all: on its own it is a
-//! static picture, and with a beam crossing it, it is an instrument saying nothing is happening.
+//! through it, not in what kind of thing they are. The trace scrolls, the way an ECG does: new
+//! samples arrive at the right and the line runs off to the left, continuously, always the full
+//! width. A flat line scrolling is a flat line, and that is exactly what it should be when
+//! nothing is running.
 //!
 //! Split from the module that packs and colours the dots because they are two different
 //! questions. Here is only geometry over time: a phase from zero to one goes in and a grid of
@@ -21,7 +21,16 @@ pub(super) type Dots = Vec<[bool; ROWS]>;
 /// baseline, the small P bump, the Q dip, the tall R spike, the S dip under the line, the
 /// broader T wave, and then a rest longer than everything before it. The rest is what makes it a
 /// pulse — a waveform with no pause in it reads as a signal, not a heart.
-const HEARTBEAT: [u8; 18] = [1, 1, 1, 2, 1, 0, 3, 3, 0, 1, 1, 2, 2, 1, 1, 1, 1, 1];
+///
+/// Nearly twice as long as the display is wide, and mostly flat, so what you see most of the
+/// time is a flat line with a beat travelling through it rather than a wall of waveform.
+const HEARTBEAT: [u8; 32] = [
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // the line
+    2, 1, // P
+    0, 3, 3, 0, // QRS
+    1, 2, 2, 1, // T
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, // and back to the line
+];
 
 /// Nothing at all, at the height the other signals rest at.
 const FLAT: [u8; 1] = [1];
@@ -34,11 +43,11 @@ const SQUARE: [u8; 8] = [3, 3, 3, 3, 0, 0, 0, 0];
 
 /// The same, tighter: a menu narrowing under what you type rather than a question to answer.
 ///
-/// Three cycles where [`SQUARE`] has one, and that is the whole difference -- so it has to be
-/// written as three. A four-sample table stretched over the display draws exactly the same one
-/// cycle the eight-sample one does, which is how these two came out pixel-identical the first
-/// time: the table is a shape, not a frequency, and the width is what sets the frequency.
-const CHOPPY: [u8; 12] = [3, 3, 0, 0, 3, 3, 0, 0, 3, 3, 0, 0];
+/// Half the period of [`SQUARE`], so twice as many cycles fit the display. That works because
+/// the trace scrolls rather than stretching to fit: a table is one period and the display shows
+/// as many of them as it has room for. While it did stretch, these two drew pixel-for-pixel the
+/// same picture — both were one cycle wide however many samples they were written with.
+const CHOPPY: [u8; 4] = [3, 3, 0, 0];
 
 /// What this state puts on the wire.
 fn signal(mood: Mood) -> &'static [u8] {
@@ -58,21 +67,24 @@ pub(super) fn draw(mood: Mood, phase: f32, columns: usize) -> Dots {
     monitor(signal(mood), phase, columns)
 }
 
-/// A beam sweeping left to right, drawing `signal` behind it and leaving blank ahead of it.
+/// The trace, scrolling: new samples arrive at the right and the line runs off to the left.
+///
+/// Continuous, and always the full width of the display. It swept before -- a beam crossing and
+/// wiping -- which meant half the display was blank at any moment and the trace was something
+/// being erased rather than something arriving. A monitor scrolls; the line is always there and
+/// what changes is what has just come in.
 ///
 /// The trace is joined vertically between neighbouring samples, for the same reason an
 /// oscilloscope joins its own: unconnected, the R spike is a dot floating three rows above a
 /// line, which reads as a speck of dust rather than a beat.
 fn monitor(signal: &[u8], phase: f32, columns: usize) -> Dots {
     let mut dots = vec![[false; ROWS]; columns];
-    let beam = (phase * columns as f32) as usize;
-    let at = |x: usize| {
-        let index = x * signal.len() / columns.max(1);
-        usize::from(signal[index.min(signal.len() - 1)])
-    };
-    let drawn = beam.min(columns.saturating_sub(1));
-    for (x, column) in dots.iter_mut().enumerate().take(drawn + 1) {
+    let scrolled = (phase * signal.len() as f32) as usize;
+    let at = |x: usize| usize::from(signal[(scrolled + x) % signal.len()]);
+    for (x, column) in dots.iter_mut().enumerate() {
         let here = at(x);
+        // Joined to the sample on its left, so a climb is a stroke and not two dots with air
+        // between them. The leftmost has nothing to its left and stands alone.
         let before = if x == 0 { here } else { at(x - 1) };
         for height in here.min(before)..=here.max(before) {
             column[ROWS - 1 - height.min(ROWS - 1)] = true;
@@ -97,7 +109,7 @@ fn breaking(phase: f32, columns: usize) -> Dots {
     dots
 }
 
-/// One instrument, one beam, and a different signal on the wire for each state.
+/// One instrument, one scrolling trace, and a different signal on the wire for each state.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,16 +129,15 @@ mod tests {
         Mood::Away,
     ];
 
-    /// How many dots are lit, over the whole display.
-    fn lit(dots: &Dots) -> usize {
-        dots.iter().flatten().filter(|on| **on).count()
-    }
-
     #[test]
-    fn every_state_moves() {
-        // The reason there is a beam at all. A flat line is a static picture on its own, and a
-        // static picture in the footer is indistinguishable from a UI that has stopped.
-        for mood in EVERY {
+    fn every_state_with_something_to_say_moves() {
+        // Resting and holding are not in this list, and that is the point of them: a flat line
+        // scrolling is a flat line, and a display that holds still is the clearest way to say
+        // nothing is running. Everything else has to be visibly doing something.
+        for mood in EVERY
+            .into_iter()
+            .filter(|m| !matches!(m, Mood::Resting | Mood::Holding))
+        {
             let first = draw(mood, 0.0, COLUMNS);
             assert!(
                 (1..STEPS).any(|step| draw(mood, step as f32 / STEPS as f32, COLUMNS) != first),
@@ -136,17 +147,19 @@ mod tests {
     }
 
     #[test]
-    fn the_beam_fills_the_display_and_starts_over() {
-        // Wipe and redraw, which is what gives a signal that never varies something to do. Not
-        // `Away`: there is no beam when the other end is gone, only a gap travelling along a
-        // line that is always the same length.
+    fn the_trace_is_always_the_full_width() {
+        // It swept before, wiping and redrawing, which left half the display blank at any
+        // moment. A monitor scrolls: the line is always there and what changes is what has just
+        // come in. `Away` is the exception it is meant to be -- that gap is the whole message.
         for mood in EVERY.into_iter().filter(|m| *m != Mood::Away) {
-            let drawn: Vec<usize> = (0..STEPS)
-                .map(|step| lit(&draw(mood, step as f32 / STEPS as f32, COLUMNS)))
-                .collect();
-            let most = drawn.iter().copied().max().unwrap_or(0);
-            let least = drawn.iter().copied().min().unwrap_or(0);
-            assert!(most > least, "{mood:?} draws the same amount throughout");
+            for step in 0..STEPS {
+                let dots = draw(mood, step as f32 / STEPS as f32, COLUMNS);
+                let empty = dots.iter().filter(|c| c.iter().all(|on| !on)).count();
+                assert_eq!(
+                    empty, 0,
+                    "{mood:?} at step {step} has {empty} blank columns"
+                );
+            }
         }
     }
 
@@ -210,9 +223,9 @@ mod tests {
         // Both are waiting on you and they are not waiting for the same thing: one wants an
         // answer, the other narrows under what you type. Same family, different beat.
         //
-        // Counted as edges *once drawn*, not as table lengths. Two tables of different lengths
-        // holding the same one cycle stretch to the same picture, which is exactly what these
-        // two did to begin with.
+        // Counted as edges *once drawn*, not as table lengths. While the trace stretched to fit,
+        // two tables of different lengths holding the same one cycle drew the same picture --
+        // which is exactly what these two did to begin with.
         let edges = |mood: Mood| {
             let dots = draw(mood, 1.0, COLUMNS);
             (1..COLUMNS).filter(|x| dots[*x] != dots[x - 1]).count()

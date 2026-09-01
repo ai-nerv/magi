@@ -5,9 +5,9 @@
 //! "working" looked identical to every other.
 //!
 //! So: braille, drawn as a monitor. Nine cells are eighteen dot columns by four dot rows, which
-//! is enough to draw a trace. A beam sweeps left to right, and what it draws is a heartbeat
-//! while a turn is running, a flat line when nothing is, and a square wave while something on
-//! screen is waiting on you. One instrument, one beam, and a different signal on the wire — so
+//! is enough to draw a trace. It scrolls, continuously, right to left, and what runs through it
+//! is a heartbeat while a turn is running, a flat line when nothing is, and a square wave while
+//! something on screen is waiting on you. One instrument and a different signal on the wire — so
 //! there is nothing to learn beyond what an ECG already taught everybody.
 //!
 //! `axon.ui.beacon_cells` sets the width, and the default is odd so the display lands on the
@@ -75,15 +75,14 @@ pub enum Mood {
 }
 
 impl Mood {
-    /// How long one sweep of the beam takes, as a multiple of the setting.
+    /// How long the trace takes to scroll one whole signal past, as a multiple of the setting.
     ///
-    /// The states that are waiting sweep slower than the states that are doing something, which
-    /// is the one thing the pace has to say. A heartbeat is a sweep and a beat together, so its
-    /// rate is a pulse rate: the built-in works out at a little under one a second.
+    /// For the heartbeat that is a pulse rate, since the signal is one beat: the built-in works
+    /// out at a beat every two seconds. For the rest it is how fast the wave travels.
     fn pace(self) -> (u64, u64) {
         match self {
             Self::Resting | Self::Holding => (3, 1),
-            Self::Working => (5, 4),
+            Self::Working => (2, 1),
             Self::Narrowing => (1, 1),
             Self::Asking => (3, 2),
             Self::Away => (2, 1),
