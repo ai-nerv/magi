@@ -63,6 +63,8 @@ pub enum Mood {
     Holding,
     /// A turn is running. A scanner crossing and coming back, easing into each turn.
     Working,
+    /// A completion popup is open and typing narrows it. Two markers closing on the middle.
+    Narrowing,
     /// A list or a permission is open and it is your move. A breath, in and out.
     Asking,
     /// The daemon is not there. A flat line with the signal dropping out of it.
@@ -78,7 +80,8 @@ impl Mood {
         match self {
             Self::Resting => (2, 1),
             Self::Holding => (1, 1),
-            Self::Working => (4, 5),
+            Self::Working => (3, 2),
+            Self::Narrowing => (2, 3),
             Self::Asking => (3, 2),
             Self::Away => (2, 1),
         }
@@ -95,6 +98,7 @@ impl Mood {
             Self::Resting => [colour::border(), colour::dim(), colour::muted()],
             Self::Holding => [colour::dim(), colour::muted(), colour::text()],
             Self::Working => [colour::border(), colour::muted(), colour::accent()],
+            Self::Narrowing => [colour::border(), colour::dim(), colour::typed()],
             Self::Asking => [colour::border(), colour::dim(), colour::warning()],
             Self::Away => [colour::border(), colour::dim(), colour::error()],
         }
@@ -120,23 +124,6 @@ impl Shape {
             dots: vec![[false; ROWS]; columns],
             heat: vec![0.0; columns],
         }
-    }
-
-    /// Light `column` to `strength`, as a bar growing from the middle row outwards.
-    ///
-    /// Vertically centred rather than growing off the floor, because the whole display is built
-    /// around a middle and a bar that grows one way is the same lopsidedness in the other axis.
-    fn light(&mut self, column: usize, strength: f32) {
-        if strength <= 0.0 || column >= self.dots.len() {
-            return;
-        }
-        // Rows in the order they light up: the line first, then out either side of it.
-        const ORDER: [usize; ROWS] = [2, 1, 3, 0];
-        let tall = (strength * ROWS as f32).ceil().clamp(1.0, ROWS as f32) as usize;
-        for row in &ORDER[..tall] {
-            self.dots[column][*row] = true;
-        }
-        self.heat[column] = self.heat[column].max(strength);
     }
 }
 
@@ -188,6 +175,7 @@ fn draw(mood: Mood, phase: f32, columns: usize) -> Shape {
         Mood::Resting => wave(phase, 0.8, 1.2, columns),
         Mood::Holding => wave(phase, 1.6, 1.5, columns),
         Mood::Working => scanner(phase, columns),
+        Mood::Narrowing => narrowing(phase, columns),
         Mood::Asking => breath(phase, columns),
         Mood::Away => dropout(phase, columns),
     }
@@ -212,31 +200,102 @@ fn wave(phase: f32, height: f32, waves: f32, columns: usize) -> Shape {
     shape
 }
 
-/// A scanner crossing and coming back, with a fringe either side of its core.
+/// How many dot columns either side of the scanner's core are lit.
 ///
-/// The one everybody knows, and the one thing on this display that was replaced rather than
-/// kept. It was a comet: a head with its tail on one side, which is a shape that looks right
-/// going one way and wrong going the other, and grew a hard triangular edge as it went. This is
-/// symmetric about its own core, so it looks the same in both directions and only the direction
-/// changes.
+/// Two, so the whole thing is five columns wide: one core and two fading either side. It used to
+/// be a quarter of the display, which meant it grew with the width and read as a slab.
+const REACH: f32 = 2.0;
+
+/// The rows the scanner uses: the middle two, and only ever those.
 ///
-/// Eased by [`swing`], which is the other half of it: a linear sweep arrives at the wall at full
-/// speed and reverses in a single frame, and nothing physical does that. This one slows into
-/// each turn and comes back out of it.
+/// It filled all four before, which on a nine-cell display is a blob the size of the footer's
+/// whole middle. Two rows is a lamp on a track; four is a bar chart having a moment.
+const TRACK: [usize; 2] = [1, 2];
+
+/// What fraction of the cycle the scanner spends out of sight at each end.
+const DWELL: f32 = 0.12;
+
+/// A lamp running a track: five columns wide, brightest in the middle, off the end at each turn.
+///
+/// The one thing on this display that was replaced rather than kept. It was a comet -- a head
+/// with its tail on one side -- which is a shape that looks right going one way and wrong going
+/// the other. This is symmetric about its own core, so it looks the same in both directions and
+/// only the direction changes.
+///
+/// It leaves the screen completely at each end and waits there before coming back. A scanner
+/// that stops with a sliver of itself still showing has not gone anywhere, it has just run out
+/// of room; going right off and pausing is the difference between a lamp on a track and a bar
+/// that fills up.
 fn scanner(phase: f32, columns: usize) -> Shape {
     let mut shape = Shape::blank(columns);
-    let span = columns as f32 - 1.0;
-    let core = swing(phase) * span;
-    let reach = (columns as f32 / 4.0).max(1.5);
+    let Some(core) = running(phase, columns) else {
+        return shape;
+    };
     for x in 0..columns {
-        let away = (x as f32 - core).abs();
-        // Linear falloff from the core, the same in both directions: a core and a fringe rather
-        // than a block with a hard edge, which is what makes it read as a lamp.
-        shape.light(x, (1.0 - away / reach).max(0.0));
+        // Linear falloff from the core, the same in both directions, so the middle column is
+        // the bright one and the pair either side of it fade out.
+        let lit = (1.0 - (x as f32 - core).abs() / (REACH + 1.0)).max(0.0);
+        if lit <= 0.0 {
+            continue;
+        }
+        for row in TRACK {
+            shape.dots[x][row] = true;
+        }
+        shape.heat[x] = lit;
     }
     shape
 }
 
+/// Where the scanner's core is, or `None` while it is waiting off the end.
+///
+/// The travel is `smooth`ed rather than linear because a sweep that arrives at the wall at full
+/// speed and reverses in a single frame is a rectangle going back and forth; easing into the
+/// turn is what makes it read as a machine. The two ends are one full width past the edge, so
+/// the last of the fringe is gone before it stops.
+fn running(phase: f32, columns: usize) -> Option<f32> {
+    let leg = (1.0 - DWELL * 2.0) / 2.0;
+    let from = -(REACH + 1.0);
+    let to = columns as f32 + REACH;
+    let (start, end, at) = if phase < leg {
+        (from, to, phase / leg)
+    } else if phase < leg + DWELL {
+        return None;
+    } else if phase < leg * 2.0 + DWELL {
+        (to, from, (phase - leg - DWELL) / leg)
+    } else {
+        return None;
+    };
+    Some(start + smooth(at) * (end - start))
+}
+
+/// Ease in and out of a journey: still at both ends, quickest through the middle.
+fn smooth(at: f32) -> f32 {
+    at * at * at.mul_add(-2.0, 3.0)
+}
+
+/// Two markers coming in from the ends towards the middle, over and over.
+///
+/// A completion popup is open and every keystroke narrows it, so the display narrows too. It is
+/// the one state that had none: `/` opened a menu and the footer went on drawing the slow wave
+/// it draws when nothing at all is happening, which is exactly wrong -- something *is*
+/// happening, you are in the middle of it, and it is not the same something as a permission ask.
+fn narrowing(phase: f32, columns: usize) -> Shape {
+    let mut shape = Shape::blank(columns);
+    let middle = (columns as f32 - 1.0) / 2.0;
+    let closing = smooth(phase) * middle;
+    for x in 0..columns {
+        let out = (x as f32 - middle).abs();
+        let lit = (1.0 - (out - (middle - closing)).abs() / 2.0).max(0.0);
+        if lit <= 0.0 {
+            continue;
+        }
+        for row in TRACK {
+            shape.dots[x][row] = true;
+        }
+        shape.heat[x] = shape.heat[x].max(lit);
+    }
+    shape
+}
 /// A bar in the middle breathing out to the edges and back.
 ///
 /// Symmetric on purpose. Everything else here travels, and a thing that grows in place is the
@@ -326,10 +385,11 @@ fn cell_of(dots: &[[bool; ROWS]], cell: usize) -> char {
 mod tests {
     use super::*;
 
-    const EVERY: [Mood; 5] = [
+    const EVERY: [Mood; 6] = [
         Mood::Resting,
         Mood::Holding,
         Mood::Working,
+        Mood::Narrowing,
         Mood::Asking,
         Mood::Away,
     ];
@@ -389,8 +449,10 @@ mod tests {
     #[test]
     fn every_state_has_something_lit_at_every_moment() {
         // An empty frame reads as the UI having died, which is the opposite of what any of
-        // these mean -- including `Away`, where the UI is the half that is still alive.
-        for mood in EVERY {
+        // these mean -- including `Away`, where the UI is the half that is still alive. The
+        // scanner is the exception and the only one: it leaves the screen on purpose, waits,
+        // and comes back, which is a different thing from never having been there.
+        for mood in EVERY.into_iter().filter(|m| *m != Mood::Working) {
             for tick in 0..STEPS {
                 let out = strip(mood, tick);
                 assert!(out.chars().any(|c| c != '\u{2800}'), "{mood:?} at {tick}");
@@ -457,8 +519,8 @@ mod tests {
     fn the_scanner_is_symmetric_about_its_core() {
         // The one thing that changed, and the reason it changed. The comet before it had its
         // tail on one side, which looks right going one way and wrong going the other. Sampled
-        // where the swing puts the core on the middle, so the display's own middle is the core's.
-        for at in [0.25, 0.75] {
+        // halfway through each leg, where the core is on the display's own middle.
+        for at in [0.19, 0.69] {
             let shape = scanner(at, COLUMNS);
             let last = COLUMNS - 1;
             for x in 0..COLUMNS / 2 {
@@ -472,27 +534,38 @@ mod tests {
     }
 
     #[test]
-    fn the_scanner_slows_into_its_turns() {
-        // A linear sweep hits the wall at full speed and reverses in one frame, which nothing
-        // physical does. Measured as distance covered: least at the ends, most in the middle.
-        let span = COLUMNS as f32 - 1.0;
-        let core = |at: f32| swing(at) * span;
-        let moved = |at: f32| (core(at + 0.02) - core(at)).abs();
+    fn the_scanner_leaves_the_screen_completely() {
+        // A scanner that stops with a sliver still showing has not gone anywhere, it has just
+        // run out of room. Off, entirely, at both ends -- and then it waits there.
+        let dark: Vec<f32> = (0..STEPS)
+            .map(|step| step as f32 / STEPS as f32)
+            .filter(|at| scanner(*at, COLUMNS).heat.iter().all(|hot| *hot <= 0.0))
+            .collect();
+        assert!(!dark.is_empty(), "it is never off the screen");
         assert!(
-            moved(0.25) > moved(0.0) * 4.0,
-            "the middle of the sweep is not much faster than the turn"
-        );
-        assert!(
-            moved(0.25) > moved(0.48) * 4.0,
-            "it does not slow into the far end either"
+            dark.iter().any(|at| *at < 0.5) && dark.iter().any(|at| *at > 0.5),
+            "it only leaves at one end: {dark:?}"
         );
     }
 
     #[test]
-    fn the_scanner_has_a_core_and_a_fringe() {
-        // Where the energy is. A block sliding back and forth is a rectangle; what makes this
-        // read as a lamp is that it is brightest in one place and falls away from it.
-        let shape = scanner(0.25, COLUMNS);
+    fn the_scanner_is_two_rows_and_five_columns() {
+        // Not a blob. Four rows across a nine-cell display is the size of the footer's whole
+        // middle, and a reach that scales with the width made it a slab on a wide terminal.
+        let shape = scanner(0.19, COLUMNS);
+        let lit: Vec<usize> = (0..COLUMNS).filter(|x| shape.heat[*x] > 0.0).collect();
+        // Five, or six when the core is sitting between two columns rather than on one --
+        // which is the fringe being drawn honestly, not the shape growing.
+        assert!((5..=6).contains(&lit.len()), "five columns wide: {lit:?}");
+        for x in lit {
+            let rows: Vec<usize> = (0..ROWS).filter(|row| shape.dots[x][*row]).collect();
+            assert_eq!(rows, vec![1, 2], "column {x} is not the middle two rows");
+        }
+    }
+
+    #[test]
+    fn the_scanner_is_brightest_in_its_middle() {
+        let shape = scanner(0.19, COLUMNS);
         let hottest = shape
             .heat
             .iter()
@@ -513,6 +586,53 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_scanner_slows_into_its_turns() {
+        // A linear sweep hits the wall at full speed and reverses in one frame, which nothing
+        // physical does. Measured as distance covered: least at the ends of a leg, most in the
+        // middle of it.
+        let at = |p: f32| running(p, COLUMNS).expect("still travelling");
+        let moved = |p: f32| (at(p + 0.01) - at(p)).abs();
+        assert!(
+            moved(0.19) > moved(0.01) * 3.0,
+            "the middle of a leg is not much faster than its start"
+        );
+        assert!(
+            moved(0.19) > moved(0.36) * 3.0,
+            "it does not slow into the far end either"
+        );
+    }
+
+    #[test]
+    fn narrowing_closes_on_the_middle() {
+        // A completion popup narrows as you type, so this does too. Two markers, coming in.
+        let out = |at: f32| {
+            let shape = narrowing(at, COLUMNS);
+            let middle = (COLUMNS as f32 - 1.0) / 2.0;
+            (0..COLUMNS)
+                .filter(|x| shape.heat[*x] > 0.0)
+                .map(|x| (x as f32 - middle).abs())
+                .fold(0.0, f32::max)
+        };
+        assert!(
+            out(0.9) < out(0.1),
+            "it is no closer to the middle at the end than the start"
+        );
+    }
+
+    #[test]
+    fn narrowing_is_not_what_a_permission_ask_draws() {
+        // `/` opening a menu drew the resting wave, which says nothing is happening -- and
+        // something is. It must also not be mistaken for the one state that wants an answer.
+        for step in 0..STEPS {
+            let at = step as f32 / STEPS as f32;
+            assert_ne!(
+                draw(Mood::Narrowing, at, COLUMNS).dots,
+                draw(Mood::Resting, at, COLUMNS).dots,
+                "step {step}: a popup looks like an idle session"
+            );
+        }
+    }
     #[test]
     fn the_breath_is_symmetric() {
         // It grows in place rather than travelling, which is the one shape here that does not
