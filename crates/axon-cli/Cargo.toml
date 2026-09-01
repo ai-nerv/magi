@@ -16,7 +16,6 @@ reqwest.workspace = true
 axon-model.workspace = true
 anyhow.workspace = true
 axon-ipc.workspace = true
-axon-journal.workspace = true
 axon-proto.workspace = true
 axon-host.workspace = true
 axon-lua.workspace = true
@@ -33,6 +32,7 @@ tokio.workspace = true
 tokio-stream.workspace = true
 
 [dev-dependencies]
+axon-journal.workspace = true
 serde_json.workspace = true
 
 [lints]
