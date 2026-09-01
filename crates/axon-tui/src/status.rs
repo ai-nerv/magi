@@ -10,67 +10,82 @@ use ratatui::text::{Line, Span};
 
 /// Render the status line.
 ///
-/// `tick` advances the spinner; the caller increments it on a timer so rendering stays a pure
+/// `tick` advances the display; the caller increments it on a timer so rendering stays a pure
 /// function of state.
 #[must_use]
 pub fn render(status: &AgentStatus, tick: usize) -> Line<'static> {
-    working(status, tick, true, None)
+    working(mood_of(status, true), tick)
 }
 
 /// The same, saying so when the daemon cannot be reached.
 #[must_use]
 pub fn connected(status: &AgentStatus, tick: usize, connected: bool) -> Line<'static> {
-    working(status, tick, connected, None)
+    working(mood_of(status, connected), tick)
 }
 
-/// The status line, with how long the turn has been running.
+/// What the display shows, from the agent alone.
 ///
-/// A spinner alone says something is happening and nothing about whether to keep waiting. Ten
-/// seconds and thirty seconds look identical, which is how a hung turn passes for a slow one.
-///
-/// A UI that has lost its socket looks exactly like an idle one: the prompt accepts text, the
-/// transcript sits there, and a submitted turn goes into a channel nobody is reading. The
-/// session is not lost -- the daemon owns it and the UI redials -- but a person typing into
-/// silence deserves to be told which silence it is.
+/// The UI picks its own — it knows about the prompt having text in it and about a list being
+/// open, and neither of those is anything the agent reports. This is the fallback for callers
+/// that only have the agent's word for it.
 #[must_use]
-pub fn working(
-    status: &AgentStatus,
-    tick: usize,
-    connected: bool,
-    elapsed: Option<std::time::Duration>,
-) -> Line<'static> {
+pub fn mood_of(status: &AgentStatus, connected: bool) -> crate::beacon::Mood {
     if !connected {
-        return spinner(
-            "Reconnecting to the daemon...".to_owned(),
-            tick,
-            colour::warning(),
-            None,
-        );
+        return crate::beacon::Mood::Away;
     }
     match status {
-        // Said rather than left blank. An empty left-hand column reads as a footer that has not
-        // loaded, and "nothing is happening" is a state worth naming -- it is the state you are
-        // in whenever it is your turn. No spinner: a turning frame beside it says work.
-        AgentStatus::Idle => Line::from(vec![Span::styled(
-            format!("   {}", crate::glyph::idle()),
-            Style::default().fg(colour::dim()),
-        )]),
-        AgentStatus::Working { label } => spinner(label.clone(), tick, colour::accent(), elapsed),
+        AgentStatus::Idle => crate::beacon::Mood::Resting,
+        AgentStatus::Working { .. } | AgentStatus::Retrying { .. } => crate::beacon::Mood::Working,
+    }
+}
+
+/// The display, and nothing else.
+///
+/// Words used to stand beside it here and they have gone to the prompt box, where there is room
+/// for them and where you are already looking. What is left is five cells of braille that never
+/// change width -- so nothing on the footer row moves when a turn starts or stops, which was the
+/// whole complaint about the line this replaced.
+#[must_use]
+pub fn working(mood: crate::beacon::Mood, tick: usize) -> Line<'static> {
+    Line::from(crate::beacon::render(mood, tick))
+}
+
+/// What the prompt box says about the turn it is waiting on.
+///
+/// In the box rather than the footer because the box is where you are looking while you wait,
+/// and because it is the one place with room for a sentence. It takes the placeholder's slot --
+/// which means it shows while the prompt is empty and gets out of the way the moment you type,
+/// and typing during a turn is allowed and always was.
+///
+/// Empty when there is nothing to say, which is what the placeholder falls back to.
+#[must_use]
+pub fn effort(status: &AgentStatus, elapsed: Option<std::time::Duration>) -> String {
+    match status {
+        AgentStatus::Idle => String::new(),
         AgentStatus::Retrying {
             attempt,
             max_attempts,
             delay_ms,
         } => {
+            // No elapsed clock: the countdown already says how long, and two numbers that both
+            // look like seconds and mean different things is worse than one.
             let seconds = delay_ms.div_ceil(1000);
-            let label =
-                format!("Retrying ({attempt}/{max_attempts}) in {seconds}s... (esc to cancel)");
-            // No elapsed clock: the countdown already says how long, and two numbers that
-            // both look like seconds and mean different things is worse than one.
-            spinner(label, tick, colour::warning(), None)
+            format!("retrying ({attempt}/{max_attempts}) in {seconds}s — esc to cancel")
+        }
+        AgentStatus::Working { label } => {
+            let doing = label.to_lowercase();
+            // Only once there is something to say. A clock that appears reading `0s` on every
+            // turn is noise for the nine turns in ten that finish before anyone looks at it.
+            match elapsed.filter(|e| e.as_secs() >= 1) {
+                Some(elapsed) => format!(
+                    "{doing} for {} — esc to interrupt, or type ahead",
+                    format_elapsed(elapsed)
+                ),
+                None => doing,
+            }
         }
     }
 }
-
 /// The note shown while the daemon is away and work is waiting for it.
 ///
 /// A prompt submitted while disconnected is not lost -- it sits in the command channel and
@@ -98,34 +113,6 @@ pub fn format_elapsed(elapsed: std::time::Duration) -> String {
     format!("{}m{:02}s", seconds / 60, seconds % 60)
 }
 
-fn spinner(
-    label: String,
-    tick: usize,
-    spinner_color: ratatui::style::Color,
-    elapsed: Option<std::time::Duration>,
-) -> Line<'static> {
-    let frame = crate::glyph::spinner(tick);
-    let mut spans = vec![
-        Span::styled(" ", Style::default()),
-        Span::styled(frame.to_owned(), Style::default().fg(spinner_color)),
-        Span::styled(" ", Style::default()),
-        Span::styled(label, Style::default().fg(colour::muted())),
-    ];
-    // Only once there is something to say. A clock that appears reading `0s` on every turn is
-    // noise for the nine turns in ten that finish before anyone looks at it.
-    if let Some(elapsed) = elapsed.filter(|e| e.as_secs() >= 1) {
-        spans.push(Span::styled(
-            format!("  {}", format_elapsed(elapsed)),
-            Style::default().fg(colour::dim()),
-        ));
-        spans.push(Span::styled(
-            "  esc to interrupt",
-            Style::default().fg(colour::dim()),
-        ));
-    }
-    Line::from(spans)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,34 +121,44 @@ mod tests {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
+    /// Whether every character of `text` is a braille cell.
+    fn all_braille(text: &str) -> bool {
+        !text.is_empty() && text.chars().all(|c| ('\u{2800}'..='\u{28FF}').contains(&c))
+    }
+
     #[test]
-    fn idle_says_so() {
-        // An empty left-hand column reads as a footer that has not loaded, and "nothing is
-        // happening" is the state you are in whenever it is your turn.
-        let line = render(&AgentStatus::Idle, 0);
-        assert_eq!(text_of(&line).trim(), crate::glyph::idle());
+    fn idle_is_the_display_and_no_words() {
+        // "waiting" was here and it is gone. It was read once and never again, and the four
+        // cells say the same thing without asking to be read at all.
+        let said = text_of(&render(&AgentStatus::Idle, 0));
+        assert!(all_braille(&said), "{said:?}");
+        assert_eq!(said.chars().count(), crate::beacon::CELLS);
     }
 
     #[test]
     fn idle_does_not_spin() {
         // A turning frame beside a word says work is happening, which is the one thing this
-        // state means is not.
-        let still = text_of(&render(&AgentStatus::Idle, 0));
-        for tick in 1..8 {
-            assert_eq!(text_of(&render(&AgentStatus::Idle, tick)), still);
+        // state means is not. What is there instead never grows a label.
+        for tick in 0..32 {
+            let said = text_of(&render(&AgentStatus::Idle, tick));
+            assert!(all_braille(&said), "tick {tick}: {said:?}");
         }
     }
 
     #[test]
-    fn working_shows_a_spinner_and_the_label() {
+    fn working_is_the_display_and_no_words_either() {
+        // The label went to the prompt box. Nothing on this row changes width when a turn
+        // starts, which was the whole complaint about the line this replaced.
         let status = AgentStatus::Working {
             label: "Thinking".into(),
         };
-        assert_eq!(text_of(&render(&status, 0)), " ⠋ Thinking");
+        let said = text_of(&render(&status, 0));
+        assert!(all_braille(&said), "{said:?}");
+        assert_eq!(said.chars().count(), crate::beacon::CELLS);
     }
 
     #[test]
-    fn the_spinner_advances_with_the_tick() {
+    fn the_display_advances_with_the_tick() {
         let status = AgentStatus::Working { label: "x".into() };
         let a = text_of(&render(&status, 0));
         let b = text_of(&render(&status, 1));
@@ -175,11 +172,8 @@ mod tests {
             max_attempts: 5,
             delay_ms: 1500,
         };
-        assert!(
-            text_of(&render(&status, 0)).contains("(2/5) in 2s"),
-            "{}",
-            text_of(&render(&status, 0))
-        );
+        let said = effort(&status, None);
+        assert!(said.contains("(2/5) in 2s"), "{said}");
     }
 }
 
@@ -192,11 +186,16 @@ mod connection_tests {
     }
 
     #[test]
-    fn a_lost_daemon_is_said_out_loud() {
+    fn a_lost_daemon_is_shown_not_said() {
         // A UI with no socket looks exactly like an idle one: the prompt takes text and a
-        // submitted turn goes into a channel nobody is reading.
-        let line = connected(&AgentStatus::Idle, 0, false);
-        assert!(text(&line).contains("Reconnecting"), "{}", text(&line));
+        // submitted turn goes into a channel nobody is reading. The word for it is gone with
+        // every other word on this row, so the display is what has to carry it.
+        let away = text(&connected(&AgentStatus::Idle, 0, false));
+        let idle = text(&connected(&AgentStatus::Idle, 0, true));
+        assert_ne!(
+            away, idle,
+            "{away} reads the same as a session that is fine"
+        );
     }
 
     #[test]
@@ -208,12 +207,21 @@ mod connection_tests {
         };
         let line = connected(&working, 0, false);
         assert!(!text(&line).contains("Thinking"), "{}", text(&line));
+        assert_eq!(
+            text(&line),
+            text(&connected(&AgentStatus::Idle, 0, false)),
+            "the daemon being away outranks whatever it last said"
+        );
     }
 
     #[test]
-    fn a_connected_idle_session_says_it_is_waiting() {
-        let line = connected(&AgentStatus::Idle, 0, true);
-        assert_eq!(text(&line).trim(), crate::glyph::idle());
+    fn a_connected_idle_session_is_not_an_absent_one() {
+        // Both are "nothing is happening" and they used to draw the same nothing. The whole
+        // reason the display has an `Away` state is that a UI with no daemon behind it looked
+        // exactly like an idle one.
+        let idle = text(&connected(&AgentStatus::Idle, 0, true));
+        let away = text(&connected(&AgentStatus::Idle, 0, false));
+        assert_ne!(idle, away);
     }
 }
 
@@ -222,10 +230,6 @@ mod elapsed_tests {
     use super::*;
     use std::time::Duration;
 
-    fn text_of(line: &Line<'_>) -> String {
-        line.spans.iter().map(|s| s.content.as_ref()).collect()
-    }
-
     #[test]
     fn a_running_turn_says_how_long_it_has_been_running() {
         // A spinner alone makes ten seconds and thirty look the same, which is how a hung
@@ -233,8 +237,8 @@ mod elapsed_tests {
         let status = AgentStatus::Working {
             label: "Thinking".into(),
         };
-        let line = working(&status, 0, true, Some(Duration::from_secs(12)));
-        assert!(text_of(&line).contains("12s"), "{}", text_of(&line));
+        let said = effort(&status, Some(Duration::from_secs(12)));
+        assert!(said.contains("12s"), "{said}");
     }
 
     #[test]
@@ -242,8 +246,8 @@ mod elapsed_tests {
         let status = AgentStatus::Working {
             label: "Thinking".into(),
         };
-        let line = working(&status, 0, true, Some(Duration::from_millis(200)));
-        assert!(!text_of(&line).contains("0s"), "{}", text_of(&line));
+        let said = effort(&status, Some(Duration::from_millis(200)));
+        assert!(!said.contains("0s"), "{said}");
     }
 
     #[test]
@@ -258,8 +262,8 @@ mod elapsed_tests {
         let status = AgentStatus::Working {
             label: "Thinking".into(),
         };
-        let line = working(&status, 0, true, Some(Duration::from_secs(3)));
-        assert!(text_of(&line).contains("esc"), "{}", text_of(&line));
+        let said = effort(&status, Some(Duration::from_secs(3)));
+        assert!(said.contains("esc"), "{said}");
     }
 
     #[test]
@@ -270,8 +274,7 @@ mod elapsed_tests {
             max_attempts: 5,
             delay_ms: 4000,
         };
-        let line = working(&status, 0, true, Some(Duration::from_secs(30)));
-        let text = text_of(&line);
+        let text = effort(&status, Some(Duration::from_secs(30)));
         assert!(text.contains("in 4s"), "{text}");
         assert!(!text.contains("30s"), "{text}");
     }

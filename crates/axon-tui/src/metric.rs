@@ -87,6 +87,8 @@ metrics! {
     tease_after_ms: u64 = 30_000, 0, "Idle time before the empty prompt starts writing to itself. Zero is off.";
     tease_step_ms: u64 = 45, 1, "How long one character of that takes.";
     tease_doubt_ms: u64 = 900, 0, "How long the word it regrets sits there before it is taken back.";
+    beacon_ms: u64 = 1_000, 1, "One cycle of the four-cell display under the box.";
+    footer_pad: u16 = 3, 0, "Columns held clear at each end of the footer.";
 }
 
 impl Default for Metrics {

@@ -8,6 +8,7 @@
 //! `xtra/pi/packages/coding-agent/src/modes/interactive`. The palette is not, and is not anybody
 //! else's either: see [`colour`].
 
+pub mod beacon;
 pub mod border;
 pub mod colour;
 pub mod complete;

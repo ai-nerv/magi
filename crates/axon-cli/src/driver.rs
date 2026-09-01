@@ -503,6 +503,10 @@ fn footer_data(app: &App) -> FooterData {
     let window = app.model.as_ref().map_or(0, |m| m.context_window);
     FooterData {
         identity: app.identity.full(),
+        model: app.model.as_ref().map_or_else(
+            || axon_tui::glyph::no_model().to_owned(),
+            |model| model.name.clone(),
+        ),
         input_tokens: app.usage().prompt_tokens(),
         output_tokens: app.usage().output,
         context_window: window,

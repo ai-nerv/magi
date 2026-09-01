@@ -84,7 +84,7 @@ axon.model = "anthropic/claude-sonnet-4-5"
 --   edge_horizontal  edge_vertical
 --   marker  no_marker  ellipsis  bullet
 --   more_rule  expand  collapse  quote_rule  notice_rule
---   placeholder_short  no_model  idle  decrypt_pool  flicker_pool  type_stages
+--   placeholder_short  no_model  decrypt_pool  flicker_pool  type_stages  heartbeat
 --   spinner       a list of frames: { "◐", "◓", "◑", "◒" }
 --   placeholders  a list of lines, one shown a session (see below)
 --
@@ -99,6 +99,18 @@ axon.model = "anthropic/claude-sonnet-4-5"
 --   frame_ms  scan_speed  scan_nose  scan_tail
 --   rest_pace  hold_pace  work_pace
 --   decrypt_ms  flicker_odds  flicker_ms  type_reveal_ms
+--   tease_after_ms  tease_step_ms  tease_doubt_ms
+--   beacon_ms  footer_pad
+
+-- The footer is three columns held clear of both edges: what this session calls itself on the
+-- left, the display in the middle, the model on the right. The display is five braille cells --
+-- ten dots by four -- and each state draws its own thing on it: a slow wave at rest, a comet
+-- while a turn runs, a breath while a list waits on you, a broken line when the daemon is away.
+-- Every column carries a heat as well as a shape, so the cells are coloured by where the energy
+-- in it is. `beacon_ms` is one cycle; each state runs at its own multiple of it.
+--
+axon.ui.footer_pad = 3
+axon.ui.beacon_ms  = 1000
 
 -- The opening scramble: text lands as noise and resolves into itself over `decrypt_ms`
 -- milliseconds. Zero, the built-in, is no effect -- set it to switch the thing on. It runs once,

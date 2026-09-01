@@ -57,14 +57,21 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     // is no second region under it. What it may not do is take the whole screen: one row of
     // transcript stays, or a list opened mid-turn hides the turn it is about.
     let around = metric::footer_rows() + more_rows + 1;
-    // The box wears the model and the footer wears the session name, which is the way round
-    // that matches how often you look at each. Cut to a third of the width first: the strip is
-    // reserved on every row, so a sixty-character model id would take the box with it.
-    let named = app.model.as_ref().map_or_else(
-        || axon_tui::glyph::no_model().to_owned(),
-        |model| model.name.clone(),
-    );
-    let badge = footer::fit_path(&named, usize::from(area.width) / 3);
+    // The box wears the usage: it is the number you want while you are deciding what to send,
+    // and the box is where you are looking when you decide. Cut to a third of the width first --
+    // the strip is reserved on every row, so anything long here takes the whole prompt with it.
+    let badge = footer::usage(footer_data);
+    let badge = if badge.chars().count() <= usize::from(area.width) / 3 {
+        badge
+    } else {
+        // The window is the part that matters when there is not room for all of it: the totals
+        // are a tally and this one is a limit you are walking towards.
+        footer::usage(&footer::FooterData {
+            input_tokens: 0,
+            output_tokens: 0,
+            ..footer_data.clone()
+        })
+    };
     let text_rows = prompt::text_rows(&app.editor, rows, area.width, &badge);
     let room = usize::from(rows.saturating_sub(around)).saturating_sub(text_rows + 3);
     // Keyed on what is open, so a permission ask after a model list is a second opening while
@@ -77,6 +84,23 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
         .map(|open| open.render(area.width.saturating_sub(metric::gutter() + 1)))
         .unwrap_or_default();
     menu.truncate(room);
+    // While a turn runs the box says so, in the placeholder's slot: it is where you are looking
+    // and it is the one place with room for a sentence. It gets out of the way the moment you
+    // type, and typing during a turn is allowed and always was. The tease stays out of it --
+    // a box writing to itself while the agent works is two things claiming the same line.
+    let effort = status::effort(app.status(), app.elapsed());
+    let saying = if effort.is_empty() {
+        axon_tui::tease::Saying {
+            badge: &badge,
+            ..app.tease.saying()
+        }
+    } else {
+        axon_tui::tease::Saying {
+            text: &effort,
+            caret: None,
+            badge: &badge,
+        }
+    };
     let prompt_lines = prompt::render(
         &app.editor,
         area.width,
@@ -84,10 +108,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
         app.scan_tick(),
         scan,
         &menu,
-        axon_tui::tease::Saying {
-            badge: &badge,
-            ..app.tease.saying()
-        },
+        saying,
     );
     let prompt_rows = u16::try_from(prompt_lines.len())
         .unwrap_or(u16::MAX)
@@ -158,7 +179,24 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
         );
     }
 
-    let mut status_line = status::working(app.status(), app.tick, app.connected, app.elapsed());
+    // The UI picks the mood, not the agent: a list being open and the prompt having text in it
+    // are both states worth showing and neither is anything the daemon reports.
+    let mood = if !app.connected {
+        axon_tui::beacon::Mood::Away
+    } else if app.is_busy() {
+        axon_tui::beacon::Mood::Working
+    } else if app
+        .overlay
+        .as_ref()
+        .is_some_and(|open| !open.is_completion())
+    {
+        axon_tui::beacon::Mood::Asking
+    } else if app.editor.is_blank() {
+        axon_tui::beacon::Mood::Resting
+    } else {
+        axon_tui::beacon::Mood::Holding
+    };
+    let mut status_line = status::working(mood, app.tick);
     if !app.connected {
         status_line.spans.extend(status::queued(app.queued));
     }
