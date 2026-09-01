@@ -108,7 +108,9 @@ axon.model = "anthropic/claude-sonnet-4-5"
 -- wave once something is typed, a scanner crossing and easing into each turn while a turn runs,
 -- a breath while a list waits on you, a line parting from the middle when the daemon is away.
 -- Every column carries a heat as well as a shape, so the cells are coloured by where the energy
--- in it is. Every shape is symmetric about the middle, which is why the cell count is odd.
+-- in it is. `beacon_cells` is a preference, not a promise: the display is centred on the row, and
+-- landing on the exact middle needs it to be the same parity as the terminal is wide, so it is
+-- widened by one where it has to be.
 --
 axon.ui.footer_pad   = 3
 axon.ui.beacon_ms    = 1000

@@ -196,7 +196,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     } else {
         axon_tui::beacon::Mood::Holding
     };
-    let mut status_line = status::working(mood, app.tick);
+    let mut status_line = status::working(mood, app.tick, area.width);
     if !app.connected {
         status_line.spans.extend(status::queued(app.queued));
     }

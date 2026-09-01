@@ -525,3 +525,39 @@ pub fn pressure(data: &FooterData) -> ratatui::style::Color {
         _ => colour::hint(),
     }
 }
+
+/// And the display lands on the exact middle of the screen, not just of the space it was given.
+#[cfg(test)]
+mod middle_tests {
+    use super::*;
+
+    #[test]
+    fn the_display_sits_on_the_screens_own_middle() {
+        // The two ends are pinned to the edges, so anything off-centre between them is visible.
+        // Checked at both parities of terminal width, which is the case that needed the work.
+        for screen in 60..160u16 {
+            let cells = crate::beacon::fitted(screen);
+            let data = FooterData {
+                identity: "axum/main/alpha".into(),
+                model: "claude-opus-5".into(),
+                ..FooterData::default()
+            };
+            let marks = vec![Span::raw("#".repeat(cells))];
+            let line: String = render(&data, &marks, screen)[0]
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+            let at = line.find('#').map(|byte| line[..byte].chars().count());
+            let Some(at) = at else {
+                panic!("width {screen}: the display was dropped from {line:?}");
+            };
+            // Its own middle against the screen's: equal space either side, to the column.
+            let after = usize::from(screen) - at - cells;
+            assert_eq!(
+                at, after,
+                "width {screen}: {at} columns before it and {after} after"
+            );
+        }
+    }
+}

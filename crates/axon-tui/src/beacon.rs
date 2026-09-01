@@ -29,15 +29,25 @@ use ratatui::text::Span;
 /// Dot rows down the display.
 const ROWS: usize = 4;
 
-/// How many cells wide it is, as configured.
+/// How many cells wide it is on a screen this wide.
+///
+/// `axon.ui.beacon_cells` asks for a width; this is the one it gets. The display is centred on
+/// the row, and a centred thing lands on the exact middle only when the space left over either
+/// side of it is the same -- which needs the display and the screen to be the same parity. Odd
+/// display on an even screen is half a column off centre, forever, and on a row whose other two
+/// columns are pinned to the edges that is visible.
+///
+/// So the asked-for width is taken as a preference and moved by one where it has to be. Up
+/// rather than down, because a display that grows by a cell reads as the same display and one
+/// that shrinks below what was asked for reads as a bug.
 #[must_use]
-pub fn cells() -> usize {
-    usize::from(crate::metric::beacon_cells()).max(1)
-}
-
-/// Dot columns across it: two to a cell.
-fn columns() -> usize {
-    cells() * 2
+pub fn fitted(screen: u16) -> usize {
+    let asked = usize::from(crate::metric::beacon_cells()).max(1);
+    if usize::from(screen) % 2 == asked % 2 {
+        asked
+    } else {
+        asked + 1
+    }
 }
 
 /// What the session is doing, as the display draws it.
@@ -105,10 +115,10 @@ struct Shape {
 
 impl Shape {
     /// An empty display of the configured width.
-    fn blank() -> Self {
+    fn blank(columns: usize) -> Self {
         Self {
-            dots: vec![[false; ROWS]; columns()],
-            heat: vec![0.0; columns()],
+            dots: vec![[false; ROWS]; columns],
+            heat: vec![0.0; columns],
         }
     }
 
@@ -132,10 +142,10 @@ impl Shape {
 
 /// The display as it stands this frame.
 #[must_use]
-pub fn render(mood: Mood, tick: usize) -> Vec<Span<'static>> {
-    let shape = draw(mood, phase(mood, tick));
+pub fn render(mood: Mood, tick: usize, cells: usize) -> Vec<Span<'static>> {
+    let shape = draw(mood, phase(mood, tick), cells * 2);
     let ramp = mood.ramp();
-    (0..cells())
+    (0..cells)
         .map(|cell| {
             // A cell is two columns and one colour, so it takes the hotter of the two rather
             // than their average: a scanner's core landing in the right half of a cell should
@@ -173,13 +183,13 @@ fn swing(phase: f32) -> f32 {
 ///
 /// Split from [`render`] so a test can say what a state draws without going through spans and
 /// colours to find out.
-fn draw(mood: Mood, phase: f32) -> Shape {
+fn draw(mood: Mood, phase: f32, columns: usize) -> Shape {
     match mood {
-        Mood::Resting => wave(phase, 0.8, 1.2),
-        Mood::Holding => wave(phase, 1.6, 1.5),
-        Mood::Working => scanner(phase),
-        Mood::Asking => breath(phase),
-        Mood::Away => dropout(phase),
+        Mood::Resting => wave(phase, 0.8, 1.2, columns),
+        Mood::Holding => wave(phase, 1.6, 1.5, columns),
+        Mood::Working => scanner(phase, columns),
+        Mood::Asking => breath(phase, columns),
+        Mood::Away => dropout(phase, columns),
     }
 }
 
@@ -189,14 +199,14 @@ fn draw(mood: Mood, phase: f32) -> Shape {
 /// one. Unjoined, a wave with any real amplitude is a scatter of dots that reads as noise. The
 /// heat is how high the line has climbed, so the crests are the lit part and the troughs sit
 /// back in the border grey — which is what gives a wave only two rows tall anything to read.
-fn wave(phase: f32, height: f32, waves: f32) -> Shape {
+fn wave(phase: f32, height: f32, waves: f32, columns: usize) -> Shape {
     let at = |x: usize| {
-        let turn = phase + x as f32 / columns() as f32 * waves;
+        let turn = phase + x as f32 / columns as f32 * waves;
         (turn * std::f32::consts::TAU).sin()
     };
     let middle = (ROWS as f32 - 1.0) / 2.0;
-    let mut shape = trace(|x| middle + at(x) * height / 2.0);
-    for x in 0..columns() {
+    let mut shape = trace(|x| middle + at(x) * height / 2.0, columns);
+    for x in 0..columns {
         shape.heat[x] = at(x).mul_add(0.5, 0.5);
     }
     shape
@@ -213,12 +223,12 @@ fn wave(phase: f32, height: f32, waves: f32) -> Shape {
 /// Eased by [`swing`], which is the other half of it: a linear sweep arrives at the wall at full
 /// speed and reverses in a single frame, and nothing physical does that. This one slows into
 /// each turn and comes back out of it.
-fn scanner(phase: f32) -> Shape {
-    let mut shape = Shape::blank();
-    let span = columns() as f32 - 1.0;
+fn scanner(phase: f32, columns: usize) -> Shape {
+    let mut shape = Shape::blank(columns);
+    let span = columns as f32 - 1.0;
     let core = swing(phase) * span;
-    let reach = (columns() as f32 / 4.0).max(1.5);
-    for x in 0..columns() {
+    let reach = (columns as f32 / 4.0).max(1.5);
+    for x in 0..columns {
         let away = (x as f32 - core).abs();
         // Linear falloff from the core, the same in both directions: a core and a fringe rather
         // than a block with a hard edge, which is what makes it read as a lamp.
@@ -233,14 +243,14 @@ fn scanner(phase: f32) -> Shape {
 /// one shape that does not read as progress — which is the point: nothing is progressing, it is
 /// your move. The heat is the breath itself rather than the distance from the middle, so the
 /// whole display brightens as it opens instead of the edges always being the cold part.
-fn breath(phase: f32) -> Shape {
-    let mut shape = Shape::blank();
+fn breath(phase: f32, columns: usize) -> Shape {
+    let mut shape = Shape::blank(columns);
     let open = swing(phase);
     // Never all the way shut. A frame with nothing lit reads as the UI having died, which is
     // the one thing none of these states mean -- so it bottoms out at the two middle columns.
-    let reach = (open * columns() as f32 / 2.0).max(0.5);
-    let middle = (columns() as f32 - 1.0) / 2.0;
-    for x in 0..columns() {
+    let reach = (open * columns as f32 / 2.0).max(0.5);
+    let middle = (columns as f32 - 1.0) / 2.0;
+    for x in 0..columns {
         let out = (x as f32 - middle).abs();
         if out > reach {
             continue;
@@ -260,31 +270,31 @@ fn breath(phase: f32) -> Shape {
 /// hung display looks like. The gap moving is the part that says the UI is still running and it
 /// is the other end that is missing. The columns either side of the break are the hot ones, so
 /// it reads as an arc across the gap rather than as a line with a bite out of it.
-fn dropout(phase: f32) -> Shape {
-    let mut shape = Shape::blank();
-    let gap = (phase * columns() as f32) as usize % columns();
-    let after = (gap + 1) % columns();
-    for x in 0..columns() {
+fn dropout(phase: f32, columns: usize) -> Shape {
+    let mut shape = Shape::blank(columns);
+    let gap = (phase * columns as f32) as usize % columns;
+    let after = (gap + 1) % columns;
+    for x in 0..columns {
         if x == gap || x == after {
             continue;
         }
         shape.dots[x][ROWS - 2] = true;
-        let beside = x == (gap + columns() - 1) % columns() || x == (after + 1) % columns();
+        let beside = x == (gap + columns - 1) % columns || x == (after + 1) % columns;
         shape.heat[x] = if beside { 1.0 } else { 0.0 };
     }
     shape
 }
 
 /// Light a joined line through the height `at` gives for each column.
-fn trace(at: impl Fn(usize) -> f32) -> Shape {
-    let mut shape = Shape::blank();
+fn trace(at: impl Fn(usize) -> f32, columns: usize) -> Shape {
+    let mut shape = Shape::blank(columns);
     let row_of = |height: f32| {
         let clamped = height.round().clamp(0.0, ROWS as f32 - 1.0);
         ROWS - 1 - clamped as usize
     };
-    for x in 0..columns() {
+    for x in 0..columns {
         let here = row_of(at(x));
-        let previous = row_of(at(if x == 0 { columns() - 1 } else { x - 1 }));
+        let previous = row_of(at(if x == 0 { columns - 1 } else { x - 1 }));
         for row in here.min(previous)..=here.max(previous) {
             shape.dots[x][row] = true;
         }
@@ -327,9 +337,15 @@ mod tests {
     /// Where in a cycle to sample. Enough to catch a state that is only wrong at one end.
     const STEPS: usize = 64;
 
+    /// A width to draw at. Odd, like the built-in.
+    const CELLS: usize = 9;
+
+    /// And its dot COLUMNS.
+    const COLUMNS: usize = CELLS * 2;
+
     /// The cells as one string.
     fn strip(mood: Mood, tick: usize) -> String {
-        render(mood, tick)
+        render(mood, tick, CELLS)
             .iter()
             .map(|s| s.content.to_string())
             .collect()
@@ -337,7 +353,10 @@ mod tests {
 
     /// The colour of each cell.
     fn colours(mood: Mood, tick: usize) -> Vec<Option<Color>> {
-        render(mood, tick).iter().map(|s| s.style.fg).collect()
+        render(mood, tick, CELLS)
+            .iter()
+            .map(|s| s.style.fg)
+            .collect()
     }
 
     #[test]
@@ -345,7 +364,7 @@ mod tests {
         for mood in EVERY {
             for tick in 0..STEPS {
                 let out = strip(mood, tick);
-                assert_eq!(out.chars().count(), cells(), "{mood:?} at {tick}: {out:?}");
+                assert_eq!(out.chars().count(), CELLS, "{mood:?} at {tick}: {out:?}");
                 assert!(
                     out.chars().all(|c| ('\u{2800}'..='\u{28FF}').contains(&c)),
                     "{mood:?} at {tick}: {out:?}"
@@ -400,8 +419,8 @@ mod tests {
         for step in 0..STEPS {
             let at = step as f32 / STEPS as f32;
             assert_ne!(
-                draw(Mood::Working, at).dots,
-                draw(Mood::Asking, at).dots,
+                draw(Mood::Working, at, COLUMNS).dots,
+                draw(Mood::Asking, at, COLUMNS).dots,
                 "at step {step} the scanner and the breath draw the same thing"
             );
         }
@@ -440,9 +459,9 @@ mod tests {
         // tail on one side, which looks right going one way and wrong going the other. Sampled
         // where the swing puts the core on the middle, so the display's own middle is the core's.
         for at in [0.25, 0.75] {
-            let shape = scanner(at);
-            let last = columns() - 1;
-            for x in 0..columns() / 2 {
+            let shape = scanner(at, COLUMNS);
+            let last = COLUMNS - 1;
+            for x in 0..COLUMNS / 2 {
                 assert_eq!(
                     shape.dots[x],
                     shape.dots[last - x],
@@ -456,7 +475,7 @@ mod tests {
     fn the_scanner_slows_into_its_turns() {
         // A linear sweep hits the wall at full speed and reverses in one frame, which nothing
         // physical does. Measured as distance covered: least at the ends, most in the middle.
-        let span = columns() as f32 - 1.0;
+        let span = COLUMNS as f32 - 1.0;
         let core = |at: f32| swing(at) * span;
         let moved = |at: f32| (core(at + 0.02) - core(at)).abs();
         assert!(
@@ -473,7 +492,7 @@ mod tests {
     fn the_scanner_has_a_core_and_a_fringe() {
         // Where the energy is. A block sliding back and forth is a rectangle; what makes this
         // read as a lamp is that it is brightest in one place and falls away from it.
-        let shape = scanner(0.25);
+        let shape = scanner(0.25, COLUMNS);
         let hottest = shape
             .heat
             .iter()
@@ -481,7 +500,7 @@ mod tests {
             .max_by(|a, b| a.1.total_cmp(b.1))
             .map(|(x, _)| x)
             .expect("a lit column");
-        for x in 0..columns() {
+        for x in 0..COLUMNS {
             if x.abs_diff(hottest) < 2 {
                 continue;
             }
@@ -499,9 +518,9 @@ mod tests {
         // It grows in place rather than travelling, which is the one shape here that does not
         // read as progress -- because nothing is progressing, it is your move.
         for step in 0..STEPS {
-            let shape = breath(step as f32 / STEPS as f32);
-            let last = columns() - 1;
-            for x in 0..columns() / 2 {
+            let shape = breath(step as f32 / STEPS as f32, COLUMNS);
+            let last = COLUMNS - 1;
+            for x in 0..COLUMNS / 2 {
                 assert_eq!(
                     shape.dots[x],
                     shape.dots[last - x],
@@ -517,7 +536,7 @@ mod tests {
         // edges are always the cold part does not breathe, it just gets wider.
         let hottest = |shape: &Shape| shape.heat.iter().copied().fold(0.0, f32::max);
         assert!(
-            hottest(&breath(0.5)) > hottest(&breath(0.0)),
+            hottest(&breath(0.5, COLUMNS)) > hottest(&breath(0.0, COLUMNS)),
             "it is no brighter open than shut"
         );
     }
@@ -527,7 +546,7 @@ mod tests {
         // The gap moving is what says the UI is still running and it is the other end that is
         // missing. A line with no gap is just a line.
         for step in 0..STEPS {
-            let shape = dropout(step as f32 / STEPS as f32);
+            let shape = dropout(step as f32 / STEPS as f32, COLUMNS);
             assert!(
                 shape
                     .dots
@@ -552,8 +571,8 @@ mod tests {
     #[test]
     fn a_wave_is_a_joined_line() {
         // Unjoined, a wave with any real amplitude is a scatter of dots that reads as noise.
-        let shape = wave(0.0, 3.0, 1.5);
-        for x in 0..columns() {
+        let shape = wave(0.0, 3.0, 1.5, COLUMNS);
+        for x in 0..COLUMNS {
             let lit: Vec<usize> = (0..ROWS).filter(|row| shape.dots[x][*row]).collect();
             assert!(!lit.is_empty(), "column {x} is empty");
             assert_eq!(
@@ -561,6 +580,38 @@ mod tests {
                 lit.len(),
                 "column {x} has a hole in it: {lit:?}"
             );
+        }
+    }
+}
+
+/// The display lands on the exact middle of the row, at every terminal width.
+#[cfg(test)]
+mod centring_tests {
+    use super::*;
+
+    #[test]
+    fn the_width_always_matches_the_screens_parity() {
+        // The whole condition. Centring leaves `screen - cells` to split either side, and a
+        // split of an odd number is half a column off -- one side always wider than the other.
+        for screen in 20..200u16 {
+            assert_eq!(
+                usize::from(screen) % 2,
+                fitted(screen) % 2,
+                "at width {screen} the display cannot sit on the middle"
+            );
+        }
+    }
+
+    #[test]
+    fn it_is_never_more_than_a_cell_off_what_was_asked_for() {
+        let asked = usize::from(crate::metric::beacon_cells()).max(1);
+        for screen in 20..200u16 {
+            let got = fitted(screen);
+            assert!(
+                got.abs_diff(asked) <= 1,
+                "at width {screen} it asked for {asked} and got {got}"
+            );
+            assert!(got >= asked, "and it never comes out narrower than asked");
         }
     }
 }

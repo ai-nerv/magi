@@ -14,13 +14,13 @@ use ratatui::text::{Line, Span};
 /// function of state.
 #[must_use]
 pub fn render(status: &AgentStatus, tick: usize) -> Line<'static> {
-    working(mood_of(status, true), tick)
+    working(mood_of(status, true), tick, 80)
 }
 
 /// The same, saying so when the daemon cannot be reached.
 #[must_use]
 pub fn connected(status: &AgentStatus, tick: usize, connected: bool) -> Line<'static> {
-    working(mood_of(status, connected), tick)
+    working(mood_of(status, connected), tick, 80)
 }
 
 /// What the display shows, from the agent alone.
@@ -46,8 +46,12 @@ pub fn mood_of(status: &AgentStatus, connected: bool) -> crate::beacon::Mood {
 /// change width -- so nothing on the footer row moves when a turn starts or stops, which was the
 /// whole complaint about the line this replaced.
 #[must_use]
-pub fn working(mood: crate::beacon::Mood, tick: usize) -> Line<'static> {
-    Line::from(crate::beacon::render(mood, tick))
+pub fn working(mood: crate::beacon::Mood, tick: usize, screen: u16) -> Line<'static> {
+    Line::from(crate::beacon::render(
+        mood,
+        tick,
+        crate::beacon::fitted(screen),
+    ))
 }
 
 /// What the prompt box says about the turn it is waiting on.
@@ -132,7 +136,7 @@ mod tests {
         // cells say the same thing without asking to be read at all.
         let said = text_of(&render(&AgentStatus::Idle, 0));
         assert!(all_braille(&said), "{said:?}");
-        assert_eq!(said.chars().count(), crate::beacon::cells());
+        assert_eq!(said.chars().count(), crate::beacon::fitted(80));
     }
 
     #[test]
@@ -154,7 +158,7 @@ mod tests {
         };
         let said = text_of(&render(&status, 0));
         assert!(all_braille(&said), "{said:?}");
-        assert_eq!(said.chars().count(), crate::beacon::cells());
+        assert_eq!(said.chars().count(), crate::beacon::fitted(80));
     }
 
     #[test]
