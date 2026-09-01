@@ -139,6 +139,8 @@ pub struct App {
     /// A field rather than a static, unlike the opening one: the screen opens once and a list
     /// opens every time you ask for a model or answer a permission.
     pub landing: axon_tui::decrypt::Landing,
+    /// The footer's trace, and everything that has scrolled past on it.
+    pub trace: axon_tui::beacon::Trace,
     /// Whether the prompt was empty when it was last looked at.
     was_blank: bool,
     /// The text being dragged over, or the last drag that finished.
@@ -189,6 +191,7 @@ impl App {
             identity: crate::identity::Identity::here(None),
             tease: axon_tui::tease::Tease::new(opener()),
             landing: axon_tui::decrypt::Landing::default(),
+            trace: axon_tui::beacon::Trace::default(),
             was_blank: true,
             selection: None,
             flipped: std::collections::BTreeSet::new(),

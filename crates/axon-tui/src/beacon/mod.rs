@@ -27,7 +27,8 @@ mod shape;
 use crate::colour;
 use ratatui::style::Style;
 use ratatui::text::Span;
-use shape::{Dots, draw};
+use shape::Dots;
+pub use shape::Trace;
 
 /// Dot rows down the display.
 const ROWS: usize = 4;
@@ -74,39 +75,19 @@ pub enum Mood {
     Away,
 }
 
-impl Mood {
-    /// How long the trace takes to scroll one whole signal past, as a multiple of the setting.
-    ///
-    /// For the heartbeat that is a pulse rate, since the signal is one beat: the built-in works
-    /// out at a beat every two seconds. For the rest it is how fast the wave travels.
-    fn pace(self) -> (u64, u64) {
-        match self {
-            Self::Resting | Self::Holding => (3, 1),
-            Self::Working => (2, 1),
-            Self::Narrowing => (1, 1),
-            Self::Asking => (3, 2),
-            Self::Away => (2, 1),
-        }
-    }
-}
-
 /// The display as it stands this frame.
+///
+/// The trace is wound forward first and drawn second, in one call, because a caller that could
+/// draw without advancing would show a still frame and a caller that advanced twice would run
+/// the trace at double speed.
 #[must_use]
-pub fn render(mood: Mood, tick: usize, cells: usize) -> Vec<Span<'static>> {
-    let dots = draw(mood, phase(mood, tick), cells * 2);
+pub fn render(trace: &mut Trace, mood: Mood, tick: usize, cells: usize) -> Vec<Span<'static>> {
+    trace.advance(mood, tick, cells * 2);
+    let dots = trace.dots(cells * 2);
     let style = Style::default().fg(colour::dim());
     (0..cells)
         .map(|cell| Span::styled(cell_of(&dots, cell).to_string(), style))
         .collect()
-}
-
-/// Where this state is in its cycle, from 0.0 to just under 1.0.
-fn phase(mood: Mood, tick: usize) -> f32 {
-    let (slower, faster) = mood.pace();
-    let cycle = (crate::metric::beacon_ms() * slower / faster).max(1);
-    let frame = crate::metric::frame_ms().max(1);
-    let elapsed = (tick as u64).saturating_mul(frame) % cycle;
-    elapsed as f32 / cycle as f32
 }
 
 /// One braille cell of the display.
@@ -148,19 +129,29 @@ mod tests {
         Mood::Away,
     ];
 
-    /// The cells as one string.
-    fn strip(mood: Mood, tick: usize) -> String {
-        render(mood, tick, CELLS)
-            .iter()
-            .map(|s| s.content.to_string())
-            .collect()
+    /// The cells as one string, after `frames` frames with `mood` on the wire.
+    fn strip(mood: Mood, frames: usize) -> String {
+        let mut trace = Trace::default();
+        (0..frames)
+            .map(|tick| {
+                render(&mut trace, mood, tick, CELLS)
+                    .iter()
+                    .map(|s| s.content.to_string())
+                    .collect::<String>()
+            })
+            .next_back()
+            .unwrap_or_default()
     }
 
     #[test]
     fn it_is_always_the_configured_width_in_braille() {
         for mood in EVERY {
+            let mut trace = Trace::default();
             for tick in 0..STEPS {
-                let out = strip(mood, tick);
+                let out: String = render(&mut trace, mood, tick, CELLS)
+                    .iter()
+                    .map(|s| s.content.to_string())
+                    .collect();
                 assert_eq!(out.chars().count(), CELLS, "{mood:?} at {tick}: {out:?}");
                 assert!(
                     out.chars().all(|c| ('\u{2800}'..='\u{28FF}').contains(&c)),
@@ -176,8 +167,9 @@ mod tests {
         // not two shades of the same thing, they are two different pictures.
         let footer = Some(colour::dim());
         for mood in EVERY {
+            let mut trace = Trace::default();
             for tick in 0..STEPS {
-                for cell in render(mood, tick, CELLS) {
+                for cell in render(&mut trace, mood, tick, CELLS) {
                     assert_eq!(cell.style.fg, footer, "{mood:?} at {tick}");
                 }
             }
@@ -188,20 +180,34 @@ mod tests {
     fn a_running_turn_and_an_idle_one_are_told_apart() {
         // The distinction the whole display exists for, checked through the packing rather than
         // against the dots: two shapes that differ but pack to the same cells are one shape.
-        assert!(
-            (0..STEPS).any(|tick| strip(Mood::Working, tick) != strip(Mood::Resting, tick)),
+        assert_ne!(
+            strip(Mood::Working, STEPS),
+            strip(Mood::Resting, STEPS),
             "a turn looks like an idle session"
         );
     }
 
     #[test]
-    fn a_waiting_display_is_slower_than_a_working_one() {
-        // The one thing the pace has to say: nothing is happening, so this is ignorable.
-        let cycle = |mood: Mood| {
-            let (slower, faster) = mood.pace();
-            slower as f32 / faster as f32
-        };
-        assert!(cycle(Mood::Resting) > cycle(Mood::Working));
+    fn the_trace_carries_on_across_a_change_of_state() {
+        // One tape at one speed. Each state used to compute its own position from the frame
+        // counter, so a turn ending teleported the display -- a new picture where the old one
+        // had been, which reads as a glitch rather than as anything having changed.
+        let mut trace = Trace::default();
+        for tick in 0..STEPS {
+            let _ = render(&mut trace, Mood::Working, tick, CELLS);
+        }
+        let beating: String = render(&mut trace, Mood::Working, STEPS, CELLS)
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
+        let switched: String = render(&mut trace, Mood::Resting, STEPS, CELLS)
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
+        assert_eq!(
+            beating, switched,
+            "the display changed on a frame where the tape did not move"
+        );
     }
 }
 

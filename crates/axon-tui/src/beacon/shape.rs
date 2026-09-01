@@ -1,4 +1,4 @@
-//! What each state puts on the wire.
+//! What each state puts on the wire, and the tape it is written onto.
 //!
 //! The display is one instrument — a monitor — and the states differ in the signal running
 //! through it, not in what kind of thing they are. The trace scrolls, the way an ECG does: new
@@ -6,14 +6,26 @@
 //! width. A flat line scrolling is a flat line, and that is exactly what it should be when
 //! nothing is running.
 //!
-//! Split from the module that packs and colours the dots because they are two different
-//! questions. Here is only geometry over time: a phase from zero to one goes in and a grid of
-//! lit dots comes out, with no idea what a braille cell is.
+//! **The tape is what makes a change of state readable.** Each state used to compute its own
+//! position from the frame counter, so switching from a heartbeat to a flat line teleported the
+//! trace — a new picture appearing where the old one had been, which is a glitch and not a
+//! transition. Here there is one tape scrolling at one speed forever, and a state change only
+//! changes what is written onto the right-hand end of it. The heartbeat you were watching
+//! scrolls off the left in its own time while the flat line comes in behind it.
 
 use super::{Mood, ROWS};
 
 /// Lit dots, by column and then row. Row zero is the top.
 pub(super) type Dots = Vec<[bool; ROWS]>;
+
+/// A sample with nothing on the wire at all.
+///
+/// Not a height, and it lights nothing — the lead is off. Kept in the same table as the heights
+/// so the gap scrolls along with everything else instead of being a second mechanism.
+const GAP: u8 = u8::MAX;
+
+/// The height everything rests at.
+const LINE: u8 = 1;
 
 /// One heartbeat, as a height per sample.
 ///
@@ -33,7 +45,7 @@ const HEARTBEAT: [u8; 32] = [
 ];
 
 /// Nothing at all, at the height the other signals rest at.
-const FLAT: [u8; 1] = [1];
+const FLAT: [u8; 1] = [LINE];
 
 /// A square wave: something is waiting on an answer and will go on waiting.
 ///
@@ -45,9 +57,14 @@ const SQUARE: [u8; 8] = [3, 3, 3, 3, 0, 0, 0, 0];
 ///
 /// Half the period of [`SQUARE`], so twice as many cycles fit the display. That works because
 /// the trace scrolls rather than stretching to fit: a table is one period and the display shows
-/// as many of them as it has room for. While it did stretch, these two drew pixel-for-pixel the
-/// same picture — both were one cycle wide however many samples they were written with.
+/// as many of them as it has room for.
 const CHOPPY: [u8; 4] = [3, 3, 0, 0];
+
+/// The line, dropping out: there is no daemon at the other end.
+///
+/// A dead line would say that too, except that a dead line is also what a hung display looks
+/// like. Gaps arriving and scrolling past are the part that says this end is still running.
+const LEADOFF: [u8; 10] = [LINE, LINE, LINE, GAP, GAP, LINE, LINE, LINE, GAP, LINE];
 
 /// What this state puts on the wire.
 fn signal(mood: Mood) -> &'static [u8] {
@@ -55,112 +72,212 @@ fn signal(mood: Mood) -> &'static [u8] {
         Mood::Working => &HEARTBEAT,
         Mood::Asking => &SQUARE,
         Mood::Narrowing => &CHOPPY,
-        Mood::Resting | Mood::Holding | Mood::Away => &FLAT,
+        Mood::Away => &LEADOFF,
+        Mood::Resting | Mood::Holding => &FLAT,
     }
 }
 
-/// What this state draws at this point in its cycle.
-pub(super) fn draw(mood: Mood, phase: f32, columns: usize) -> Dots {
-    if mood == Mood::Away {
-        return breaking(phase, columns);
-    }
-    monitor(signal(mood), phase, columns)
+/// The tape the trace is written on: what has come past, newest last.
+///
+/// State, deliberately, and held by the UI beside its other running animations. Everything else
+/// on this screen is a pure function of a frame counter, and this cannot be: what is on the left
+/// of the display is what the session was doing a second ago, and no amount of arithmetic over
+/// the current state recovers that.
+#[derive(Debug, Default)]
+pub struct Trace {
+    /// Samples, oldest first. Never kept longer than the widest display asked for.
+    written: Vec<u8>,
+    /// How far into the current signal the next sample comes from.
+    at: usize,
+    /// What was being written last time, to notice a change of state.
+    was: Option<Mood>,
+    /// The frame the last sample was written on.
+    since: usize,
+    /// Fractions of a sample owed but not yet written.
+    owed: f32,
 }
 
-/// The trace, scrolling: new samples arrive at the right and the line runs off to the left.
-///
-/// Continuous, and always the full width of the display. It swept before -- a beam crossing and
-/// wiping -- which meant half the display was blank at any moment and the trace was something
-/// being erased rather than something arriving. A monitor scrolls; the line is always there and
-/// what changes is what has just come in.
-///
-/// The trace is joined vertically between neighbouring samples, for the same reason an
-/// oscilloscope joins its own: unconnected, the R spike is a dot floating three rows above a
-/// line, which reads as a speck of dust rather than a beat.
-fn monitor(signal: &[u8], phase: f32, columns: usize) -> Dots {
-    let mut dots = vec![[false; ROWS]; columns];
-    let scrolled = (phase * signal.len() as f32) as usize;
-    let at = |x: usize| usize::from(signal[(scrolled + x) % signal.len()]);
-    for (x, column) in dots.iter_mut().enumerate() {
-        let here = at(x);
-        // Joined to the sample on its left, so a climb is a stroke and not two dots with air
-        // between them. The leftmost has nothing to its left and stands alone.
-        let before = if x == 0 { here } else { at(x - 1) };
-        for height in here.min(before)..=here.max(before) {
-            column[ROWS - 1 - height.min(ROWS - 1)] = true;
+impl Trace {
+    /// Write however many samples the clock says have arrived since the last frame.
+    ///
+    /// Driven from the frame counter rather than a clock of its own, so a UI that redraws
+    /// slowly draws a slower trace rather than skipping most of it.
+    pub fn advance(&mut self, mood: Mood, tick: usize, columns: usize) {
+        // A new signal is written from its own beginning, so a heartbeat starts at the baseline
+        // rather than wherever in the beat the old state happened to leave the index.
+        if self.was != Some(mood) {
+            self.was = Some(mood);
+            self.at = 0;
+        }
+        let frames = tick.saturating_sub(self.since);
+        self.since = tick;
+        self.owed += frames as f32 * rate(columns);
+        let signal = signal(mood);
+        while self.owed >= 1.0 {
+            self.owed -= 1.0;
+            self.written.push(signal[self.at % signal.len()]);
+            self.at += 1;
+        }
+        // Only what is on screen is worth keeping. Held to twice the width rather than exactly
+        // it, so the trim is occasional instead of once a sample.
+        if self.written.len() > columns * 2 {
+            self.written.drain(..self.written.len() - columns);
         }
     }
-    dots
-}
 
-/// A flat line with a gap travelling through it: the lead is off.
-///
-/// Not the monitor, because there is nothing to sweep — the other end is gone. A dead line would
-/// say that too, except that a dead line is also what a hung display looks like. The gap moving
-/// is the part that says this end is still running.
-fn breaking(phase: f32, columns: usize) -> Dots {
-    let mut dots = vec![[false; ROWS]; columns];
-    let gap = (phase * columns as f32) as usize % columns.max(1);
-    for (x, column) in dots.iter_mut().enumerate() {
-        if x != gap && x != (gap + 1) % columns {
-            column[ROWS - 2] = true;
+    /// The trace as it stands, `columns` wide.
+    ///
+    /// Joined vertically between neighbouring samples, for the same reason an oscilloscope joins
+    /// its own: unconnected, the R spike is a dot floating three rows above a line, which reads
+    /// as a speck of dust rather than a beat. A gap joins to nothing on either side.
+    pub(super) fn dots(&self, columns: usize) -> Dots {
+        let mut dots = vec![[false; ROWS]; columns];
+        // Short of a full display, the rest is baseline: a session that has just opened shows a
+        // flat line, not a half-drawn one.
+        let short = columns.saturating_sub(self.written.len());
+        let at = |x: usize| {
+            if x < short {
+                return LINE;
+            }
+            // Counted back from the newest sample, so the right-hand edge is always what has
+            // just arrived however much of the tape has been written.
+            self.written[self.written.len() - (columns - x)]
+        };
+        for (x, column) in dots.iter_mut().enumerate() {
+            let here = at(x);
+            if here == GAP {
+                continue;
+            }
+            let before = if x == 0 { here } else { at(x - 1) };
+            let joined = if before == GAP { here } else { before };
+            for height in here.min(joined)..=here.max(joined) {
+                column[ROWS - 1 - usize::from(height).min(ROWS - 1)] = true;
+            }
         }
+        dots
     }
-    dots
 }
 
-/// One instrument, one scrolling trace, and a different signal on the wire for each state.
+/// How many samples arrive per frame, so the trace crosses the display in `axon.ui.beacon_ms`.
+///
+/// One rate for every state. It used to be one per state, which is what made a change of state
+/// jump: two different scroll positions computed from the same frame counter are two different
+/// pictures, and swapping between them is a cut, not a transition.
+fn rate(columns: usize) -> f32 {
+    let across = crate::metric::beacon_ms().max(1) as f32;
+    columns as f32 * crate::metric::frame_ms().max(1) as f32 / across
+}
+
+/// One tape, one speed, and a different signal written onto it for each state.
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Where in a cycle to sample. Enough to catch a signal only wrong at one end.
-    const STEPS: usize = 64;
-
     /// A width to draw at, in dot columns: nine cells, like the built-in.
     const COLUMNS: usize = 18;
 
-    const EVERY: [Mood; 6] = [
-        Mood::Resting,
-        Mood::Holding,
-        Mood::Working,
-        Mood::Narrowing,
-        Mood::Asking,
-        Mood::Away,
-    ];
+    /// A trace wound forward `frames` frames with `mood` on the wire.
+    fn wound(mood: Mood, frames: usize) -> Trace {
+        let mut trace = Trace::default();
+        for tick in 0..frames {
+            trace.advance(mood, tick, COLUMNS);
+        }
+        trace
+    }
+
+    /// The heights of a drawn trace, top row first per column.
+    fn rows(dots: &Dots) -> Vec<Vec<usize>> {
+        dots.iter()
+            .map(|column| (0..ROWS).filter(|row| column[*row]).collect())
+            .collect()
+    }
 
     #[test]
-    fn every_state_with_something_to_say_moves() {
-        // Resting and holding are not in this list, and that is the point of them: a flat line
-        // scrolling is a flat line, and a display that holds still is the clearest way to say
-        // nothing is running. Everything else has to be visibly doing something.
-        for mood in EVERY
-            .into_iter()
-            .filter(|m| !matches!(m, Mood::Resting | Mood::Holding))
-        {
-            let first = draw(mood, 0.0, COLUMNS);
-            assert!(
-                (1..STEPS).any(|step| draw(mood, step as f32 / STEPS as f32, COLUMNS) != first),
-                "{mood:?} never changes"
-            );
+    fn a_fresh_trace_is_a_flat_line() {
+        // Nothing has come past yet, and a half-drawn display would read as a UI still starting.
+        let dots = Trace::default().dots(COLUMNS);
+        for (x, on) in rows(&dots).iter().enumerate() {
+            assert_eq!(on, &vec![ROWS - 2], "column {x} is not on the line");
         }
     }
 
     #[test]
-    fn the_trace_is_always_the_full_width() {
-        // It swept before, wiping and redrawing, which left half the display blank at any
-        // moment. A monitor scrolls: the line is always there and what changes is what has just
-        // come in. `Away` is the exception it is meant to be -- that gap is the whole message.
-        for mood in EVERY.into_iter().filter(|m| *m != Mood::Away) {
-            for step in 0..STEPS {
-                let dots = draw(mood, step as f32 / STEPS as f32, COLUMNS);
-                let empty = dots.iter().filter(|c| c.iter().all(|on| !on)).count();
-                assert_eq!(
-                    empty, 0,
-                    "{mood:?} at step {step} has {empty} blank columns"
-                );
-            }
+    fn the_trace_scrolls() {
+        // Whatever else it does, it has to be visibly moving while a turn is running.
+        let mut trace = wound(Mood::Working, 40);
+        let before = trace.dots(COLUMNS);
+        for tick in 40..64 {
+            trace.advance(Mood::Working, tick, COLUMNS);
         }
+        assert_ne!(before, trace.dots(COLUMNS), "it never moved");
+    }
+
+    #[test]
+    fn a_change_of_state_writes_nothing_on_its_own() {
+        // The whole reason there is a tape. Switching signals within one frame must not move
+        // the trace: what is on screen already happened, and it does not get to change
+        // retroactively because the agent finished.
+        let mut trace = wound(Mood::Working, 200);
+        let before = trace.dots(COLUMNS);
+        // The same frame the winding ended on, so no time has passed.
+        trace.advance(Mood::Resting, 199, COLUMNS);
+        assert_eq!(
+            before,
+            trace.dots(COLUMNS),
+            "the trace moved on a frame where no time passed"
+        );
+    }
+
+    #[test]
+    fn a_change_of_state_scrolls_rather_than_cutting() {
+        // And with time passing, the display that follows is the one before it shifted along --
+        // not a different picture in the same place. Each state used to work out its own
+        // position from the frame counter, so a turn ending teleported the trace.
+        let mut trace = wound(Mood::Working, 200);
+        let before = trace.dots(COLUMNS);
+        trace.advance(Mood::Resting, 200, COLUMNS);
+        let after = trace.dots(COLUMNS);
+        // From the second column in. The leftmost one lost the neighbour it was joined to when
+        // that neighbour scrolled off, so it is legitimately drawn differently from how it was
+        // drawn a frame ago -- it is the join that changed, not the sample.
+        let kept = COLUMNS - 6;
+        let shifted = (1..=4).any(|by| before[by + 1..by + 1 + kept] == after[1..1 + kept]);
+        assert!(
+            shifted,
+            "the display is not the one before it moved along:\n{before:?}\n{after:?}"
+        );
+    }
+
+    #[test]
+    fn a_new_signal_arrives_from_the_right() {
+        // And having not jumped, it has to actually change -- by scrolling in, one sample at a
+        // time, so a beat you were watching finishes its run off the left.
+        let mut trace = wound(Mood::Working, 200);
+        let beating = trace.dots(COLUMNS);
+        for tick in 200..260 {
+            trace.advance(Mood::Resting, tick, COLUMNS);
+        }
+        let flat = trace.dots(COLUMNS);
+        assert_ne!(beating, flat, "the flat line never arrived");
+        for (x, on) in rows(&flat).iter().enumerate() {
+            assert_eq!(on, &vec![ROWS - 2], "column {x} is still not flat");
+        }
+    }
+
+    #[test]
+    fn a_signal_starts_from_its_own_beginning() {
+        // A heartbeat that starts mid-spike is a glitch arriving, not a beat.
+        let mut trace = wound(Mood::Asking, 200);
+        trace.advance(Mood::Working, 400, COLUMNS);
+        assert!(
+            trace.at > 0,
+            "nothing was written on a frame two hundred behind"
+        );
+        let written = &trace.written[trace.written.len() - trace.at.min(4)..];
+        assert!(
+            written.iter().all(|h| *h == LINE),
+            "the beat did not start on the baseline: {written:?}"
+        );
     }
 
     #[test]
@@ -173,7 +290,7 @@ mod tests {
             "and it is a spike, not a plateau: {top} of {}",
             HEARTBEAT.len()
         );
-        let resting = HEARTBEAT.iter().filter(|h| **h == 1).count();
+        let resting = HEARTBEAT.iter().filter(|h| **h == LINE).count();
         assert!(
             resting * 2 > HEARTBEAT.len(),
             "and it spends most of the beat at rest"
@@ -181,12 +298,11 @@ mod tests {
     }
 
     #[test]
-    fn the_heartbeat_is_drawn_as_a_joined_trace() {
+    fn the_trace_is_drawn_joined() {
         // The R wave climbs three rows in one sample. Unjoined that is a dot above a gap above a
         // dot, which is a speck of dust rather than a beat.
-        let dots = monitor(&HEARTBEAT, 1.0, COLUMNS);
-        for (x, column) in dots.iter().enumerate() {
-            let on: Vec<usize> = (0..ROWS).filter(|row| column[*row]).collect();
+        let dots = wound(Mood::Working, 400).dots(COLUMNS);
+        for (x, on) in rows(&dots).iter().enumerate() {
             assert!(!on.is_empty(), "column {x} is empty");
             assert_eq!(
                 on.last().expect("lit") - on[0] + 1,
@@ -197,37 +313,22 @@ mod tests {
     }
 
     #[test]
-    fn a_flat_line_is_flat() {
-        // Nothing is happening, and the display should be ignorable while that is true.
-        let dots = monitor(&FLAT, 1.0, COLUMNS);
-        for (x, column) in dots.iter().enumerate() {
-            let on: Vec<usize> = (0..ROWS).filter(|row| column[*row]).collect();
-            assert_eq!(on, vec![ROWS - 2], "column {x} is off the line");
-        }
-    }
-
-    #[test]
-    fn the_square_wave_only_has_two_heights() {
-        // Manufactured-looking on purpose: it is the one signal that is a prompt rather than
-        // something the machine is doing to itself.
-        for wave in [SQUARE.as_slice(), CHOPPY.as_slice()] {
-            let mut seen: Vec<u8> = wave.to_vec();
-            seen.sort_unstable();
-            seen.dedup();
-            assert_eq!(seen.len(), 2, "{wave:?} is not a square wave");
-        }
+    fn the_lead_off_line_has_gaps_in_it() {
+        // The gaps arriving are what say this end is still running while the other is not.
+        let dots = wound(Mood::Away, 400).dots(COLUMNS);
+        assert!(
+            dots.iter().any(|column| column.iter().all(|on| !on)),
+            "there is no break in the line"
+        );
     }
 
     #[test]
     fn a_menu_and_a_permission_are_not_the_same_square() {
-        // Both are waiting on you and they are not waiting for the same thing: one wants an
-        // answer, the other narrows under what you type. Same family, different beat.
-        //
-        // Counted as edges *once drawn*, not as table lengths. While the trace stretched to fit,
-        // two tables of different lengths holding the same one cycle drew the same picture --
-        // which is exactly what these two did to begin with.
+        // Both are waiting on you and not for the same thing: one wants an answer, the other
+        // narrows under what you type. Same family, different beat -- counted as edges once
+        // drawn, because a table is a period and the width is what sets the frequency.
         let edges = |mood: Mood| {
-            let dots = draw(mood, 1.0, COLUMNS);
+            let dots = wound(mood, 400).dots(COLUMNS);
             (1..COLUMNS).filter(|x| dots[*x] != dots[x - 1]).count()
         };
         assert!(
@@ -236,49 +337,37 @@ mod tests {
             edges(Mood::Narrowing),
             edges(Mood::Asking)
         );
-        assert!(
-            (0..STEPS).any(|step| {
-                let at = step as f32 / STEPS as f32;
-                draw(Mood::Asking, at, COLUMNS) != draw(Mood::Narrowing, at, COLUMNS)
-            }),
-            "they draw the same thing throughout"
+    }
+
+    #[test]
+    fn a_running_turn_does_not_look_like_an_idle_one() {
+        // The distinction the whole display exists for.
+        assert_ne!(
+            wound(Mood::Working, 400).dots(COLUMNS),
+            wound(Mood::Resting, 400).dots(COLUMNS)
         );
     }
 
     #[test]
-    fn thinking_does_not_look_like_not_thinking() {
-        // The one distinction the whole display exists for.
+    fn the_tape_does_not_grow_without_end() {
+        // It runs for as long as the session does. Only what is on screen is worth keeping.
+        let trace = wound(Mood::Working, 10_000);
         assert!(
-            (0..STEPS).any(|step| {
-                let at = step as f32 / STEPS as f32;
-                draw(Mood::Working, at, COLUMNS) != draw(Mood::Resting, at, COLUMNS)
-            }),
-            "a running turn draws the same as an idle session"
+            trace.written.len() <= COLUMNS * 2,
+            "it kept {} samples",
+            trace.written.len()
         );
     }
 
     #[test]
-    fn the_lead_off_line_always_has_a_gap_in_it() {
-        // The gap moving is what says this end is still running. A line with no gap is a line.
-        for step in 0..STEPS {
-            let dots = breaking(step as f32 / STEPS as f32, COLUMNS);
-            assert!(
-                dots.iter().any(|column| column.iter().all(|on| !on)),
-                "step {step} has no gap"
-            );
-        }
-    }
-
-    #[test]
-    fn a_signal_shorter_than_the_display_still_fills_it() {
-        // `FLAT` is one sample and `CHOPPY` is four, on eighteen columns. Reading past the end
-        // of the table would panic, which on a display nobody looks at directly is the worst
-        // possible place for it.
-        for mood in EVERY {
-            for width in 2..40 {
-                let dots = draw(mood, 0.99, width);
-                assert_eq!(dots.len(), width, "{mood:?} at width {width}");
+    fn any_width_draws_without_panicking() {
+        // A display narrower than a signal, and one wider than the tape has filled.
+        for width in 2..40 {
+            let mut trace = Trace::default();
+            for tick in 0..30 {
+                trace.advance(Mood::Working, tick, width);
             }
+            assert_eq!(trace.dots(width).len(), width, "at width {width}");
         }
     }
 }

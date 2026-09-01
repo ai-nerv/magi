@@ -109,8 +109,9 @@ axon.model = "anthropic/claude-sonnet-4-5"
 -- square wave while a permission or a list waits on you, a tighter one while `/` narrows a menu,
 -- and a line with the lead off when the daemon is away. Anything open on screen outranks what
 -- the agent is doing, because it is the thing holding everything up. One colour, the footer's
--- own. `beacon_ms` is how long one whole signal takes to scroll past -- for the heartbeat that
--- is the pulse rate -- and each state runs at its own multiple of it.
+-- own. `beacon_ms` is how long the trace takes to scroll one display width, and it is the same
+-- for every state: one tape at one speed, so a turn starting or ending scrolls in rather than
+-- cutting to a different picture.
 --
 -- `beacon_cells` is a preference, not a promise: the display is centred on the row, and landing
 -- on the exact middle needs it to be the same parity as the terminal is wide, so it is widened

@@ -8,46 +8,21 @@ use axon_proto::AgentStatus;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-/// Render the status line.
-///
-/// `tick` advances the display; the caller increments it on a timer so rendering stays a pure
-/// function of state.
-#[must_use]
-pub fn render(status: &AgentStatus, tick: usize) -> Line<'static> {
-    working(mood_of(status, true), tick, 80)
-}
-
-/// The same, saying so when the daemon cannot be reached.
-#[must_use]
-pub fn connected(status: &AgentStatus, tick: usize, connected: bool) -> Line<'static> {
-    working(mood_of(status, connected), tick, 80)
-}
-
-/// What the display shows, from the agent alone.
-///
-/// The UI picks its own — it knows about the prompt having text in it and about a list being
-/// open, and neither of those is anything the agent reports. This is the fallback for callers
-/// that only have the agent's word for it.
-#[must_use]
-pub fn mood_of(status: &AgentStatus, connected: bool) -> crate::beacon::Mood {
-    if !connected {
-        return crate::beacon::Mood::Away;
-    }
-    match status {
-        AgentStatus::Idle => crate::beacon::Mood::Resting,
-        AgentStatus::Working { .. } | AgentStatus::Retrying { .. } => crate::beacon::Mood::Working,
-    }
-}
-
 /// The display, and nothing else.
 ///
 /// Words used to stand beside it here and they have gone to the prompt box, where there is room
-/// for them and where you are already looking. What is left is five cells of braille that never
-/// change width -- so nothing on the footer row moves when a turn starts or stops, which was the
-/// whole complaint about the line this replaced.
+/// for them and where you are already looking. What is left never changes width -- so nothing on
+/// the footer row moves when a turn starts or stops, which was the whole complaint about the
+/// line this replaced.
 #[must_use]
-pub fn working(mood: crate::beacon::Mood, tick: usize, screen: u16) -> Line<'static> {
+pub fn working(
+    trace: &mut crate::beacon::Trace,
+    mood: crate::beacon::Mood,
+    tick: usize,
+    screen: u16,
+) -> Line<'static> {
     Line::from(crate::beacon::render(
+        trace,
         mood,
         tick,
         crate::beacon::fitted(screen),
@@ -120,9 +95,20 @@ pub fn format_elapsed(elapsed: std::time::Duration) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::beacon::{Mood, Trace};
 
-    fn text_of(line: &Line<'_>) -> String {
-        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    /// The row after `frames` frames with `mood` on the wire.
+    fn said(mood: Mood, frames: usize) -> String {
+        let mut trace = Trace::default();
+        let mut out = String::new();
+        for tick in 0..frames.max(1) {
+            out = working(&mut trace, mood, tick, 80)
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect();
+        }
+        out
     }
 
     /// Whether every character of `text` is a braille cell.
@@ -131,42 +117,27 @@ mod tests {
     }
 
     #[test]
-    fn idle_is_the_display_and_no_words() {
-        // "waiting" was here and it is gone. It was read once and never again, and the four
-        // cells say the same thing without asking to be read at all.
-        let said = text_of(&render(&AgentStatus::Idle, 0));
-        assert!(all_braille(&said), "{said:?}");
-        assert_eq!(said.chars().count(), crate::beacon::fitted(80));
-    }
-
-    #[test]
-    fn idle_does_not_spin() {
-        // A turning frame beside a word says work is happening, which is the one thing this
-        // state means is not. What is there instead never grows a label.
-        for tick in 0..32 {
-            let said = text_of(&render(&AgentStatus::Idle, tick));
-            assert!(all_braille(&said), "tick {tick}: {said:?}");
+    fn the_row_is_the_display_and_no_words() {
+        // "waiting" was here and it is gone, and so is the label beside the spinner. Nothing on
+        // this row changes width when a turn starts, which was the whole complaint about it.
+        for mood in [Mood::Resting, Mood::Working, Mood::Asking, Mood::Away] {
+            let out = said(mood, 40);
+            assert!(all_braille(&out), "{mood:?}: {out:?}");
+            assert_eq!(out.chars().count(), crate::beacon::fitted(80));
         }
     }
 
     #[test]
-    fn working_is_the_display_and_no_words_either() {
-        // The label went to the prompt box. Nothing on this row changes width when a turn
-        // starts, which was the whole complaint about the line this replaced.
-        let status = AgentStatus::Working {
-            label: "Thinking".into(),
-        };
-        let said = text_of(&render(&status, 0));
-        assert!(all_braille(&said), "{said:?}");
-        assert_eq!(said.chars().count(), crate::beacon::fitted(80));
+    fn a_running_turn_does_not_look_like_an_idle_one() {
+        assert_ne!(said(Mood::Working, 40), said(Mood::Resting, 40));
     }
 
     #[test]
-    fn the_display_advances_with_the_tick() {
-        let status = AgentStatus::Working { label: "x".into() };
-        let a = text_of(&render(&status, 0));
-        let b = text_of(&render(&status, 1));
-        assert_ne!(a, b);
+    fn a_lost_daemon_does_not_look_like_an_idle_session() {
+        // A UI with no socket looks exactly like an idle one: the prompt takes text and a
+        // submitted turn goes into a channel nobody is reading. Both are flat lines, so the
+        // gaps travelling through this one are the whole of what tells them apart.
+        assert_ne!(said(Mood::Away, 60), said(Mood::Resting, 60));
     }
 
     #[test]
@@ -180,55 +151,6 @@ mod tests {
         assert!(said.contains("(2/5) in 2s"), "{said}");
     }
 }
-
-#[cfg(test)]
-mod connection_tests {
-    use super::*;
-
-    fn text(line: &Line<'static>) -> String {
-        line.spans.iter().map(|s| s.content.as_ref()).collect()
-    }
-
-    #[test]
-    fn a_lost_daemon_is_shown_not_said() {
-        // A UI with no socket looks exactly like an idle one: the prompt takes text and a
-        // submitted turn goes into a channel nobody is reading. The word for it is gone with
-        // every other word on this row, so the display is what has to carry it.
-        let away = text(&connected(&AgentStatus::Idle, 0, false));
-        let idle = text(&connected(&AgentStatus::Idle, 0, true));
-        assert_ne!(
-            away, idle,
-            "{away} reads the same as a session that is fine"
-        );
-    }
-
-    #[test]
-    fn it_outranks_whatever_the_session_last_said_it_was_doing() {
-        // The last status to arrive was "Thinking", and it has not been true since the socket
-        // went. Showing it would be reporting a turn that nothing is running.
-        let working = AgentStatus::Working {
-            label: "Thinking".into(),
-        };
-        let line = connected(&working, 0, false);
-        assert!(!text(&line).contains("Thinking"), "{}", text(&line));
-        assert_eq!(
-            text(&line),
-            text(&connected(&AgentStatus::Idle, 0, false)),
-            "the daemon being away outranks whatever it last said"
-        );
-    }
-
-    #[test]
-    fn a_connected_idle_session_is_not_an_absent_one() {
-        // Both are "nothing is happening" and they used to draw the same nothing. The whole
-        // reason the display has an `Away` state is that a UI with no daemon behind it looked
-        // exactly like an idle one.
-        let idle = text(&connected(&AgentStatus::Idle, 0, true));
-        let away = text(&connected(&AgentStatus::Idle, 0, false));
-        assert_ne!(idle, away);
-    }
-}
-
 #[cfg(test)]
 mod elapsed_tests {
     use super::*;
