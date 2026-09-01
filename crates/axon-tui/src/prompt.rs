@@ -134,7 +134,7 @@ pub fn render(
     let (top, bottom) = crate::border::edges(width, content, tick, scan);
 
     let mut out = Vec::with_capacity(content + 2);
-    out.push(hidden(top, Direction::Up, offset));
+    out.push(tagged(hidden(top, Direction::Up, offset), saying.mode));
 
     for row in 0..shown {
         let body = if blank {
@@ -182,7 +182,7 @@ pub fn render(
     }
 
     let below = total_rows.saturating_sub(end);
-    out.push(tagged(hidden(bottom, Direction::Down, below), saying.mode));
+    out.push(hidden(bottom, Direction::Down, below));
     out
 }
 
@@ -291,30 +291,70 @@ fn hidden(edge: Line<'static>, direction: Direction, count: usize) -> Line<'stat
         Direction::Down => '↓',
     };
     let label = format!(" {arrow} {count} more ");
-    let width: usize = edge.spans.iter().map(|s| s.content.chars().count()).sum();
-    if label.chars().count() + 4 > width {
+    let width = columns_of(&edge);
+    if label.chars().count() + 8 > width {
         return edge;
     }
-    // Kept from the third column, so the corner and the first stretch of border survive and the
-    // caption reads as part of the frame.
-    let mut spans: Vec<Span<'static>> = edge.spans.into_iter().take(3).collect();
-    spans.push(Span::styled(
-        label.clone(),
-        Style::default().fg(colour::dim()),
-    ));
-    let used = 3 + label.chars().count();
-    for _ in used..width - 1 {
-        spans.push(Span::styled("─", Style::default().fg(colour::border())));
+    // Right on the top edge, left on the bottom. The mode has the top-left corner and two
+    // captions in one place is one caption with something written over it.
+    let at = match direction {
+        Direction::Up => width - 2 - label.chars().count(),
+        Direction::Down => 2,
+    };
+    caption(edge, &label, Style::default().fg(colour::dim()), at)
+}
+
+/// Write the mode onto the top edge of the box.
+///
+/// On the border, the way the scroll count is, and on the top-left because that is where the
+/// eye starts. It is not optional: the prompt opens in normal mode and refuses text until told
+/// otherwise, and a modal editor that does not say which mode it is in is a broken keyboard.
+///
+/// Three letters, always, so the frame does not move when the mode does.
+fn tagged(edge: Line<'static>, mode: crate::vim::Mode) -> Line<'static> {
+    let label = format!(" {} ", mode.tag());
+    if label.chars().count() + 4 > columns_of(&edge) {
+        return edge;
     }
-    spans.push(Span::styled(
-        "╮".to_owned(),
-        Style::default().fg(colour::border()),
-    ));
-    let last = spans.len() - 1;
-    if matches!(direction, Direction::Down) {
-        spans[last] = Span::styled("╯".to_owned(), Style::default().fg(colour::border()));
+    // Insert mode is the one worth noticing, because it is the one where a keystroke changes
+    // something. Normal mode sits at the same level as the border it is written on.
+    let style = Style::default().fg(if mode.is_insert() {
+        colour::accent()
+    } else {
+        colour::border()
+    });
+    caption(edge, &label, style, 2)
+}
+
+/// How many columns an edge occupies.
+fn columns_of(edge: &Line<'static>) -> usize {
+    edge.spans.iter().map(|s| s.content.chars().count()).sum()
+}
+
+/// Write `label` over the edge, starting at column `at`.
+///
+/// Over the columns it covers rather than spliced between spans. An edge is a handful of spans
+/// whose boundaries move as the scan travels along it, so cutting at a span index cuts somewhere
+/// different every frame — which is how the first version of this ate a corner, and how the
+/// version before that rebuilt one by hand and got it wrong on the other edge.
+fn caption(edge: Line<'static>, label: &str, style: Style, at: usize) -> Line<'static> {
+    let mut columns: Vec<Span<'static>> = edge
+        .spans
+        .into_iter()
+        .flat_map(|span| {
+            let style = span.style;
+            span.content
+                .chars()
+                .map(|c| Span::styled(c.to_string(), style))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    for (index, c) in label.chars().enumerate() {
+        if let Some(column) = columns.get_mut(at + index) {
+            *column = Span::styled(c.to_string(), style);
+        }
     }
-    Line::from(spans)
+    Line::from(columns)
 }
 
 enum Direction {
@@ -711,46 +751,4 @@ mod placeholder_tests {
             "something is still drawn struck"
         );
     }
-}
-
-/// Write the mode onto the bottom edge of the box.
-///
-/// On the border, like the "N more" caption above it, and on the bottom because the top edge
-/// already has one. Three letters, always the same three columns wide, so the frame does not
-/// move when the mode does.
-///
-/// It is not optional. The prompt opens in normal mode and refuses text until told otherwise,
-/// and a modal editor that does not say which mode it is in is a broken keyboard.
-fn tagged(edge: Line<'static>, mode: crate::vim::Mode) -> Line<'static> {
-    let label = format!(" {} ", mode.tag());
-    let width: usize = edge.spans.iter().map(|s| s.content.chars().count()).sum();
-    if label.chars().count() + 4 > width {
-        return edge;
-    }
-    // Insert mode is the one worth noticing, because it is the one where a keystroke changes
-    // something. Normal mode sits at the same level as the border it is written on.
-    let style = Style::default().fg(if mode.is_insert() {
-        colour::accent()
-    } else {
-        colour::border()
-    });
-    // Written over the columns it covers rather than spliced between spans. The edge is a
-    // handful of spans whose boundaries move as the scan travels along it, so cutting at a span
-    // index cuts somewhere different every frame -- which is how the first version of this ate
-    // the bottom-right corner.
-    let mut columns: Vec<Span<'static>> = edge
-        .spans
-        .into_iter()
-        .flat_map(|span| {
-            let style = span.style;
-            span.content
-                .chars()
-                .map(|c| Span::styled(c.to_string(), style))
-                .collect::<Vec<_>>()
-        })
-        .collect();
-    for (at, c) in label.chars().enumerate() {
-        columns[2 + at] = Span::styled(c.to_string(), style);
-    }
-    Line::from(columns)
 }
