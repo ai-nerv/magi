@@ -61,9 +61,9 @@ pub fn over(buffer: &mut Buffer, area: ratatui::layout::Rect, progress: f32) {
 /// not: `/model`, then a permission ask, then `/model` again, and each one wants the text to
 /// land the same way. So this is a clock the caller holds and restarts, keyed on what is open.
 ///
-/// It is keyed on the *title* rather than on a list being open at all, because a completion
-/// popup refilters on every keystroke and re-scrambling as you type is not an effect, it is a
-/// fault. Two different lists are two openings; the same list narrowing is one.
+/// It is keyed on *which* thing is open rather than on something being open at all, because a
+/// list refilters on every keystroke and re-scrambling as you type is not an effect, it is a
+/// fault. Two different lists are two openings; one list narrowing is still one.
 #[derive(Debug, Default)]
 pub struct Landing {
     /// When the thing now open opened, or `None` when nothing is.

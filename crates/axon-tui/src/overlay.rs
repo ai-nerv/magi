@@ -63,6 +63,23 @@ impl Overlay {
         }
     }
 
+    /// What is open, as one string, for anything that has to notice when it changes.
+    ///
+    /// The title when there is one, so a permission ask following a model list reads as a second
+    /// opening. A popup has no title and answers with the character that opened it, because it
+    /// refilters on every keystroke: pressing `/` opens the menu once, and narrowing it to `/mo`
+    /// is still that one opening.
+    #[must_use]
+    pub fn key(&self) -> &str {
+        match self {
+            Self::Picker(picker) => &picker.title,
+            Self::Completion(popup) => match popup.kind {
+                crate::complete::Kind::Command => "/",
+                crate::complete::Kind::Path => "@",
+            },
+        }
+    }
+
     /// Whether this is a completion popup.
     #[must_use]
     pub fn is_completion(&self) -> bool {
@@ -85,5 +102,43 @@ impl From<Picker> for Overlay {
 impl From<Completion> for Overlay {
     fn from(completion: Completion) -> Self {
         Self::Completion(completion)
+    }
+}
+
+/// Everything that opens under the prompt says what it is.
+#[cfg(test)]
+mod key_tests {
+    use super::*;
+
+    #[test]
+    fn a_list_is_known_by_what_it_is_choosing() {
+        let picker = Picker::new("model", Vec::new(), None);
+        assert_eq!(Overlay::Picker(picker).key(), "model");
+    }
+
+    /// A popup, completing `kind`.
+    fn popup(kind: crate::complete::Kind) -> Overlay {
+        Overlay::Completion(Completion {
+            kind,
+            candidates: Vec::new(),
+            selected: 0,
+            typed: String::new(),
+            token_start: 0,
+        })
+    }
+
+    #[test]
+    fn the_slash_menu_has_a_key_of_its_own() {
+        // It had none, so pressing `/` opened a menu that never landed.
+        assert_eq!(popup(crate::complete::Kind::Command).key(), "/");
+    }
+
+    #[test]
+    fn completing_a_path_is_not_the_same_menu() {
+        assert_ne!(
+            popup(crate::complete::Kind::Path).key(),
+            popup(crate::complete::Kind::Command).key(),
+            "@ and / are two menus, and each one opening is its own"
+        );
     }
 }

@@ -60,14 +60,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     let badge = app.identity.full();
     let text_rows = prompt::text_rows(&app.editor, rows, area.width, &badge);
     let room = usize::from(rows.saturating_sub(around)).saturating_sub(text_rows + 3);
-    // Keyed on the title, so a permission ask and a model list are two openings while the same
-    // list narrowing under a query is one. A completion popup has no title and never lands.
-    app.landing.showing(
-        app.overlay
-            .as_ref()
-            .and_then(|open| open.list())
-            .map(|list| list.title.as_str()),
-    );
+    // Keyed on what is open, so a permission ask after a model list is a second opening while
+    // either one narrowing under a query is still the first.
+    app.landing
+        .showing(app.overlay.as_ref().map(axon_tui::overlay::Overlay::key));
     let mut menu = app
         .overlay
         .as_ref()
