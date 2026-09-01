@@ -99,6 +99,12 @@ pub struct Tease {
     block: bool,
     /// The span currently inverted.
     marked: Option<Range<usize>>,
+    /// Whether the ghost cursor is on screen at all.
+    ///
+    /// It arrives with the first performance and stays until somebody touches a key, which is
+    /// the whole of its life: a second cursor on a prompt nobody has left alone yet is a second
+    /// place to type, and a prompt has one.
+    showing: bool,
     /// What is left to play.
     script: VecDeque<Act>,
     /// The lines already shown, newest last.
@@ -121,6 +127,7 @@ impl Tease {
             caret: 0,
             block: false,
             marked: None,
+            showing: false,
             script: VecDeque::new(),
             seen: VecDeque::from([opener.to_owned()]),
             since: Instant::now(),
@@ -147,14 +154,16 @@ impl Tease {
         }
     }
 
-    /// Where the ghost cursor is. Always somewhere.
+    /// Where the ghost cursor is, once there is one.
     ///
-    /// It used to go out between performances, which meant the thing you were watching move
-    /// vanished the moment it stopped -- and a cursor that disappears reads as a bug rather than
-    /// as a rest. It stays where it finished, as a block, which is where it will set off from.
+    /// Nothing until the box has actually started writing to itself, then everywhere until a
+    /// key is touched. It does *not* go out between performances -- the thing you were watching
+    /// move vanishing the moment it stopped reads as a bug rather than as a rest -- so it stays
+    /// where it finished, as a block, which is where it will set off from next.
     #[must_use]
     pub fn caret(&self) -> Option<usize> {
-        Some(self.caret.min(self.shown.chars().count()))
+        self.showing
+            .then(|| self.caret.min(self.shown.chars().count()))
     }
 
     /// Somebody touched a key. Stop where it stands and start the wait over.
@@ -163,6 +172,7 @@ impl Tease {
     /// opener up each time -- so pressing escape, or `i`, or an arrow, rewrote the placeholder
     /// under you for no reason anybody could see. Stopping is not the same as starting again.
     pub fn interrupt(&mut self) {
+        self.showing = false;
         self.marked = None;
         self.script.clear();
         self.block = true;
@@ -203,6 +213,7 @@ impl Tease {
             }
             let next = pick(lines, &self.shown, &self.seen).to_owned();
             self.script = perform(&self.shown, &next, self.caret);
+            self.showing = !self.script.is_empty();
             self.remember(next);
             self.holding = Duration::ZERO;
             self.since = Instant::now();
@@ -641,18 +652,19 @@ mod tests {
             to: 4,
             over: Duration::ZERO,
         });
+        tease.showing = true;
         tease.interrupt();
         assert_eq!(
             tease.shown(),
             "one two three",
             "the line changed under them"
         );
+        assert!(tease.script.is_empty(), "it has stopped");
         assert_eq!(
             tease.caret(),
-            Some(4),
-            "and the ghost stays where it got to"
+            None,
+            "and the ghost has gone, leaving only yours"
         );
-        assert!(tease.script.is_empty(), "but it has stopped");
     }
 
     #[test]
@@ -662,15 +674,36 @@ mod tests {
         let mut tease = Tease::new("one");
         tease.restart("something else");
         assert_eq!(tease.shown(), "something else");
-        assert_eq!(tease.caret(), Some(0));
+        assert_eq!(
+            tease.caret(),
+            None,
+            "and it waits again before showing a ghost"
+        );
     }
 
     #[test]
-    fn the_ghost_is_on_screen_even_at_rest() {
-        // It used to go out between performances, so the thing you were watching move vanished
-        // the moment it stopped -- which reads as a bug rather than as a rest.
+    fn there_is_no_ghost_until_the_box_has_started() {
+        // A second cursor on a prompt nobody has left alone yet is a second place to type, and
+        // a prompt has one.
         let tease = Tease::new("resting");
-        assert_eq!(tease.caret(), Some(0));
+        assert_eq!(tease.caret(), None);
+    }
+
+    #[test]
+    fn the_ghost_stays_between_performances() {
+        // Once it is there it is there. The thing you were watching move vanishing the moment
+        // it stopped reads as a bug rather than as a rest.
+        let mut tease = Tease::new("one two three");
+        tease.showing = true;
+        tease.play(&Act::Jump {
+            to: 4,
+            over: Duration::ZERO,
+        });
+        assert_eq!(
+            tease.caret(),
+            Some(4),
+            "with an empty script and no key touched"
+        );
     }
 
     #[test]
@@ -678,6 +711,7 @@ mod tests {
         // It is drawn every frame now, so a caret left over from a longer line would index off
         // the end of a shorter one.
         let mut tease = Tease::new("a much longer line than the next one");
+        tease.showing = true;
         tease.caret = 30;
         tease.shown = "short".to_owned();
         assert_eq!(tease.caret(), Some(5));

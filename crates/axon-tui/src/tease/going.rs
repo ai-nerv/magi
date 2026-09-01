@@ -208,3 +208,63 @@ mod timing_tests {
         assert!(tease.block, "it rested with a bar cursor");
     }
 }
+
+/// The ghost's whole life: absent, then there, then gone the moment a key lands.
+#[cfg(test)]
+mod ghost_life_tests {
+    use super::*;
+
+    fn pool() -> Vec<String> {
+        [
+            "this is a temporary fix that will outlive us all",
+            "this is a clever fix that will outlive us all",
+        ]
+        .iter()
+        .map(|line| (*line).to_owned())
+        .collect()
+    }
+
+    #[test]
+    fn it_arrives_with_the_first_performance_and_not_before() {
+        let mut tease = Tease::new("this is a temporary fix that will outlive us all");
+        assert_eq!(tease.caret(), None, "nothing before the wait is up");
+
+        // The wait, without waiting it: this is the state the clock would have left behind.
+        tease.since = Instant::now() - Duration::from_secs(60 * 60);
+        assert!(tease.advance(&pool()), "the wait was up");
+        assert!(tease.caret().is_some(), "and now there is a ghost");
+    }
+
+    #[test]
+    fn a_key_takes_it_away_and_the_next_wait_brings_it_back() {
+        // The cycle, end to end. Only the real cursor is left in between, which is the whole
+        // point of it going.
+        let mut tease = Tease::new("this is a temporary fix that will outlive us all");
+        tease.since = Instant::now() - Duration::from_secs(60 * 60);
+        tease.advance(&pool());
+        assert!(tease.caret().is_some(), "the premise");
+
+        tease.interrupt();
+        assert_eq!(tease.caret(), None, "a key left only the real cursor");
+
+        tease.since = Instant::now() - Duration::from_secs(60 * 60);
+        tease.advance(&pool());
+        assert!(tease.caret().is_some(), "and it comes back on its own");
+    }
+
+    #[test]
+    fn it_does_not_come_back_while_the_wait_is_still_running() {
+        let mut tease = Tease::new("this is a temporary fix that will outlive us all");
+        tease.since = Instant::now() - Duration::from_secs(60 * 60);
+        tease.advance(&pool());
+        tease.interrupt();
+        for _ in 0..16 {
+            tease.advance(&pool());
+        }
+        assert_eq!(
+            tease.caret(),
+            None,
+            "it reappeared without being waited for"
+        );
+    }
+}
