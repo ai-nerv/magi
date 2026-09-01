@@ -105,9 +105,11 @@ axon.model = "anthropic/claude-sonnet-4-5"
 -- The footer is three columns held clear of both edges: what this session calls itself on the
 -- left, the display in the middle, the model on the right. The display is `beacon_cells` wide --
 -- and each state draws its own thing on it: rings going out from the middle at rest, a standing
--- wave once something is typed, a lamp running a track while a turn runs, markers closing on the
--- middle while `/` narrows a menu, a breath while a permission waits on you, and a line with the
--- signal dropping out of it when the daemon is away.
+-- wave once something is typed, a lamp running a track while a turn runs -- crossing, going
+-- right off the end, waiting, coming back, and no two crossings the same length -- markers
+-- closing on the middle while `/` narrows a menu, a breath while a permission waits on you, and
+-- a line with the signal dropping out of it when the daemon is away. Anything open on screen
+-- outranks what the agent is doing, because it is the thing holding everything up.
 -- Every column carries a heat as well as a shape, so the cells are coloured by where the energy
 -- in it is. `beacon_cells` is a preference, not a promise: the display is centred on the row, and
 -- landing on the exact middle needs it to be the same parity as the terminal is wide, so it is

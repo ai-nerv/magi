@@ -181,16 +181,21 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
 
     // The UI picks the mood, not the agent: a list being open and the prompt having text in it
     // are both states worth showing and neither is anything the daemon reports.
+    // Anything open on the screen outranks whatever the agent is doing, because it is the thing
+    // holding everything up. A permission ask arrives *during* a turn, so asking `is_busy()`
+    // first meant the one moment axon is waiting on you was the one moment it said `Working`.
     let mood = if !app.connected {
         axon_tui::beacon::Mood::Away
-    } else if app.is_busy() {
-        axon_tui::beacon::Mood::Working
     } else if app
         .overlay
         .as_ref()
-        .is_some_and(|open| !open.is_completion())
+        .is_some_and(axon_tui::overlay::Overlay::is_completion)
     {
+        axon_tui::beacon::Mood::Narrowing
+    } else if app.overlay.is_some() {
         axon_tui::beacon::Mood::Asking
+    } else if app.is_busy() {
+        axon_tui::beacon::Mood::Working
     } else if app.editor.is_blank() {
         axon_tui::beacon::Mood::Resting
     } else {
