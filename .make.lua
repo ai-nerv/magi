@@ -353,7 +353,7 @@ make.recipe{
   desc = "install config/ into $XDG_CONFIG_HOME/axon",
   params = {
     { "--dest", desc = "somewhere other than the config directory" },
-    { "--force", flag = true, desc = "overwrite files you have edited" },
+    { "--keep", flag = true, desc = "leave installed files you have edited alone" },
   },
   run = function(a)
     assert(oslo.run{ "sh", "-c", "command -v rsync", capture = true }.ok,
@@ -374,31 +374,39 @@ make.recipe{
     end
     sh.mkdir("-p", dest)
 
-    -- Never over an edit. `rsync -a` overwrites unconditionally and preserves the source's
-    -- mtime, so a config you had changed came back as the shipped one *looking untouched* --
-    -- which is how a model choice reverted to a provider with no key, three times, while the
-    -- file's timestamp said nobody had been near it. The whole point of installing these is
-    -- that they are yours to edit; a command that undoes the editing is worse than useless.
+    -- The repo's `config/` is the source of truth, and installing copies it. That is the whole
+    -- job, and for a long time it was not what happened: anything that differed was left alone
+    -- and named, so one edited file froze forever and every later fix to it silently never
+    -- arrived. Three bugs were diagnosed twice because of it.
     --
-    -- So: anything missing is written, anything identical is written (it is the same bytes),
-    -- and anything that differs is left alone and named. `--force` is the way to say you meant
-    -- it. Directories are walked file by file for the same reason, and without `--delete`: a
-    -- tool you wrote into `tools/` is not litter.
+    -- What that guard was actually protecting against is still real -- `rsync -a` preserves the
+    -- source's mtime, so an overwritten config came back looking untouched -- so the answer is
+    -- a copy, not a refusal: anything that differs is saved beside itself as `.bak` and then
+    -- written. Nothing is lost and nothing is stale. `--keep` is the old behaviour, for editing
+    -- the installed copy on purpose.
+    --
+    -- Directories are walked file by file, and without `--delete`: a tool you wrote into
+    -- `tools/` is not litter.
     local function same(a, b)
       return oslo.run{ "cmp", "-s", a, b }.ok
     end
 
-    local synced, kept = 0, {}
+    local synced, saved, kept = 0, {}, {}
     local function install_file(src, dir, name)
       local dst = dir .. "/" .. name
-      if oslo.fs.stat(dst) and not same(src, dst) and not a.force then
-        kept[#kept + 1] = dst
-        return
+      if oslo.fs.stat(dst) and not same(src, dst) then
+        if a.keep then
+          kept[#kept + 1] = dst
+          return
+        end
+        sh.rsync("-a", dst, dst .. ".bak")
+        saved[#saved + 1] = dst
       end
       sh.mkdir("-p", dir)
       sh.rsync("-a", src, dst)
       synced = synced + 1
     end
+
 
     local function install_tree(src, dst)
       for _, path in ipairs(oslo.fs.glob(src .. "/*")) do
@@ -421,12 +429,17 @@ make.recipe{
     end
     print(oslo.ui.style("✓ ", { fg = "green" }) ..
           ("%d file%s -> %s"):format(synced, synced == 1 and "" or "s", dest))
+    if #saved > 0 then
+      print(dim(("   %d differed and %s saved as .bak beside %s")
+                  :format(#saved, #saved == 1 and "was" or "were",
+                          #saved == 1 and "it" or "them")))
+      for _, path in ipairs(saved) do print(dim("   " .. path .. ".bak")) end
+    end
     if #kept > 0 then
       print(oslo.ui.style("!  ", { fg = "yellow" }) ..
-            ("%d file%s left alone because you have changed %s:")
-              :format(#kept, #kept == 1 and "" or "s", #kept == 1 and "it" or "them"))
+            ("%d file%s left alone because you asked with --keep:")
+              :format(#kept, #kept == 1 and "" or "s"))
       for _, path in ipairs(kept) do print(dim("   " .. path)) end
-      print(dim("   `make configs --force` overwrites them"))
     end
 
     -- Installed, then read back. axon loads its own configuration, so a file that will not run

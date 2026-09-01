@@ -105,7 +105,7 @@ axon.model = "anthropic/claude-sonnet-4-5"
 -- over the whole screen, and leaves the box and every other frame character alone.
 --
 axon.ui.decrypt_ms = 900
-axon.ui.decrypt_pool = "01"
+axon.ui.decrypt_pool = "0#$%&@?*"
 
 -- And the box never quite settling: one character in `flicker_odds` glitches to a symbol for
 -- `flicker_ms` and comes back as itself. Zero odds, the built-in, is off. Only inside the prompt
