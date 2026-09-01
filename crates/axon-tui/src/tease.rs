@@ -16,6 +16,10 @@
 //! knows what a phrase is *about*; [`perform`] works out the difference between two lines and
 //! writes the script that turns one into the other, and everything else just plays it.
 
+#[cfg(test)]
+#[path = "tease/going.rs"]
+mod going_tests;
+
 use std::collections::VecDeque;
 use std::ops::Range;
 use std::time::{Duration, Instant};
@@ -102,8 +106,10 @@ pub struct Tease {
     /// Without this it never leaves: picking the closest line to the one on screen and nothing
     /// else means two lines in a family point at each other and it swaps between them forever.
     seen: VecDeque<String>,
-    /// When the act at the front of the script started.
+    /// When the last act was played.
     since: Instant,
+    /// How long its result is held before the next one.
+    holding: Duration,
 }
 
 impl Tease {
@@ -118,6 +124,7 @@ impl Tease {
             script: VecDeque::new(),
             seen: VecDeque::from([opener.to_owned()]),
             since: Instant::now(),
+            holding: Duration::ZERO,
         }
     }
 
@@ -140,13 +147,14 @@ impl Tease {
         }
     }
 
-    /// Where the ghost cursor is, or `None` while nothing is going on.
+    /// Where the ghost cursor is. Always somewhere.
     ///
-    /// Nothing to show while it rests: a second cursor sitting on an untouched placeholder is a
-    /// second place to type, and there is only one.
+    /// It used to go out between performances, which meant the thing you were watching move
+    /// vanished the moment it stopped -- and a cursor that disappears reads as a bug rather than
+    /// as a rest. It stays where it finished, as a block, which is where it will set off from.
     #[must_use]
     pub fn caret(&self) -> Option<usize> {
-        (!self.script.is_empty()).then_some(self.caret)
+        Some(self.caret.min(self.shown.chars().count()))
     }
 
     /// Somebody typed. Stop, and start the wait over with `opener` on screen.
@@ -157,6 +165,7 @@ impl Tease {
         self.marked = None;
         self.script.clear();
         self.since = Instant::now();
+        self.holding = Duration::ZERO;
         self.remember(opener.to_owned());
     }
 
@@ -169,21 +178,26 @@ impl Tease {
         if after.is_zero() {
             return false;
         }
-        let Some(act) = self.script.front() else {
+        // The duration on an act is how long its *result* is held, not how long to wait before
+        // it happens. Those are not the same thing and getting them the wrong way round put the
+        // long pause before the selection appeared rather than on the selection -- so the box
+        // sat with the cursor doing nothing and then flashed the words it was taking.
+        if self.since.elapsed() < self.holding {
+            return false;
+        }
+        let Some(act) = self.script.pop_front() else {
             if self.since.elapsed() < after {
                 return false;
             }
             let next = pick(lines, &self.shown, &self.seen).to_owned();
             self.script = perform(&self.shown, &next, self.caret);
             self.remember(next);
+            self.holding = Duration::ZERO;
             self.since = Instant::now();
             return !self.script.is_empty();
         };
-        if self.since.elapsed() < act.over() {
-            return false;
-        }
-        let act = self.script.pop_front().expect("checked above");
         self.play(&act);
+        self.holding = act.over();
         self.since = Instant::now();
         true
     }
@@ -413,7 +427,13 @@ pub fn perform(from: &str, to: &str, caret: usize) -> VecDeque<Act> {
     for letter in replacement.chars() {
         script.push_back(Act::Put { letter, over: step });
     }
-    script.push_back(Act::Rest(look));
+    // And back to a block, the way `esc` ends an edit. It is also what leaves the ghost in a
+    // shape that makes sense while it rests: a bar sitting still for thirty seconds looks like
+    // a prompt waiting for you rather than a box that has stopped.
+    script.push_back(Act::Shape {
+        block: true,
+        over: look,
+    });
     script
 }
 
@@ -604,154 +624,24 @@ mod tests {
         tease.script = perform("one", "two", 0);
         tease.interrupt("something else");
         assert_eq!(tease.shown(), "something else");
-        assert!(tease.caret().is_none(), "and no ghost is left on screen");
+        assert_eq!(tease.caret(), Some(0), "and the ghost is back at the start");
     }
 
     #[test]
-    fn nothing_is_shown_while_it_rests() {
-        // A second cursor on an untouched placeholder is a second place to type, and there is
-        // only one.
+    fn the_ghost_is_on_screen_even_at_rest() {
+        // It used to go out between performances, so the thing you were watching move vanished
+        // the moment it stopped -- which reads as a bug rather than as a rest.
         let tease = Tease::new("resting");
-        assert!(tease.caret().is_none());
-    }
-}
-
-/// It chooses the line it can make the smallest edit into.
-#[cfg(test)]
-mod picking_tests {
-    use super::*;
-
-    fn pool() -> Vec<String> {
-        [
-            "the scaffolding is temporary",
-            "the scaffolding is the building",
-            "we're shipping and watching the graphs",
-        ]
-        .iter()
-        .map(|line| (*line).to_owned())
-        .collect()
+        assert_eq!(tease.caret(), Some(0));
     }
 
     #[test]
-    fn it_prefers_a_line_it_can_edit_into() {
-        let none = VecDeque::new();
-        // The whole point of the engine. Picking at random would retype the line most of the
-        // time, and the middle edit -- walk, mark, cut, type -- would almost never be seen.
-        let lines = pool();
-        for _ in 0..8 {
-            assert_eq!(
-                pick(&lines, "the scaffolding is temporary", &none),
-                "the scaffolding is the building"
-            );
-        }
-    }
-
-    #[test]
-    fn it_still_answers_when_nothing_is_close() {
-        // A pool of unrelated lines is not an error; it just means more retyping.
-        let lines = vec!["alpha beta".to_owned()];
-        assert_eq!(pick(&lines, "gamma delta", &VecDeque::new()), "alpha beta");
-    }
-
-    #[test]
-    fn it_never_offers_the_line_already_up() {
-        let lines = pool();
-        let none = VecDeque::new();
-        for _ in 0..8 {
-            assert_ne!(
-                pick(&lines, "the scaffolding is temporary", &none),
-                "the scaffolding is temporary"
-            );
-        }
-    }
-
-    #[test]
-    fn kinship_counts_both_ends() {
-        assert_eq!(kinship(&["a", "b", "c"], &["a", "x", "c"]), 2);
-        assert_eq!(kinship(&["a", "b"], &["x", "y"]), 0);
-        assert_eq!(kinship(&["a", "b"], &["a", "b"]), 2, "and does not double");
-    }
-}
-
-/// It moves on, and what it changes is in the middle.
-#[cfg(test)]
-mod wandering_tests {
-    use super::*;
-
-    fn pool() -> Vec<String> {
-        [
-            "this is a temporary fix that will outlive us all",
-            "this is a permanent fix that will outlive us all",
-            "this is a clever fix that will outlive us all",
-            "the roadmap is a list of wishes, sorted by hope",
-            "the roadmap is a list of bugs, sorted by hope",
-        ]
-        .iter()
-        .map(|line| (*line).to_owned())
-        .collect()
-    }
-
-    /// The lines it walks through, following its own choices.
-    fn walked(steps: usize) -> Vec<String> {
-        let lines = pool();
-        let mut shown = lines[0].clone();
-        let mut seen: VecDeque<String> = VecDeque::from([shown.clone()]);
-        let mut out = vec![shown.clone()];
-        for _ in 0..steps {
-            let next = pick(&lines, &shown, &seen).to_owned();
-            let mut tease = Tease::new(&shown);
-            for act in perform(&shown, &next, 0) {
-                tease.play(&act);
-            }
-            shown = tease.shown().to_owned();
-            seen.push_back(shown.clone());
-            while seen.len() > RECALLED {
-                seen.pop_front();
-            }
-            out.push(shown.clone());
-        }
-        out
-    }
-
-    #[test]
-    fn it_does_not_get_stuck_between_two_lines() {
-        // The bug this exists for. Picking the closest line and nothing else means the closest
-        // line to *that* is the one it came from, so a family of two points at itself and the
-        // box swaps between them until somebody types.
-        let walk = walked(6);
-        let mut distinct = walk.clone();
-        distinct.sort();
-        distinct.dedup();
-        assert!(
-            distinct.len() >= 4,
-            "it only ever said {} different things: {walk:#?}",
-            distinct.len()
-        );
-    }
-
-    #[test]
-    fn every_line_it_lands_on_is_one_from_the_pool() {
-        // Whatever route it takes, the acts have to add up to a line somebody wrote.
-        let lines = pool();
-        for said in walked(6) {
-            assert!(lines.contains(&said), "{said:?} is not in the pool");
-        }
-    }
-
-    #[test]
-    fn what_changes_has_words_on_both_sides_of_it() {
-        // "a word in the middle", which is the whole ask. A family whose lines differ only at
-        // the end can only ever have its tail retyped, and the walk has nothing to walk past.
-        let lines = pool();
-        for from in &lines {
-            let to = pick(&lines, from, &VecDeque::new());
-            let (cut, _) = difference(&words(from), &words(to));
-            let total = words(from).len();
-            assert!(cut.start > 0, "{from:?} into {to:?} changes the first word");
-            assert!(
-                cut.end < total,
-                "{from:?} into {to:?} changes the last word"
-            );
-        }
+    fn the_ghost_is_never_past_the_end_of_the_line() {
+        // It is drawn every frame now, so a caret left over from a longer line would index off
+        // the end of a shorter one.
+        let mut tease = Tease::new("a much longer line than the next one");
+        tease.caret = 30;
+        tease.shown = "short".to_owned();
+        assert_eq!(tease.caret(), Some(5));
     }
 }
