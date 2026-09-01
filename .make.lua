@@ -7,6 +7,12 @@
 --
 -- At an oslo prompt in this directory `make` is enough; everywhere else it is `oslo make`.
 -- CI has no oslo, so it calls the language's own tool -- nothing here is on the release path.
+--
+-- **Everything here builds `--release`.** `build` makes a release binary, `run` runs it and
+-- `install` copies it, so a `check` or a `test` against the debug profile compiles the whole
+-- workspace a second time into a second target directory -- and then verifies a set of
+-- artefacts nobody is going to run. One profile, one set of artefacts, one thing verified.
+-- `make debug` is the one way out, which is what its name is for.
 
 local make = oslo.make
 
@@ -455,22 +461,24 @@ make.recipe{
 }
 
 make.recipe{ name = "test", desc = "the suite",
-             run = function() sh.cargo("test", "--all-targets") end }
+             run = function() sh.cargo("test", "--all-targets", "--release") end }
 make.alias("t", "test")
 
 make.recipe{ name = "check", desc = "type-check every target",
-             run = function() sh.cargo("check", "--all-targets") end }
+             run = function() sh.cargo("check", "--all-targets", "--release") end }
 
 make.recipe{ name = "clippy", desc = "clippy, with warnings denied",
              run = function()
-               sh.cargo("clippy", "--all-targets", "--", "-Dwarnings")
+               sh.cargo("clippy", "--all-targets", "--release", "--", "-Dwarnings")
              end }
 
 make.recipe{
   name = "rustdoc",
   desc = "build the docs, with warnings denied",
   run = function()
-    local built = oslo.run{ "env", "RUSTDOCFLAGS=-Dwarnings", "cargo", "doc", "--no-deps" }
+    local built = oslo.run{
+      "env", "RUSTDOCFLAGS=-Dwarnings", "cargo", "doc", "--no-deps", "--release",
+    }
     assert(built.ok, "rustdoc failed")
   end,
 }
