@@ -15,6 +15,7 @@ mod external_editor;
 mod help;
 mod history;
 mod identity;
+mod instance;
 mod keys;
 mod models;
 mod paths;

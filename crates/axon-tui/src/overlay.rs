@@ -76,6 +76,8 @@ impl Overlay {
             Self::Completion(popup) => match popup.kind {
                 crate::complete::Kind::Command => ":",
                 crate::complete::Kind::Path => "@",
+                crate::complete::Kind::Instance => "$",
+                crate::complete::Kind::Skill => "/",
             },
         }
     }

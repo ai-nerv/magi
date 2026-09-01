@@ -53,7 +53,7 @@ fn the_command_palette_marks_the_selection_and_shows_details() {
             "  :resume       continue a session from this direc",
             "  :rewind       undo the last exchange, or :rewind",
             "  :think        how much reasoning to ask for",
-            "  :quit         exit axon, and :q for the same",
+            "  :peers        which other instances are listenin",
         ]
     );
 }

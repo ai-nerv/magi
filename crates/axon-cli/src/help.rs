@@ -17,6 +17,8 @@ const KEYS: &str = "\
 - `h j k l` `w b e` `0 ^ $` `f t F T` move — `gg G` ends
 - `d c y` take a motion: `dw` `d$` `ct,` `yb` — doubled for the line: `dd cc yy`
 - `x X D p P J ~ r` edit — `:` command line, which holds your prompt until it closes
+
+**Triggers** — `@file` completes a path, `$instance` another axon, `/skill` a skill (not built yet)
 - `j k` scroll the transcript while the prompt is one line — `gg G` its ends
 - `tab` complete — `enter` runs the command — `↑/↓` move through the list
 - `pgup`/`pgdn` scroll — `shift+↑/↓` by a line — `shift+home/end` to the ends

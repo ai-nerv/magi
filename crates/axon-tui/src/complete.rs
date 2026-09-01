@@ -14,6 +14,10 @@ pub enum Kind {
     Command,
     /// A file path after an `@`.
     Path,
+    /// Another instance after a `$`.
+    Instance,
+    /// A skill after a `/`.
+    Skill,
 }
 
 /// One offered completion.
@@ -91,6 +95,10 @@ pub fn commands() -> Vec<Candidate> {
         (":resume", "continue a session from this directory"),
         (":rewind", "undo the last exchange, or :rewind N"),
         (":think", "how much reasoning to ask for"),
+        (
+            ":peers",
+            "which other instances are listening, and what they are doing",
+        ),
         (":quit", "exit axon, and :q for the same"),
     ]
     .iter()
@@ -110,54 +118,77 @@ pub fn resolve(
     col: usize,
     list_paths: &dyn Fn(&str) -> Vec<String>,
 ) -> Option<Completion> {
+    resolve_with(line, col, list_paths, &|_| Vec::new())
+}
+
+/// The same, told where instance names come from.
+///
+/// Two entry points rather than one with an extra argument everywhere, because the filesystem
+/// and the list of running siblings are found by different callers and most of them have only
+/// the first.
+pub fn resolve_with(
+    line: &str,
+    col: usize,
+    list_paths: &dyn Fn(&str) -> Vec<String>,
+    list_instances: &dyn Fn(&str) -> Vec<String>,
+) -> Option<Completion> {
     let before: String = line.chars().take(col).collect();
+    let token = crate::trigger::under(&before, &crate::trigger::EVERY)?;
 
-    if let Some(query) = before.strip_prefix(':')
-        && !query.contains(char::is_whitespace)
-    {
-        {
-            let all = commands();
-            let values: Vec<String> = all.iter().map(|c| c.value.clone()).collect();
-            let ranked = fuzzy::filter(&format!(":{query}"), &values);
-            let candidates = ranked
+    // Which of the four it is decides where the candidates come from, and nothing else. That is
+    // the whole reason the triggers are a table: adding one is a `match` arm here and an entry
+    // there, not another copy of the block below.
+    // Some candidates carry their sigil and some do not -- `:help` is written with the colon and
+    // `src/main.rs` is not -- and the needle has to be the same shape as what it is matched
+    // against, or `@src` is searched for inside `src/main.rs` and finds nothing.
+    let (kind, offered, sigil_in_value) = match token.trigger {
+        crate::trigger::Trigger::Command => (Kind::Command, commands(), true),
+        crate::trigger::Trigger::File => (
+            Kind::Path,
+            list_paths(&token.query)
                 .into_iter()
-                .filter_map(|v| all.iter().find(|c| &c.value == v).cloned())
-                .collect::<Vec<_>>();
-            return (!candidates.is_empty()).then_some(Completion {
-                kind: Kind::Command,
-                typed: format!(":{query}"),
-                candidates,
-                selected: 0,
-                token_start: 0,
-            });
-        }
-    }
+                .map(|value| Candidate {
+                    value,
+                    detail: String::new(),
+                })
+                .collect(),
+            false,
+        ),
+        crate::trigger::Trigger::Instance => (
+            Kind::Instance,
+            list_instances(&token.query)
+                .into_iter()
+                .map(|value| Candidate {
+                    value: format!("${value}"),
+                    detail: String::new(),
+                })
+                .collect(),
+            true,
+        ),
+        // Skills are not built yet. An empty list means no popup, which is what somebody typing
+        // `/` into a sentence should see until there is something to offer them.
+        crate::trigger::Trigger::Skill => (Kind::Skill, Vec::new(), true),
+    };
 
-    let at = before.rfind('@')?;
-    let query = &before[at + 1..];
-    if query.contains(char::is_whitespace) {
-        return None;
-    }
-
-    let paths = list_paths(query);
-    let ranked = fuzzy::filter(query, &paths);
+    let values: Vec<String> = offered.iter().map(|c| c.value.clone()).collect();
+    let needle = if sigil_in_value {
+        token.written()
+    } else {
+        token.query.clone()
+    };
+    let ranked = fuzzy::filter(&needle, &values);
     let candidates: Vec<Candidate> = ranked
         .into_iter()
         .take(max_visible() * 4)
-        .map(|value| Candidate {
-            value: value.clone(),
-            detail: String::new(),
-        })
+        .filter_map(|value| offered.iter().find(|c| c.value == *value).cloned())
         .collect();
 
-    (!candidates.is_empty()).then(|| Completion {
-        kind: Kind::Path,
-        typed: query.to_owned(),
+    (!candidates.is_empty()).then_some(Completion {
+        kind,
+        typed: token.written(),
         candidates,
         selected: 0,
-        // The `@` itself is replaced along with the query, so accepting a path leaves a bare
-        // path in the prompt rather than one still wearing its trigger.
-        token_start: before[..at].chars().count(),
+        token_start: token.at,
     })
 }
 

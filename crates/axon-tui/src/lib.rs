@@ -32,6 +32,7 @@ pub mod status;
 pub mod table;
 pub mod tease;
 pub mod transcript;
+pub mod trigger;
 pub mod vim;
 pub mod wrap;
 

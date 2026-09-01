@@ -84,6 +84,15 @@ pub async fn run(
     // screen until the alternate one is open.
     axon_tui::decrypt::begin();
     let mut terminal_events = EventStream::new();
+    // Held so the session can update what it says about itself, read what arrived, and notice
+    // being asked to stop. `None` only if binding failed, which is not fatal: a session nobody
+    // can reach is still a session.
+    #[allow(clippy::type_complexity)]
+    let mut reachable: Option<(
+        tokio::sync::watch::Sender<crate::instance::answering::About>,
+        tokio::sync::mpsc::Receiver<crate::instance::wire::Message>,
+        tokio::sync::mpsc::Receiver<()>,
+    )>;
     let mut ticker = tokio::time::interval(Duration::from_millis(axon_tui::metric::frame_ms()));
 
     let (event_tx, mut event_rx) = mpsc::channel::<HarnessEvent>(256);
@@ -92,6 +101,33 @@ pub async fn run(
     // event, so a UI watching only for events cannot tell "nothing is happening" from
     // "nothing can happen".
     let attached = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // The other half of the mirror: this session can be reached by name for as long as it
+    // runs. Bound before the first frame, so a fork started by hand can find its parent
+    // immediately rather than racing the UI.
+    {
+        let (about_tx, about_rx) = tokio::sync::watch::channel(crate::instance::answering::About {
+            me: app.identity.clone(),
+            busy: false,
+            working_for: 0,
+            inbox: Vec::new(),
+        });
+        let (arrived_tx, arrived_rx) = tokio::sync::mpsc::channel(64);
+        let (stopped_tx, stopped_rx) = tokio::sync::mpsc::channel(1);
+        let at = crate::instance::listening_at(&app.identity);
+        tokio::spawn(async move {
+            let _ = crate::instance::serving::serve(
+                &at,
+                crate::instance::serving::Serving {
+                    about: about_rx,
+                    arrived: arrived_tx,
+                    stopped: stopped_tx,
+                },
+            )
+            .await;
+        });
+        reachable = Some((about_tx, arrived_rx, stopped_rx));
+    }
+
     tokio::spawn(connection_loop(
         socket.to_path_buf(),
         event_tx,
@@ -184,6 +220,13 @@ pub async fn run(
                             Action::Submit(text) => {
                                 crate::history::remember(&text);
                                 let _ = command_tx.send(UiCommand::SubmitPrompt { text }).await;
+                                dirty = true;
+                            }
+                            // Answered here rather than in `run_command` because it dials
+                            // other instances, and that is the one thing a command does that
+                            // has to await.
+                            Action::Command(text) if text.trim() == ":peers" => {
+                                app.show_notice(peers(&app).await);
                                 dirty = true;
                             }
                             Action::Command(text) => {
@@ -375,6 +418,24 @@ pub async fn run(
                 // prompt's border scan runs whenever the box is on screen, and a scan that
                 // stops the moment a turn ends reads as the UI having frozen.
                 app.advance();
+                // What the socket is allowed to say about us, and what it heard. Done on the
+                // frame rather than where the state changes: the socket answers with whatever
+                // was last published, and a session that only republished on some paths would
+                // report a turn that finished a minute ago.
+                if let Some((about, arrived, stopped)) = reachable.as_mut() {
+                    if stopped.try_recv().is_ok() {
+                        break;
+                    }
+                    while let Ok(message) = arrived.try_recv() {
+                        app.inbox.push(message);
+                    }
+                    let _ = about.send(crate::instance::answering::About {
+                        me: app.identity.clone(),
+                        busy: app.is_busy(),
+                        working_for: app.elapsed().map_or(0, |since| since.as_secs()),
+                        inbox: app.inbox.clone(),
+                    });
+                }
                 dirty = true;
             }
         }
@@ -662,4 +723,46 @@ fn debug_log(args: std::fmt::Arguments<'_>) {
     {
         let _ = writeln!(file, "{args}");
     }
+}
+
+/// What every other instance says it is doing.
+///
+/// Asked, not read off the directory. A socket file outlives the process that made it, so the
+/// only way to know an instance is there is for it to answer — and the answer is what somebody
+/// typing `:peers` wanted in the first place.
+async fn peers(app: &App) -> String {
+    let around = crate::instance::asking::around(&app.identity);
+    if around.is_empty() {
+        return "no other instances are listening".to_owned();
+    }
+    let mut said = Vec::new();
+    for who in around {
+        // Everything found this way is a peer: a fork is one this session started, and it has
+        // not started any yet. The floor of the permission model, not a placeholder for it.
+        let line = match crate::instance::asking::ask(
+            &who,
+            &app.identity,
+            crate::instance::Kind::Peer,
+            "status",
+            Vec::new(),
+        )
+        .await
+        {
+            Ok(reply) => match reply.result.first() {
+                Some(status) if reply.ok => format!(
+                    "- `{}` {}",
+                    who.written(),
+                    if status["busy"].as_bool().unwrap_or(false) {
+                        "working"
+                    } else {
+                        "idle"
+                    }
+                ),
+                _ => format!("- `{}` answered nothing", who.written()),
+            },
+            Err(why) => format!("- `{}` {why}", who.written()),
+        };
+        said.push(line);
+    }
+    format!("**Listening**\n\n{}", said.join("\n"))
 }

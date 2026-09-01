@@ -143,6 +143,8 @@ pub struct App {
     pub trace: axon_tui::beacon::Trace,
     /// Which mode the prompt is in, and any half-typed command waiting on its second key.
     pub modal: crate::keys::Modal,
+    /// What other instances have sent and nobody has read yet.
+    pub inbox: Vec<crate::instance::wire::Message>,
     /// Whether the prompt was empty when it was last looked at.
     was_blank: bool,
     /// The text being dragged over, or the last drag that finished.
@@ -195,6 +197,7 @@ impl App {
             landing: axon_tui::decrypt::Landing::default(),
             trace: axon_tui::beacon::Trace::default(),
             modal: crate::keys::Modal::default(),
+            inbox: Vec::new(),
             was_blank: true,
             selection: None,
             flipped: std::collections::BTreeSet::new(),
@@ -672,7 +675,12 @@ impl App {
     pub fn refresh_completion(&mut self, list_paths: &dyn Fn(&str) -> Vec<String>) {
         let (row, col) = self.editor.cursor();
         let line = self.editor.lines()[row].clone();
-        let resolved = axon_tui::complete::resolve(&line, col, list_paths);
+        // `$` offers whoever is listening. Read from the socket directory on the keystroke
+        // rather than from a list kept up to date, because an instance that died did not get to
+        // remove itself from one.
+        let resolved = axon_tui::complete::resolve_with(&line, col, list_paths, &|_| {
+            crate::instance::listening()
+        });
         self.overlay = resolved
             .filter(|found| {
                 found.kind != axon_tui::complete::Kind::Command || self.modal.commanding()
