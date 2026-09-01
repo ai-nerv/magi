@@ -25,12 +25,35 @@
 //! resolves to, and a rule about who may do what.
 
 pub mod answering;
-pub mod asking;
+pub mod briefing;
 pub mod serving;
+pub mod tool;
 pub mod wire;
 
 use crate::identity::Identity;
 use std::path::{Path, PathBuf};
+
+/// What the model calls the tool that reaches other instances.
+///
+/// Named once, because it is said in three places: the tool registers under it, the briefing
+/// tells the model to use it, and its own help repeats it.
+pub const TOOL: &str = "agent";
+
+/// The variable a spawned instance learns its parent from.
+///
+/// Inherited across the spawn rather than passed as an argument, so a child that re-execs or
+/// starts a shell that starts another axon still knows where it came from.
+pub const PARENT: &str = "AXON_PARENT";
+
+/// Who started this session, if anybody did.
+///
+/// `None` for one somebody started at a terminal, which is most of them. The whole of the
+/// authority to stop a session: a `stop` is honoured when it comes from this name and ignored
+/// otherwise, so a notification from a stranger costs nothing.
+#[must_use]
+pub fn parent() -> Option<String> {
+    std::env::var(PARENT).ok().filter(|name| !name.is_empty())
+}
 
 /// How you came by an instance, which is what decides what you may do to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,21 +184,6 @@ impl Address {
             role: self.role.clone().unwrap_or_else(|| asker.role.clone()),
             id: self.id.clone(),
         }
-    }
-
-    /// Where that instance listens.
-    ///
-    /// Beside the daemon sockets and named for the instance rather than digested from a path:
-    /// a peer is found *by name*, and a name you have to hash a directory to reconstruct is a
-    /// name nobody can type. The daemon's own socket stays digested, because that one is found
-    /// by the directory you are standing in.
-    #[must_use]
-    pub fn socket(&self, asker: &Identity) -> PathBuf {
-        let whole = self.against(asker);
-        runtime()
-            .join("axon")
-            .join("instances")
-            .join(format!("{}.sock", safe(&whole.full())))
     }
 }
 
@@ -322,30 +330,22 @@ mod tests {
     }
 
     #[test]
-    fn a_socket_is_one_segment_inside_the_instances_directory() {
-        // `project/role/id` has slashes in it and a socket path is a filename.
-        let path = Address::read("$gamma")
-            .expect("an address")
-            .socket(&asker());
-        assert!(inside(&path), "{path:?}");
-        let name = path.file_name().expect("a name").to_string_lossy();
-        assert!(!name.contains('/'), "{name}");
-    }
-
-    #[test]
     fn a_name_cannot_climb_out_of_the_directory() {
-        // The reason names are flattened rather than joined. This one comes off a wire.
-        let escaping = Address {
-            project: Some("../../etc".to_owned()),
-            role: Some("..".to_owned()),
+        // The reason names are flattened rather than joined. `project/role/id` has slashes in
+        // it and a socket path is a filename, and this name comes off a wire.
+        let escaping = Identity {
+            project: "../../etc".to_owned(),
+            role: "..".to_owned(),
             id: "passwd".to_owned(),
         };
-        let path = escaping.socket(&asker());
+        let path = listening_at(&escaping);
         assert!(inside(&path), "it escaped to {path:?}");
         assert!(
             !path.to_string_lossy().contains(".."),
             "it kept the climb: {path:?}"
         );
+        let name = path.file_name().expect("a name").to_string_lossy();
+        assert!(!name.contains('/'), "{name}");
     }
 
     #[test]

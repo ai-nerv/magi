@@ -145,6 +145,10 @@ pub struct App {
     pub modal: crate::keys::Modal,
     /// What other instances have sent and nobody has read yet.
     pub inbox: Vec<crate::instance::wire::Message>,
+    /// Who started this session, if anybody did.
+    pub parent: Option<String>,
+    /// Instances this session started, which are the ones it may stop.
+    pub forked: Vec<String>,
     /// Whether the prompt was empty when it was last looked at.
     was_blank: bool,
     /// The text being dragged over, or the last drag that finished.
@@ -198,6 +202,8 @@ impl App {
             trace: axon_tui::beacon::Trace::default(),
             modal: crate::keys::Modal::default(),
             inbox: Vec::new(),
+            parent: crate::instance::parent(),
+            forked: Vec::new(),
             was_blank: true,
             selection: None,
             flipped: std::collections::BTreeSet::new(),

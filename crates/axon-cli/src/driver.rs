@@ -219,17 +219,13 @@ pub async fn run(
                         match action {
                             Action::Submit(text) => {
                                 crate::history::remember(&text);
-                                // A prompt that names another instance is addressed to it. No
-                                // command for this on purpose: `$gamma` is a trigger, and a
-                                // `:tell $gamma` would be the trigger doing nothing while a
-                                // command did its job for it.
-                                let named =
-                                    axon_tui::trigger::named(&text, axon_tui::trigger::Trigger::Instance);
-                                if named.is_empty() {
-                                    let _ = command_tx.send(UiCommand::SubmitPrompt { text }).await;
-                                } else {
-                                    app.show_notice(addressed(&named, &text, &app).await);
-                                }
+                                // A prompt that names another instance is still the model's to
+                                // answer. What naming one does is *tell the model it is there*
+                                // and that there is a tool for reaching it -- axon delivering
+                                // the message itself would be the harness deciding what the
+                                // model meant by "tell", which is the model's job.
+                                let text = crate::instance::briefing::augment(&text, &app);
+                                let _ = command_tx.send(UiCommand::SubmitPrompt { text }).await;
                                 dirty = true;
                             }
                             Action::Command(text) => {
@@ -726,42 +722,4 @@ fn debug_log(args: std::fmt::Arguments<'_>) {
     {
         let _ = writeln!(file, "{args}");
     }
-}
-
-/// Deliver a prompt that names other instances to them.
-///
-/// `tell $main/delta to stop` goes to `$main/delta`, not to the model. The whole line travels,
-/// including the names — what to make of "tell … to stop" is the receiving session's business,
-/// and stripping the address out would leave a message whose subject nobody can see.
-async fn addressed(named: &[String], text: &str, app: &App) -> String {
-    let mut said = Vec::new();
-    for name in named {
-        let Some(address) = crate::instance::Address::read(name) else {
-            said.push(format!("- `${name}` does not name an instance"));
-            continue;
-        };
-        // A peer, because nothing has been forked yet. When forks exist this is what the parent
-        // knows it started, and the only thing that changes is what is passed here.
-        let sent = crate::instance::asking::ask(
-            &address,
-            &app.identity,
-            crate::instance::Kind::Peer,
-            "tell",
-            vec![
-                serde_json::json!(app.identity.full()),
-                serde_json::json!(text),
-            ],
-        )
-        .await;
-        said.push(match sent {
-            Ok(reply) if reply.ok => format!("- told `{}`", address.written()),
-            Ok(reply) => format!(
-                "- `{}` {}",
-                address.written(),
-                reply.error.unwrap_or_else(|| "refused".to_owned())
-            ),
-            Err(why) => format!("- {why}"),
-        });
-    }
-    said.join("\n")
 }
