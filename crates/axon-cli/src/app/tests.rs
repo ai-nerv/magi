@@ -172,13 +172,25 @@ mod reduction {
     fn the_popup_follows_the_prompt() {
         let mut app = App::new();
         let none = |_: &str| Vec::new();
-        app.editor.insert_str(":qu");
+        app.modal.open_command(&mut app.editor);
+        app.editor.insert_str("qu");
         app.refresh_completion(&none);
         assert!(app.overlay.is_some());
-        app.editor.clear();
+        app.modal.close_command(&mut app.editor);
         app.editor.insert_str("plain text");
         app.refresh_completion(&none);
         assert!(app.overlay.is_none());
+    }
+
+    #[test]
+    fn a_colon_in_a_sentence_is_not_a_command() {
+        // The menu belongs to the command line. A colon typed in insert mode is a colon, and
+        // it used to put the palette over the prompt every time somebody wrote a ratio.
+        let mut app = App::new();
+        app.modal.insert();
+        app.editor.insert_str(":qu");
+        app.refresh_completion(&|_: &str| Vec::new());
+        assert!(app.overlay.is_none(), "the palette opened over a sentence");
     }
 
     #[test]

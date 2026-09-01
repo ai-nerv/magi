@@ -223,14 +223,12 @@ pub fn handle(
                 let command = open.kind == Kind::Command;
                 accept(open, editor);
                 *overlay = None;
-                if !command || busy {
+                if !command {
                     return Action::Accepted;
                 }
-                return match editor.submit() {
-                    Some(text) if text.starts_with(':') => Action::Command(text),
-                    Some(text) => Action::Submit(text),
-                    None => Action::Accepted,
-                };
+                // Through the command line, which has the prompt's own text put aside and
+                // owes it back whether the command runs or not.
+                return modal::finish_command(editor, modal);
             }
             _ => {}
         }
@@ -249,6 +247,10 @@ pub fn handle(
         // Out of insert mode, and only that. Interrupting a turn is the *second* escape, from
         // normal mode, because a key that both left a mode and cancelled a turn would cancel
         // one every time somebody finished typing.
+        KeyCode::Esc if modal.commanding() => {
+            modal.close_command(editor);
+            Action::Redraw
+        }
         KeyCode::Esc => {
             modal.normal(editor);
             Action::Redraw
@@ -258,6 +260,9 @@ pub fn handle(
             editor.newline();
             Action::Redraw
         }
+        // The command line runs whatever is on it, whether or not a turn is going: `:q` and
+        // `:model` are the UI's business and do not wait on the daemon.
+        KeyCode::Enter if modal.commanding() => modal::finish_command(editor, modal),
         KeyCode::Enter => {
             if busy {
                 return Action::Ignore;
@@ -267,6 +272,12 @@ pub fn handle(
                 Some(text) => Action::Submit(text),
                 None => Action::Ignore,
             }
+        }
+        // Backspacing the colon away is how vim leaves a command line, and the prompt gets its
+        // text back the same as if escape had done it.
+        KeyCode::Backspace if modal.commanding() && editor.text() == ":" => {
+            modal.close_command(editor);
+            Action::Redraw
         }
 
         KeyCode::Backspace => {
@@ -633,16 +644,25 @@ pub(super) mod tests {
     fn enter_runs_the_command_the_palette_offered() {
         // Two presses to reach one command reads as a palette that does nothing, which is
         // what `:model` looked like for as long as enter merely filled the box.
-        let (mut editor, mut popup) = with_popup(":qu");
+        let mut editor = Editor::new();
+        let mut modal = Modal::default();
+        editor.insert_str("a half written prompt");
+        modal.open_command(&mut editor);
+        editor.insert_str("qu");
+        let mut popup = axon_tui::complete::resolve(":qu", 3, &no_paths).map(Into::into);
         let action = handle(
             press(KeyCode::Enter, KeyModifiers::NONE),
             &mut editor,
             &mut popup,
             false,
-            &mut typing(),
+            &mut modal,
         );
         assert_eq!(action, Action::Command(":quit".into()));
-        assert_eq!(editor.text(), "", "and the prompt is spent");
+        assert_eq!(
+            editor.text(),
+            "a half written prompt",
+            "and the prompt it was holding came back"
+        );
     }
 
     #[test]
@@ -742,53 +762,6 @@ pub(super) mod tests {
         );
         assert!(popup.is_none());
         assert_eq!(editor.text(), ":qu", "the buffer is untouched");
-    }
-}
-
-#[cfg(test)]
-mod accept_tests {
-    use super::tests::typing;
-    use super::*;
-
-    fn press(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::NONE)
-    }
-
-    #[test]
-    fn tab_taking_a_completion_says_so_rather_than_asking_for_a_redraw() {
-        // The driver recomputes the popup after every key. Told only "redraw", it reopens the
-        // menu on the thing just chosen from it -- and `:help`, whose name is exactly what
-        // offered it, can then never be submitted at all.
-        let mut editor = Editor::new();
-        editor.insert_str(":hel");
-        let mut overlay: Option<axon_tui::overlay::Overlay> =
-            axon_tui::complete::resolve(":hel", 4, &|_| Vec::new()).map(Into::into);
-        assert!(overlay.is_some(), "the popup is open");
-
-        let action = handle(
-            press(KeyCode::Tab),
-            &mut editor,
-            &mut overlay,
-            false,
-            &mut typing(),
-        );
-        assert_eq!(action, Action::Accepted);
-        assert!(overlay.is_none(), "and closed");
-        assert_eq!(editor.text(), ":help");
-    }
-
-    #[test]
-    fn enter_after_a_tab_submits_what_was_taken() {
-        let mut editor = Editor::new();
-        editor.insert_str(":help");
-        let action = handle(
-            press(KeyCode::Enter),
-            &mut editor,
-            &mut None,
-            false,
-            &mut typing(),
-        );
-        assert_eq!(action, Action::Command(":help".to_owned()));
     }
 }
 

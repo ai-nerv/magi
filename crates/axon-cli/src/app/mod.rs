@@ -665,10 +665,19 @@ impl App {
     }
 
     /// Recompute the completion popup from the current prompt.
+    ///
+    /// The command menu only opens on the command line. A colon typed in insert mode is a
+    /// colon -- in a sentence, in a path, in a ratio -- and it used to put the command palette
+    /// over the prompt every time somebody wrote one.
     pub fn refresh_completion(&mut self, list_paths: &dyn Fn(&str) -> Vec<String>) {
         let (row, col) = self.editor.cursor();
         let line = self.editor.lines()[row].clone();
-        self.overlay = axon_tui::complete::resolve(&line, col, list_paths).map(Into::into);
+        let resolved = axon_tui::complete::resolve(&line, col, list_paths);
+        self.overlay = resolved
+            .filter(|found| {
+                found.kind != axon_tui::complete::Kind::Command || self.modal.commanding()
+            })
+            .map(Into::into);
     }
 
     fn assistant_mut(&mut self, id: &MessageId) -> Option<&mut Entry> {

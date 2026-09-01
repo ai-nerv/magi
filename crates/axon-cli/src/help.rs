@@ -13,7 +13,10 @@ const KEYS: &str = "\
 
 - `enter` submit — `shift+enter` newline
 - `esc` leave insert mode — again in normal mode to interrupt a running turn
-- `i a I A o O` insert — `h j k l` move — `w b 0 ^ $` — `x dd D C p`
+- `i a I A o O` insert — `esc` back — `u` undo
+- `h j k l` `w b e` `0 ^ $` `f t F T` move — `gg G` ends
+- `d c y` take a motion: `dw` `d$` `ct,` `yb` — doubled for the line: `dd cc yy`
+- `x X D p P J ~ r` edit — `:` command line, which holds your prompt until it closes
 - `j k` scroll the transcript while the prompt is one line — `gg G` its ends
 - `tab` complete — `enter` runs the command — `↑/↓` move through the list
 - `pgup`/`pgdn` scroll — `shift+↑/↓` by a line — `shift+home/end` to the ends

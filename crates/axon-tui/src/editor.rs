@@ -12,8 +12,16 @@ pub struct Editor {
     row: usize,
     /// Character index within `lines[row]`, not a byte offset.
     col: usize,
-    /// Most recently killed text, for `Ctrl-Y`.
+    /// Most recently killed text, for `Ctrl-Y` and for `p`.
     kill_ring: String,
+    /// Whether what is in the kill ring was taken as whole lines.
+    ///
+    /// vim's distinction, and it is not decoration: `yy` then `p` puts the line *below* the
+    /// one you are on, while `yw` then `p` puts the word *after the cursor*. Without this the
+    /// two are the same paste and one of them is always wrong.
+    kill_lines: bool,
+    /// Buffers to go back to, oldest first.
+    undo: Vec<Snapshot>,
     /// Submitted prompts, oldest first.
     history: Vec<String>,
     /// Position while walking `history`; `None` means "editing, not browsing".
@@ -34,6 +42,20 @@ struct Typed {
     ch: char,
     at: std::time::Instant,
 }
+
+/// A buffer as it stood, to go back to.
+#[derive(Debug, Clone)]
+struct Snapshot {
+    lines: Vec<String>,
+    row: usize,
+    col: usize,
+}
+
+/// How many edits back you can go.
+///
+/// Bounded because a session is long and every keystroke in normal mode can be an edit. Deep
+/// enough that nobody reaches the end of it while still remembering what they did.
+const UNDOS: usize = 200;
 
 /// How long a typed character is remembered, whatever the reveal is set to.
 const REMEMBERED: std::time::Duration = std::time::Duration::from_secs(1);
@@ -261,6 +283,7 @@ impl Editor {
     /// position, and every method here indexes `lines[row]`.
     pub fn delete_line(&mut self) {
         self.kill_ring = std::mem::take(&mut self.lines[self.row]);
+        self.kill_lines = true;
         if self.lines.len() > 1 {
             self.lines.remove(self.row);
             self.row = self.row.min(self.lines.len() - 1);
@@ -294,6 +317,208 @@ impl Editor {
     pub fn settle(&mut self) {
         let last = self.lines[self.row].chars().count();
         self.col = self.col.min(last.saturating_sub(1));
+    }
+
+    /// Put the cursor somewhere, clamped to what is actually there.
+    pub fn goto(&mut self, row: usize, col: usize) {
+        self.row = row.min(self.lines.len() - 1);
+        self.col = col.min(self.lines[self.row].chars().count());
+    }
+
+    /// Keep the buffer as it stands, to go back to.
+    ///
+    /// Called by whatever is about to change it rather than by the methods that do the
+    /// changing: one command is one undo, and a command built out of three editor calls would
+    /// otherwise take three `u` to walk back.
+    pub fn remember(&mut self) {
+        self.undo.push(Snapshot {
+            lines: self.lines.clone(),
+            row: self.row,
+            col: self.col,
+        });
+        if self.undo.len() > UNDOS {
+            self.undo.remove(0);
+        }
+    }
+
+    /// Go back to the buffer before the last remembered change.
+    ///
+    /// Answers whether there was anything to go back to, so a caller can say "already at the
+    /// oldest change" rather than redrawing an unchanged screen.
+    pub fn undo(&mut self) -> bool {
+        let Some(was) = self.undo.pop() else {
+            return false;
+        };
+        self.lines = was.lines;
+        self.row = was.row;
+        self.col = was.col;
+        self.history_pos = None;
+        true
+    }
+
+    /// The text between two positions, in buffer order.
+    #[must_use]
+    pub fn between(&self, from: (usize, usize), to: (usize, usize)) -> String {
+        let (start, end) = if from <= to { (from, to) } else { (to, from) };
+        if start.0 == end.0 {
+            return self.lines[start.0]
+                .chars()
+                .skip(start.1)
+                .take(end.1 - start.1)
+                .collect();
+        }
+        let mut out: String = self.lines[start.0].chars().skip(start.1).collect();
+        for row in start.0 + 1..end.0 {
+            out.push('\n');
+            out.push_str(&self.lines[row]);
+        }
+        out.push('\n');
+        out.extend(self.lines[end.0].chars().take(end.1));
+        out
+    }
+
+    /// Cut the text between two positions into the kill ring.
+    pub fn cut(&mut self, from: (usize, usize), to: (usize, usize)) {
+        let (start, end) = if from <= to { (from, to) } else { (to, from) };
+        self.kill_ring = self.between(start, end);
+        self.kill_lines = false;
+        let head: String = self.lines[start.0].chars().take(start.1).collect();
+        let tail: String = self.lines[end.0].chars().skip(end.1).collect();
+        self.lines.splice(start.0..=end.0, [head + &tail]);
+        self.row = start.0;
+        self.col = start.1;
+        self.history_pos = None;
+    }
+
+    /// Copy the text between two positions into the kill ring, leaving the buffer alone.
+    pub fn copy(&mut self, from: (usize, usize), to: (usize, usize)) {
+        self.kill_ring = self.between(from, to);
+        self.kill_lines = false;
+    }
+
+    /// Copy whole lines into the kill ring, so a later paste opens a line for them.
+    pub fn copy_lines(&mut self, from: usize, to: usize) {
+        let (start, end) = (from.min(to), from.max(to));
+        self.kill_ring = self.lines[start..=end.min(self.lines.len() - 1)].join("\n");
+        self.kill_lines = true;
+    }
+
+    /// Put the kill ring back: after the cursor, or on a new line if it was taken as lines.
+    pub fn paste(&mut self, after: bool) {
+        let text = std::mem::take(&mut self.kill_ring);
+        if self.kill_lines {
+            let at = if after { self.row + 1 } else { self.row };
+            for (index, line) in text.split('\n').enumerate() {
+                self.lines.insert(at + index, line.to_owned());
+            }
+            self.row = at;
+            self.col = 0;
+        } else {
+            if after && !self.lines[self.row].is_empty() {
+                self.col = (self.col + 1).min(self.lines[self.row].chars().count());
+            }
+            self.insert_str(&text);
+        }
+        self.kill_ring = text;
+        self.history_pos = None;
+    }
+
+    /// Move to the last character of the word the cursor is in, or of the next one.
+    pub fn word_end(&mut self) {
+        let chars: Vec<char> = self.lines[self.row].chars().collect();
+        if self.col + 1 >= chars.len() {
+            return;
+        }
+        self.col += 1;
+        while self.col < chars.len() && chars[self.col].is_whitespace() {
+            self.col += 1;
+        }
+        while self.col + 1 < chars.len() && !chars[self.col + 1].is_whitespace() {
+            self.col += 1;
+        }
+    }
+
+    /// Replace the character under the cursor.
+    pub fn replace_char(&mut self, c: char) {
+        let byte = self.byte_offset();
+        if byte < self.lines[self.row].len() {
+            let mut rest = self.lines[self.row].split_off(byte);
+            let mut chars = rest.chars();
+            chars.next();
+            rest = chars.as_str().to_owned();
+            self.lines[self.row].push(c);
+            self.lines[self.row].push_str(&rest);
+        }
+        self.history_pos = None;
+    }
+
+    /// Swap the case of the character under the cursor, and step over it.
+    pub fn flip_case(&mut self) {
+        let Some(c) = self.lines[self.row].chars().nth(self.col) else {
+            return;
+        };
+        let swapped = if c.is_uppercase() {
+            c.to_lowercase().next().unwrap_or(c)
+        } else {
+            c.to_uppercase().next().unwrap_or(c)
+        };
+        self.replace_char(swapped);
+        self.right();
+    }
+
+    /// Pull the next line onto the end of this one, with a space between.
+    pub fn join(&mut self) {
+        if self.row + 1 >= self.lines.len() {
+            return;
+        }
+        let next = self.lines.remove(self.row + 1);
+        let joined = next.trim_start();
+        self.col = self.lines[self.row].chars().count();
+        if !self.lines[self.row].is_empty() && !joined.is_empty() {
+            self.lines[self.row].push(' ');
+        }
+        self.lines[self.row].push_str(joined);
+        self.history_pos = None;
+    }
+
+    /// Move to the next occurrence of `c` on this line, or to just before it.
+    ///
+    /// Answers whether it found one, so `df,` on a line with no comma leaves the line alone
+    /// rather than deleting to the end of it.
+    pub fn find_char(&mut self, c: char, before: bool) -> bool {
+        let chars: Vec<char> = self.lines[self.row].chars().collect();
+        let found = chars
+            .iter()
+            .enumerate()
+            .skip(self.col + 1)
+            .find(|(_, at)| **at == c)
+            .map(|(index, _)| index);
+        let Some(index) = found else {
+            return false;
+        };
+        self.col = if before {
+            index.saturating_sub(1)
+        } else {
+            index
+        };
+        true
+    }
+
+    /// The same, backwards.
+    pub fn find_char_back(&mut self, c: char, after: bool) -> bool {
+        let chars: Vec<char> = self.lines[self.row].chars().collect();
+        let found = chars
+            .iter()
+            .enumerate()
+            .take(self.col)
+            .rev()
+            .find(|(_, at)| **at == c)
+            .map(|(index, _)| index);
+        let Some(index) = found else {
+            return false;
+        };
+        self.col = if after { index + 1 } else { index };
+        true
     }
 
     /// Move to the end of the line.

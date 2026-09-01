@@ -388,7 +388,8 @@ mod inside_the_box {
     /// A screen with `/mo` typed and the menu that opens on it.
     fn drawn() -> Vec<String> {
         let mut app = App::new();
-        app.editor.insert_str(":mo");
+        app.modal.open_command(&mut app.editor);
+        app.editor.insert_str("mo");
         app.refresh_completion(&|_| Vec::new());
         assert!(app.overlay.is_some(), "the premise: `:mo` opens a menu");
         let footer = FooterData::default();
