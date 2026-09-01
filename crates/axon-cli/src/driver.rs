@@ -219,14 +219,17 @@ pub async fn run(
                         match action {
                             Action::Submit(text) => {
                                 crate::history::remember(&text);
-                                let _ = command_tx.send(UiCommand::SubmitPrompt { text }).await;
-                                dirty = true;
-                            }
-                            // Answered here rather than in `run_command` because it dials
-                            // other instances, and that is the one thing a command does that
-                            // has to await.
-                            Action::Command(text) if text.trim() == ":peers" => {
-                                app.show_notice(peers(&app).await);
+                                // A prompt that names another instance is addressed to it. No
+                                // command for this on purpose: `$gamma` is a trigger, and a
+                                // `:tell $gamma` would be the trigger doing nothing while a
+                                // command did its job for it.
+                                let named =
+                                    axon_tui::trigger::named(&text, axon_tui::trigger::Trigger::Instance);
+                                if named.is_empty() {
+                                    let _ = command_tx.send(UiCommand::SubmitPrompt { text }).await;
+                                } else {
+                                    app.show_notice(addressed(&named, &text, &app).await);
+                                }
                                 dirty = true;
                             }
                             Action::Command(text) => {
@@ -725,44 +728,40 @@ fn debug_log(args: std::fmt::Arguments<'_>) {
     }
 }
 
-/// What every other instance says it is doing.
+/// Deliver a prompt that names other instances to them.
 ///
-/// Asked, not read off the directory. A socket file outlives the process that made it, so the
-/// only way to know an instance is there is for it to answer — and the answer is what somebody
-/// typing `:peers` wanted in the first place.
-async fn peers(app: &App) -> String {
-    let around = crate::instance::asking::around(&app.identity);
-    if around.is_empty() {
-        return "no other instances are listening".to_owned();
-    }
+/// `tell $main/delta to stop` goes to `$main/delta`, not to the model. The whole line travels,
+/// including the names — what to make of "tell … to stop" is the receiving session's business,
+/// and stripping the address out would leave a message whose subject nobody can see.
+async fn addressed(named: &[String], text: &str, app: &App) -> String {
     let mut said = Vec::new();
-    for who in around {
-        // Everything found this way is a peer: a fork is one this session started, and it has
-        // not started any yet. The floor of the permission model, not a placeholder for it.
-        let line = match crate::instance::asking::ask(
-            &who,
+    for name in named {
+        let Some(address) = crate::instance::Address::read(name) else {
+            said.push(format!("- `${name}` does not name an instance"));
+            continue;
+        };
+        // A peer, because nothing has been forked yet. When forks exist this is what the parent
+        // knows it started, and the only thing that changes is what is passed here.
+        let sent = crate::instance::asking::ask(
+            &address,
             &app.identity,
             crate::instance::Kind::Peer,
-            "status",
-            Vec::new(),
+            "tell",
+            vec![
+                serde_json::json!(app.identity.full()),
+                serde_json::json!(text),
+            ],
         )
-        .await
-        {
-            Ok(reply) => match reply.result.first() {
-                Some(status) if reply.ok => format!(
-                    "- `{}` {}",
-                    who.written(),
-                    if status["busy"].as_bool().unwrap_or(false) {
-                        "working"
-                    } else {
-                        "idle"
-                    }
-                ),
-                _ => format!("- `{}` answered nothing", who.written()),
-            },
-            Err(why) => format!("- `{}` {why}", who.written()),
-        };
-        said.push(line);
+        .await;
+        said.push(match sent {
+            Ok(reply) if reply.ok => format!("- told `{}`", address.written()),
+            Ok(reply) => format!(
+                "- `{}` {}",
+                address.written(),
+                reply.error.unwrap_or_else(|| "refused".to_owned())
+            ),
+            Err(why) => format!("- {why}"),
+        });
     }
-    format!("**Listening**\n\n{}", said.join("\n"))
+    said.join("\n")
 }

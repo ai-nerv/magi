@@ -65,19 +65,6 @@ pub async fn ask(
         .map_err(|why| format!("{}: {why}", who.written()))
 }
 
-/// What is listening, as addresses.
-///
-/// Every socket in the directory, whether or not anything is behind it. A name that no longer
-/// answers is discovered by asking it, which is the only way that does not go stale.
-#[must_use]
-pub fn around(me: &Identity) -> Vec<Address> {
-    super::listening()
-        .into_iter()
-        .filter_map(|name| Address::read(&name.replace('-', "/")))
-        .filter(|address| address.against(me).full() != me.full())
-        .collect()
-}
-
 /// A refusal happens before the round trip, and a name has to resolve to somewhere.
 #[cfg(test)]
 mod tests {
@@ -128,17 +115,5 @@ mod tests {
                 "{verb} on a fork was refused as a peer: {why}"
             );
         }
-    }
-
-    #[test]
-    fn we_are_not_in_our_own_list_of_neighbours() {
-        // A session that could address itself is a session that can deadlock on its own socket:
-        // the frame loop that would answer is the one waiting for the answer.
-        assert!(
-            around(&me())
-                .iter()
-                .all(|a| a.against(&me()).full() != me().full()),
-            "it offered itself"
-        );
     }
 }

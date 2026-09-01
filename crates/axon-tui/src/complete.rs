@@ -95,10 +95,6 @@ pub fn commands() -> Vec<Candidate> {
         (":resume", "continue a session from this directory"),
         (":rewind", "undo the last exchange, or :rewind N"),
         (":think", "how much reasoning to ask for"),
-        (
-            ":peers",
-            "which other instances are listening, and what they are doing",
-        ),
         (":quit", "exit axon, and :q for the same"),
     ]
     .iter()

@@ -6,12 +6,16 @@
 //!
 //! | | | |
 //! |---|---|---|
-//! | `$gamma` | a **fork** | you started it, you can ask it, you can stop it |
-//! | `$main/delta` | a **peer** | somebody else started it; you can ask, and that is all |
+//! | `$gamma` | a **fork** | you started it: ask it, tell it, stop it |
+//! | `$main/delta` | a **peer** | somebody else's: ask it, tell it, and that is all |
 //!
-//! A peer that could be stopped by anything that learned its name is a session somebody loses
-//! while they are typing into it. So [`Kind`] is not decoration: [`Reach::allows`] is the one
-//! place that answers "may I", and every verb goes through it.
+//! Both can be *spoken to*. A message lands in an inbox and the session it belongs to decides
+//! what to do with it, which is not control -- it is the same thing a person does with a message.
+//! What separates the two is the one act the far end cannot decline: a peer that could be stopped
+//! by anything that learned its name is a session somebody loses while they are typing into it.
+//!
+//! So [`Kind`] is not decoration: [`Reach::allows`] is the one place that answers "may I", and
+//! every verb goes through it.
 //!
 //! # What is here and what is not
 //!
@@ -59,7 +63,12 @@ impl Reach {
     pub fn allows(self, kind: Kind) -> bool {
         match kind {
             Kind::Fork => true,
-            Kind::Peer => self == Self::Ask,
+            // A peer can be spoken to. Telling something a message is not controlling it: it
+            // lands in an inbox and the session it belongs to decides what to do with it, the
+            // same way a person reads a message and answers or does not. Ending a session is
+            // the one thing the far end does not get to decline, and that is why it is the one
+            // thing a peer is refused.
+            Kind::Peer => self != Self::Stop,
         }
     }
 
@@ -72,7 +81,7 @@ impl Reach {
             Self::Stop => "stop",
         };
         format!(
-            "{} is a peer, not a fork: you can ask it, but not {verb} it",
+            "{} is a peer, not a fork: you can ask it and tell it things, but not {verb} it",
             address.written()
         )
     }
@@ -290,14 +299,18 @@ mod tests {
 
     #[test]
     fn a_fork_may_be_stopped_and_a_peer_may_not() {
-        // The whole permission model. A peer belongs to whoever started it, and a session any
-        // process knowing its name can end is a session somebody loses while typing into it.
+        // The whole permission model, and the line is drawn at the one act the far end cannot
+        // decline. A message lands in an inbox and the session decides what to do with it; a
+        // session any process knowing its name can end is one somebody loses while typing.
         for reach in [Reach::Ask, Reach::Tell, Reach::Stop] {
             assert!(reach.allows(Kind::Fork), "{reach:?} on your own fork");
         }
         assert!(Reach::Ask.allows(Kind::Peer), "asking is always allowed");
-        assert!(!Reach::Tell.allows(Kind::Peer));
-        assert!(!Reach::Stop.allows(Kind::Peer));
+        assert!(
+            Reach::Tell.allows(Kind::Peer),
+            "a peer you did not fork can still be spoken to"
+        );
+        assert!(!Reach::Stop.allows(Kind::Peer), "but not ended");
     }
 
     #[test]

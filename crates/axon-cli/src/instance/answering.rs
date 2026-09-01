@@ -114,7 +114,7 @@ fn spurned(reach: Reach) -> String {
         Reach::Tell => "tell",
         Reach::Stop => "stop",
     };
-    format!("only a fork may be {verb}: this connection is a peer's")
+    format!("only a fork may be {verb}ped: this connection is a peer's")
 }
 
 /// A peer may ask and nothing else, and every answer is the shape the family agreed.
@@ -162,14 +162,19 @@ mod tests {
     }
 
     #[test]
-    fn a_peer_may_not_put_things_in_our_inbox() {
+    fn a_peer_may_put_things_in_our_inbox() {
+        // An instance nobody forked is still one you can talk to. What arrives is a message,
+        // not an instruction: it waits in the inbox and this session decides.
         let (reply, then) = answer(
             &call("tell", &["axon/main/beta", "do this"]),
             &about(),
             Kind::Peer,
         );
-        assert!(!reply.ok);
-        assert_eq!(then, Then::Nothing);
+        assert!(reply.ok, "{:?}", reply.error);
+        let Then::Keep(message) = then else {
+            panic!("nothing was kept");
+        };
+        assert_eq!(message.from, "axon/main/beta");
     }
 
     #[test]

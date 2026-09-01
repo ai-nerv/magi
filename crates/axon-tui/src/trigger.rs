@@ -241,3 +241,69 @@ mod tests {
         assert_eq!(token.query, "");
     }
 }
+
+/// Every finished token of this trigger in a line.
+///
+/// Different from [`Trigger::found`], and both are needed. That one answers "is the cursor in a
+/// token", which is a question about something half-typed and ends at the first space. This one
+/// answers "what does this sentence name", which is a question about a line somebody has
+/// finished — and `tell $gamma to stop` names `$gamma` precisely because there is a space after
+/// it.
+#[must_use]
+pub fn named(line: &str, trigger: Trigger) -> Vec<String> {
+    line.split_whitespace()
+        .filter_map(|word| word.strip_prefix(trigger.sigil()))
+        .filter(|rest| !rest.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+/// A finished sentence names what it mentions.
+#[cfg(test)]
+mod naming_tests {
+    use super::*;
+
+    #[test]
+    fn a_finished_sentence_names_what_it_mentions() {
+        // The whole reason this exists beside `found`. That one stops at the first space,
+        // because it is asking about a token under the cursor; this one is asking what a line
+        // somebody has already sent is talking about.
+        assert_eq!(
+            named("tell $main/delta to stop", Trigger::Instance),
+            vec!["main/delta"]
+        );
+        assert!(
+            Trigger::Instance
+                .found("tell $main/delta to stop")
+                .is_none(),
+            "which the completion form does not answer"
+        );
+    }
+
+    #[test]
+    fn several_are_all_named() {
+        assert_eq!(
+            named("ask $gamma and $delta", Trigger::Instance),
+            vec!["gamma", "delta"]
+        );
+    }
+
+    #[test]
+    fn a_bare_sigil_names_nobody() {
+        assert!(named("costs $ and more", Trigger::Instance).is_empty());
+    }
+
+    #[test]
+    fn a_sigil_inside_a_word_is_not_a_name() {
+        assert!(named("that costs 20$", Trigger::Instance).is_empty());
+    }
+
+    #[test]
+    fn a_path_is_not_an_instance() {
+        assert!(named("look at @src/main.rs", Trigger::Instance).is_empty());
+        assert_eq!(
+            named("look at @src/main.rs", Trigger::File),
+            vec!["src/main.rs"]
+        );
+    }
+}
