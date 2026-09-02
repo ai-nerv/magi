@@ -208,6 +208,7 @@ dependencies = [
  "axon-proto",
  "ratatui",
  "serde_json",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]

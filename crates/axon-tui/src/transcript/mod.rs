@@ -157,7 +157,7 @@ fn notice(text: &str, width: u16) -> Vec<Line<'static>> {
 /// something, or why an exchange seems to have been undone, needs this line to be the answer.
 fn marker(label: &str, width: u16) -> Vec<Line<'static>> {
     let label = label.to_owned();
-    let rule = usize::from(width).saturating_sub(label.chars().count());
+    let rule = usize::from(width).saturating_sub(crate::wrap::columns(&label));
     vec![
         Line::default(),
         Line::from(vec![
@@ -301,13 +301,25 @@ fn assistant(
 fn clip(text: &str, width: usize) -> String {
     // Expanded before it is measured, because a tab is one character and several columns.
     let text = crate::wrap::expand_tabs(text);
-    if text.chars().count() <= width {
+    if crate::wrap::columns(&text) <= width {
         return text;
     }
-    text.chars()
-        .take(width.saturating_sub(1))
-        .collect::<String>()
-        + glyph::ellipsis()
+    // **Taken by column, not by character.** Cutting at `width - 1` characters and appending an
+    // ellipsis produced a run *wider* than it was asked for the moment any of those characters
+    // was two columns — which is exactly the case the cut is there to handle. A wide glyph that
+    // will not fit in the last column is dropped rather than half-drawn.
+    let room = width.saturating_sub(crate::wrap::columns(glyph::ellipsis()));
+    let mut out = String::with_capacity(text.len());
+    let mut used = 0;
+    for c in text.chars() {
+        let wide = crate::wrap::columns(c.encode_utf8(&mut [0u8; 4]));
+        if used + wide > room {
+            break;
+        }
+        used += wide;
+        out.push(c);
+    }
+    out + glyph::ellipsis()
 }
 
 /// Put a line where a block's inside would be.
@@ -753,7 +765,7 @@ mod branch_tests {
             .map(|l| {
                 l.spans
                     .iter()
-                    .map(|s| s.content.chars().count())
+                    .map(|s| crate::wrap::columns(&s.content))
                     .sum::<usize>()
             })
             .max()

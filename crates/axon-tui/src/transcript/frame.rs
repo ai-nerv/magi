@@ -64,11 +64,11 @@ pub(super) fn top(label: &str, chip: Style, handle: Option<&str>, width: u16) ->
         Span::styled(label.to_owned(), chip),
         Span::styled(" ]".to_owned(), edge),
     ];
-    let used = 3 + named.chars().count();
+    let used = 3 + crate::wrap::columns(&named);
 
     // The chip, plus two edge cells after it so the handle sits *in* the edge rather than
     // wedged against the corner.
-    let worn = handle.map_or(0, |handle| handle.chars().count() + 6);
+    let worn = handle.map_or(0, |handle| crate::wrap::columns(handle) + 6);
     // **The name, and then edge.** What a call was *given* used to sit here too, and it made the
     // one row that says what this block is into the row that also says what it was asked — a
     // long path pushed against the handle, and a clipped one said neither thing properly. The
@@ -159,7 +159,7 @@ mod framing {
         for width in [20u16, 33, 60, 120] {
             for line in tool(Detail::Full, width) {
                 assert_eq!(
-                    line.chars().count(),
+                    crate::wrap::columns(&line),
                     usize::from(width),
                     "at {width}: {line:?}"
                 );
@@ -223,7 +223,11 @@ mod framing {
 /// terminal's own. There are no sides drawn in them: the gap is what puts the fill inside.
 pub(super) fn inside(line: Line<'static>, width: u16, style: Style, lead: usize) -> Line<'static> {
     let room = usize::from(held(width));
-    let used: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+    let used: usize = line
+        .spans
+        .iter()
+        .map(|s| crate::wrap::columns(&s.content))
+        .sum();
     // `lead` counts from the block's own left edge, and the first `MARGIN` of those columns are
     // outside the fill — so what is left is the padding *within* it.
     let pad = lead.saturating_sub(MARGIN).min(room);
@@ -261,7 +265,10 @@ mod nesting {
             line.spans
                 .iter()
                 .flat_map(|span| {
-                    std::iter::repeat_n(span.style.bg.is_some(), span.content.chars().count())
+                    std::iter::repeat_n(
+                        span.style.bg.is_some(),
+                        crate::wrap::columns(&span.content),
+                    )
                 })
                 .collect()
         })
@@ -328,13 +335,13 @@ pub(super) fn lone(label: &str, chip: Style, beside: &str, width: u16) -> Line<'
         Span::styled(label.to_owned(), chip),
         Span::styled(" ]".to_owned(), Style::default().fg(colour::border())),
     ];
-    let mut used = MARGIN + named.chars().count();
+    let mut used = MARGIN + crate::wrap::columns(&named);
     if !beside.trim().is_empty() {
         let beside = clip(
             &format!(" {}", beside.trim()),
             usize::from(width).saturating_sub(used),
         );
-        used += beside.chars().count();
+        used += crate::wrap::columns(&beside);
         spans.push(Span::styled(beside, Style::default().fg(colour::dim())));
     }
     spans.push(Span::raw(
@@ -497,6 +504,91 @@ mod alignment {
                 let first = line.chars().next().expect("a column");
                 assert_eq!(first, ' ', "{line:?} starts in the frame's column");
             }
+        }
+    }
+}
+
+/// A glyph two columns wide does not push a row past the frame.
+#[cfg(test)]
+mod wide {
+    use crate::transcript::tests::text_of;
+    use crate::transcript::{Detail, entry_lines};
+    use axon_proto::{Entry, MessageId, ToolCallId, ToolResult};
+
+    /// Two columns each on a terminal, one `char` each in Rust — which is the whole problem.
+    const WIDE: &str = "日本語のテキストがここにあります、これは長い行です";
+
+    /// Measured with the width table itself, never with the code under test — a test that
+    /// uses the same ruler as the thing it is checking agrees with it about everything,
+    /// including being wrong. These passed unchanged with `columns` counting characters.
+    fn width_of(line: &str) -> usize {
+        unicode_width::UnicodeWidthStr::width(line)
+    }
+
+    #[test]
+    fn a_message_of_wide_glyphs_still_fills_the_width_exactly() {
+        // Everything laying out a row counted *characters*, so one wide glyph pushed it a column
+        // past the frame and a screen with any in it was ragged down the right.
+        for width in [24u16, 40, 56] {
+            let shown = text_of(&entry_lines(
+                &Entry::User {
+                    id: MessageId::new("m1"),
+                    text: WIDE.into(),
+                    aside: String::new(),
+                },
+                width,
+                Detail::Preview,
+            ));
+            for line in shown {
+                assert_eq!(width_of(&line), usize::from(width), "at {width}: {line:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn wide_tool_output_fills_the_width_both_folded_and_open() {
+        for detail in [Detail::Preview, Detail::Full] {
+            let shown = text_of(&entry_lines(
+                &Entry::Tool {
+                    id: ToolCallId::new("t1"),
+                    name: "shell".into(),
+                    args: format!(r#"{{"command":"echo {WIDE}"}}"#),
+                    result: Some(ToolResult {
+                        output: format!("{WIDE}\n{WIDE}"),
+                        is_error: false,
+                    }),
+                    thought_signature: None,
+                },
+                48,
+                detail,
+            ));
+            for line in shown {
+                assert_eq!(width_of(&line), 48, "{detail:?}: {line:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_cut_ends_no_wider_than_it_was_asked_for() {
+        // Cutting at `width - 1` *characters* and appending an ellipsis produced a run wider
+        // than the budget the moment any of those characters was two columns — which is exactly
+        // the case a cut exists to handle.
+        for room in 4..20 {
+            let cut = super::super::clip(WIDE, room);
+            assert!(
+                width_of(&cut) <= room,
+                "{room}: {cut:?} is {}",
+                width_of(&cut)
+            );
+        }
+    }
+
+    #[test]
+    fn wrapping_wide_text_never_overflows_a_row() {
+        let rows = crate::wrap::line(ratatui::text::Line::from(WIDE), 10);
+        for row in rows {
+            let text: String = row.spans.iter().map(|s| s.content.as_ref()).collect();
+            assert!(width_of(&text) <= 10, "{text:?} is {}", width_of(&text));
         }
     }
 }

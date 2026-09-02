@@ -143,7 +143,7 @@ mod tests {
                 .map(|s| s.content.as_ref())
                 .collect::<String>();
             assert_eq!(
-                header.chars().count(),
+                crate::wrap::columns(&header),
                 usize::from(width),
                 "row must fill the width at {width}"
             );

@@ -12,7 +12,7 @@ use ratatui::text::{Line, Span};
 #[must_use]
 pub fn line(source: Line<'static>, width: u16) -> Vec<Line<'static>> {
     let width = usize::from(width).max(1);
-    let total: usize = source.spans.iter().map(|s| s.content.chars().count()).sum();
+    let total: usize = source.spans.iter().map(|s| columns(&s.content)).sum();
     if total <= width {
         return vec![source];
     }
@@ -24,7 +24,7 @@ pub fn line(source: Line<'static>, width: u16) -> Vec<Line<'static>> {
     for span in source.spans {
         let style = span.style;
         for word in split_keeping_spaces(span.content.as_ref()) {
-            let len = word.chars().count();
+            let len = columns(&word);
 
             // A leading space on a fresh row is the break itself; dropping it keeps the left
             // edge aligned instead of stepping in by one per wrapped row.
@@ -36,16 +36,30 @@ pub fn line(source: Line<'static>, width: u16) -> Vec<Line<'static>> {
                 if len > width {
                     let mut rest = word.as_str();
                     while !rest.is_empty() {
+                        // **Filled by column and advanced by byte.** It took `room` *characters*
+                        // and then advanced by the *columns* they came to — two numbers that are
+                        // only ever the same for text one column per character, which is the one
+                        // case a hard split does not have to think about.
                         let room = width - used;
-                        let take: String = rest.chars().take(room).collect();
-                        let consumed = take.chars().count();
-                        current.push(Span::styled(take, style));
+                        let mut taken = 0;
+                        let mut wide = 0;
+                        for (at, c) in rest.char_indices() {
+                            let next = columns(c.encode_utf8(&mut [0u8; 4]));
+                            if wide + next > room {
+                                break;
+                            }
+                            wide += next;
+                            taken = at + c.len_utf8();
+                        }
+                        // A single glyph wider than the whole row would otherwise take nothing
+                        // and loop for ever.
+                        if taken == 0 {
+                            taken = rest.char_indices().nth(1).map_or(rest.len(), |(at, _)| at);
+                        }
+                        current.push(Span::styled(rest[..taken].to_owned(), style));
                         rows.push(Line::from(std::mem::take(&mut current)));
                         used = 0;
-                        rest = &rest[rest
-                            .char_indices()
-                            .nth(consumed)
-                            .map_or(rest.len(), |(i, _)| i)..];
+                        rest = &rest[taken..];
                     }
                     continue;
                 }
@@ -59,7 +73,7 @@ pub fn line(source: Line<'static>, width: u16) -> Vec<Line<'static>> {
             } else {
                 word
             };
-            let len = word.chars().count();
+            let len = columns(&word);
             if len == 0 {
                 continue;
             }
@@ -145,7 +159,7 @@ mod tests {
     #[test]
     fn no_row_exceeds_the_width() {
         for row in rows(Line::from("alpha beta gamma delta epsilon"), 12) {
-            assert!(row.chars().count() <= 12, "{row:?}");
+            assert!(columns(&row) <= 12, "{row:?}");
         }
     }
 
@@ -250,4 +264,19 @@ mod tab_tests {
         assert_eq!(expand_tabs("     3\t}"), "     3  }");
         assert!(!expand_tabs("     3\t}").contains('\t'));
     }
+}
+
+/// How many columns `text` occupies on a terminal.
+///
+/// **Not how many characters it has.** A `▸`, a CJK glyph and an emoji are each one `char` and
+/// two columns wide, and everything that lays out a row — a frame's fill, a clip, a wrap — was
+/// counting characters. One wide glyph in a line therefore pushed the row a column past the
+/// frame, and a screen with any of them in it was ragged down the right.
+///
+/// Tabs are expanded first, because a tab is one character and several columns, and a zero-width
+/// joiner or a combining accent is one character and none.
+#[must_use]
+pub fn columns(text: &str) -> usize {
+    use unicode_width::UnicodeWidthStr;
+    UnicodeWidthStr::width(expand_tabs(text).as_str())
 }
