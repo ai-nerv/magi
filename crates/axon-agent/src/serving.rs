@@ -88,9 +88,20 @@ async fn talk(stream: tokio::net::UnixStream, serving: Serving) -> std::io::Resu
     loop {
         let call: Call = match tokio::time::timeout(IDLE, framing::read(&mut reader)).await {
             Ok(Ok(call)) => call,
-            // A malformed frame is answered rather than dropped, so the caller sees axon's
-            // error instead of a transport one. Then the connection ends: a stream that has
-            // lost its framing cannot be resynchronised.
+            // Hanging up is not a mistake, and this is the one place that has to know the
+            // difference. A caller that has said everything it wanted to closes its side, and
+            // the read that was waiting for the next frame ends in `UnexpectedEof`.
+            //
+            // **It used to answer that with a refusal**, and the refusal went out: the client
+            // had closed the *write* half and was still reading, so a one-shot
+            // `printf … | socat - UNIX-CONNECT:…` got the answer it asked for and then
+            // `{"ok":false,"error":"early eof"}` — a second frame, saying something untrue,
+            // that anything parsing until EOF chokes on. Invisible from inside, because axon's
+            // own client holds its connection and reads exactly one reply per call.
+            Ok(Err(why)) if why.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
+            // A frame that is genuinely malformed still gets an answer, so the caller sees this
+            // crate's error rather than a transport one. Then the connection ends: a stream
+            // that has lost its framing cannot be resynchronised.
             Ok(Err(why)) => {
                 let _ = framing::write(&mut writer, &Reply::refused(why.to_string())).await;
                 return Ok(());
@@ -577,5 +588,96 @@ mod handing_over {
         let known: Vec<&str> = crate::wire::VERBS.iter().map(|(verb, _)| *verb).collect();
         assert_eq!(named_verbs, known);
         tidy("listed");
+    }
+}
+
+/// Hanging up is not a mistake; a bad frame is.
+#[cfg(test)]
+mod parting {
+    use super::tests::{listening, named, tidy};
+    use std::io::{Read, Write};
+    use std::time::Duration;
+
+    /// Send `bytes`, close the write half, and read everything that comes back.
+    ///
+    /// The shape of a one-shot: `printf … | socat - UNIX-CONNECT:…`. The write half closes as
+    /// soon as the pipe is drained, and the read half stays open for the answer.
+    fn one_shot(at: &std::path::Path, bytes: &[u8]) -> Vec<u8> {
+        let mut sock = std::os::unix::net::UnixStream::connect(at).expect("connected");
+        sock.set_read_timeout(Some(Duration::from_secs(5)))
+            .expect("a timeout");
+        sock.write_all(bytes).expect("wrote");
+        sock.shutdown(std::net::Shutdown::Write).expect("hung up");
+        let mut back = Vec::new();
+        let _ = sock.read_to_end(&mut back);
+        back
+    }
+
+    /// One call, framed by hand.
+    fn framed(body: &str) -> Vec<u8> {
+        let mut out = u32::try_from(body.len())
+            .expect("fits")
+            .to_be_bytes()
+            .to_vec();
+        out.extend_from_slice(body.as_bytes());
+        out
+    }
+
+    #[tokio::test]
+    async fn a_one_shot_gets_one_frame_and_nothing_after_it() {
+        // Found with `socat`, and findable no other way: axon's own client holds its connection
+        // and reads exactly one reply per call, so it never saw the second frame. A sibling
+        // parsing until EOF chokes on it, and what it chokes on says something untrue.
+        let them = named("parting", "mu-rho");
+        let _bound = listening(&them).await;
+        let at = crate::directory::listening_at(&them);
+
+        let back =
+            tokio::task::spawn_blocking(move || one_shot(&at, &framed(r#"{"call":"verbs"}"#)))
+                .await
+                .expect("the thread finished");
+
+        let said = u32::from_be_bytes([back[0], back[1], back[2], back[3]]) as usize;
+        assert_eq!(
+            back.len(),
+            said + 4,
+            "a second frame followed the answer: {}",
+            String::from_utf8_lossy(&back[said + 4..])
+        );
+        tidy("parting");
+    }
+
+    #[tokio::test]
+    async fn a_frame_that_is_actually_broken_is_still_answered() {
+        // The other half of the rule. A refusal a caller can read beats a dropped connection:
+        // "expected value at line 1" says what to fix where "connection reset" does not.
+        let them = named("broken", "nu-rho");
+        let _bound = listening(&them).await;
+        let at = crate::directory::listening_at(&them);
+
+        let back = tokio::task::spawn_blocking(move || one_shot(&at, &framed("not json")))
+            .await
+            .expect("the thread finished");
+
+        assert!(!back.is_empty(), "a broken frame got no answer at all");
+        let reply: serde_json::Value =
+            serde_json::from_slice(&back[4..]).expect("the refusal is a reply");
+        assert_eq!(reply["ok"], false, "{reply}");
+    }
+
+    #[tokio::test]
+    async fn a_caller_that_says_nothing_at_all_is_not_answered() {
+        // Connecting and hanging up is what a liveness check does — see `asking::answers`. It
+        // should cost the session a closed connection and nothing else.
+        let them = named("silent", "xi-rho");
+        let _bound = listening(&them).await;
+        let at = crate::directory::listening_at(&them);
+
+        let back = tokio::task::spawn_blocking(move || one_shot(&at, &[]))
+            .await
+            .expect("the thread finished");
+
+        assert!(back.is_empty(), "{}", String::from_utf8_lossy(&back));
+        tidy("silent");
     }
 }
