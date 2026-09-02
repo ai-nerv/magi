@@ -95,7 +95,11 @@ mod tests {
             .iter()
             .find(|s| s.content.contains("write"))
             .expect("the name");
-        assert_eq!(name.content.as_ref(), "[ write ]");
+        assert_eq!(
+            name.content.as_ref(),
+            "write",
+            "the brackets belong to the frame, not the name"
+        );
         assert_eq!(name.style.fg, Some(colour::tool_title()), "the outcome");
         assert_eq!(name.style.bg, None, "and nothing behind it");
     }

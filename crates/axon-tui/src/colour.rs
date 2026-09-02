@@ -81,9 +81,10 @@ palette! {
     md_quote = 250, "Block quote text and its rule.";
 
     // ---------------------------------------------------------------- diffs
-    diff_added = 10, "Added lines in a diff.";
-    diff_removed = 9, "Removed lines in a diff.";
-    diff_context = 250, "Unchanged context lines in a diff.";
+    diff_added = 40, "Added lines in a diff.";
+    diff_removed = 167, "Removed lines in a diff.";
+    diff_marker = 214, "A diff's file and hunk headers, which are neither added nor removed.";
+    diff_context = 245, "Unchanged context lines in a diff.";
 
     // ---------------------------------------------------------------- tools
     tool_bg = 237, "Behind a tool block.";
@@ -112,7 +113,7 @@ palette! {
     rule = 245, "The rule above and below a quotation.";
 
     // ------------------------------------------------------------ the rest
-    message_bg = 240, "Behind something you said.";
+    message_bg = 237, "Behind something you said.";
     message_text = 255, "Something you said.";
     // The tag on a message block, and why it is not one of the greys.
     //

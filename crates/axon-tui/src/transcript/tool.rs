@@ -164,11 +164,16 @@ pub(super) fn block(
 /// name: a declared tool that reports a patch gets the same treatment without the renderer
 /// having to be told which tools exist.
 fn change_colour(line: &str) -> Color {
+    // The file and hunk headers are neither added nor removed, and colouring them as changes made
+    // every diff look like it added and removed its own filename. They are not context either —
+    // they are the thing that says *where* — so they get a colour of their own, and a diff reads
+    // as three things rather than two and a lie.
+    if line.starts_with("+++") || line.starts_with("---") || line.starts_with("@@") {
+        return colour::diff_marker();
+    }
     match line.as_bytes().first() {
-        // `+++`/`---` are file headers, not changed lines, and colouring them as changes makes
-        // every diff look like it added and removed its own filename.
-        Some(b'+') if !line.starts_with("+++") => colour::diff_added(),
-        Some(b'-') if !line.starts_with("---") => colour::diff_removed(),
+        Some(b'+') => colour::diff_added(),
+        Some(b'-') => colour::diff_removed(),
         _ => colour::diff_context(),
     }
 }
@@ -244,14 +249,14 @@ mod diff_tests {
             40,
             Detail::Preview,
         );
-        assert_eq!(colour_of(&lines, "-was"), Some(colour::error()));
-        assert_eq!(colour_of(&lines, "+now"), Some(colour::success()));
+        assert_eq!(colour_of(&lines, "-was"), Some(colour::diff_removed()));
+        assert_eq!(colour_of(&lines, "+now"), Some(colour::diff_added()));
     }
 
     #[test]
     fn ordinary_output_keeps_the_tool_colour() {
         let lines = entry_lines(&edit_entry("edited a.rs\n"), 40, Detail::Preview);
-        assert_eq!(colour_of(&lines, "edited"), Some(colour::muted()));
+        assert_eq!(colour_of(&lines, "edited"), Some(colour::diff_context()));
     }
 
     #[test]
@@ -263,8 +268,8 @@ mod diff_tests {
             40,
             Detail::Preview,
         );
-        assert_eq!(colour_of(&lines, "--- a.rs"), Some(colour::muted()));
-        assert_eq!(colour_of(&lines, "+++ a.rs"), Some(colour::muted()));
+        assert_eq!(colour_of(&lines, "--- a.rs"), Some(colour::diff_marker()));
+        assert_eq!(colour_of(&lines, "+++ a.rs"), Some(colour::diff_marker()));
     }
 
     #[test]
@@ -281,8 +286,8 @@ mod diff_tests {
             thought_signature: None,
         };
         let lines = entry_lines(&entry, 40, Detail::Preview);
-        assert_eq!(colour_of(&lines, "-was"), Some(colour::error()));
-        assert_eq!(colour_of(&lines, "+now"), Some(colour::error()));
+        assert_eq!(colour_of(&lines, "-was"), Some(colour::tool_failed()));
+        assert_eq!(colour_of(&lines, "+now"), Some(colour::tool_failed()));
     }
 }
 

@@ -49,16 +49,20 @@ pub(super) fn held(width: u16) -> u16 {
 /// `handle` is the fold state — `>` shut, `v` open — and is left off entirely for a block that
 /// does not fold. A handle on something that cannot be opened is an affordance that lies.
 pub(super) fn top(label: &str, chip: Style, handle: Option<&str>, width: u16) -> Line<'static> {
-    // The block's background is *not* on the edge. The frame is the outer thing and the
-    // coloured box sits inside it, so a border painted with the block's own fill would put
-    // colour outside the box it is drawing.
-    let edge = Style::default().fg(colour::muted());
+    // **The frame's own colour, which is the prompt box's.** Every drawn line on the screen is
+    // one thing — the box you type in and the boxes above it — so they are one colour, and a
+    // reader's eye is not asked to sort three greys into a hierarchy that means nothing.
+    let edge = Style::default().fg(colour::border());
+    // The brackets belong to the frame, not to the name. Only the name carries a colour of its
+    // own: what the block *is* is the one thing worth telling apart at a glance, and punctuation
+    // painted with it made the whole chip read as the signal.
     let named = format!("[ {label} ]");
-    // Two dashes before the name, so it sits off the corner rather than against it.
     let mut spans = vec![
         Span::styled(glyph::block_top_left().to_owned(), edge),
         Span::styled(glyph::block_edge().repeat(2), edge),
-        Span::styled(named.clone(), chip),
+        Span::styled("[ ".to_owned(), edge),
+        Span::styled(label.to_owned(), chip),
+        Span::styled(" ]".to_owned(), edge),
     ];
     let used = 3 + named.chars().count();
 
@@ -72,7 +76,10 @@ pub(super) fn top(label: &str, chip: Style, handle: Option<&str>, width: u16) ->
     let fill = usize::from(width).saturating_sub(used + worn + 1);
     spans.push(Span::styled(glyph::block_edge().repeat(fill), edge));
     if let Some(handle) = handle {
-        spans.push(Span::styled(format!("[ {handle} ]"), chip));
+        // The arrow is the frame's too. It is not *about* this block the way its name is — it is
+        // the same affordance on every block that has one, so it belongs to the drawn line rather
+        // than standing out from it.
+        spans.push(Span::styled(format!("[ {handle} ]"), edge));
         spans.push(Span::styled(glyph::block_edge().repeat(2), edge));
     }
     spans.push(Span::styled(glyph::block_top_right().to_owned(), edge));
@@ -84,7 +91,7 @@ pub(super) fn bottom(width: u16) -> Line<'static> {
     // The block's background is *not* on the edge. The frame is the outer thing and the
     // coloured box sits inside it, so a border painted with the block's own fill would put
     // colour outside the box it is drawing.
-    let edge = Style::default().fg(colour::muted());
+    let edge = Style::default().fg(colour::border());
     Line::from(vec![
         Span::styled(glyph::block_bottom_left().to_owned(), edge),
         Span::styled(
@@ -314,7 +321,9 @@ pub(super) fn lone(label: &str, chip: Style, beside: &str, width: u16) -> Line<'
     let named = format!("[ {label} ]");
     let mut spans = vec![
         Span::raw(" ".repeat(MARGIN)),
-        Span::styled(named.clone(), chip),
+        Span::styled("[ ".to_owned(), Style::default().fg(colour::border())),
+        Span::styled(label.to_owned(), chip),
+        Span::styled(" ]".to_owned(), Style::default().fg(colour::border())),
     ];
     let mut used = MARGIN + named.chars().count();
     if !beside.trim().is_empty() {

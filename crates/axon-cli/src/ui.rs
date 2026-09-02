@@ -43,15 +43,16 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     } else {
         axon_tui::border::Scan::Holding
     };
-
-    // Both edge rules belong to the transcript and are drawn against it, top and bottom. The
-    // lower one had a row of its own down by the prompt, with the status line between it and
-    // the text it was about — and a rule with a blank row above it marks nothing.
+    // **A row always sits between the transcript and the prompt.** It was taken only when there
+    // was something to say in it, so following the newest output put the last line of the
+    // conversation directly against the box you answer in, and scrolling away pushed everything
+    // up by one. Reserved either way: what changes is whether the row is blank or carries the
+    // rule, not how much room the transcript has.
     //
     // "Not following" is exactly "you have scrolled away from the newest output", which is when
-    // the lower one is worth drawing. It says only that the transcript continues: a count of how
-    // much was asked for and is not wanted, and it depended on a height the row itself changes.
-    let more_rows = u16::from(!app.scrollback.is_following());
+    // the rule is worth drawing. It says only that the transcript continues.
+    let scrolled = !app.scrollback.is_following();
+    let more_rows = 1;
 
     // The menu goes inside the box, so the box is as tall as the two of them together and there
     // is no second region under it. What it may not do is take the whole screen: one row of
@@ -170,7 +171,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
             },
         );
     }
-    if more_rows > 0 {
+    if scrolled {
         frame.render_widget(
             Paragraph::new(status::more(area.width)),
             Rect {

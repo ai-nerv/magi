@@ -6,6 +6,14 @@ use super::*;
 
 mod tests {
     use super::*;
+    /// The span carrying the tool's name, which is what states the outcome.
+    fn named(line: &Line<'static>) -> Span<'static> {
+        line.spans
+            .iter()
+            .find(|s| s.content.contains("shell"))
+            .expect("the name")
+            .clone()
+    }
 
     /// The span carrying the fold handle, which is not the last: `pad` fills to the width
     /// after it.
@@ -36,12 +44,11 @@ mod tests {
     }
 
     #[test]
-    fn the_handle_is_reversed_like_the_name() {
-        // It was a lone bright glyph at the far end of an empty row, which reads as debris
-        // rather than as the other end of the same header.
+    fn the_handle_belongs_to_the_frame_rather_than_the_name() {
+        // The name says what this block *is* and carries a colour for it. The handle is the same
+        // affordance on every block that has one, so it is drawn like the line it sits in — and
+        // a reader is not asked to read meaning into a shape that never varies.
         let line = header_of(false);
-        // Neither is at an end of the span list: `pad` puts the block's own padding around
-        // everything the header drew.
         let name = line
             .spans
             .iter()
@@ -49,18 +56,28 @@ mod tests {
             .expect("the name")
             .clone();
         let handle = handle_span(&line);
-        assert_eq!(handle.style.bg, name.style.bg, "the same chip");
-        assert_eq!(handle.style.fg, name.style.fg);
+        assert_eq!(handle.style.fg, Some(colour::border()));
+        assert_ne!(handle.style.fg, name.style.fg, "the handle apes the name");
     }
 
     #[test]
-    fn a_failed_call_colours_both_ends_by_its_outcome() {
+    fn the_brackets_are_the_frames_too() {
+        // Only the text inside them is the block's own colour. Painted with it, the punctuation
+        // read as the signal and every block wore a solid tag.
+        let line = header_of(false);
+        for span in line.spans.iter().filter(|s| s.content.contains('[')) {
+            assert_eq!(span.style.fg, Some(colour::border()), "{:?}", span.content);
+        }
+    }
+
+    #[test]
+    fn only_the_name_states_the_outcome() {
         let ok = header_of(false);
         let failed = header_of(true);
         assert_ne!(
-            handle_span(&ok).style.fg,
-            handle_span(&failed).style.fg,
-            "the handle states the outcome the way the name does"
+            named(&ok).style.fg,
+            named(&failed).style.fg,
+            "the name should state the outcome"
         );
     }
 
