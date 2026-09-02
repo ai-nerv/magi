@@ -56,11 +56,88 @@ impl App {
                 .and_then(|sort| sort.as_str().map(ToOwned::to_owned))
                 .unwrap_or_default(),
             text: message.text.clone(),
-            // A question is not answered by being filed, and being called for is not answered by
-            // being filed either. Those start a turn; a note waits to be read.
-            wake: sort.interrupts() || sort.expects_an_answer(),
         };
         self.inbox.push(message);
         command
+    }
+}
+
+/// A message reaches the session, and the sorts agree about which of them wants an answer.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::instance::wire::{Message, Sort};
+
+    fn app() -> App {
+        let mut app = App::new();
+        app.identity = crate::identity::Identity {
+            project: "axon".to_owned(),
+            role: "main".to_owned(),
+            id: "alpha-rho".to_owned(),
+        };
+        app
+    }
+
+    fn arriving(sort: Sort) -> axon_proto::Entry {
+        let command = app().received(Message::sent("axon/main/beta-nu", "hello", sort, None));
+        let axon_proto::UiCommand::Arrived {
+            who,
+            kin,
+            sort,
+            text,
+        } = command
+        else {
+            panic!("an arrival is an arrival");
+        };
+        axon_proto::Entry::From {
+            who,
+            kin,
+            sort,
+            text,
+        }
+    }
+
+    #[test]
+    fn an_arrival_goes_to_the_session_rather_than_onto_the_screen() {
+        // The transcript and the turns are the session's. An entry the UI kept for itself was
+        // one the model never saw, so an instance could be asked a question and sit there.
+        let mut app = app();
+        let command = app.received(Message::new("axon/main/beta-nu", "the parser is done"));
+        assert!(matches!(command, axon_proto::UiCommand::Arrived { .. }));
+        assert_eq!(app.inbox.len(), 1, "and the tool can still read it");
+    }
+
+    #[test]
+    fn the_two_halves_agree_about_which_sorts_want_an_answer() {
+        // The rule lives in the session — `axon_host::wants_answering` — and the sorts live
+        // here. Nothing would fail if they drifted: a sort added on this side would simply stop
+        // waking anybody, quietly, in a way no test that only knew one half could see.
+        for sort in [
+            Sort::Note,
+            Sort::Question,
+            Sort::Answer,
+            Sort::Attention,
+            Sort::Claim,
+            Sort::Release,
+            Sort::Handoff,
+            Sort::Trouble,
+        ] {
+            let ours = sort.interrupts() || sort.expects_an_answer();
+            let theirs = axon_host::wants_answering(&arriving(sort));
+            assert_eq!(ours, theirs, "{sort:?}");
+        }
+    }
+
+    #[test]
+    fn a_note_is_read_rather_than_answered() {
+        assert!(!axon_host::wants_answering(&arriving(Sort::Note)));
+        assert!(!axon_host::wants_answering(&arriving(Sort::Answer)));
+    }
+
+    #[test]
+    fn being_asked_or_called_for_is_answered() {
+        for sort in [Sort::Question, Sort::Attention, Sort::Trouble] {
+            assert!(axon_host::wants_answering(&arriving(sort)), "{sort:?}");
+        }
     }
 }

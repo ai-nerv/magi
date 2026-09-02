@@ -204,9 +204,19 @@ async fn connection(
                             aside,
                         }, held, catalog).await?;
                     }
-                    Some(UiCommand::Arrived { who, kin, sort, text, wake }) => {
-                        let held = worker.read().await.clone();
+                    Some(UiCommand::Arrived { who, kin, sort, text }) => {
                         let arrived = Entry::From { who, kin, sort, text };
+                        let wake = wants_answering(&arrived);
+                        // Nothing another instance says interrupts a turn. A main with ten
+                        // subagents would be answering the first one's question while the
+                        // second, third and fourth arrive, and the moment it is mid-thought is
+                        // the worst one to hand it somebody else's. What arrives now is dealt
+                        // with when the turn it arrived during is over -- see `after`.
+                        if !session.lock().await.idle() {
+                            session.lock().await.hold(arrived);
+                            continue;
+                        }
+                        let held = worker.read().await.clone();
                         if wake {
                             // A turn, the same way a prompt starts one. This is what makes a
                             // message a *message*: without it the entry landed in the transcript
@@ -504,8 +514,59 @@ async fn submit(
     // Overlapping turns are not a risk. The worker is one thread taking one job at a time, so
     // a second prompt queues behind the first exactly as it did when this awaited.
     let session = Arc::clone(session);
-    tokio::spawn(async move { worker.run(session).await });
+    tokio::spawn(async move { after(session, worker).await });
     Ok(())
+}
+
+/// Run a turn, then deal with whatever arrived while it was running.
+///
+/// The other half of the waiting room. An arrival during a turn is held rather than delivered
+/// — see [`session::Session::waiting`] — and this is where it comes back out: the turn ends,
+/// the messages are committed in the order they came, and if any of them wanted an answer, one
+/// more turn runs to give it.
+///
+/// A loop, because more can arrive during *that* turn. It ends when a turn finishes with an
+/// empty waiting room, which is the ordinary case: a session with nobody talking to it does one
+/// pass and stops.
+async fn after(session: Arc<Mutex<Session>>, worker: Arc<worker::Worker>) {
+    loop {
+        worker.run(Arc::clone(&session)).await;
+
+        let arrived = session.lock().await.release();
+        if arrived.is_empty() {
+            return;
+        }
+        // Committed together and answered once. Ten subagents reporting during one turn is ten
+        // things to read and one turn to read them in — waking once per message would spend a
+        // turn on each and let the last of them arrive during the answer to the first.
+        let mut answer = false;
+        {
+            let mut held = session.lock().await;
+            for entry in arrived {
+                answer |= wants_answering(&entry);
+                if held.commit(entry).is_err() {
+                    return;
+                }
+            }
+        }
+        if !answer {
+            return;
+        }
+    }
+}
+
+/// Whether a message that arrived is one the session should answer rather than merely have read.
+///
+/// The sender chose, by which verb they used. A note is something to have seen by the time you
+/// next reply; a question, a call for help, or a report that something has gone wrong is not.
+///
+/// **The one place that decides.** It was two: the UI worked it out from its own `Sort` enum and
+/// put the answer on the wire, and this worked it out again from the string. Two rules for one
+/// question, in two vocabularies, and nothing would have failed when they drifted — a sort added
+/// to one would just quietly stop waking anybody.
+#[must_use]
+pub fn wants_answering(entry: &Entry) -> bool {
+    matches!(entry, Entry::From { sort, .. } if matches!(sort.as_str(), "question" | "attention" | "trouble"))
 }
 
 /// Publish an error to whoever is attached.

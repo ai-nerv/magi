@@ -28,6 +28,17 @@ pub struct Session {
     journal: Journal,
     status: AgentStatus,
     events: broadcast::Sender<HarnessEvent>,
+    /// Messages from other instances that arrived while a turn was running.
+    ///
+    /// **Nothing another instance says interrupts a turn.** A main with ten subagents would
+    /// otherwise be answering the first one's question while the second, third and fourth
+    /// arrive, and a session that is mid-thought is the worst moment to hand it somebody else's.
+    /// So an arrival is held here and dealt with when the turn ends.
+    ///
+    /// Held rather than journalled on arrival, and that part is not politeness: committing a
+    /// message between an assistant's tool call and its result puts a user turn inside an
+    /// exchange, which is a conversation no provider accepts.
+    waiting: Vec<Entry>,
 }
 
 impl Session {
@@ -43,7 +54,27 @@ impl Session {
             choices: Vec::new(),
             thinking: "off".to_owned(),
             events,
+            waiting: Vec::new(),
         })
+    }
+
+    /// Whether nothing is running, so something new may start.
+    #[must_use]
+    pub fn idle(&self) -> bool {
+        matches!(self.status, AgentStatus::Idle)
+    }
+
+    /// Keep this until the session has finished what it is doing.
+    pub fn hold(&mut self, entry: Entry) {
+        self.waiting.push(entry);
+    }
+
+    /// Take everything that was held, in the order it arrived.
+    ///
+    /// Emptied by the taking, so the same message cannot be dealt with twice — two turns ending
+    /// close together would otherwise both find it there.
+    pub fn release(&mut self) -> Vec<Entry> {
+        std::mem::take(&mut self.waiting)
     }
 
     /// Put this session onto a different journal, keeping everyone attached to it.
@@ -724,3 +755,6 @@ mod streaming_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod waiting;

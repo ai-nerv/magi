@@ -573,14 +573,11 @@ pub enum UiCommand {
         /// What sort of message it is.
         sort: String,
         /// What they said.
-        text: String,
-        /// Whether it should start a turn rather than wait to be read.
         ///
-        /// The sender decides, by which verb they used. A `note` waits; being asked a question,
-        /// called for, or told something has gone wrong does not — that is the whole difference
-        /// between the sorts, and a message that only ever waited would make them a wording
-        /// choice.
-        wake: bool,
+        /// Whether it starts a turn is not on the wire: it follows from `sort`, and the one
+        /// place that decides is `axon_host::wants_answering`. Carrying the answer as well
+        /// would be two rules for one question, in two vocabularies, free to drift.
+        text: String,
     },
     /// Interrupt the running turn.
     Interrupt,
