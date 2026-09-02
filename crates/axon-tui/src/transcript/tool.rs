@@ -6,7 +6,7 @@
 //! prose and an assistant message is prose, and this is a name, arguments, a body that may be
 //! a diff, and a decision about how much of it to show.
 
-use super::{blank, clip};
+use super::clip;
 use crate::colour;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -107,9 +107,10 @@ pub(super) fn block(
             lead,
         ));
     }
-    // A plain row first, not a grey one: this is the gap *between* blocks, and painted with
-    // the block's own background it joined the previous block into one band.
-    let mut out: Vec<Line<'static>> = vec![blank(width, Style::default())];
+    // No gap of its own: one blank row before every entry is laid on in `laid_out`, where the
+    // two entries that need separating are both in view. Pushed here as well it was pushed
+    // twice between two calls, and not at all between a message and the block after it.
+    let mut out: Vec<Line<'static>> = Vec::new();
     if let Some(result) = result {
         let output = result.output.trim_end();
         if !output.is_empty() {
@@ -523,7 +524,7 @@ mod block_tests {
             Detail::Preview,
         )
         .into_iter()
-        .nth(1)
+        .next()
         .expect("the header row")
     }
 
@@ -676,9 +677,9 @@ mod revealing {
     #[test]
     fn a_preview_is_still_one_row_a_line() {
         // The other half: a preview is a glance, and a wrapped one is not scannable. Three lines
-        // of output, three rows, plus the arguments, the two edges, and the gap above.
+        // of output, three rows, plus the arguments and the two edges.
         let shown = rows(Detail::Preview, 56);
-        assert_eq!(shown.len(), 7, "{shown:#?}");
+        assert_eq!(shown.len(), 6, "{shown:#?}");
     }
 
     #[test]

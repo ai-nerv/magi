@@ -31,7 +31,7 @@ mod tests {
             Some(&result),
             50,
             Detail::Preview,
-        )[1]
+        )[0]
         .clone()
     }
 

@@ -78,7 +78,7 @@ mod tests {
             .iter()
             .position(|l| l.contains("write"))
             .expect("a header");
-        assert_eq!(header, 1, "the first row after the padding");
+        assert_eq!(header, 0, "the block's first row is its top edge");
         assert!(
             shown[header].contains(&format!("[ {} ]", crate::glyph::expand())),
             "the handle is set into the top edge: {shown:#?}"
@@ -90,7 +90,7 @@ mod tests {
         // In the outcome's own colour with nothing behind it, and bracketed so the run reads as
         // a tag on the block rather than as the first word of a sentence.
         let lines = block("write", "{}", None, 50, Detail::Preview);
-        let name = lines[1]
+        let name = lines[0]
             .spans
             .iter()
             .find(|s| s.content.contains("write"))
@@ -107,7 +107,7 @@ mod tests {
             is_error: true,
         };
         let lines = block("shell", "{}", Some(failed), 50, Detail::Preview);
-        let name = lines[1]
+        let name = lines[0]
             .spans
             .iter()
             .find(|s| s.content.contains("shell"))
@@ -133,7 +133,7 @@ mod tests {
                 width,
                 Detail::Preview,
             );
-            let header: String = lines[1]
+            let header: String = lines[0]
                 .spans
                 .iter()
                 .map(|s| s.content.as_ref())

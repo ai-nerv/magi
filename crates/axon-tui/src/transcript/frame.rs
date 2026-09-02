@@ -140,7 +140,7 @@ mod framing {
     fn nothing_is_drawn_down_the_sides() {
         // A full box costs two columns of every row to draw a line nobody reads, and on a narrow
         // terminal those two come out of the text.
-        for line in tool(Detail::Full, 60).iter().skip(2) {
+        for line in tool(Detail::Full, 60).iter().skip(1) {
             assert!(!line.contains('│'), "{line:?}");
         }
     }

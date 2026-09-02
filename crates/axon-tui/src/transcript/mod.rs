@@ -64,10 +64,33 @@ pub fn laid_out(
             _ => detail,
         };
         let lines = entry_lines(entry, width, shown);
+        // **One blank row before every entry, and never two.** Decided here rather than by each
+        // renderer, because the gap is a fact about two entries meeting and no single renderer
+        // can see both — which is how a user message ended up flush against the block after it
+        // while a tool call, which pushed its own, always had room.
+        //
+        // Nothing before the first: a gap at the very top separates a block from nothing.
+        if !laid.lines.is_empty() && !blank_row(laid.lines.last()) && !blank_row(lines.first()) {
+            laid.lines.push(Line::default());
+            laid.owners.push(None);
+        }
         laid.owners.extend(std::iter::repeat_n(id, lines.len()));
         laid.lines.extend(lines);
     }
     laid
+}
+
+/// Whether a row carries nothing but space.
+///
+/// By what it *says*, not by how it is styled: the gap a tool block puts above itself is a run of
+/// spaces, the one an assistant message puts above its prose is an empty `Line`, and a rule that
+/// told those apart would add a second blank between the two.
+fn blank_row(line: Option<&Line<'static>>) -> bool {
+    line.is_none_or(|line| {
+        line.spans
+            .iter()
+            .all(|span| span.content.chars().all(char::is_whitespace))
+    })
 }
 
 /// Render one entry.
@@ -287,11 +310,6 @@ fn clip(text: &str, width: usize) -> String {
         + glyph::ellipsis()
 }
 
-/// A full-width line carrying only the background.
-fn blank(width: u16, style: Style) -> Line<'static> {
-    Line::from(Span::styled(" ".repeat(usize::from(width)), style))
-}
-
 /// Put a line where a block's inside would be.
 ///
 /// The same column a fill starts at, so prose and blocks share one text column down the left and
@@ -446,8 +464,8 @@ mod tests {
             thought_signature: None,
         };
         let rendered = text_of(&entry_lines(&entry, 40, Detail::Preview));
-        assert!(rendered[1].contains("read"), "{:?}", rendered[1]);
-        assert!(rendered[1].contains("a.rs"), "{:?}", rendered[1]);
+        assert!(rendered[0].contains("read"), "{:?}", rendered[0]);
+        assert!(rendered[0].contains("a.rs"), "{:?}", rendered[0]);
     }
 
     #[test]
@@ -743,3 +761,7 @@ mod branch_tests {
         assert_eq!(widest, 60);
     }
 }
+
+#[cfg(test)]
+#[path = "spacing.rs"]
+mod spacing_tests;
