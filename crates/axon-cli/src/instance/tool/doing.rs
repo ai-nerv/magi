@@ -66,7 +66,8 @@ pub fn decide(
 ) -> Result<Wanted, Output> {
     let Some(address) = Address::read(who) else {
         return Err(Output::error(format!(
-            "`{who}` is not a name an instance can have. Names are `id` or `project/id`."
+            "`{who}` is not a name an instance can have. Names are `id`, `role/id` or \
+             `project/role/id`."
         )));
     };
     if !VERBS.iter().any(|(name, _)| *name == verb) {
@@ -89,7 +90,7 @@ pub fn decide(
         // Held only for what this session started. Refused here rather than at the far end,
         // where the answer would be "that is not the secret" — true, and no help at all to a
         // model that never had one.
-        let Some(secret) = standing.minted.get(&whole.full()).cloned() else {
+        let Some(secret) = standing.minted.get(&whole.id).cloned() else {
             return Err(Output::error(format!(
                 "this session did not start `{}`, so it holds nothing that could stop it",
                 whole.full()
@@ -212,7 +213,7 @@ mod tests {
 
     fn standing() -> Standing {
         Standing {
-            me: "axon/alpha-rho".to_owned(),
+            me: "axon/main/alpha-rho".to_owned(),
             parent: None,
             forked: Vec::new(),
             minted: std::collections::BTreeMap::new(),
@@ -231,7 +232,7 @@ mod tests {
             &standing(),
         )
         .expect("a call worth making");
-        assert_eq!(wanted.who.full(), "axon/beta-nu");
+        assert_eq!(wanted.who.full(), "axon/main/beta-nu");
         assert_eq!(wanted.sort, Sort::Note);
     }
 
@@ -282,7 +283,7 @@ mod tests {
         // The far end would say "that is not the secret", which is true and no help at all to a
         // model that never had one.
         let mut standing = standing();
-        standing.forked.push("axon/iota-mu".to_owned());
+        standing.forked.push("iota-mu".to_owned());
         let refused = decide("stop", "iota-mu", &serde_json::json!({}), &standing)
             .expect_err("nothing to stop it with");
         assert!(refused.is_error);
@@ -296,10 +297,10 @@ mod tests {
     #[test]
     fn stopping_something_this_session_started_carries_the_secret() {
         let mut standing = standing();
-        standing.forked.push("axon/iota-mu".to_owned());
+        standing.forked.push("iota-mu".to_owned());
         standing
             .minted
-            .insert("axon/iota-mu".to_owned(), "s3cret".to_owned());
+            .insert("iota-mu".to_owned(), "s3cret".to_owned());
         let wanted = decide("stop", "iota-mu", &serde_json::json!({}), &standing).expect("decided");
         assert_eq!(wanted.token.as_deref(), Some("s3cret"));
     }
@@ -311,7 +312,7 @@ mod tests {
         let mut standing = standing();
         standing
             .minted
-            .insert("axon/beta-nu".to_owned(), "s3cret".to_owned());
+            .insert("beta-nu".to_owned(), "s3cret".to_owned());
         for verb in ["send", "ask", "status", "about", "attention"] {
             let wanted = decide(
                 verb,
@@ -330,7 +331,7 @@ mod tests {
         standing.parent = Some("beta-nu".to_owned());
         let refused = decide(
             "send",
-            "other/tau-chi",
+            "other/main/tau-chi",
             &serde_json::json!({"message": "x"}),
             &standing,
         )

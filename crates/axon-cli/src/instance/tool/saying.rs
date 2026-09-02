@@ -15,8 +15,8 @@ pub fn help(standing: &Standing) -> String {
         .collect();
     format!(
         "This session is `{me}`{born}.\n\n`{TOOL}` verbs:\n\n{rows}\n\nInstances are named \
-         `project/id`. A bare id means one in this project, and there is no reaching outside \
-         it.\n\nWho can be reached at all depends on where each of you sits: `list` says, and \
+         `project/role/id`. A bare id means one in this project, and there is no reaching \
+         outside it.\n\nWho can be reached at all depends on where each of you sits: `list` says, and \
          it lists only what this session may actually reach. Only an instance this session \
          started can be stopped.",
         me = standing.me,
@@ -52,21 +52,19 @@ pub fn list(standing: &Standing) -> String {
             } else {
                 ""
             };
-            let named = crate::identity::Identity {
-                project: them.project.clone(),
-                id: them.id.clone(),
-            };
+            let where_it_is = crate::instance::socket(&them.project, &them.id);
             // Asked rather than assumed. A socket file outlives the process that made it, so
             // the directory says who *was* here — and a model that sends to a name it read off
             // a stale entry is told the message landed when nothing received it.
-            let alive = if crate::instance::asking::answers(&named, &me_named) {
+            let alive = if crate::instance::asking::answers(&where_it_is, &me_named) {
                 ""
             } else {
                 " — not answering; its socket is what a crash left behind"
             };
             format!(
-                "- `{}` — {}{stoppable}{alive}",
-                named.full(),
+                "- `{}/{}` — {}{stoppable}{alive}",
+                them.project,
+                them.id,
                 relation.named()
             )
         })

@@ -128,8 +128,8 @@ impl Read for Reading<'_> {
 /// is the cheapest question that distinguishes a running session from a crash's leftovers, and
 /// it is worth asking before a message is reported as delivered.
 #[must_use]
-pub fn answers(them: &Identity, me: &Identity) -> bool {
-    Held::to(them, me).is_ok()
+pub fn answers(where_it_is: &Path, me: &Identity) -> bool {
+    Held::at(where_it_is, me).is_ok()
 }
 
 /// A refusal is a reply, and a caller always says who it is.
@@ -140,6 +140,7 @@ mod tests {
     fn me() -> Identity {
         Identity {
             project: "axon".to_owned(),
+            role: "main".to_owned(),
             id: "alpha-rho".to_owned(),
         }
     }
@@ -159,7 +160,7 @@ mod tests {
             from: Some(held.me.clone()),
             token: None,
         };
-        assert_eq!(call.from.as_deref(), Some("axon/alpha-rho"));
+        assert_eq!(call.from.as_deref(), Some("axon/main/alpha-rho"));
         assert!(call.token.is_none(), "an ordinary call carries no secret");
     }
 
@@ -174,7 +175,7 @@ mod tests {
         let answering = std::thread::spawn(move || {
             let call: Call = framing::read_from(&mut Reading(&theirs)).expect("reads");
             assert_eq!(call.call, "status");
-            assert_eq!(call.from.as_deref(), Some("axon/alpha-rho"));
+            assert_eq!(call.from.as_deref(), Some("axon/main/alpha-rho"));
             framing::write_to(
                 &mut Writing(&theirs),
                 &Reply::of(serde_json::json!({"busy": true})),
@@ -191,8 +192,9 @@ mod tests {
     fn nothing_listening_is_an_error_rather_than_a_wait() {
         let missing = Identity {
             project: "no-such-project-here".to_owned(),
+            role: "main".to_owned(),
             id: "nobody-nowhere".to_owned(),
         };
-        assert!(!answers(&missing, &me()));
+        assert!(!answers(&crate::instance::listening_at(&missing), &me()));
     }
 }

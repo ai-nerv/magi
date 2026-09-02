@@ -125,7 +125,7 @@ pub struct App {
     pub picking: Option<Picking>,
     /// How much of each tool result to show.
     pub detail: axon_tui::transcript::Detail,
-    /// What this session calls itself: `project/id`.
+    /// What this session calls itself: `project/role/id`.
     ///
     /// Shown in the prompt box, and about to be the address another session reaches it at.
     pub identity: crate::identity::Identity,
@@ -147,9 +147,9 @@ pub struct App {
     pub inbox: Vec<crate::instance::wire::Message>,
     /// Who started this session, if anybody did. `None` makes it a main.
     pub parent: Option<String>,
-    /// Instances this session started, which are the ones it may stop.
+    /// The ids of the instances this session started, which are the ones it may stop.
     pub forked: Vec<String>,
-    /// The secret handed to each of them, so this session can stop the ones it started.
+    /// The secret handed to each of them, by id, so this session can stop what it started.
     pub minted: std::collections::BTreeMap<String, String>,
     /// Whether the prompt was empty when it was last looked at.
     was_blank: bool,

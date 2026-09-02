@@ -88,7 +88,9 @@ pub fn token() -> Option<String> {
 /// identity is made when a UI starts, the daemon outlives UIs, and nothing on disk says which
 /// of several sessions in a project a given process was spawned under.
 pub const PROJECT: &str = "AXON_PROJECT";
-/// The other half of [`PROJECT`].
+/// What that session is for, the middle part of its name.
+pub const ROLE: &str = "AXON_ROLE";
+/// The last of the three, and the only one the socket is named after.
 pub const ID: &str = "AXON_ID";
 
 /// Which session a spawned process belongs to, from its environment.
@@ -99,7 +101,13 @@ pub const ID: &str = "AXON_ID";
 pub fn mine() -> Option<Identity> {
     let project = std::env::var(PROJECT).ok().filter(|it| !it.is_empty())?;
     let id = std::env::var(ID).ok().filter(|it| !it.is_empty())?;
-    Some(Identity { project, id })
+    // The one part with a sensible default. Project and id place a session and a wrong guess at
+    // either would sign messages as somebody else; a role only says what it is for.
+    let role = std::env::var(ROLE)
+        .ok()
+        .filter(|it| !it.is_empty())
+        .unwrap_or_else(|| "main".to_owned());
+    Some(Identity { project, role, id })
 }
 
 /// What `me` started, read off the project directory.
@@ -107,13 +115,15 @@ pub fn mine() -> Option<Identity> {
 /// Not from anything the session remembers: a session that restarted forgot, and a child that
 /// declined to leave its note would have made itself unstoppable by forgetting who its parent
 /// was. The directory is the one place both facts survive.
+///
+/// Ids, not whole names. The directory knows where a session is, not what it calls itself: a
+/// role is not on disk, so a full name built from here would be a name with a guess in it.
 #[must_use]
 pub fn children(me: &Identity) -> Vec<String> {
     listening(&me.project)
         .into_iter()
         .filter(|id| *id != me.id)
         .filter(|id| whom(&me.project, id).parent.as_deref() == Some(me.id.as_str()))
-        .map(|id| format!("{}/{id}", me.project))
         .collect()
 }
 
@@ -164,25 +174,33 @@ impl Reach {
 
 /// Another instance, by name.
 ///
-/// `$iota-mu` is one in this project; `$axon/iota-mu` names the project as well. The second
-/// form parses and then loses: [`policy`] refuses anything outside the asker's own project, and
-/// the directory it would have to be found in is not one this session lists. It reads rather
-/// than being rejected as a typo so the refusal can say *why*.
+/// The same three parts a session wears on its status line, and the short forms fill in from
+/// whoever is asking: `$iota-mu` is one in this project, `$review/iota-mu` says what it is for,
+/// `$axon/review/iota-mu` says everything.
+///
+/// The last of those parses and then loses — [`policy`] refuses anything outside the asker's own
+/// project, and the directory it would have to be found in is not one this session lists. It
+/// reads rather than being rejected as a typo so the refusal can say *why*.
+///
+/// **The id is the part that finds it.** A role is what a session says about itself, so a role
+/// in an address is a description, not a lookup: it is filled in and carried along, and never
+/// consulted to work out which socket is meant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Address {
     /// Which project, or `None` to mean the asker's own.
     pub project: Option<String>,
+    /// What it is for, or `None` to mean the asker's own.
+    pub role: Option<String>,
     /// Which instance. Always given: this is the part that names one.
     pub id: String,
 }
 
 impl Address {
-    /// Read `$iota-mu` or `$axon/iota-mu`.
+    /// Read `$iota-mu`, `$review/iota-mu` or `$axon/review/iota-mu`.
     ///
     /// The sigil is optional so this reads what the trigger hands over as well as what somebody
-    /// wrote. Answers `None` for anything with no id in it, and for three parts — that shape was
-    /// `project/role/id` before roles left names, and reading it now would resolve an old name
-    /// to a session that is not the one it meant.
+    /// wrote. Read from the right, because the id is the part that is always there and the rest
+    /// fills in from the outside: `a/b/c/d` is not a deeper address, it is a typo.
     #[must_use]
     pub fn read(written: &str) -> Option<Self> {
         let body = written.strip_prefix('$').unwrap_or(written);
@@ -190,10 +208,17 @@ impl Address {
         match parts.as_slice() {
             [id] => Some(Self {
                 project: None,
+                role: None,
                 id: (*id).to_owned(),
             }),
-            [project, id] => Some(Self {
+            [role, id] => Some(Self {
+                project: None,
+                role: Some((*role).to_owned()),
+                id: (*id).to_owned(),
+            }),
+            [project, role, id] => Some(Self {
                 project: Some((*project).to_owned()),
+                role: Some((*role).to_owned()),
                 id: (*id).to_owned(),
             }),
             _ => None,
@@ -208,11 +233,15 @@ impl Address {
             out.push_str(project);
             out.push('/');
         }
+        if let Some(role) = &self.role {
+            out.push_str(role);
+            out.push('/');
+        }
         out.push_str(&self.id);
         out
     }
 
-    /// The full name, filling the project in from whoever is asking.
+    /// The full name, filling the gaps in from whoever is asking.
     #[must_use]
     pub fn against(&self, asker: &Identity) -> Identity {
         Identity {
@@ -220,6 +249,7 @@ impl Address {
                 .project
                 .clone()
                 .unwrap_or_else(|| asker.project.clone()),
+            role: self.role.clone().unwrap_or_else(|| asker.role.clone()),
             id: self.id.clone(),
         }
     }
@@ -231,10 +261,19 @@ pub fn home(project: &str) -> PathBuf {
     runtime().join("axon").join(safe(project))
 }
 
+/// Where a session's socket is, by the only two parts of a name that place it.
+///
+/// No role. An id is already unique inside a project, so a role in the path would be a second
+/// key for the same door -- and a session that changed what it was for would move.
+#[must_use]
+pub fn socket(project: &str, id: &str) -> PathBuf {
+    home(project).join(safe(id))
+}
+
 /// Where a socket for `me` is put, so an instance can be reached by name.
 #[must_use]
 pub fn listening_at(me: &Identity) -> PathBuf {
-    home(&me.project).join(safe(&me.id))
+    socket(&me.project, &me.id)
 }
 
 /// Where the note saying who started `me` is put.
@@ -373,6 +412,7 @@ mod tests {
     fn asker() -> Identity {
         Identity {
             project: "axon".to_owned(),
+            role: "main".to_owned(),
             id: "alpha-rho".to_owned(),
         }
     }
@@ -381,14 +421,34 @@ mod tests {
     fn a_bare_name_is_somebody_in_this_project() {
         let address = Address::read("$iota-mu").expect("an address");
         assert_eq!(address.id, "iota-mu");
-        assert_eq!(address.against(&asker()).full(), "axon/iota-mu");
+        assert_eq!(address.against(&asker()).full(), "axon/main/iota-mu");
     }
 
     #[test]
-    fn a_two_part_name_gives_the_project() {
-        let address = Address::read("$other/beta-nu").expect("an address");
-        assert_eq!(address.project.as_deref(), Some("other"));
-        assert_eq!(address.against(&asker()).full(), "other/beta-nu");
+    fn a_two_part_name_gives_the_role() {
+        let address = Address::read("$review/iota-mu").expect("an address");
+        assert_eq!(address.role.as_deref(), Some("review"));
+        assert_eq!(address.project, None, "which fills in from the asker");
+        assert_eq!(address.against(&asker()).full(), "axon/review/iota-mu");
+    }
+
+    #[test]
+    fn a_three_part_name_gives_everything() {
+        let address = Address::read("$other/review/eta-nu").expect("an address");
+        assert_eq!(address.against(&asker()).full(), "other/review/eta-nu");
+    }
+
+    #[test]
+    fn the_role_in_an_address_never_decides_which_socket_is_meant() {
+        // A role is what a session says it is for. Two addresses that differ only there are the
+        // same session, and a lookup that read the role would have made them two.
+        let one = Address::read("$review/iota-mu").expect("an address");
+        let other = Address::read("$scratch/iota-mu").expect("an address");
+        let asker = asker();
+        assert_eq!(
+            listening_at(&one.against(&asker)),
+            listening_at(&other.against(&asker))
+        );
     }
 
     #[test]
@@ -400,18 +460,12 @@ mod tests {
     fn an_address_that_names_nobody_is_not_an_address() {
         assert_eq!(Address::read("$"), None);
         assert_eq!(Address::read(""), None);
-    }
-
-    #[test]
-    fn the_old_three_part_shape_is_not_read_as_a_name() {
-        // `project/role/id` was the shape before roles left names. Reading it now would resolve
-        // to `role/id` or `project/id` and reach a session that is not the one it meant.
-        assert_eq!(Address::read("$axon/main/delta"), None);
+        assert_eq!(Address::read("$a/b/c/d"), None, "four parts is a typo");
     }
 
     #[test]
     fn what_was_written_comes_back_out() {
-        for written in ["$iota-mu", "$other/beta-nu"] {
+        for written in ["$iota-mu", "$review/iota-mu", "$other/review/eta-nu"] {
             let address = Address::read(written).expect("an address");
             assert_eq!(address.written(), written);
         }
@@ -445,6 +499,7 @@ mod tests {
         // A project is the working directory's name, and a directory can be called `..`.
         let escaping = Identity {
             project: "../../etc".to_owned(),
+            role: "main".to_owned(),
             id: "../passwd".to_owned(),
         };
         let path = listening_at(&escaping);

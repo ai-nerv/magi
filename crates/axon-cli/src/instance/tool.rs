@@ -17,7 +17,7 @@
 //!
 //! Everything here can be done to anything listening except `stop`. A session is stopped by the
 //! session that started it and by nothing else — and "is" is not something a caller gets to
-//! claim. A child is handed a secret in [`super::TOKEN`] at spawn, and a `stop` that cannot
+//! claim. A         if self.forked.contains(&them.id) { is handed a secret in [`super::TOKEN`] at spawn, and a `stop` that cannot
 //! quote it back is refused however convincing the name on it was.
 //!
 //! # Two walls, and what the model is shown
@@ -53,7 +53,7 @@ const VERBS: &[(&str, &str)] = &[
     ),
     (
         "about",
-        "who an instance is: project, id, and who started it",
+        "who an instance is: project, role, id, and who started it",
     ),
     (
         "status",
@@ -138,33 +138,40 @@ pub struct Standing {
     pub me: String,
     /// Who started it, if anybody.
     pub parent: Option<String>,
-    /// What it started, which is what it may stop.
+    /// The ids of what it started, which is what it may stop.
+    ///
+    /// Ids rather than whole names, because that is what the directory holds: a role is not on
+    /// disk, so a full name built from it would carry a guess.
     pub forked: Vec<String>,
-    /// The secret handed to each of them at spawn, which a `stop` has to quote back.
+    /// The secret handed to each of them at spawn, by id, which a `stop` has to quote back.
     pub minted: std::collections::BTreeMap<String, String>,
     /// What has arrived.
     pub inbox: Vec<Message>,
 }
 
 impl Standing {
-    /// Where this session sits in the tree.
-    #[must_use]
-    pub fn whom(&self) -> Whom {
-        let (project, id) = self.me.split_once('/').unwrap_or_default();
-        Whom {
-            project: project.to_owned(),
-            id: id.to_owned(),
-            parent: self.parent.clone(),
-        }
-    }
-
-    /// This session as an identity, for filling the project into a short name.
+    /// This session as an identity, for filling the gaps in a short name.
     #[must_use]
     pub fn identity(&self) -> Identity {
-        let whom = self.whom();
-        Identity {
-            project: whom.project,
-            id: whom.id,
+        Identity::read(&self.me).unwrap_or_else(|| Identity {
+            project: String::new(),
+            role: "main".to_owned(),
+            id: String::new(),
+        })
+    }
+
+    /// Where this session sits in the tree.
+    ///
+    /// Project and id, and no role: what a session is *for* has no bearing on what it may reach.
+    /// A session that could pick its own role could pick `main` and claim a main's reach, so
+    /// the relation is worked out from the spawn tree and nothing else.
+    #[must_use]
+    pub fn whom(&self) -> Whom {
+        let me = self.identity();
+        Whom {
+            project: me.project,
+            id: me.id,
+            parent: self.parent.clone(),
         }
     }
 
@@ -181,7 +188,10 @@ impl Standing {
         if me.project != them.project {
             return Relation::Elsewhere;
         }
-        if self.forked.iter().any(|child| *child == them.full()) {
+        // By id. What this session started is a list of ids, because that is what the directory
+        // holds — a role is not on disk, and matching whole names would have missed a child
+        // that called itself something this session did not expect.
+        if self.forked.contains(&them.id) {
             return Relation::Child;
         }
         policy::between(&me, &super::whom(&them.project, &them.id))
@@ -201,9 +211,9 @@ impl Tool for Agent {
 
     fn description(&self) -> &str {
         "Talk to other axon instances. `verb: \"help\"` lists everything this can do. \
-         Instances are named `id` or `project/id`, and a bare id means one in this project. \
-         Use `list` to find out who is there and what may be done to each, rather than \
-         assuming a name."
+         Instances are named `id`, `role/id` or `project/role/id`; a bare id means one in \
+         this project. Use `list` to find out who is there and what may be done to each, \
+         rather than assuming a name."
     }
 
     fn parameters(&self) -> Value {
@@ -217,8 +227,9 @@ impl Tool for Agent {
                 },
                 "who": {
                     "type": "string",
-                    "description": "which instance, as `iota-mu` or `project/iota-mu`. \
-                                    Not needed by `help`, `list` or `inbox`.",
+                    "description": "which instance, as `iota-mu`, `review/iota-mu` or \
+                                    `axon/review/iota-mu`. Not needed by `help`, `list` or \
+                                    `inbox`.",
                 },
                 "message": {
                     "type": "string",
@@ -296,7 +307,7 @@ mod tests {
 
     fn standing() -> Standing {
         Standing {
-            me: "axon/alpha-rho".to_owned(),
+            me: "axon/main/alpha-rho".to_owned(),
             parent: None,
             forked: Vec::new(),
             minted: std::collections::BTreeMap::new(),
@@ -318,7 +329,7 @@ mod tests {
         let out = call(json!({"verb": "help"}), standing());
         assert!(!out.is_error);
         assert!(
-            out.content.contains("axon/alpha-rho"),
+            out.content.contains("axon/main/alpha-rho"),
             "it never says who we are"
         );
         for (verb, _) in VERBS {
@@ -374,10 +385,10 @@ mod tests {
         // here is the socket, because nothing is listening in a test — and that failure
         // arriving *is* the evidence, since a refusal would have come before the dial.
         let mut standing = standing();
-        standing.forked.push("axon/iota-mu".to_owned());
+        standing.forked.push("iota-mu".to_owned());
         standing
             .minted
-            .insert("axon/iota-mu".to_owned(), "s3cret".to_owned());
+            .insert("iota-mu".to_owned(), "s3cret".to_owned());
         let out = call(json!({"verb": "stop", "who": "iota-mu"}), standing);
         assert!(out.is_error);
         assert!(
@@ -393,13 +404,15 @@ mod tests {
         // description of itself. A child that declined to leave its note beside its socket
         // would otherwise have made itself unstoppable by forgetting who its parent was.
         let mut standing = standing();
-        standing.forked.push("axon/iota-mu".to_owned());
+        standing.forked.push("iota-mu".to_owned());
         let child = Identity {
             project: "axon".to_owned(),
+            role: "main".to_owned(),
             id: "iota-mu".to_owned(),
         };
         let stranger = Identity {
             project: "axon".to_owned(),
+            role: "main".to_owned(),
             id: "beta-nu".to_owned(),
         };
         assert_eq!(standing.stands(&child), Relation::Child);
@@ -413,6 +426,7 @@ mod tests {
         standing.forked.push("other/iota-mu".to_owned());
         let across = Identity {
             project: "other".to_owned(),
+            role: "main".to_owned(),
             id: "iota-mu".to_owned(),
         };
         assert_eq!(standing.stands(&across), Relation::Elsewhere);
@@ -438,7 +452,7 @@ mod tests {
     fn a_name_nothing_can_have_says_what_a_name_looks_like() {
         let out = call(json!({"verb": "status", "who": "a/b/c/d"}), standing());
         assert!(out.is_error);
-        assert!(out.content.contains("project/id"), "{}", out.content);
+        assert!(out.content.contains("project/role/id"), "{}", out.content);
     }
 
     #[test]
@@ -462,7 +476,7 @@ mod surface_tests {
 
     fn standing() -> Standing {
         Standing {
-            me: "axon/alpha-rho".to_owned(),
+            me: "axon/main/alpha-rho".to_owned(),
             parent: None,
             forked: Vec::new(),
             minted: std::collections::BTreeMap::new(),

@@ -38,7 +38,7 @@ pub struct Call {
     /// Its arguments, in order.
     #[serde(default)]
     pub args: Vec<serde_json::Value>,
-    /// Who is calling, as `project/id`.
+    /// Who is calling, as `project/role/id`.
     ///
     /// Taken at face value for everything but `stop`. It has to be: this is one user talking to
     /// itself in one directory, and a check that cannot be enforced reads like security to
@@ -115,7 +115,7 @@ impl Reply {
 /// where one tool can be asked what it speaks and another cannot has stopped being a family.
 pub const VERBS: &[(&str, &str)] = &[
     ("verbs", "what this instance answers"),
-    ("identity", "its project, id and who started it"),
+    ("identity", "its project, role, id and who started it"),
     (
         "kin",
         "how the caller stands to it: parent, child, sibling, main, cousin",
@@ -201,7 +201,7 @@ impl Sort {
 pub struct Message {
     /// This message, so an answer can quote it.
     pub id: String,
-    /// Who sent it, as `project/id`.
+    /// Who sent it, as `project/role/id`.
     pub from: String,
     /// What kind of thing it is.
     #[serde(default)]
@@ -335,8 +335,8 @@ mod tests {
     #[test]
     fn a_message_remembers_who_sent_it() {
         // A message with no sender cannot be replied to, which is the whole point of mirroring.
-        let message = Message::new("axon/alpha-rho", "stop what you are doing");
-        assert_eq!(message.from, "axon/alpha-rho");
+        let message = Message::new("axon/main/alpha-rho", "stop what you are doing");
+        assert_eq!(message.from, "axon/main/alpha-rho");
         assert!(message.at > 0, "and when it was sent");
     }
 }

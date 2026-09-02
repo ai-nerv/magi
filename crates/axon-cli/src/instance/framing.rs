@@ -130,7 +130,7 @@ mod tests {
         let sent = Call {
             call: "tell".to_owned(),
             args: vec![serde_json::json!("hello")],
-            from: Some("axon/alpha-rho".to_owned()),
+            from: Some("axon/main/alpha-rho".to_owned()),
             token: None,
         };
         let mut wire = Vec::new();

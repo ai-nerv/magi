@@ -178,6 +178,7 @@ async fn main() -> Result<()> {
             let identity =
                 identity::Identity::here(loaded.as_ref().and_then(|l| l.config.string("project")));
             environ.insert(instance::PROJECT.to_owned(), identity.project.clone());
+            environ.insert(instance::ROLE.to_owned(), identity.role.clone());
             environ.insert(instance::ID.to_owned(), identity.id.clone());
             daemon::ensure(&socket, cli.sessions.as_deref(), cli.resume, &environ).await?;
             driver::run(&socket, cli.prompt, cli.sessions, loaded, environ, identity).await

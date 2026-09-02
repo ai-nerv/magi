@@ -114,6 +114,7 @@ pub fn answer(call: &Call, about: &About, caller: Option<&Whom>) -> (Reply, Then
         "identity" => (
             Reply::of(serde_json::json!({
                 "project": about.me.project,
+                "role": about.me.role,
                 "id": about.me.id,
                 "full": about.me.full(),
                 "parent": about.parent,
@@ -148,9 +149,20 @@ pub fn answer(call: &Call, about: &About, caller: Option<&Whom>) -> (Reply, Then
                 .and_then(|name| super::wire::Sort::read(&name))
                 .unwrap_or_default();
             let about_what = text_at(call, 2);
-            // From the relation, never from an argument: a message that could name its own
-            // sender is a message anybody can forge into anybody's inbox.
-            let from = format!("{}/{}", caller.project, caller.id);
+            // Project and id from the connection, never from an argument: a message that could
+            // name its own sender is a message anybody can forge into anybody's inbox.
+            //
+            // The role is the exception, and only because it is not worth taking: it is what a
+            // session says it is *for*, it grants nothing, and the alternative is stamping every
+            // message `main` and telling the reader something untrue about who wrote it.
+            let role = Identity::read(call.from.as_deref().unwrap_or_default())
+                .map_or_else(|| "main".to_owned(), |claimed| claimed.role);
+            let from = Identity {
+                project: caller.project.clone(),
+                role,
+                id: caller.id.clone(),
+            }
+            .full();
             (
                 Reply::done(),
                 Then::Keep(Message::sent(&from, &text, sort, about_what)),
@@ -193,6 +205,7 @@ mod tests {
         About {
             me: Identity {
                 project: "axon".to_owned(),
+                role: "main".to_owned(),
                 id: "alpha-rho".to_owned(),
             },
             parent: None,
@@ -274,7 +287,7 @@ mod tests {
         let call = Call {
             call: "tell".to_owned(),
             args: vec![serde_json::json!("the parser is done")],
-            from: Some("axon/somebody-else".to_owned()),
+            from: Some("axon/main/somebody-else".to_owned()),
             token: None,
         };
         let (reply, then) = answer(&call, &about(), Some(&them));
@@ -282,7 +295,7 @@ mod tests {
         let Then::Keep(message) = then else {
             panic!("it was not kept: {then:?}");
         };
-        assert_eq!(message.from, "axon/beta-nu");
+        assert_eq!(message.from, "axon/main/beta-nu");
     }
 
     #[test]

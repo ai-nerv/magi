@@ -18,7 +18,7 @@ pub struct FooterData {
     pub context_percent: Option<f64>,
     /// Size of the context window, in tokens.
     pub context_window: u64,
-    /// What this session calls itself: `project/id`. The left of the footer.
+    /// What this session calls itself: `project/role/id`. The left of the footer.
     pub identity: String,
     /// Model id, as the provider names it. The right of the footer.
     pub model: String,
@@ -360,7 +360,7 @@ mod name_fit_tests {
     #[test]
     fn the_line_never_outgrows_the_terminal() {
         let data = FooterData {
-            identity: "a-very-long-project-name/a-very-long-id".into(),
+            identity: "a-very-long-project-name/a-very-long-role/a-very-long-id".into(),
             input_tokens: 123_456,
             output_tokens: 654_321,
             context_window: 200_000,

@@ -39,7 +39,7 @@ pub fn augment(text: &str, app: &App) -> String {
         let Some(address) = Address::read(&name) else {
             said.push(format!(
                 "`${name}` is not a name an instance can have, so nothing answers to it. \
-                 Names are `id` or `project/id`."
+                 Names are `id`, `role/id` or `project/role/id`."
             ));
             continue;
         };
@@ -108,6 +108,7 @@ mod tests {
         let mut app = App::new();
         app.identity = crate::identity::Identity {
             project: "axon".to_owned(),
+            role: "main".to_owned(),
             id: "alpha-rho".to_owned(),
         };
         app
@@ -128,7 +129,7 @@ mod tests {
         // replacement for what somebody typed.
         let said = augment("tell $beta-nu to stop", &app());
         assert!(said.starts_with("tell $beta-nu to stop"), "{said}");
-        assert!(said.contains("axon/beta-nu"), "{said}");
+        assert!(said.contains("axon/main/beta-nu"), "{said}");
     }
 
     #[test]
@@ -164,7 +165,7 @@ mod tests {
         // as though it were the last.
         let mut app = app();
         for text in ["first", "second", "third"] {
-            app.inbox.push(Message::new("axon/beta-nu", text));
+            app.inbox.push(Message::new("axon/main/beta-nu", text));
         }
         let said = augment("what did $beta-nu want", &app);
         let first = said.find("first").expect("the first is there");
@@ -175,8 +176,10 @@ mod tests {
     #[test]
     fn only_that_instance_s_messages_are_repeated() {
         let mut app = app();
-        app.inbox.push(Message::new("axon/beta-nu", "from beta"));
-        app.inbox.push(Message::new("axon/gamma-xi", "from gamma"));
+        app.inbox
+            .push(Message::new("axon/main/beta-nu", "from beta"));
+        app.inbox
+            .push(Message::new("axon/main/gamma-xi", "from gamma"));
         let said = augment("what did $beta-nu want", &app);
         assert!(said.contains("from beta"), "{said}");
         assert!(!said.contains("from gamma"), "it leaked another's: {said}");
@@ -188,7 +191,7 @@ mod tests {
         let mut app = app();
         for at in 0..50 {
             app.inbox
-                .push(Message::new("axon/beta-nu", &format!("message {at}")));
+                .push(Message::new("axon/main/beta-nu", &format!("message {at}")));
         }
         let said = augment("what did $beta-nu want", &app);
         assert!(!said.contains("message 0"), "it pasted the whole exchange");

@@ -143,18 +143,19 @@ fn ours(stream: &tokio::net::UnixStream) -> bool {
 /// refuses it as `elsewhere` and the refusal can say which wall it met. `None` is kept for a
 /// caller that said nothing at all, which is a different mistake and gets a different answer.
 fn placed(from: Option<&str>, about: &About) -> Option<Whom> {
-    let (project, id) = from?.split_once('/')?;
-    if project.is_empty() || id.is_empty() {
-        return None;
-    }
-    if project != about.me.project {
+    // Parsed as a whole name, never split at the first slash: `axon/review/iota-mu` cut that way
+    // gives a session called `review/iota-mu`, which is nobody, and every relation it has is
+    // wrong. The role in it is dropped here on purpose — it is the caller's own description of
+    // itself and nothing is decided by it.
+    let them = crate::identity::Identity::read(from?)?;
+    if them.project != about.me.project {
         return Some(Whom {
-            project: project.to_owned(),
-            id: id.to_owned(),
+            project: them.project,
+            id: them.id,
             parent: None,
         });
     }
-    Some(whom(project, id))
+    Some(whom(&them.project, &them.id))
 }
 
 /// Two instances, one socket, and a message that actually arrives.
@@ -189,6 +190,7 @@ mod tests {
     fn named(tag: &str, id: &str) -> Identity {
         Identity {
             project: project(tag),
+            role: "main".to_owned(),
             id: id.to_owned(),
         }
     }
