@@ -1,10 +1,34 @@
-# magi
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="misc/magi_alt-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="misc/magi_alt.svg">
+    <img src="misc/magi_alt.svg" alt="magi" width="520">
+  </picture>
+</p>
 
-A coding agent for Linux.
+<p align="center"><em>A coding agent for Linux.</em></p>
 
 Tau's bones, Pi's face: the system is a constellation of POSIX processes over Unix sockets,
 and the terminal experience is Pi's — differential rendering into native scrollback, live
 streaming, an editor-grade prompt.
+
+## The family
+
+Named for the MAGI in *Neon Genesis Evangelion* — three units that reach a decision by voting,
+each running a facet of the same mind. Here they are three programs, in three repositories,
+that talk over sockets and pipes:
+
+| | |
+|---|---|
+| **magi** | this one: the harness — UI, host, providers, tools |
+| **melchior** | the agent layer — sessions talking to sessions, adoption, permissions |
+| **balthasar** | the memory layer — what was said, distilled and recalled |
+| **casper** | tooling and tool APIs. Not yet divided out |
+
+**They are separate programs, not components.** melchior does not know what a harness is, and
+balthasar's Rust never parses magi's types — each one is useful, and testable, with the others
+absent. magi with no melchior is a session with no siblings, which is the ordinary case and not
+an error.
 
 ## Status
 
@@ -43,14 +67,41 @@ make host         # a replay host alone
 make ui           # the UI alone, attaching to it
 ```
 
+## Talking to other sessions
+
+With `melchior` installed, a session can reach the other sessions in the same project. The
+model calls one `agent` tool — `list`, `send`, `inbox`, `reply` — and magi's whole knowledge of
+the layer is one file, `magi-cli/src/melchior.rs`, that spawns it and reads lines.
+
+Two walls decide who can be reached. The **project** wall is the filesystem: another checkout's
+sessions are not refused, they are simply not there. The **instance** wall is the front door: a
+main speaks for its instance, and its subagents are private, so `agent_talk` is `mains` by
+default and `instance` or `project` when you mean otherwise.
+
+A message carries a **sort**, and the sort decides what it may interrupt. `question`, `answer`,
+`attention`, `trouble` and `handoff` wake an idle session; only `attention` and `trouble` may
+reach one mid-turn. Anything arriving during a turn waits, and the whole waiting room is
+answered together by one turn at idle — so ten notes cost one reply, not ten.
+
+One main may ask another to **adopt** it. Consent is a person's: the request surfaces as a
+prompt on the other side, and accepting hands down exactly the grants the parent already holds
+— never more. A child that wants something outside them is refused and told to ask its parent.
+
 ## Layout
 
 | Crate | Role |
 |---|---|
 | `magi-proto` | the wire contract: events, commands, envelope. No I/O |
 | `magi-ipc` | Unix socket transport, length-prefixed CBOR, `SO_PEERCRED` identity |
+| `magi-model` | the provider-neutral message model |
+| `magi-provider` | the HTTP side: streaming, SSE, retries, what each error means |
+| `magi-core` | the turn loop, as an explicit state machine |
+| `magi-tools` | what a tool is, and the three the floor is made of |
+| `magi-lua` | the Lua VM, and the config API it offers `init.lua` |
+| `magi-journal` | an append-only session journal |
+| `magi-host` | the session: the journal, the socket, and the turns |
 | `magi-tui` | rendering: theme, markdown, transcript, editor, status, footer |
-| `magi-cli` | the UI process |
+| `magi-cli` | the UI process, and `melchior.rs` — everything magi knows of the agent layer |
 | `magi-testkit` | fake harness and recordings |
 
 ## Development
@@ -64,13 +115,16 @@ make clippy       # warnings denied
 make verify       # all of it
 ```
 
-The gates are not advisory:
-
 | Gate | Rule |
 |---|---|
 | `gate-file-size` | no `.rs` over 800 lines |
+| `gate-modules` | every `.rs` is reachable from its crate root |
 | `gate-proto-size` | `magi-proto` under 4,000 lines |
 | `gate-reachable` | no crate unreachable from the binary |
+
+`gate-modules` earns its place on its own: a file nobody declares is not a compile error, not a
+warning and not run — it simply is not part of the crate. Two were found at once, each holding
+tests that had silently not run since the commit that moved them.
 
 The gates are not advisory. They exist because Pi carries ~20,000 lines that nothing reaches
 and a 6,549-line god file, and Tau has a 34,875-line one — each of which arrived one
@@ -104,6 +158,8 @@ Everything magi knows about the outside world is Lua, and it all lives in `confi
 |---|---|
 | `config/apis/*.lua` | the wire protocols — how to talk to an endpoint |
 | `config/providers.lua` | the catalog — which endpoints exist and what they offer |
+| `config/tools.lua` | what the model may call, and how each tool is reached |
+| `config/clients/*.lua` | the stubs siblings ship, copied in — `hexe` and `oslo` so far |
 | `config/init.lua` | your settings, and anything you want to add |
 
 `make configs` copies them to `$XDG_CONFIG_HOME/magi/`, where magi reads them. The binary also

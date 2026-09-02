@@ -83,7 +83,7 @@ magi.allow = {
 -- only if it is not on PATH, or to point at a build.
 --
 -- Not installed is not an error. A session without melchior has no name beyond its project and no
--- siblings to talk to, and is otherwise a working session -- the same as aeon being absent.
+-- siblings to talk to, and is otherwise a working session -- the same as balthasar being absent.
 --
 -- magi.melchior = "melchior"
 

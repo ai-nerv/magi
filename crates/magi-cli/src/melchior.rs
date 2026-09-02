@@ -16,7 +16,7 @@
 //!
 //! # melchior being absent is the ordinary case
 //!
-//! Exactly as aeon's is. A session with no melchior has no siblings, no name beyond its project, and
+//! Exactly as balthasar's is. A session with no melchior has no siblings, no name beyond its project, and
 //! no `agent` tool — and is otherwise a working session. Nothing here returns an error for it,
 //! because "you have not installed the other program" is not a thing to fail a session over.
 //!
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn a_missing_melchior_is_a_session_without_siblings() {
-        // The aeon rule: a sibling not being installed is the ordinary case, not a failure.
+        // The balthasar rule: a sibling not being installed is the ordinary case, not a failure.
         // This is the one that decides whether somebody with no melchior can use magi at all.
         assert!(Melchior::start("melchior-that-is-not-installed", "magi", None).is_none());
     }
