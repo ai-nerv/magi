@@ -1,23 +1,23 @@
--- axon's configuration, and its only entry point.
+-- magi's configuration, and its only entry point.
 --
 -- A program, not a data file: it may probe the machine, loop, and branch. Settings are
 -- assigned, descriptions go to a registrar, and the file returns nothing.
 
 -- What runs. Nothing is discovered by scanning: a file not named here does not load.
 -- Clients first — a tool loads its sibling's client library as it declares itself.
-axon.load("clients/hexe.lua")
-axon.load("clients/oslo.lua")
-axon.load("apis.lua")
-axon.load("providers.lua")
-axon.load("tools.lua")
+magi.load("clients/hexe.lua")
+magi.load("clients/oslo.lua")
+magi.load("apis.lua")
+magi.load("providers.lua")
+magi.load("tools.lua")
 
--- Which model to use, as `axon models` prints it.
-axon.model = "anthropic/claude-sonnet-4-5"
+-- Which model to use, as `magi models` prints it.
+magi.model = "anthropic/claude-sonnet-4-5"
 
--- An endpoint of your own, if it speaks a dialect axon already knows. Registration is keyed,
+-- An endpoint of your own, if it speaks a dialect magi already knows. Registration is keyed,
 -- so declaring the same id twice replaces rather than appends.
 --
--- axon.provider("my-box", {
+-- magi.provider("my-box", {
 --   name = "My GPU box",
 --   api = "openai-completions",
 --   base_url = "http://10.0.0.7:8000/v1",
@@ -31,7 +31,7 @@ axon.model = "anthropic/claude-sonnet-4-5"
 -- moved work to the shell, which has no confinement at all. `bwrap` in front of the shell peer
 -- is what actually contains anything.
 --
--- axon.confine = true
+-- magi.confine = true
 
 -- Permissions granted in advance, so they are not asked about. Each rule is a verb — `read`,
 -- `write`, `run`, `reach` — and one width. A rule naming no width grants nothing.
@@ -40,60 +40,60 @@ axon.model = "anthropic/claude-sonnet-4-5"
 --   directory = "/path"    that path and everything under it
 --   program = "git"        any command whose first word is this
 --
--- axon.allow = {
+-- magi.allow = {
 --   { verb = "read",  directory = "/home/you/work" },
 --   { verb = "run",   program = "git" },
 -- }
 
 -- Granted rather than asked, because asking here cannot work.
 --
--- `agent` reaches the other instances through atom, and it is a `command` transport -- so axon
+-- `agent` reaches the other instances through melchior, and it is a `command` transport -- so magi
 -- asks before running it, the way it asks before running `fd` or `ls`. That is right for a
 -- program a config named and wrong for this one, twice over:
 --
 --   * The prompt lands mid-conversation. A sibling asks a question, the turn it started stops
---     on "may I run atom?", and the session that asked is left waiting on a keystroke nobody
+--     on "may I run melchior?", and the session that asked is left waiting on a keystroke nobody
 --     told it about.
 --   * A model that reaches for `agent` and the shell in the same breath raises two prompts at
 --     once, and only one of them fits on the screen. The turn then waits forever for an answer
 --     to a question that was never drawn.
 --
--- Safe to grant because of what is on the other side: atom's surface has no verb that runs
+-- Safe to grant because of what is on the other side: melchior's surface has no verb that runs
 -- anything. It sends messages, reads an inbox, and says who is listening -- deliberately, and
--- its own tests refuse a verb named `run`, `shell`, `exec` or `eval`. Granting `atom` grants
+-- its own tests refuse a verb named `run`, `shell`, `exec` or `eval`. Granting `melchior` grants
 -- the ability to talk to other sessions, which is the whole of what the tool is for.
 --
 -- Take this out and the agent tool starts asking; nothing else changes.
-axon.allow = {
-  { verb = "run", program = "atom" },
+magi.allow = {
+  { verb = "run", program = "melchior" },
 }
 
--- Environment every process axon starts is given, on top of what it inherits. `OSLO_PROFILE`
--- is set to "axon" whether or not this says so, and naming it here overrides that.
+-- Environment every process magi starts is given, on top of what it inherits. `OSLO_PROFILE`
+-- is set to "magi" whether or not this says so, and naming it here overrides that.
 --
--- axon.env = { PAGER = "cat", RUST_LOG = "warn" }
+-- magi.env = { PAGER = "cat", RUST_LOG = "warn" }
 
--- Directories whose `.axon.lua` is as trusted as this file. A project file may otherwise set
+-- Directories whose `.magi.lua` is as trusted as this file. A project file may otherwise set
 -- settings but not declare a provider, a tool or a peer.
 --
--- axon.trusted = { "/home/you/work" }
+-- magi.trusted = { "/home/you/work" }
 
--- The agent layer, as a program. atom is a separate tool, in its own repository: it names this
+-- The agent layer, as a program. melchior is a separate tool, in its own repository: it names this
 -- session, holds the socket the others reach it on, and answers the `agent` tool. Named here
 -- only if it is not on PATH, or to point at a build.
 --
--- Not installed is not an error. A session without atom has no name beyond its project and no
+-- Not installed is not an error. A session without melchior has no name beyond its project and no
 -- siblings to talk to, and is otherwise a working session -- the same as aeon being absent.
 --
--- axon.atom = "atom"
+-- magi.melchior = "melchior"
 
 -- What a session is called, in the name other sessions see: `project/role/id`. Defaults to the
 -- working directory's own name.
 --
--- axon.project = "axon"
+-- magi.project = "magi"
 
 -- How far one session may reach another. Sessions in different projects never can, at any
--- setting; this only widens things inside one project. Handed to atom, which enforces it in
+-- setting; this only widens things inside one project. Handed to melchior, which enforces it in
 -- both the socket and the tool.
 --
 --   "mains"     two sessions started at a terminal can talk to each other, and a subagent can
@@ -101,11 +101,11 @@ axon.allow = {
 --   "instance"  and subagents of the same parent can talk to each other.
 --   "project"   and anything in the project can reach anything else in it.
 --
--- axon.agent_talk = "mains"
+-- magi.agent_talk = "mains"
 
 -- ---------------------------------------------------------------------- the screen
 --
--- Everything the UI draws with is a setting under `axon.ui`. Three kinds:
+-- Everything the UI draws with is a setting under `magi.ui`. Three kinds:
 --
 -- COLOURS are palette indices, 0-255, and mean whatever your terminal says they mean:
 --
@@ -160,16 +160,16 @@ axon.allow = {
 -- on the exact middle needs it to be the same parity as the terminal is wide, so it is widened
 -- by one where it has to be.
 --
-axon.ui.footer_pad   = 3
-axon.ui.beacon_ms    = 2000
-axon.ui.beacon_cells = 9
+magi.ui.footer_pad   = 3
+magi.ui.beacon_ms    = 2000
+magi.ui.beacon_cells = 9
 
 -- The opening scramble: text lands as noise and resolves into itself over `decrypt_ms`
 -- milliseconds. Zero, the built-in, is no effect -- set it to switch the thing on. It runs once,
 -- over the whole screen, and leaves the box and every other frame character alone.
 --
-axon.ui.decrypt_ms = 900
-axon.ui.decrypt_pool = "0#$%&@?*"
+magi.ui.decrypt_ms = 900
+magi.ui.decrypt_pool = "0#$%&@?*"
 
 -- And the box never quite settling: one character in `flicker_odds` glitches to a symbol for
 -- `flicker_ms` and comes back as itself. Zero odds, the built-in, is off. Only inside the prompt
@@ -178,12 +178,12 @@ axon.ui.decrypt_pool = "0#$%&@?*"
 -- `flicker_odds` is one in N, so a BIGGER number is rarer. 3000 is a character every few
 -- seconds; 250 is a fidget.
 --
-axon.ui.flicker_odds = 800
-axon.ui.flicker_ms   = 180
+magi.ui.flicker_odds = 800
+magi.ui.flicker_ms   = 180
 
 -- What the box says when you sit down. Plain, and read once: a joke in this position is a joke
 -- in the way. A fresh one each time the prompt empties.
-axon.ui.openers = {
+magi.ui.openers = {
   "let's build something",
   "what are we making?",
   "let's scan the project",
@@ -205,7 +205,7 @@ axon.ui.openers = {
 -- lines only differ at the end is a family it can only ever retype the tail of. It picks the
 -- closest line it has not shown lately, so a family is found and then left without anything here
 -- having to group them.
-axon.ui.placeholders = {
+magi.ui.placeholders = {
   -- How long it will last
   "this is a temporary fix that will outlive us all",
   "this is a permanent fix that will outlive us all",
@@ -255,13 +255,13 @@ axon.ui.placeholders = {
 -- The time is split evenly across the stages, so give it enough that each one gets a frame or
 -- more: three stages in 300ms is 100ms each against a default `frame_ms` of 80.
 --
-axon.ui.type_reveal_ms = 60
-axon.ui.type_stages    = "·*#"
+magi.ui.type_reveal_ms = 60
+magi.ui.type_stages    = "·*#"
 
 -- For a palette generated by lule, where 1-6 are pigments in chroma order rather than hues and
 -- 232-255 runs black → colour 0 → accent → colour 15 → white:
 --
--- axon.ui = {
+-- magi.ui = {
 --   accent = 1, success = 2, warning = 3, error = 9,
 --   md_heading = 5, md_code = 1, md_code_block = 2, md_quote = 250,
 --   diff_added = 2, diff_removed = 9, diff_context = 250,
@@ -277,10 +277,10 @@ axon.ui.type_stages    = "·*#"
 --   border = 238, scan = 254,
 -- }
 
--- What axon tells the model it is. axon appends the session's facts (directory, platform,
+-- What magi tells the model it is. magi appends the session's facts (directory, platform,
 -- date) and the project's `AGENTS.md`.
-axon.system = [[
-You are axon, a coding agent working in a terminal alongside a person at their computer.
+magi.system = [[
+You are magi, a coding agent working in a terminal alongside a person at their computer.
 
 Do the work rather than describing it. When a change is needed, make it with `edit` or `write`;
 when something needs checking, check it with `read` or `shell`. Prefer reading the code to

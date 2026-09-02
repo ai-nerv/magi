@@ -58,160 +58,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
-name = "axon-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axon-host",
- "axon-ipc",
- "axon-journal",
- "axon-lua",
- "axon-model",
- "axon-proto",
- "axon-provider",
- "axon-testkit",
- "axon-tools",
- "axon-tui",
- "base64",
- "clap",
- "crossterm",
- "ratatui",
- "reqwest",
- "rustix",
- "serde",
- "serde_json",
- "tokio",
- "tokio-stream",
-]
-
-[[package]]
-name = "axon-core"
-version = "0.1.0"
-dependencies = [
- "axon-model",
- "axon-provider",
- "serde_json",
-]
-
-[[package]]
-name = "axon-host"
-version = "0.1.0"
-dependencies = [
- "axon-core",
- "axon-ipc",
- "axon-journal",
- "axon-lua",
- "axon-model",
- "axon-proto",
- "axon-provider",
- "axon-tools",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
-]
-
-[[package]]
-name = "axon-ipc"
-version = "0.1.0"
-dependencies = [
- "axon-proto",
- "ciborium",
- "rustix",
- "serde",
- "thiserror 2.0.20",
- "tokio",
-]
-
-[[package]]
-name = "axon-journal"
-version = "0.1.0"
-dependencies = [
- "axon-proto",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "axon-lua"
-version = "0.1.0"
-dependencies = [
- "axon-model",
- "axon-provider",
- "axon-tools",
- "luna",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "axon-model"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "axon-proto"
-version = "0.1.0"
-dependencies = [
- "axon-model",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "axon-provider"
-version = "0.1.0"
-dependencies = [
- "axon-model",
- "base64",
- "bytes",
- "futures-util",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.20",
- "tokio",
-]
-
-[[package]]
-name = "axon-testkit"
-version = "0.1.0"
-dependencies = [
- "axon-ipc",
- "axon-proto",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "axon-tools"
-version = "0.1.0"
-dependencies = [
- "axon-ipc",
- "axon-model",
- "axon-proto",
- "serde",
- "serde_json",
- "similar",
-]
-
-[[package]]
-name = "axon-tui"
-version = "0.1.0"
-dependencies = [
- "axon-proto",
- "ratatui",
- "serde_json",
- "unicode-width 0.2.0",
-]
-
-[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1050,6 +896,160 @@ dependencies = [
  "ottavino-gc-arena",
  "rand 0.8.8",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "magi-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "clap",
+ "crossterm",
+ "magi-host",
+ "magi-ipc",
+ "magi-journal",
+ "magi-lua",
+ "magi-model",
+ "magi-proto",
+ "magi-provider",
+ "magi-testkit",
+ "magi-tools",
+ "magi-tui",
+ "ratatui",
+ "reqwest",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+]
+
+[[package]]
+name = "magi-core"
+version = "0.1.0"
+dependencies = [
+ "magi-model",
+ "magi-provider",
+ "serde_json",
+]
+
+[[package]]
+name = "magi-host"
+version = "0.1.0"
+dependencies = [
+ "magi-core",
+ "magi-ipc",
+ "magi-journal",
+ "magi-lua",
+ "magi-model",
+ "magi-proto",
+ "magi-provider",
+ "magi-tools",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
+name = "magi-ipc"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "magi-proto",
+ "rustix",
+ "serde",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
+name = "magi-journal"
+version = "0.1.0"
+dependencies = [
+ "magi-proto",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "magi-lua"
+version = "0.1.0"
+dependencies = [
+ "luna",
+ "magi-model",
+ "magi-provider",
+ "magi-tools",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "magi-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "magi-proto"
+version = "0.1.0"
+dependencies = [
+ "magi-model",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "magi-provider"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "bytes",
+ "futures-util",
+ "magi-model",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
+name = "magi-testkit"
+version = "0.1.0"
+dependencies = [
+ "magi-ipc",
+ "magi-proto",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "magi-tools"
+version = "0.1.0"
+dependencies = [
+ "magi-ipc",
+ "magi-model",
+ "magi-proto",
+ "serde",
+ "serde_json",
+ "similar",
+]
+
+[[package]]
+name = "magi-tui"
+version = "0.1.0"
+dependencies = [
+ "magi-proto",
+ "ratatui",
+ "serde_json",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]

@@ -1,17 +1,17 @@
 [workspace]
 members = [
-  "crates/axon-proto",
-  "crates/axon-provider",
-  "crates/axon-host",
-  "crates/axon-ipc",
-  "crates/axon-journal",
-  "crates/axon-lua",
-  "crates/axon-model",
-  "crates/axon-tui",
-  "crates/axon-cli",
-  "crates/axon-core",
-  "crates/axon-testkit",
-  "crates/axon-tools",
+  "crates/magi-proto",
+  "crates/magi-provider",
+  "crates/magi-host",
+  "crates/magi-ipc",
+  "crates/magi-journal",
+  "crates/magi-lua",
+  "crates/magi-model",
+  "crates/magi-tui",
+  "crates/magi-cli",
+  "crates/magi-core",
+  "crates/magi-testkit",
+  "crates/magi-tools",
 ]
 resolver = "3"
 
@@ -31,17 +31,17 @@ todo = "deny"
 unwrap_used = "deny"
 
 [workspace.dependencies]
-axon-host = { path = "crates/axon-host" }
-axon-core = { path = "crates/axon-core" }
-axon-ipc = { path = "crates/axon-ipc" }
-axon-journal = { path = "crates/axon-journal" }
-axon-lua = { path = "crates/axon-lua" }
-axon-model = { path = "crates/axon-model" }
-axon-proto = { path = "crates/axon-proto" }
-axon-provider = { path = "crates/axon-provider" }
-axon-testkit = { path = "crates/axon-testkit" }
-axon-tools = { path = "crates/axon-tools" }
-axon-tui = { path = "crates/axon-tui" }
+magi-host = { path = "crates/magi-host" }
+magi-core = { path = "crates/magi-core" }
+magi-ipc = { path = "crates/magi-ipc" }
+magi-journal = { path = "crates/magi-journal" }
+magi-lua = { path = "crates/magi-lua" }
+magi-model = { path = "crates/magi-model" }
+magi-proto = { path = "crates/magi-proto" }
+magi-provider = { path = "crates/magi-provider" }
+magi-testkit = { path = "crates/magi-testkit" }
+magi-tools = { path = "crates/magi-tools" }
+magi-tui = { path = "crates/magi-tui" }
 
 anyhow = "1.0"
 base64 = "0.22"
@@ -83,7 +83,7 @@ strip = "symbols"
 # Optimised for size, not speed, because none of these is ever in a hot loop.
 #
 # Argument parsing runs once, before the UI exists. The recorded-session harness runs only under
-# `axon fake-host`, which is the demo. The rest are type definitions with a little code attached.
+# `magi fake-host`, which is the demo. The rest are type definitions with a little code attached.
 # Anything that runs per-frame, per-token or per-tool call is deliberately not on this list.
 [profile.release.package.clap_builder]
 opt-level = "z"
@@ -91,9 +91,9 @@ opt-level = "z"
 opt-level = "z"
 [profile.release.package.clap_lex]
 opt-level = "z"
-[profile.release.package.axon-testkit]
+[profile.release.package.magi-testkit]
 opt-level = "z"
-[profile.release.package.axon-proto]
+[profile.release.package.magi-proto]
 opt-level = "z"
-[profile.release.package.axon-model]
+[profile.release.package.magi-model]
 opt-level = "z"

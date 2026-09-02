@@ -1,4 +1,4 @@
--- axon's build, as recipes. This replaced the Makefile; there is no other.
+-- magi's build, as recipes. This replaced the Makefile; there is no other.
 --
 --   make            the recipes, with what each of them says it does
 --   make build      the binary
@@ -23,7 +23,7 @@ local function project()
     local value = line:match("^%s*([^#%[%s]%S*)%s*$")
     if value then found[#found + 1] = value end
   end
-  return found[1] or "axon", found[2] or "0.1.0"
+  return found[1] or "magi", found[2] or "0.1.0"
 end
 
 local NAME, VERSION = project()
@@ -130,16 +130,16 @@ make.recipe{
 
 ---------------------------------------------------------------------------- rust
 
--- The workspace ships one binary, `axon`, and every crate is a library behind it. Recipes name
+-- The workspace ships one binary, `magi`, and every crate is a library behind it. Recipes name
 -- the binary rather than the library: `--lib` builds artifacts nobody runs.
-local BIN = "axon"
-local RECORDING = os.getenv("RECORDING") or "crates/axon-cli/tests/fixtures/hello.jsonl"
+local BIN = "magi"
+local RECORDING = os.getenv("RECORDING") or "crates/magi-cli/tests/fixtures/hello.jsonl"
 
 -- Where a demo host listens. Under `$XDG_RUNTIME_DIR` because a Unix socket path must stay
 -- shorter than SUN_LEN, and a scratch directory path does not.
 local function demo_socket()
   local dir = os.getenv("XDG_RUNTIME_DIR") or "/tmp"
-  return dir .. "/axon-demo.sock"
+  return dir .. "/magi-demo.sock"
 end
 
 local function target_path(release)
@@ -180,8 +180,8 @@ end
 
 -- Say when what is on PATH is older than what was just built.
 --
--- The recurring trap, and it has cost two evenings. `make build` writes into `target/`, `axon`
--- runs whatever is on PATH, and nothing connected the two: you fix a bug, rebuild, run `axon`,
+-- The recurring trap, and it has cost two evenings. `make build` writes into `target/`, `magi`
+-- runs whatever is on PATH, and nothing connected the two: you fix a bug, rebuild, run `magi`,
 -- and watch the bug you just fixed happen again. Both `build` and `configs` say so now, because
 -- each is a moment somebody is about to go and try the thing.
 --
@@ -276,7 +276,7 @@ make.recipe{
 }
 make.alias("r", "run")
 
--- What somebody means by "run it". The daemon is not started here: axon starts its own, for
+-- What somebody means by "run it". The daemon is not started here: magi starts its own, for
 -- this directory, and stops being our business the moment it exists.
 --
 -- `demo` used to be called this, which cost an evening: it replays a recording, so the model
@@ -284,9 +284,9 @@ make.alias("r", "run")
 -- promises the product and delivers a fixture is worse than no recipe at all.
 make.recipe{
   name = "run",
-  desc = "axon, for real, in the current directory",
+  desc = "magi, for real, in the current directory",
   params = {
-    { "--prompt", desc = "submit this on start, as `axon \"...\"` does" },
+    { "--prompt", desc = "submit this on start, as `magi \"...\"` does" },
   },
   run = function(a)
     build_binary(false)
@@ -348,15 +348,15 @@ make.recipe{
 
 ---------------------------------------------------------------- configuration
 
--- axon's own configuration lives in `config/`, and this installs it: `config/*` becomes
--- `~/.config/axon/*`. The binary carries a copy of the same files, so a fresh install already
+-- magi's own configuration lives in `config/`, and this installs it: `config/*` becomes
+-- `~/.config/magi/*`. The binary carries a copy of the same files, so a fresh install already
 -- speaks and already has a catalog; this is how you get the real ones to edit.
 --
 -- The same shape as hexe's and oslo's `configs` recipe, deliberately: three tools that install
 -- their configuration three different ways is three things to remember.
 make.recipe{
   name = "configs",
-  desc = "install config/ into $XDG_CONFIG_HOME/axon",
+  desc = "install config/ into $XDG_CONFIG_HOME/magi",
   params = {
     { "--dest", desc = "somewhere other than the config directory" },
     { "--keep", flag = true, desc = "leave installed files you have edited alone" },
@@ -436,11 +436,11 @@ make.recipe{
       for _, path in ipairs(kept) do print(dim("   " .. path)) end
     end
 
-    -- Installed, then read back. axon loads its own configuration, so a file that will not run
+    -- Installed, then read back. magi loads its own configuration, so a file that will not run
     -- is worth knowing about now rather than the next time a daemon starts and quietly falls
     -- back to what it was compiled with.
     --
-    -- Read back from the config directory rather than from wherever this was run. `.axon.lua` is
+    -- Read back from the config directory rather than from wherever this was run. `.magi.lua` is
     -- looked for in the working directory, so checking from inside a checkout also loaded that
     -- checkout's project file and printed its refusals: three warnings about this repository, on
     -- every install, saying nothing about what was installed.

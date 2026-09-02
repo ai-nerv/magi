@@ -1,1 +1,0 @@
-axon.theme = "dark"

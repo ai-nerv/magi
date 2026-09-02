@@ -1,0 +1,1 @@
+magi.theme = "dark"

@@ -1,7 +1,7 @@
 *.exe
 *.test
 *.out
-/axon
+/magi
 /coverage.out
 /bin
 /build

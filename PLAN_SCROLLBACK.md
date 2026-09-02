@@ -1,4 +1,4 @@
-# axon — the scrollback, moved out
+# magi — the scrollback, moved out
 
 > The other half of `memo`'s §3.7. Written from memo's side, for whoever implements this one.
 > memo's half is built: the store, the verbs, and the tests are in `../memo` at `5a4dd7b`+.
@@ -7,7 +7,7 @@
 
 ## What is being decided
 
-axon stops keeping a journal. `memo` becomes the only copy of what was said, and axon **cannot
+magi stops keeping a journal. `memo` becomes the only copy of what was said, and magi **cannot
 start a session without it**.
 
 This reverses the recommendation in memo's `PLAN.md` §3.7, which argued for keeping the journal
@@ -38,7 +38,7 @@ retention policy nowhere to bite.
 The scrollback is opened with `PRAGMA synchronous = FULL`, not the WAL default of `NORMAL`.
 NORMAL can lose the last transactions to a power cut while keeping the database consistent —
 the right trade for a cache and the wrong one for the only copy. **This is stronger than what
-`axon-journal` does today**, which flushes but does not `fsync` (`Journal::append` calls
+`magi-journal` does today**, which flushes but does not `fsync` (`Journal::append` calls
 `writer.flush()`; see its own comment about why per-token fsync would be ruinous).
 
 ---
@@ -63,12 +63,12 @@ means *append* should not be told apart by whether a row happened to exist.
 
 ## 3. The turn shape
 
-What axon sends. Everything but `cursor` is optional, and `raw` is the one that matters.
+What magi sends. Everything but `cursor` is optional, and `raw` is the one that matters.
 
 ```jsonc
 {
   "entry":  "e-7a1f",        // which message this block is part of. Blocks share it.
-  "cursor": 41,              // axon's own numbering. memo never renumbers.
+  "cursor": 41,              // magi's own numbering. memo never renumbers.
   "at":     1756600000,      // unix seconds. defaults to memo's clock.
   "role":   "assistant",     // user | assistant | tool
   "kind":   "prose",         // prose | thinking | tool_call | tool_result | summary
@@ -79,17 +79,17 @@ What axon sends. Everything but `cursor` is optional, and `raw` is the one that 
 }
 ```
 
-**`raw` is the contract.** Send the serialised `axon_proto::Record` — the same line the journal
+**`raw` is the contract.** Send the serialised `magi_proto::Record` — the same line the journal
 would have written. memo keeps it as an opaque string, hands it back byte for byte on `replay`,
 and has no idea what an `Entry` is. That is what keeps memo's commitment 1 intact while it holds
-axon's only copy: a second harness with entirely different records needs no change in memo.
+magi's only copy: a second harness with entirely different records needs no change in memo.
 
 Either a JSON object or a pre-serialised string is accepted; both come back identically.
 
 `text` exists so memo can quote a turn in `memo why` and search one. It is a projection, not the
 record — losing it costs a nicer diagnostic, not a session.
 
-### Mapping `axon_proto::Entry`
+### Mapping `magi_proto::Entry`
 
 `Record` is `{"record":"entry","cursor":N,"entry":{…}}`, and `Entry` is internally tagged on
 `type`, snake_case. Six variants, and only five of them ever reach here:
@@ -144,10 +144,10 @@ Four, and they are the whole of it.
 
 **Acknowledge before proceeding.** `observe` returning is the only signal that a turn is safe.
 Do not render it as settled, do not advance the cursor, do not start the next turn until it
-does. Fire-and-forget was correct when axon had its own journal and is data loss now.
+does. Fire-and-forget was correct when magi had its own journal and is data loss now.
 
 **Refuse to start rather than start without it.** If `memo` cannot be reached at session open,
-axon must say so and stop. A session that begins and cannot persist is worse than one that never
+magi must say so and stop. A session that begins and cannot persist is worse than one that never
 began: the person will have said things to it.
 
 **Allocate cursors from `resume`.** On restart, ask `resume` first and continue from `next`.
@@ -155,7 +155,7 @@ Guessing overwrites a turn that nothing else holds a copy of.
 
 **One writer per session.** `(session, cursor)` is the primary key and last write wins. Two
 daemons on one session will silently interleave. `SO_PEERCRED` identifies the caller but does
-not exclude a second one — if two axons can hold one session, that is axon's lock to take.
+not exclude a second one — if two magi sessions can hold one session, that is magi's lock to take.
 
 ---
 
@@ -174,7 +174,7 @@ cursor = held.next
 
 `replay` answers in cursor order, final form. A turn memo holds no `raw` for is **skipped, not
 invented** — a replay that made something up would be worse than a short one, so a `raw` missing
-here is a bug on axon's side to find, not a hole for memo to paper over.
+here is a bug on magi's side to find, not a hole for memo to paper over.
 
 The existing view logic is unaffected. `context.rs` rebuilds the provider conversation from
 entries and does not care where they came from; `Branch` and `Compaction` still resolve as views
@@ -182,15 +182,15 @@ over what `replay` returns.
 
 ---
 
-## 6. What axon can delete, and what it must not
+## 6. What magi can delete, and what it must not
 
 **Can go:** the JSONL files, `paths::latest_for`, `Journal::open`'s recovery path, the
 torn-tail truncation.
 
 **Must stay:** `Record` and `Entry` — they are still the serialisation, they just land somewhere
-else. `Cursor` allocation stays axon's. `context.rs` is untouched.
+else. `Cursor` allocation stays magi's. `context.rs` is untouched.
 
-**Worth keeping anyway:** `axon-journal`'s conformance tests. They describe what a transcript
+**Worth keeping anyway:** `magi-journal`'s conformance tests. They describe what a transcript
 has to survive, and they are now describing memo's job.
 
 ---
@@ -213,11 +213,11 @@ answering emptily.
 
 ---
 
-## 8. Two things to settle before writing any axon code
+## 8. Two things to settle before writing any magi code
 
 **Retention.** Nothing prunes the scrollback yet. A year of sessions is a large file and there is
 no policy for it — by age, by session count, or never. Memory decay does not touch it, by
 design.
 
-**Concurrency.** Rule four above is unenforced. If two axon daemons can ever hold one session,
-decide now whether the lock is axon's or memo's, because retrofitting it means a schema change.
+**Concurrency.** Rule four above is unenforced. If two magi daemons can ever hold one session,
+decide now whether the lock is magi's or memo's, because retrofitting it means a schema change.

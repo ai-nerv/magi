@@ -1,0 +1,15 @@
+[package]
+name = "magi-tui"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+magi-proto.workspace = true
+ratatui.workspace = true
+unicode-width.workspace = true
+
+[lints]
+workspace = true

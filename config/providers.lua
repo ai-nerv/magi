@@ -1,16 +1,16 @@
--- The provider catalog: an ordinary axon config, not a data file with its own parser.
+-- The provider catalog: an ordinary magi config, not a data file with its own parser.
 --
 -- `api` names a wire protocol, not a vendor. `base_url` is omitted where the endpoint comes from
 -- configuration. Costs are dollars per million tokens.
 --
 -- **`discover = true` asks the provider what it offers** instead of listing it here. What comes
--- back is cached under `$XDG_CACHE_HOME/axon/models/` and refreshed daily; it is never written
+-- back is cached under `$XDG_CACHE_HOME/magi/models/` and refreshed daily; it is never written
 -- back into this file. A provider that lists `models` is taken at its word and never asked.
 --
 -- Eight providers, because eight is what gets used. Adding another is a dozen lines; carrying
 -- forty that nobody has a key for is a catalog nobody reads.
 
-axon.provider("anthropic", {
+magi.provider("anthropic", {
   name = "Anthropic",
   api = "anthropic-messages",
   base_url = "https://api.anthropic.com",
@@ -22,7 +22,7 @@ axon.provider("anthropic", {
   },
 })
 
-axon.provider("github-copilot", {
+magi.provider("github-copilot", {
   name = "GitHub Copilot",
   api = "anthropic-messages",
   base_url = "https://api.individual.githubcopilot.com",
@@ -32,7 +32,7 @@ axon.provider("github-copilot", {
   },
 })
 
-axon.provider("openai", {
+magi.provider("openai", {
   name = "OpenAI",
   api = "openai-responses",
   base_url = "https://api.openai.com/v1",
@@ -45,7 +45,7 @@ axon.provider("openai", {
   },
 })
 
-axon.provider("google", {
+magi.provider("google", {
   name = "Google",
   api = "google-generative-ai",
   base_url = "https://generativelanguage.googleapis.com/v1beta",
@@ -56,7 +56,7 @@ axon.provider("google", {
   },
 })
 
-axon.provider("openrouter", {
+magi.provider("openrouter", {
   name = "OpenRouter",
   api = "openai-completions",
   base_url = "https://openrouter.ai/api/v1",
@@ -67,7 +67,7 @@ axon.provider("openrouter", {
   discover = true,
 })
 
-axon.provider("deepseek", {
+magi.provider("deepseek", {
   name = "DeepSeek",
   api = "openai-completions",
   base_url = "https://api.deepseek.com",
@@ -79,7 +79,7 @@ axon.provider("deepseek", {
   },
 })
 
-axon.provider("zai", {
+magi.provider("zai", {
   name = "Z.AI",
   api = "openai-completions",
   base_url = "https://api.z.ai/api/coding/paas/v4",
@@ -90,7 +90,7 @@ axon.provider("zai", {
   },
 })
 
-axon.provider("ollama", {
+magi.provider("ollama", {
   name = "Ollama",
   api = "openai-completions",
   base_url = "http://localhost:11434/v1",
