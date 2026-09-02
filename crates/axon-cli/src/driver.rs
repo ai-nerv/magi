@@ -102,10 +102,10 @@ pub async fn run(
     if let Some(reading) = layer.as_mut().and_then(crate::atom::Atom::hearing) {
         std::thread::spawn(move || {
             use std::io::BufRead;
-            for line in std::io::BufReader::new(reading)
-                .lines()
-                .map_while(Result::ok)
-            {
+            // Already buffered, and handed over as the reader for that reason: the line that
+            // named this session was read through it, and whatever followed the newline is
+            // sitting in it. Wrapping the raw pipe again here would have thrown that away.
+            for line in reading.lines().map_while(Result::ok) {
                 // A line this build cannot read is a newer atom, not a reason to stop reading:
                 // the next one may well be a message, and dropping the whole pipe over a field
                 // nobody here knows about would lose it.

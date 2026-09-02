@@ -77,6 +77,15 @@ pub enum Heard {
 pub struct Atom {
     child: Child,
     told: Option<ChildStdin>,
+    /// What atom is saying, from the line after the one that named this session.
+    ///
+    /// **The reader, not the pipe.** Reading the first line needs a buffer, and a buffer holds
+    /// whatever came after the newline it stopped at — so handing back the raw `ChildStdout`
+    /// and making the caller wrap it again drops however much of the next message was already
+    /// in there. It was worse than that: taking the pipe out of the child to read one line and
+    /// then letting the reader fall out of scope *closed* it, and the session heard the line
+    /// that named it and then nothing, for as long as it ran.
+    hears: Option<BufReader<std::process::ChildStdout>>,
     /// The program this one was started from, for the one-shot calls that go beside the pipe.
     program: String,
     /// What this session ended up being called.
@@ -132,6 +141,7 @@ impl Atom {
             Self {
                 child,
                 told,
+                hears: Some(reading),
                 program: program.to_owned(),
                 named,
             },
@@ -148,9 +158,12 @@ impl Atom {
         briefing(&self.program, text, project)
     }
 
-    /// The stdout to read arrivals from, taken once.
-    pub fn hearing(&mut self) -> Option<std::process::ChildStdout> {
-        self.child.stdout.take()
+    /// What atom is saying, taken once, for a thread to read to the end of.
+    ///
+    /// Taken rather than borrowed because reading it blocks, and everything else here happens on
+    /// the frame loop.
+    pub fn hearing(&mut self) -> Option<BufReader<std::process::ChildStdout>> {
+        self.hears.take()
     }
 
     /// Tell atom what this session is doing.
@@ -267,5 +280,180 @@ mod tests {
         // rather than land in the nearest arm — an unknown line read as a `message` would put
         // something in the transcript that nobody said.
         assert!(serde_json::from_str::<Heard>(r#"{"heard":"whistling","tune":"…"}"#).is_err());
+    }
+
+    /// A second session in the same project, so there is somebody to be talked to.
+    ///
+    /// A bare child rather than another [`Atom`], on purpose: if the thing under test is broken,
+    /// the fixture must not be broken the same way.
+    fn a_sibling(project: &str) -> Option<(std::process::Child, String)> {
+        let mut child = Command::new("atom")
+            .args(["serve", "--project", project])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let mut said = String::new();
+        BufReader::new(child.stdout.as_mut()?)
+            .read_line(&mut said)
+            .ok()?;
+        let named = said
+            .split("\"as\":\"")
+            .nth(1)?
+            .split('"')
+            .next()?
+            .to_owned();
+        Some((child, named))
+    }
+
+    /// The three that tell a spawned process which session it is speaking as.
+    fn as_session(command: &mut Command, named: &str) {
+        let mut parts = named.split('/');
+        command
+            .env("ATOM_PROJECT", parts.next().unwrap_or_default())
+            .env("ATOM_ROLE", parts.next().unwrap_or_default())
+            .env("ATOM_ID", parts.next().unwrap_or_default());
+    }
+
+    /// The last segment, which is what a sibling is addressed by inside one project.
+    fn id_of(named: &str) -> &str {
+        named.rsplit('/').next().unwrap_or_default()
+    }
+
+    #[test]
+    fn a_session_keeps_hearing_after_the_line_that_named_it() {
+        // The bug this is here for, and it is the whole feature: `start` read the first line
+        // through a reader it then dropped, which closed the pipe. The name arrived, the session
+        // looked healthy, and no message ever reached the transcript again -- one line heard,
+        // then silence, with nothing anywhere saying so.
+        let project = format!("axon-hears-{}", std::process::id());
+        let Some((mut layer, _at)) = Atom::start("atom", &project, None) else {
+            eprintln!("atom is not installed; skipping");
+            return;
+        };
+        let me = layer.named.clone();
+        assert!(!me.is_empty(), "the layer must name the session");
+
+        let mut heard = layer
+            .hearing()
+            .expect("the pipe is gone after start: nothing could ever arrive");
+
+        let Some((mut them, theirs)) = a_sibling(&project) else {
+            eprintln!("atom is not installed; skipping");
+            return;
+        };
+        let mut sending = Command::new("atom");
+        sending.args([
+            "tool",
+            "--verb",
+            "send",
+            "--who",
+            id_of(&me),
+            "--message",
+            "second line",
+        ]);
+        as_session(&mut sending, &theirs);
+        let sent = sending.output().expect("atom tool runs");
+        assert!(
+            sent.status.success(),
+            "the send failed: {}",
+            String::from_utf8_lossy(&sent.stderr)
+        );
+
+        // Past the roster, which atom publishes whenever the set of sessions changes.
+        let mut line = String::new();
+        while heard.read_line(&mut line).is_ok_and(|read| read > 0) {
+            if line.contains("\"message\"") {
+                break;
+            }
+            line.clear();
+        }
+        let _ = them.kill();
+        assert!(
+            line.contains("second line") && line.contains(&theirs),
+            "the session heard: {line:?}"
+        );
+        // And it is the shape the driver turns into an entry, not merely text that mentions it.
+        let said: Heard = serde_json::from_str(line.trim()).expect("a line axon can read");
+        let Heard::Message { who, text, .. } = said else {
+            panic!("not a message: {line}");
+        };
+        assert_eq!(who, theirs);
+        assert_eq!(text, "second line");
+    }
+
+    #[test]
+    fn a_session_hears_every_message_rather_than_the_first() {
+        // A pipe read once is not a pipe read: the failure that started this looked exactly like
+        // a working session until the second thing arrived.
+        let project = format!("axon-again-{}", std::process::id());
+        let Some((mut layer, _at)) = Atom::start("atom", &project, None) else {
+            return;
+        };
+        let me = layer.named.clone();
+        let mut heard = layer.hearing().expect("the pipe");
+        let Some((mut them, theirs)) = a_sibling(&project) else {
+            return;
+        };
+
+        for what in ["one", "two", "three"] {
+            let mut sending = Command::new("atom");
+            sending.args([
+                "tool",
+                "--verb",
+                "send",
+                "--who",
+                id_of(&me),
+                "--message",
+                what,
+            ]);
+            as_session(&mut sending, &theirs);
+            assert!(sending.output().expect("runs").status.success());
+        }
+
+        let mut seen = Vec::new();
+        let mut line = String::new();
+        while seen.len() < 3 && heard.read_line(&mut line).is_ok_and(|read| read > 0) {
+            if let Ok(Heard::Message { text, .. }) = serde_json::from_str::<Heard>(line.trim()) {
+                seen.push(text);
+            }
+            line.clear();
+        }
+        let _ = them.kill();
+        assert_eq!(seen, ["one", "two", "three"], "it stopped listening");
+    }
+
+    #[test]
+    fn what_the_session_is_doing_keeps_reaching_the_layer() {
+        // The other direction, and the same failure mode: a channel that looks fine because the
+        // first write succeeded. A sibling asking `status` is told whatever was last said, so
+        // one that died after a message reads as a session frozen mid-turn forever.
+        let project = format!("axon-doing-{}", std::process::id());
+        let Some((mut layer, _at)) = Atom::start("atom", &project, None) else {
+            return;
+        };
+        let me = layer.named.clone();
+        layer.doing(false, 0, 0);
+        layer.doing(true, 41, 2);
+
+        let Some((mut them, theirs)) = a_sibling(&project) else {
+            return;
+        };
+        let mut asking = Command::new("atom");
+        asking.args(["tool", "--verb", "status", "--who", id_of(&me)]);
+        as_session(&mut asking, &theirs);
+        let asked = asking.output().expect("atom tool runs");
+        let _ = them.kill();
+        let said = String::from_utf8_lossy(&asked.stdout).into_owned();
+        assert!(
+            asked.status.success(),
+            "{}",
+            String::from_utf8_lossy(&asked.stderr)
+        );
+        assert!(
+            said.contains("41") || said.contains("working"),
+            "the layer answered with the state at startup: {said}"
+        );
     }
 }

@@ -558,7 +558,21 @@ async fn after(session: Arc<Mutex<Session>>, worker: Arc<worker::Worker>) {
 /// Whether a message that arrived is one the session should answer rather than merely have read.
 ///
 /// The sender chose, by which verb they used. A note is something to have seen by the time you
-/// next reply; a question, a call for help, or a report that something has gone wrong is not.
+/// next reply; a question, an answer to one you asked, a call for help, work handed to you, or a
+/// report that something has gone wrong is not.
+///
+/// **Not the same question as "may this interrupt".** A running turn is interrupted only by
+/// `attention` and `trouble`, and the layer decides that. This is the other one: an *idle*
+/// session, and whether what just arrived is a reason to think. Answering it too narrowly is
+/// silent — nothing fails, the entry is in the transcript, and the session simply sits there.
+///
+/// That is what left `ask` a one-way trip. `ask` sends a `question`, which woke the receiver;
+/// `reply` sends an `answer`, which was not on this list, so the reply reached the asker's
+/// transcript and nothing ran. Two agents got exactly one exchange and then stopped, and the
+/// only symptom was silence.
+///
+/// `claim` and `release` stay off it on purpose: they say what somebody else is doing, and a
+/// session that started a turn over every one of them would spend the day on bookkeeping.
 ///
 /// **The one place that decides.** It was two: the UI worked it out from its own `Sort` enum and
 /// put the answer on the wire, and this worked it out again from the string. Two rules for one
@@ -566,7 +580,10 @@ async fn after(session: Arc<Mutex<Session>>, worker: Arc<worker::Worker>) {
 /// to one would just quietly stop waking anybody.
 #[must_use]
 pub fn wants_answering(entry: &Entry) -> bool {
-    matches!(entry, Entry::From { sort, .. } if matches!(sort.as_str(), "question" | "attention" | "trouble"))
+    matches!(entry, Entry::From { sort, .. } if matches!(
+        sort.as_str(),
+        "question" | "answer" | "attention" | "trouble" | "handoff"
+    ))
 }
 
 /// Publish an error to whoever is attached.

@@ -88,3 +88,73 @@ mod waiting_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+/// Which arrivals make an idle session think, and which only make it better informed.
+///
+/// The rule that decides whether two agents can hold a conversation at all. It is invisible when
+/// wrong: the entry is committed either way, so a session that should have answered just sits
+/// there looking idle, and nothing anywhere reports a problem.
+#[cfg(test)]
+mod waking {
+    use axon_proto::Entry;
+
+    fn arrived(sort: &str) -> Entry {
+        Entry::From {
+            who: "axon/main/beta-nu".to_owned(),
+            kin: "main".to_owned(),
+            sort: sort.to_owned(),
+            text: "…".to_owned(),
+        }
+    }
+
+    #[test]
+    fn an_answer_to_a_question_this_session_asked_starts_a_turn() {
+        // The bug this is here for, and it is the whole of "they talk once and then stop".
+        // `ask` sends a question and wakes the receiver; `reply` sends an answer, which did not
+        // wake the asker — so the reply landed in the transcript and nothing ran. Every
+        // conversation was exactly one exchange long.
+        assert!(
+            crate::wants_answering(&arrived("answer")),
+            "a reply must resume the session that asked, or `ask` is a one-way trip"
+        );
+    }
+
+    #[test]
+    fn work_handed_over_starts_a_turn() {
+        // `handoff` is "this is yours now" — a piece of work moved, not copied. A session that
+        // does not wake for it is one where the work simply stops, with both sides believing
+        // the other has it.
+        assert!(crate::wants_answering(&arrived("handoff")));
+    }
+
+    #[test]
+    fn being_asked_or_called_on_starts_a_turn() {
+        for sort in ["question", "attention", "trouble"] {
+            assert!(crate::wants_answering(&arrived(sort)), "{sort}");
+        }
+    }
+
+    #[test]
+    fn a_note_is_read_by_the_time_you_next_answer_rather_than_now() {
+        // The other half of the rule, and it has to hold: a session that starts a turn for
+        // everything that arrives is one nobody leaves running.
+        for sort in ["note", "claim", "release"] {
+            assert!(!crate::wants_answering(&arrived(sort)), "{sort}");
+        }
+    }
+
+    #[test]
+    fn a_sort_from_a_newer_layer_does_not_start_a_turn_by_accident() {
+        // The two programs are released apart. An unknown sort is committed and read like a
+        // note, which is the safe end of that: waking for something nobody here understands
+        // would have a session answering messages it cannot interpret.
+        assert!(!crate::wants_answering(&arrived("whistling")));
+    }
+
+    #[test]
+    fn nothing_that_is_not_a_message_wakes_anybody() {
+        assert!(!crate::wants_answering(&Entry::Notice {
+            text: "…".to_owned(),
+        }));
+    }
+}
