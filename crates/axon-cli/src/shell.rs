@@ -208,7 +208,11 @@ fn name_of(command: &str) -> String {
 /// the whole 600-second timeout. Tau's shell extension runs on a pty for the same reason.
 ///
 /// A terminal is also what makes a shell answer "yes" to *am I interactive*, which is what loads
-/// aliases and functions in the first place.
+/// aliases and functions in the first place — and it is why `TERM` is set to `dumb` on the way
+/// in. The shell is interactive here in the sense that matters (it reads commands and keeps its
+/// state) and not in the sense that does not (nobody is looking at it), and `dumb` is how that
+/// second half is said. A shell that draws a prompt anyway pays for it on every keystroke of
+/// every command written into it, which is slow enough to read as a hang.
 fn open_pty() -> anyhow::Result<(OwnedFd, OwnedFd)> {
     use rustix::pty::OpenptFlags;
     let controller = rustix::pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY)?;

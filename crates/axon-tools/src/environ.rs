@@ -10,11 +10,19 @@ use std::process::Command;
 
 /// What is set whether or not anybody asked.
 ///
-/// `OSLO_PROFILE` tells the shell which profile to load. Axon's shell is not an interactive one
-/// and should not read the profile a person wrote for theirs — a prompt, a pager, a greeting are
-/// noise in a tool's output at best and a hang at worst. Mandatory rather than a default a config
-/// could forget: a session that silently sourced the wrong profile is one where every command
-/// returns something slightly wrong.
+/// `OSLO_PROFILE` names the **history and tracking store** a shell records into — nothing more.
+/// Setting it keeps what an agent ran out of the history a person scrolls back through, and keeps
+/// it *somewhere*, which is worth having: `oslo history` under this name is the log of what the
+/// agent did.
+///
+/// It was documented here as choosing which profile to *load*, and used as though setting it made
+/// the shell non-interactive. It does not, and believing it did hid a real problem for a while —
+/// the shell came up with the person's full prompt, redrawing on every keystroke of a command
+/// written into it. What a shell should not do when nothing is watching is said by `TERM=dumb`,
+/// which the shell peer sets on the terminal it opens.
+///
+/// Mandatory rather than a default a config could forget: an agent's commands landing in a
+/// person's own history is a thing they would have to notice before they could object to it.
 pub const ALWAYS: &[(&str, &str)] = &[("OSLO_PROFILE", "axon")];
 
 /// Apply axon's environment to `command`.
