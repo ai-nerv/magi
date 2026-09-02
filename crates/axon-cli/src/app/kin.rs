@@ -120,3 +120,113 @@ mod tests {
         assert_eq!(kin, "myself");
     }
 }
+
+impl App {
+    /// Another session is asking to become this one's child.
+    ///
+    /// Put to the person, not to the model. Accepting means this session's authority is lent to
+    /// another — what the child may then do is what this session may do — and a model deciding
+    /// that on its own behalf would be granting itself a second pair of hands.
+    ///
+    /// The same picker a permission uses, deliberately: it is the same kind of question, asked of
+    /// the same person, and a second modal shape for it would be one more thing to recognise
+    /// under pressure. Where the answer *goes* is what differs, and that is
+    /// [`Picking::Adoption`](super::Picking::Adoption)'s job.
+    pub fn asked_to_adopt(&mut self, id: &str, who: &str, why: &str) {
+        let them = who.rsplit('/').next().unwrap_or(who);
+        // Their words, and marked as theirs. A reason printed bare reads as though the session
+        // were saying it, and this is the one part of the question somebody else wrote.
+        let detail = if why.trim().is_empty() {
+            "no reason given".to_owned()
+        } else {
+            format!("“{}”", why.trim())
+        };
+        self.overlay = Some(
+            axon_tui::picker::Picker::new(
+                format!("`{them}` asks to work under this session — {detail}"),
+                vec![
+                    axon_tui::picker::Choice {
+                        value: "yes".to_owned(),
+                        detail: "it becomes this session's child, and may do what this may"
+                            .to_owned(),
+                        ready: true,
+                    },
+                    axon_tui::picker::Choice {
+                        value: "no".to_owned(),
+                        detail: "refuse, and tell them so".to_owned(),
+                        ready: true,
+                    },
+                ],
+                None,
+            )
+            .into(),
+        );
+        self.picking = Some(super::Picking::Adoption { id: id.to_owned() });
+    }
+}
+
+/// Being asked to take a session on is put to the person, and answered either way.
+#[cfg(test)]
+mod adopting {
+
+    /// The heading the person actually reads.
+    fn titled(app: &App) -> String {
+        match app.overlay.as_ref() {
+            Some(axon_tui::overlay::Overlay::Picker(picker)) => picker.title.clone(),
+            _ => String::new(),
+        }
+    }
+    use super::*;
+
+    fn app() -> App {
+        let mut app = App::new();
+        app.named = "axum/main/alpha-rho".to_owned();
+        app
+    }
+
+    #[test]
+    fn the_question_takes_the_screen_and_says_who_is_asking() {
+        let mut app = app();
+        app.asked_to_adopt("r1", "axum/main/beta-nu", "I am running the migration");
+        let Some(crate::app::Picking::Adoption { id }) = app.picking.as_ref() else {
+            panic!("the request must be remembered, or the answer has nothing to name");
+        };
+        assert_eq!(id, "r1");
+        assert!(app.overlay.is_some(), "nothing was put in front of anybody");
+    }
+
+    #[test]
+    fn their_reason_is_shown_as_theirs() {
+        // The one part of the question somebody else wrote. Printed bare it reads as though
+        // this session were saying it, and a person deciding whether to lend their authority
+        // should see whose words they are weighing.
+        let mut app = app();
+        app.asked_to_adopt("r1", "axum/main/beta-nu", "I am running the migration");
+        let shown = titled(&app);
+        assert!(shown.contains("beta-nu"), "{shown}");
+        assert!(shown.contains("running the migration"), "{shown}");
+    }
+
+    #[test]
+    fn a_request_with_no_reason_still_says_so() {
+        // Rather than an empty pair of quotes, which reads as a rendering fault.
+        let mut app = app();
+        app.asked_to_adopt("r1", "axum/main/beta-nu", "   ");
+        assert!(titled(&app).contains("no reason given"), "{}", titled(&app));
+    }
+
+    #[test]
+    fn accepting_is_not_something_a_model_can_reach() {
+        // The whole reason this goes up the pipe rather than into the transcript. A model that
+        // could accept on its own behalf would be granting itself a second pair of hands, and
+        // the only thing that answers this is a keypress.
+        let mut app = app();
+        app.asked_to_adopt("r1", "axum/main/beta-nu", "why");
+        // An arrival is what a model sees, and it does not touch the pending request.
+        let _ = app.received("axum/main/gamma-xi", "note", "unrelated");
+        assert!(
+            matches!(app.picking, Some(crate::app::Picking::Adoption { .. })),
+            "a message changed a question only a person may answer"
+        );
+    }
+}

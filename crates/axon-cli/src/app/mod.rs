@@ -48,6 +48,16 @@ pub enum Picking {
         /// The widths, in the order they were offered.
         offers: Vec<axon_proto::permit::Scope>,
     },
+    /// Whether another session may become this one's child.
+    ///
+    /// Not a [`Permission`](Self::Permission) even though it looks like one on screen, and the
+    /// difference is where the answer goes: a permission unblocks a turn over this session's own
+    /// socket, and this goes down the pipe to atom, which is holding a request another session
+    /// is waiting on. Same picker, two entirely different destinations.
+    Adoption {
+        /// Which request, as atom named it.
+        id: String,
+    },
 }
 
 /// Everything the UI knows.

@@ -71,6 +71,19 @@ pub enum Heard {
     },
     /// Somebody with the right to stop this session did.
     Stopped,
+    /// Another session is asking to become this one's child, and a person has to answer.
+    ///
+    /// Up the pipe rather than into the transcript, because it is not the model's to answer. It
+    /// decides whether another session may act with this one's authority, and a model that could
+    /// accept on its own behalf would be granting itself a second pair of hands.
+    Asked {
+        /// The request, quoted back when it is answered.
+        id: String,
+        /// Who is asking, as `project/role/id`.
+        who: String,
+        /// Why, in their words — the whole of what the person has to go on.
+        why: String,
+    },
 }
 
 /// A running atom, and the pipe back to it.
@@ -182,6 +195,20 @@ impl Atom {
         });
         // Best effort. atom having gone away is a session without siblings, and taking the UI
         // down over it would be the tail wagging the dog.
+        let _ = writeln!(told, "{line}");
+        let _ = told.flush();
+    }
+
+    /// Say what the person decided about a request this session was asked to answer.
+    ///
+    /// Sent whichever way they answered. A refusal that went back as silence is one the asking
+    /// session cannot tell from an answer that never came, so it would wait for good — and the
+    /// person who said no would have no way to know it had not landed.
+    pub fn answered(&mut self, id: &str, accept: bool) {
+        let Some(told) = self.told.as_mut() else {
+            return;
+        };
+        let line = serde_json::json!({ "say": "answered", "id": id, "accept": accept });
         let _ = writeln!(told, "{line}");
         let _ = told.flush();
     }

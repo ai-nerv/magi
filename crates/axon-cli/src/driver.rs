@@ -254,6 +254,21 @@ pub async fn run(
                                 dirty = true;
                             }
                             Action::Chose(value) => {
+                                // Answered down the pipe, not over the socket, so it is taken
+                                // before the list that turns a choice into a `UiCommand`. atom
+                                // is holding a request another session is blocked on; this
+                                // session's own turn loop knows nothing about it.
+                                if let Some(crate::app::Picking::Adoption { id }) =
+                                    app.picking.as_ref()
+                                {
+                                    let (id, accept) = (id.clone(), value == "yes");
+                                    app.picking = None;
+                                    if let Some(layer) = layer.as_mut() {
+                                        layer.answered(&id, accept);
+                                    }
+                                    dirty = true;
+                                    continue;
+                                }
                                 let command = match app.picking.take() {
                                     Some(crate::app::Picking::Thinking) => {
                                         UiCommand::SetThinking { level: value }
@@ -296,7 +311,9 @@ pub async fn run(
                                             );
                                         UiCommand::Permit { id, decision }
                                     }
-                                    None => continue,
+                                    // Taken above, before this list: its answer is not a
+                                    // `UiCommand` and has nowhere to go from here.
+                                    Some(crate::app::Picking::Adoption { .. }) | None => continue,
                                 };
                                 let _ = command_tx.send(command).await;
                                 dirty = true;
@@ -306,15 +323,26 @@ pub async fn run(
                             // has stopped: closing it without a word left the session blocked
                             // until its own patience ran out, which on screen is a hang.
                             Action::Dismissed => {
-                                if let Some(crate::app::Picking::Permission { id, .. }) =
-                                    app.picking.take()
-                                {
-                                    let _ = command_tx
-                                        .send(UiCommand::Permit {
-                                            id,
-                                            decision: axon_proto::permit::Decision::Deny,
-                                        })
-                                        .await;
+                                match app.picking.take() {
+                                    Some(crate::app::Picking::Permission { id, .. }) => {
+                                        let _ = command_tx
+                                            .send(UiCommand::Permit {
+                                                id,
+                                                decision: axon_proto::permit::Decision::Deny,
+                                            })
+                                            .await;
+                                    }
+                                    // Walking away is a no, and it has to be *said*. The asking
+                                    // session has been waiting since its call came back with
+                                    // "the question has been put"; a dismissal that answered
+                                    // nothing would leave it waiting for good, and the person
+                                    // who closed the box would think they had refused.
+                                    Some(crate::app::Picking::Adoption { id }) => {
+                                        if let Some(layer) = layer.as_mut() {
+                                            layer.answered(&id, false);
+                                        }
+                                    }
+                                    _ => {}
                                 }
                                 dirty = true;
                             }
@@ -444,6 +472,12 @@ pub async fn run(
                             let _ = command_tx.send(app.received(&who, &sort, &text)).await;
                         }
                         crate::atom::Heard::Around { names } => app.reachable = names,
+                        // Straight to the screen, and it takes it. Nothing is blocked on this
+                        // turn — the asking session is blocked on the *answer*, and it has been
+                        // told to expect one.
+                        crate::atom::Heard::Asked { id, who, why } => {
+                            app.asked_to_adopt(&id, &who, &why);
+                        }
                         crate::atom::Heard::Stopped => ended = true,
                         // Said once, at startup, and read there. A second one is a newer atom
                         // saying something this build has no use for.
