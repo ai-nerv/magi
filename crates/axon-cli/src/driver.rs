@@ -50,6 +50,12 @@ pub async fn run(
         crate::config::adopt_ui(loaded);
     }
     let mut app = App::new();
+    // What the configuration already allows, so a session that takes a child on can lend it what
+    // it holds from the first moment rather than only what a person has answered a prompt with
+    // since. The ledger the session enforces with is seeded from the same list.
+    if let Some(loaded) = &loaded {
+        app.granted = crate::config::granted(loaded);
+    }
     // What the footer shows. atom names a session because it can see the namespace and axon
     // cannot; without atom there are no siblings to be told apart, so the project is name enough.
     app.named = started
@@ -262,9 +268,13 @@ pub async fn run(
                                     app.picking.as_ref()
                                 {
                                     let (id, accept) = (id.clone(), value == "yes");
+                                    // Taken at the moment of accepting, and it does not track
+                                    // afterwards: what was consented to is what was on the table
+                                    // when the question was answered.
+                                    let lending = accept.then(|| app.lending());
                                     app.picking = None;
                                     if let Some(layer) = layer.as_mut() {
-                                        layer.answered(&id, accept);
+                                        layer.answered(&id, accept, lending.as_deref());
                                     }
                                     dirty = true;
                                     continue;
@@ -297,18 +307,30 @@ pub async fn run(
                                     // a guess — and a value matching none of them is the "no"
                                     // row, which is the only other thing in the list.
                                     Some(crate::app::Picking::Permission { id, offers }) => {
-                                        let decision = offers
+                                        let chosen = offers
                                             .iter()
                                             .find(|scope| {
                                                 scope.label(&app.asking_about) == value
-                                            })
-                                            .map_or(
-                                                axon_proto::permit::Decision::Deny,
-                                                |scope| axon_proto::permit::Decision::Allow {
-                                                    scope: scope.clone(),
-                                                    lifetime: axon_proto::permit::Lifetime::Session,
-                                                },
-                                            );
+                                            });
+                                        // Remembered here because here is where it is known. The
+                                        // ledger that enforces it lives on the worker thread and
+                                        // is never read back, and a session that lends its
+                                        // permissions to a child has to know what it holds.
+                                        if let Some(scope) = chosen
+                                            && let Some(grant) = axon_tools::permit::standing(
+                                                &app.asking_about,
+                                                scope,
+                                            )
+                                        {
+                                            app.was_granted(grant);
+                                        }
+                                        let decision = chosen.map_or(
+                                            axon_proto::permit::Decision::Deny,
+                                            |scope| axon_proto::permit::Decision::Allow {
+                                                scope: scope.clone(),
+                                                lifetime: axon_proto::permit::Lifetime::Session,
+                                            },
+                                        );
                                         UiCommand::Permit { id, decision }
                                     }
                                     // Taken above, before this list: its answer is not a
@@ -339,7 +361,7 @@ pub async fn run(
                                     // who closed the box would think they had refused.
                                     Some(crate::app::Picking::Adoption { id }) => {
                                         if let Some(layer) = layer.as_mut() {
-                                            layer.answered(&id, false);
+                                            layer.answered(&id, false, None);
                                         }
                                     }
                                     _ => {}
@@ -477,6 +499,20 @@ pub async fn run(
                         // told to expect one.
                         crate::atom::Heard::Asked { id, who, why } => {
                             app.asked_to_adopt(&id, &who, &why);
+                        }
+                        // Straight into the ledger, never into the transcript. Permissions a
+                        // model can read are permissions it can reason about acquiring more of.
+                        crate::atom::Heard::Adopted { by, handover } => {
+                            let grants = handover
+                                .as_deref()
+                                .and_then(|said| serde_json::from_str(said).ok())
+                                .unwrap_or_default();
+                            let _ = command_tx
+                                .send(UiCommand::TakeGrants { grants })
+                                .await;
+                            app.notice_after_attach(format!(
+                                "`{by}` took this session on. It may now do what that session may."
+                            ));
                         }
                         crate::atom::Heard::Stopped => ended = true,
                         // Said once, at startup, and read there. A second one is a newer atom

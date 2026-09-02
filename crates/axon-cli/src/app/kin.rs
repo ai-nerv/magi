@@ -163,6 +163,26 @@ impl App {
         );
         self.picking = Some(super::Picking::Adoption { id: id.to_owned() });
     }
+
+    /// What this session may do, for lending to one it takes on as a child.
+    ///
+    /// A copy taken at the moment of accepting. It does not track: a grant this session is given
+    /// afterwards is not passed on, because what was consented to was what was on the table when
+    /// the question was answered.
+    #[must_use]
+    pub fn lending(&self) -> Vec<axon_proto::permit::Grant> {
+        self.granted.clone()
+    }
+
+    /// Remember a grant this session was given, so a child can be lent it later.
+    ///
+    /// Called where the answer is *sent*, because that is where the UI knows what was decided —
+    /// the ledger that enforces it lives on the worker thread and is never read back.
+    pub fn was_granted(&mut self, grant: axon_proto::permit::Grant) {
+        if !self.granted.contains(&grant) {
+            self.granted.push(grant);
+        }
+    }
 }
 
 /// Being asked to take a session on is put to the person, and answered either way.
@@ -228,5 +248,83 @@ mod adopting {
             matches!(app.picking, Some(crate::app::Picking::Adoption { .. })),
             "a message changed a question only a person may answer"
         );
+    }
+}
+
+/// What a session lends the one it takes on.
+#[cfg(test)]
+mod lending_grants {
+    use super::*;
+    use axon_proto::permit::{Action, Grant, Scope};
+
+    fn app() -> App {
+        let mut app = App::new();
+        app.named = "axum/main/alpha-rho".to_owned();
+        app
+    }
+
+    fn run(program: &str) -> Grant {
+        Grant {
+            verb: "run".to_owned(),
+            scope: Scope::Program {
+                program: program.to_owned(),
+            },
+        }
+    }
+
+    #[test]
+    fn a_session_lends_exactly_what_it_holds() {
+        // The rule chosen for this: a child gets what its parent already has and nothing more.
+        // Everything on this list was consented to once already — written in a config, or
+        // answered into a prompt by the person now accepting.
+        let mut app = app();
+        app.was_granted(run("git"));
+        app.was_granted(run("cargo"));
+        assert_eq!(app.lending(), vec![run("git"), run("cargo")]);
+    }
+
+    #[test]
+    fn the_same_grant_twice_is_lent_once() {
+        // Answering "any git command" to two prompts is one permission, and a list that grew
+        // per answer would be a list that grows for as long as a session runs.
+        let mut app = app();
+        app.was_granted(run("git"));
+        app.was_granted(run("git"));
+        assert_eq!(app.lending().len(), 1);
+    }
+
+    #[test]
+    fn a_session_that_holds_nothing_lends_nothing() {
+        // And that has to be an empty list rather than an absent one: a child of a session with
+        // no grants may do nothing without asking, which is the correct outcome and not an error.
+        assert!(app().lending().is_empty());
+    }
+
+    #[test]
+    fn what_a_person_answered_is_what_is_lent() {
+        // Read through the same function the ledger uses, so the UI's idea of what an answer
+        // granted cannot drift from what the session actually enforces.
+        let action = Action::Run {
+            command: "git status".to_owned(),
+            program: "git".to_owned(),
+        };
+        let scope = Scope::Program {
+            program: "git".to_owned(),
+        };
+        let grant = axon_tools::permit::standing(&action, &scope).expect("a standing rule");
+        let mut app = app();
+        app.was_granted(grant);
+        assert_eq!(app.lending(), vec![run("git")]);
+    }
+
+    #[test]
+    fn answering_just_this_once_leaves_nothing_to_lend() {
+        // `Once` is spent on the call that asked. Lending it would hand a child a permission the
+        // parent itself no longer has.
+        let action = Action::Run {
+            command: "rm -rf /".to_owned(),
+            program: "rm".to_owned(),
+        };
+        assert!(axon_tools::permit::standing(&action, &Scope::Once).is_none());
     }
 }

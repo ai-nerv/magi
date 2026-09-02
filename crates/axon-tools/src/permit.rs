@@ -34,6 +34,18 @@ impl Ledger {
         Self { grants }
     }
 
+    /// Take on grants somebody else already holds.
+    ///
+    /// For a session that has been adopted: it may do what its parent may do, and no more. The
+    /// grants are the parent's own — the ones a person there either wrote in a config or answered
+    /// a prompt with — so nothing arrives here that somebody did not already consent to once.
+    ///
+    /// Added rather than replacing, because the child keeps whatever it was already allowed. A
+    /// duplicate costs a redundant entry and decides nothing differently.
+    pub fn take_on(&mut self, grants: Vec<Grant>) {
+        self.grants.extend(grants);
+    }
+
     /// Whether `action` is already covered, so nobody need be asked.
     #[must_use]
     pub fn allows(&self, action: &Action) -> bool {
@@ -98,7 +110,11 @@ impl Ledger {
 /// a scope that only means something beside the request it came from cannot. An exact file
 /// becomes a directory of one, which matches that path and nothing under it because it is not a
 /// directory.
-fn standing(action: &Action, scope: &Scope) -> Option<Grant> {
+///
+/// Public because the UI needs the same reading. It is where a person's answer is turned into a
+/// decision, and a session that lends its permissions to a child has to know what it holds — two
+/// readings of "what did that answer grant" would part company the first time either changed.
+pub fn standing(action: &Action, scope: &Scope) -> Option<Grant> {
     let verb = action.verb().to_owned();
     match scope {
         Scope::Once => None,

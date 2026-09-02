@@ -229,6 +229,15 @@ async fn connection(
                             session.lock().await.commit(arrived)?;
                         }
                     }
+                    Some(UiCommand::TakeGrants { grants }) => {
+                        let held = worker.read().await.clone();
+                        if let Some(worker) = held {
+                            // Queued like a turn, so one already running finishes under the
+                            // permissions it started with. A tool that had checked and been
+                            // refused should not find the answer different halfway through.
+                            worker.take_on(Arc::clone(&session), grants).await;
+                        }
+                    }
                     Some(UiCommand::DeclareNeeds) => {
                         let held = worker.read().await.clone();
                         if let Some(worker) = held {

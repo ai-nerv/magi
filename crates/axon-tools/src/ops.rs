@@ -76,6 +76,18 @@ pub trait Ops: Send + Sync {
         let _ = (tool, action);
         Ok(())
     }
+
+    /// Take on grants a parent session already holds.
+    ///
+    /// `&self`, because the ledger is behind a lock: this arrives while the session is running,
+    /// from a person on the other side of a socket accepting it as a child, and there is no
+    /// moment at which the session could be rebuilt around it instead.
+    ///
+    /// Nothing by default. A double that has no ledger has nothing to add to, and a tool test
+    /// should not have to know that adoption exists.
+    fn take_on(&self, grants: Vec<axon_proto::permit::Grant>) {
+        let _ = grants;
+    }
 }
 
 /// Ops against the real machine, rooted at one directory.
@@ -238,6 +250,16 @@ impl Ops for Real {
                 action.verb(),
                 action.subject()
             )),
+        }
+    }
+
+    fn take_on(&self, grants: Vec<axon_proto::permit::Grant>) {
+        // Nothing when there is no gate: an ungated session already allows everything, and
+        // handing it grants would be writing a rule that decides nothing.
+        if let Some(gate) = &self.gate
+            && let Ok(mut ledger) = gate.ledger.lock()
+        {
+            ledger.take_on(grants);
         }
     }
 
@@ -574,5 +596,72 @@ mod gate_tests {
         .expect("allowed");
         assert_eq!(ops.grants().len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Grants a parent lends change what a child may actually do.
+#[cfg(test)]
+mod taking_on {
+    use super::*;
+    use axon_proto::permit::{Action, Decision, Grant, Scope};
+
+    fn run(command: &str) -> Action {
+        Action::Run {
+            command: command.to_owned(),
+            program: command.split_whitespace().next().unwrap_or("").to_owned(),
+        }
+    }
+
+    /// An approver that refuses everything, so anything allowed came from the ledger.
+    struct Refuses;
+    impl crate::approve::Approver for Refuses {
+        fn ask(&self, _tool: &str, _action: &Action) -> Decision {
+            Decision::Deny
+        }
+    }
+
+    #[test]
+    fn what_a_parent_lends_is_what_the_child_may_do() {
+        // The end of the chain. Everything before this — the prompt, the pipe, the socket — is
+        // plumbing for exactly this effect, and without it a child would be told it had been
+        // adopted and then be refused every command anyway.
+        let ops = Real::gated(
+            std::env::temp_dir(),
+            crate::permit::Ledger::new(),
+            std::sync::Arc::new(Refuses),
+        );
+        assert!(
+            ops.allow("shell", &run("git status")).is_err(),
+            "it should start with nothing"
+        );
+
+        ops.take_on(vec![Grant {
+            verb: "run".to_owned(),
+            scope: Scope::Program {
+                program: "git".to_owned(),
+            },
+        }]);
+
+        assert!(
+            ops.allow("shell", &run("git status")).is_ok(),
+            "the lent grant did not reach the ledger"
+        );
+        // And no further than what was lent. A child gets what its parent holds and nothing more.
+        assert!(
+            ops.allow("shell", &run("rm -rf /")).is_err(),
+            "it took on more than it was lent"
+        );
+    }
+
+    #[test]
+    fn a_session_that_gates_nothing_is_unchanged_by_being_lent_something() {
+        // An ungated session already allows everything; writing a rule into it would decide
+        // nothing and suggest it had.
+        let ops = Real::new(std::env::temp_dir());
+        ops.take_on(vec![Grant {
+            verb: "run".to_owned(),
+            scope: Scope::Anything,
+        }]);
+        assert!(ops.allow("shell", &run("anything")).is_ok());
     }
 }

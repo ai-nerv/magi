@@ -270,7 +270,7 @@ mod settings;
 
 use settings::{grants, options, system};
 
-pub use settings::{adopt_ui, environ};
+pub use settings::{adopt_ui, environ, grants as granted};
 
 /// What this directory chose last time it was used.
 #[must_use]

@@ -71,6 +71,19 @@ pub enum Heard {
     },
     /// Somebody with the right to stop this session did.
     Stopped,
+    /// A session this one asked to be taken on by has accepted.
+    ///
+    /// Its own line rather than the message that also arrives, because they have different
+    /// readers. The message is for the model — somebody said yes, here is who. This is for the
+    /// harness, and carries what that session lent: permissions written into a transcript are
+    /// permissions a model can read and reason about acquiring more of.
+    Adopted {
+        /// Who took this session on, as `project/role/id`.
+        by: String,
+        /// What they handed over, as this side wrote it.
+        #[serde(default)]
+        handover: Option<String>,
+    },
     /// Another session is asking to become this one's child, and a person has to answer.
     ///
     /// Up the pipe rather than into the transcript, because it is not the model's to answer. It
@@ -204,11 +217,24 @@ impl Atom {
     /// Sent whichever way they answered. A refusal that went back as silence is one the asking
     /// session cannot tell from an answer that never came, so it would wait for good — and the
     /// person who said no would have no way to know it had not landed.
-    pub fn answered(&mut self, id: &str, accept: bool) {
+    /// `lending` is what this session hands the one it has taken on. atom carries it unread and
+    /// delivers it to the other harness — it is axon's idea, not the layer's, and a layer that
+    /// understood permissions would be a second place to change when they change.
+    pub fn answered(
+        &mut self,
+        id: &str,
+        accept: bool,
+        lending: Option<&[axon_proto::permit::Grant]>,
+    ) {
         let Some(told) = self.told.as_mut() else {
             return;
         };
-        let line = serde_json::json!({ "say": "answered", "id": id, "accept": accept });
+        let line = serde_json::json!({
+            "say": "answered",
+            "id": id,
+            "accept": accept,
+            "handover": lending.and_then(|grants| serde_json::to_string(grants).ok()),
+        });
         let _ = writeln!(told, "{line}");
         let _ = told.flush();
     }

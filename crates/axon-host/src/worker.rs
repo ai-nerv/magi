@@ -31,6 +31,12 @@ enum Work {
     /// adapter and client live here. It queues behind any turn already running, which is right:
     /// asking what a turn will need while one is in flight would describe the wrong work.
     Declare,
+    /// Take on grants the parent of this session already holds.
+    ///
+    /// On this thread because the ledger is inside the `Ops` this thread owns. It queues like
+    /// anything else, so a turn already running finishes under the permissions it started with
+    /// rather than gaining new ones halfway through a tool call.
+    TakeOn(Vec<axon_proto::permit::Grant>),
 }
 
 /// A handle to the thread running turns.
@@ -141,6 +147,7 @@ impl Worker {
                             )
                             .await;
                         }
+                        Work::TakeOn(grants) => ops.take_on(grants),
                         Work::Declare => {
                             declare(&job.session, &backend, &adapter, &client, &*ops).await;
                         }
@@ -163,6 +170,15 @@ impl Worker {
     /// Ask the model what the work ahead needs, and put each answer to the person.
     pub async fn declare(&self, session: Arc<Mutex<Session>>) {
         self.queue(session, Work::Declare).await;
+    }
+
+    /// Take on grants this session's parent holds.
+    pub async fn take_on(
+        &self,
+        session: Arc<Mutex<Session>>,
+        grants: Vec<axon_proto::permit::Grant>,
+    ) {
+        self.queue(session, Work::TakeOn(grants)).await;
     }
 
     async fn queue(&self, session: Arc<Mutex<Session>>, kind: Work) {

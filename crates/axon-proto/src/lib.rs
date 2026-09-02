@@ -611,6 +611,19 @@ pub enum UiCommand {
     /// asked once, about an accurate description of the job, instead of four times in the
     /// middle of it.
     DeclareNeeds,
+    /// Take on the permissions a parent session holds.
+    ///
+    /// Sent once, when somebody at another session accepts this one as its child. The grants are
+    /// that session's own — written in its config, or answered into its ledger by a person — so
+    /// nothing arrives here that was not consented to once already.
+    ///
+    /// Additive, and there is no command to take them back: a session that should not have them
+    /// is a session that should be restarted. Undoing a grant mid-run would leave a turn holding
+    /// a permission it had checked and no longer has.
+    TakeGrants {
+        /// What the parent may do, and now this session may too.
+        grants: Vec<permit::Grant>,
+    },
     /// Rewind the conversation.
     Branch {
         /// How many entries from the start to keep, or `None` for "undo the last exchange".

@@ -21,45 +21,6 @@ fn add(total: axon_proto::Usage, next: axon_proto::Usage) -> axon_proto::Usage {
     }
 }
 
-/// What an open selection list is choosing.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Picking {
-    /// Which model answers.
-    Model,
-    /// How much reasoning to ask for.
-    Thinking,
-    /// Which earlier session to continue.
-    ///
-    /// Carries what each row said beside the id it means, because a row is labelled with what a
-    /// person can read — what they asked for — and that is not an id. The picker is taken by the
-    /// keypress that chose a row, so by the time this is read there is no list left to index.
-    Session {
-        /// Every row, as `(what it said, which session it was)`.
-        rows: Vec<(String, String)>,
-    },
-    /// Whether a tool may do what it is about to do.
-    ///
-    /// Carries the question's id, because the answer has to find its way back to the turn that
-    /// is blocked on it, and the widths on offer, because they were computed from the action by
-    /// the side that knows what the action was.
-    Permission {
-        /// Which question is being answered.
-        id: ToolCallId,
-        /// The widths, in the order they were offered.
-        offers: Vec<axon_proto::permit::Scope>,
-    },
-    /// Whether another session may become this one's child.
-    ///
-    /// Not a [`Permission`](Self::Permission) even though it looks like one on screen, and the
-    /// difference is where the answer goes: a permission unblocks a turn over this session's own
-    /// socket, and this goes down the pipe to atom, which is holding a request another session
-    /// is waiting on. Same picker, two entirely different destinations.
-    Adoption {
-        /// Which request, as atom named it.
-        id: String,
-    },
-}
-
 /// Everything the UI knows.
 pub struct App {
     /// Transcript in order.
@@ -166,6 +127,16 @@ pub struct App {
     /// and what is *unanswered* is the only part a sibling asking `status` cares about —
     /// everything else about an inbox belongs to the layer that holds it.
     pub waiting: usize,
+    /// What this session is allowed to do, as far as the screen has seen it decided.
+    ///
+    /// Kept here rather than asked of the session, because the UI is where every one of them was
+    /// decided: the configured rules are read at startup, and each later grant is a picker answer
+    /// this loop sent. The ledger the session actually enforces with lives on the worker thread,
+    /// behind a lock, and going to fetch it would be a round trip for something already known.
+    ///
+    /// It exists for one purpose: handing it to a session this one takes on as a child. A child
+    /// gets what its parent already holds and nothing more, so this is that list.
+    pub granted: Vec<axon_proto::permit::Grant>,
     /// Whether the prompt was empty when it was last looked at.
     was_blank: bool,
     /// The text being dragged over, or the last drag that finished.
@@ -220,6 +191,7 @@ impl App {
             modal: crate::keys::Modal::default(),
             reachable: Vec::new(),
             waiting: 0,
+            granted: Vec::new(),
             was_blank: true,
             selection: None,
             flipped: std::collections::BTreeSet::new(),
@@ -730,6 +702,8 @@ impl App {
 }
 
 mod kin;
+mod picking;
+pub use picking::Picking;
 #[cfg(test)]
 mod retracting;
 #[cfg(test)]
