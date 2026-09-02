@@ -58,8 +58,8 @@ mod tests {
         let ok = header_of(false);
         let failed = header_of(true);
         assert_ne!(
-            handle_span(&ok).style.bg,
-            handle_span(&failed).style.bg,
+            handle_span(&ok).style.fg,
+            handle_span(&failed).style.fg,
             "the handle states the outcome the way the name does"
         );
     }

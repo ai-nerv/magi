@@ -150,7 +150,7 @@ fn marker(label: &str, width: u16) -> Vec<Line<'static>> {
 
 /// A framed full-width block, labelled `USER` in its top edge.
 fn user(text: &str, width: u16) -> Vec<Line<'static>> {
-    said("USER", colour::said_by_you(), None, text, width)
+    said("USER", colour::said_by_you(), text, width)
 }
 
 /// The same box, labelled with who sent it and how they stand to this session.
@@ -166,14 +166,14 @@ fn from(who: &str, kin: &str, sort: &str, text: &str, width: u16) -> Vec<Line<'s
     let label = format!("{}::{id}", kin.to_uppercase());
     // The sort only when it is not the ordinary one: `note` beside every message is noise, and
     // `attention` beside one is the whole point of having sorts at all.
-    let beside = (sort != "note" && !sort.is_empty()).then(|| sort.to_owned());
-    said(
-        &label,
-        colour::said_by_agent(),
-        beside.as_deref(),
-        text,
-        width,
-    )
+    // Into the name rather than behind it: nothing follows a title but edge, and the sort is
+    // part of what the block *is* — not something it was given.
+    let label = if sort != "note" && !sort.is_empty() {
+        format!("{label} · {sort}")
+    } else {
+        label
+    };
+    said(&label, colour::said_by_agent(), text, width)
 }
 
 /// A framed block with its tag set into the top edge.
@@ -181,13 +181,7 @@ fn from(who: &str, kin: &str, sort: &str, text: &str, width: u16) -> Vec<Line<'s
 /// The tag rides the edge rather than taking a row of its own: a block that grew a line
 /// every time it was labelled would cost a row per message to say something a glance takes
 /// in — and the edge has to be drawn anyway.
-fn said(
-    label: &str,
-    tag: ratatui::style::Color,
-    beside: Option<&str>,
-    text: &str,
-    width: u16,
-) -> Vec<Line<'static>> {
+fn said(label: &str, tag: ratatui::style::Color, text: &str, width: u16) -> Vec<Line<'static>> {
     let style = Style::default()
         .bg(colour::message_bg())
         .fg(colour::message_text());
@@ -195,10 +189,10 @@ fn said(
     // loud background. That difference is the point: a tool block is the one that folds, and
     // when all three wore the same bright chip on backgrounds three greys apart, half the screen
     // looked like it had a handle on it. This sits *into* the block instead of on top of it.
-    let chip = Style::default()
-        .bg(colour::tool_bg())
-        .fg(tag)
-        .add_modifier(Modifier::BOLD);
+    // In the tag's own colour, on nothing. A filled chip on a frame that carries no fill was
+    // the one solid thing on the edge, reading as a sticker stuck to the box rather than as its
+    // name.
+    let chip = Style::default().fg(tag).add_modifier(Modifier::BOLD);
     // One column narrower each side than the frame, so the text sits inside the edges rather
     // than running under the corners.
     let inner = width.saturating_sub(crate::metric::block_pad() * 2 + 2);
@@ -206,7 +200,7 @@ fn said(
 
     // No handle: neither of these folds, and a handle on something that cannot be opened is an
     // affordance that lies.
-    let mut out = vec![top(label, chip, beside, None, width)];
+    let mut out = vec![top(label, chip, None, width)];
     for line in body {
         out.push(inside(line, width, style, LEAD));
     }

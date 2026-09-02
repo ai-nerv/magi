@@ -65,50 +65,48 @@ pub(super) fn block(
     };
     let style = Style::default().bg(colour::tool_bg());
 
-    // The name in reverse: the outcome behind it, the box's own background in front. A coloured
-    // word states pending, done or failed; a coloured *label* states it at a glance, and reads as
-    // the tag on a block rather than as the first word of a sentence. The spaces are part of it —
-    // a reversed run tight against the text is a smudge.
-    let label = Style::default()
-        .bg(outcome)
-        .fg(colour::tool_bg())
-        .add_modifier(Modifier::BOLD);
-    // The handle rides the header, right-aligned, and reversed the way the name is. In the
-    // outcome's foreground it was a lone bright glyph at the far end of an empty row, reading as
-    // debris rather than as the other end of the same header; as a chip it pairs with the name
-    // and the row has two ends that belong together.
+    // The name in the outcome's own colour, on nothing. It was reversed — the outcome behind it,
+    // the box in front — and against a frame that carries no fill of its own a filled chip was
+    // the one solid thing on an otherwise drawn-in-line edge, reading as a sticker on the box
+    // rather than as its name.
+    let label = Style::default().fg(outcome).add_modifier(Modifier::BOLD);
+    // The handle sits at the far end of the same edge as the name, so the row has two ends that
+    // belong together.
     let handle = match detail {
         Detail::Preview => crate::glyph::expand(),
         Detail::Full => crate::glyph::collapse(),
     };
-    // A plain row first, not a grey one: this is the gap *between* blocks, and painted with the
-    // block's own background it joined the previous block's bottom padding into one two-row
-    // band. Three calls in a row then read as a single wall of grey with headings in it rather
-    // than as three things that happened.
-    // The name and the summary are set into the top edge, and the handle sits at the far end of
-    // the same edge — so the row that says what this is is also the row that bounds it.
-    let mut out = vec![
-        blank(width, Style::default()),
-        super::frame::top(
-            name,
-            label,
-            Some(summarize(args).as_str()),
-            Some(handle),
-            width,
-        ),
-    ];
-
     // One step further in than the header, so the two are not one column of text under a
     // coloured word.
     //
-    // What a call was *given* is not listed here. It was, briefly: opening a block showed its
-    // arguments and then a rule and then the output. For an `edit` that is the same thing twice --
-    // `old` and `new`, then a diff of `old` and `new` -- and for everything else it is a header
-    // repeated a row below the header. The summary beside the name is what the call was given;
-    // one line of it is enough, and a block that says it twice reads as a stutter.
+    // What a call was given is the first row, not a second header: opening a block used to show
+    // its arguments, then a rule, then the output, and for an `edit` that is the same thing twice.
     let lead = super::frame::LEAD + STEP;
     let body = usize::from(width).saturating_sub(lead + usize::from(crate::metric::block_pad()));
 
+    // Gathered before anything is framed, because whether there is a box at all depends on
+    // whether there is anything to put in one.
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    let mut said: Vec<Line<'static>> = Vec::new();
+    // What the call was given, as the block's first row. It used to ride the top edge beside the
+    // name, which made the one row that says what this block *is* also the row that says what it
+    // was *asked* — and a long path there had nowhere to go but into the handle. Here it has the
+    // width to be read, and the edge is left to say one thing.
+    let asked = summarize(args);
+    if !asked.trim().is_empty() {
+        said.push(super::frame::inside(
+            Line::from(Span::styled(
+                clip(asked.trim(), body),
+                style.fg(colour::tool_output()),
+            )),
+            width,
+            style,
+            lead,
+        ));
+    }
+    // A plain row first, not a grey one: this is the gap *between* blocks, and painted with
+    // the block's own background it joined the previous block into one band.
+    let mut out: Vec<Line<'static>> = vec![blank(width, Style::default())];
     if let Some(result) = result {
         let output = result.output.trim_end();
         if !output.is_empty() {
@@ -123,7 +121,7 @@ pub(super) fn block(
                 } else {
                     change_colour(line)
                 };
-                out.push(super::frame::inside(
+                rows.push(super::frame::inside(
                     Line::from(Span::styled(clip(line, body), style.fg(fg))),
                     width,
                     style,
@@ -133,7 +131,7 @@ pub(super) fn block(
             // The affordance goes on the fold, because that is where a reader is
             // looking when they wonder where the rest went.
             if all.len() > shown {
-                out.push(super::frame::inside(
+                rows.push(super::frame::inside(
                     Line::from(Span::styled(
                         format!("… {} more lines · ctrl+o", all.len() - shown),
                         style.fg(colour::tool_fold()),
@@ -146,6 +144,16 @@ pub(super) fn block(
         }
     }
 
+    // **A box only when there is something to put in it.** A call that has not produced anything
+    // yet — most often one stopped on a permission prompt, waiting for an answer — was drawn as
+    // two edges with a gap between them: an empty frame sitting on the screen behind the very
+    if rows.is_empty() {
+        out.push(super::frame::lone(name, label, &summarize(args), width));
+        return out;
+    }
+    out.push(super::frame::top(name, label, Some(handle), width));
+    out.extend(said);
+    out.extend(rows);
     out.push(super::frame::bottom(width));
     out
 }
@@ -522,36 +530,23 @@ mod block_tests {
     }
 
     #[test]
-    fn only_the_chips_on_the_top_edge_carry_a_background() {
-        // The frame is the outer thing and the fill is inside it, so the edge itself is drawn on
-        // the terminal's own background. Only the two chips are reversed — the name at one end
-        // and the fold handle at the other.
-        let reversed = |content: &str| {
-            content.contains("shell")
-                || content.contains(crate::glyph::expand())
-                || content.contains(crate::glyph::collapse())
-        };
+    fn nothing_on_the_top_edge_paints_a_background() {
+        // The frame is the outer thing and the fill is inside it, so the edge is drawn on the
+        // terminal's own background — and the chips carry their colour in the foreground, not
+        // behind them. Nothing on this row has a background at all.
         for span in header(None).spans {
-            if reversed(&span.content) {
-                assert!(
-                    span.style.bg.is_some(),
-                    "the chip {:?} lost its colour",
-                    span.content
-                );
-            } else {
-                assert_eq!(
-                    span.style.bg, None,
-                    "{:?} paints the block's fill onto its own frame",
-                    span.content
-                );
-            }
+            assert_eq!(
+                span.style.bg, None,
+                "{:?} paints something behind itself on the frame",
+                span.content
+            );
         }
     }
 
     #[test]
     fn the_name_says_what_happened() {
-        // The outcome moved from the name's foreground to its background when the name became
-        // a reversed label, so this asks the label what colour it is standing on.
+        // The outcome is the name's *foreground* now: a filled chip on a frame drawn in line
+        // characters was the one solid thing on the edge, so the colour moved to the letters.
         let ok = ToolResult {
             output: "hi".into(),
             is_error: false,
@@ -560,18 +555,18 @@ mod block_tests {
             is_error: true,
             ..ok.clone()
         };
-        let behind = |result: Option<&ToolResult>| {
+        let coloured = |result: Option<&ToolResult>| {
             header(result)
                 .spans
                 .iter()
                 .find(|s| s.content.contains("shell"))
                 .expect("the name")
                 .style
-                .bg
+                .fg
         };
-        assert_eq!(behind(None), Some(colour::tool_title()), "still running");
-        assert_eq!(behind(Some(&ok)), Some(colour::tool_ok()));
-        assert_eq!(behind(Some(&bad)), Some(colour::tool_failed()));
+        assert_eq!(coloured(None), Some(colour::tool_title()), "still running");
+        assert_eq!(coloured(Some(&ok)), Some(colour::tool_ok()));
+        assert_eq!(coloured(Some(&bad)), Some(colour::tool_failed()));
     }
 }
 

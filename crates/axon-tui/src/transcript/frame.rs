@@ -1,7 +1,7 @@
 //! The edges of a block: where it starts, where it stops, and what is set into them.
 //!
 //! ```text
-//! ┌──[ TOOL ] src/main.rs ─────────────────[ v ]──┐
+//! ┌──[ TOOL ]───────────────────────────────[ v ]──┐
 //!    …the block's own rows, one column further in…
 //! └───────────────────────────────────────────────┘
 //! ```
@@ -26,7 +26,7 @@ pub(super) const LEAD: usize = 1 + 1;
 /// The top edge of a block, with its name set into it and a handle on the right.
 ///
 /// ```text
-/// ┌──[ TOOL ] src/main.rs ─────────────────[ v ]──┐
+/// ┌──[ TOOL ]───────────────────────────────[ v ]──┐
 ///    …the block's own rows, one column further in…
 /// └───────────────────────────────────────────────┘
 /// ```
@@ -38,13 +38,7 @@ pub(super) const LEAD: usize = 1 + 1;
 ///
 /// `handle` is the fold state — `>` shut, `v` open — and is left off entirely for a block that
 /// does not fold. A handle on something that cannot be opened is an affordance that lies.
-pub(super) fn top(
-    label: &str,
-    chip: Style,
-    beside: Option<&str>,
-    handle: Option<&str>,
-    width: u16,
-) -> Line<'static> {
+pub(super) fn top(label: &str, chip: Style, handle: Option<&str>, width: u16) -> Line<'static> {
     // The block's background is *not* on the edge. The frame is the outer thing and the
     // coloured box sits inside it, so a border painted with the block's own fill would put
     // colour outside the box it is drawing.
@@ -56,25 +50,15 @@ pub(super) fn top(
         Span::styled(glyph::block_edge().repeat(2), edge),
         Span::styled(named.clone(), chip),
     ];
-    let mut used = 3 + named.chars().count();
+    let used = 3 + named.chars().count();
 
     // The chip, plus two edge cells after it so the handle sits *in* the edge rather than
     // wedged against the corner.
     let worn = handle.map_or(0, |handle| handle.chars().count() + 6);
-    // One for the closing corner. Everything between the name and the handle is edge, and the
-    // summary is clipped into it rather than pushing either end off the screen.
-    let room = usize::from(width).saturating_sub(used + worn + 1);
-    // Only when there is room for something worth reading. `clip` to nothing still returns the
-    // ellipsis it would have ended with, so a screen too narrow for the summary grew a column
-    // rather than losing one — and the edge came out a character wider than the block.
-    if room > 1
-        && let Some(beside) = beside.filter(|beside| !beside.trim().is_empty())
-    {
-        let beside = clip(&format!(" {} ", beside.trim()), room);
-        used += beside.chars().count();
-        spans.push(Span::styled(beside, Style::default().fg(colour::dim())));
-    }
-
+    // **The name, and then edge.** What a call was *given* used to sit here too, and it made the
+    // one row that says what this block is into the row that also says what it was asked — a
+    // long path pushed against the handle, and a clipped one said neither thing properly. The
+    // arguments are the block's first row now, where they have the width to be read.
     let fill = usize::from(width).saturating_sub(used + worn + 1);
     spans.push(Span::styled(glyph::block_edge().repeat(fill), edge));
     if let Some(handle) = handle {
@@ -228,7 +212,7 @@ pub(super) fn inside(line: Line<'static>, width: u16, style: Style, lead: usize)
     spans.extend(line.spans);
     spans.push(Span::styled(" ".repeat(trailing), style));
     spans.push(Span::raw(" "));
-    Line::from(spans)
+    Line::from(spans.clone())
 }
 
 /// The frame is outside, the fill is inside.
@@ -297,5 +281,106 @@ mod nesting {
                 assert_eq!(row.len(), usize::from(width), "at {width}");
             }
         }
+    }
+}
+
+/// A call with nothing to show yet: one line, no box.
+///
+/// **A box only when there is something to put in it.** A call stopped on a permission prompt has
+/// produced nothing, and framing it drew two edges with a gap between them — an empty box sitting
+/// on the screen behind the very question that was holding it up.
+///
+/// No handle, because nothing is folded away and offering to open it would be offering something
+/// that is not there. It grows its box when it has a result.
+pub(super) fn lone(label: &str, chip: Style, beside: &str, width: u16) -> Line<'static> {
+    let named = format!("[ {label} ]");
+    let mut spans = vec![
+        Span::raw(" ".repeat(LEAD)),
+        Span::styled(named.clone(), chip),
+    ];
+    let mut used = LEAD + named.chars().count();
+    if !beside.trim().is_empty() {
+        let beside = clip(
+            &format!(" {}", beside.trim()),
+            usize::from(width).saturating_sub(used),
+        );
+        used += beside.chars().count();
+        spans.push(Span::styled(beside, Style::default().fg(colour::dim())));
+    }
+    spans.push(Span::raw(
+        " ".repeat(usize::from(width).saturating_sub(used)),
+    ));
+    Line::from(spans.clone())
+}
+
+/// A box is drawn only when there is something to put in it.
+#[cfg(test)]
+mod emptiness {
+    use crate::transcript::tests::text_of;
+    use crate::transcript::{Detail, entry_lines};
+    use axon_proto::{Entry, ToolCallId, ToolResult};
+
+    fn call(result: Option<ToolResult>) -> Vec<String> {
+        text_of(&entry_lines(
+            &Entry::Tool {
+                id: ToolCallId::new("t1"),
+                name: "shell".into(),
+                args: r#"{"command":"git log -1"}"#.into(),
+                result,
+                thought_signature: None,
+            },
+            56,
+            Detail::Preview,
+        ))
+    }
+
+    #[test]
+    fn a_call_waiting_on_a_permission_is_not_a_box() {
+        // The one this is here for. A call stopped on a prompt has produced nothing, and framing
+        // it drew two edges with a gap between them — an empty box on the screen behind the very
+        // question holding it up.
+        let shown = call(None);
+        assert!(
+            shown.iter().all(|l| !l.contains('┌') && !l.contains('└')),
+            "an empty box was drawn: {shown:#?}"
+        );
+        assert!(
+            shown.iter().any(|l| l.contains("[ shell ]")),
+            "and it says nothing about what is being asked: {shown:#?}"
+        );
+    }
+
+    #[test]
+    fn nor_does_it_offer_a_handle() {
+        // Nothing is folded away. Offering to open it would be offering something not there.
+        let shown = call(None);
+        assert!(
+            shown
+                .iter()
+                .all(|l| !l.contains("[ > ]") && !l.contains("[ v ]")),
+            "{shown:#?}"
+        );
+    }
+
+    #[test]
+    fn a_call_that_produced_nothing_is_not_a_box_either() {
+        // Same rule, reached a different way: a `write` that reports nothing has an outcome but
+        // no body, and an empty frame says less than a line does.
+        let shown = call(Some(ToolResult {
+            output: String::new(),
+            is_error: false,
+        }));
+        assert!(shown.iter().all(|l| !l.contains('┌')), "{shown:#?}");
+    }
+
+    #[test]
+    fn a_call_with_output_grows_its_box() {
+        let shown = call(Some(ToolResult {
+            output: "one line".into(),
+            is_error: false,
+        }));
+        assert!(shown.iter().any(|l| l.contains('┌')), "{shown:#?}");
+        assert!(shown.iter().any(|l| l.contains('└')), "{shown:#?}");
+        assert!(shown.iter().any(|l| l.contains("one line")), "{shown:#?}");
     }
 }

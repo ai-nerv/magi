@@ -87,8 +87,8 @@ mod tests {
 
     #[test]
     fn the_name_is_a_label_rather_than_a_word() {
-        // Reversed out of the outcome colour, with a space either side so the run reads as a
-        // tag on the block instead of as the first word of a sentence.
+        // In the outcome's own colour with nothing behind it, and bracketed so the run reads as
+        // a tag on the block rather than as the first word of a sentence.
         let lines = block("write", "{}", None, 50, Detail::Preview);
         let name = lines[1]
             .spans
@@ -96,12 +96,8 @@ mod tests {
             .find(|s| s.content.contains("write"))
             .expect("the name");
         assert_eq!(name.content.as_ref(), "[ write ]");
-        assert_eq!(
-            name.style.bg,
-            Some(colour::tool_title()),
-            "the outcome behind"
-        );
-        assert_eq!(name.style.fg, Some(colour::tool_bg()), "the box in front");
+        assert_eq!(name.style.fg, Some(colour::tool_title()), "the outcome");
+        assert_eq!(name.style.bg, None, "and nothing behind it");
     }
 
     #[test]
@@ -116,17 +112,24 @@ mod tests {
             .iter()
             .find(|s| s.content.contains("shell"))
             .expect("the name");
-        assert_eq!(name.style.bg, Some(colour::tool_failed()));
+        assert_eq!(name.style.fg, Some(colour::tool_failed()));
     }
 
     #[test]
     fn a_narrow_screen_still_keeps_the_handle() {
         // The summary is clipped to make room rather than pushing the handle off the edge.
+        //
+        // With a result, because a call that has produced nothing is drawn as a plain line
+        // rather than a box — there is no edge for a handle to sit in until there is a body.
+        let done = axon_proto::ToolResult {
+            output: "done".to_owned(),
+            is_error: false,
+        };
         for width in [20u16, 30, 44, 100] {
             let lines = block(
                 "write",
                 r#"{"path":"/a/very/long/path/that/keeps/going/on.rs"}"#,
-                None,
+                Some(&done),
                 width,
                 Detail::Preview,
             );
