@@ -338,8 +338,30 @@ do -- agent
   Talk to the other axon instances running in this project: ask what they are doing, send them
   work, answer their questions, and stop the ones this session started.
 
-  Call it with `verb: "help"` first -- that lists every verb and what each one takes, from the
-  atom that is actually installed. `list` says who is really there.]],
+  ANSWERING SOMEBODY. A message from another instance appears in this conversation as a block
+  headed `<RELATION::id>`. Replying in your own text does NOT reach them -- they cannot see this
+  conversation. To answer, call this tool:
+
+    1. `verb: "inbox"` -- lists what has been sent to you, each with an id.
+    2. `verb: "reply", who: <their id>, about: <that message's id>, message: <your answer>`.
+
+  `about` is required by `reply` and must be an id from `inbox`; without it the call is refused.
+  If you have nothing to quote, use `send` or `ask` instead rather than guessing an id.
+
+  CHOOSING A VERB. What you pick decides whether they wake up:
+
+    `ask`       you need an answer; it starts a turn for them, and their reply starts one for you
+    `reply`     answers a question you were asked; starts a turn for whoever asked
+    `send`      a note. It does NOT wake them -- they read it next time they answer something
+    `attention` you need them now; this is the one that reaches them mid-turn
+    `trouble`   something is wrong and you cannot go on
+    `handoff`   this piece of work is theirs now
+
+  So: use `ask` when you want a response, `send` only when you genuinely want no reply.
+
+  Instances are named `id`, `role/id` or `project/role/id`; a bare id means one in this project.
+  `list` says who is actually there -- use it rather than assuming a name. `verb: "help"` lists
+  every verb and what each takes, from the atom that is actually installed.]],
 
     -- Five arguments and no list of verbs, on purpose. atom's vocabulary grows and this file
     -- would not hear about it; `help` is the copy that cannot go stale.
@@ -361,15 +383,21 @@ do -- agent
     transport = {
       kind = "command",
       command = "atom",
-      -- An argument the model left out still arrives, as an empty string. atom drops those
-      -- rather than looking for an instance named "", so a `list` needs no `who`.
+      -- `--name={value}`, one token, and never `"--name", "{value}"` as two.
+      --
+      -- An argument the model left out is dropped *whole*, flag and all -- but only when the
+      -- flag and the placeholder are the same token. Written as two, the placeholder vanishes
+      -- and the bare flag stays, so `reply` with no `about` sent `--about --sort` and atom read
+      -- the next flag as the value: `about` came out as the string "--sort". The verb was then
+      -- refused for want of a real one, the model fell back to `send`, and the answer arrived as
+      -- a note -- which wakes nobody. One exchange, then silence, from a missing `=`.
       args = {
         "tool",
-        "--verb", "{verb}",
-        "--who", "{who}",
-        "--message", "{message}",
-        "--about", "{about}",
-        "--sort", "{sort}",
+        "--verb={verb}",
+        "--who={who}",
+        "--message={message}",
+        "--about={about}",
+        "--sort={sort}",
       },
       timeout = 30,
     },

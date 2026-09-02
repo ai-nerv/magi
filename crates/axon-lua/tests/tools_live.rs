@@ -228,3 +228,69 @@ fn the_agent_tool_reaches_another_session_through_atom() {
         "the receiving session heard: {heard}"
     );
 }
+
+/// The argument vector the shipped `agent` declaration actually builds.
+///
+/// Rendered from `config/tools.lua` rather than a fixture, because the bug was *in* the
+/// declaration and a fixture would have been written from the same misunderstanding.
+fn agent_argv(call: serde_json::Value) -> Vec<String> {
+    let mut engine = Engine::new();
+    engine.run(&config("tools.lua"), "tools.lua").expect("runs");
+    let declared = engine.tools();
+    let spec = declared
+        .iter()
+        .find(|(name, _)| name == "agent")
+        .map(|(_, spec)| spec.clone())
+        .expect("the agent tool is declared");
+    let args: Vec<String> = spec["transport"]["args"]
+        .as_array()
+        .expect("args")
+        .iter()
+        .map(|a| a.as_str().unwrap_or_default().to_owned())
+        .collect();
+    axon_tools::command::render(&args, &call)
+}
+
+#[test]
+fn an_argument_the_model_left_out_takes_its_flag_with_it() {
+    // The bug, exactly. An absent argument is dropped *whole* -- but only when the flag and the
+    // placeholder are one token. Written as `"--about", "{about}"`, the placeholder vanished and
+    // the bare flag stayed, so `reply` with no `about` sent `--about --sort` and the layer read
+    // the next flag as the value: `about` came out as the string "--sort".
+    let argv = agent_argv(serde_json::json!({ "verb": "list" }));
+    assert_eq!(argv, vec!["tool", "--verb=list"], "{argv:?}");
+}
+
+#[test]
+fn no_rendered_flag_is_ever_left_holding_the_next_one() {
+    // The general form, so this cannot come back under a different argument name. Every token
+    // after the subcommand carries its own value; none is a bare flag waiting to swallow one.
+    for call in [
+        serde_json::json!({ "verb": "help" }),
+        serde_json::json!({ "verb": "inbox" }),
+        serde_json::json!({ "verb": "status", "who": "beta-nu" }),
+        serde_json::json!({ "verb": "send", "who": "beta-nu", "message": "hello" }),
+        serde_json::json!({ "verb": "reply", "who": "beta-nu", "message": "yes", "about": "m1" }),
+    ] {
+        for token in agent_argv(call.clone()).iter().skip(1) {
+            assert!(
+                token.starts_with("--") && token.contains('='),
+                "{token:?} is a bare flag and will take the next argument as its value: {call}"
+            );
+        }
+    }
+}
+
+#[test]
+fn what_the_model_sends_arrives_as_what_it_meant() {
+    // The values themselves, because a `=` in a message must not split the pair: the name ends
+    // at the *first* `=` and everything after it is the value.
+    let argv = agent_argv(serde_json::json!({
+        "verb": "reply",
+        "who": "beta-nu",
+        "message": "x = y + 1",
+        "about": "m1",
+    }));
+    assert!(argv.contains(&"--message=x = y + 1".to_owned()), "{argv:?}");
+    assert!(argv.contains(&"--about=m1".to_owned()), "{argv:?}");
+}
