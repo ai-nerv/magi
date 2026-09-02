@@ -1,7 +1,7 @@
 # magi — the scrollback, moved out
 
 > The other half of `balthasar`'s §3.7. Written from balthasar's side, for whoever implements this one.
-> balthasar's half is built: the store, the verbs, and the tests are in `../aeon` at `5a4dd7b`+.
+> balthasar's half is built: the store, the verbs, and the tests are in `../balthasar` at `5a4dd7b`+.
 
 ---
 
