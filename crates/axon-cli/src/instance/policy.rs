@@ -135,7 +135,21 @@ pub enum Relation {
 }
 
 impl Relation {
-    /// What to call it, for saying so.
+    /// The one-word form, for a chip on a block or a caller that wants to branch on it.
+    #[must_use]
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Myself => "myself",
+            Self::Parent => "parent",
+            Self::Child => "child",
+            Self::Sibling => "sibling",
+            Self::Main => "main",
+            Self::Cousin => "cousin",
+            Self::Elsewhere => "elsewhere",
+        }
+    }
+
+    /// What to call it in a sentence, for saying why.
     #[must_use]
     pub fn named(self) -> &'static str {
         match self {

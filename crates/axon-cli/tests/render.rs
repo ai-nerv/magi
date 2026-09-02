@@ -74,7 +74,7 @@ fn a_conversation_renders_the_way_pi_lays_it_out() {
     assert_eq!(
         rendered,
         vec![
-            "",                   // user box: top padding
+            "  USER",             // user box: the tag rides the top padding row
             " run the tests",     // user box: body
             "",                   // user box: bottom padding
             "",                   // assistant: leading blank

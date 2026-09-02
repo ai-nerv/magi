@@ -222,6 +222,29 @@ pub enum Entry {
         /// Markdown, rendered like any other prose.
         text: String,
     },
+    /// Something another axon said to this one.
+    ///
+    /// Its own kind rather than a [`Entry::User`] with a note on it. The two look alike on
+    /// purpose — both are somebody addressing this session, and both are answered the same way
+    /// — but the person did not say this, and a block that reads as something you typed is one
+    /// you will answer as though you had.
+    ///
+    /// Produced by a UI, like [`Entry::Notice`]: the message arrived on this session's socket,
+    /// which is a UI's, and the daemon on the far end of the other socket never saw it.
+    From {
+        /// Who said it, as `project/id`.
+        who: String,
+        /// How they stand to this session: `parent`, `child`, `sibling`, `main`, `cousin`.
+        ///
+        /// Carried rather than looked up when it is drawn, because it was true when the
+        /// message arrived and a session that has since forked would redraw the transcript
+        /// with a relation that did not hold at the time.
+        kin: String,
+        /// What sort of message it is: `note`, `question`, `attention`, `trouble`…
+        sort: String,
+        /// Markdown, rendered like any other prose.
+        text: String,
+    },
     /// The conversation as it was at an earlier point, taken up again.
     ///
     /// "That went wrong, back up and try something else." The entries it skips stay in the

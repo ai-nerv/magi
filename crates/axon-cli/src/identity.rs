@@ -46,6 +46,23 @@ impl Identity {
     pub fn full(&self) -> String {
         format!("{}/{}", self.project, self.id)
     }
+
+    /// Read one back, from a name that came off the wire.
+    ///
+    /// Exactly two parts. A name that is one, or three, is not a short form of anything — it is
+    /// a session that will not be found, and answering `None` says so where a guess would have
+    /// resolved to somebody else.
+    #[must_use]
+    pub fn read(whole: &str) -> Option<Self> {
+        let (project, id) = whole.split_once('/')?;
+        if project.is_empty() || id.is_empty() || id.contains('/') {
+            return None;
+        }
+        Some(Self {
+            project: project.to_owned(),
+            id: id.to_owned(),
+        })
+    }
 }
 
 /// The working directory's own name.

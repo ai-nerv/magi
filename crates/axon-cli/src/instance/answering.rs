@@ -10,7 +10,7 @@
 //! that has to bind one to check them is a test nobody writes.
 
 use super::Reach;
-use super::policy::{self, Relation, Whom};
+use super::policy::{self, Whom};
 use super::wire::{Call, Message, Reply, VERBS};
 use crate::identity::Identity;
 
@@ -125,7 +125,7 @@ pub fn answer(call: &Call, about: &About, caller: Option<&Whom>) -> (Reply, Then
         // time, and so the two answers can be compared when they disagree.
         "kin" => (
             Reply::of(serde_json::json!({
-                "relation": named(relation),
+                "relation": relation.word(),
                 "means": relation.named(),
                 "may_stop": policy::may(caller, theirs, Reach::Stop),
             })),
@@ -182,19 +182,6 @@ pub fn answer(call: &Call, about: &About, caller: Option<&Whom>) -> (Reply, Then
 /// A string argument, if there is one there.
 fn text_at(call: &Call, at: usize) -> Option<String> {
     call.args.get(at)?.as_str().map(ToOwned::to_owned)
-}
-
-/// The one-word form of a relation, for a caller that wants to branch on it.
-fn named(relation: Relation) -> &'static str {
-    match relation {
-        Relation::Myself => "myself",
-        Relation::Parent => "parent",
-        Relation::Child => "child",
-        Relation::Sibling => "sibling",
-        Relation::Main => "main",
-        Relation::Cousin => "cousin",
-        Relation::Elsewhere => "elsewhere",
-    }
 }
 
 /// The walls hold over a call, and every answer is the shape the family agreed.

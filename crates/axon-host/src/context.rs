@@ -47,6 +47,17 @@ pub fn of(session: &Session) -> Context {
                 open = None;
                 messages.push(Message::user(text.clone()));
             }
+            // Somebody addressed this session, so it is a user turn — but not *the* user, and
+            // the difference decides whether the model treats it as an instruction or as
+            // something a peer said. Named rather than dropped: silently swallowing a message
+            // another agent sent is the one failure worth none of the tidiness.
+            Entry::From { who, kin, text, .. } => {
+                open = None;
+                messages.push(Message::user(format!(
+                    "[message from {}::{who}]\n{text}",
+                    kin.to_uppercase()
+                )));
+            }
             Entry::Assistant {
                 text,
                 thinking,

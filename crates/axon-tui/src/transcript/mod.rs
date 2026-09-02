@@ -83,6 +83,12 @@ pub fn entry_lines(entry: &Entry, width: u16, detail: Detail) -> Vec<Line<'stati
             name, args, result, ..
         } => tool::block(name, args, result.as_ref(), width, detail),
         Entry::Notice { text } => notice(text, width),
+        Entry::From {
+            who,
+            kin,
+            sort,
+            text,
+        } => from(who, kin, sort, text, width),
         Entry::Compaction { replaces, .. } => {
             marker(&format!(" {replaces} earlier messages summarised "), width)
         }
@@ -139,15 +145,55 @@ fn marker(label: &str, width: u16) -> Vec<Line<'static>> {
     ]
 }
 
-/// A full-width box on `userMessageBg`, padded one cell on every side.
+/// A full-width box on `userMessageBg`, padded one cell on every side, labelled `USER`.
 fn user(text: &str, width: u16) -> Vec<Line<'static>> {
+    said("USER", colour::message_text(), None, text, width)
+}
+
+/// The same box, labelled with who sent it and how they stand to this session.
+///
+/// Deliberately the same shape as a user message. Both are somebody addressing this session and
+/// both are answered the same way; what separates them is the tag, which is why the tag is
+/// there. `PARENT::alpha-rho` says in one chip the two things worth knowing — who, and what
+/// they are to you — and a reader who takes that in has taken in whether it can be ignored.
+fn from(who: &str, kin: &str, sort: &str, text: &str, width: u16) -> Vec<Line<'static>> {
+    // The id alone. The project is this session's own — nothing else can reach it — so printing
+    // it would be a column of the same word down the left of every message.
+    let id = who.rsplit('/').next().unwrap_or(who);
+    let label = format!("{}::{id}", kin.to_uppercase());
+    // The sort only when it is not the ordinary one: `note` beside every message is noise, and
+    // `attention` beside one is the whole point of having sorts at all.
+    let beside = (sort != "note" && !sort.is_empty()).then(|| sort.to_owned());
+    said(&label, colour::accent(), beside.as_deref(), text, width)
+}
+
+/// A padded box with a reversed tag on its top row.
+///
+/// The tag rides the padding row rather than taking one of its own: a block that grew a line
+/// every time it was labelled would have cost a row per message to say something a glance takes
+/// in. Reversed, like a tool's name, because that is what a tag on a block looks like here.
+fn said(
+    label: &str,
+    tag: ratatui::style::Color,
+    beside: Option<&str>,
+    text: &str,
+    width: u16,
+) -> Vec<Line<'static>> {
     let style = Style::default()
         .bg(colour::message_bg())
         .fg(colour::message_text());
+    let chip = Style::default()
+        .bg(tag)
+        .fg(colour::message_bg())
+        .add_modifier(Modifier::BOLD);
     let inner = width.saturating_sub(crate::metric::block_pad() * 2);
     let body = markdown::render(text, inner, style);
 
-    let mut out = vec![blank(width, style)];
+    let mut spans = vec![Span::styled(format!(" {label} "), chip)];
+    if let Some(beside) = beside {
+        spans.push(Span::styled(format!(" {beside}"), style.fg(colour::dim())));
+    }
+    let mut out = vec![pad(Line::from(spans), width, style)];
     for line in body {
         out.push(pad(line, width, style));
     }
@@ -281,6 +327,15 @@ mod tests {
             .collect()
     }
 
+    fn from(who: &str, kin: &str, sort: &str) -> Entry {
+        Entry::From {
+            who: who.into(),
+            kin: kin.into(),
+            sort: sort.into(),
+            text: "the parser is done".into(),
+        }
+    }
+
     #[test]
     fn a_user_message_is_a_padded_full_width_box() {
         let entry = Entry::User {
@@ -289,9 +344,76 @@ mod tests {
         };
         let lines = entry_lines(&entry, 20, Detail::Preview);
         let rendered = text_of(&lines);
-        assert_eq!(rendered.len(), 3, "blank, body, blank");
+        assert_eq!(rendered.len(), 3, "tag, body, blank");
         assert_eq!(rendered[1], " hello              ");
         assert!(rendered.iter().all(|l| l.chars().count() == 20));
+    }
+
+    #[test]
+    fn a_user_message_is_tagged_and_costs_no_extra_row_for_it() {
+        // The tag rides the padding row. A block that grew a line every time it was labelled
+        // would cost a row per message to say what a glance takes in.
+        let entry = Entry::User {
+            id: MessageId::new("m1"),
+            text: "hello".into(),
+        };
+        let rendered = text_of(&entry_lines(&entry, 20, Detail::Preview));
+        assert_eq!(rendered[0].trim(), "USER", "{rendered:?}");
+        assert_eq!(rendered.len(), 3, "it grew a row: {rendered:?}");
+    }
+
+    #[test]
+    fn a_message_from_another_axon_is_tagged_with_who_and_what_they_are() {
+        // The two things worth knowing, in one chip. A reader who takes that in has taken in
+        // whether it can be ignored.
+        let rendered = text_of(&entry_lines(
+            &from("axon/alpha-rho", "parent", "note"),
+            40,
+            Detail::Preview,
+        ));
+        assert_eq!(rendered[0].trim(), "PARENT::alpha-rho", "{rendered:?}");
+        assert!(rendered[1].contains("the parser is done"), "{rendered:?}");
+    }
+
+    #[test]
+    fn the_project_is_not_repeated_down_the_left_of_every_message() {
+        // Nothing outside this session's own project can reach it, so printing the project
+        // would be a column of the same word beside every message.
+        let rendered = text_of(&entry_lines(
+            &from("axon/alpha-rho", "child", "note"),
+            40,
+            Detail::Preview,
+        ));
+        assert!(!rendered[0].contains("axon/"), "{rendered:?}");
+    }
+
+    #[test]
+    fn an_ordinary_note_says_nothing_about_its_sort_and_an_urgent_one_does() {
+        // `note` beside every message is noise. `attention` beside one is the point of sorts.
+        let plain = text_of(&entry_lines(
+            &from("axon/alpha-rho", "main", "note"),
+            40,
+            Detail::Preview,
+        ));
+        assert!(!plain[0].contains("note"), "{plain:?}");
+        let urgent = text_of(&entry_lines(
+            &from("axon/alpha-rho", "main", "attention"),
+            40,
+            Detail::Preview,
+        ));
+        assert!(urgent[0].contains("attention"), "{urgent:?}");
+    }
+
+    #[test]
+    fn a_message_from_elsewhere_is_still_drawn_rather_than_dropped() {
+        // A relation that makes no sense is a bug in the sender or a stale note on disk, and
+        // neither is a reason to swallow something somebody sent.
+        let rendered = text_of(&entry_lines(
+            &from("other/beta-nu", "elsewhere", ""),
+            40,
+            Detail::Preview,
+        ));
+        assert!(rendered[1].contains("the parser is done"), "{rendered:?}");
     }
 
     #[test]

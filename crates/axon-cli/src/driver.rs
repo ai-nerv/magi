@@ -440,8 +440,12 @@ pub async fn run(
                     if stopped.try_recv().is_ok() {
                         break;
                     }
+                    // Onto the transcript as well as into the inbox. A message that only
+                    // reached a queue is one nobody knew about until they thought to ask, and
+                    // for an `attention` — the one sort allowed to interrupt — that is the
+                    // whole of the failure.
                     while let Ok(message) = arrived.try_recv() {
-                        app.inbox.push(message);
+                        app.received(message);
                     }
                     let _ = about.send(crate::instance::answering::About {
                         me: app.identity.clone(),

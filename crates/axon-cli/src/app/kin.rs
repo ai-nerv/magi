@@ -32,4 +32,30 @@ impl App {
             inbox: self.inbox.clone(),
         }
     }
+
+    /// A message arrived from another axon.
+    ///
+    /// Two places, and both are needed. The transcript is so somebody *sees* it — a message that
+    /// only reached a queue is a message nobody knew about until they thought to ask, which for
+    /// an `attention` is the whole of the failure. The inbox is so the model can act on it: it
+    /// is what the `agent` tool reads, and reading a message is not the same as answering it.
+    pub fn received(&mut self, message: crate::instance::wire::Message) {
+        let kin = crate::identity::Identity::read(&message.from)
+            .map_or(crate::instance::policy::Relation::Elsewhere, |who| {
+                self.standing().stands(&who)
+            });
+        self.entries.push(axon_proto::Entry::From {
+            who: message.from.clone(),
+            // Stamped now rather than looked up when it is drawn: it was true when the message
+            // arrived, and a session that has since forked would redraw the whole transcript
+            // with relations that did not hold at the time.
+            kin: kin.word().to_owned(),
+            sort: serde_json::to_value(message.sort)
+                .ok()
+                .and_then(|sort| sort.as_str().map(ToOwned::to_owned))
+                .unwrap_or_default(),
+            text: message.text.clone(),
+        });
+        self.inbox.push(message);
+    }
 }
