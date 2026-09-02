@@ -1,0 +1,26 @@
+[package]
+name = "magi-host"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+magi-ipc.workspace = true
+magi-journal.workspace = true
+magi-core.workspace = true
+magi-model.workspace = true
+magi-proto.workspace = true
+magi-lua.workspace = true
+magi-provider.workspace = true
+magi-tools.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

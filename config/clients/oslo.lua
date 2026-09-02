@@ -1,6 +1,6 @@
 -- oslo's client library: what another program requires to talk to a running shell.
 -- Plain Lua, so siblings copy it rather than port it. The transport arrives as the chunk's
--- argument; inside axon that is `axon.stream`, found automatically when nothing is passed.
+-- argument; inside magi that is `magi.stream`, found automatically when nothing is passed.
 --
 --   local oslo = load(src)(my_transport)
 --   local sh   = oslo.connect()
@@ -18,7 +18,7 @@ local M = { _NAME = "oslo", _VERSION = 1 }
 
 -- Every global this family answers to. The file is copied between siblings, so a lookup that knew
 -- only its own name would fail on exactly the hosts it is meant to run in.
-local FAMILY = { "oslo", "hexe", "axon" }
+local FAMILY = { "oslo", "hexe", "magi" }
 
 -- ---------------------------------------------------------------- JSON, in Lua
 

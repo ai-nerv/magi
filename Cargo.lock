@@ -22,15 +22,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aho-corasick"
-version = "1.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c982642fa9e8606056828ee9a8505737230110bb1099153c79efe865c59d12ba"
-dependencies = [
- "memchr",
-]
-
-[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -67,159 +58,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
-name = "axon-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axon-host",
- "axon-ipc",
- "axon-journal",
- "axon-lua",
- "axon-proto",
- "axon-provider",
- "axon-testkit",
- "axon-tools",
- "axon-tui",
- "clap",
- "crossterm",
- "ignore",
- "ratatui",
- "reqwest",
- "rustix",
- "serde_json",
- "tokio",
- "tokio-stream",
-]
-
-[[package]]
-name = "axon-core"
-version = "0.1.0"
-dependencies = [
- "axon-model",
- "axon-provider",
- "serde_json",
-]
-
-[[package]]
-name = "axon-host"
-version = "0.1.0"
-dependencies = [
- "axon-core",
- "axon-ipc",
- "axon-journal",
- "axon-lua",
- "axon-model",
- "axon-proto",
- "axon-provider",
- "axon-tools",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
-]
-
-[[package]]
-name = "axon-ipc"
-version = "0.1.0"
-dependencies = [
- "axon-proto",
- "ciborium",
- "rustix",
- "serde",
- "thiserror 2.0.20",
- "tokio",
-]
-
-[[package]]
-name = "axon-journal"
-version = "0.1.0"
-dependencies = [
- "axon-proto",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "axon-lua"
-version = "0.1.0"
-dependencies = [
- "axon-model",
- "axon-provider",
- "axon-tools",
- "luna",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "axon-model"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "axon-proto"
-version = "0.1.0"
-dependencies = [
- "axon-model",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "axon-provider"
-version = "0.1.0"
-dependencies = [
- "axon-model",
- "base64",
- "bytes",
- "futures-util",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 2.0.20",
- "tokio",
-]
-
-[[package]]
-name = "axon-testkit"
-version = "0.1.0"
-dependencies = [
- "axon-ipc",
- "axon-proto",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "axon-tools"
-version = "0.1.0"
-dependencies = [
- "axon-ipc",
- "axon-model",
- "axon-proto",
- "ignore",
- "serde",
- "serde_json",
- "similar",
-]
-
-[[package]]
-name = "axon-tui"
-version = "0.1.0"
-dependencies = [
- "axon-proto",
- "ratatui",
- "serde_json",
-]
-
-[[package]]
 name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -238,16 +76,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
 dependencies = [
  "generic-array",
-]
-
-[[package]]
-name = "bstr"
-version = "1.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6bb31b46c14244e20ee9984b11bf5c992b91fb6939fea616e3512c8baecdbe5f"
-dependencies = [
- "memchr",
- "serde_core",
 ]
 
 [[package]]
@@ -432,31 +260,6 @@ checksum = "8498c871161e1742aaa9d52551b2d6ebdd4c3d45a3be423e3728f33b955be550"
 dependencies = [
  "cfg-if",
 ]
-
-[[package]]
-name = "crossbeam-deque"
-version = "0.8.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5181e0de7b61eb03a81e347d6dd8797bae9da5146707b51077e2d71a54ec0ceb"
-dependencies = [
- "crossbeam-epoch",
- "crossbeam-utils",
-]
-
-[[package]]
-name = "crossbeam-epoch"
-version = "0.9.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d6914041f254d6e9176c01941b21115dcfb7089e55135a35411081bd106ef3f"
-dependencies = [
- "crossbeam-utils",
-]
-
-[[package]]
-name = "crossbeam-utils"
-version = "0.8.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61803da095bee82a81bb1a452ecc25d3b2f1416d1897eb86430c6159ef717c17"
 
 [[package]]
 name = "crossterm"
@@ -718,19 +521,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "globset"
-version = "0.4.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07c34a9410465b45bd9787443bc7370f37735bad04b0f0cd57ff1a3186c98988"
-dependencies = [
- "aho-corasick",
- "bstr",
- "log",
- "regex-automata",
- "regex-syntax",
-]
-
-[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -983,22 +773,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ignore"
-version = "0.4.33"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00b69833ed729dc5aa7d19541d96d6cf8e9137194207a04916d658e43168402f"
-dependencies = [
- "crossbeam-deque",
- "globset",
- "log",
- "memchr",
- "regex-automata",
- "same-file",
- "walkdir",
- "winapi-util",
-]
-
-[[package]]
 name = "indexmap"
 version = "2.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1122,6 +896,160 @@ dependencies = [
  "ottavino-gc-arena",
  "rand 0.8.8",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "magi-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "clap",
+ "crossterm",
+ "magi-host",
+ "magi-ipc",
+ "magi-journal",
+ "magi-lua",
+ "magi-model",
+ "magi-proto",
+ "magi-provider",
+ "magi-testkit",
+ "magi-tools",
+ "magi-tui",
+ "ratatui",
+ "reqwest",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+]
+
+[[package]]
+name = "magi-core"
+version = "0.1.0"
+dependencies = [
+ "magi-model",
+ "magi-provider",
+ "serde_json",
+]
+
+[[package]]
+name = "magi-host"
+version = "0.1.0"
+dependencies = [
+ "magi-core",
+ "magi-ipc",
+ "magi-journal",
+ "magi-lua",
+ "magi-model",
+ "magi-proto",
+ "magi-provider",
+ "magi-tools",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
+name = "magi-ipc"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "magi-proto",
+ "rustix",
+ "serde",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
+name = "magi-journal"
+version = "0.1.0"
+dependencies = [
+ "magi-proto",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "magi-lua"
+version = "0.1.0"
+dependencies = [
+ "luna",
+ "magi-model",
+ "magi-provider",
+ "magi-tools",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "magi-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "magi-proto"
+version = "0.1.0"
+dependencies = [
+ "magi-model",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "magi-provider"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "bytes",
+ "futures-util",
+ "magi-model",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
+name = "magi-testkit"
+version = "0.1.0"
+dependencies = [
+ "magi-ipc",
+ "magi-proto",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "magi-tools"
+version = "0.1.0"
+dependencies = [
+ "magi-ipc",
+ "magi-model",
+ "magi-proto",
+ "serde",
+ "serde_json",
+ "similar",
+]
+
+[[package]]
+name = "magi-tui"
+version = "0.1.0"
+dependencies = [
+ "magi-proto",
+ "ratatui",
+ "serde_json",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]
@@ -1393,23 +1321,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "regex-automata"
-version = "0.4.18"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad8553b9b26413251cbf30e620595c7a41b3887f03da04579c0e6b0d6a06b4b2"
-dependencies = [
- "aho-corasick",
- "memchr",
- "regex-syntax",
-]
-
-[[package]]
-name = "regex-syntax"
-version = "0.8.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
-
-[[package]]
 name = "reqwest"
 version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1530,15 +1441,6 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
-
-[[package]]
-name = "same-file"
-version = "1.0.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
-dependencies = [
- "winapi-util",
-]
 
 [[package]]
 name = "scopeguard"
@@ -2051,16 +1953,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
-name = "walkdir"
-version = "2.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29790946404f91d9c5d06f9874efddea1dc06c5efe94541a7d6863108e3a5e4b"
-dependencies = [
- "same-file",
- "winapi-util",
-]
-
-[[package]]
 name = "want"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2196,15 +2088,6 @@ name = "winapi-i686-pc-windows-gnu"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
-
-[[package]]
-name = "winapi-util"
-version = "0.1.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
-dependencies = [
- "windows-sys 0.61.2",
-]
 
 [[package]]
 name = "winapi-x86_64-pc-windows-gnu"

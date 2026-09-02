@@ -16,13 +16,13 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            artifact: "axon-linux-amd64"
+            artifact: "magi-linux-amd64"
           - os: ubuntu-24.04-arm
-            artifact: "axon-linux-arm64"
+            artifact: "magi-linux-arm64"
           - os: macos-15-intel
-            artifact: "axon-macos-amd64"
+            artifact: "magi-macos-amd64"
           - os: macos-14
-            artifact: "axon-macos-arm64"
+            artifact: "magi-macos-arm64"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

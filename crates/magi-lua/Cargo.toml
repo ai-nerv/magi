@@ -1,0 +1,22 @@
+[package]
+name = "magi-lua"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+# The same VM oslo runs, pinned to the same tag on purpose: a config that loads in one sibling
+# must load in the other, and two VMs at two revisions is how that quietly stops being true.
+#
+# Stackless, pure Rust, tracing collector. No C, so the static musl build needs no C toolchain.
+luna.workspace = true
+magi-model.workspace = true
+magi-provider.workspace = true
+magi-tools.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

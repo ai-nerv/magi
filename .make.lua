@@ -1,4 +1,4 @@
--- axon's build, as recipes. This replaced the Makefile; there is no other.
+-- magi's build, as recipes. This replaced the Makefile; there is no other.
 --
 --   make            the recipes, with what each of them says it does
 --   make build      the binary
@@ -7,6 +7,12 @@
 --
 -- At an oslo prompt in this directory `make` is enough; everywhere else it is `oslo make`.
 -- CI has no oslo, so it calls the language's own tool -- nothing here is on the release path.
+--
+-- **Everything here builds `--release`.** `build` makes a release binary, `run` runs it and
+-- `install` copies it, so a `check` or a `test` against the debug profile compiles the whole
+-- workspace a second time into a second target directory -- and then verifies a set of
+-- artefacts nobody is going to run. One profile, one set of artefacts, one thing verified.
+-- `make debug` is the one way out, which is what its name is for.
 
 local make = oslo.make
 
@@ -17,7 +23,7 @@ local function project()
     local value = line:match("^%s*([^#%[%s]%S*)%s*$")
     if value then found[#found + 1] = value end
   end
-  return found[1] or "axon", found[2] or "0.1.0"
+  return found[1] or "magi", found[2] or "0.1.0"
 end
 
 local NAME, VERSION = project()
@@ -124,16 +130,16 @@ make.recipe{
 
 ---------------------------------------------------------------------------- rust
 
--- The workspace ships one binary, `axon`, and every crate is a library behind it. Recipes name
+-- The workspace ships one binary, `magi`, and every crate is a library behind it. Recipes name
 -- the binary rather than the library: `--lib` builds artifacts nobody runs.
-local BIN = "axon"
-local RECORDING = os.getenv("RECORDING") or "crates/axon-cli/tests/fixtures/hello.jsonl"
+local BIN = "magi"
+local RECORDING = os.getenv("RECORDING") or "crates/magi-cli/tests/fixtures/hello.jsonl"
 
 -- Where a demo host listens. Under `$XDG_RUNTIME_DIR` because a Unix socket path must stay
 -- shorter than SUN_LEN, and a scratch directory path does not.
 local function demo_socket()
   local dir = os.getenv("XDG_RUNTIME_DIR") or "/tmp"
-  return dir .. "/axon-demo.sock"
+  return dir .. "/magi-demo.sock"
 end
 
 local function target_path(release)
@@ -174,14 +180,19 @@ end
 
 -- Say when what is on PATH is older than what was just built.
 --
--- The recurring trap, and it has cost two evenings. `make build` writes into `target/`, `axon`
--- runs whatever is on PATH, and nothing connected the two: you fix a bug, rebuild, run `axon`,
+-- The recurring trap, and it has cost two evenings. `make build` writes into `target/`, `magi`
+-- runs whatever is on PATH, and nothing connected the two: you fix a bug, rebuild, run `magi`,
 -- and watch the bug you just fixed happen again. Both `build` and `configs` say so now, because
 -- each is a moment somebody is about to go and try the thing.
 --
 -- Below `binary_path` on purpose: it needs `BIN` and `binary_path`, and a `local` declared later
 -- in the file is a different variable from the global this would otherwise read.
+-- Set while `install` is running, because every warning below is "run `make install`" and
+-- printing that to somebody who is running it is noise that reads as a failure.
+local installing = false
+
 local function warn_if_install_is_behind()
+  if installing then return end
   local installed = PREFIX .. "/bin/" .. BIN
   if not oslo.fs.stat(installed) then
     print(dim("   nothing is installed yet — run `make install`"))
@@ -265,7 +276,7 @@ make.recipe{
 }
 make.alias("r", "run")
 
--- What somebody means by "run it". The daemon is not started here: axon starts its own, for
+-- What somebody means by "run it". The daemon is not started here: magi starts its own, for
 -- this directory, and stops being our business the moment it exists.
 --
 -- `demo` used to be called this, which cost an evening: it replays a recording, so the model
@@ -273,9 +284,9 @@ make.alias("r", "run")
 -- promises the product and delivers a fixture is worse than no recipe at all.
 make.recipe{
   name = "run",
-  desc = "axon, for real, in the current directory",
+  desc = "magi, for real, in the current directory",
   params = {
-    { "--prompt", desc = "submit this on start, as `axon \"...\"` does" },
+    { "--prompt", desc = "submit this on start, as `magi \"...\"` does" },
   },
   run = function(a)
     build_binary(false)
@@ -315,8 +326,13 @@ make.recipe{
 make.recipe{
   name = "install",
   desc = ("install the static binary to %s/bin, and config/ where it reads it"):format(PREFIX),
-  deps = { "build" },
+  -- Built here rather than through `deps`, so the flag is set before anything can warn. A
+  -- dependency runs first, and what it printed was "run `make install`" to somebody already
+  -- running it -- which reads as a failure at the top of a run that then succeeds.
   run = function()
+    installing = true
+    build_binary(true)
+    report(binary_path())
     local bin = PREFIX .. "/bin"
     assert(oslo.run{ "mkdir", "-p", bin }.ok, "could not create " .. bin)
     assert(oslo.run{ "install", "-m", "755", binary_path(), bin .. "/" .. BIN }.ok,
@@ -332,18 +348,18 @@ make.recipe{
 
 ---------------------------------------------------------------- configuration
 
--- axon's own configuration lives in `config/`, and this installs it: `config/*` becomes
--- `~/.config/axon/*`. The binary carries a copy of the same files, so a fresh install already
+-- magi's own configuration lives in `config/`, and this installs it: `config/*` becomes
+-- `~/.config/magi/*`. The binary carries a copy of the same files, so a fresh install already
 -- speaks and already has a catalog; this is how you get the real ones to edit.
 --
 -- The same shape as hexe's and oslo's `configs` recipe, deliberately: three tools that install
 -- their configuration three different ways is three things to remember.
 make.recipe{
   name = "configs",
-  desc = "install config/ into $XDG_CONFIG_HOME/axon",
+  desc = "install config/ into $XDG_CONFIG_HOME/magi",
   params = {
     { "--dest", desc = "somewhere other than the config directory" },
-    { "--force", flag = true, desc = "overwrite files you have edited" },
+    { "--keep", flag = true, desc = "leave installed files you have edited alone" },
   },
   run = function(a)
     assert(oslo.run{ "sh", "-c", "command -v rsync", capture = true }.ok,
@@ -364,16 +380,17 @@ make.recipe{
     end
     sh.mkdir("-p", dest)
 
-    -- Never over an edit. `rsync -a` overwrites unconditionally and preserves the source's
-    -- mtime, so a config you had changed came back as the shipped one *looking untouched* --
-    -- which is how a model choice reverted to a provider with no key, three times, while the
-    -- file's timestamp said nobody had been near it. The whole point of installing these is
-    -- that they are yours to edit; a command that undoes the editing is worse than useless.
+    -- The repo's `config/` is the source of truth, and installing copies it. That is the whole
+    -- job, and for a long time it was not what happened: anything that differed was left alone
+    -- and named, so one edited file froze forever and every later fix to it silently never
+    -- arrived. Three bugs were diagnosed twice because of it.
     --
-    -- So: anything missing is written, anything identical is written (it is the same bytes),
-    -- and anything that differs is left alone and named. `--force` is the way to say you meant
-    -- it. Directories are walked file by file for the same reason, and without `--delete`: a
-    -- tool you wrote into `tools/` is not litter.
+    -- `--keep` is the old refusal, for editing the installed copy on purpose. There was a `.bak`
+    -- beside anything overwritten for a while, and it went: a directory that grows a second copy
+    -- of every file you edit is litter, and the version worth recovering is in git anyway.
+    --
+    -- Directories are walked file by file, and without `--delete`: a tool you wrote into
+    -- `tools/` is not litter.
     local function same(a, b)
       return oslo.run{ "cmp", "-s", a, b }.ok
     end
@@ -381,7 +398,7 @@ make.recipe{
     local synced, kept = 0, {}
     local function install_file(src, dir, name)
       local dst = dir .. "/" .. name
-      if oslo.fs.stat(dst) and not same(src, dst) and not a.force then
+      if a.keep and oslo.fs.stat(dst) and not same(src, dst) then
         kept[#kept + 1] = dst
         return
       end
@@ -389,6 +406,7 @@ make.recipe{
       sh.rsync("-a", src, dst)
       synced = synced + 1
     end
+
 
     local function install_tree(src, dst)
       for _, path in ipairs(oslo.fs.glob(src .. "/*")) do
@@ -413,20 +431,25 @@ make.recipe{
           ("%d file%s -> %s"):format(synced, synced == 1 and "" or "s", dest))
     if #kept > 0 then
       print(oslo.ui.style("!  ", { fg = "yellow" }) ..
-            ("%d file%s left alone because you have changed %s:")
-              :format(#kept, #kept == 1 and "" or "s", #kept == 1 and "it" or "them"))
+            ("%d file%s left alone because you asked with --keep:")
+              :format(#kept, #kept == 1 and "" or "s"))
       for _, path in ipairs(kept) do print(dim("   " .. path)) end
-      print(dim("   `make configs --force` overwrites them"))
     end
 
-    -- Installed, then read back. axon loads its own configuration, so a file that will not run
+    -- Installed, then read back. magi loads its own configuration, so a file that will not run
     -- is worth knowing about now rather than the next time a daemon starts and quietly falls
     -- back to what it was compiled with.
+    --
+    -- Read back from the config directory rather than from wherever this was run. `.magi.lua` is
+    -- looked for in the working directory, so checking from inside a checkout also loaded that
+    -- checkout's project file and printed its refusals: three warnings about this repository, on
+    -- every install, saying nothing about what was installed.
     local binary = binary_path()
     if oslo.fs.stat(binary) then
       local home = dest:gsub("/" .. NAME .. "$", "")
+      local absolute = binary:sub(1, 1) == "/" and binary or (root .. "/" .. binary)
       local checked = oslo.run{ "sh", "-c",
-        ("XDG_CONFIG_HOME=%q %q models --all >/dev/null"):format(home, binary) }
+        ("cd %q && XDG_CONFIG_HOME=%q %q models --all >/dev/null"):format(dest, home, absolute) }
       assert(checked.ok, "the installed configuration does not load")
       print(dim("   it loads"))
     end
@@ -438,22 +461,24 @@ make.recipe{
 }
 
 make.recipe{ name = "test", desc = "the suite",
-             run = function() sh.cargo("test", "--all-targets") end }
+             run = function() sh.cargo("test", "--all-targets", "--release") end }
 make.alias("t", "test")
 
 make.recipe{ name = "check", desc = "type-check every target",
-             run = function() sh.cargo("check", "--all-targets") end }
+             run = function() sh.cargo("check", "--all-targets", "--release") end }
 
 make.recipe{ name = "clippy", desc = "clippy, with warnings denied",
              run = function()
-               sh.cargo("clippy", "--all-targets", "--", "-Dwarnings")
+               sh.cargo("clippy", "--all-targets", "--release", "--", "-Dwarnings")
              end }
 
 make.recipe{
   name = "rustdoc",
   desc = "build the docs, with warnings denied",
   run = function()
-    local built = oslo.run{ "env", "RUSTDOCFLAGS=-Dwarnings", "cargo", "doc", "--no-deps" }
+    local built = oslo.run{
+      "env", "RUSTDOCFLAGS=-Dwarnings", "cargo", "doc", "--no-deps", "--release",
+    }
     assert(built.ok, "rustdoc failed")
   end,
 }
@@ -470,7 +495,7 @@ make.recipe{
   name = "gates",
   desc = "the architectural gates",
   run = function()
-    local names = { "gate-file-size", "gate-proto-size", "gate-reachable" }
+    local names = { "gate-file-size", "gate-modules", "gate-proto-size", "gate-reachable" }
     local failed = {}
     for _, name in ipairs(names) do
       local result = oslo.run{ "sh", "scripts/" .. name .. ".sh", capture = true }

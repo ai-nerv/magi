@@ -1,7 +1,7 @@
 *.exe
 *.test
 *.out
-/axon
+/magi
 /coverage.out
 /bin
 /build
@@ -26,3 +26,4 @@ compile_commands.json
 
 # Planning documents stay local, as PLAN.md does.
 PLAN_DIFFERENCE.md
+config/clients/agent.lua

@@ -1,0 +1,39 @@
+[package]
+name = "magi-cli"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "magi"
+path = "src/main.rs"
+
+[dependencies]
+rustix.workspace = true
+base64.workspace = true
+reqwest.workspace = true
+magi-model.workspace = true
+anyhow.workspace = true
+magi-ipc.workspace = true
+magi-proto.workspace = true
+magi-host.workspace = true
+magi-lua.workspace = true
+magi-provider.workspace = true
+magi-tools.workspace = true
+magi-testkit.workspace = true
+magi-tui.workspace = true
+clap.workspace = true
+crossterm.workspace = true
+ratatui.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+
+[dev-dependencies]
+magi-journal.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
