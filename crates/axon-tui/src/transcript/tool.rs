@@ -82,7 +82,11 @@ pub(super) fn block(
     // What a call was given is the first row, not a second header: opening a block used to show
     // its arguments, then a rule, then the output, and for an `edit` that is the same thing twice.
     let lead = super::frame::MARGIN + STEP;
-    let body = usize::from(width).saturating_sub(lead + usize::from(crate::metric::block_pad()));
+    // `MARGIN` on the right, because that is what is actually there. It subtracted `block_pad`
+    // — one — and the block keeps two, so every row had a column of room that did not exist: a
+    // line that filled it came out a character wider than the frame, and the `…` that said it
+    // had been cut was the very thing hanging past the corner.
+    let body = usize::from(width).saturating_sub(lead + super::frame::MARGIN);
 
     // Gathered before anything is framed, because whether there is a box at all depends on
     // whether there is anything to put in one.
@@ -94,13 +98,12 @@ pub(super) fn block(
     // width to be read, and the edge is left to say one thing.
     let asked = summarize(args);
     if !asked.trim().is_empty() {
-        said.push(super::frame::inside(
-            Line::from(Span::styled(
-                clip(asked.trim(), body),
-                style.fg(colour::tool_output()),
-            )),
+        said.extend(laid(
+            asked.trim(),
+            style.fg(colour::tool_output()),
+            detail,
             width,
-            style,
+            body,
             lead,
         ));
     }
@@ -121,12 +124,7 @@ pub(super) fn block(
                 } else {
                     change_colour(line)
                 };
-                rows.push(super::frame::inside(
-                    Line::from(Span::styled(clip(line, body), style.fg(fg))),
-                    width,
-                    style,
-                    lead,
-                ));
+                rows.extend(laid(line, style.fg(fg), detail, width, body, lead));
             }
             // The affordance goes on the fold, because that is where a reader is
             // looking when they wonder where the rest went.
@@ -577,3 +575,119 @@ mod header_tests;
 #[cfg(test)]
 #[path = "handle.rs"]
 mod handle_tests;
+
+/// One line of a block's contents, cut or wrapped according to how much was asked for.
+///
+/// **This is what opening a block is for.** Every row was cut to the width whichever way the
+/// block was showing, so a long line ended in `…` open or shut — and the key that was supposed to
+/// reveal it added rows underneath without touching the one thing the reader was looking at.
+/// Pressing it on a short result did nothing at all, visibly.
+///
+/// So: a preview cuts, because a preview is a glance and one row per line is what makes it
+/// scannable. Open, nothing is hidden — a long line wraps and every character of it is there.
+fn laid(
+    text: &str,
+    style: Style,
+    detail: Detail,
+    width: u16,
+    body: usize,
+    lead: usize,
+) -> Vec<Line<'static>> {
+    match detail {
+        Detail::Preview => vec![super::frame::inside(
+            Line::from(Span::styled(clip(text, body), style)),
+            width,
+            style,
+            lead,
+        )],
+        Detail::Full => {
+            let whole = Line::from(Span::styled(crate::wrap::expand_tabs(text), style));
+            crate::wrap::line(whole, u16::try_from(body).unwrap_or(u16::MAX))
+                .into_iter()
+                .map(|part| super::frame::inside(part, width, style, lead))
+                .collect()
+        }
+    }
+}
+
+/// Opening a block shows what a preview cut, and nothing ever leaves the frame.
+#[cfg(test)]
+mod revealing {
+    use super::*;
+
+    const LONG: &str =
+        "the quick brown fox jumps over the lazy dog and keeps running well past the edge";
+
+    fn rows(detail: Detail, width: u16) -> Vec<String> {
+        block(
+            "shell",
+            r#"{"command":"grep -rn 'a pattern long enough to need cutting' crates/"}"#,
+            Some(&axon_proto::ToolResult {
+                output: format!("{LONG}\nshort\n{LONG}"),
+                is_error: false,
+            }),
+            width,
+            detail,
+        )
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+        .collect()
+    }
+
+    #[test]
+    fn opening_shows_the_end_of_a_line_a_preview_cut() {
+        // The complaint this is here for. Every row was cut whichever way the block was showing,
+        // so a long line ended in `…` open or shut — and the key that was meant to reveal it
+        // added rows underneath without touching the thing being read. On a short result it did
+        // nothing visible at all.
+        let folded = rows(Detail::Preview, 56).join("\n");
+        assert!(folded.contains('…'), "the premise: it was cut\n{folded}");
+        assert!(
+            !folded.contains("past the edge"),
+            "the tail is showing while folded\n{folded}"
+        );
+
+        let open = rows(Detail::Full, 56).join("\n");
+        assert!(
+            open.contains("past the edge"),
+            "opening it did not show the rest\n{open}"
+        );
+        assert!(!open.contains('…'), "still cutting when open\n{open}");
+    }
+
+    #[test]
+    fn nothing_reaches_past_the_frame_either_way() {
+        // The width the body was laid out to subtracted one column on the right where the block
+        // keeps two, so a line that filled it came out a character wider than the frame — and
+        // the `…` saying it had been cut was the thing hanging past the corner.
+        for width in [24u16, 40, 56, 100] {
+            for detail in [Detail::Preview, Detail::Full] {
+                for row in rows(detail, width) {
+                    assert_eq!(
+                        row.chars().count(),
+                        usize::from(width),
+                        "at {width} ({detail:?}): {row:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_preview_is_still_one_row_a_line() {
+        // The other half: a preview is a glance, and a wrapped one is not scannable. Three lines
+        // of output, three rows, plus the arguments, the two edges, and the gap above.
+        let shown = rows(Detail::Preview, 56);
+        assert_eq!(shown.len(), 7, "{shown:#?}");
+    }
+
+    #[test]
+    fn a_long_argument_is_shown_in_full_when_the_block_is() {
+        // The arguments are a row like any other now, so they wrap with the rest.
+        let open = rows(Detail::Full, 40).join("\n");
+        assert!(
+            open.contains("crates/"),
+            "the end of the command is missing\n{open}"
+        );
+    }
+}
