@@ -16,13 +16,19 @@ pub fn sessions_dir() -> PathBuf {
     base.join("axon").join("sessions")
 }
 
-/// A session identifier derived from the time it started.
+/// A session identifier derived from the time it started, and what tells it from its neighbours.
 ///
 /// Sortable as a string, which is what makes "the most recent session" a directory listing
-/// rather than a database.
+/// rather than a database. The time alone is not enough: it has seconds of resolution, and two
+/// sessions started in the same second named one journal between them and wrote into it
+/// together. That is not a rare race now — starting a second `axon` beside the first is the
+/// ordinary way to get two, and a person doing it does not pause a second first.
 #[must_use]
-pub fn session_id(now: u64) -> String {
-    format!("{now:020}")
+pub fn session_id(now: u64, whose: &str) -> String {
+    if whose.is_empty() {
+        return format!("{now:020}");
+    }
+    format!("{now:020}-{whose}")
 }
 
 /// The newest session journal in `dir`, if there is one.
@@ -77,10 +83,14 @@ mod tests {
 
     #[test]
     fn ids_sort_chronologically_as_strings() {
-        let mut ids = [session_id(1_700_000_000), session_id(9), session_id(1_000)];
+        let mut ids = [
+            session_id(1_700_000_000, ""),
+            session_id(9, ""),
+            session_id(1_000, ""),
+        ];
         ids.sort();
-        assert_eq!(ids[0], session_id(9), "{ids:?}");
-        assert_eq!(ids[2], session_id(1_700_000_000), "{ids:?}");
+        assert_eq!(ids[0], session_id(9, ""), "{ids:?}");
+        assert_eq!(ids[2], session_id(1_700_000_000, ""), "{ids:?}");
     }
 
     #[test]
@@ -88,13 +98,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("axon-latest-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("mkdir");
-        for id in [session_id(1), session_id(500)] {
+        for id in [session_id(1, ""), session_id(500, "")] {
             std::fs::write(dir.join(format!("{id}.jsonl")), "").expect("write");
         }
         std::fs::write(dir.join("notes.txt"), "").expect("write");
 
         let newest = latest(&dir).expect("a journal");
-        assert!(newest.to_string_lossy().contains(&session_id(500)));
+        assert!(newest.to_string_lossy().contains(&session_id(500, "")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -120,8 +130,8 @@ mod resume_tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("mkdir");
         for (id, cwd) in [(1_u64, "/work/a"), (2, "/work/a"), (3, "/work/b")] {
-            let path = dir.join(format!("{}.jsonl", session_id(id)));
-            axon_journal::Journal::open(&path, SessionId::new(session_id(id)), cwd, id)
+            let path = dir.join(format!("{}.jsonl", session_id(id, "")));
+            axon_journal::Journal::open(&path, SessionId::new(session_id(id, "")), cwd, id)
                 .expect("journal");
         }
         dir
@@ -132,7 +142,7 @@ mod resume_tests {
         let dir = fixture("scoped");
         let found = latest_for(&dir, "/work/a").expect("a journal");
         assert!(
-            found.to_string_lossy().contains(&session_id(2)),
+            found.to_string_lossy().contains(&session_id(2, "")),
             "{found:?}"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -143,7 +153,7 @@ mod resume_tests {
         // The bare `latest` would return the /work/b journal, which is the bug this avoids.
         let dir = fixture("elsewhere");
         let newest = latest(&dir).expect("a journal");
-        assert!(newest.to_string_lossy().contains(&session_id(3)));
+        assert!(newest.to_string_lossy().contains(&session_id(3, "")));
         let found = latest_for(&dir, "/work/a").expect("a journal");
         assert_ne!(found, newest);
         let _ = std::fs::remove_dir_all(&dir);

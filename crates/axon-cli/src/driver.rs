@@ -32,9 +32,7 @@ const RECONNECT_DELAY: Duration = Duration::from_millis(500);
 pub async fn run(
     socket: &Path,
     prompt: Option<String>,
-    sessions: Option<std::path::PathBuf>,
     loaded: Option<crate::config::Loaded>,
-    environ: std::collections::BTreeMap<String, String>,
     identity: crate::identity::Identity,
 ) -> Result<()> {
     // **Before anything reads a setting.** `colour`, `glyph` and `metric` each hold their table
@@ -76,9 +74,9 @@ pub async fn run(
         }
     }
     // Before anything else, because the answer to "why is my new tool not there" has to arrive
-    // before the model is asked to use it. The daemon holds the tool set it was built with, and
-    // a session that outlived a config edit reports the tool as unregistered -- which reads as a
-    // broken tool rather than a stale daemon.
+    // before the model is asked to use it. A session holds the tool set it was built with, and
+    // one that has been open across a config edit reports the tool as unregistered -- which
+    // reads as a broken tool rather than as a session that predates it.
     let edited = crate::config::edited_since_start(socket);
     if !edited.is_empty() {
         let names: Vec<String> = edited
@@ -86,7 +84,7 @@ pub async fn run(
             .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
             .collect();
         app.notice_after_attach(format!(
-            "This session started before {} changed. Run `axon stop` to pick it up.",
+            "This session started before {} changed. Quit and start axon again to pick it up.",
             names.join(", ")
         ));
     }
@@ -149,8 +147,6 @@ pub async fn run(
         socket.to_path_buf(),
         event_tx,
         command_rx,
-        sessions,
-        environ,
         app.cursor(),
         Arc::clone(&attached),
     ));
@@ -467,27 +463,6 @@ pub async fn run(
     // that reuses the id look like somebody's subagent, and the reader believes the file.
     crate::instance::forget(&app.identity);
 
-    // The daemon this UI started goes with it.
-    //
-    // A UI quitting was a detach and the daemon was left running, which is the right shape for
-    // a long turn you want to walk away from and the wrong one for everything else: a week of
-    // work left a process per project, each holding the socket, the tool set and the
-    // environment of whichever shell happened to start it. That last one cost three sessions —
-    // a daemon started before a key was exported can never see it, and nothing said so.
-    //
-    // **Unconditional.** The first attempt stopped only a daemon this UI had started itself,
-    // which sounds careful and is the bug: anything left by an earlier `-p`, a crash, or a
-    // killed session means the UI attaches rather than spawns, and it then left the mess
-    // exactly where it found it. From the outside that is indistinguishable from the cleanup
-    // never having been written.
-    //
-    // A second UI on the same socket survives it: its own reconnect loop starts a replacement
-    // and resumes, because the session is on disk rather than in the process.
-    //
-    // The flag and the `axon.daemon` setting that would make this a choice are worth having and
-    // are not worth guessing at before somebody wants the other behaviour.
-    crate::stop::stop_one(&crate::daemon::pid_path(socket));
-
     Ok(())
 }
 
@@ -499,8 +474,6 @@ async fn connection_loop(
     socket: std::path::PathBuf,
     events: mpsc::Sender<HarnessEvent>,
     mut commands: mpsc::Receiver<UiCommand>,
-    sessions: Option<std::path::PathBuf>,
-    environ: std::collections::BTreeMap<String, String>,
     mut from_cursor: Cursor,
     attached: Arc<std::sync::atomic::AtomicBool>,
 ) {
@@ -508,25 +481,16 @@ async fn connection_loop(
         attached.store(false, Ordering::Relaxed);
         let Ok(stream) = axon_ipc::connect(&socket).await else {
             debug_log(format_args!("connect failed"));
-            // Redialling alone only works when the daemon is slow, not when it is gone -- and
-            // it is gone in every case that matters: it crashed, `axon stop` ended it, the
-            // machine slept. The socket is removed on the way out, so there is nothing left to
-            // dial and the UI spun on "Reconnecting" for as long as it was left open. Starting
-            // one is what a detached UI is for.
-            // `resume`, not a fresh session. The daemon owns the conversation and a restart is
-            // meant to be invisible; starting a new one instead threw the transcript away and
-            // the UI came back to a greeting, which is a worse failure than the hang this
-            // replaced. The session being resumed is this directory's most recent, which is
-            // precisely the one that just died.
-            match crate::daemon::ensure(&socket, sessions.as_deref(), true, &environ).await {
-                // Nothing to record: the UI stops this directory's daemon on the way out
-                // whether it started it or adopted it.
-                Ok(_) => {}
-                Err(error) => {
-                    debug_log(format_args!("restart failed: {error}"));
-                    tokio::time::sleep(RECONNECT_DELAY).await;
-                }
-            }
+            // Waited out rather than restarted. There is nothing to restart: the session is a
+            // task in this process, so a socket that will not answer means this process is
+            // still binding it — the only race left — or has begun shutting it down, and
+            // either way the loop ends when the process does.
+            //
+            // This used to spawn a daemon. It had to: the session was a separate process that
+            // could crash, be killed, or be lost to a sleeping machine, and a UI with nothing
+            // to talk to had to build itself a new one and resume the journal. None of those
+            // can happen to something that dies exactly when its window does.
+            tokio::time::sleep(RECONNECT_DELAY).await;
             continue;
         };
 

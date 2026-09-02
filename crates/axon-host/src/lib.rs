@@ -517,8 +517,8 @@ pub fn error_event(cursor: Cursor, class: ErrorClass, message: String) -> Harnes
 }
 
 /// Open the session a daemon should serve for `cwd`.
-pub fn open_session(dir: &Path, cwd: &str, now: u64) -> Result<Session, JournalError> {
-    let id = paths::session_id(now);
+pub fn open_session(dir: &Path, cwd: &str, now: u64, whose: &str) -> Result<Session, JournalError> {
+    let id = paths::session_id(now, whose);
     let path = dir.join(format!("{id}.jsonl"));
     Session::open(&path, axon_proto::SessionId::new(id), cwd, now)
 }

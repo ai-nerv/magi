@@ -8,12 +8,12 @@ mod app;
 mod auth;
 mod clipboard;
 mod config;
-mod daemon;
 mod driver;
 mod ext_lua;
 mod external_editor;
 mod help;
 mod history;
+mod host;
 mod identity;
 mod instance;
 mod keys;
@@ -21,7 +21,6 @@ mod models;
 mod paths;
 mod print;
 mod shell;
-mod stop;
 mod terminal;
 mod tools;
 mod ui;
@@ -71,15 +70,6 @@ enum Command {
     /// Sign in to a provider that uses a subscription rather than a key.
     #[command(subcommand)]
     Auth(AuthCommand),
-    /// Stop the daemon for this directory.
-    ///
-    /// Quitting the UI is a detach on purpose — the turn keeps running — so nothing otherwise
-    /// ever ends one, and a week of work leaves a process per project.
-    Stop {
-        /// Stop every daemon, not just this directory's.
-        #[arg(long)]
-        all: bool,
-    },
     /// List the tools the model can call, and how each is reached.
     Tools,
     /// List the providers and models axon knows about.
@@ -88,8 +78,6 @@ enum Command {
         #[arg(long)]
         all: bool,
     },
-    /// Run the daemon: own the journal, serve the socket.
-    Host,
     /// Serve a recorded session so the UI can be developed without a model.
     FakeHost {
         /// JSONL recording to replay.
@@ -105,7 +93,12 @@ enum Command {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let cwd = std::env::current_dir()?;
-    let socket = cli.socket.unwrap_or_else(|| axon_ipc::socket_for(&cwd));
+    // Only for a daemon somebody ran by hand, and for the replay host. Every real session names
+    // its own socket after itself — see `mine` below and [`instance::host_at`].
+    let socket = cli
+        .socket
+        .clone()
+        .unwrap_or_else(|| axon_ipc::socket_for(&cwd));
 
     match cli.command {
         Some(Command::Ext(Ext::Shell)) => shell::run(),
@@ -114,7 +107,6 @@ async fn main() -> Result<()> {
         Some(Command::Auth(AuthCommand::Login { provider })) => auth::login(&provider).await,
         Some(Command::Auth(AuthCommand::Logout { provider })) => auth::logout(&provider),
         Some(Command::Auth(AuthCommand::Status)) => auth::status(),
-        Some(Command::Stop { all }) => stop::run(&socket, all),
         Some(Command::Tools) => {
             tools::print()?;
             Ok(())
@@ -123,7 +115,6 @@ async fn main() -> Result<()> {
             models::print(all);
             Ok(())
         }
-        Some(Command::Host) => host(&socket, cli.sessions, &cwd, cli.resume).await,
         Some(Command::FakeHost { replay, pace_ms }) => {
             let recording = axon_testkit::Recording::load(&replay).await?;
             eprintln!(
@@ -136,19 +127,30 @@ async fn main() -> Result<()> {
             harness.serve(listener).await?;
             Ok(())
         }
-        // A daemon is started even for a one-shot: it owns the session, so a `-p` answer is
-        // journalled and resumable rather than thrown away with the process that printed it.
+        // Journalled like any other session, so a `-p` answer is resumable rather than thrown
+        // away with the process that printed it.
         None if cli.print => {
             let Some(prompt) = cli.prompt else {
                 anyhow::bail!("`-p` needs a prompt: axon -p \"…\"");
             };
-            let environ = crate::config::load()
-                .ok()
-                .as_ref()
-                .map(crate::config::environ)
-                .unwrap_or_default();
-            daemon::ensure(&socket, cli.sessions.as_deref(), cli.resume, &environ).await?;
-            let outcome = print::run(&socket, prompt).await?;
+            // Its own instance too. `axon -p` is a session like any other: it has a name, it is
+            // journalled, and while it runs another axon can reach it.
+            let loaded = crate::config::load().ok();
+            let (identity, environ) = mine(loaded.as_ref());
+            let socket = cli.socket.unwrap_or_else(|| instance::host_at(&identity));
+            host::start(
+                &socket,
+                cli.sessions.as_deref(),
+                cli.resume,
+                &cwd,
+                loaded.as_ref(),
+                &environ,
+                &identity.id,
+            )
+            .await?;
+            let outcome = print::run(&socket, prompt).await;
+            host::done(&socket);
+            let outcome = outcome?;
             if !outcome.text.is_empty() {
                 println!("{}", outcome.text);
             }
@@ -161,113 +163,53 @@ async fn main() -> Result<()> {
             Ok(())
         }
         None => {
-            // The return value is not kept: the UI stops this directory's daemon when it
-            // exits whether it started it or adopted one that was already there.
             // Loaded once, here. Every later reader is handed this one: a second `load` in the
             // same process runs every configuration file again and repeats every refusal it
             // printed the first time.
             let loaded = crate::config::load().ok();
-            let mut environ = loaded
-                .as_ref()
-                .map(crate::config::environ)
-                .unwrap_or_default();
-            // Named here rather than in the UI, because the daemon is started a line below and
-            // everything it spawns inherits this. A tool peer is the only thing that can reach
-            // other instances — it needs the directory, and the daemon does not have one — and
-            // the one fact it cannot work out for itself is which session it belongs to.
-            let identity =
-                identity::Identity::here(loaded.as_ref().and_then(|l| l.config.string("project")));
-            environ.insert(instance::PROJECT.to_owned(), identity.project.clone());
-            environ.insert(instance::ROLE.to_owned(), identity.role.clone());
-            environ.insert(instance::ID.to_owned(), identity.id.clone());
-            daemon::ensure(&socket, cli.sessions.as_deref(), cli.resume, &environ).await?;
-            driver::run(&socket, cli.prompt, cli.sessions, loaded, environ, identity).await
+            let (identity, environ) = mine(loaded.as_ref());
+            // This instance's own socket, named after itself. Named after the *directory*, a
+            // second `axon` started in the same place found the first one already answering
+            // and joined it — one session, one journal, one transcript, and whatever either of
+            // them typed appearing in both.
+            let socket = cli.socket.unwrap_or_else(|| instance::host_at(&identity));
+            host::start(
+                &socket,
+                cli.sessions.as_deref(),
+                cli.resume,
+                &cwd,
+                loaded.as_ref(),
+                &environ,
+                &identity.id,
+            )
+            .await?;
+            let ran = driver::run(&socket, cli.prompt, loaded, identity).await;
+            // Not on a signal, and not by anybody else: the session is this process, so the
+            // only thing that ends it is this process ending.
+            host::done(&socket);
+            ran
         }
     }
 }
 
-/// Run the daemon.
+/// Who this instance is, and the environment everything it starts inherits.
 ///
-/// Resuming picks the newest journal recorded for this directory rather than the newest
-/// anywhere: sessions are stored flat, so "the last one" on its own means the last one in
-/// whatever project happened to be open most recently.
-async fn host(
-    socket: &std::path::Path,
-    sessions: Option<PathBuf>,
-    cwd: &std::path::Path,
-    resume: bool,
-) -> Result<()> {
-    let dir = sessions.unwrap_or_else(axon_host::paths::sessions_dir);
-    let cwd = cwd.display().to_string();
-    let session = match resume
-        .then(|| axon_host::paths::latest_for(&dir, &cwd))
-        .flatten()
-    {
-        Some(path) => axon_host::session::Session::open(
-            &path,
-            axon_proto::SessionId::new(axon_host::paths::session_id(unix_seconds())),
-            &cwd,
-            unix_seconds(),
-        )?,
-        None => axon_host::open_session(&dir, &cwd, unix_seconds())?,
-    };
-    eprintln!(
-        "axon host: session {} on {}",
-        session.id(),
-        socket.display()
-    );
-    // Fatal rather than defaulted: a config that will not run has expressed an intention that
-    // has not been carried out, and a daemon that quietly ignores it answers every prompt with
-    // the wrong model for as long as nobody notices.
-    let loaded = crate::config::load()?;
-    let backend = crate::config::backend(&loaded);
-    let catalog = crate::config::catalog(&loaded);
-    if backend.is_none() {
-        eprintln!("axon host: no model configured; prompts will say so");
-    }
-    let listener = axon_ipc::bind(socket).await?;
-
-    // Raced against the signals that mean "stop", so the daemon takes its socket and pid file
-    // with it. Left behind, a socket nobody is listening on is indistinguishable from a daemon
-    // that is merely busy, and the next run waits out its whole startup timeout on it.
-    tokio::select! {
-        result = axon_host::serve_catalog(listener, session, backend, catalog) => result?,
-        () = shutdown() => eprintln!("axon host: stopping"),
-    }
-    let _ = tokio::fs::remove_file(socket).await;
-    let _ = tokio::fs::remove_file(daemon::pid_path(socket)).await;
-    Ok(())
-}
-
-/// Resolve when the daemon is asked to stop.
-///
-/// Both signals, because `axon stop` sends one and a person with the daemon in the foreground
-/// sends the other, and neither should leave files behind.
-async fn shutdown() {
-    let mut term = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-        Ok(term) => term,
-        // Nothing can be installed, so nothing can be waited on. Never resolving is right: the
-        // other arm of the race is the daemon doing its job.
-        Err(_) => return std::future::pending().await,
-    };
-    tokio::select! {
-        _ = term.recv() => {}
-        result = tokio::signal::ctrl_c() => {
-            if result.is_err() {
-                std::future::pending::<()>().await;
-            }
-        }
-    }
-}
-
-/// Seconds since the epoch, for naming a session.
-///
-/// A session id is a sortable timestamp, which is what makes "the most recent session" a
-/// directory listing rather than an index to maintain.
-fn unix_seconds() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
+/// Named here rather than in the UI, because the daemon is started before the first frame and
+/// everything it spawns inherits this. A tool peer is the only thing that can reach other
+/// instances — it needs the project directory, and the daemon does not have one — and the one
+/// fact it cannot work out for itself is which session it belongs to.
+fn mine(
+    loaded: Option<&crate::config::Loaded>,
+) -> (
+    identity::Identity,
+    std::collections::BTreeMap<String, String>,
+) {
+    let mut environ = loaded.map(crate::config::environ).unwrap_or_default();
+    let identity = identity::Identity::here(loaded.and_then(|l| l.config.string("project")));
+    environ.insert(instance::PROJECT.to_owned(), identity.project.clone());
+    environ.insert(instance::ROLE.to_owned(), identity.role.clone());
+    environ.insert(instance::ID.to_owned(), identity.id.clone());
+    (identity, environ)
 }
 
 /// What `axon auth` can do.

@@ -114,54 +114,38 @@ fn workspace(name: &str, base_url: &str) -> PathBuf {
 }
 
 /// Run the binary under test in `dir`, isolated from the machine's own config and sockets.
+///
+/// The socket is named explicitly, so a test that only wants an answer gets a predictable
+/// path. Use [`unpinned`] for the ones that are about the naming itself.
 fn axon(dir: &Path, args: &[&str]) -> std::process::Output {
+    let socket = dir.join("run/host.sock");
+    let mut named: Vec<&str> = vec!["--socket", socket.to_str().expect("a path")];
+    named.extend_from_slice(args);
+    unpinned(dir, &named)
+}
+
+/// The same, letting axon name its own socket the way it does for a person.
+fn unpinned(dir: &Path, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_axon"))
         .current_dir(dir)
         .env("XDG_RUNTIME_DIR", dir.join("run"))
         .env("XDG_CONFIG_HOME", dir.join("config"))
-        .arg("--socket")
-        .arg(dir.join("run/host.sock"))
         .args(args)
         .output()
         .expect("run axon")
 }
 
-/// Stop the daemon this test started, so it does not outlive the run.
+/// Remove a workspace.
+///
+/// It used to have to hunt down daemons first, by recorded pid, and assert that each had died.
+/// There is nothing to hunt: a session is the process that shows it, so `axon` returning means
+/// its session is already over.
 fn teardown(dir: &Path) {
-    stop_daemon(dir);
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// Kill every daemon started under `dir`, and wait for its socket to stop answering.
-///
-/// By recorded pid, never by `pkill -f`: that pattern is matched against every command line on
-/// the machine, and a temporary directory path is a prefix other processes can share -- the
-/// one running these tests included.
-fn stop_daemon(dir: &Path) {
-    for pid_file in pid_files(&dir.join("run")) {
-        let Ok(pid) = std::fs::read_to_string(&pid_file) else {
-            continue;
-        };
-        let _ = Command::new("kill").arg(pid.trim()).status();
-
-        let socket = pid_file.with_extension("sock");
-        let stopped = (0..40).any(|_| {
-            if std::os::unix::net::UnixStream::connect(&socket).is_err() {
-                return true;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(50));
-            false
-        });
-        // Asserted rather than tolerated: a surviving daemon still has the session open, so
-        // the next run would attach to it and pass a resume test without resuming anything.
-        assert!(stopped, "the daemon outlived the run that started it");
-        let _ = std::fs::remove_file(&pid_file);
-    }
-}
-
-/// Pid files directly under `dir` or one level below it, which is where both socket layouts
-/// these tests use put them: an explicit `--socket`, and the default named for the directory.
-fn pid_files(dir: &Path) -> Vec<PathBuf> {
+/// Every socket left under `dir`, at any depth.
+fn sockets(dir: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else {
         return out;
@@ -169,8 +153,8 @@ fn pid_files(dir: &Path) -> Vec<PathBuf> {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            out.extend(pid_files(&path));
-        } else if path.extension().is_some_and(|e| e == "pid") {
+            out.extend(sockets(&path));
+        } else {
             out.push(path);
         }
     }
@@ -229,7 +213,6 @@ fn resuming_reconstructs_the_context_the_model_is_given() {
             .status
             .success()
     );
-    stop_daemon(&dir);
 
     let second = axon(
         &dir,
@@ -278,40 +261,37 @@ fn resuming_reconstructs_the_context_the_model_is_given() {
 }
 
 #[test]
-fn two_directories_do_not_share_a_session() {
-    // The default socket is named for the working directory, so `axon` in one project cannot
-    // attach to another's transcript.
-    let one = workspace("split-a", &serve(stream("a")));
-    let two = workspace("split-b", &serve(stream("b")));
-    let a = Command::new(env!("CARGO_BIN_EXE_axon"))
-        .current_dir(&one)
-        .env("XDG_RUNTIME_DIR", one.join("run"))
-        .env("XDG_CONFIG_HOME", one.join("config"))
-        .args(["--sessions", "sessions", "-p", "hello"])
-        .output()
-        .expect("run");
-    assert!(a.status.success(), "{}", String::from_utf8_lossy(&a.stderr));
+fn two_runs_in_one_directory_do_not_share_a_session() {
+    // The bug this is here for. The socket used to be named after the *working directory*, so a
+    // second `axon` started in the same place found the first one's daemon already answering
+    // and attached to it: two windows, one session, one transcript, and whatever either of them
+    // typed appeared in both.
+    //
+    // Sequential rather than concurrent, because what is under test is the *naming*: if the
+    // socket were the directory's, both runs would use one path and leave one journal.
+    let dir = workspace("split", &serve(stream("a")));
+    for _ in 0..2 {
+        let out = unpinned(&dir, &["--sessions", "sessions", "-p", "hello"]);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
 
-    let sockets: Vec<PathBuf> = std::fs::read_dir(one.join("run/axon"))
-        .expect("runtime dir")
+    let journals: Vec<PathBuf> = std::fs::read_dir(dir.join("sessions"))
+        .expect("sessions dir")
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "sock"))
+        .filter(|p| p.extension().is_some_and(|e| e == "jsonl"))
         .collect();
-    assert_eq!(sockets.len(), 1, "{sockets:?}");
-    assert_ne!(
-        sockets[0].file_name(),
-        Some(std::ffi::OsStr::new("host.sock")),
-        "the socket is named for the directory, not shared"
-    );
-    // Without this the teardown below has nothing to kill and says nothing about it, which is
-    // how the default socket layout leaked a daemon per run without any test noticing.
-    assert!(
-        !pid_files(&one.join("run")).is_empty(),
-        "the daemon recorded where to find it"
-    );
-    teardown(&one);
-    teardown(&two);
+    assert_eq!(journals.len(), 2, "one session each: {journals:?}");
+
+    // And nothing outlives either of them. A socket file nobody is listening on is
+    // indistinguishable from a session that is merely busy.
+    let left = sockets(&dir.join("run"));
+    assert!(left.is_empty(), "something was left behind: {left:?}");
+    teardown(&dir);
 }
 
 /// A provider that accepts the request and never answers, leaving a turn in flight.
@@ -365,7 +345,6 @@ fn a_daemon_killed_mid_turn_leaves_a_journal_that_still_loads() {
     }
     let journal = journal.expect("the prompt was journalled before the provider was called");
 
-    stop_daemon(&dir);
     let _ = child.kill();
     let _ = child.wait();
 
@@ -476,57 +455,6 @@ fn print_mode_waits_for_the_answer_after_a_tool_runs() {
     teardown(&dir);
 }
 
-#[test]
-fn stop_ends_the_daemon_and_takes_its_files_with_it() {
-    // Quitting the UI is a detach on purpose, so nothing else ever ends a daemon. Without
-    // this, a week of work leaves a process per project and `ps | grep` is the interface.
-    let dir = workspace("stop", &serve(stream("hello")));
-    assert!(
-        axon(&dir, &["--sessions", "sessions", "-p", "hi"])
-            .status
-            .success()
-    );
-    let socket = dir.join("run/host.sock");
-    assert!(
-        std::os::unix::net::UnixStream::connect(&socket).is_ok(),
-        "a daemon is running"
-    );
-
-    let output = axon(&dir, &["stop"]);
-    assert!(output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stdout).contains("Stopped 1"),
-        "{}",
-        String::from_utf8_lossy(&output.stdout)
-    );
-
-    assert!(
-        std::os::unix::net::UnixStream::connect(&socket).is_err(),
-        "and is gone"
-    );
-    // A socket file nobody is listening on is indistinguishable from a busy daemon, and the
-    // next run waits out its whole startup timeout on one.
-    assert!(!socket.exists(), "the socket file went with it");
-    assert!(
-        !dir.join("run/host.pid").exists(),
-        "and so did the pid file"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn stopping_when_nothing_runs_says_so_rather_than_failing() {
-    let dir = workspace("stop-nothing", &serve(stream("unused")));
-    let output = axon(&dir, &["stop"]);
-    assert!(output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stdout).contains("No daemon"),
-        "{}",
-        String::from_utf8_lossy(&output.stdout)
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
 /// Copy the checkout's `config/` into a test's config directory.
 ///
 /// The binary carries no configuration, so a test that isolates `XDG_CONFIG_HOME` has to install
@@ -550,74 +478,20 @@ fn install_config(into: &Path) {
 }
 
 #[test]
-fn the_daemon_runs_under_the_axon_profile() {
-    // The peer sets this for itself, which covers the shell. The daemon needs it too, for
-    // everything it starts that is not a peer — the `git` it asks about the branch, the `sh` a
-    // permission check runs — or half of what a session does falls outside the profile it is
-    // supposed to be recording under.
-    let dir = workspace("profile", &serve(stream("here")));
+fn a_session_leaves_nothing_running_behind_it() {
+    // What replaced `axon stop`. A daemon owned the session and a UI quitting was a *detach*,
+    // so nothing ever ended one and a week of work left a process per project — `axon stop`
+    // existed only to clean up after that. The session is the process now, so returning from
+    // `axon` is the end of it, with no socket, no pid file and no second process.
+    let dir = workspace("nothing-behind", &serve(stream("bye")));
     let output = axon(&dir, &["--sessions", "sessions", "-p", "what is it"]);
     assert!(
         output.status.success(),
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-
-    let running: Vec<u32> = pid_files(&dir.join("run"))
-        .into_iter()
-        .filter_map(|path| std::fs::read_to_string(path).ok())
-        .filter_map(|pid| pid.trim().parse::<u32>().ok())
-        .collect();
-    assert!(!running.is_empty(), "a daemon was started");
-
-    for pid in running {
-        let environ = std::fs::read(format!("/proc/{pid}/environ")).expect("its environment");
-        let seen = String::from_utf8_lossy(&environ);
-        assert!(
-            seen.split('\0').any(|pair| pair == "OSLO_PROFILE=axon"),
-            "daemon {pid} is outside the profile"
-        );
-    }
-    teardown(&dir);
-}
-
-#[test]
-fn a_daemon_nobody_is_attached_to_stops_on_its_own() {
-    // The leak this closes: a `-p` run attaches, gets its answer and detaches, and the daemon
-    // stayed up for the rest of the afternoon. One per directory per session is how twenty-two
-    // of them end up running. Detaching still is not ending a session — the grace period is
-    // what makes reattaching possible — so the test sets a short one rather than none.
-    let dir = workspace("idle", &serve(stream("bye")));
-    let init = dir.join("config/axon/init.lua");
-    let mut source = std::fs::read_to_string(&init).expect("the entry point");
-    source.push_str("\naxon.idle_exit = 1\n");
-    std::fs::write(&init, source).expect("write");
-
-    let output = axon(&dir, &["--sessions", "sessions", "-p", "what is it"]);
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let started: Vec<u32> = pid_files(&dir.join("run"))
-        .into_iter()
-        .filter_map(|path| std::fs::read_to_string(path).ok())
-        .filter_map(|pid| pid.trim().parse::<u32>().ok())
-        .collect();
-    assert!(!started.is_empty(), "a daemon was started");
-
-    // Its own clock, so this waits for the behaviour rather than for a fixed sleep.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    let alive = |pid: u32| std::path::Path::new(&format!("/proc/{pid}")).exists();
-    while std::time::Instant::now() < deadline && started.iter().copied().any(alive) {
-        std::thread::sleep(std::time::Duration::from_millis(250));
-    }
-    let stragglers: Vec<u32> = started.iter().copied().filter(|p| alive(*p)).collect();
-    assert!(
-        stragglers.is_empty(),
-        "still running with nobody attached: {stragglers:?}"
-    );
+    let left = sockets(&dir.join("run"));
+    assert!(left.is_empty(), "{left:?}");
     teardown(&dir);
 }
 

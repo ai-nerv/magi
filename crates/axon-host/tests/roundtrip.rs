@@ -20,7 +20,7 @@ fn temp(name: &str) -> (PathBuf, PathBuf) {
 
 async fn start(name: &str) -> (PathBuf, PathBuf) {
     let (dir, socket) = temp(name);
-    let session = open_session(&dir, "/tmp", 1).expect("session");
+    let session = open_session(&dir, "/tmp", 1, "").expect("session");
     let listener = axon_ipc::bind(&socket).await.expect("bind");
     tokio::spawn(async move { serve(listener, session, None).await });
     (dir, socket)
@@ -219,7 +219,7 @@ async fn start_with_backend(name: &str, base_url: String) -> (PathBuf, PathBuf) 
     use axon_provider::provider::{Auth, Provider};
 
     let (dir, socket) = temp(name);
-    let session = open_session(&dir, "/tmp", 1).expect("session");
+    let session = open_session(&dir, "/tmp", 1, "").expect("session");
     let model = Model {
         id: "m".into(),
         name: "M".into(),
@@ -346,7 +346,7 @@ async fn an_amended_entry_is_not_announced_as_a_new_one() {
     use axon_proto::{Entry, MessageId, ToolCallId, ToolResult};
 
     let (dir, socket) = temp("amend");
-    let session = open_session(&dir, "/tmp", 1).expect("session");
+    let session = open_session(&dir, "/tmp", 1, "").expect("session");
     let session = std::sync::Arc::new(tokio::sync::Mutex::new(session));
 
     let mut live = session.lock().await.subscribe();
@@ -441,7 +441,7 @@ async fn what_a_turn_cost_reaches_the_ui() {
     use axon_proto::{Entry, MessageId, Signatures, StopReason, Usage};
 
     let (dir, socket) = temp("usage");
-    let session = open_session(&dir, "/tmp", 1).expect("session");
+    let session = open_session(&dir, "/tmp", 1, "").expect("session");
     let session = std::sync::Arc::new(tokio::sync::Mutex::new(session));
     let mut live = session.lock().await.subscribe();
 
@@ -533,7 +533,7 @@ fn two_models() -> axon_host::catalog::Catalog {
 
 async fn start_with_catalog(name: &str) -> (PathBuf, PathBuf) {
     let (dir, socket) = temp(name);
-    let session = open_session(&dir, "/tmp", 1).expect("session");
+    let session = open_session(&dir, "/tmp", 1, "").expect("session");
     let catalog = two_models();
     let backend = catalog.backend("local/a");
     let listener = axon_ipc::bind(&socket).await.expect("bind");

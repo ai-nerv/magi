@@ -276,6 +276,22 @@ pub fn listening_at(me: &Identity) -> PathBuf {
     socket(&me.project, &me.id)
 }
 
+/// Where `me`'s own daemon listens.
+///
+/// **One daemon per instance, never one per directory.** The socket used to be named after the
+/// working directory, so a second `axon` started in the same place found the first one's daemon
+/// already answering and attached to it — two windows onto one session, one journal, one
+/// transcript. Typing in either appeared in both, and every instance this file names was a
+/// fiction: two ids, two sockets, and one conversation behind them.
+///
+/// Beside the instance socket and named after it, so everything belonging to one session is
+/// `<id>` and `<id>.*` in one directory: the socket it is reached at, the daemon behind it, that
+/// daemon's pid and log, and the note saying who started it.
+#[must_use]
+pub fn host_at(me: &Identity) -> PathBuf {
+    home(&me.project).join(format!("{}.host", safe(&me.id)))
+}
+
 /// Where the note saying who started `me` is put.
 #[must_use]
 pub fn kin_at(me: &Identity) -> PathBuf {

@@ -1,6 +1,6 @@
 //! Loading the config, and the catalog that is part of it.
 //!
-//! The config is Lua because the interesting configs are programs: probe the machine, loop over
+//! The config is Lua because the interesting configs are progra    let Ok(started) = std::fs::metadata(socket).and_then(|m| m.modified())s: probe the machine, loop over
 //! a directory of endpoints, branch on whether a GPU box answers. A provider declared in a loop
 //! is the same table as one written out by hand, and neither is a fragment anybody has to merge.
 //!
@@ -306,18 +306,17 @@ pub fn backend(loaded: &Loaded) -> Option<axon_host::turn::Backend> {
 
 /// Configuration files edited since the daemon on `socket` started.
 ///
-/// The daemon holds the tool set it was built with. Nothing said so, and the two disagreed in
+/// A session holds the tool set it was built with. Nothing said so, and the two disagreed in
 /// the worst direction: `axon tools` reads the configuration and lists a tool you just added,
 /// the running session was never told about it, and the model reports that the tool is not
-/// registered -- which reads as a broken tool rather than a stale daemon. Same shape as "I ran
+/// registered -- which reads as a broken tool rather than a stale session. Same shape as "I ran
 /// `make configs` and still nothing".
 ///
-/// The pid file is written when the daemon is spawned, so its mtime is when the session began.
-/// No protocol change and nothing to keep in sync: a file newer than that was not read.
+/// The socket is bound when the session starts, so its mtime is when the session began. No
+/// protocol change and nothing to keep in sync: a file newer than that was not read.
 #[must_use]
 pub fn edited_since_start(socket: &std::path::Path) -> Vec<std::path::PathBuf> {
-    let Ok(started) = std::fs::metadata(crate::daemon::pid_path(socket)).and_then(|m| m.modified())
-    else {
+    let Ok(started) = std::fs::metadata(socket).and_then(|m| m.modified()) else {
         return Vec::new();
     };
     let mut watched = watched_files();
