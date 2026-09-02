@@ -80,8 +80,8 @@ mod tests {
         );
         assert_eq!(
             lines.last().expect("a trailing row").spans[0].style.bg,
-            Some(colour::tool_bg()),
-            "and the block's own padding does"
+            None,
+            "the bottom edge is outside the fill too"
         );
     }
 }

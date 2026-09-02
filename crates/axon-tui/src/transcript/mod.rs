@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 mod frame;
 mod tool;
 
-use frame::{LEAD, bottom, top};
+use frame::{LEAD, bottom, inside, top};
 
 pub use tool::Detail;
 
@@ -206,11 +206,11 @@ fn said(
 
     // No handle: neither of these folds, and a handle on something that cannot be opened is an
     // affordance that lies.
-    let mut out = vec![top(label, chip, beside, None, width, style)];
+    let mut out = vec![top(label, chip, beside, None, width)];
     for line in body {
-        out.push(pad_by(line, width, style, LEAD));
+        out.push(inside(line, width, style, LEAD));
     }
-    out.push(bottom(width, style));
+    out.push(bottom(width));
     out
 }
 
@@ -304,20 +304,6 @@ fn indent(line: Line<'static>) -> Line<'static> {
         " ".repeat(usize::from(crate::metric::block_pad())),
     )];
     spans.extend(line.spans);
-    Line::from(spans)
-}
-
-/// The same, at a chosen indent.
-///
-/// A tool block puts its output one step further in than its header, so the two are not one
-/// column of text under a coloured word.
-fn pad_by(line: Line<'static>, width: u16, style: Style, lead: usize) -> Line<'static> {
-    let used: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
-    let trailing = usize::from(width).saturating_sub(used + lead);
-
-    let mut spans = vec![Span::styled(" ".repeat(lead), style)];
-    spans.extend(line.spans);
-    spans.push(Span::styled(" ".repeat(trailing), style));
     Line::from(spans)
 }
 

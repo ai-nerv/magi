@@ -44,9 +44,11 @@ pub(super) fn top(
     beside: Option<&str>,
     handle: Option<&str>,
     width: u16,
-    style: Style,
 ) -> Line<'static> {
-    let edge = style.fg(colour::muted());
+    // The block's background is *not* on the edge. The frame is the outer thing and the
+    // coloured box sits inside it, so a border painted with the block's own fill would put
+    // colour outside the box it is drawing.
+    let edge = Style::default().fg(colour::muted());
     let named = format!("[ {label} ]");
     // Two dashes before the name, so it sits off the corner rather than against it.
     let mut spans = vec![
@@ -70,7 +72,7 @@ pub(super) fn top(
     {
         let beside = clip(&format!(" {} ", beside.trim()), room);
         used += beside.chars().count();
-        spans.push(Span::styled(beside, style.fg(colour::dim())));
+        spans.push(Span::styled(beside, Style::default().fg(colour::dim())));
     }
 
     let fill = usize::from(width).saturating_sub(used + worn + 1);
@@ -84,8 +86,11 @@ pub(super) fn top(
 }
 
 /// The bottom edge, corner to corner.
-pub(super) fn bottom(width: u16, style: Style) -> Line<'static> {
-    let edge = style.fg(colour::muted());
+pub(super) fn bottom(width: u16) -> Line<'static> {
+    // The block's background is *not* on the edge. The frame is the outer thing and the
+    // coloured box sits inside it, so a border painted with the block's own fill would put
+    // colour outside the box it is drawing.
+    let edge = Style::default().fg(colour::muted());
     Line::from(vec![
         Span::styled(glyph::block_bottom_left().to_owned(), edge),
         Span::styled(
@@ -200,5 +205,97 @@ mod framing {
             !shown[0].contains("[ > ]") && !shown[0].contains("[ v ]"),
             "{shown:#?}"
         );
+    }
+}
+
+/// One of a block's own rows: the coloured box, shrunk to sit inside the frame.
+///
+/// The frame is the outer thing and the fill is the inner one. Painted to the full width the
+/// background ran out past the corners the edges had just drawn, so the block was a coloured band
+/// with a line across the top of it rather than a box with something in it — and on a dark
+/// terminal the two ends of every row bled into the margin.
+///
+/// So the fill spans `1..width-1`, and the two columns the corners stand in are left as the
+/// terminal's own. There are no sides drawn in them: the gap is what puts the fill inside.
+pub(super) fn inside(line: Line<'static>, width: u16, style: Style, lead: usize) -> Line<'static> {
+    let held = usize::from(width).saturating_sub(2);
+    let used: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+    // `lead` counts from the block's edge, and the first of those columns is the frame's own.
+    let pad = lead.saturating_sub(1).min(held);
+    let trailing = held.saturating_sub(used + pad);
+
+    let mut spans = vec![Span::raw(" "), Span::styled(" ".repeat(pad), style)];
+    spans.extend(line.spans);
+    spans.push(Span::styled(" ".repeat(trailing), style));
+    spans.push(Span::raw(" "));
+    Line::from(spans)
+}
+
+/// The frame is outside, the fill is inside.
+#[cfg(test)]
+mod nesting {
+    use crate::transcript::{Detail, entry_lines};
+    use axon_proto::{Entry, MessageId};
+
+    /// Every column of a rendered row, and whether the block's fill is painted behind it.
+    fn filled(width: u16) -> Vec<Vec<bool>> {
+        entry_lines(
+            &Entry::User {
+                id: MessageId::new("m1"),
+                text: "hello".into(),
+                aside: String::new(),
+            },
+            width,
+            Detail::Preview,
+        )
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .flat_map(|span| {
+                    std::iter::repeat_n(span.style.bg.is_some(), span.content.chars().count())
+                })
+                .collect()
+        })
+        .collect()
+    }
+
+    #[test]
+    fn the_fill_stops_short_of_the_frame() {
+        // The bug this is here for. Painted to the full width, the background ran out past the
+        // corners the edges had just drawn: the block read as a coloured band with a line across
+        // the top of it rather than as a box with something in it.
+        let rows = filled(30);
+        let body = &rows[1];
+        assert!(!body[0], "the fill reaches the left corner's column");
+        assert!(!body[29], "and the right one's");
+        assert!(
+            body[1] && body[28],
+            "the fill should span everything between"
+        );
+    }
+
+    #[test]
+    fn the_edges_carry_no_fill_of_their_own() {
+        // Outside the box means outside: an edge painted with the block's own background is a
+        // border drawn *on* the thing it is supposed to contain.
+        let rows = filled(30);
+        for (at, on) in rows[0].iter().enumerate() {
+            // Except the label chip, which carries its own colour because it is a chip.
+            assert!(!on || (3..12).contains(&at), "column {at} of the top edge");
+        }
+        assert!(
+            rows[2].iter().all(|on| !on),
+            "the bottom edge is painted with the block's fill"
+        );
+    }
+
+    #[test]
+    fn a_row_is_still_exactly_the_width() {
+        for width in [12u16, 30, 80] {
+            for row in filled(width) {
+                assert_eq!(row.len(), usize::from(width), "at {width}");
+            }
+        }
     }
 }

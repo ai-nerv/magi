@@ -6,7 +6,7 @@
 //! prose and an assistant message is prose, and this is a name, arguments, a body that may be
 //! a diff, and a decision about how much of it to show.
 
-use super::{blank, clip, pad_by};
+use super::{blank, clip};
 use crate::colour;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -95,7 +95,6 @@ pub(super) fn block(
             Some(summarize(args).as_str()),
             Some(handle),
             width,
-            style,
         ),
     ];
 
@@ -124,7 +123,7 @@ pub(super) fn block(
                 } else {
                     change_colour(line)
                 };
-                out.push(pad_by(
+                out.push(super::frame::inside(
                     Line::from(Span::styled(clip(line, body), style.fg(fg))),
                     width,
                     style,
@@ -134,7 +133,7 @@ pub(super) fn block(
             // The affordance goes on the fold, because that is where a reader is
             // looking when they wonder where the rest went.
             if all.len() > shown {
-                out.push(pad_by(
+                out.push(super::frame::inside(
                     Line::from(Span::styled(
                         format!("… {} more lines · ctrl+o", all.len() - shown),
                         style.fg(colour::tool_fold()),
@@ -147,7 +146,7 @@ pub(super) fn block(
         }
     }
 
-    out.push(super::frame::bottom(width, style));
+    out.push(super::frame::bottom(width));
     out
 }
 
@@ -523,26 +522,26 @@ mod block_tests {
     }
 
     #[test]
-    fn the_whole_header_row_carries_a_background() {
-        // Without it the box is ragged coloured text rather than a block. Every span has one.
-        // Two are reversed out of the outcome colour — the name at one end and the fold handle
-        // at the other — and everything between them is the block's own.
+    fn only_the_chips_on_the_top_edge_carry_a_background() {
+        // The frame is the outer thing and the fill is inside it, so the edge itself is drawn on
+        // the terminal's own background. Only the two chips are reversed — the name at one end
+        // and the fold handle at the other.
         let reversed = |content: &str| {
             content.contains("shell")
                 || content.contains(crate::glyph::expand())
                 || content.contains(crate::glyph::collapse())
         };
         for span in header(None).spans {
-            assert!(
-                span.style.bg.is_some(),
-                "{:?} has no background",
-                span.content
-            );
-            if !reversed(&span.content) {
+            if reversed(&span.content) {
+                assert!(
+                    span.style.bg.is_some(),
+                    "the chip {:?} lost its colour",
+                    span.content
+                );
+            } else {
                 assert_eq!(
-                    span.style.bg,
-                    Some(colour::tool_bg()),
-                    "{:?} is not the block background",
+                    span.style.bg, None,
+                    "{:?} paints the block's fill onto its own frame",
                     span.content
                 );
             }
