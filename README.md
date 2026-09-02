@@ -8,14 +8,15 @@
 
 <p align="center"><em>A coding agent for Linux.</em></p>
 
-Tau's bones, Pi's face: the system is a constellation of POSIX processes over Unix sockets,
-and the terminal experience is Pi's — differential rendering into native scrollback, live
-streaming, an editor-grade prompt.
+Three computers had to agree before NERV moved. This is the one you talk to: the harness — a
+constellation of POSIX processes over Unix sockets, and a terminal that earns the name, with
+differential rendering into native scrollback, live streaming and an editor-grade prompt. Close
+the window and the turn keeps running.
 
 ## The family
 
-Named for the MAGI in *Neon Genesis Evangelion* — three units that reach a decision by voting,
-each running a facet of the same mind. Here they are three programs, in three repositories,
+The MAGI of *Neon Genesis Evangelion* were three units deliberating, each running a facet of the
+same mind, and no one of them the whole. Here they are three programs, in three repositories,
 that talk over sockets and pipes:
 
 | | |
@@ -126,9 +127,10 @@ make verify       # all of it
 warning and not run — it simply is not part of the crate. Two were found at once, each holding
 tests that had silently not run since the commit that moved them.
 
-The gates are not advisory. They exist because Pi carries ~20,000 lines that nothing reaches
-and a 6,549-line god file, and Tau has a 34,875-line one — each of which arrived one
-reasonable commit at a time.
+The gates are not advisory. Every agent this one was measured against carries dead code nothing
+reaches and a god file in the tens of thousands of lines — 6,549 in one, 34,875 in another. None
+of that was decided; it arrived one reasonable commit at a time, which is the only way it ever
+arrives, and the reason the limit has to be a script rather than an intention.
 
 ## Releases
 
