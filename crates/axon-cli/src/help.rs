@@ -23,7 +23,7 @@ const KEYS: &str = "\
 - `tab` complete — `enter` runs the command — `↑/↓` move through the list
 - `pgup`/`pgdn` scroll — `shift+↑/↓` by a line — `shift+home/end` to the ends
 - `ctrl+o` show tool output in full, again to fold it back
-- click a block's `>` to open just that one — it wraps what a preview cut
+- click a block's `▸` to open just that one — it wraps what a preview cut
 - drag to select; it is copied when you let go
 - `ctrl+x` edit the prompt in `$EDITOR`
 - `ctrl+c` clear the prompt — `:q` to leave, `:qa` to take everything with it

@@ -87,9 +87,9 @@ fn a_conversation_renders_the_way_pi_lays_it_out() {
             "  Running them now.",
             "", // the gap between blocks, unpainted
             // The name in the outcome's colour, and the fold handle at the far end of the same
-            // edge — `>` shut, `v` open, saying which way it will go. Nothing else on the edge:
+            // edge — `▸` shut, `▾` open, saying which way it will go. Nothing else on the edge:
             // what the call was *given* is the block's first row, where it has room to be read.
-            "┌──[ bash ]─────────────────────────[ > ]──┐",
+            "┌──[ bash ]─────────────────────────[ ▸ ]──┐",
             "    cargo test",
             // The output sits a step further in than the edge, so the two are not one column of
             // text under a coloured word.

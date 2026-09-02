@@ -96,7 +96,7 @@ pub(super) fn block(
     // name, which made the one row that says what this block *is* also the row that says what it
     // was *asked* — and a long path there had nowhere to go but into the handle. Here it has the
     // width to be read, and the edge is left to say one thing.
-    let asked = summarize(args);
+    let asked = summarize(args, detail);
     if !asked.trim().is_empty() {
         said.extend(laid(
             asked.trim(),
@@ -147,7 +147,12 @@ pub(super) fn block(
     // yet — most often one stopped on a permission prompt, waiting for an answer — was drawn as
     // two edges with a gap between them: an empty frame sitting on the screen behind the very
     if rows.is_empty() {
-        out.push(super::frame::lone(name, label, &summarize(args), width));
+        out.push(super::frame::lone(
+            name,
+            label,
+            &summarize(args, detail),
+            width,
+        ));
         return out;
     }
     out.push(super::frame::top(name, label, Some(handle), width));
@@ -187,13 +192,20 @@ fn change_colour(line: &str) -> Color {
 ///
 /// Falls back to the raw text for arguments that are not an object, because a tool may take
 /// anything and a header that renders nothing is worse than one that renders awkwardly.
-fn summarize(args: &str) -> String {
+/// **Only a preview cuts.** This clipped to a per-argument budget whichever way the block was
+/// showing, so a long `shell` command ended in `…` and opening the block did nothing about it —
+/// the text was already gone by the time anything decided how much to draw. A budget is a
+/// *glance* being kept scannable; asked to show the whole thing, there is nothing to budget.
+fn summarize(args: &str, detail: Detail) -> String {
     let Ok(serde_json::Value::Object(fields)) = serde_json::from_str::<serde_json::Value>(args)
     else {
         return flatten(args);
     };
-    let share = (usize::from(crate::metric::summary_budget()) / fields.len().max(1))
-        .max(usize::from(crate::metric::argument_floor()));
+    let share = match detail {
+        Detail::Preview => (usize::from(crate::metric::summary_budget()) / fields.len().max(1))
+            .max(usize::from(crate::metric::argument_floor())),
+        Detail::Full => usize::MAX,
+    };
     fields
         .values()
         .map(|value| match value {
@@ -298,8 +310,11 @@ mod summary_tests {
     #[test]
     fn a_header_shows_the_value_and_not_the_key() {
         // `read "path": "a.rs"` is three kinds of punctuation around the one thing being read.
-        assert_eq!(summarize(r#"{"path": "a.rs"}"#), "a.rs");
-        assert_eq!(summarize(r#"{"command": "ls -la"}"#), "ls -la");
+        assert_eq!(summarize(r#"{"path": "a.rs"}"#, Detail::Preview), "a.rs");
+        assert_eq!(
+            summarize(r#"{"command": "ls -la"}"#, Detail::Preview),
+            "ls -la"
+        );
     }
 
     #[test]
@@ -307,7 +322,7 @@ mod summary_tests {
         // The quotes are the encoding, not the value: `"println!(\"one\");"` is a short line
         // of code wearing a costume.
         assert_eq!(
-            summarize(r#"{"old": "println!(\"one\");"}"#),
+            summarize(r#"{"old": "println!(\"one\");"}"#, Detail::Preview),
             "println!(\"one\");"
         );
     }
@@ -316,7 +331,10 @@ mod summary_tests {
     fn a_long_argument_is_elided_rather_than_shown_whole() {
         // An `edit` header that repeats both sides in full is a diff written twice, once badly
         // — and the real one is two lines below it.
-        let summary = summarize(&format!(r#"{{"new": "{}"}}"#, "x".repeat(200)));
+        let summary = summarize(
+            &format!(r#"{{"new": "{}"}}"#, "x".repeat(200)),
+            Detail::Preview,
+        );
         assert!(
             summary.chars().count() <= usize::from(crate::metric::summary_budget()),
             "{summary}"
@@ -330,7 +348,7 @@ mod summary_tests {
         // leave room for two arguments that do not exist helps nobody.
         let command = "ls -la && cat main.rs 2>&1 | head";
         assert_eq!(
-            summarize(&format!(r#"{{"command": "{command}"}}"#)),
+            summarize(&format!(r#"{{"command": "{command}"}}"#), Detail::Preview),
             command
         );
     }
@@ -339,9 +357,10 @@ mod summary_tests {
     fn three_arguments_share_it() {
         // An `edit`, where the diff two lines below says what actually changed.
         let long = "y".repeat(100);
-        let summary = summarize(&format!(
-            r#"{{"a": "{long}", "b": "{long}", "c": "{long}"}}"#
-        ));
+        let summary = summarize(
+            &format!(r#"{{"a": "{long}", "b": "{long}", "c": "{long}"}}"#),
+            Detail::Preview,
+        );
         assert!(
             summary.chars().count() <= usize::from(crate::metric::summary_budget()) + 4,
             "{summary}"
@@ -351,21 +370,24 @@ mod summary_tests {
 
     #[test]
     fn several_arguments_are_separated_plainly() {
-        let summary = summarize(r#"{"a": "one", "b": "two"}"#);
+        let summary = summarize(r#"{"a": "one", "b": "two"}"#, Detail::Preview);
         assert_eq!(summary, "one, two");
     }
 
     #[test]
     fn a_multi_line_argument_stays_on_one_line() {
         // A heredoc in a `bash` call would otherwise push the whole block sideways.
-        let summary = summarize("{\"command\": \"echo a\\necho b\"}");
+        let summary = summarize("{\"command\": \"echo a\\necho b\"}", Detail::Preview);
         assert!(!summary.contains('\n'), "{summary}");
         assert_eq!(summary, "echo a echo b");
     }
 
     #[test]
     fn a_non_string_argument_is_still_shown() {
-        assert_eq!(summarize(r#"{"lines": 42, "all": true}"#), "42, true");
+        assert_eq!(
+            summarize(r#"{"lines": 42, "all": true}"#, Detail::Preview),
+            "42, true"
+        );
     }
 
     #[test]
@@ -373,7 +395,10 @@ mod summary_tests {
         // Sorted by key, an `edit` header reads `new, old, path` — the thing being edited
         // last, after both sides of a change the diff below is about to show properly.
         assert_eq!(
-            summarize(r#"{"path": "a.rs", "old": "x", "new": "y"}"#),
+            summarize(
+                r#"{"path": "a.rs", "old": "x", "new": "y"}"#,
+                Detail::Preview
+            ),
             "a.rs, x, y"
         );
     }
@@ -382,13 +407,16 @@ mod summary_tests {
     fn arguments_that_are_not_an_object_fall_back_rather_than_vanishing() {
         // A tool may take anything, and a header that renders nothing is worse than one that
         // renders awkwardly.
-        assert_eq!(summarize("not json at all"), "not json at all");
-        assert_eq!(summarize("[1, 2]"), "[1, 2]");
+        assert_eq!(
+            summarize("not json at all", Detail::Preview),
+            "not json at all"
+        );
+        assert_eq!(summarize("[1, 2]", Detail::Preview), "[1, 2]");
     }
 
     #[test]
     fn a_call_with_no_arguments_summarises_to_nothing() {
-        assert_eq!(summarize("{}"), "");
+        assert_eq!(summarize("{}", Detail::Preview), "");
     }
 }
 
@@ -694,6 +722,55 @@ mod revealing {
         assert!(
             open.contains("crates/"),
             "the end of the command is missing\n{open}"
+        );
+    }
+}
+
+/// A long command is cut in a preview and shown in full when the block is opened.
+#[cfg(test)]
+mod arguments {
+    use super::*;
+
+    const LONG: &str =
+        "git log --oneline --graph --decorate --all --since='2 weeks ago' -- crates/axon-tui/src";
+
+    fn args() -> String {
+        format!(r#"{{"command": "{LONG}"}}"#)
+    }
+
+    #[test]
+    fn a_preview_cuts_the_command_and_opening_shows_it_whole() {
+        // The complaint this is here for. The cut happened in `summarize`, before anything had
+        // decided how much to draw — so a `shell` command ended in `…` and opening the block did
+        // nothing, because the text was already gone.
+        let shut = summarize(&args(), Detail::Preview);
+        assert!(shut.ends_with('…'), "the premise: it was cut — {shut}");
+
+        let open = summarize(&args(), Detail::Full);
+        assert!(!open.contains('…'), "still cutting when open — {open}");
+        assert_eq!(open, LONG, "the whole command should be there");
+    }
+
+    #[test]
+    fn the_opened_block_actually_carries_it() {
+        // End to end, not just the summary: the rows a reader sees have to hold the tail.
+        let entry = axon_proto::Entry::Tool {
+            id: axon_proto::ToolCallId::new("t1"),
+            name: "shell".into(),
+            args: args(),
+            result: Some(axon_proto::ToolResult {
+                output: "done".into(),
+                is_error: false,
+            }),
+            thought_signature: None,
+        };
+        let shown: String = crate::transcript::entry_lines(&entry, 56, Detail::Full)
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+            .collect();
+        assert!(
+            shown.contains("crates/axon-tui/src"),
+            "the end of the command is missing: {shown}"
         );
     }
 }

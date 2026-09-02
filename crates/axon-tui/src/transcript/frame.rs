@@ -181,11 +181,13 @@ mod framing {
         assert!(
             tool(Detail::Preview, 60)
                 .iter()
-                .any(|l| l.contains("[ > ]")),
+                .any(|l| l.contains(&format!("[ {} ]", crate::glyph::expand()))),
             "a folded block does not offer to open"
         );
         assert!(
-            tool(Detail::Full, 60).iter().any(|l| l.contains("[ v ]")),
+            tool(Detail::Full, 60)
+                .iter()
+                .any(|l| l.contains(&format!("[ {} ]", crate::glyph::collapse()))),
             "an open block does not offer to fold"
         );
     }
@@ -203,7 +205,8 @@ mod framing {
             Detail::Preview,
         ));
         assert!(
-            !shown[0].contains("[ > ]") && !shown[0].contains("[ v ]"),
+            !shown[0].contains(&format!("[ {} ]", crate::glyph::expand()))
+                && !shown[0].contains(&format!("[ {} ]", crate::glyph::collapse())),
             "{shown:#?}"
         );
     }
@@ -384,7 +387,8 @@ mod emptiness {
         assert!(
             shown
                 .iter()
-                .all(|l| !l.contains("[ > ]") && !l.contains("[ v ]")),
+                .all(|l| !l.contains(crate::glyph::expand())
+                    && !l.contains(crate::glyph::collapse())),
             "{shown:#?}"
         );
     }
