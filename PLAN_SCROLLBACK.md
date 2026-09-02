@@ -1,23 +1,23 @@
 # magi — the scrollback, moved out
 
-> The other half of `memo`'s §3.7. Written from memo's side, for whoever implements this one.
-> memo's half is built: the store, the verbs, and the tests are in `../memo` at `5a4dd7b`+.
+> The other half of `balthasar`'s §3.7. Written from balthasar's side, for whoever implements this one.
+> balthasar's half is built: the store, the verbs, and the tests are in `../aeon` at `5a4dd7b`+.
 
 ---
 
 ## What is being decided
 
-magi stops keeping a journal. `memo` becomes the only copy of what was said, and magi **cannot
+magi stops keeping a journal. `balthasar` becomes the only copy of what was said, and magi **cannot
 start a session without it**.
 
-This reverses the recommendation in memo's `PLAN.md` §3.7, which argued for keeping the journal
-as a write-ahead log and treating memo's transcript as a queryable mirror. That argument is
+This reverses the recommendation in balthasar's `PLAN.md` §3.7, which argued for keeping the journal
+as a write-ahead log and treating balthasar's transcript as a queryable mirror. That argument is
 still in that file and still worth reading before committing to this. It was overruled
 deliberately, and what follows is built for the decision that was actually made rather than the
 one that was recommended.
 
-**What changes about the failure mode.** Today, killing memo costs memory and the turn keeps
-running. After this, killing memo costs the session. Everything below that looks like
+**What changes about the failure mode.** Today, killing balthasar costs memory and the turn keeps
+running. After this, killing balthasar costs the session. Everything below that looks like
 over-engineering — the durability pragma, the acknowledge-before-proceed rule, the refusal to
 start — is there because that failure mode is now the one that matters.
 
@@ -26,7 +26,7 @@ start — is there because that failure mode is now the one that matters.
 ## 1. Where it lives
 
 ```
-$XDG_DATA_HOME/memo/
+$XDG_DATA_HOME/balthasar/
   thing-1a2b3c.db              the memory store — small, rewritten constantly
   thing-1a2b3c-transcript.db   the scrollback  — large, append-mostly    ← this
 ```
@@ -68,25 +68,25 @@ What magi sends. Everything but `cursor` is optional, and `raw` is the one that 
 ```jsonc
 {
   "entry":  "e-7a1f",        // which message this block is part of. Blocks share it.
-  "cursor": 41,              // magi's own numbering. memo never renumbers.
-  "at":     1756600000,      // unix seconds. defaults to memo's clock.
+  "cursor": 41,              // magi's own numbering. balthasar never renumbers.
+  "at":     1756600000,      // unix seconds. defaults to balthasar's clock.
   "role":   "assistant",     // user | assistant | tool
   "kind":   "prose",         // prose | thinking | tool_call | tool_result | summary
   "text":   "…",             // for quoting and for search. NOT the record.
   "tool":   "shell",         // when it is one
 
-  "raw":    { … }            // ← THE RECORD. memo stores it and never parses it.
+  "raw":    { … }            // ← THE RECORD. balthasar stores it and never parses it.
 }
 ```
 
 **`raw` is the contract.** Send the serialised `magi_proto::Record` — the same line the journal
-would have written. memo keeps it as an opaque string, hands it back byte for byte on `replay`,
-and has no idea what an `Entry` is. That is what keeps memo's commitment 1 intact while it holds
-magi's only copy: a second harness with entirely different records needs no change in memo.
+would have written. balthasar keeps it as an opaque string, hands it back byte for byte on `replay`,
+and has no idea what an `Entry` is. That is what keeps balthasar's commitment 1 intact while it holds
+magi's only copy: a second harness with entirely different records needs no change in balthasar.
 
 Either a JSON object or a pre-serialised string is accepted; both come back identically.
 
-`text` exists so memo can quote a turn in `memo why` and search one. It is a projection, not the
+`text` exists so balthasar can quote a turn in `balthasar why` and search one. It is a projection, not the
 record — losing it costs a nicer diagnostic, not a session.
 
 ### Mapping `magi_proto::Entry`
@@ -98,7 +98,7 @@ record — losing it costs a nicer diagnostic, not a session.
 several tool calls. Each becomes its own turn at its own cursor, and they share an `entry` — the
 entry's own `id`. That is what lets a span address one tool call rather than only the message
 around it, and it is what stops a bounded read handing back an assistant turn without the call
-it made: memo drops a leading part-message rather than showing a fragment of one.
+it made: balthasar drops a leading part-message rather than showing a fragment of one.
 
 | `Entry` | blocks | `role` | `kind` | `text` |
 |---|---|---|---|---|
@@ -116,11 +116,11 @@ it out; a plain `User` turn does.
 
 **`raw` goes on the first block only.** Restoring reassembles *messages*, not blocks, so the
 record belongs to the message — written once, and `replay --raw` emits it once. The other blocks
-exist to be read and addressed, never to be restored from. A turn memo was given no record for
+exist to be read and addressed, never to be restored from. A turn balthasar was given no record for
 is skipped on replay rather than invented, which is what makes this work without a second rule.
 
 Everything the table drops — `id`, `signatures`, `usage`, `thought_signature`, `stop_reason`,
-`keeps`, `replaces` — rides in `raw` and comes back intact. The table is only what memo needs to
+`keeps`, `replaces` — rides in `raw` and comes back intact. The table is only what balthasar needs to
 *show* a turn.
 
 ### The amend case, spelled out
@@ -146,7 +146,7 @@ Four, and they are the whole of it.
 Do not render it as settled, do not advance the cursor, do not start the next turn until it
 does. Fire-and-forget was correct when magi had its own journal and is data loss now.
 
-**Refuse to start rather than start without it.** If `memo` cannot be reached at session open,
+**Refuse to start rather than start without it.** If `balthasar` cannot be reached at session open,
 magi must say so and stop. A session that begins and cannot persist is worse than one that never
 began: the person will have said things to it.
 
@@ -163,7 +163,7 @@ not exclude a second one — if two magi sessions can hold one session, that is 
 
 ```lua
 local held = memory.resume(session)        -- { next = 412, turns = 411 }
-if not held then error("memo is unreachable; this session cannot be restored") end
+if not held then error("balthasar is unreachable; this session cannot be restored") end
 
 for _, turn in ipairs(memory.replay(session)) do
   local record = json.decode(turn.raw)     -- exactly the line the journal held
@@ -172,9 +172,9 @@ end
 cursor = held.next
 ```
 
-`replay` answers in cursor order, final form. A turn memo holds no `raw` for is **skipped, not
+`replay` answers in cursor order, final form. A turn balthasar holds no `raw` for is **skipped, not
 invented** — a replay that made something up would be worse than a short one, so a `raw` missing
-here is a bug on magi's side to find, not a hole for memo to paper over.
+here is a bug on magi's side to find, not a hole for balthasar to paper over.
 
 The existing view logic is unaffected. `context.rs` rebuilds the provider conversation from
 entries and does not care where they came from; `Branch` and `Compaction` still resolve as views
@@ -191,22 +191,22 @@ torn-tail truncation.
 else. `Cursor` allocation stays magi's. `context.rs` is untouched.
 
 **Worth keeping anyway:** `magi-journal`'s conformance tests. They describe what a transcript
-has to survive, and they are now describing memo's job.
+has to survive, and they are now describing balthasar's job.
 
 ---
 
 ## 7. What is already built and testable
 
 ```sh
-memo serve                    # prints the scrollback path it opened
-memo replay                   # the runs it holds
-memo replay <session>         # the turns, for a person
-memo replay <session> --raw   # the records, one per line — what a restore reads
-memo replay <session> --resume
-memo why <handle>             # now quotes the turn each witness saw
+balthasar serve                    # prints the scrollback path it opened
+balthasar replay                   # the runs it holds
+balthasar replay <session>         # the turns, for a person
+balthasar replay <session> --raw   # the records, one per line — what a restore reads
+balthasar replay <session> --resume
+balthasar why <handle>             # now quotes the turn each witness saw
 ```
 
-Round-tripped in `crates/memo-host/tests/scrollback.rs`: a record comes back byte for byte, the
+Round-tripped in `crates/balthasar-host/tests/scrollback.rs`: a record comes back byte for byte, the
 same turn twice is two turns, a tool call revises in place, `resume` reports the next cursor,
 `why` quotes, and a host with no scrollback refuses `replay`/`resume`/`amend` rather than
 answering emptily.
@@ -220,4 +220,4 @@ no policy for it — by age, by session count, or never. Memory decay does not t
 design.
 
 **Concurrency.** Rule four above is unenforced. If two magi daemons can ever hold one session,
-decide now whether the lock is magi's or memo's, because retrofitting it means a schema change.
+decide now whether the lock is magi's or balthasar's, because retrofitting it means a schema change.
