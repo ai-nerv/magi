@@ -7,7 +7,7 @@ use crate::colour;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-/// What the footer displays. The UI owns none of this; the daemon reports it.
+/// What the footer displays. The UI owns none of this; the session reports it.
 #[derive(Debug, Clone, Default)]
 pub struct FooterData {
     /// Cumulative input tokens.

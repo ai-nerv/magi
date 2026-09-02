@@ -56,7 +56,7 @@ pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
         reader.read::<HarnessEvent>().await?,
         HarnessEvent::SessionSnapshot { .. }
     ) {
-        anyhow::bail!("the daemon did not open with a snapshot");
+        anyhow::bail!("the session did not open with a snapshot");
     }
     writer
         .write(&UiCommand::SubmitPrompt { text: prompt })

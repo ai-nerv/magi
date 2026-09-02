@@ -45,11 +45,6 @@ axon.model = "anthropic/claude-sonnet-4-5"
 --   { verb = "run",   program = "git" },
 -- }
 
--- How long a daemon stays up with nobody attached and nothing running, in seconds. Detaching
--- is not ending a session, so this is a grace period rather than a hangup; 0 keeps it forever.
---
--- axon.idle_exit = 600
-
 -- Environment every process axon starts is given, on top of what it inherits. `OSLO_PROFILE`
 -- is set to "axon" whether or not this says so, and naming it here overrides that.
 --
@@ -117,7 +112,7 @@ axon.model = "anthropic/claude-sonnet-4-5"
 -- and it is drawn as a monitor: the trace scrolls continuously right to left, and what runs
 -- through it is the signal the session is putting out. A heartbeat while a turn is running, a flat line when nothing is, a
 -- square wave while a permission or a list waits on you, a tighter one while `/` narrows a menu,
--- and a line with the lead off when the daemon is away. Anything open on screen outranks what
+-- and a line with the lead off when the session is not answering. Anything open on screen outranks what
 -- the agent is doing, because it is the thing holding everything up. One colour, the footer's
 -- own. `beacon_ms` is how long the trace takes to scroll one display width, and it is the same
 -- for every state: one tape at one speed, so a turn starting or ending scrolls in rather than

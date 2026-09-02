@@ -65,7 +65,7 @@ pub fn effort(status: &AgentStatus, elapsed: Option<std::time::Duration>) -> Str
         }
     }
 }
-/// The note shown while the daemon is away and work is waiting for it.
+/// The note shown while the session is away and work is waiting for it.
 ///
 /// A prompt submitted while disconnected is not lost -- it sits in the command channel and
 /// goes out on reconnect -- but the box emptied and nothing appeared, so there was no way to
@@ -133,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn a_lost_daemon_does_not_look_like_an_idle_session() {
+    fn a_lost_session_does_not_look_like_an_idle_session() {
         // A UI with no socket looks exactly like an idle one: the prompt takes text and a
         // submitted turn goes into a channel nobody is reading. Both are flat lines, so the
         // gaps travelling through this one are the whole of what tells them apart.

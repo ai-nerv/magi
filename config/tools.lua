@@ -327,9 +327,9 @@ do -- agent
   -- inconsistent otherwise.
   --
   -- Those two ask a *different* program about itself, and any process can do that. This one has
-  -- to know which axon it is speaking as, and that is not something the daemon knows: the name
-  -- is made when a UI starts and a daemon outlives UIs. A peer is spawned by the daemon and
-  -- inherits its environment, which carries the name down from the UI that bound the socket.
+  -- to know which axon it is speaking as, and that means reading the project directory: which
+  -- sockets are there, and whose note sits beside each. A peer inherits this session's name
+  -- from the environment and has a directory to read; a function in the VM has neither.
   --
   -- The peer declares its own name, description and parameters on connect, so the vocabulary is
   -- written once in Rust rather than copied here to drift out of date.

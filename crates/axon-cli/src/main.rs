@@ -145,7 +145,7 @@ async fn main() -> Result<()> {
                 &cwd,
                 loaded.as_ref(),
                 &environ,
-                &identity.id,
+                &identity,
             )
             .await?;
             let outcome = print::run(&socket, prompt).await;
@@ -180,7 +180,7 @@ async fn main() -> Result<()> {
                 &cwd,
                 loaded.as_ref(),
                 &environ,
-                &identity.id,
+                &identity,
             )
             .await?;
             let ran = driver::run(&socket, cli.prompt, loaded, identity).await;

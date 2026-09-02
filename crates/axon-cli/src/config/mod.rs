@@ -1,6 +1,6 @@
 //! Loading the config, and the catalog that is part of it.
 //!
-//! The config is Lua because the interesting configs are progra    let Ok(started) = std::fs::metadata(socket).and_then(|m| m.modified())s: probe the machine, loop over
+//! The config is Lua because the interesting configs are programs: probe the machine, loop over
 //! a directory of endpoints, branch on whether a GPU box answers. A provider declared in a loop
 //! is the same table as one written out by hand, and neither is a fragment anybody has to merge.
 //!
@@ -258,7 +258,6 @@ pub fn catalog(loaded: &Loaded) -> axon_host::catalog::Catalog {
         system: system(loaded),
         grants: grants(loaded),
         environ: environ(loaded),
-        idle_exit: idle_exit(loaded),
         chosen: asked(loaded),
         confine: loaded.config.boolean("confine").unwrap_or(false),
     }
@@ -269,7 +268,7 @@ use chosen::{asked, chosen};
 mod catalog;
 mod settings;
 
-use settings::{grants, idle_exit, options, system};
+use settings::{grants, options, system};
 
 pub use settings::{adopt_ui, environ};
 

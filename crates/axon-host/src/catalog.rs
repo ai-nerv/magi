@@ -36,12 +36,6 @@ pub struct Catalog {
     pub grants: Vec<axon_proto::permit::Grant>,
     /// Environment every process this session starts is given, beside the mandatory pairs.
     pub environ: std::collections::BTreeMap<String, String>,
-    /// How long a daemon stays up with nobody attached and nothing running.
-    ///
-    /// Zero means forever. Detaching is not ending a session — a UI that quits mid-turn can
-    /// come back to the answer — so this is a grace period rather than a hangup: long enough to
-    /// restart a terminal, short enough that daemons do not accumulate one per directory.
-    pub idle_exit: std::time::Duration,
     /// The model the configuration asked for, whether or not it can be reached.
     ///
     /// Kept so a refusal can name it. Without this the daemon could only say "no model
@@ -61,7 +55,6 @@ impl Catalog {
             tools: Vec::new(),
             clients: Vec::new(),
             environ: std::collections::BTreeMap::new(),
-            idle_exit: std::time::Duration::ZERO,
             cwd: std::path::PathBuf::new(),
             providers: Vec::new(),
             options: axon_provider::api::Options::default(),
@@ -219,7 +212,6 @@ mod tests {
             tools: Vec::new(),
             clients: Vec::new(),
             environ: std::collections::BTreeMap::new(),
-            idle_exit: std::time::Duration::ZERO,
             cwd: std::env::temp_dir(),
             providers,
             options: axon_provider::api::Options::default(),

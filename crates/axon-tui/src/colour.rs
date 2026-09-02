@@ -114,6 +114,15 @@ palette! {
     // ------------------------------------------------------------ the rest
     message_bg = 240, "Behind something you said.";
     message_text = 255, "Something you said.";
+    // The tag on a message block, and why it is not one of the greys.
+    //
+    // A tool block wears a reversed chip too, and its colours are the outcome's: white while it
+    // runs, green when it finished, red when it failed. A message tag in white on a background
+    // three steps from the tool block's own made the two indistinguishable at a glance — and a
+    // tool block is the one that folds, so half the screen looked like it had a handle on it.
+    // These two are hues no tool state uses.
+    said_by_you = 13, "The `USER` tag on something you said.";
+    said_by_agent = 14, "The tag on a message from another instance.";
     thinking = 249, "Reasoning blocks.";
     text = 253, "Default foreground.";
     muted = 250, "Secondary text.";

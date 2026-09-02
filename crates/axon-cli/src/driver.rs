@@ -21,7 +21,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 
-/// How long to wait before redialling a daemon that went away.
+/// How long to wait before redialling a session that went away.
 const RECONNECT_DELAY: Duration = Duration::from_millis(500);
 
 /// Run the UI until the user quits.
@@ -41,9 +41,9 @@ pub async fn run(
     // it first threw the whole configured `axon.ui` away, silently, and left the box repeating
     // the one placeholder compiled into the binary.
     //
-    // Read here rather than taken from the daemon, because this is about the screen in front of
-    // the person reading it. A model or a tool set has to come from the daemon — it is what the
-    // daemon is actually using — but nothing on the other end of the socket has an opinion about
+    // Read here rather than taken from the session, because this is about the screen in front of
+    // the person reading it. A model or a tool set has to come from the session — it is what the
+    // session is actually using — but nothing on the other end of the socket has an opinion about
     // how fast a border moves.
     if let Some(loaded) = &loaded {
         crate::config::adopt_ui(loaded);
@@ -59,7 +59,7 @@ pub async fn run(
     }
 
     let mut app = App::new();
-    // Handed in rather than made here. The daemon was started with this name in its environment
+    // Handed in rather than made here. The session was started with this name in its environment
     // and every tool peer inherits it from there, so a UI that named itself independently would
     // bind one socket and sign its messages as another.
     app.identity = identity;
@@ -67,7 +67,7 @@ pub async fn run(
     app.editor = axon_tui::Editor::with_history(crate::history::load());
     if let Some(loaded) = &loaded {
         // Worked out here because the answer needs the catalog, and the snapshot carries only
-        // whether there is a model — not why there is not. Same text the daemon refuses a prompt
+        // whether there is a model — not why there is not. Same text the session refuses a prompt
         // with, so meeting the problem at attach and meeting it at the first prompt say one thing.
         if crate::config::backend(loaded).is_none() {
             app.no_model = Some(axon_host::no_model(&crate::config::catalog(loaded)));
@@ -158,7 +158,7 @@ pub async fn run(
     };
 
     // Sent once the connection task exists, not before: the channel buffers it, and it reaches
-    // the daemon after the attach that the connection loop opens with.
+    // the session after the attach that the connection loop opens with.
     if let Some(text) = prompt {
         let _ = command_tx.send(UiCommand::SubmitPrompt { text }).await;
     }
@@ -270,7 +270,7 @@ pub async fn run(
                                     }
                                     // Matched back by position, because a row is labelled with
                                     // what a person can read -- when it was, what they asked --
-                                    // and none of that is the id the daemon needs.
+                                    // and none of that is the id the session needs.
                                     Some(crate::app::Picking::Session { rows }) => {
                                         let found = rows
                                             .iter()
@@ -308,7 +308,7 @@ pub async fn run(
                             }
                             // Leaving a question is an answer to it. A permission prompt is the
                             // only list something is waiting on, and the wait is a turn that
-                            // has stopped: closing it without a word left the daemon blocked
+                            // has stopped: closing it without a word left the session blocked
                             // until its own patience ran out, which on screen is a hang.
                             Action::Dismissed => {
                                 if let Some(crate::app::Picking::Permission { id, .. }) =
@@ -466,9 +466,9 @@ pub async fn run(
     Ok(())
 }
 
-/// Keep a connection to the daemon, redialling when it drops.
+/// Keep a connection to the session, redialling when it drops.
 ///
-/// A dead daemon is not an error for the UI: it is the detach case, and reattaching with the
+/// A dead session is not an error for the UI: it is the detach case, and reattaching with the
 /// last cursor is how an in-flight turn is rejoined rather than replayed.
 async fn connection_loop(
     socket: std::path::PathBuf,
@@ -486,7 +486,7 @@ async fn connection_loop(
             // still binding it — the only race left — or has begun shutting it down, and
             // either way the loop ends when the process does.
             //
-            // This used to spawn a daemon. It had to: the session was a separate process that
+            // This used to spawn a session. It had to: the session was a separate process that
             // could crash, be killed, or be lost to a sleeping machine, and a UI with nothing
             // to talk to had to build itself a new one and resume the journal. None of those
             // can happen to something that dies exactly when its window does.
@@ -559,7 +559,7 @@ fn terminal_size() -> (u16, u16) {
 
 /// The footer as of now.
 ///
-/// Rebuilt each frame from what the daemon has reported rather than kept in step by hand: the
+/// Rebuilt each frame from what the session has reported rather than kept in step by hand: the
 /// numbers change on every delta, and a copy updated at each of the places that could change
 /// them is a copy that misses one.
 fn footer_data(app: &App) -> FooterData {
@@ -591,13 +591,13 @@ enum Control {
     Continue,
     /// Exit.
     Quit,
-    /// Something only the daemon can do.
+    /// Something only the session can do.
     Send(UiCommand),
 }
 
 /// Run a colon command.
 ///
-/// Every command here is answered locally. Anything that needs the daemon becomes a
+/// Every command here is answered locally. Anything that needs the session becomes a
 /// [`UiCommand`] instead, so the set of things the UI can do alone stays visible in one match.
 fn run_command(input: &str, app: &mut App) -> Control {
     match input.split_whitespace().next().unwrap_or_default() {
@@ -614,7 +614,7 @@ fn run_command(input: &str, app: &mut App) -> Control {
             app.show_help();
             Control::Continue
         }
-        // With a name it is the daemon's to do: only it knows the catalog this session
+        // With a name it is the session's to do: only it knows the catalog this session
         // started with and whether the name reaches anything. Without one, the answer is
         // already on screen — the footer says which model is answering — so this says it
         // again in words, which is what somebody typing `:model` is asking for.
@@ -641,7 +641,7 @@ fn run_command(input: &str, app: &mut App) -> Control {
                 Control::Continue
             }
         },
-        // The daemon's, because it holds the conversation the question is about and the
+        // The session's, because it holds the conversation the question is about and the
         // provider that answers it.
         ":permissions" => Control::Send(UiCommand::DeclareNeeds),
         // A list rather than a flag. `--resume` continues this directory's most recent session
@@ -650,7 +650,7 @@ fn run_command(input: &str, app: &mut App) -> Control {
             app.open_session_picker();
             Control::Continue
         }
-        // Rewinding is the daemon's to work out: it holds the session, and which messages are
+        // Rewinding is the session's to work out: it holds the session, and which messages are
         // still live is a question about the session rather than about what is on screen.
         ":rewind" => match input.split_whitespace().nth(1) {
             None => Control::Send(UiCommand::Branch { keeps: None }),

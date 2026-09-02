@@ -1,11 +1,11 @@
-//! The axon daemon.
+//! The session: the journal, the socket, and the turns.
 //!
-//! Owns the session, the journal, and the socket. Answers the same protocol the replay host
-//! answers, which is the whole test of M1: `axon host` stands in for `axon fake-host` without
-//! a line of the UI moving.
+//! Answers the same protocol the replay host answers, which is the whole test of M1: this
+//! stands in for `axon fake-host` without a line of the UI moving.
 //!
-//! One session per daemon, for now. `UiCommand::Attach` already names one, so growing to a
-//! registry is a lookup rather than a protocol change.
+//! One session per process. It runs as a task inside the `axon` that shows it -- there is no
+//! daemon -- so a session ends exactly when its window does. `UiCommand::Attach` already names
+//! one, so growing to a registry would be a lookup rather than a protocol change.
 
 pub mod asking;
 pub mod cancel;
@@ -29,14 +29,11 @@ use axon_proto::{
 use session::Session;
 use std::path::Path;
 
-/// How often an unattached daemon looks up to see whether it is still wanted.
-const IDLE_CHECK: std::time::Duration = std::time::Duration::from_secs(5);
-
 use std::sync::Arc;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
 
-/// Anything that stops the daemon.
+/// Anything that stops the session.
 #[derive(Debug, thiserror::Error)]
 pub enum HostError {
     /// The transport failed.
@@ -78,14 +75,14 @@ pub async fn serve_catalog(
 ) -> Result<(), HostError> {
     // Told once, here, because this is the only place that knows both. A UI asking the
     // configuration for itself would report whatever is configured now rather than what this
-    // daemon is actually talking to.
+    // session is actually talking to.
     session.set_choices(catalog.choices());
     session.set_model(backend.as_ref().map(|backend| axon_proto::ModelInfo {
         name: backend.model.qualified(),
         context_window: backend.model.context_window,
     }));
     let session = Arc::new(Mutex::new(session));
-    // Turns run on the worker's own thread because a protocol lives in a Lua VM. A daemon
+    // Turns run on the worker's own thread because a protocol lives in a Lua VM. A session
     // with no backend has no worker, and says so when a prompt arrives.
     //
     // Behind a lock because `/model` replaces it. Replaced rather than reconfigured: the
@@ -120,36 +117,18 @@ pub async fn serve_catalog(
             .map(|backend| worker::Worker::gated(backend, Some(Arc::clone(&approver))))
             .map(Arc::new),
     ));
-    // "Nobody is attached" is the subscriber count on the session's own channel, which is exactly
-    // the question: a UI is attached precisely when it is listening.
-    let watching = session.lock().await.publisher();
-    let idle_exit = catalog.idle_exit;
     let catalog = Arc::new(catalog);
-    let mut idle_since: Option<std::time::Instant> = None;
-    let mut sweep = tokio::time::interval(IDLE_CHECK);
-    sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // No idle timer. There was one, and it counted the seconds since anything was attached: a
+    // daemon outlived the UI that started it, so one per directory per afternoon was how
+    // twenty-two of them ended up running, and this swept them.
+    //
+    // Nothing outlives its UI now — the session is a task in the process that shows it — so
+    // there is nothing left to sweep, and keeping the timer would have been actively dangerous:
+    // a UI whose connection hiccuped for long enough would have had its own session close the
+    // socket underneath it, with no daemon left to restart and no way back.
     loop {
-        let stream = tokio::select! {
-            accepted = listener.accept() => accepted?.0,
-            _ = sweep.tick(), if !idle_exit.is_zero() => {
-                // Detaching is not ending a session: a UI that quits mid-turn can come back to
-                // the answer. But a daemon nobody is attached to, with nothing running, is a
-                // process kept alive for a conversation nobody is having — and one per
-                // directory per afternoon is how twenty-two of them end up running.
-                let busy = !matches!(session.lock().await.status(), AgentStatus::Idle);
-                if busy || watching.receiver_count() > 0 {
-                    idle_since = None;
-                    continue;
-                }
-                let since = *idle_since.get_or_insert_with(std::time::Instant::now);
-                if since.elapsed() >= idle_exit {
-                    eprintln!("axon host: nothing attached for {idle_exit:?}; stopping");
-                    return Ok(());
-                }
-                continue;
-            }
-        };
-        // The daemon serves one user. A connection from any other uid is refused rather than
+        let stream = listener.accept().await?.0;
+        // A session serves one user. A connection from any other uid is refused rather than
         // authenticated, because there is no case where it should be served.
         match PeerCred::of(&stream) {
             Ok(cred) if cred.is_same_user() => {}

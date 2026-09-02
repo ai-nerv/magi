@@ -147,7 +147,7 @@ fn marker(label: &str, width: u16) -> Vec<Line<'static>> {
 
 /// A full-width box on `userMessageBg`, padded one cell on every side, labelled `USER`.
 fn user(text: &str, width: u16) -> Vec<Line<'static>> {
-    said("USER", colour::message_text(), None, text, width)
+    said("USER", colour::said_by_you(), None, text, width)
 }
 
 /// The same box, labelled with who sent it and how they stand to this session.
@@ -164,7 +164,13 @@ fn from(who: &str, kin: &str, sort: &str, text: &str, width: u16) -> Vec<Line<'s
     // The sort only when it is not the ordinary one: `note` beside every message is noise, and
     // `attention` beside one is the whole point of having sorts at all.
     let beside = (sort != "note" && !sort.is_empty()).then(|| sort.to_owned());
-    said(&label, colour::accent(), beside.as_deref(), text, width)
+    said(
+        &label,
+        colour::said_by_agent(),
+        beside.as_deref(),
+        text,
+        width,
+    )
 }
 
 /// A padded box with a reversed tag on its top row.
