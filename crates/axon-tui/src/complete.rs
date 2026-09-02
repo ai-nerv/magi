@@ -96,6 +96,10 @@ pub fn commands() -> Vec<Candidate> {
         (":rewind", "undo the last exchange, or :rewind N"),
         (":think", "how much reasoning to ask for"),
         (":quit", "exit axon, and :q for the same"),
+        (
+            ":quitall",
+            "exit, taking anything this session started — :qa for the same",
+        ),
     ]
     .iter()
     .map(|(value, detail)| Candidate {

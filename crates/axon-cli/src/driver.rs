@@ -664,91 +664,9 @@ fn footer_data(app: &App) -> FooterData {
     }
 }
 
-/// Whether a slash command asked the UI to exit.
-#[derive(Debug, PartialEq)]
-enum Control {
-    /// Stay running.
-    Continue,
-    /// Exit.
-    Quit,
-    /// Something only the session can do.
-    Send(UiCommand),
-}
-
-/// Run a colon command.
-///
-/// Every command here is answered locally. Anything that needs the session becomes a
-/// [`UiCommand`] instead, so the set of things the UI can do alone stays visible in one match.
-fn run_command(input: &str, app: &mut App) -> Control {
-    match input.split_whitespace().next().unwrap_or_default() {
-        ":quit" | ":q" => Control::Quit,
-        // Both halves, because the name promises both. Clearing only the view left the model
-        // remembering everything while the footer reported an empty context -- the screen and
-        // the token count both lying, in the same direction, at the same time. The branch is
-        // journalled, so the record of what was said survives what the model is shown.
-        ":clear" => {
-            app.clear_view();
-            Control::Send(UiCommand::Branch { keeps: Some(0) })
-        }
-        ":help" => {
-            app.show_help();
-            Control::Continue
-        }
-        // With a name it is the session's to do: only it knows the catalog this session
-        // started with and whether the name reaches anything. Without one, the answer is
-        // already on screen — the footer says which model is answering — so this says it
-        // again in words, which is what somebody typing `:model` is asking for.
-        ":model" => match input.split_whitespace().nth(1) {
-            Some(name) => Control::Send(UiCommand::SetModel {
-                name: name.to_owned(),
-            }),
-            // A list rather than a sentence. Somebody asking this has usually configured
-            // nothing, and being told "no model is configured" answers the question they did
-            // not ask while leaving the one they did.
-            None => {
-                app.open_model_picker();
-                Control::Continue
-            }
-        },
-        // Same shape as `:model`: a list rather than a sentence, because the useful reply to
-        // "how much reasoning" is the set of answers and which of them this model can give.
-        ":think" => match input.split_whitespace().nth(1) {
-            Some(level) => Control::Send(UiCommand::SetThinking {
-                level: level.to_owned(),
-            }),
-            None => {
-                app.open_thinking_picker();
-                Control::Continue
-            }
-        },
-        // The session's, because it holds the conversation the question is about and the
-        // provider that answers it.
-        ":permissions" => Control::Send(UiCommand::DeclareNeeds),
-        // A list rather than a flag. `--resume` continues this directory's most recent session
-        // and there was no way to reach any of the others, which is most of them.
-        ":resume" => {
-            app.open_session_picker();
-            Control::Continue
-        }
-        // Rewinding is the session's to work out: it holds the session, and which messages are
-        // still live is a question about the session rather than about what is on screen.
-        ":rewind" => match input.split_whitespace().nth(1) {
-            None => Control::Send(UiCommand::Branch { keeps: None }),
-            Some(n) => match n.parse() {
-                Ok(keeps) => Control::Send(UiCommand::Branch { keeps: Some(keeps) }),
-                Err(_) => {
-                    app.show_notice(format!(":rewind takes a number, not {n:?}"));
-                    Control::Continue
-                }
-            },
-        },
-        _ => {
-            app.show_notice(format!("unknown command: {input}"));
-            Control::Continue
-        }
-    }
-}
-
+/// The colon commands. A closed list, in a file of its own.
+mod commands;
+use commands::{Control, run_command};
 /// Hand the prompt to `$EDITOR`, releasing the terminal for the duration.
 ///
 /// The raw-mode session is dropped first and rebuilt after: a full-screen editor and a TUI
