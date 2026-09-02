@@ -16,7 +16,7 @@ use std::collections::BTreeSet;
 mod frame;
 mod tool;
 
-use frame::{LEAD, bottom, inside, top};
+use frame::{MARGIN, bottom, inside, top};
 
 pub use tool::Detail;
 
@@ -114,7 +114,7 @@ pub fn entry_lines(entry: &Entry, width: u16, detail: Detail) -> Vec<Line<'stati
 /// is — a voice that is not the conversation's.
 fn notice(text: &str, width: u16) -> Vec<Line<'static>> {
     let style = Style::default().fg(colour::dim());
-    let inner = width.saturating_sub(crate::metric::block_pad() * 2 + 2);
+    let inner = frame::held(width);
     let mut out = vec![Line::default()];
     for line in markdown::render(text, inner, style) {
         let mut spans = vec![Span::styled(
@@ -195,14 +195,14 @@ fn said(label: &str, tag: ratatui::style::Color, text: &str, width: u16) -> Vec<
     let chip = Style::default().fg(tag).add_modifier(Modifier::BOLD);
     // One column narrower each side than the frame, so the text sits inside the edges rather
     // than running under the corners.
-    let inner = width.saturating_sub(crate::metric::block_pad() * 2 + 2);
+    let inner = frame::held(width);
     let body = markdown::render(text, inner, style);
 
     // No handle: neither of these folds, and a handle on something that cannot be opened is an
     // affordance that lies.
     let mut out = vec![top(label, chip, None, width)];
     for line in body {
-        out.push(inside(line, width, style, LEAD));
+        out.push(inside(line, width, style, MARGIN));
     }
     out.push(bottom(width));
     out
@@ -217,7 +217,7 @@ fn assistant(
     width: u16,
 ) -> Vec<Line<'static>> {
     let base = Style::default().fg(colour::text());
-    let inner = width.saturating_sub(crate::metric::block_pad() * 2);
+    let inner = frame::held(width);
     let mut out = Vec::new();
 
     if !thinking.trim().is_empty() || !text.trim().is_empty() {
@@ -292,11 +292,13 @@ fn blank(width: u16, style: Style) -> Line<'static> {
     Line::from(Span::styled(" ".repeat(usize::from(width)), style))
 }
 
-/// Indent a line by [`crate::metric::block_pad()`] without a background.
+/// Put a line where a block's inside would be.
+///
+/// The same column a fill starts at, so prose and blocks share one text column down the left and
+/// one down the right. Before this they were laid out to different rules and a screen of mixed
+/// output had two ragged margins; now the only things reaching past the text are the frames.
 fn indent(line: Line<'static>) -> Line<'static> {
-    let mut spans = vec![Span::raw(
-        " ".repeat(usize::from(crate::metric::block_pad())),
-    )];
+    let mut spans = vec![Span::raw(" ".repeat(frame::MARGIN))];
     spans.extend(line.spans);
     Line::from(spans)
 }
@@ -429,7 +431,9 @@ mod tests {
             usage: axon_proto::Usage::default(),
         };
         let rendered = text_of(&entry_lines(&entry, 20, Detail::Preview));
-        assert_eq!(rendered, vec!["", " sure"]);
+        // Two columns in — the same column a block's fill starts at, so prose and boxes share
+        // one text column down the left rather than each having their own.
+        assert_eq!(rendered, vec!["", "  sure"]);
     }
 
     #[test]

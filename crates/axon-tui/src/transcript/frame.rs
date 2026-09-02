@@ -17,11 +17,21 @@ use crate::glyph;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-/// How far a block's rows sit in from its frame.
+/// Columns between a block's frame and everything inside it, on each side.
 ///
-/// One column for the edge itself, plus the configured padding — so text starts *inside* the box
-/// rather than under the corner it shares a row with.
-pub(super) const LEAD: usize = 1 + 1;
+/// Two, not one. The fill used to start against the corner, so the box read as being *drawn on*
+/// the text rather than around it — and the edge had nowhere to breathe.
+///
+/// It is also the left margin for everything that is **not** in a box: an assistant's prose, its
+/// thinking, a notice. They are laid out to exactly the span the fill covers, so a screen of
+/// mixed blocks and prose has one text column down the left and one down the right, and the only
+/// things reaching past them are the frames themselves.
+pub(super) const MARGIN: usize = 2;
+
+/// How wide the inside of a block is — and how wide everything outside one is set.
+pub(super) fn held(width: u16) -> u16 {
+    width.saturating_sub(u16::try_from(MARGIN * 2).unwrap_or(4))
+}
 
 /// The top edge of a block, with its name set into it and a handle on the right.
 ///
@@ -202,17 +212,21 @@ mod framing {
 /// So the fill spans `1..width-1`, and the two columns the corners stand in are left as the
 /// terminal's own. There are no sides drawn in them: the gap is what puts the fill inside.
 pub(super) fn inside(line: Line<'static>, width: u16, style: Style, lead: usize) -> Line<'static> {
-    let held = usize::from(width).saturating_sub(2);
+    let room = usize::from(held(width));
     let used: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
-    // `lead` counts from the block's edge, and the first of those columns is the frame's own.
-    let pad = lead.saturating_sub(1).min(held);
-    let trailing = held.saturating_sub(used + pad);
+    // `lead` counts from the block's own left edge, and the first `MARGIN` of those columns are
+    // outside the fill — so what is left is the padding *within* it.
+    let pad = lead.saturating_sub(MARGIN).min(room);
+    let trailing = room.saturating_sub(used + pad);
 
-    let mut spans = vec![Span::raw(" "), Span::styled(" ".repeat(pad), style)];
+    let mut spans = vec![
+        Span::raw(" ".repeat(MARGIN)),
+        Span::styled(" ".repeat(pad), style),
+    ];
     spans.extend(line.spans);
     spans.push(Span::styled(" ".repeat(trailing), style));
-    spans.push(Span::raw(" "));
-    Line::from(spans.clone())
+    spans.push(Span::raw(" ".repeat(MARGIN)));
+    Line::from(spans)
 }
 
 /// The frame is outside, the fill is inside.
@@ -248,13 +262,17 @@ mod nesting {
     fn the_fill_stops_short_of_the_frame() {
         // The bug this is here for. Painted to the full width, the background ran out past the
         // corners the edges had just drawn: the block read as a coloured band with a line across
-        // the top of it rather than as a box with something in it.
+        // the top of it rather than as a box with something in it. It stops two columns short
+        // now, on both sides, and that margin is what everything outside a box is set to as well.
         let rows = filled(30);
         let body = &rows[1];
-        assert!(!body[0], "the fill reaches the left corner's column");
-        assert!(!body[29], "and the right one's");
         assert!(
-            body[1] && body[28],
+            !body[0] && !body[1],
+            "the fill runs into the frame's margin"
+        );
+        assert!(!body[28] && !body[29], "and out the other side");
+        assert!(
+            body[2] && body[27],
             "the fill should span everything between"
         );
     }
@@ -295,10 +313,10 @@ mod nesting {
 pub(super) fn lone(label: &str, chip: Style, beside: &str, width: u16) -> Line<'static> {
     let named = format!("[ {label} ]");
     let mut spans = vec![
-        Span::raw(" ".repeat(LEAD)),
+        Span::raw(" ".repeat(MARGIN)),
         Span::styled(named.clone(), chip),
     ];
-    let mut used = LEAD + named.chars().count();
+    let mut used = MARGIN + named.chars().count();
     if !beside.trim().is_empty() {
         let beside = clip(
             &format!(" {}", beside.trim()),
@@ -382,5 +400,90 @@ mod emptiness {
         assert!(shown.iter().any(|l| l.contains('┌')), "{shown:#?}");
         assert!(shown.iter().any(|l| l.contains('└')), "{shown:#?}");
         assert!(shown.iter().any(|l| l.contains("one line")), "{shown:#?}");
+    }
+}
+
+/// Prose and blocks share one text column, so only the frames reach past it.
+#[cfg(test)]
+mod alignment {
+    use crate::transcript::tests::text_of;
+    use crate::transcript::{Detail, entry_lines};
+    use axon_proto::{Entry, MessageId, StopReason, ToolCallId, ToolResult};
+
+    fn said(text: &str) -> Vec<String> {
+        text_of(&entry_lines(
+            &Entry::Assistant {
+                id: MessageId::new("a1"),
+                text: text.into(),
+                thinking: String::new(),
+                stop_reason: Some(StopReason::EndTurn),
+                error: None,
+                signatures: axon_proto::Signatures::default(),
+                usage: axon_proto::Usage::default(),
+            },
+            40,
+            Detail::Preview,
+        ))
+    }
+
+    #[test]
+    fn prose_starts_where_a_block_starts() {
+        // They were laid out to different rules, so a screen of mixed output had two ragged
+        // margins. An answer and the box above it should begin in the same column.
+        let block = text_of(&entry_lines(
+            &Entry::User {
+                id: MessageId::new("m1"),
+                text: "hello".into(),
+                aside: String::new(),
+            },
+            40,
+            Detail::Preview,
+        ));
+        let prose = said("hello");
+        let column = |line: &str| line.len() - line.trim_start().len();
+        assert_eq!(
+            column(&block[1]),
+            column(&prose[1]),
+            "{block:#?} against {prose:#?}"
+        );
+    }
+
+    #[test]
+    fn prose_stops_where_a_block_stops() {
+        // The right margin too, or long prose runs out past the corner above it.
+        let long = "word ".repeat(40);
+        for line in said(&long).iter().filter(|l| !l.trim().is_empty()) {
+            assert!(
+                line.chars().count() <= 40 - super::MARGIN,
+                "{line:?} reaches past the frame"
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_frame_reaches_the_first_and_last_column() {
+        // The whole point of the margin: everything with content in it is inside, and the two
+        // outermost columns belong to the edges alone.
+        let shown = text_of(&entry_lines(
+            &Entry::Tool {
+                id: ToolCallId::new("t1"),
+                name: "read".into(),
+                args: r#"{"path":"src/main.rs"}"#.into(),
+                result: Some(ToolResult {
+                    output: "one".into(),
+                    is_error: false,
+                }),
+                thought_signature: None,
+            },
+            40,
+            Detail::Full,
+        ));
+        for line in shown.iter().filter(|l| !l.trim().is_empty()) {
+            let edge = line.starts_with('┌') || line.starts_with('└');
+            if !edge {
+                let first = line.chars().next().expect("a column");
+                assert_eq!(first, ' ', "{line:?} starts in the frame's column");
+            }
+        }
     }
 }

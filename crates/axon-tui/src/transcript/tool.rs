@@ -81,7 +81,7 @@ pub(super) fn block(
     //
     // What a call was given is the first row, not a second header: opening a block used to show
     // its arguments, then a rule, then the output, and for an `edit` that is the same thing twice.
-    let lead = super::frame::LEAD + STEP;
+    let lead = super::frame::MARGIN + STEP;
     let body = usize::from(width).saturating_sub(lead + usize::from(crate::metric::block_pad()));
 
     // Gathered before anything is framed, because whether there is a box at all depends on

@@ -81,9 +81,11 @@ fn a_conversation_renders_the_way_pi_lays_it_out() {
             "┌──[ USER ]────────────────────────────────┐",
             "  run the tests",
             "└──────────────────────────────────────────┘",
-            "",                   // assistant: leading blank
-            " Running them now.", // assistant: body, indented
-            "",                   // the gap between blocks, unpainted
+            "", // assistant: leading blank
+            // Two columns in, the same as a block's inside: prose and boxes share one text
+            // column down the left, so the only things reaching past it are the frames.
+            "  Running them now.",
+            "", // the gap between blocks, unpainted
             // The name in the outcome's colour, and the fold handle at the far end of the same
             // edge — `>` shut, `v` open, saying which way it will go. Nothing else on the edge:
             // what the call was *given* is the block's first row, where it has room to be read.
