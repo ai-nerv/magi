@@ -115,6 +115,10 @@ impl Reply {
 /// where one tool can be asked what it speaks and another cannot has stopped being a family.
 pub const VERBS: &[(&str, &str)] = &[
     ("verbs", "what this instance answers"),
+    (
+        "client",
+        "the Lua client library for this surface, as source",
+    ),
     ("identity", "its project, role, id and who started it"),
     (
         "kin",
@@ -338,5 +342,75 @@ mod tests {
         let message = Message::new("axon/main/alpha-rho", "stop what you are doing");
         assert_eq!(message.from, "axon/main/alpha-rho");
         assert!(message.at > 0, "and when it was sent");
+    }
+}
+
+/// The client library and the surface it claims to speak are the same surface.
+#[cfg(test)]
+mod client_tests {
+    use super::*;
+
+    /// The verbs the shipped Lua stub attaches to a session.
+    ///
+    /// Read line by line and comments dropped first, because the block explains itself and a
+    /// split on quotes reads the prose as verbs — which it did, and the failure was the test's
+    /// rather than the stub's.
+    fn surface() -> Vec<String> {
+        let source = crate::CLIENT;
+        let from = source
+            .find("local SURFACE = {")
+            .expect("the stub names its surface");
+        let body = &source[from..];
+        let to = body.find("\n}").expect("and closes it");
+        body[..to]
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.starts_with("--") && !line.starts_with("local"))
+            .flat_map(|line| line.split('"').skip(1).step_by(2))
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn the_stub_speaks_every_verb_this_answers() {
+        // The failure the family's guidance names first, and it is silent: a client that does
+        // not know about a verb simply never calls it, and the surface quietly shrinks to
+        // whatever the oldest copy of this file knew about.
+        let stub = surface();
+        for (verb, _) in VERBS {
+            assert!(
+                stub.iter().any(|named| named == verb),
+                "the client library does not offer `{verb}`: {stub:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_stub_claims_nothing_this_does_not_answer() {
+        // The other direction, and worse: a verb a client offers and nothing answers fails at
+        // the far end, in somebody else's program, with a refusal they cannot act on.
+        let known: Vec<&str> = VERBS.iter().map(|(verb, _)| *verb).collect();
+        for verb in surface() {
+            assert!(
+                known.contains(&verb.as_str()),
+                "the client library offers `{verb}`, which nothing answers: {known:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_stub_is_shipped_whole_and_returns_its_module() {
+        // `include_str!` of the wrong path, or a file that got truncated, both present as a
+        // client that will not load — in the sibling, not here.
+        assert!(crate::CLIENT.len() > 4_000, "that is not the whole file");
+        assert!(crate::CLIENT.contains("local M = { _NAME = \"agent\""));
+        assert!(crate::CLIENT.trim_end().ends_with("return M"));
+    }
+
+    #[test]
+    fn the_stub_puts_a_caller_on_every_call() {
+        // Without it a session answers `verbs` and refuses everything else, which reads as
+        // "that instance is broken" rather than as a client that never introduced itself.
+        assert!(crate::CLIENT.contains("from = self.from"));
     }
 }

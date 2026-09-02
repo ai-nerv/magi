@@ -69,6 +69,16 @@ enum Command {
     /// Sign in to a provider that uses a subscription rather than a key.
     #[command(subcommand)]
     Auth(AuthCommand),
+    /// Print the Lua client library for the agent surface.
+    ///
+    /// What a sibling needs in order to talk to a running axon: framing, encoding, discovery
+    /// and the verbs, as one plain-Lua file to `require`. Redirect it — `axon lua-api >
+    /// config/clients/agent.lua` — because getting a file onto disk is the caller's business
+    /// and a flag that picked the path would be axon inventing a convention nobody asked for.
+    ///
+    /// The same source is served over the socket as the `client` verb, for a sandboxed VM that
+    /// cannot shell out to run this. It goes with the agent layer when that leaves.
+    LuaApi,
     /// List the tools the model can call, and how each is reached.
     Tools,
     /// List the providers and models axon knows about.
@@ -106,6 +116,10 @@ async fn main() -> Result<()> {
         Some(Command::Auth(AuthCommand::Login { provider })) => auth::login(&provider).await,
         Some(Command::Auth(AuthCommand::Logout { provider })) => auth::logout(&provider),
         Some(Command::Auth(AuthCommand::Status)) => auth::status(),
+        Some(Command::LuaApi) => {
+            print!("{}", axon_agent::CLIENT);
+            Ok(())
+        }
         Some(Command::Tools) => {
             tools::print()?;
             Ok(())

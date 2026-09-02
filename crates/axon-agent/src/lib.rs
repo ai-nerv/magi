@@ -47,3 +47,12 @@ pub mod wire;
 pub use directory::{Address, Reach};
 pub use identity::Identity;
 pub use policy::{Relation, Talk, Whom};
+
+/// The Lua client library, as source.
+///
+/// Shipped by this crate and copied by whoever wants to talk to it — that is the family's
+/// arrangement, and it is why there is one implementation of the framing rather than one per
+/// sibling. It is handed out three ways, because a host that can do one of them often cannot do
+/// the others: as this constant to anything linking the crate, on stdout for anything that can
+/// shell out, and over the wire as the `client` verb for a sandboxed VM that can do neither.
+pub const CLIENT: &str = include_str!("../lua/agent.lua");

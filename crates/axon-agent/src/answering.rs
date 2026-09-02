@@ -80,6 +80,18 @@ pub fn answer(call: &Call, about: &About, caller: Option<&Whom>) -> (Reply, Then
             Then::Nothing,
         );
     }
+    // Answered before the permission check for the same reason `verbs` is, and it is the other
+    // half of the same idea: `verbs` says what this surface speaks, and this hands over the
+    // library that speaks it. `agent lua-api` prints the same source, which is enough for a host
+    // that can shell out and useless to one that cannot — a sandboxed VM with no `io.popen` has
+    // no way to run it. Over the wire, a sibling can fetch the right vocabulary using the wrong
+    // one, in code, with nothing written to disk.
+    //
+    // Safe to answer a stranger: it is a file this crate ships, identical for every session, and
+    // it says nothing about *this* one.
+    if call.call == "client" {
+        return (Reply::of(serde_json::json!(crate::CLIENT)), Then::Nothing);
+    }
     let Some(caller) = caller else {
         return (
             Reply::refused("say who is calling: every call but `verbs` needs a `from`"),

@@ -7,6 +7,7 @@
 -- Clients first — a tool loads its sibling's client library as it declares itself.
 axon.load("clients/hexe.lua")
 axon.load("clients/oslo.lua")
+axon.load("clients/agent.lua")
 axon.load("apis.lua")
 axon.load("providers.lua")
 axon.load("tools.lua")
