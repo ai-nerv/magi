@@ -12,7 +12,6 @@ members = [
   "crates/axon-core",
   "crates/axon-testkit",
   "crates/axon-tools",
-  "crates/axon-agent",
 ]
 resolver = "3"
 
@@ -42,7 +41,6 @@ axon-proto = { path = "crates/axon-proto" }
 axon-provider = { path = "crates/axon-provider" }
 axon-testkit = { path = "crates/axon-testkit" }
 axon-tools = { path = "crates/axon-tools" }
-axon-agent = { path = "crates/axon-agent" }
 axon-tui = { path = "crates/axon-tui" }
 
 anyhow = "1.0"

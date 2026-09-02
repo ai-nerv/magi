@@ -322,38 +322,56 @@ do -- memo
 end
 
 do -- agent
-  -- Talking to the other axons in this project. A peer process rather than a function in this
-  -- VM, unlike hexe and oslo -- and for a reason worth writing down, because the shape looks
-  -- inconsistent otherwise.
+  -- Talking to the other axons in this project, through atom -- a separate program that owns
+  -- naming, the sockets sessions reach each other on, and the walls between them.
   --
-  -- Those two ask a *different* program about itself, and any process can do that. This one has
-  -- to know which axon it is speaking as, and that means reading the project directory: which
-  -- sockets are there, and whose note sits beside each. A peer inherits this session's name
-  -- from the environment and has a directory to read; a function in the VM has neither.
+  -- `atom` rather than `axon ext agent`, and a `command` rather than a `process`: this ran as
+  -- axon's own peer until the layer left, and neither half of that is a rename. A command
+  -- transport is one exec per call with the arguments in argv, which is the whole protocol atom
+  -- offers -- deliberately, so a harness that can run a program can use it without copying
+  -- anybody's message types.
   --
-  -- The peer declares its own name, description and parameters on connect, so the vocabulary is
-  -- written once in Rust rather than copied here to drift out of date.
+  -- Delete this block if atom is not installed. The tool then fails per call rather than at
+  -- load, which is the honest outcome: a session with no atom has no siblings to talk to.
   axon.tool("agent", {
     description = [[
   Talk to the other axon instances running in this project: ask what they are doing, send them
   work, answer their questions, and stop the ones this session started.
 
-  Call it with `verb: "help"` first. `list` says who is actually there.]],
+  Call it with `verb: "help"` first -- that lists every verb and what each one takes, from the
+  atom that is actually installed. `list` says who is really there.]],
 
+    -- Five arguments and no list of verbs, on purpose. atom's vocabulary grows and this file
+    -- would not hear about it; `help` is the copy that cannot go stale.
     parameters = {
       type = "object",
       properties = {
         verb = { type = "string", description = "What to do. `help` lists them all." },
+        who = {
+          type = "string",
+          description = "Which instance: `iota-mu`, `review/iota-mu` or `axon/review/iota-mu`.",
+        },
+        message = { type = "string", description = "What to say, for the verbs that say something." },
+        about = { type = "string", description = "The id of the message being answered." },
+        sort = { type = "string", description = "For `send` only: what kind of message it is." },
       },
       required = { "verb" },
     },
 
     transport = {
-      kind = "process",
-      -- The same executable under another name, like `shell`. `axon.self` is the binary that is
-      -- running: naming it "axon" and hoping PATH agrees finds whichever copy the shell sees.
-      command = axon.self,
-      args = { "ext", "agent" },
+      kind = "command",
+      command = "atom",
+      -- An argument the model left out still arrives, as an empty string. atom drops those
+      -- rather than looking for an instance named "", so a `list` needs no `who`.
+      args = {
+        "tool",
+        "--verb", "{verb}",
+        "--who", "{who}",
+        "--message", "{message}",
+        "--about", "{about}",
+        "--sort", "{sort}",
+      },
+      timeout = 30,
     },
   })
 end

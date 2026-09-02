@@ -33,7 +33,8 @@ pub async fn run(
     socket: &Path,
     prompt: Option<String>,
     loaded: Option<crate::config::Loaded>,
-    identity: crate::instance::Identity,
+    project: &str,
+    started: Option<(crate::atom::Atom, std::path::PathBuf)>,
 ) -> Result<()> {
     // **Before anything reads a setting.** `colour`, `glyph` and `metric` each hold their table
     // in a `OnceLock` that the first *read* fills with the built-in defaults, and `adopt` after
@@ -48,21 +49,12 @@ pub async fn run(
     if let Some(loaded) = &loaded {
         crate::config::adopt_ui(loaded);
     }
-    // Same trap, same shape: the first read of the policy fills it with the default, and the
-    // socket is bound a few lines below.
-    if let Some(talk) = loaded
-        .as_ref()
-        .and_then(|l| l.config.string("agent_talk"))
-        .and_then(crate::instance::policy::Talk::read)
-    {
-        crate::instance::policy::adopt(talk);
-    }
-
     let mut app = App::new();
-    // Handed in rather than made here. The session was started with this name in its environment
-    // and every tool peer inherits it from there, so a UI that named itself independently would
-    // bind one socket and sign its messages as another.
-    app.identity = identity;
+    // What the footer shows. atom names a session because it can see the namespace and axon
+    // cannot; without atom there are no siblings to be told apart, so the project is name enough.
+    app.named = started
+        .as_ref()
+        .map_or_else(|| project.to_owned(), |(layer, _)| layer.named.clone());
     // The prompts from previous runs, so the arrow keys reach past this one.
     app.editor = axon_tui::Editor::with_history(crate::history::load());
     if let Some(loaded) = &loaded {
@@ -93,15 +85,6 @@ pub async fn run(
     // screen until the alternate one is open.
     axon_tui::decrypt::begin();
     let mut terminal_events = EventStream::new();
-    // Held so the session can update what it says about itself, read what arrived, and notice
-    // being asked to stop. `None` only if binding failed, which is not fatal: a session nobody
-    // can reach is still a session.
-    #[allow(clippy::type_complexity)]
-    let mut reachable: Option<(
-        tokio::sync::watch::Sender<crate::instance::answering::About>,
-        tokio::sync::mpsc::Receiver<crate::instance::wire::Message>,
-        tokio::sync::mpsc::Receiver<()>,
-    )>;
     let mut ticker = tokio::time::interval(Duration::from_millis(axon_tui::metric::frame_ms()));
 
     let (event_tx, mut event_rx) = mpsc::channel::<HarnessEvent>(256);
@@ -110,37 +93,30 @@ pub async fn run(
     // event, so a UI watching only for events cannot tell "nothing is happening" from
     // "nothing can happen".
     let attached = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    // The other half of the mirror: this session can be reached by name for as long as it
-    // runs. Bound before the first frame, so a fork started by hand can find its parent
-    // immediately rather than racing the UI.
-    {
-        let (about_tx, about_rx) = tokio::sync::watch::channel(crate::instance::answering::About {
-            me: app.identity.clone(),
-            parent: crate::instance::parent(),
-            token: crate::instance::token(),
-            busy: false,
-            working_for: 0,
-            inbox: Vec::new(),
+
+    // What atom says, on its way to becoming an entry. Read on a thread because it is a
+    // blocking pipe and everything else in this loop is not — and dropped, along with atom
+    // itself, when this function returns.
+    let (heard_tx, mut heard) = mpsc::channel::<crate::atom::Heard>(64);
+    let mut layer = started.map(|(layer, _at)| layer);
+    if let Some(reading) = layer.as_mut().and_then(crate::atom::Atom::hearing) {
+        std::thread::spawn(move || {
+            use std::io::BufRead;
+            for line in std::io::BufReader::new(reading)
+                .lines()
+                .map_while(Result::ok)
+            {
+                // A line this build cannot read is a newer atom, not a reason to stop reading:
+                // the next one may well be a message, and dropping the whole pipe over a field
+                // nobody here knows about would lose it.
+                let Ok(said) = serde_json::from_str::<crate::atom::Heard>(&line) else {
+                    continue;
+                };
+                if heard_tx.blocking_send(said).is_err() {
+                    return;
+                }
+            }
         });
-        let (arrived_tx, arrived_rx) = tokio::sync::mpsc::channel(64);
-        let (stopped_tx, stopped_rx) = tokio::sync::mpsc::channel(1);
-        // Left beside the socket so the tree can be read off the directory: a session that
-        // finds this one there can tell whose subagent it is without asking it, and without
-        // trusting what it would have said.
-        crate::instance::announce(&app.identity);
-        let at = crate::instance::listening_at(&app.identity);
-        tokio::spawn(async move {
-            let _ = crate::instance::serving::serve(
-                &at,
-                crate::instance::serving::Serving {
-                    about: about_rx,
-                    arrived: arrived_tx,
-                    stopped: stopped_tx,
-                },
-            )
-            .await;
-        });
-        reachable = Some((about_tx, arrived_rx, stopped_rx));
     }
 
     tokio::spawn(connection_loop(
@@ -176,6 +152,10 @@ pub async fn run(
     // Set by a mouse release, acted on after the next draw: the text a selection covers is read
     // back out of the frame it was drawn into, so there has to be a frame.
     let mut copied: Option<axon_tui::select::Selection> = None;
+    // Whether a turn was running last frame. A turn *ending* is the edge that answers an
+    // arrival, and neither side of the pipe can see it: atom cannot see a turn at all, and the
+    // session publishes what it is doing rather than what it just stopped doing.
+    let mut was_busy = false;
     loop {
         // Read each pass rather than tracked here: the connection lives in another task, and
         // this is the one thing about it the screen has to show.
@@ -248,7 +228,9 @@ pub async fn run(
                                 // parser" put a page of facts about `iota-mu` into the
                                 // transcript under your own name. You typed one line; you
                                 // should see one line.
-                                let aside = crate::instance::briefing(&text, &app.standing());
+                                let aside = layer
+                                    .as_ref()
+                                    .map_or_else(String::new, |l| l.briefing(&text, project));
                                 let _ = command_tx
                                     .send(UiCommand::SubmitPrompt { text, aside })
                                     .await;
@@ -447,35 +429,49 @@ pub async fn run(
                 // frame rather than where the state changes: the socket answers with whatever
                 // was last published, and a session that only republished on some paths would
                 // report a turn that finished a minute ago.
-                if let Some((about, arrived, stopped)) = reachable.as_mut() {
-                    if stopped.try_recv().is_ok() {
-                        break;
+                // What atom heard, and what it is allowed to say about us. Done on the frame
+                // rather than where the state changes: atom answers with whatever it was last
+                // told, and a session that only told it on some paths would report a turn that
+                // finished a minute ago.
+                let mut ended = false;
+                while let Ok(said) = heard.try_recv() {
+                    match said {
+                        // Handed to the session, not drawn here. atom is where a message lands,
+                        // but the transcript and the turns are the session's — an entry the UI
+                        // appended for itself is one the model never sees, and an instance
+                        // could be asked a question and sit there until somebody typed at it.
+                        crate::atom::Heard::Message { who, sort, text } => {
+                            let _ = command_tx.send(app.received(&who, &sort, &text)).await;
+                        }
+                        crate::atom::Heard::Around { names } => app.reachable = names,
+                        crate::atom::Heard::Stopped => ended = true,
+                        // Said once, at startup, and read there. A second one is a newer atom
+                        // saying something this build has no use for.
+                        crate::atom::Heard::Listening { .. } => {}
                     }
-                    // Handed to the session, not drawn here. The UI binds the socket other
-                    // instances reach this one at, so a message lands in this process — but the
-                    // transcript and the turns are the session's, and an entry the UI appended
-                    // for itself was one the model never saw. An instance could be asked a
-                    // question and would sit there until somebody typed at it.
-                    while let Ok(message) = arrived.try_recv() {
-                        let _ = command_tx.send(app.received(message)).await;
-                    }
-                    let _ = about.send(crate::instance::answering::About {
-                        me: app.identity.clone(),
-                        parent: crate::instance::parent(),
-                        token: crate::instance::token(),
-                        busy: app.is_busy(),
-                        working_for: app.elapsed().map_or(0, |since| since.as_secs()),
-                        inbox: app.inbox.clone(),
-                    });
+                }
+                if ended {
+                    break;
+                }
+                // The turn that was running has finished, so whatever it was answering has been
+                // answered. Counted rather than matched up one for one: a turn answers whatever
+                // arrived before it, and a sibling asking `status` wants to know whether it is
+                // still waiting, not which of its messages this was.
+                if was_busy && !app.is_busy() {
+                    app.answered();
+                }
+                was_busy = app.is_busy();
+                if let Some(layer) = layer.as_mut() {
+                    layer.doing(
+                        app.is_busy(),
+                        app.elapsed().map_or(0, |since| since.as_secs()),
+                        app.unanswered(),
+                    );
                 }
                 dirty = true;
             }
         }
     }
-
-    // The note beside the socket goes when the session does. A stale one would make a main
-    // that reuses the id look like somebody's subagent, and the reader believes the file.
-    crate::instance::forget(&app.identity);
 
     Ok(())
 }
@@ -579,7 +575,7 @@ fn terminal_size() -> (u16, u16) {
 fn footer_data(app: &App) -> FooterData {
     let window = app.model.as_ref().map_or(0, |m| m.context_window);
     FooterData {
-        identity: app.identity.full(),
+        identity: app.named.clone(),
         model: app.model.as_ref().map_or_else(
             || axon_tui::glyph::no_model().to_owned(),
             |model| model.name.clone(),

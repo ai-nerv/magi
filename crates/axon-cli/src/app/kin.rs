@@ -1,90 +1,71 @@
-//! What the session knows about its neighbours.
+//! A message from another session, on its way into the conversation.
 //!
-//! Two views of the same handful of fields, kept together because they must agree. One says
-//! where this session sits in the tree; the other is the copy the `agent` tool is handed. Built
-//! here rather than at each call site so the briefing and the tool cannot end up describing the
-//! same neighbour differently — a model told it may stop a session and then refused when it
-//! tries has been lied to by the harness, not by the far end.
+//! atom is where one lands — it holds the socket — and the session is where it belongs, because
+//! the transcript and the turns are the session's. So this is the seam: what came up atom's pipe
+//! becomes a command for the session, and nothing here decides anything about it.
+//!
+//! The sort arrives already chosen, by the sender, and is not second-guessed. A second opinion
+//! about what a message *is* would be a second chance to get it wrong.
 
 use super::App;
 
 impl App {
-    /// Everything the `agent` tool needs in order to answer, copied out of the session.
+    /// A message arrived from another session.
     ///
-    /// A copy rather than a borrow: a tool runs on the turn thread and this is the UI's.
-    #[must_use]
-    pub fn standing(&self) -> axon_agent::verbs::Standing {
-        axon_agent::verbs::Standing {
-            me: self.identity.full(),
-            parent: self.parent.clone(),
-            forked: self.forked.clone(),
-            minted: self.minted.clone(),
-            inbox: self.inbox.clone(),
+    /// Handed to the session rather than pushed onto the transcript here. An entry the UI kept
+    /// for itself was one the model never saw, so an instance could be asked a question and sit
+    /// there until somebody typed at it.
+    pub fn received(&mut self, who: &str, sort: &str, text: &str) -> axon_proto::UiCommand {
+        // Counted now, and only ever a count. What is *unanswered* is the one thing a sibling
+        // asking `status` cares about, and the one thing atom cannot work out for itself: it
+        // cannot see a turn end.
+        self.waiting += 1;
+        axon_proto::UiCommand::Arrived {
+            who: who.to_owned(),
+            kin: relation(who, &self.named),
+            sort: sort.to_owned(),
+            text: text.to_owned(),
         }
     }
 
-    /// A message arrived from another axon.
-    ///
-    /// Two places, and both are needed. The transcript is so somebody *sees* it — a message that
-    /// only reached a queue is a message nobody knew about until they thought to ask, which for
-    /// an `attention` is the whole of the failure. The inbox is so the model can act on it: it
-    /// is what the `agent` tool reads, and reading a message is not the same as answering it.
-    pub fn received(&mut self, message: crate::instance::wire::Message) -> axon_proto::UiCommand {
-        let kin = crate::instance::Identity::read(&message.from)
-            .map_or(crate::instance::policy::Relation::Elsewhere, |who| {
-                self.standing().stands(&who)
-            });
-        let sort = message.sort;
-        let command = axon_proto::UiCommand::Arrived {
-            who: message.from.clone(),
-            // Stamped now rather than looked up when it is drawn: it was true when the message
-            // arrived, and a session that has since forked would redraw the whole transcript
-            // with relations that did not hold at the time.
-            kin: kin.word().to_owned(),
-            sort: serde_json::to_value(sort)
-                .ok()
-                .and_then(|sort| sort.as_str().map(ToOwned::to_owned))
-                .unwrap_or_default(),
-            text: message.text.clone(),
-        };
-        self.inbox.push(message);
-        command
+    /// How many arrivals are still waiting on an answer.
+    #[must_use]
+    pub fn unanswered(&self) -> usize {
+        self.waiting
+    }
+
+    /// A turn ended, so whatever it was answering is answered.
+    pub fn answered(&mut self) {
+        self.waiting = 0;
     }
 }
 
-/// A message reaches the session, and the sorts agree about which of them wants an answer.
+/// How the sender stands to us, from the two names.
+///
+/// A thin reading, deliberately. The *authority* is atom, which holds the directory and the
+/// notes beside each socket; what is here is only enough to label a block on screen — whether
+/// the sender is this project's, and whether it is us. Anything finer is asked of atom by the
+/// tool that needs it, rather than guessed at twice.
+fn relation(who: &str, me: &str) -> String {
+    let project = |name: &str| name.split('/').next().unwrap_or_default().to_owned();
+    if who == me {
+        return "myself".to_owned();
+    }
+    if project(who) != project(me) {
+        return "elsewhere".to_owned();
+    }
+    "main".to_owned()
+}
+
+/// An arrival becomes a command, and is counted once.
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::instance::wire::{Message, Sort};
 
     fn app() -> App {
         let mut app = App::new();
-        app.identity = crate::instance::Identity {
-            project: "axon".to_owned(),
-            role: "main".to_owned(),
-            id: "alpha-rho".to_owned(),
-        };
+        app.named = "axon/main/alpha-rho".to_owned();
         app
-    }
-
-    fn arriving(sort: Sort) -> axon_proto::Entry {
-        let command = app().received(Message::sent("axon/main/beta-nu", "hello", sort, None));
-        let axon_proto::UiCommand::Arrived {
-            who,
-            kin,
-            sort,
-            text,
-        } = command
-        else {
-            panic!("an arrival is an arrival");
-        };
-        axon_proto::Entry::From {
-            who,
-            kin,
-            sort,
-            text,
-        }
     }
 
     #[test]
@@ -92,42 +73,50 @@ mod tests {
         // The transcript and the turns are the session's. An entry the UI kept for itself was
         // one the model never saw, so an instance could be asked a question and sit there.
         let mut app = app();
-        let command = app.received(Message::new("axon/main/beta-nu", "the parser is done"));
-        assert!(matches!(command, axon_proto::UiCommand::Arrived { .. }));
-        assert_eq!(app.inbox.len(), 1, "and the tool can still read it");
+        let command = app.received("axon/main/beta-nu", "attention", "the parser is done");
+        let axon_proto::UiCommand::Arrived {
+            who, sort, text, ..
+        } = command
+        else {
+            panic!("an arrival is an arrival");
+        };
+        assert_eq!(who, "axon/main/beta-nu");
+        assert_eq!(sort, "attention");
+        assert_eq!(text, "the parser is done");
     }
 
     #[test]
-    fn the_two_halves_agree_about_which_sorts_want_an_answer() {
-        // The rule lives in the session — `axon_host::wants_answering` — and the sorts live
-        // here. Nothing would fail if they drifted: a sort added on this side would simply stop
-        // waking anybody, quietly, in a way no test that only knew one half could see.
-        for sort in [
-            Sort::Note,
-            Sort::Question,
-            Sort::Answer,
-            Sort::Attention,
-            Sort::Claim,
-            Sort::Release,
-            Sort::Handoff,
-            Sort::Trouble,
-        ] {
-            let ours = sort.interrupts() || sort.expects_an_answer();
-            let theirs = axon_host::wants_answering(&arriving(sort));
-            assert_eq!(ours, theirs, "{sort:?}");
-        }
+    fn what_is_waiting_is_what_has_not_been_answered() {
+        // What a sibling asking `status` is really asking, and the one part of an inbox the
+        // layer holding it cannot work out on its own.
+        let mut app = app();
+        assert_eq!(app.unanswered(), 0);
+        app.received("axon/main/beta-nu", "question", "which parser?");
+        app.received("axon/main/gamma-xi", "attention", "look at this");
+        assert_eq!(app.unanswered(), 2);
+        app.answered();
+        assert_eq!(app.unanswered(), 0, "a turn answered them");
     }
 
     #[test]
-    fn a_note_is_read_rather_than_answered() {
-        assert!(!axon_host::wants_answering(&arriving(Sort::Note)));
-        assert!(!axon_host::wants_answering(&arriving(Sort::Answer)));
+    fn a_sender_in_another_project_is_marked_as_being_elsewhere() {
+        // It should never happen — atom does not reach across projects — so one that arrives
+        // should say so on the block rather than quietly reading as a neighbour.
+        let mut app = app();
+        let command = app.received("elsewhere/main/beta-nu", "note", "hello");
+        let axon_proto::UiCommand::Arrived { kin, .. } = command else {
+            panic!("an arrival");
+        };
+        assert_eq!(kin, "elsewhere");
     }
 
     #[test]
-    fn being_asked_or_called_for_is_answered() {
-        for sort in [Sort::Question, Sort::Attention, Sort::Trouble] {
-            assert!(axon_host::wants_answering(&arriving(sort)), "{sort:?}");
-        }
+    fn a_session_talking_to_itself_is_labelled_as_itself() {
+        let mut app = app();
+        let command = app.received("axon/main/alpha-rho", "note", "a note to self");
+        let axon_proto::UiCommand::Arrived { kin, .. } = command else {
+            panic!("an arrival");
+        };
+        assert_eq!(kin, "myself");
     }
 }

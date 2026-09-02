@@ -41,18 +41,18 @@ pub async fn start(
     cwd: &Path,
     loaded: Option<&crate::config::Loaded>,
     environ: &std::collections::BTreeMap<String, String>,
-    me: &crate::instance::Identity,
+    key: &str,
 ) -> Result<()> {
     let dir = sessions.map_or_else(axon_host::paths::sessions_dir, Path::to_path_buf);
     let cwd = cwd.display().to_string();
-    let session = match resume.then(|| free(&dir, &cwd, me)).flatten() {
+    let session = match resume.then(|| free(&dir, &cwd, socket.parent())).flatten() {
         Some(path) => axon_host::session::Session::open(
             &path,
-            axon_proto::SessionId::new(axon_host::paths::session_id(unix_seconds(), &me.id)),
+            axon_proto::SessionId::new(axon_host::paths::session_id(unix_seconds(), key)),
             &cwd,
             unix_seconds(),
         )?,
-        None => axon_host::open_session(&dir, &cwd, unix_seconds(), &me.id)?,
+        None => axon_host::open_session(&dir, &cwd, unix_seconds(), key)?,
     };
     // A stale socket cannot be a running session any more — nothing outlives its process — so
     // one found here was left by a crash and is cleared rather than treated as somebody's.
@@ -98,22 +98,37 @@ fn unix_seconds() -> u64 {
 /// both opened it, and appended into one file in whatever order they happened to write — a
 /// transcript neither of them said.
 ///
-/// A journal is named after the session that made it and a session id ends in the instance's
-/// name, so "is anybody still writing this" is a question the runtime directory answers: if that
-/// instance's socket is still up, the journal is taken. `None` means every one of them is, which
-/// is a fresh session rather than a refusal — somebody asking to resume wants to start working.
-fn free(dir: &Path, cwd: &str, me: &crate::instance::Identity) -> Option<std::path::PathBuf> {
+/// A journal is named after the session that made it and a session id ends in that session's
+/// key, so "is anybody still writing this" is a question `sockets` answers: if something is
+/// listening on the socket that key names, the journal is taken. `None` means every one of them
+/// is, which is a fresh session rather than a refusal — somebody asking to resume wants to start
+/// working.
+///
+/// Dialled rather than looked for. A path is left behind by a crash, and a journal nobody could
+/// ever resume again because the session that wrote it died badly is worse than one opened twice.
+fn free(dir: &Path, cwd: &str, sockets: Option<&Path>) -> Option<std::path::PathBuf> {
     axon_host::paths::summaries(dir, cwd)
         .into_iter()
         .find(|session| {
-            let Some(whose) = session.id.split_once('-').map(|(_, name)| name) else {
-                // A journal from before session ids carried a name. Nothing can be checked, and
+            let Some(whose) = session.id.split_once('-').map(|(_, key)| key) else {
+                // A journal from before session ids carried a key. Nothing can be checked, and
                 // the old behaviour is the right one for it.
                 return true;
             };
-            !crate::instance::asking::answers(&crate::instance::socket(&me.project, whose), me)
+            !answers(sockets, whose)
         })
         .map(|session| session.path)
+}
+
+/// Whether a session with this key is still up.
+///
+/// Connecting is the whole test: a socket with nothing behind it refuses, and one still being
+/// served accepts. Nothing is sent — the question is whether anybody is there, and asking it
+/// twice would be a protocol.
+fn answers(sockets: Option<&Path>, key: &str) -> bool {
+    sockets.is_some_and(|dir| {
+        std::os::unix::net::UnixStream::connect(crate::session::socket_in(dir, key)).is_ok()
+    })
 }
 
 /// Put this session's environment where every process it starts will pick it up.
@@ -138,13 +153,12 @@ fn stamp(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::instance;
 
     fn environ() -> std::collections::BTreeMap<String, String> {
         [
-            (instance::PROJECT.to_owned(), "axon".to_owned()),
-            (instance::ROLE.to_owned(), "main".to_owned()),
-            (instance::ID.to_owned(), "delta-rho".to_owned()),
+            ("ATOM_PROJECT".to_owned(), "axon".to_owned()),
+            ("ATOM_ROLE".to_owned(), "main".to_owned()),
+            ("ATOM_ID".to_owned(), "delta-rho".to_owned()),
         ]
         .into_iter()
         .collect()
@@ -191,17 +205,14 @@ mod tests {
 
         let started = backend.expect("a backend").environ;
         assert_eq!(
-            started.get(instance::ID).map(String::as_str),
+            started.get("ATOM_ID").map(String::as_str),
             Some("delta-rho")
         );
         assert_eq!(
-            started.get(instance::PROJECT).map(String::as_str),
+            started.get("ATOM_PROJECT").map(String::as_str),
             Some("axon")
         );
-        assert_eq!(
-            started.get(instance::ROLE).map(String::as_str),
-            Some("main")
-        );
+        assert_eq!(started.get("ATOM_ROLE").map(String::as_str), Some("main"));
     }
 
     #[test]
@@ -214,19 +225,10 @@ mod tests {
 
         let after = catalog.backend("fake/m").expect("still there").environ;
         assert_eq!(
-            after.get(instance::ID).map(String::as_str),
+            after.get("ATOM_ID").map(String::as_str),
             Some("delta-rho"),
             "a switch lost the session's name"
         );
-    }
-
-    /// A session in a project nothing is running in, so no journal reads as taken.
-    fn nobody() -> crate::instance::Identity {
-        crate::instance::Identity {
-            project: "no-such-project-here".to_owned(),
-            role: "main".to_owned(),
-            id: "alpha-rho".to_owned(),
-        }
     }
 
     /// A journal in `dir` for `cwd`, named after the session that made it.
@@ -247,7 +249,7 @@ mod tests {
         journal(&dir, "00000000000000000002-beta-nu", "/work");
 
         // Nothing is listening in either name, so the newest wins as it always did.
-        let found = free(&dir, "/work", &nobody()).expect("a journal");
+        let found = free(&dir, "/work", Some(&dir)).expect("a journal");
         assert!(found.to_string_lossy().contains("beta-nu"), "{found:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -260,7 +262,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("mkdir");
         journal(&dir, "00000000000000000007", "/work");
-        assert!(free(&dir, "/work", &nobody()).is_some());
+        assert!(free(&dir, "/work", Some(&dir)).is_some());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -270,7 +272,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("axon-none-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("mkdir");
-        assert!(free(&dir, "/work", &nobody()).is_none());
+        assert!(free(&dir, "/work", Some(&dir)).is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -283,7 +285,7 @@ mod tests {
         stamp(&mut nothing, &mut catalog, &environ());
         assert!(nothing.is_none());
         assert_eq!(
-            catalog.environ.get(instance::ID).map(String::as_str),
+            catalog.environ.get("ATOM_ID").map(String::as_str),
             Some("delta-rho")
         );
     }

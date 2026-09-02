@@ -7,7 +7,6 @@
 -- Clients first — a tool loads its sibling's client library as it declares itself.
 axon.load("clients/hexe.lua")
 axon.load("clients/oslo.lua")
-axon.load("clients/agent.lua")
 axon.load("apis.lua")
 axon.load("providers.lua")
 axon.load("tools.lua")
@@ -56,8 +55,23 @@ axon.model = "anthropic/claude-sonnet-4-5"
 --
 -- axon.trusted = { "/home/you/work" }
 
+-- The agent layer, as a program. atom is a separate tool, in its own repository: it names this
+-- session, holds the socket the others reach it on, and answers the `agent` tool. Named here
+-- only if it is not on PATH, or to point at a build.
+--
+-- Not installed is not an error. A session without atom has no name beyond its project and no
+-- siblings to talk to, and is otherwise a working session -- the same as aeon being absent.
+--
+-- axon.atom = "atom"
+
+-- What a session is called, in the name other sessions see: `project/role/id`. Defaults to the
+-- working directory's own name.
+--
+-- axon.project = "axon"
+
 -- How far one session may reach another. Sessions in different projects never can, at any
--- setting; this only widens things inside one project.
+-- setting; this only widens things inside one project. Handed to atom, which enforces it in
+-- both the socket and the tool.
 --
 --   "mains"     two sessions started at a terminal can talk to each other, and a subagent can
 --               talk to whoever started it. Nothing else. This is the default.

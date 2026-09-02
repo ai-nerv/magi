@@ -5,6 +5,7 @@
 //! a single artifact.
 
 mod app;
+mod atom;
 mod auth;
 mod clipboard;
 mod config;
@@ -14,11 +15,11 @@ mod external_editor;
 mod help;
 mod history;
 mod host;
-mod instance;
 mod keys;
 mod models;
 mod paths;
 mod print;
+mod session;
 mod shell;
 mod terminal;
 mod tools;
@@ -69,15 +70,14 @@ enum Command {
     /// Sign in to a provider that uses a subscription rather than a key.
     #[command(subcommand)]
     Auth(AuthCommand),
-    /// Print the Lua client library for the agent surface.
+    /// Print the Lua client library for axon's own surface.
     ///
     /// What a sibling needs in order to talk to a running axon: framing, encoding, discovery
     /// and the verbs, as one plain-Lua file to `require`. Redirect it — `axon lua-api >
-    /// config/clients/agent.lua` — because getting a file onto disk is the caller's business
+    /// config/clients/axon.lua` — because getting a file onto disk is the caller's business
     /// and a flag that picked the path would be axon inventing a convention nobody asked for.
     ///
-    /// The same source is served over the socket as the `client` verb, for a sandboxed VM that
-    /// cannot shell out to run this. It goes with the agent layer when that leaves.
+    /// The agent surface has its own, printed by `atom lua-api`. It left with the layer.
     LuaApi,
     /// List the tools the model can call, and how each is reached.
     Tools,
@@ -102,8 +102,8 @@ enum Command {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let cwd = std::env::current_dir()?;
-    // Only for a daemon somebody ran by hand, and for the replay host. Every real session names
-    // its own socket after itself — see `mine` below and [`instance::host_at`].
+    // Only for the replay host, and for a socket somebody named by hand. Every real session
+    // names its own after a key nothing else holds — see [`session::socket_for`].
     let socket = cli
         .socket
         .clone()
@@ -111,13 +111,13 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Some(Command::Ext(Ext::Shell)) => shell::run(),
-        Some(Command::Ext(Ext::Agent)) => instance::peer::run(),
+
         Some(Command::Ext(Ext::Lua { file })) => ext_lua::run(&file),
         Some(Command::Auth(AuthCommand::Login { provider })) => auth::login(&provider).await,
         Some(Command::Auth(AuthCommand::Logout { provider })) => auth::logout(&provider),
         Some(Command::Auth(AuthCommand::Status)) => auth::status(),
         Some(Command::LuaApi) => {
-            print!("{}", axon_agent::CLIENT);
+            print!("{}", axon_lua::client::CLIENT);
             Ok(())
         }
         Some(Command::Tools) => {
@@ -146,11 +146,28 @@ async fn main() -> Result<()> {
             let Some(prompt) = cli.prompt else {
                 anyhow::bail!("`-p` needs a prompt: axon -p \"…\"");
             };
-            // Its own instance too. `axon -p` is a session like any other: it has a name, it is
-            // journalled, and while it runs another axon can reach it.
+            // Its own session like any other: journalled, and reachable by name while it runs.
             let loaded = crate::config::load().ok();
-            let (identity, environ) = mine(loaded.as_ref());
-            let socket = cli.socket.unwrap_or_else(|| instance::host_at(&identity));
+            let project =
+                session::project(loaded.as_ref().and_then(|l| l.config.string("project")));
+            let program = loaded
+                .as_ref()
+                .and_then(|l| l.config.string("atom"))
+                .unwrap_or("atom")
+                .to_owned();
+            // Held for the run, so its socket is up while the turn is: a `-p` that another
+            // session wants to ask about is one that has to be answering.
+            let _layer = atom::Atom::start(&program, &project, talk(loaded.as_ref()));
+            let environ = inherited(
+                loaded.as_ref(),
+                &_layer
+                    .as_ref()
+                    .map_or_else(String::new, |(layer, _)| layer.named.clone()),
+            );
+            let key = session::key();
+            let socket = cli
+                .socket
+                .unwrap_or_else(|| session::socket_for(&project, &key));
             host::start(
                 &socket,
                 cli.sessions.as_deref(),
@@ -158,7 +175,7 @@ async fn main() -> Result<()> {
                 &cwd,
                 loaded.as_ref(),
                 &environ,
-                &identity,
+                &key,
             )
             .await?;
             let outcome = print::run(&socket, prompt).await;
@@ -180,12 +197,33 @@ async fn main() -> Result<()> {
             // same process runs every configuration file again and repeats every refusal it
             // printed the first time.
             let loaded = crate::config::load().ok();
-            let (identity, environ) = mine(loaded.as_ref());
-            // This instance's own socket, named after itself. Named after the *directory*, a
-            // second `axon` started in the same place found the first one already answering
-            // and joined it — one session, one journal, one transcript, and whatever either of
-            // them typed appearing in both.
-            let socket = cli.socket.unwrap_or_else(|| instance::host_at(&identity));
+            let project =
+                session::project(loaded.as_ref().and_then(|l| l.config.string("project")));
+
+            // atom first, because it names this session and the name goes into the environment
+            // everything else inherits. Absent, this is a session with no siblings and no
+            // `agent` tool — and otherwise a working session, which is the whole point of the
+            // layer being a separate program.
+            let program = loaded
+                .as_ref()
+                .and_then(|l| l.config.string("atom"))
+                .unwrap_or("atom")
+                .to_owned();
+            let started = atom::Atom::start(&program, &project, talk(loaded.as_ref()));
+            let named = started
+                .as_ref()
+                .map(|(atom, _)| atom.named.clone())
+                .unwrap_or_default();
+            let environ = inherited(loaded.as_ref(), &named);
+
+            // This session's own socket, named after a key nothing else shares. Named after the
+            // *directory*, a second `axon` started in the same place found the first already
+            // answering and joined it — one session, one journal, one transcript, and whatever
+            // either of them typed appearing in both.
+            let key = session::key();
+            let socket = cli
+                .socket
+                .unwrap_or_else(|| session::socket_for(&project, &key));
             host::start(
                 &socket,
                 cli.sessions.as_deref(),
@@ -193,10 +231,10 @@ async fn main() -> Result<()> {
                 &cwd,
                 loaded.as_ref(),
                 &environ,
-                &identity,
+                &key,
             )
             .await?;
-            let ran = driver::run(&socket, cli.prompt, loaded, identity).await;
+            let ran = driver::run(&socket, cli.prompt, loaded, &project, started).await;
             // Not on a signal, and not by anybody else: the session is this process, so the
             // only thing that ends it is this process ending.
             host::done(&socket);
@@ -205,24 +243,40 @@ async fn main() -> Result<()> {
     }
 }
 
-/// Who this instance is, and the environment everything it starts inherits.
+/// Everything this session starts inherits this, and it is how they learn which session it is.
 ///
-/// Named here rather than in the UI, because the daemon is started before the first frame and
-/// everything it spawns inherits this. A tool peer is the only thing that can reach other
-/// instances — it needs the project directory, and the daemon does not have one — and the one
-/// fact it cannot work out for itself is which session it belongs to.
-fn mine(
+/// `named` is `project/role/id` as atom gave it, or empty when atom is not installed. The three
+/// variables are atom's own names for them, so `atom tool` — which is a program axon does not
+/// build and does not link — finds itself without axon having to explain anything.
+///
+/// Empty when there is no name, rather than a plausible one: a tool that invented a name would
+/// sign messages as a session that does not exist.
+fn inherited(
     loaded: Option<&crate::config::Loaded>,
-) -> (
-    instance::Identity,
-    std::collections::BTreeMap<String, String>,
-) {
+    named: &str,
+) -> std::collections::BTreeMap<String, String> {
     let mut environ = loaded.map(crate::config::environ).unwrap_or_default();
-    let identity = instance::Identity::here(loaded.and_then(|l| l.config.string("project")));
-    environ.insert(instance::PROJECT.to_owned(), identity.project.clone());
-    environ.insert(instance::ROLE.to_owned(), identity.role.clone());
-    environ.insert(instance::ID.to_owned(), identity.id.clone());
-    (identity, environ)
+    let mut parts = named.split('/');
+    if let (Some(project), Some(role), Some(id)) = (parts.next(), parts.next(), parts.next()) {
+        environ.insert("ATOM_PROJECT".to_owned(), project.to_owned());
+        environ.insert("ATOM_ROLE".to_owned(), role.to_owned());
+        environ.insert("ATOM_ID".to_owned(), id.to_owned());
+    }
+    // The `agent` tool is a separate process from the one holding the socket, and both have to
+    // answer the same way about who may be reached. Set on only one of them, a refusal would
+    // depend on which of the two a model happened to go through.
+    if let Some(talk) = talk(loaded) {
+        environ.insert(atom::TALK.to_owned(), talk.to_owned());
+    }
+    environ
+}
+
+/// How far this session may reach, as the config said it.
+///
+/// Passed through rather than parsed: the levels are the layer's vocabulary, and axon checking
+/// the spelling would put the list of them in two programs.
+fn talk(loaded: Option<&crate::config::Loaded>) -> Option<&str> {
+    loaded.and_then(|l| l.config.string("agent_talk"))
 }
 
 /// What `axon auth` can do.
@@ -247,11 +301,6 @@ enum AuthCommand {
 enum Ext {
     /// A persistent shell, spoken to over the tool protocol.
     Shell,
-    /// The tool that reaches other axon instances.
-    ///
-    /// A process rather than a function in the daemon's VM, because it needs to know which
-    /// instance this session is -- and only a process spawned under it inherits that.
-    Agent,
     /// Tools written in Lua, served from their own process.
     ///
     /// The second implementation of the protocol, and the one that proves it is a protocol:

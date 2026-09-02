@@ -125,10 +125,12 @@ pub struct App {
     pub picking: Option<Picking>,
     /// How much of each tool result to show.
     pub detail: axon_tui::transcript::Detail,
-    /// What this session calls itself: `project/role/id`.
+    /// What this session is called, as the footer shows it.
     ///
-    /// Shown in the prompt box, and about to be the address another session reaches it at.
-    pub identity: crate::instance::Identity,
+    /// `project/role/id` when atom is running, because naming is its job: it holds the directory
+    /// those names live in and can look before it chooses. Just the project otherwise — with no
+    /// layer there are no siblings to be told apart.
+    pub named: String,
     /// The empty prompt writing to itself.
     ///
     /// Held here rather than in the renderer because it moves on a clock and on what the person
@@ -143,14 +145,17 @@ pub struct App {
     pub trace: axon_tui::beacon::Trace,
     /// Which mode the prompt is in, and any half-typed command waiting on its second key.
     pub modal: crate::keys::Modal,
-    /// What other instances have sent and nobody has read yet.
-    pub inbox: Vec<crate::instance::wire::Message>,
-    /// Who started this session, if anybody did. `None` makes it a main.
-    pub parent: Option<String>,
-    /// The ids of the instances this session started, which are the ones it may stop.
-    pub forked: Vec<String>,
-    /// The secret handed to each of them, by id, so this session can stop what it started.
-    pub minted: std::collections::BTreeMap<String, String>,
+    /// Every session atom says is listening in this project, for the `$` popup.
+    ///
+    /// Pushed by atom rather than read here: a completion offered on a keystroke cannot go and
+    /// look, and axon reading the directory would be a second place that knows the layout.
+    pub reachable: Vec<String>,
+    /// How many messages from other sessions have arrived and not been answered.
+    ///
+    /// A count, not the messages. What was said goes into the transcript like anything else,
+    /// and what is *unanswered* is the only part a sibling asking `status` cares about —
+    /// everything else about an inbox belongs to the layer that holds it.
+    pub waiting: usize,
     /// Whether the prompt was empty when it was last looked at.
     was_blank: bool,
     /// The text being dragged over, or the last drag that finished.
@@ -198,15 +203,13 @@ impl App {
             // Folded. A transcript of whole build logs is not a transcript, and the handle at
             // the foot of each block is how you open the one you care about.
             detail: axon_tui::transcript::Detail::Preview,
-            identity: crate::instance::Identity::here(None),
+            named: String::new(),
             tease: axon_tui::tease::Tease::new(opener()),
             landing: axon_tui::decrypt::Landing::default(),
             trace: axon_tui::beacon::Trace::default(),
             modal: crate::keys::Modal::default(),
-            inbox: Vec::new(),
-            parent: crate::instance::parent(),
-            forked: Vec::new(),
-            minted: std::collections::BTreeMap::new(),
+            reachable: Vec::new(),
+            waiting: 0,
             was_blank: true,
             selection: None,
             flipped: std::collections::BTreeSet::new(),
@@ -692,9 +695,8 @@ impl App {
         // `$` offers whoever is listening. Read from the socket directory on the keystroke
         // rather than from a list kept up to date, because an instance that died did not get to
         // remove itself from one.
-        let resolved = axon_tui::complete::resolve_with(&line, col, list_paths, &|_| {
-            crate::instance::listening(&self.identity.project)
-        });
+        let resolved =
+            axon_tui::complete::resolve_with(&line, col, list_paths, &|_| self.reachable.clone());
         self.overlay = resolved
             .filter(|found| {
                 found.kind != axon_tui::complete::Kind::Command || self.modal.commanding()

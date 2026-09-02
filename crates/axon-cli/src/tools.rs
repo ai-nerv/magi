@@ -19,13 +19,6 @@ pub fn print() -> Result<(), axon_lua::LuaError> {
     let engine = std::rc::Rc::new(std::cell::RefCell::new(engine));
     let mut registry = Registry::new();
     axon_tools::builtin::install(&mut registry);
-    // Listed here so `axon tools` shows it. It is not yet registered for a *turn*: the
-    // registry the model actually calls is built in `axon-host`, which cannot see this crate,
-    // and the session state this tool needs -- the inbox, what was forked -- lives there.
-    // Moving it across is the next piece of work and it is not a rename.
-    registry.register(Box::new(crate::instance::Agent {
-        standing: axon_agent::verbs::Standing::default(),
-    }));
     axon_lua::tool::install(
         std::rc::Rc::clone(&engine),
         &mut registry,

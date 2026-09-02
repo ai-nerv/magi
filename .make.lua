@@ -372,20 +372,6 @@ make.recipe{
     local source = root .. "/config"
     assert(oslo.fs.stat(source .. "/"), "there is no config/ directory in " .. root)
 
-    -- The agent layer ships its own client library, the way hexe and oslo ship theirs, and
-    -- `config/clients/` is where axon keeps the copies it loads. Copied here rather than
-    -- checked in twice: two copies in one repository disagree the first time one is edited, and
-    -- the one that would go stale is the one nobody opens.
-    --
-    -- When that crate leaves the workspace this line becomes what it already is for the other
-    -- siblings -- a file that arrives from somewhere else -- and the only change is where it is
-    -- copied from.
-    local ships = root .. "/crates/axon-agent/lua/agent.lua"
-    if oslo.fs.stat(ships) then
-      sh.mkdir("-p", source .. "/clients")
-      sh.rsync("-a", ships, source .. "/clients/agent.lua")
-    end
-
     local dest = a.dest
     if not dest then
       local config = os.getenv("XDG_CONFIG_HOME")
