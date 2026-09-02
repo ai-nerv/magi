@@ -128,7 +128,7 @@ pub struct App {
     /// What this session calls itself: `project/role/id`.
     ///
     /// Shown in the prompt box, and about to be the address another session reaches it at.
-    pub identity: crate::identity::Identity,
+    pub identity: crate::instance::Identity,
     /// The empty prompt writing to itself.
     ///
     /// Held here rather than in the renderer because it moves on a clock and on what the person
@@ -198,7 +198,7 @@ impl App {
             // Folded. A transcript of whole build logs is not a transcript, and the handle at
             // the foot of each block is how you open the one you care about.
             detail: axon_tui::transcript::Detail::Preview,
-            identity: crate::identity::Identity::here(None),
+            identity: crate::instance::Identity::here(None),
             tease: axon_tui::tease::Tease::new(opener()),
             landing: axon_tui::decrypt::Landing::default(),
             trace: axon_tui::beacon::Trace::default(),

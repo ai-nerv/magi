@@ -5,7 +5,8 @@
 //! about who may do what, and this one is about how it reads when they may.
 
 use super::{Standing, TOOL, VERBS};
-use crate::instance::policy::Relation;
+use crate::asking;
+use crate::policy::Relation;
 
 /// Every verb, as the model should read it.
 pub fn help(standing: &Standing) -> String {
@@ -35,7 +36,7 @@ pub fn help(standing: &Standing) -> String {
 /// arrives too late to change the plan.
 pub fn list(standing: &Standing) -> String {
     let me = standing.whom();
-    let there = crate::instance::reachable(&me);
+    let there = crate::directory::reachable(&me);
     if there.is_empty() {
         return format!(
             "Nothing else in `{}` can be reached from here. Either nothing else is running, \
@@ -52,11 +53,11 @@ pub fn list(standing: &Standing) -> String {
             } else {
                 ""
             };
-            let where_it_is = crate::instance::socket(&them.project, &them.id);
+            let where_it_is = crate::directory::socket(&them.project, &them.id);
             // Asked rather than assumed. A socket file outlives the process that made it, so
             // the directory says who *was* here — and a model that sends to a name it read off
             // a stale entry is told the message landed when nothing received it.
-            let alive = if crate::instance::asking::answers(&where_it_is, &me_named) {
+            let alive = if asking::answers(&where_it_is, &me_named) {
                 ""
             } else {
                 " — not answering; its socket is what a crash left behind"

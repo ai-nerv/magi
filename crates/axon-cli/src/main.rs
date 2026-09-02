@@ -14,7 +14,6 @@ mod external_editor;
 mod help;
 mod history;
 mod host;
-mod identity;
 mod instance;
 mod keys;
 mod models;
@@ -201,11 +200,11 @@ async fn main() -> Result<()> {
 fn mine(
     loaded: Option<&crate::config::Loaded>,
 ) -> (
-    identity::Identity,
+    instance::Identity,
     std::collections::BTreeMap<String, String>,
 ) {
     let mut environ = loaded.map(crate::config::environ).unwrap_or_default();
-    let identity = identity::Identity::here(loaded.and_then(|l| l.config.string("project")));
+    let identity = instance::Identity::here(loaded.and_then(|l| l.config.string("project")));
     environ.insert(instance::PROJECT.to_owned(), identity.project.clone());
     environ.insert(instance::ROLE.to_owned(), identity.role.clone());
     environ.insert(instance::ID.to_owned(), identity.id.clone());

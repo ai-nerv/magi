@@ -41,7 +41,7 @@ pub async fn start(
     cwd: &Path,
     loaded: Option<&crate::config::Loaded>,
     environ: &std::collections::BTreeMap<String, String>,
-    me: &crate::identity::Identity,
+    me: &crate::instance::Identity,
 ) -> Result<()> {
     let dir = sessions.map_or_else(axon_host::paths::sessions_dir, Path::to_path_buf);
     let cwd = cwd.display().to_string();
@@ -102,7 +102,7 @@ fn unix_seconds() -> u64 {
 /// name, so "is anybody still writing this" is a question the runtime directory answers: if that
 /// instance's socket is still up, the journal is taken. `None` means every one of them is, which
 /// is a fresh session rather than a refusal — somebody asking to resume wants to start working.
-fn free(dir: &Path, cwd: &str, me: &crate::identity::Identity) -> Option<std::path::PathBuf> {
+fn free(dir: &Path, cwd: &str, me: &crate::instance::Identity) -> Option<std::path::PathBuf> {
     axon_host::paths::summaries(dir, cwd)
         .into_iter()
         .find(|session| {
@@ -221,8 +221,8 @@ mod tests {
     }
 
     /// A session in a project nothing is running in, so no journal reads as taken.
-    fn nobody() -> crate::identity::Identity {
-        crate::identity::Identity {
+    fn nobody() -> crate::instance::Identity {
+        crate::instance::Identity {
             project: "no-such-project-here".to_owned(),
             role: "main".to_owned(),
             id: "alpha-rho".to_owned(),

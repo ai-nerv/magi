@@ -36,7 +36,7 @@
 //! It only ever opens things. There is no level below `mains`, because a project where nothing
 //! can talk is a project that did not need any of this.
 
-use super::Reach;
+use crate::directory::Reach;
 use std::sync::OnceLock;
 
 /// How far a session may reach, as the config set it.

@@ -6,7 +6,7 @@
 //!
 //! The daemon holds the tool registry, and the daemon does not know which instance this session
 //! is — the identity is made when a UI starts, and a daemon outlives UIs. A peer is spawned by
-//! the daemon and inherits its environment, which carries [`super::PROJECT`] and [`super::ID`]
+//! the daemon and inherits its environment, which carries [`PROJECT`](axon_agent::directory::PROJECT) and [`ID`](axon_agent::directory::ID)
 //! down from the UI that started it. So the peer knows who it is, can read the project
 //! directory, and can dial. None of that is true inside the daemon.
 //!
@@ -15,7 +15,7 @@
 //! | | |
 //! |---|---|
 //! | who this session is | the environment, put there by the UI that bound the socket |
-//! | who started it | [`super::PARENT`], inherited across the spawn |
+//! | who started it | [`PARENT`](axon_agent::directory::PARENT), inherited across the spawn |
 //! | what it started | the project directory: every socket whose note names this session |
 //! | what has arrived | asked of this session's own socket |
 //!
@@ -23,7 +23,8 @@
 //! be asked which UI started the daemon that started it. Everything else is read from somewhere
 //! that cannot be talked into lying.
 
-use super::tool::{Agent, Standing};
+use super::Agent;
+use axon_agent::verbs::Standing;
 use axon_ipc::blocking::{FrameReader, FrameWriter};
 use axon_proto::{ToolReport, ToolRequest};
 use axon_tools::Tool;

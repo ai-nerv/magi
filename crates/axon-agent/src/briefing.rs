@@ -14,9 +14,9 @@
 //! turns a name into something callable: who they are, how they stand to you, whether they can
 //! be reached at all, what has already been said, and the name of the tool.
 
-use super::policy::{self, Relation};
-use super::{Address, Reach};
-use crate::app::App;
+use crate::directory::{Address, Reach, TOOL};
+use crate::policy::{self, Relation};
+use crate::verbs::Standing;
 
 /// How many earlier messages with an instance are worth repeating.
 ///
@@ -27,44 +27,46 @@ const RECALLED: usize = 6;
 
 /// What the model needs in order to act on the instances a prompt names.
 ///
-/// Empty when it names none, which is almost every prompt — and empty is what makes this an
+/// `named` is what the harness found in the prompt, because finding it is the harness's job:
+/// scanning for `$iota-mu` means knowing what a prompt is, where the cursor sits and which
+/// sigils mean what, and none of that is this crate's business. It is handed the names and
+/// answers about them.
+///
+/// Empty when it is given none, which is almost every prompt — and empty is what makes this an
 /// aside rather than an edit: nothing is added to the prompt, so there is nothing to strip back
 /// out and no way for the two to disagree about where one ends.
 #[must_use]
-pub fn about(text: &str, app: &App) -> String {
-    let named = axon_tui::trigger::named(text, axon_tui::trigger::Trigger::Instance);
+pub fn about(named: &[String], standing: &Standing) -> String {
     if named.is_empty() {
         return String::new();
     }
     let mut said = Vec::new();
     for name in named {
-        let Some(address) = Address::read(&name) else {
+        let Some(address) = Address::read(name) else {
             said.push(format!(
                 "`${name}` is not a name an instance can have, so nothing answers to it. \
                  Names are `id`, `role/id` or `project/role/id`."
             ));
             continue;
         };
-        said.push(brief(&address, app));
+        said.push(brief(&address, standing));
     }
     said.push(String::new());
     said.push(format!(
-        "Use the `{}` tool to reach any of them. Call `{}` with `verb: \"help\"` \
-         to see everything it can do.",
-        super::TOOL,
-        super::TOOL
+        "Use the `{TOOL}` tool to reach any of them. Call `{TOOL}` with `verb: \"help\"` \
+         to see everything it can do."
     ));
     said.join("\n")
 }
 
 /// What is known about one instance, as a paragraph the model can act on.
-fn brief(address: &Address, app: &App) -> String {
-    let whole = address.against(&app.identity);
+fn brief(address: &Address, app: &Standing) -> String {
+    let whole = address.against(&app.identity());
     let me = app.whom();
-    // Through the same [`Standing`](super::tool::Standing) the tool will use, so the briefing
+    // Through the same [`Standing`](crate::verbs::Standing) the tool will use, so the briefing
     // and the refusal can never disagree about where somebody sits. A model told it may stop a
     // session and then refused when it tries has been lied to by the harness.
-    let relation = app.standing().stands(&whole);
+    let relation = app.stands(&whole);
     let mut said = format!(
         "`{}` is another axon, addressed as `{}`. It is {}.",
         whole.full(),
@@ -104,16 +106,25 @@ fn brief(address: &Address, app: &App) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::instance::wire::Message;
+    use crate::wire::Message;
 
-    fn app() -> App {
-        let mut app = App::new();
-        app.identity = crate::identity::Identity {
-            project: "axon".to_owned(),
-            role: "main".to_owned(),
-            id: "alpha-rho".to_owned(),
-        };
-        app
+    /// What the harness would have found in a prompt.
+    ///
+    /// Scanning is not this crate's job -- a prompt, a cursor and a sigil table are all the
+    /// harness's -- so the real one is `axon_tui::trigger`. This is the same answer, badly, for
+    /// tests that want to say what they mean.
+    fn named(text: &str) -> Vec<String> {
+        text.split_whitespace()
+            .filter_map(|word| word.strip_prefix('$'))
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    fn app() -> Standing {
+        Standing {
+            me: "axon/main/alpha-rho".to_owned(),
+            ..Standing::default()
+        }
     }
 
     #[test]
@@ -123,7 +134,10 @@ mod tests {
         // of this existed.
         let app = app();
         for text in ["fix the parser", "look at @src/main.rs", "it cost me 20$"] {
-            assert!(about(text, &app).is_empty(), "{text:?} produced an aside");
+            assert!(
+                about(&named(text), &app).is_empty(),
+                "{text:?} produced an aside"
+            );
         }
     }
 
@@ -131,7 +145,7 @@ mod tests {
     fn naming_one_says_what_is_known_about_it_and_nothing_of_the_prompt() {
         // The prompt is the model's to answer, and the person's to read. This goes beside it:
         // spliced onto the end, it put a page of facts into the transcript under their name.
-        let said = about("tell $beta-nu to stop", &app());
+        let said = about(&named("tell $beta-nu to stop"), &app());
         assert!(!said.contains("tell $beta-nu to stop"), "{said}");
         assert!(said.contains("axon/main/beta-nu"), "{said}");
     }
@@ -139,15 +153,15 @@ mod tests {
     #[test]
     fn it_names_the_tool_rather_than_doing_anything() {
         // The point of the whole file. The model decides what "tell it to stop" meant.
-        let said = about("tell $beta-nu to stop", &app());
-        assert!(said.contains(super::super::TOOL), "{said}");
+        let said = about(&named("tell $beta-nu to stop"), &app());
+        assert!(said.contains(crate::directory::TOOL), "{said}");
     }
 
     #[test]
     fn it_says_how_the_named_one_stands_to_this_session() {
         // Otherwise the model tries, is refused, and spends a turn finding out something the
         // harness knew before it asked.
-        let said = about("ask $beta-nu", &app());
+        let said = about(&named("ask $beta-nu"), &app());
         assert!(said.contains("another instance's main"), "{said}");
         assert!(said.contains("not stopped"), "{said}");
     }
@@ -157,9 +171,9 @@ mod tests {
         // A model that reads the history and then meets a refusal has spent the turn planning
         // something it was never going to be allowed to do.
         let mut app = app();
-        app.identity.project = "somewhere-with-no-runtime-dir".to_owned();
+        app.me = "somewhere-with-no-runtime-dir/main/alpha-rho".to_owned();
         app.parent = Some("beta-nu".to_owned());
-        let said = about("ask $other/tau-chi", &app);
+        let said = about(&named("ask $other/tau-chi"), &app);
         assert!(said.contains("cannot reach"), "{said}");
     }
 
@@ -171,7 +185,7 @@ mod tests {
         for text in ["first", "second", "third"] {
             app.inbox.push(Message::new("axon/main/beta-nu", text));
         }
-        let said = about("what did $beta-nu want", &app);
+        let said = about(&named("what did $beta-nu want"), &app);
         let first = said.find("first").expect("the first is there");
         let third = said.find("third").expect("the third is there");
         assert!(first < third, "they came back backwards: {said}");
@@ -184,7 +198,7 @@ mod tests {
             .push(Message::new("axon/main/beta-nu", "from beta"));
         app.inbox
             .push(Message::new("axon/main/gamma-xi", "from gamma"));
-        let said = about("what did $beta-nu want", &app);
+        let said = about(&named("what did $beta-nu want"), &app);
         assert!(said.contains("from beta"), "{said}");
         assert!(!said.contains("from gamma"), "it leaked another's: {said}");
     }
@@ -197,14 +211,14 @@ mod tests {
             app.inbox
                 .push(Message::new("axon/main/beta-nu", &format!("message {at}")));
         }
-        let said = about("what did $beta-nu want", &app);
+        let said = about(&named("what did $beta-nu want"), &app);
         assert!(!said.contains("message 0"), "it pasted the whole exchange");
         assert!(said.contains("message 49"), "it dropped the newest");
     }
 
     #[test]
     fn a_name_nothing_can_have_is_said_to_be_one() {
-        let said = about("ask $a/b/c/d about it", &app());
+        let said = about(&named("ask $a/b/c/d about it"), &app());
         assert!(said.contains("not a name"), "{said}");
     }
 }

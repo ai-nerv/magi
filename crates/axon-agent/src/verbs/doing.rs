@@ -10,11 +10,12 @@
 //! round trip finding out. The far end checks again — a caller is not to be trusted with its own
 //! permissions — but by then the turn has already been paid for.
 
+use super::Answer;
 use super::{SPEAKS, Standing, TOOL, VERBS};
-use crate::instance::policy;
-use crate::instance::wire::{Reply, Sort};
-use crate::instance::{Address, Reach, asking};
-use axon_tools::Output;
+use crate::asking;
+use crate::directory::{Address, Reach};
+use crate::policy;
+use crate::wire::{Reply, Sort};
 use serde_json::Value;
 
 /// A call this tool decided to make.
@@ -63,15 +64,15 @@ pub fn decide(
     who: &str,
     arguments: &Value,
     standing: &Standing,
-) -> Result<Wanted, Output> {
+) -> Result<Wanted, Answer> {
     let Some(address) = Address::read(who) else {
-        return Err(Output::error(format!(
+        return Err(Answer::refused(format!(
             "`{who}` is not a name an instance can have. Names are `id`, `role/id` or \
              `project/role/id`."
         )));
     };
     if !VERBS.iter().any(|(name, _)| *name == verb) {
-        return Err(Output::error(format!(
+        return Err(Answer::refused(format!(
             "`{verb}` is not one of {TOOL}'s verbs. Call it with `verb: \"help\"`."
         )));
     }
@@ -84,14 +85,14 @@ pub fn decide(
     let whole = address.against(&standing.identity());
     let relation = standing.stands(&whole);
     if !policy::may(&me, relation, reach) {
-        return Err(Output::error(policy::refusal(&me, relation, reach)));
+        return Err(Answer::refused(policy::refusal(&me, relation, reach)));
     }
     let token = if reach == Reach::Stop {
         // Held only for what this session started. Refused here rather than at the far end,
         // where the answer would be "that is not the secret" — true, and no help at all to a
         // model that never had one.
         let Some(secret) = standing.minted.get(&whole.id).cloned() else {
-            return Err(Output::error(format!(
+            return Err(Answer::refused(format!(
                 "this session did not start `{}`, so it holds nothing that could stop it",
                 whole.full()
             )));
@@ -117,7 +118,7 @@ pub fn decide(
 }
 
 /// Make the call, and say what came back.
-pub fn perform(wanted: &Wanted, standing: &Standing) -> Output {
+pub fn perform(wanted: &Wanted, standing: &Standing) -> Answer {
     let me = standing.identity();
     let mut held = match asking::Held::to(&wanted.who, &me) {
         Ok(held) => held,
@@ -125,7 +126,7 @@ pub fn perform(wanted: &Wanted, standing: &Standing) -> Output {
         // that made it, so a name found in the directory is not a promise that anything is
         // behind it. "nothing is listening" is actionable; "connection refused" is not.
         Err(why) => {
-            return Output::error(format!(
+            return Answer::refused(format!(
                 "nothing is listening as `{}` ({why}). Use `list` to see who is actually there.",
                 wanted.who.full()
             ));
@@ -134,19 +135,19 @@ pub fn perform(wanted: &Wanted, standing: &Standing) -> Output {
     let reply = match said(&mut held, wanted) {
         Ok(reply) => reply,
         Err(why) => {
-            return Output::error(format!("`{}` did not answer: {why}", wanted.who.full()));
+            return Answer::refused(format!("`{}` did not answer: {why}", wanted.who.full()));
         }
     };
     if !reply.ok {
         // The far end's own words. It knows things this side does not — that it was never
         // started by anybody, that the secret was wrong — and repeating them beats a summary.
-        return Output::error(format!(
+        return Answer::refused(format!(
             "`{}` refused: {}",
             wanted.who.full(),
             reply.error.unwrap_or_else(|| "no reason given".to_owned())
         ));
     }
-    Output::ok(landed(wanted, &reply))
+    Answer::said(landed(wanted, &reply))
 }
 
 /// One verb, over an open connection.
@@ -286,12 +287,8 @@ mod tests {
         standing.forked.push("iota-mu".to_owned());
         let refused = decide("stop", "iota-mu", &serde_json::json!({}), &standing)
             .expect_err("nothing to stop it with");
-        assert!(refused.is_error);
-        assert!(
-            refused.content.contains("did not start"),
-            "{}",
-            refused.content
-        );
+        assert!(refused.failed);
+        assert!(refused.said.contains("did not start"), "{}", refused.said);
     }
 
     #[test]
@@ -336,7 +333,7 @@ mod tests {
             &standing,
         )
         .expect_err("across the wall");
-        assert!(refused.content.contains("projects"), "{}", refused.content);
+        assert!(refused.said.contains("projects"), "{}", refused.said);
     }
 
     #[test]
@@ -351,16 +348,8 @@ mod tests {
         )
         .expect("decided");
         let out = perform(&wanted, &standing());
-        assert!(out.is_error);
-        assert!(
-            out.content.contains("nothing is listening"),
-            "{}",
-            out.content
-        );
-        assert!(
-            out.content.contains("list"),
-            "and what to do: {}",
-            out.content
-        );
+        assert!(out.failed);
+        assert!(out.said.contains("nothing is listening"), "{}", out.said);
+        assert!(out.said.contains("list"), "and what to do: {}", out.said);
     }
 }

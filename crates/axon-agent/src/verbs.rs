@@ -17,24 +17,113 @@
 //!
 //! Everything here can be done to anything listening except `stop`. A session is stopped by the
 //! session that started it and by nothing else — and "is" is not something a caller gets to
-//! claim. A         if self.forked.contains(&them.id) { is handed a secret in [`super::TOKEN`] at spawn, and a `stop` that cannot
-//! quote it back is refused however convincing the name on it was.
+//! claim. A child is handed a secret in [`crate::directory::TOKEN`] at spawn, and a `stop` that
+//! cannot quote it back is refused however convincing the name on it was.
 //!
 //! # Two walls, and what the model is shown
 //!
 //! `list` shows what this session can actually reach, never everything that exists. A model
 //! told about a cousin it will then be refused spends the turn planning around a wall it was
-//! never going to get through; see [`super::policy`] for where the walls are.
+//! never going to get through; see [`crate::policy`] for where the walls are.
 
 pub mod doing;
 pub mod saying;
 
-use super::TOOL;
-use super::policy::{self, Relation, Whom};
-use super::wire::Message;
+use crate::directory::TOOL;
 use crate::identity::Identity;
-use axon_tools::{Cancel, Ops, Output, Tool};
+use crate::policy::{self, Relation, Whom};
+use crate::wire::Message;
 use serde_json::{Value, json};
+
+/// What a verb produced, for a host to turn into whatever a tool result looks like there.
+///
+/// Not a tool trait, and that is the point of the file. This crate does not know what a tool is
+/// — a harness does — and the moment it implemented one, it would depend on that harness and
+/// could not leave. So the vocabulary is [`described`] as data, the work is [`answer`], and the
+/// forty lines that make the two into a tool live on the other side of the boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Answer {
+    /// What to tell the model.
+    pub said: String,
+    /// Whether it failed. A verb that ran and reported a problem is still an answer.
+    pub failed: bool,
+}
+
+impl Answer {
+    /// It worked.
+    #[must_use]
+    pub fn said(said: impl Into<String>) -> Self {
+        Self {
+            said: said.into(),
+            failed: false,
+        }
+    }
+
+    /// It did not, and this is why.
+    #[must_use]
+    pub fn refused(why: impl Into<String>) -> Self {
+        Self {
+            said: why.into(),
+            failed: true,
+        }
+    }
+}
+
+/// The tool this crate offers, as a host needs to declare it.
+///
+/// Handed over as data rather than as an implementation, the way aeon publishes its descriptors
+/// to axon: the vocabulary is written once, here, and a harness registers what comes back. Two
+/// copies of nineteen verb descriptions would disagree the first time one was edited.
+#[must_use]
+pub fn described() -> Value {
+    json!({
+        "name": TOOL,
+        "description": "Talk to other axon instances. `verb: \"help\"` lists everything this \
+                        can do. Instances are named `id`, `role/id` or `project/role/id`; a \
+                        bare id means one in this project. Use `list` to find out who is there \
+                        and what may be done to each, rather than assuming a name.",
+        "parameters": parameters(),
+    })
+}
+
+/// The JSON Schema for a call.
+#[must_use]
+pub fn parameters() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "verb": {
+                "type": "string",
+                "enum": VERBS.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+                "description": "what to do",
+            },
+            "who": {
+                "type": "string",
+                "description": "which instance, as `iota-mu`, `review/iota-mu` or \
+                                `axon/review/iota-mu`. Not needed by `help`, `list` or \
+                                `inbox`.",
+            },
+            "message": {
+                "type": "string",
+                "description": "what to say. Needed by send, ask, reply, announce, \
+                                attention, trouble, handoff and claim.",
+            },
+            "about": {
+                "type": "string",
+                "description": "the id of the message being answered or released. \
+                                Required by `reply`; `inbox` lists the ids.",
+            },
+            "sort": {
+                "type": "string",
+                "enum": ["note", "question", "answer", "attention", "claim", "release",
+                         "handoff", "trouble"],
+                "description": "for `send` only, what kind of message it is. The other \
+                                verbs each mean one already. Defaults to note.",
+            },
+        },
+        "required": ["verb"],
+    })
+}
 
 /// What the tool can be asked to do.
 ///
@@ -194,109 +283,59 @@ impl Standing {
         if self.forked.contains(&them.id) {
             return Relation::Child;
         }
-        policy::between(&me, &super::whom(&them.project, &them.id))
+        policy::between(&me, &crate::directory::whom(&them.project, &them.id))
     }
 }
 
-/// Reaching other instances.
-pub struct Agent {
-    /// What this session knows about itself and its neighbours.
-    pub standing: Standing,
-}
-
-impl Tool for Agent {
-    fn name(&self) -> &str {
-        TOOL
+/// Answer one call.
+///
+/// `standing` is what the host knows about this session: its name, who started it, what it
+/// started, and what has arrived. Handed in rather than reached for, so this stays a function
+/// of its arguments and the host keeps the state.
+#[must_use]
+pub fn answer(arguments: &Value, standing: &Standing) -> Answer {
+    let verb = arguments.get("verb").and_then(Value::as_str).unwrap_or("");
+    if verb.is_empty() {
+        return Answer::refused(format!(
+            "{TOOL} needs a verb. Call it with `verb: \"help\"` to see them."
+        ));
     }
-
-    fn description(&self) -> &str {
-        "Talk to other axon instances. `verb: \"help\"` lists everything this can do. \
-         Instances are named `id`, `role/id` or `project/role/id`; a bare id means one in \
-         this project. Use `list` to find out who is there and what may be done to each, \
-         rather than assuming a name."
+    if !VERBS.iter().any(|(name, _)| *name == verb) {
+        return Answer::refused(format!(
+            "`{verb}` is not one of {TOOL}'s verbs. Call it with `verb: \"help\"`."
+        ));
     }
-
-    fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "verb": {
-                    "type": "string",
-                    "enum": VERBS.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
-                    "description": "what to do",
-                },
-                "who": {
-                    "type": "string",
-                    "description": "which instance, as `iota-mu`, `review/iota-mu` or \
-                                    `axon/review/iota-mu`. Not needed by `help`, `list` or \
-                                    `inbox`.",
-                },
-                "message": {
-                    "type": "string",
-                    "description": "what to say. Needed by send, ask, reply, announce, \
-                                    attention, trouble, handoff and claim.",
-                },
-                "about": {
-                    "type": "string",
-                    "description": "the id of the message being answered or released. \
-                                    Required by `reply`; `inbox` lists the ids.",
-                },
-                "sort": {
-                    "type": "string",
-                    "enum": ["note", "question", "answer", "attention", "claim", "release",
-                             "handoff", "trouble"],
-                    "description": "for `send` only, what kind of message it is. The other \
-                                    verbs each mean one already. Defaults to note.",
-                },
-            },
-            "required": ["verb"],
-        })
+    // What a verb needs is a table, not a condition per verb: the third one written by hand
+    // disagreed with the schema and told the model `whoami` wanted a `who`.
+    let said = arguments.get("message").and_then(Value::as_str);
+    if SPEAKS.contains(&verb) && said.is_none_or(str::is_empty) {
+        return Answer::refused(format!("`{verb}` needs `message` — what to say."));
     }
-
-    fn run(&self, arguments: &Value, _ops: &dyn Ops, _cancel: &dyn Cancel) -> Output {
-        let verb = arguments.get("verb").and_then(Value::as_str).unwrap_or("");
-        if verb.is_empty() {
-            return Output::error(format!(
-                "{TOOL} needs a verb. Call it with `verb: \"help\"` to see them."
-            ));
-        }
-        if !VERBS.iter().any(|(name, _)| *name == verb) {
-            return Output::error(format!(
-                "`{verb}` is not one of {TOOL}'s verbs. Call it with `verb: \"help\"`."
-            ));
-        }
-        // What a verb needs is a table, not a condition per verb: the third one written by hand
-        // disagreed with the schema and told the model `whoami` wanted a `who`.
-        let said = arguments.get("message").and_then(Value::as_str);
-        if SPEAKS.contains(&verb) && said.is_none_or(str::is_empty) {
-            return Output::error(format!("`{verb}` needs `message` — what to say."));
-        }
-        if verb == "reply" && arguments.get("about").is_none() {
-            return Output::error(
-                "`reply` needs `about` — the id of the message being answered. `inbox` lists them."
-                    .to_owned(),
-            );
-        }
-        match verb {
-            "help" => Output::ok(saying::help(&self.standing)),
-            "whoami" => Output::ok(saying::whoami(&self.standing)),
-            "list" => Output::ok(saying::list(&self.standing)),
-            "inbox" => Output::ok(saying::inbox(&self.standing)),
-            _ if ALONE.contains(&verb) => Output::ok(format!(
-                "`{verb}` is understood but not yet carried out: the socket call it makes is \
+    if verb == "reply" && arguments.get("about").is_none() {
+        return Answer::refused(
+            "`reply` needs `about` — the id of the message being answered. `inbox` lists them."
+                .to_owned(),
+        );
+    }
+    match verb {
+        "help" => Answer::said(saying::help(standing)),
+        "whoami" => Answer::said(saying::whoami(standing)),
+        "list" => Answer::said(saying::list(standing)),
+        "inbox" => Answer::said(saying::inbox(standing)),
+        _ if ALONE.contains(&verb) => Answer::said(format!(
+            "`{verb}` is understood but not yet carried out: the socket call it makes is \
                  not wired into the turn loop."
-            )),
-            _ => match arguments.get("who").and_then(Value::as_str) {
-                // Decided first, dialled second. Everything worth refusing is refused before
-                // the round trip, so a model that asked for something it may not have is told
-                // what it may do instead of paying for the answer.
-                Some(who) => match doing::decide(verb, who, arguments, &self.standing) {
-                    Ok(wanted) => doing::perform(&wanted, &self.standing),
-                    Err(refused) => refused,
-                },
-                None => Output::error(format!("`{verb}` needs `who` — which instance to reach.")),
+        )),
+        _ => match arguments.get("who").and_then(Value::as_str) {
+            // Decided first, dialled second. Everything worth refusing is refused before
+            // the round trip, so a model that asked for something it may not have is told
+            // what it may do instead of paying for the answer.
+            Some(who) => match doing::decide(verb, who, arguments, standing) {
+                Ok(wanted) => doing::perform(&wanted, standing),
+                Err(refused) => refused,
             },
-        }
+            None => Answer::refused(format!("`{verb}` needs `who` — which instance to reach.")),
+        },
     }
 }
 
@@ -315,35 +354,28 @@ mod tests {
         }
     }
 
-    fn call(arguments: Value, standing: Standing) -> Output {
-        Agent { standing }.run(
-            &arguments,
-            &axon_tools::ops::Real::new(std::path::PathBuf::from(".")),
-            &axon_tools::Uncancelled,
-        )
+    fn call(arguments: Value, standing: Standing) -> Answer {
+        answer(&arguments, &standing)
     }
 
     #[test]
     fn help_lists_every_verb() {
         // The first thing the briefing points the model at, so it has to be complete.
         let out = call(json!({"verb": "help"}), standing());
-        assert!(!out.is_error);
+        assert!(!out.failed);
         assert!(
-            out.content.contains("axon/main/alpha-rho"),
+            out.said.contains("axon/main/alpha-rho"),
             "it never says who we are"
         );
         for (verb, _) in VERBS {
-            assert!(out.content.contains(verb), "{verb} is missing from help");
+            assert!(out.said.contains(verb), "{verb} is missing from help");
         }
     }
 
     #[test]
     fn the_schema_offers_exactly_the_verbs_that_exist() {
         // A model told about a verb the tool does not have spends a call finding out.
-        let schema = Agent {
-            standing: standing(),
-        }
-        .parameters();
+        let schema = parameters();
         let offered = schema["properties"]["verb"]["enum"]
             .as_array()
             .expect("an enum")
@@ -357,15 +389,15 @@ mod tests {
     #[test]
     fn a_verb_that_needs_an_instance_says_so_when_it_has_none() {
         let out = call(json!({"verb": "status"}), standing());
-        assert!(out.is_error);
-        assert!(out.content.contains("who"), "{}", out.content);
+        assert!(out.failed);
+        assert!(out.said.contains("who"), "{}", out.said);
     }
 
     #[test]
     fn help_and_inbox_need_nobody() {
         for verb in ["help", "inbox"] {
             let out = call(json!({"verb": verb}), standing());
-            assert!(!out.is_error, "{verb}: {}", out.content);
+            assert!(!out.failed, "{verb}: {}", out.said);
         }
     }
 
@@ -374,8 +406,8 @@ mod tests {
         // Refused before the round trip, so the model is told what it may do instead of
         // spending a turn discovering it.
         let out = call(json!({"verb": "stop", "who": "beta-nu"}), standing());
-        assert!(out.is_error);
-        assert!(out.content.contains("started"), "{}", out.content);
+        assert!(out.failed);
+        assert!(out.said.contains("started"), "{}", out.said);
     }
 
     #[test]
@@ -390,11 +422,11 @@ mod tests {
             .minted
             .insert("iota-mu".to_owned(), "s3cret".to_owned());
         let out = call(json!({"verb": "stop", "who": "iota-mu"}), standing);
-        assert!(out.is_error);
+        assert!(out.failed);
         assert!(
-            out.content.contains("nothing is listening"),
+            out.said.contains("nothing is listening"),
             "it was refused before it got to the socket: {}",
-            out.content
+            out.said
         );
     }
 
@@ -436,23 +468,23 @@ mod tests {
     fn sending_without_anything_to_say_is_refused() {
         for verb in ["send", "ask"] {
             let out = call(json!({"verb": verb, "who": "gamma"}), standing());
-            assert!(out.is_error, "{verb} sent nothing");
-            assert!(out.content.contains("message"), "{}", out.content);
+            assert!(out.failed, "{verb} sent nothing");
+            assert!(out.said.contains("message"), "{}", out.said);
         }
     }
 
     #[test]
     fn an_unknown_verb_points_at_help() {
         let out = call(json!({"verb": "obliterate", "who": "gamma"}), standing());
-        assert!(out.is_error);
-        assert!(out.content.contains("help"), "{}", out.content);
+        assert!(out.failed);
+        assert!(out.said.contains("help"), "{}", out.said);
     }
 
     #[test]
     fn a_name_nothing_can_have_says_what_a_name_looks_like() {
         let out = call(json!({"verb": "status", "who": "a/b/c/d"}), standing());
-        assert!(out.is_error);
-        assert!(out.content.contains("project/role/id"), "{}", out.content);
+        assert!(out.failed);
+        assert!(out.said.contains("project/role/id"), "{}", out.said);
     }
 
     #[test]
@@ -462,8 +494,8 @@ mod tests {
             .inbox
             .push(Message::new("axon/main/gamma", "the parser is fixed"));
         let out = call(json!({"verb": "inbox"}), standing);
-        assert!(out.content.contains("axon/main/gamma"), "{}", out.content);
-        assert!(out.content.contains("the parser is fixed"));
+        assert!(out.said.contains("axon/main/gamma"), "{}", out.said);
+        assert!(out.said.contains("the parser is fixed"));
     }
 }
 
@@ -472,7 +504,7 @@ mod tests {
 #[cfg(test)]
 mod surface_tests {
     use super::*;
-    use crate::instance::wire::Sort;
+    use crate::wire::Sort;
 
     fn standing() -> Standing {
         Standing {
@@ -484,12 +516,8 @@ mod surface_tests {
         }
     }
 
-    fn call(arguments: Value, standing: Standing) -> Output {
-        Agent { standing }.run(
-            &arguments,
-            &axon_tools::ops::Real::new(std::path::PathBuf::from(".")),
-            &axon_tools::Uncancelled,
-        )
+    fn call(arguments: Value, standing: Standing) -> Answer {
+        answer(&arguments, &standing)
     }
 
     #[test]
@@ -501,7 +529,7 @@ mod surface_tests {
                 json!({"verb": verb, "message": "x", "about": "y"}),
                 standing(),
             );
-            let wants_who = out.is_error && out.content.contains("needs `who`");
+            let wants_who = out.failed && out.said.contains("needs `who`");
             assert_eq!(
                 wants_who,
                 !ALONE.contains(verb),
@@ -515,8 +543,8 @@ mod surface_tests {
     fn a_verb_that_says_something_refuses_to_say_nothing() {
         for verb in SPEAKS {
             let out = call(json!({"verb": verb, "who": "gamma"}), standing());
-            assert!(out.is_error, "{verb} sent an empty message");
-            assert!(out.content.contains("message"), "{verb}: {}", out.content);
+            assert!(out.failed, "{verb} sent an empty message");
+            assert!(out.said.contains("message"), "{verb}: {}", out.said);
         }
     }
 
@@ -525,21 +553,21 @@ mod surface_tests {
         // Without it the far end has an answer and no idea to what, which is worse than no
         // answer: it reads as an unprompted assertion.
         let out = call(json!({"verb": "reply", "message": "yes"}), standing());
-        assert!(out.is_error);
-        assert!(out.content.contains("about"), "{}", out.content);
-        assert!(out.content.contains("inbox"), "and where to find the id");
+        assert!(out.failed);
+        assert!(out.said.contains("about"), "{}", out.said);
+        assert!(out.said.contains("inbox"), "and where to find the id");
     }
 
     #[test]
     fn a_root_session_is_told_it_has_nobody_to_escalate_to() {
         // A subagent that does not know it is one will not raise `attention` at a parent it
         // does not know it has. A root that thinks it has one will wait for an answer forever.
-        let said = call(json!({"verb": "whoami"}), standing()).content;
+        let said = call(json!({"verb": "whoami"}), standing()).said;
         assert!(said.contains("root session"), "{said}");
 
         let mut child = standing();
         child.parent = Some("axon/main/root".to_owned());
-        let said = call(json!({"verb": "whoami"}), child).content;
+        let said = call(json!({"verb": "whoami"}), child).said;
         assert!(said.contains("axon/main/root"), "{said}");
         assert!(said.contains("attention"), "and what to do with it: {said}");
     }
@@ -548,7 +576,7 @@ mod surface_tests {
     fn whoami_says_what_it_may_stop() {
         let mut standing = standing();
         standing.forked.push("axon/main/gamma".to_owned());
-        let said = call(json!({"verb": "whoami"}), standing).content;
+        let said = call(json!({"verb": "whoami"}), standing).said;
         assert!(said.contains("axon/main/gamma"), "{said}");
         assert!(said.contains("may stop"), "{said}");
     }
@@ -580,7 +608,7 @@ mod surface_tests {
             Sort::Attention,
             None,
         ));
-        let said = call(json!({"verb": "inbox"}), standing).content;
+        let said = call(json!({"verb": "inbox"}), standing).said;
         assert!(
             said.contains("! `axon/main/delta`"),
             "urgent unmarked: {said}"

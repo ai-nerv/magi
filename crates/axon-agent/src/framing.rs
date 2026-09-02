@@ -1,13 +1,13 @@
 //! The family's framing: four bytes of length, then JSON.
 //!
-//! Not [`axon_ipc`], which is what the UI and the daemon speak to each other. That is CBOR
+//! Not `axon_ipc`, which is what the UI and the daemon speak to each other. That is CBOR
 //! inside an `Envelope` carrying a protocol version, and it is right for two halves of one
 //! program that ship together — a peer from another build should be turned away at the
 //! boundary rather than after its fields have been read.
 //!
 //! This socket is the opposite case. Anything may knock on it: another axon, a sibling tool,
 //! somebody with `socat` working out why a message never arrived. So it speaks what the family
-//! agreed and what [`super::wire`] documents — a big-endian `u32`, then a JSON body, and
+//! agreed and what [`crate::wire`] documents — a big-endian `u32`, then a JSON body, and
 //! nothing wrapped around it.
 //!
 //! **This was the bug this file exists to fix.** The socket was framed with `axon_ipc` and
@@ -92,7 +92,7 @@ pub fn write_to<T: Serialize, W: Write>(to: &mut W, value: &T) -> std::io::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::instance::wire::{Call, Reply};
+    use crate::wire::{Call, Reply};
 
     #[test]
     fn a_frame_is_four_bytes_of_length_and_then_json() {

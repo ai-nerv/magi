@@ -9,22 +9,12 @@
 use super::App;
 
 impl App {
-    /// Where this session sits in the tree, for asking whether it may reach somebody.
-    #[must_use]
-    pub fn whom(&self) -> crate::instance::policy::Whom {
-        crate::instance::policy::Whom {
-            project: self.identity.project.clone(),
-            id: self.identity.id.clone(),
-            parent: self.parent.clone(),
-        }
-    }
-
     /// Everything the `agent` tool needs in order to answer, copied out of the session.
     ///
     /// A copy rather than a borrow: a tool runs on the turn thread and this is the UI's.
     #[must_use]
-    pub fn standing(&self) -> crate::instance::tool::Standing {
-        crate::instance::tool::Standing {
+    pub fn standing(&self) -> axon_agent::verbs::Standing {
+        axon_agent::verbs::Standing {
             me: self.identity.full(),
             parent: self.parent.clone(),
             forked: self.forked.clone(),
@@ -40,7 +30,7 @@ impl App {
     /// an `attention` is the whole of the failure. The inbox is so the model can act on it: it
     /// is what the `agent` tool reads, and reading a message is not the same as answering it.
     pub fn received(&mut self, message: crate::instance::wire::Message) -> axon_proto::UiCommand {
-        let kin = crate::identity::Identity::read(&message.from)
+        let kin = crate::instance::Identity::read(&message.from)
             .map_or(crate::instance::policy::Relation::Elsewhere, |who| {
                 self.standing().stands(&who)
             });
@@ -70,7 +60,7 @@ mod tests {
 
     fn app() -> App {
         let mut app = App::new();
-        app.identity = crate::identity::Identity {
+        app.identity = crate::instance::Identity {
             project: "axon".to_owned(),
             role: "main".to_owned(),
             id: "alpha-rho".to_owned(),

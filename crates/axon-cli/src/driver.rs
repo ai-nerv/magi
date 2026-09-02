@@ -33,7 +33,7 @@ pub async fn run(
     socket: &Path,
     prompt: Option<String>,
     loaded: Option<crate::config::Loaded>,
-    identity: crate::identity::Identity,
+    identity: crate::instance::Identity,
 ) -> Result<()> {
     // **Before anything reads a setting.** `colour`, `glyph` and `metric` each hold their table
     // in a `OnceLock` that the first *read* fills with the built-in defaults, and `adopt` after
@@ -248,7 +248,7 @@ pub async fn run(
                                 // parser" put a page of facts about `iota-mu` into the
                                 // transcript under your own name. You typed one line; you
                                 // should see one line.
-                                let aside = crate::instance::briefing::about(&text, &app);
+                                let aside = crate::instance::briefing(&text, &app.standing());
                                 let _ = command_tx
                                     .send(UiCommand::SubmitPrompt { text, aside })
                                     .await;

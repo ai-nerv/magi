@@ -4,16 +4,16 @@
 //! session in two directions rather than a supervisor and a worker with different vocabularies.
 //!
 //! Nothing here decides anything: it frames bytes, works out where the caller sits in the tree,
-//! and hands both to [`super::answering::answer`], which is where the permission check and the
+//! and hands both to [`crate::answering::answer`], which is where the permission check and the
 //! vocabulary live. What this file owns is the parts that only go wrong under a real socket — a
 //! connection that serves one call and dies, a peer that reads slowly, a socket left behind by
 //! a crash.
 
-use super::answering::{About, Then, answer};
-use super::framing;
-use super::policy::Whom;
-use super::wire::{Call, Message, Reply};
-use super::{inside, whom};
+use crate::answering::{About, Then, answer};
+use crate::directory::{inside, whom};
+use crate::framing;
+use crate::policy::Whom;
+use crate::wire::{Call, Message, Reply};
 use std::path::Path;
 use tokio::sync::mpsc;
 
@@ -48,12 +48,7 @@ pub async fn serve(path: &Path, serving: Serving) -> std::io::Result<()> {
         // working directory's, which can be anything.
         return Err(std::io::Error::other("that is not an instance socket"));
     }
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let listener = axon_ipc::bind(path)
-        .await
-        .map_err(|why| std::io::Error::other(why.to_string()))?;
+    let listener = bind(path).await?;
     let held = std::sync::Arc::new(tokio::sync::Semaphore::new(CALLERS));
 
     loop {
@@ -130,7 +125,31 @@ async fn talk(stream: tokio::net::UnixStream, serving: Serving) -> std::io::Resu
 /// is a question `SO_PEERCRED` cannot answer, and that one is answered by the directory and by
 /// the secret instead.
 fn ours(stream: &tokio::net::UnixStream) -> bool {
-    axon_ipc::PeerCred::of(stream).is_ok_and(|cred| cred.is_same_user())
+    stream
+        .peer_cred()
+        .is_ok_and(|cred| cred.uid() == rustix::process::getuid().as_raw())
+}
+
+/// Listen at `path`, clearing what a crash left behind.
+///
+/// Twenty lines rather than a dependency. A socket file outlives the process that made it, so
+/// `bind` fails with `EADDRINUSE` on a path nothing has answered since a machine slept — and
+/// the alternative to clearing it is a session that cannot be reached because a previous one
+/// died badly.
+///
+/// **Connected to before removed.** A path that answers belongs to somebody: unlinking it would
+/// take a running session's socket out from under it, and the two would then both think they
+/// were reachable while only one of them was.
+async fn bind(path: &Path) -> std::io::Result<tokio::net::UnixListener> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    if tokio::fs::metadata(path).await.is_ok()
+        && tokio::net::UnixStream::connect(path).await.is_err()
+    {
+        tokio::fs::remove_file(path).await?;
+    }
+    tokio::net::UnixListener::bind(path)
 }
 
 /// Where a caller sits in the tree, from the name it gave.
@@ -172,9 +191,9 @@ fn placed(from: Option<&str>, about: &About) -> Option<Whom> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::asking::Held;
     use crate::identity::Identity;
-    use crate::instance::asking::Held;
-    use crate::instance::wire::Sort;
+    use crate::wire::Sort;
     use std::time::Duration;
 
     /// A project nothing else is using.
@@ -196,7 +215,7 @@ mod tests {
     }
 
     fn tidy(tag: &str) {
-        let _ = std::fs::remove_dir_all(crate::instance::home(&project(tag)));
+        let _ = std::fs::remove_dir_all(crate::directory::home(&project(tag)));
     }
 
     /// What a bound session hands back, held for as long as the test needs it.
@@ -219,7 +238,7 @@ mod tests {
         });
         let (arrived_tx, arrived) = mpsc::channel(8);
         let (stopped_tx, stopped) = mpsc::channel(1);
-        let at = crate::instance::listening_at(me);
+        let at = crate::directory::listening_at(me);
         tokio::spawn(async move {
             let _ = serve(
                 &at,
@@ -232,7 +251,7 @@ mod tests {
             .await;
         });
         // The bind is a few awaits away and the first dial would otherwise race it.
-        let at = crate::instance::listening_at(me);
+        let at = crate::directory::listening_at(me);
         for _ in 0..100 {
             if Held::at(&at, me).is_ok() {
                 break;
@@ -357,15 +376,15 @@ mod tests {
         };
         // The note a child leaves beside its socket, so the far end reads the caller as its
         // parent rather than as a stranger. Written by hand here; a session writes its own.
-        std::fs::create_dir_all(crate::instance::home(&project("secret")))
+        std::fs::create_dir_all(crate::directory::home(&project("secret")))
             .expect("a project directory");
-        std::fs::write(crate::instance::kin_at(&them), &me.id).expect("the note");
+        std::fs::write(crate::directory::kin_at(&them), &me.id).expect("the note");
 
         let (about_tx, about_rx) = tokio::sync::watch::channel(about.clone());
         about.busy = false;
         let (arrived_tx, _arrived) = mpsc::channel(8);
         let (stopped_tx, mut stopped) = mpsc::channel(1);
-        let at = crate::instance::listening_at(&them);
+        let at = crate::directory::listening_at(&them);
         tokio::spawn(async move {
             let _ = serve(
                 &at,
@@ -377,7 +396,7 @@ mod tests {
             )
             .await;
         });
-        let at = crate::instance::listening_at(&them);
+        let at = crate::directory::listening_at(&them);
         for _ in 0..100 {
             if Held::at(&at, &me).is_ok() {
                 break;
@@ -423,7 +442,7 @@ mod tests {
         // test the encoding bug would have failed, and the only one that could have.
         let them = named("sibling", "theta-mu");
         let _bound = listening(&them).await;
-        let at = crate::instance::listening_at(&them);
+        let at = crate::directory::listening_at(&them);
 
         let asked = tokio::task::spawn_blocking(move || {
             use std::io::{Read, Write};

@@ -9,10 +9,10 @@
 //! connection", "`n` did not match the result" are all decidable without a socket, and a test
 //! that has to bind one to check them is a test nobody writes.
 
-use super::Reach;
-use super::policy::{self, Whom};
-use super::wire::{Call, Message, Reply, VERBS};
+use crate::directory::Reach;
 use crate::identity::Identity;
+use crate::policy::{self, Whom};
+use crate::wire::{Call, Message, Reply, VERBS};
 
 /// What this instance is willing to say about itself.
 ///
@@ -146,7 +146,7 @@ pub fn answer(call: &Call, about: &About, caller: Option<&Whom>) -> (Reply, Then
                 return (Reply::refused("tell takes what to say"), Then::Nothing);
             };
             let sort = text_at(call, 1)
-                .and_then(|name| super::wire::Sort::read(&name))
+                .and_then(|name| crate::wire::Sort::read(&name))
                 .unwrap_or_default();
             let about_what = text_at(call, 2);
             // Project and id from the connection, never from an argument: a message that could

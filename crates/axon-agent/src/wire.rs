@@ -218,9 +218,9 @@ pub struct Message {
 impl Message {
     /// A plain note from `from`.
     ///
-    /// Only tests build one this way. Everything real arrives over the socket, where the sort is
-    /// part of what was sent and the sender is worked out rather than given.
-    #[cfg(test)]
+    /// Everything real arrives over the socket, where the sort is part of what was sent and the
+    /// sender is worked out rather than given. This is for tests, and for a host that wants to
+    /// put something in an inbox without a round trip.
     #[must_use]
     pub fn new(from: &str, text: &str) -> Self {
         Self::sent(from, text, Sort::Note, None)

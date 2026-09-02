@@ -22,6 +22,7 @@ axon-lua.workspace = true
 axon-provider.workspace = true
 axon-tools.workspace = true
 axon-testkit.workspace = true
+axon-agent.workspace = true
 axon-tui.workspace = true
 clap.workspace = true
 crossterm.workspace = true

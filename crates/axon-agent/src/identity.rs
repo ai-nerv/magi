@@ -21,7 +21,7 @@
 //! So the role is what a session *says about itself*, and the id is where it *is*. Permission
 //! never reads the role for the same reason: a session that could pick its own role could pick
 //! `main` and claim a main's reach. What decides that is the tree — see
-//! [`crate::instance::policy`].
+//! [`crate::policy`].
 
 /// The default role, until there is more than one.
 const ROLE: &str = "main";

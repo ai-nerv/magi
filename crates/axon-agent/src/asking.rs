@@ -1,6 +1,6 @@
 //! Reaching another instance.
 //!
-//! The other half of [`super::serving`], and deliberately blocking. The caller is a tool peer
+//! The other half of [`crate::serving`], and deliberately blocking. The caller is a tool peer
 //! whose whole existence is one round trip — it has no UI to keep responsive and no turn to
 //! yield to — and a blocking socket there is a dozen lines where an async one would be a
 //! runtime, a spawn and a channel to carry the answer back out of it.
@@ -14,14 +14,14 @@
 //!
 //! # Every call says who is making it
 //!
-//! Not as courtesy — [`super::answering`] refuses anything but `verbs` without it, because
+//! Not as courtesy — [`crate::answering`] refuses anything but `verbs` without it, because
 //! every other verb is about that session and a stranger has no standing to ask. The name is
 //! taken at face value; what it buys is a *relation*, which is read off the directory at the
 //! far end and is not the caller's to claim.
 
-use super::framing;
-use super::wire::{Call, Reply};
+use crate::framing;
 use crate::identity::Identity;
+use crate::wire::{Call, Reply};
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -58,7 +58,7 @@ impl Held {
 
     /// Open a connection to a session by name, in this project.
     pub fn to(them: &Identity, me: &Identity) -> std::io::Result<Self> {
-        Self::at(&super::listening_at(them), me)
+        Self::at(&crate::directory::listening_at(them), me)
     }
 
     /// Make one call and read its answer.
@@ -195,6 +195,6 @@ mod tests {
             role: "main".to_owned(),
             id: "nobody-nowhere".to_owned(),
         };
-        assert!(!answers(&crate::instance::listening_at(&missing), &me()));
+        assert!(!answers(&crate::directory::listening_at(&missing), &me()));
     }
 }

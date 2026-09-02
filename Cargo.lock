@@ -58,10 +58,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "axon-agent"
+version = "0.1.0"
+dependencies = [
+ "rustix",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "axon-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "axon-agent",
  "axon-host",
  "axon-ipc",
  "axon-journal",
