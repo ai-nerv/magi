@@ -104,7 +104,18 @@ mod clicking {
                         if !self.live_rows.contains(&row) {
                             break;
                         }
-                        return Some((row, at + 1));
+                        // Where the glyph actually sits inside the chip, rather than a guess at
+                        // it: the chip has been ` » ` and is now `[ > ]`, and a helper that knew
+                        // the old width aimed at a bracket.
+                        let inside = span
+                            .content
+                            .chars()
+                            .position(|c| {
+                                axon_tui::glyph::expand().starts_with(c)
+                                    || axon_tui::glyph::collapse().starts_with(c)
+                            })
+                            .and_then(|at| u16::try_from(at).ok())?;
+                        return Some((row, at + inside));
                     }
                     at += u16::try_from(span.content.chars().count()).ok()?;
                 }
@@ -165,9 +176,9 @@ mod clicking {
         // collapsed whatever it landed on.
         let mut app = laid();
         let (row, column) = app.handle().expect("a handle");
-        // The chip is the button, spaces included: ` » ` is three columns and all of them
+        // The chip is the button, brackets included: `[ > ]` is five columns and all of them
         // should act, because aiming at one column is not aiming.
-        let chip = column.saturating_sub(1)..=column + 1;
+        let chip = column.saturating_sub(2)..=column + 2;
         for at in 0..60_u16 {
             if chip.contains(&at) {
                 continue;

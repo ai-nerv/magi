@@ -75,21 +75,22 @@ fn a_conversation_renders_the_way_pi_lays_it_out() {
     assert_eq!(
         rendered,
         vec![
-            "  USER",             // user box: the tag rides the top padding row
-            " run the tests",     // user box: body
-            "",                   // user box: bottom padding
+            // A block is a top edge with its name set into it, its rows one column further in,
+            // and a bottom edge. No sides: two columns of every row spent drawing a line nobody
+            // reads are two columns taken off the text.
+            "┌──[ USER ]────────────────────────────────┐",
+            "  run the tests",
+            "└──────────────────────────────────────────┘",
             "",                   // assistant: leading blank
             " Running them now.", // assistant: body, indented
-            "",                   // tool box: top padding
-            // tool box: the name reversed out as a label, then its arguments, then the
-            // handle that opens the block, held against the right edge.
-            // The handle is reversed the way the name is, a chip with a space either side, so
-            // it sits one column further in than a bare glyph did.
-            "  bash  cargo test                       »",
-            // The output sits a step in from the header, so the two are not one column of
+            "",                   // the gap between blocks, unpainted
+            // The name reversed out as a label, the arguments beside it, and the fold handle at
+            // the far end of the same edge — `>` shut, `v` open, saying which way it will go.
+            "┌──[ bash ] cargo test ─────────────[ > ]──┐",
+            // The output sits a step further in than the edge, so the two are not one column of
             // text under a coloured word.
-            "   test result: ok. 42 passed",
-            "", // tool box: bottom padding
+            "    test result: ok. 42 passed",
+            "└──────────────────────────────────────────┘",
         ]
     );
 }

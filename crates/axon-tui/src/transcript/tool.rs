@@ -6,7 +6,7 @@
 //! prose and an assistant message is prose, and this is a name, arguments, a body that may be
 //! a diff, and a decision about how much of it to show.
 
-use super::{blank, clip, pad, pad_by};
+use super::{blank, clip, pad_by};
 use crate::colour;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -64,7 +64,6 @@ pub(super) fn block(
         Some(_) => colour::tool_ok(),
     };
     let style = Style::default().bg(colour::tool_bg());
-    let inner = usize::from(width.saturating_sub(crate::metric::block_pad() * 2));
 
     // The name in reverse: the outcome behind it, the box's own background in front. A coloured
     // word states pending, done or failed; a coloured *label* states it at a glance, and reads as
@@ -82,36 +81,23 @@ pub(super) fn block(
         Detail::Preview => crate::glyph::expand(),
         Detail::Full => crate::glyph::collapse(),
     };
-    // A plain row, not a grey one: this is the gap *between* blocks, and painted with the
+    // A plain row first, not a grey one: this is the gap *between* blocks, and painted with the
     // block's own background it joined the previous block's bottom padding into one two-row
     // band. Three calls in a row then read as a single wall of grey with headings in it rather
     // than as three things that happened.
-    let mut out = vec![blank(width, Style::default()), {
-        let summary = summarize(args);
-        let named = format!(" {name} ");
-        let beside = if summary.is_empty() {
-            String::new()
-        } else {
-            format!(" {summary}")
-        };
-        // Whatever is left between the two, so the handle sits on the right edge whatever the
-        // name and summary came to. Clipped rather than overflowed on a narrow screen.
-        // Three, not one: the handle is a chip with a space either side now.
-        let worn = handle.chars().count() + 2;
-        let room = inner.saturating_sub(named.chars().count() + worn).max(1);
-        let beside = clip(&beside, room);
-        let gap = inner.saturating_sub(named.chars().count() + beside.chars().count() + worn);
-        pad(
-            Line::from(vec![
-                Span::styled(named, label),
-                Span::styled(beside, style.fg(colour::tool_output())),
-                Span::styled(" ".repeat(gap), style),
-                Span::styled(format!(" {handle} "), label),
-            ]),
+    // The name and the summary are set into the top edge, and the handle sits at the far end of
+    // the same edge — so the row that says what this is is also the row that bounds it.
+    let mut out = vec![
+        blank(width, Style::default()),
+        super::frame::top(
+            name,
+            label,
+            Some(summarize(args).as_str()),
+            Some(handle),
             width,
             style,
-        )
-    }];
+        ),
+    ];
 
     // One step further in than the header, so the two are not one column of text under a
     // coloured word.
@@ -121,7 +107,7 @@ pub(super) fn block(
     // `old` and `new`, then a diff of `old` and `new` -- and for everything else it is a header
     // repeated a row below the header. The summary beside the name is what the call was given;
     // one line of it is enough, and a block that says it twice reads as a stutter.
-    let lead = usize::from(crate::metric::block_pad()) + STEP;
+    let lead = super::frame::LEAD + STEP;
     let body = usize::from(width).saturating_sub(lead + usize::from(crate::metric::block_pad()));
 
     if let Some(result) = result {
@@ -161,7 +147,7 @@ pub(super) fn block(
         }
     }
 
-    out.push(blank(width, style));
+    out.push(super::frame::bottom(width, style));
     out
 }
 

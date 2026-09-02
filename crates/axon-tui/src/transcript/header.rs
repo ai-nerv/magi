@@ -34,7 +34,9 @@ mod tests {
     fn a_folded_block_offers_to_open() {
         let shown = rows(Detail::Preview);
         assert!(
-            shown.iter().any(|l| l.ends_with(crate::glyph::expand())),
+            shown
+                .iter()
+                .any(|l| l.contains(&format!("[ {} ]", crate::glyph::expand()))),
             "nothing says this can be opened: {shown:#?}"
         );
     }
@@ -43,7 +45,9 @@ mod tests {
     fn an_open_block_offers_to_fold() {
         let shown = rows(Detail::Full);
         assert!(
-            shown.iter().any(|l| l.ends_with(crate::glyph::collapse())),
+            shown
+                .iter()
+                .any(|l| l.contains(&format!("[ {} ]", crate::glyph::collapse()))),
             "and nothing says it can be closed again: {shown:#?}"
         );
     }
@@ -58,7 +62,11 @@ mod tests {
             !shown.iter().any(|l| l.contains("more lines")),
             "the premise: nothing was truncated here: {shown:#?}"
         );
-        assert!(shown.iter().any(|l| l.ends_with(crate::glyph::expand())));
+        assert!(
+            shown
+                .iter()
+                .any(|l| l.contains(&format!("[ {} ]", crate::glyph::expand())))
+        );
     }
 
     #[test]
@@ -72,8 +80,8 @@ mod tests {
             .expect("a header");
         assert_eq!(header, 1, "the first row after the padding");
         assert!(
-            shown[header].ends_with(crate::glyph::expand()),
-            "the handle is the last thing on the title row: {shown:#?}"
+            shown[header].contains(&format!("[ {} ]", crate::glyph::expand())),
+            "the handle is set into the top edge: {shown:#?}"
         );
     }
 
@@ -87,7 +95,7 @@ mod tests {
             .iter()
             .find(|s| s.content.contains("write"))
             .expect("the name");
-        assert_eq!(name.content.as_ref(), " write ");
+        assert_eq!(name.content.as_ref(), "[ write ]");
         assert_eq!(
             name.style.bg,
             Some(colour::tool_title()),
@@ -112,7 +120,7 @@ mod tests {
     }
 
     #[test]
-    fn a_narrow_screen_still_ends_on_the_handle() {
+    fn a_narrow_screen_still_keeps_the_handle() {
         // The summary is clipped to make room rather than pushing the handle off the edge.
         for width in [20u16, 30, 44, 100] {
             let lines = block(
@@ -133,7 +141,7 @@ mod tests {
                 "row must fill the width at {width}"
             );
             assert!(
-                header.trim_end().ends_with(crate::glyph::expand()),
+                header.contains(&format!("[ {} ]", crate::glyph::expand())),
                 "at {width}: {header:?}"
             );
         }

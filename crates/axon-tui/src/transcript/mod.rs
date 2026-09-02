@@ -13,7 +13,10 @@ use ratatui::text::{Line, Span};
 use std::collections::BTreeSet;
 
 /// Horizontal padding inside a block, in cells. Pi's `outputPad`.
+mod frame;
 mod tool;
+
+use frame::{LEAD, bottom, top};
 
 pub use tool::Detail;
 
@@ -145,7 +148,7 @@ fn marker(label: &str, width: u16) -> Vec<Line<'static>> {
     ]
 }
 
-/// A full-width box on `userMessageBg`, padded one cell on every side, labelled `USER`.
+/// A framed full-width block, labelled `USER` in its top edge.
 fn user(text: &str, width: u16) -> Vec<Line<'static>> {
     said("USER", colour::said_by_you(), None, text, width)
 }
@@ -173,11 +176,11 @@ fn from(who: &str, kin: &str, sort: &str, text: &str, width: u16) -> Vec<Line<'s
     )
 }
 
-/// A padded box with a reversed tag on its top row.
+/// A framed block with its tag set into the top edge.
 ///
-/// The tag rides the padding row rather than taking one of its own: a block that grew a line
-/// every time it was labelled would have cost a row per message to say something a glance takes
-/// in. Reversed, like a tool's name, because that is what a tag on a block looks like here.
+/// The tag rides the edge rather than taking a row of its own: a block that grew a line
+/// every time it was labelled would cost a row per message to say something a glance takes
+/// in — and the edge has to be drawn anyway.
 fn said(
     label: &str,
     tag: ratatui::style::Color,
@@ -196,18 +199,18 @@ fn said(
         .bg(colour::tool_bg())
         .fg(tag)
         .add_modifier(Modifier::BOLD);
-    let inner = width.saturating_sub(crate::metric::block_pad() * 2);
+    // One column narrower each side than the frame, so the text sits inside the edges rather
+    // than running under the corners.
+    let inner = width.saturating_sub(crate::metric::block_pad() * 2 + 2);
     let body = markdown::render(text, inner, style);
 
-    let mut spans = vec![Span::styled(format!(" {label} "), chip)];
-    if let Some(beside) = beside {
-        spans.push(Span::styled(format!(" {beside}"), style.fg(colour::dim())));
-    }
-    let mut out = vec![pad(Line::from(spans), width, style)];
+    // No handle: neither of these folds, and a handle on something that cannot be opened is an
+    // affordance that lies.
+    let mut out = vec![top(label, chip, beside, None, width, style)];
     for line in body {
-        out.push(pad(line, width, style));
+        out.push(pad_by(line, width, style, LEAD));
     }
-    out.push(blank(width, style));
+    out.push(bottom(width, style));
     out
 }
 
@@ -304,13 +307,6 @@ fn indent(line: Line<'static>) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Indent a line and extend its background to the full width.
-///
-/// The trailing fill is what makes a box read as a block rather than as ragged coloured text.
-fn pad(line: Line<'static>, width: u16, style: Style) -> Line<'static> {
-    pad_by(line, width, style, usize::from(crate::metric::block_pad()))
-}
-
 /// The same, at a chosen indent.
 ///
 /// A tool block puts its output one step further in than its header, so the two are not one
@@ -347,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    fn a_user_message_is_a_padded_full_width_box() {
+    fn a_user_message_is_a_framed_full_width_box() {
         let entry = Entry::User {
             id: MessageId::new("m1"),
             text: "hello".into(),
@@ -355,8 +351,14 @@ mod tests {
         };
         let lines = entry_lines(&entry, 20, Detail::Preview);
         let rendered = text_of(&lines);
-        assert_eq!(rendered.len(), 3, "tag, body, blank");
-        assert_eq!(rendered[1], " hello              ");
+        assert_eq!(rendered.len(), 3, "top edge, body, bottom edge");
+        // Inside the frame, not under the corner it shares a row with.
+        assert_eq!(rendered[1], "  hello             ");
+        assert!(rendered[0].starts_with('┌') && rendered[0].ends_with('┐'));
+        assert!(rendered[2].starts_with('└') && rendered[2].ends_with('┘'));
+        // No sides. Two columns of every row spent drawing a line nobody reads is two columns
+        // taken off the text on the terminal where they are least affordable.
+        assert!(!rendered[1].contains('│'), "{rendered:?}");
         assert!(rendered.iter().all(|l| l.chars().count() == 20));
     }
 
@@ -370,8 +372,12 @@ mod tests {
             aside: String::new(),
         };
         let rendered = text_of(&entry_lines(&entry, 20, Detail::Preview));
-        assert_eq!(rendered[0].trim(), "USER", "{rendered:?}");
+        assert!(rendered[0].contains("[ USER ]"), "{rendered:?}");
         assert_eq!(rendered.len(), 3, "it grew a row: {rendered:?}");
+        assert!(
+            rendered[0].starts_with('┌'),
+            "the tag rides the top edge: {rendered:?}"
+        );
     }
 
     #[test]
@@ -383,7 +389,10 @@ mod tests {
             40,
             Detail::Preview,
         ));
-        assert_eq!(rendered[0].trim(), "PARENT::alpha-rho", "{rendered:?}");
+        assert!(
+            rendered[0].contains("[ PARENT::alpha-rho ]"),
+            "{rendered:?}"
+        );
         assert!(rendered[1].contains("the parser is done"), "{rendered:?}");
     }
 
