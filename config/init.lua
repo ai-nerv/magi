@@ -45,6 +45,29 @@ axon.model = "anthropic/claude-sonnet-4-5"
 --   { verb = "run",   program = "git" },
 -- }
 
+-- Granted rather than asked, because asking here cannot work.
+--
+-- `agent` reaches the other instances through atom, and it is a `command` transport -- so axon
+-- asks before running it, the way it asks before running `fd` or `ls`. That is right for a
+-- program a config named and wrong for this one, twice over:
+--
+--   * The prompt lands mid-conversation. A sibling asks a question, the turn it started stops
+--     on "may I run atom?", and the session that asked is left waiting on a keystroke nobody
+--     told it about.
+--   * A model that reaches for `agent` and the shell in the same breath raises two prompts at
+--     once, and only one of them fits on the screen. The turn then waits forever for an answer
+--     to a question that was never drawn.
+--
+-- Safe to grant because of what is on the other side: atom's surface has no verb that runs
+-- anything. It sends messages, reads an inbox, and says who is listening -- deliberately, and
+-- its own tests refuse a verb named `run`, `shell`, `exec` or `eval`. Granting `atom` grants
+-- the ability to talk to other sessions, which is the whole of what the tool is for.
+--
+-- Take this out and the agent tool starts asking; nothing else changes.
+axon.allow = {
+  { verb = "run", program = "atom" },
+}
+
 -- Environment every process axon starts is given, on top of what it inherits. `OSLO_PROFILE`
 -- is set to "axon" whether or not this says so, and naming it here overrides that.
 --
