@@ -109,6 +109,7 @@ mod reduction {
                 Entry::User {
                     id: MessageId::new("m1"),
                     text: "asked".into(),
+                    aside: String::new(),
                 },
                 Entry::Assistant {
                     id: MessageId::new("a1"),
@@ -137,6 +138,7 @@ mod reduction {
             entries: vec![Entry::User {
                 id: MessageId::new("m9"),
                 text: "restored".into(),
+                aside: String::new(),
             }],
             status: AgentStatus::Idle,
             model: None,
@@ -405,6 +407,7 @@ mod onboarding_tests {
             vec![Entry::User {
                 id: MessageId::new("u1"),
                 text: "hello".into(),
+                aside: String::new(),
             }],
         ));
         assert!(notices(&app).is_empty());

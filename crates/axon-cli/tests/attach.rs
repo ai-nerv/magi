@@ -142,7 +142,11 @@ fn fold(mut entries: Vec<Entry>, events: &[HarnessEvent]) -> Vec<Entry> {
     for event in events {
         match event.clone() {
             HarnessEvent::PermissionAsked { .. } => {}
-            HarnessEvent::UserMessage { id, text, .. } => entries.push(Entry::User { id, text }),
+            HarnessEvent::UserMessage { id, text, .. } => entries.push(Entry::User {
+                id,
+                text,
+                aside: String::new(),
+            }),
             HarnessEvent::AssistantStarted { id, .. } => entries.push(Entry::Assistant {
                 id,
                 text: String::new(),
@@ -177,6 +181,18 @@ fn fold(mut entries: Vec<Entry>, events: &[HarnessEvent]) -> Vec<Entry> {
                 }
             }
             HarnessEvent::Refused { .. } | HarnessEvent::ModelChanged { .. } => {}
+            HarnessEvent::MessageArrived {
+                who,
+                kin,
+                sort,
+                text,
+                ..
+            } => entries.push(Entry::From {
+                who,
+                kin,
+                sort,
+                text,
+            }),
             HarnessEvent::Branched { id, keeps, .. } => {
                 entries.push(Entry::Branch { id, keeps });
             }

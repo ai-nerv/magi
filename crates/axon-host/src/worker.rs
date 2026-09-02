@@ -343,6 +343,7 @@ mod tests {
             .commit(Entry::User {
                 id: axon_proto::MessageId::new("u1"),
                 text: "still works".into(),
+                aside: String::new(),
             })
             .expect("commit");
         assert_eq!(session.lock().await.entries().len(), 1);

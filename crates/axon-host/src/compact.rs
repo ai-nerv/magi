@@ -215,6 +215,7 @@ mod tests {
             .map(|i| Entry::User {
                 id: axon_proto::MessageId::new(format!("u{i}")),
                 text: "hello".into(),
+                aside: String::new(),
             })
             .collect()
     }

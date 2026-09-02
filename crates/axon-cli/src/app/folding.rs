@@ -208,6 +208,7 @@ mod clicking {
         app.entries = vec![Entry::User {
             id: MessageId::new("u1".to_owned()),
             text: "a question".to_owned(),
+            aside: String::new(),
         }];
         let laid = axon_tui::transcript::laid_out(
             app.entries(),

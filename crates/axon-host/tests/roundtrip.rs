@@ -79,7 +79,10 @@ impl Client {
 
     async fn submit(&mut self, text: &str) {
         self.writer
-            .write(&UiCommand::SubmitPrompt { text: text.into() })
+            .write(&UiCommand::SubmitPrompt {
+                text: text.into(),
+                aside: String::new(),
+            })
             .await
             .expect("submit");
     }

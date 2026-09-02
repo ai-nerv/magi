@@ -61,6 +61,7 @@ mod tests {
             entry: Entry::User {
                 id: MessageId::new("m1"),
                 text: "hi".into(),
+                aside: String::new(),
             },
         };
         let line = serde_json::to_string(&record).expect("encode");
@@ -77,6 +78,7 @@ mod tests {
             entry: Entry::User {
                 id: MessageId::new("m1"),
                 text: "two\nlines".into(),
+                aside: String::new(),
             },
         };
         let line = serde_json::to_string(&record).expect("encode");

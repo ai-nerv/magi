@@ -266,6 +266,7 @@ mod tests {
         Entry::User {
             id: MessageId::new(text),
             text: text.to_owned(),
+            aside: String::new(),
         }
     }
 
@@ -496,6 +497,7 @@ mod amend_at_tests {
             .append(Entry::User {
                 id: MessageId::new("u1"),
                 text: "hello".into(),
+                aside: String::new(),
             })
             .expect("append");
         journal.append(call(0, false)).expect("append");

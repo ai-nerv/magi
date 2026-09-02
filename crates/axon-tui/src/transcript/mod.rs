@@ -188,9 +188,13 @@ fn said(
     let style = Style::default()
         .bg(colour::message_bg())
         .fg(colour::message_text());
+    // Dark chip, coloured text — the other way round from a tool block, whose name is dark on a
+    // loud background. That difference is the point: a tool block is the one that folds, and
+    // when all three wore the same bright chip on backgrounds three greys apart, half the screen
+    // looked like it had a handle on it. This sits *into* the block instead of on top of it.
     let chip = Style::default()
-        .bg(tag)
-        .fg(colour::message_bg())
+        .bg(colour::tool_bg())
+        .fg(tag)
         .add_modifier(Modifier::BOLD);
     let inner = width.saturating_sub(crate::metric::block_pad() * 2);
     let body = markdown::render(text, inner, style);
@@ -347,6 +351,7 @@ mod tests {
         let entry = Entry::User {
             id: MessageId::new("m1"),
             text: "hello".into(),
+            aside: String::new(),
         };
         let lines = entry_lines(&entry, 20, Detail::Preview);
         let rendered = text_of(&lines);
@@ -362,6 +367,7 @@ mod tests {
         let entry = Entry::User {
             id: MessageId::new("m1"),
             text: "hello".into(),
+            aside: String::new(),
         };
         let rendered = text_of(&entry_lines(&entry, 20, Detail::Preview));
         assert_eq!(rendered[0].trim(), "USER", "{rendered:?}");

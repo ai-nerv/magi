@@ -358,6 +358,7 @@ async fn an_overflow_is_compacted_and_the_turn_carries_on() {
         let mut held = session.lock().await;
         for i in 0..12 {
             held.commit(Entry::User {
+                aside: String::new(),
                 id: axon_proto::MessageId::new(format!("u{i}")),
                 text: format!("message number {i}"),
             })
@@ -419,6 +420,7 @@ async fn a_compacted_session_sends_the_summary_and_not_the_history() {
         let mut held = session.lock().await;
         for i in 0..12 {
             held.commit(Entry::User {
+                aside: String::new(),
                 id: axon_proto::MessageId::new(format!("u{i}")),
                 text: format!("forgotten message {i}"),
             })
@@ -433,6 +435,7 @@ async fn a_compacted_session_sends_the_summary_and_not_the_history() {
         held.commit(Entry::User {
             id: axon_proto::MessageId::new("u99"),
             text: "carry on".into(),
+            aside: String::new(),
         })
         .expect("commit");
     }

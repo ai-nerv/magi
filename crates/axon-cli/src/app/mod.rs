@@ -389,7 +389,31 @@ impl App {
                 }
             }
             HarnessEvent::UserMessage { id, text, .. } => {
-                self.entries.push(Entry::User { id, text });
+                // No aside. It is context for the model and the transcript never shows it, so
+                // there is nothing here for one to be.
+                self.entries.push(Entry::User {
+                    id,
+                    text,
+                    aside: String::new(),
+                });
+            }
+            // Drawn from the session's own stream rather than appended when it landed on the
+            // socket. The UI is where a message arrives and the session is where it *is*: an
+            // entry the UI kept for itself was one the model never saw, so an instance could be
+            // asked a question and sit there until somebody typed at it.
+            HarnessEvent::MessageArrived {
+                who,
+                kin,
+                sort,
+                text,
+                ..
+            } => {
+                self.entries.push(Entry::From {
+                    who,
+                    kin,
+                    sort,
+                    text,
+                });
             }
             // Beginning a message that is already on screen means beginning it *again*: an
             // attempt streamed half an answer, failed, and the retry starts from nothing. So it

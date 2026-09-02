@@ -124,6 +124,7 @@ mod tests {
         let mut reader = FrameReader::new(server);
 
         let sent = UiCommand::SubmitPrompt {
+            aside: String::new(),
             text: "hello".into(),
         };
         writer.write(&sent).await.expect("write");

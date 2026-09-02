@@ -170,6 +170,17 @@ pub enum Entry {
         id: MessageId,
         /// Markdown source.
         text: String,
+        /// Context the model is given with this prompt and nobody is shown.
+        ///
+        /// Naming `$iota-mu` puts facts about that instance in front of the model: who it is,
+        /// how it stands to this session, what has already passed between them. The person
+        /// typed one line and should see one line — pasting the briefing into the transcript
+        /// showed them a wall of text they did not write and could not have wanted.
+        ///
+        /// Journalled, because the model has to still see it on the next turn, and rendered
+        /// nowhere.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        aside: String,
     },
     /// A model response, possibly still streaming.
     Assistant {
@@ -354,6 +365,22 @@ pub enum HarnessEvent {
         /// Markdown source.
         text: String,
     },
+    /// A message from another instance was accepted into the transcript.
+    ///
+    /// The aside on a [`Entry::User`] has no event of its own because nothing on the UI's end
+    /// reads it. This does: it is drawn.
+    MessageArrived {
+        /// Position of this event.
+        cursor: Cursor,
+        /// Who said it, as `project/role/id`.
+        who: String,
+        /// How they stood to this session when it arrived.
+        kin: String,
+        /// What sort of message it is.
+        sort: String,
+        /// What they said.
+        text: String,
+    },
     /// A model response began.
     AssistantStarted {
         /// Position of this event.
@@ -493,6 +520,7 @@ impl HarnessEvent {
         match self {
             Self::SessionSnapshot { cursor, .. }
             | Self::UserMessage { cursor, .. }
+            | Self::MessageArrived { cursor, .. }
             | Self::AssistantStarted { cursor, .. }
             | Self::AssistantDelta { cursor, .. }
             | Self::AssistantEnded { cursor, .. }
@@ -524,6 +552,35 @@ pub enum UiCommand {
     SubmitPrompt {
         /// Markdown source.
         text: String,
+        /// Context for the model that is not part of what the person typed.
+        ///
+        /// See [`Entry::User::aside`]. Separate on the wire so the session can journal the two
+        /// apart: one is the conversation, the other is what the harness knew at the time.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        aside: String,
+    },
+    /// A message arrived from another instance.
+    ///
+    /// The UI binds the socket other instances reach this one at, so a message lands there and
+    /// nowhere else — and the session, which owns the transcript and runs the turns, is on the
+    /// other side of this command. Without it an arriving message reached the screen and
+    /// stopped: the model never saw it, so nothing ever answered one.
+    Arrived {
+        /// Who said it, as `project/role/id`.
+        who: String,
+        /// How they stand to this session, in one word.
+        kin: String,
+        /// What sort of message it is.
+        sort: String,
+        /// What they said.
+        text: String,
+        /// Whether it should start a turn rather than wait to be read.
+        ///
+        /// The sender decides, by which verb they used. A `note` waits; being asked a question,
+        /// called for, or told something has gone wrong does not — that is the whole difference
+        /// between the sorts, and a message that only ever waited would make them a wording
+        /// choice.
+        wake: bool,
     },
     /// Interrupt the running turn.
     Interrupt,

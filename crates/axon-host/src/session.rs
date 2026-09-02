@@ -363,7 +363,10 @@ fn grown(before: &str, now: &str) -> String {
 /// The events that reconstruct one entry from nothing.
 fn events_for(cursor: Cursor, entry: &Entry) -> Vec<HarnessEvent> {
     match entry {
-        Entry::User { id, text } => vec![HarnessEvent::UserMessage {
+        // The aside is deliberately not replayed: it is context for the model, the UI never
+        // renders it, and putting it on the wire would send every attach a copy of something
+        // nothing on that end reads.
+        Entry::User { id, text, .. } => vec![HarnessEvent::UserMessage {
             cursor,
             id: id.clone(),
             text: text.clone(),
@@ -400,11 +403,21 @@ fn events_for(cursor: Cursor, entry: &Entry) -> Vec<HarnessEvent> {
             }
             out
         }
-        // Never journalled, so never replayed. A UI makes its own and the daemon has none to
+        // Never journalled, so never replayed. A UI makes its own and the session has none to
         // give: this arm exists because the type allows one, not because one arrives.
-        // Neither is journalled: both are made by a UI, and one of them arrived on a socket
-        // this daemon has never seen.
-        Entry::Notice { .. } | Entry::From { .. } => Vec::new(),
+        Entry::Notice { .. } => Vec::new(),
+        Entry::From {
+            who,
+            kin,
+            sort,
+            text,
+        } => vec![HarnessEvent::MessageArrived {
+            cursor,
+            who: who.clone(),
+            kin: kin.clone(),
+            sort: sort.clone(),
+            text: text.clone(),
+        }],
         Entry::Branch { id, keeps } => vec![HarnessEvent::Branched {
             cursor,
             id: id.clone(),
@@ -464,6 +477,7 @@ mod tests {
         Entry::User {
             id: MessageId::new(text),
             text: text.to_owned(),
+            aside: String::new(),
         }
     }
 

@@ -65,7 +65,11 @@ impl Recording {
                 // answer has no place in one.
                 HarnessEvent::PermissionAsked { .. } => {}
                 HarnessEvent::UserMessage { id, text, .. } => {
-                    entries.push(Entry::User { id, text });
+                    entries.push(Entry::User {
+                        id,
+                        text,
+                        aside: String::new(),
+                    });
                 }
                 HarnessEvent::AssistantStarted { id, .. } => entries.push(Entry::Assistant {
                     id,
@@ -118,6 +122,18 @@ impl Recording {
                 // Not part of the transcript: a refusal is an answer to something the UI
                 // asked, and a replay is rebuilding what the session *is*.
                 HarnessEvent::Refused { .. } | HarnessEvent::ModelChanged { .. } => {}
+                HarnessEvent::MessageArrived {
+                    who,
+                    kin,
+                    sort,
+                    text,
+                    ..
+                } => entries.push(Entry::From {
+                    who,
+                    kin,
+                    sort,
+                    text,
+                }),
                 HarnessEvent::Branched { id, keeps, .. } => {
                     entries.push(Entry::Branch { id, keeps });
                 }

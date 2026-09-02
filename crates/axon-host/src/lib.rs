@@ -196,9 +196,28 @@ async fn connection(
         tokio::select! {
             command = incoming.recv() => {
                 match command {
-                    Some(UiCommand::SubmitPrompt { text }) => {
+                    Some(UiCommand::SubmitPrompt { text, aside }) => {
                         let held = worker.read().await.clone();
-                        submit(&session, text, held, catalog).await?;
+                        submit(&session, Entry::User {
+                            id: MessageId::new(format!("u{}", session.lock().await.cursor().next().0)),
+                            text,
+                            aside,
+                        }, held, catalog).await?;
+                    }
+                    Some(UiCommand::Arrived { who, kin, sort, text, wake }) => {
+                        let held = worker.read().await.clone();
+                        let arrived = Entry::From { who, kin, sort, text };
+                        if wake {
+                            // A turn, the same way a prompt starts one. This is what makes a
+                            // message a *message*: without it the entry landed in the transcript
+                            // and nothing read it, so an instance could be asked a question and
+                            // would sit there until somebody typed at it.
+                            submit(&session, arrived, held, catalog).await?;
+                        } else {
+                            // Committed and no more. A note is something to have seen by the
+                            // time you next answer, not a reason to start answering.
+                            session.lock().await.commit(arrived)?;
+                        }
                     }
                     Some(UiCommand::DeclareNeeds) => {
                         let held = worker.read().await.clone();
@@ -438,14 +457,19 @@ pub fn no_model(catalog: &crate::catalog::Catalog) -> String {
     said
 }
 
-/// Accept a prompt and run a turn.
+/// Journal what opened a turn, and run it.
 ///
-/// The prompt is journalled before the provider is called, so an interrupted turn still shows
-/// what was asked. Without a backend the refusal is a well-formed assistant entry rather than
-/// an error out of band — the transcript stays uniform and the UI needs no second path.
+/// `opening` is what was said and by whom: a prompt somebody typed, or a message another
+/// instance sent. Both start a turn the same way and for the same reason — something addressed
+/// to this session arrived and wants an answer — so they are one path rather than two that
+/// would drift.
+///
+/// It is journalled before the provider is called, so an interrupted turn still shows what was
+/// asked. Without a backend the refusal is a well-formed assistant entry rather than an error
+/// out of band — the transcript stays uniform and the UI needs no second path.
 async fn submit(
     session: &Arc<Mutex<Session>>,
-    text: String,
+    opening: Entry,
     worker: Option<Arc<worker::Worker>>,
     catalog: &crate::catalog::Catalog,
 ) -> Result<(), HostError> {
@@ -454,8 +478,7 @@ async fn submit(
         // A stop belongs to the turn it interrupted. Left set, it would cancel the prompt typed
         // to replace the one the user just stopped.
         held.cancel().clear();
-        let id = MessageId::new(format!("u{}", held.cursor().next().0));
-        held.commit(Entry::User { id, text })?;
+        held.commit(opening)?;
     }
 
     let Some(worker) = worker else {

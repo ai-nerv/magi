@@ -48,6 +48,7 @@ fn a_conversation_renders_the_way_pi_lays_it_out() {
         Entry::User {
             id: MessageId::new("m1"),
             text: "run the tests".into(),
+            aside: String::new(),
         },
         Entry::Assistant {
             id: MessageId::new("a1"),
@@ -140,6 +141,7 @@ fn every_row_of_a_user_box_spans_the_full_width() {
     let entry = Entry::User {
         id: MessageId::new("m1"),
         text: "short".into(),
+        aside: String::new(),
     };
     for line in transcript::entry_lines(&entry, 30, transcript::Detail::Preview) {
         let width: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
@@ -169,7 +171,11 @@ fn the_recorded_sample_replays_into_a_transcript() {
         cursor = event.cursor();
 
         match event {
-            HarnessEvent::UserMessage { id, text, .. } => entries.push(Entry::User { id, text }),
+            HarnessEvent::UserMessage { id, text, .. } => entries.push(Entry::User {
+                id,
+                text,
+                aside: String::new(),
+            }),
             HarnessEvent::AssistantStarted { id, .. } => entries.push(Entry::Assistant {
                 id,
                 text: String::new(),
@@ -253,7 +259,11 @@ fn visual() {
         }
         let event: HarnessEvent = serde_json::from_str(line).expect("event");
         match event {
-            HarnessEvent::UserMessage { id, text, .. } => entries.push(Entry::User { id, text }),
+            HarnessEvent::UserMessage { id, text, .. } => entries.push(Entry::User {
+                id,
+                text,
+                aside: String::new(),
+            }),
             HarnessEvent::AssistantStarted { id, .. } => entries.push(Entry::Assistant {
                 id,
                 text: String::new(),

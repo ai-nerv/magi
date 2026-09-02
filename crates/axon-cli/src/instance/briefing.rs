@@ -25,16 +25,18 @@ use crate::app::App;
 /// conversation.
 const RECALLED: usize = 6;
 
-/// Add what the model needs in order to act on the instances a prompt names.
+/// What the model needs in order to act on the instances a prompt names.
 ///
-/// Unchanged when it names none, which is almost every prompt.
+/// Empty when it names none, which is almost every prompt — and empty is what makes this an
+/// aside rather than an edit: nothing is added to the prompt, so there is nothing to strip back
+/// out and no way for the two to disagree about where one ends.
 #[must_use]
-pub fn augment(text: &str, app: &App) -> String {
+pub fn about(text: &str, app: &App) -> String {
     let named = axon_tui::trigger::named(text, axon_tui::trigger::Trigger::Instance);
     if named.is_empty() {
-        return text.to_owned();
+        return String::new();
     }
-    let mut said = vec![text.to_owned(), String::new(), "---".to_owned()];
+    let mut said = Vec::new();
     for name in named {
         let Some(address) = Address::read(&name) else {
             said.push(format!(
@@ -115,27 +117,29 @@ mod tests {
     }
 
     #[test]
-    fn a_prompt_that_names_nobody_is_left_exactly_as_it_was() {
-        // Almost every prompt. Anything appended here is context somebody pays for.
+    fn a_prompt_that_names_nobody_produces_nothing_at_all() {
+        // Almost every prompt. Anything here is context somebody pays for, and an empty aside
+        // is what keeps a prompt that named nobody indistinguishable from one typed before any
+        // of this existed.
         let app = app();
         for text in ["fix the parser", "look at @src/main.rs", "it cost me 20$"] {
-            assert_eq!(augment(text, &app), text, "{text:?} was rewritten");
+            assert!(about(text, &app).is_empty(), "{text:?} produced an aside");
         }
     }
 
     #[test]
-    fn naming_one_keeps_the_prompt_and_adds_to_it() {
-        // The prompt is the model's to answer. Naming an instance is a fact given to it, not a
-        // replacement for what somebody typed.
-        let said = augment("tell $beta-nu to stop", &app());
-        assert!(said.starts_with("tell $beta-nu to stop"), "{said}");
+    fn naming_one_says_what_is_known_about_it_and_nothing_of_the_prompt() {
+        // The prompt is the model's to answer, and the person's to read. This goes beside it:
+        // spliced onto the end, it put a page of facts into the transcript under their name.
+        let said = about("tell $beta-nu to stop", &app());
+        assert!(!said.contains("tell $beta-nu to stop"), "{said}");
         assert!(said.contains("axon/main/beta-nu"), "{said}");
     }
 
     #[test]
     fn it_names_the_tool_rather_than_doing_anything() {
         // The point of the whole file. The model decides what "tell it to stop" meant.
-        let said = augment("tell $beta-nu to stop", &app());
+        let said = about("tell $beta-nu to stop", &app());
         assert!(said.contains(super::super::TOOL), "{said}");
     }
 
@@ -143,7 +147,7 @@ mod tests {
     fn it_says_how_the_named_one_stands_to_this_session() {
         // Otherwise the model tries, is refused, and spends a turn finding out something the
         // harness knew before it asked.
-        let said = augment("ask $beta-nu", &app());
+        let said = about("ask $beta-nu", &app());
         assert!(said.contains("another instance's main"), "{said}");
         assert!(said.contains("not stopped"), "{said}");
     }
@@ -155,7 +159,7 @@ mod tests {
         let mut app = app();
         app.identity.project = "somewhere-with-no-runtime-dir".to_owned();
         app.parent = Some("beta-nu".to_owned());
-        let said = augment("ask $other/tau-chi", &app);
+        let said = about("ask $other/tau-chi", &app);
         assert!(said.contains("cannot reach"), "{said}");
     }
 
@@ -167,7 +171,7 @@ mod tests {
         for text in ["first", "second", "third"] {
             app.inbox.push(Message::new("axon/main/beta-nu", text));
         }
-        let said = augment("what did $beta-nu want", &app);
+        let said = about("what did $beta-nu want", &app);
         let first = said.find("first").expect("the first is there");
         let third = said.find("third").expect("the third is there");
         assert!(first < third, "they came back backwards: {said}");
@@ -180,7 +184,7 @@ mod tests {
             .push(Message::new("axon/main/beta-nu", "from beta"));
         app.inbox
             .push(Message::new("axon/main/gamma-xi", "from gamma"));
-        let said = augment("what did $beta-nu want", &app);
+        let said = about("what did $beta-nu want", &app);
         assert!(said.contains("from beta"), "{said}");
         assert!(!said.contains("from gamma"), "it leaked another's: {said}");
     }
@@ -193,14 +197,14 @@ mod tests {
             app.inbox
                 .push(Message::new("axon/main/beta-nu", &format!("message {at}")));
         }
-        let said = augment("what did $beta-nu want", &app);
+        let said = about("what did $beta-nu want", &app);
         assert!(!said.contains("message 0"), "it pasted the whole exchange");
         assert!(said.contains("message 49"), "it dropped the newest");
     }
 
     #[test]
     fn a_name_nothing_can_have_is_said_to_be_one() {
-        let said = augment("ask $a/b/c/d about it", &app());
+        let said = about("ask $a/b/c/d about it", &app());
         assert!(said.contains("not a name"), "{said}");
     }
 }

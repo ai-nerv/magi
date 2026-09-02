@@ -160,7 +160,12 @@ pub async fn run(
     // Sent once the connection task exists, not before: the channel buffers it, and it reaches
     // the session after the attach that the connection loop opens with.
     if let Some(text) = prompt {
-        let _ = command_tx.send(UiCommand::SubmitPrompt { text }).await;
+        let _ = command_tx
+            .send(UiCommand::SubmitPrompt {
+                text,
+                aside: String::new(),
+            })
+            .await;
     }
 
     let mut dirty = true;
@@ -237,8 +242,16 @@ pub async fn run(
                                 // and that there is a tool for reaching it -- axon delivering
                                 // the message itself would be the harness deciding what the
                                 // model meant by "tell", which is the model's job.
-                                let text = crate::instance::briefing::augment(&text, &app);
-                                let _ = command_tx.send(UiCommand::SubmitPrompt { text }).await;
+                                //
+                                // Beside the prompt, not appended to it. It used to be spliced
+                                // onto the end under a rule, so typing "ask $iota-mu about the
+                                // parser" put a page of facts about `iota-mu` into the
+                                // transcript under your own name. You typed one line; you
+                                // should see one line.
+                                let aside = crate::instance::briefing::about(&text, &app);
+                                let _ = command_tx
+                                    .send(UiCommand::SubmitPrompt { text, aside })
+                                    .await;
                                 dirty = true;
                             }
                             Action::Command(text) => {
@@ -438,12 +451,13 @@ pub async fn run(
                     if stopped.try_recv().is_ok() {
                         break;
                     }
-                    // Onto the transcript as well as into the inbox. A message that only
-                    // reached a queue is one nobody knew about until they thought to ask, and
-                    // for an `attention` — the one sort allowed to interrupt — that is the
-                    // whole of the failure.
+                    // Handed to the session, not drawn here. The UI binds the socket other
+                    // instances reach this one at, so a message lands in this process — but the
+                    // transcript and the turns are the session's, and an entry the UI appended
+                    // for itself was one the model never saw. An instance could be asked a
+                    // question and would sit there until somebody typed at it.
                     while let Ok(message) = arrived.try_recv() {
-                        app.received(message);
+                        let _ = command_tx.send(app.received(message)).await;
                     }
                     let _ = about.send(crate::instance::answering::About {
                         me: app.identity.clone(),

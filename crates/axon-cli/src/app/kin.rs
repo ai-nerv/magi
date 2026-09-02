@@ -39,23 +39,28 @@ impl App {
     /// only reached a queue is a message nobody knew about until they thought to ask, which for
     /// an `attention` is the whole of the failure. The inbox is so the model can act on it: it
     /// is what the `agent` tool reads, and reading a message is not the same as answering it.
-    pub fn received(&mut self, message: crate::instance::wire::Message) {
+    pub fn received(&mut self, message: crate::instance::wire::Message) -> axon_proto::UiCommand {
         let kin = crate::identity::Identity::read(&message.from)
             .map_or(crate::instance::policy::Relation::Elsewhere, |who| {
                 self.standing().stands(&who)
             });
-        self.entries.push(axon_proto::Entry::From {
+        let sort = message.sort;
+        let command = axon_proto::UiCommand::Arrived {
             who: message.from.clone(),
             // Stamped now rather than looked up when it is drawn: it was true when the message
             // arrived, and a session that has since forked would redraw the whole transcript
             // with relations that did not hold at the time.
             kin: kin.word().to_owned(),
-            sort: serde_json::to_value(message.sort)
+            sort: serde_json::to_value(sort)
                 .ok()
                 .and_then(|sort| sort.as_str().map(ToOwned::to_owned))
                 .unwrap_or_default(),
             text: message.text.clone(),
-        });
+            // A question is not answered by being filed, and being called for is not answered by
+            // being filed either. Those start a turn; a note waits to be read.
+            wake: sort.interrupts() || sort.expects_an_answer(),
+        };
         self.inbox.push(message);
+        command
     }
 }

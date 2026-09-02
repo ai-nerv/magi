@@ -59,7 +59,10 @@ pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
         anyhow::bail!("the session did not open with a snapshot");
     }
     writer
-        .write(&UiCommand::SubmitPrompt { text: prompt })
+        .write(&UiCommand::SubmitPrompt {
+            text: prompt,
+            aside: String::new(),
+        })
         .await?;
 
     let mut text = String::new();
