@@ -43,6 +43,7 @@ pub fn list(standing: &Standing) -> String {
             me.project
         );
     }
+    let me_named = standing.identity();
     let rows: Vec<String> = there
         .into_iter()
         .map(|(them, relation)| {
@@ -51,10 +52,21 @@ pub fn list(standing: &Standing) -> String {
             } else {
                 ""
             };
+            let named = crate::identity::Identity {
+                project: them.project.clone(),
+                id: them.id.clone(),
+            };
+            // Asked rather than assumed. A socket file outlives the process that made it, so
+            // the directory says who *was* here — and a model that sends to a name it read off
+            // a stale entry is told the message landed when nothing received it.
+            let alive = if crate::instance::asking::answers(&named, &me_named) {
+                ""
+            } else {
+                " — not answering; its socket is what a crash left behind"
+            };
             format!(
-                "- `{}/{}` — {}{stoppable}",
-                them.project,
-                them.id,
+                "- `{}` — {}{stoppable}{alive}",
+                named.full(),
                 relation.named()
             )
         })

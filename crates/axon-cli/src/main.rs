@@ -109,6 +109,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Some(Command::Ext(Ext::Shell)) => shell::run(),
+        Some(Command::Ext(Ext::Agent)) => instance::peer::run(),
         Some(Command::Ext(Ext::Lua { file })) => ext_lua::run(&file),
         Some(Command::Auth(AuthCommand::Login { provider })) => auth::login(&provider).await,
         Some(Command::Auth(AuthCommand::Logout { provider })) => auth::logout(&provider),
@@ -166,12 +167,20 @@ async fn main() -> Result<()> {
             // same process runs every configuration file again and repeats every refusal it
             // printed the first time.
             let loaded = crate::config::load().ok();
-            let environ = loaded
+            let mut environ = loaded
                 .as_ref()
                 .map(crate::config::environ)
                 .unwrap_or_default();
+            // Named here rather than in the UI, because the daemon is started a line below and
+            // everything it spawns inherits this. A tool peer is the only thing that can reach
+            // other instances — it needs the directory, and the daemon does not have one — and
+            // the one fact it cannot work out for itself is which session it belongs to.
+            let identity =
+                identity::Identity::here(loaded.as_ref().and_then(|l| l.config.string("project")));
+            environ.insert(instance::PROJECT.to_owned(), identity.project.clone());
+            environ.insert(instance::ID.to_owned(), identity.id.clone());
             daemon::ensure(&socket, cli.sessions.as_deref(), cli.resume, &environ).await?;
-            driver::run(&socket, cli.prompt, cli.sessions, loaded, environ).await
+            driver::run(&socket, cli.prompt, cli.sessions, loaded, environ, identity).await
         }
     }
 }
@@ -282,6 +291,11 @@ enum AuthCommand {
 enum Ext {
     /// A persistent shell, spoken to over the tool protocol.
     Shell,
+    /// The tool that reaches other axon instances.
+    ///
+    /// A process rather than a function in the daemon's VM, because it needs to know which
+    /// instance this session is -- and only a process spawned under it inherits that.
+    Agent,
     /// Tools written in Lua, served from their own process.
     ///
     /// The second implementation of the protocol, and the one that proves it is a protocol:

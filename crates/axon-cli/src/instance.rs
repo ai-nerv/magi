@@ -34,7 +34,10 @@
 //! ever held. A session nobody started holds none, so nothing can stop it.
 
 pub mod answering;
+pub mod asking;
 pub mod briefing;
+pub mod framing;
+pub mod peer;
 pub mod policy;
 pub mod serving;
 pub mod tool;
@@ -76,6 +79,64 @@ pub fn token() -> Option<String> {
     std::env::var(TOKEN)
         .ok()
         .filter(|secret| !secret.is_empty())
+}
+
+/// The two variables that tell a spawned process which session it belongs to.
+///
+/// Put into the daemon's environment by the UI that bound the socket, and inherited from there
+/// by every tool peer. It is the one thing a separate process cannot work out for itself: the
+/// identity is made when a UI starts, the daemon outlives UIs, and nothing on disk says which
+/// of several sessions in a project a given process was spawned under.
+pub const PROJECT: &str = "AXON_PROJECT";
+/// The other half of [`PROJECT`].
+pub const ID: &str = "AXON_ID";
+
+/// Which session a spawned process belongs to, from its environment.
+///
+/// `None` outside a session — `axon ext agent` run by hand from a shell, which should say so
+/// rather than invent a name and send messages signed with it.
+#[must_use]
+pub fn mine() -> Option<Identity> {
+    let project = std::env::var(PROJECT).ok().filter(|it| !it.is_empty())?;
+    let id = std::env::var(ID).ok().filter(|it| !it.is_empty())?;
+    Some(Identity { project, id })
+}
+
+/// What `me` started, read off the project directory.
+///
+/// Not from anything the session remembers: a session that restarted forgot, and a child that
+/// declined to leave its note would have made itself unstoppable by forgetting who its parent
+/// was. The directory is the one place both facts survive.
+#[must_use]
+pub fn children(me: &Identity) -> Vec<String> {
+    listening(&me.project)
+        .into_iter()
+        .filter(|id| *id != me.id)
+        .filter(|id| whom(&me.project, id).parent.as_deref() == Some(me.id.as_str()))
+        .map(|id| format!("{}/{id}", me.project))
+        .collect()
+}
+
+/// What has arrived for `me`, asked of `me`'s own socket.
+///
+/// A separate process cannot see the UI's memory, and the inbox lives there. So it asks — which
+/// works because a session is allowed to ask itself anything, and because the answer then comes
+/// from the one copy that is actually current rather than from a snapshot taken at spawn.
+///
+/// Empty when nothing answers, which is the ordinary case for a peer started outside a session.
+#[must_use]
+pub fn inbox_of(me: &Identity) -> Vec<wire::Message> {
+    let Ok(mut held) = asking::Held::to(me, me) else {
+        return Vec::new();
+    };
+    let Ok(reply) = held.call("inbox", Vec::new()) else {
+        return Vec::new();
+    };
+    reply
+        .result
+        .first()
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or_default()
 }
 
 /// What a caller is asking to do.

@@ -320,3 +320,40 @@ do -- memo
     end,
   })
 end
+
+do -- agent
+  -- Talking to the other axons in this project. A peer process rather than a function in this
+  -- VM, unlike hexe and oslo -- and for a reason worth writing down, because the shape looks
+  -- inconsistent otherwise.
+  --
+  -- Those two ask a *different* program about itself, and any process can do that. This one has
+  -- to know which axon it is speaking as, and that is not something the daemon knows: the name
+  -- is made when a UI starts and a daemon outlives UIs. A peer is spawned by the daemon and
+  -- inherits its environment, which carries the name down from the UI that bound the socket.
+  --
+  -- The peer declares its own name, description and parameters on connect, so the vocabulary is
+  -- written once in Rust rather than copied here to drift out of date.
+  axon.tool("agent", {
+    description = [[
+  Talk to the other axon instances running in this project: ask what they are doing, send them
+  work, answer their questions, and stop the ones this session started.
+
+  Call it with `verb: "help"` first. `list` says who is actually there.]],
+
+    parameters = {
+      type = "object",
+      properties = {
+        verb = { type = "string", description = "What to do. `help` lists them all." },
+      },
+      required = { "verb" },
+    },
+
+    transport = {
+      kind = "process",
+      -- The same executable under another name, like `shell`. `axon.self` is the binary that is
+      -- running: naming it "axon" and hoping PATH agrees finds whichever copy the shell sees.
+      command = axon.self,
+      args = { "ext", "agent" },
+    },
+  })
+end

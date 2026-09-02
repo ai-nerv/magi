@@ -10,6 +10,7 @@
 //! a crash.
 
 use super::answering::{About, Then, answer};
+use super::framing;
 use super::policy::Whom;
 use super::wire::{Call, Message, Reply};
 use super::{inside, whom};
@@ -87,18 +88,16 @@ pub async fn serve(path: &Path, serving: Serving) -> std::io::Result<()> {
 /// a client that holds a connection — the obvious way to write one — dies on its *second* call
 /// with a broken pipe.
 async fn talk(stream: tokio::net::UnixStream, serving: Serving) -> std::io::Result<()> {
-    let (read, write) = stream.into_split();
-    let mut reader = axon_ipc::FrameReader::new(read);
-    let mut writer = axon_ipc::FrameWriter::new(write);
+    let (mut reader, mut writer) = stream.into_split();
 
     loop {
-        let call: Call = match tokio::time::timeout(IDLE, reader.read()).await {
+        let call: Call = match tokio::time::timeout(IDLE, framing::read(&mut reader)).await {
             Ok(Ok(call)) => call,
             // A malformed frame is answered rather than dropped, so the caller sees axon's
             // error instead of a transport one. Then the connection ends: a stream that has
             // lost its framing cannot be resynchronised.
             Ok(Err(why)) => {
-                let _ = writer.write(&Reply::refused(why.to_string())).await;
+                let _ = framing::write(&mut writer, &Reply::refused(why.to_string())).await;
                 return Ok(());
             }
             Err(_) => return Ok(()),
@@ -109,10 +108,7 @@ async fn talk(stream: tokio::net::UnixStream, serving: Serving) -> std::io::Resu
         // with the tree as it stood when it was opened.
         let caller = placed(call.from.as_deref(), &about);
         let (reply, then) = answer(&call, &about, caller.as_ref());
-        writer
-            .write(&reply)
-            .await
-            .map_err(|why| std::io::Error::other(why.to_string()))?;
+        framing::write(&mut writer, &reply).await?;
         match then {
             Then::Nothing => {}
             Then::Keep(message) => {
@@ -159,4 +155,304 @@ fn placed(from: Option<&str>, about: &About) -> Option<Whom> {
         });
     }
     Some(whom(project, id))
+}
+
+/// Two instances, one socket, and a message that actually arrives.
+///
+/// Everything else about this surface is decided without a socket, on purpose — the walls, the
+/// vocabulary, the refusals. This is the one thing that cannot be: that the client half and the
+/// server half agree about what goes on the wire.
+///
+/// They did not, once. The socket was framed with `axon_ipc` — CBOR inside an envelope carrying
+/// a protocol version — and documented as the family's four-byte length and a JSON body. Both
+/// ends of axon agreed with each other perfectly, every test passed, and no sibling tool could
+/// have said a word to it. That failure is invisible from inside the program that owns it,
+/// which is why these bind a real socket.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::Identity;
+    use crate::instance::asking::Held;
+    use crate::instance::wire::Sort;
+    use std::time::Duration;
+
+    /// A project nothing else is using.
+    ///
+    /// The runtime directory is shared with whatever axons the person has open, and the whole
+    /// point of a project directory is that one project cannot see another's.
+    /// One per test, because they run at once and each clears up after itself. Sharing a
+    // project directory made every test tear down the sockets the others were using.
+    fn project(tag: &str) -> String {
+        format!("axon-test-{}-{tag}", std::process::id())
+    }
+
+    fn named(tag: &str, id: &str) -> Identity {
+        Identity {
+            project: project(tag),
+            id: id.to_owned(),
+        }
+    }
+
+    fn tidy(tag: &str) {
+        let _ = std::fs::remove_dir_all(crate::instance::home(&project(tag)));
+    }
+
+    /// What a bound session hands back, held for as long as the test needs it.
+    struct Bound {
+        arrived: mpsc::Receiver<Message>,
+        /// Dropping this closes the channel the socket reads the session's state from, and
+        /// every call would then answer with whatever was left behind.
+        _about: tokio::sync::watch::Sender<About>,
+        _stopped: mpsc::Receiver<()>,
+    }
+
+    async fn listening(me: &Identity) -> Bound {
+        let (about, about_rx) = tokio::sync::watch::channel(About {
+            me: me.clone(),
+            parent: None,
+            token: None,
+            busy: false,
+            working_for: 0,
+            inbox: Vec::new(),
+        });
+        let (arrived_tx, arrived) = mpsc::channel(8);
+        let (stopped_tx, stopped) = mpsc::channel(1);
+        let at = crate::instance::listening_at(me);
+        tokio::spawn(async move {
+            let _ = serve(
+                &at,
+                Serving {
+                    about: about_rx,
+                    arrived: arrived_tx,
+                    stopped: stopped_tx,
+                },
+            )
+            .await;
+        });
+        // The bind is a few awaits away and the first dial would otherwise race it.
+        let at = crate::instance::listening_at(me);
+        for _ in 0..100 {
+            if Held::at(&at, me).is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        Bound {
+            arrived,
+            _about: about,
+            _stopped: stopped,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_message_sent_by_one_instance_arrives_at_another() {
+        let them = named("arrives", "beta-nu");
+        let me = named("arrives", "alpha-rho");
+        let mut bound = listening(&them).await;
+
+        // From a blocking thread, because that is where it happens for real: the client half is
+        // a tool peer, which has no runtime and wants none.
+        let (they, i) = (them.clone(), me.clone());
+        let sent = tokio::task::spawn_blocking(move || {
+            let mut held = Held::to(&they, &i).expect("it is listening");
+            held.call(
+                "tell",
+                vec![
+                    serde_json::json!("the parser is done"),
+                    serde_json::json!("attention"),
+                    serde_json::json!(null),
+                ],
+            )
+            .expect("answered")
+        })
+        .await
+        .expect("the thread finished");
+
+        assert!(sent.ok, "{sent:?}");
+        let message = tokio::time::timeout(Duration::from_secs(5), bound.arrived.recv())
+            .await
+            .expect("it arrived")
+            .expect("the channel is open");
+        assert_eq!(message.text, "the parser is done");
+        // Never from an argument. A message that could name its own sender is one anybody can
+        // forge into anybody's inbox.
+        assert_eq!(message.from, me.full());
+        assert_eq!(message.sort, Sort::Attention);
+        assert!(message.sort.interrupts());
+        tidy("arrives");
+    }
+
+    #[tokio::test]
+    async fn one_connection_serves_several_calls() {
+        // The family's guidance names this one: a client that holds a connection is the obvious
+        // way to write one, and against a server that closes after replying it dies on its
+        // *second* call with a broken pipe.
+        let them = named("held", "gamma-xi");
+        let me = named("held", "delta-pi");
+        let _bound = listening(&them).await;
+
+        let (they, i) = (them.clone(), me.clone());
+        let answers = tokio::task::spawn_blocking(move || {
+            let mut held = Held::to(&they, &i).expect("it is listening");
+            ["verbs", "identity", "status", "identity"]
+                .into_iter()
+                .map(|verb| held.call(verb, Vec::new()).expect("answered"))
+                .collect::<Vec<_>>()
+        })
+        .await
+        .expect("the thread finished");
+
+        for (at, reply) in answers.iter().enumerate() {
+            assert!(reply.ok, "call {at} failed: {reply:?}");
+            assert_eq!(reply.n, reply.result.len(), "call {at}");
+        }
+        assert_eq!(answers[1].result[0]["id"], them.id);
+        tidy("held");
+    }
+
+    #[tokio::test]
+    async fn a_main_refuses_a_stop_from_another_main_at_the_wall() {
+        // Two gates stand between a caller and a stop, and this is the outer one: nobody
+        // started this session, so no relation makes the caller its parent and the secret is
+        // never even looked at.
+        let them = named("wall", "epsilon-tau");
+        let me = named("wall", "zeta-nu");
+        let _bound = listening(&them).await;
+
+        let (they, i) = (them.clone(), me.clone());
+        let reply = tokio::task::spawn_blocking(move || {
+            let mut held = Held::to(&they, &i).expect("it is listening");
+            held.call_with("stop", Vec::new(), "guessed")
+                .expect("answered")
+        })
+        .await
+        .expect("the thread finished");
+
+        assert!(!reply.ok, "a stop went through: {reply:?}");
+        let why = reply.error.unwrap_or_default();
+        assert!(
+            why.contains("only the session that started one may stop it"),
+            "it did not say why: {why}"
+        );
+        tidy("wall");
+    }
+
+    #[tokio::test]
+    async fn claiming_to_be_the_parent_is_not_enough_to_stop_a_child() {
+        // The inner gate, and the whole reason there is a secret. Every session in a project
+        // runs as one user, so any process here can connect calling itself the parent — and the
+        // directory, which is what decides relations, will agree with it. What it cannot do is
+        // produce the secret that session was started with.
+        let them = named("secret", "iota-mu");
+        let me = named("secret", "kappa-rho");
+        let mut about = About {
+            me: them.clone(),
+            parent: Some(me.id.clone()),
+            token: Some("the-real-one".to_owned()),
+            busy: false,
+            working_for: 0,
+            inbox: Vec::new(),
+        };
+        // The note a child leaves beside its socket, so the far end reads the caller as its
+        // parent rather than as a stranger. Written by hand here; a session writes its own.
+        std::fs::create_dir_all(crate::instance::home(&project("secret")))
+            .expect("a project directory");
+        std::fs::write(crate::instance::kin_at(&them), &me.id).expect("the note");
+
+        let (about_tx, about_rx) = tokio::sync::watch::channel(about.clone());
+        about.busy = false;
+        let (arrived_tx, _arrived) = mpsc::channel(8);
+        let (stopped_tx, mut stopped) = mpsc::channel(1);
+        let at = crate::instance::listening_at(&them);
+        tokio::spawn(async move {
+            let _ = serve(
+                &at,
+                Serving {
+                    about: about_rx,
+                    arrived: arrived_tx,
+                    stopped: stopped_tx,
+                },
+            )
+            .await;
+        });
+        let at = crate::instance::listening_at(&them);
+        for _ in 0..100 {
+            if Held::at(&at, &me).is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let _keep = about_tx;
+
+        let (they, i) = (them.clone(), me.clone());
+        let (guessed, right) = tokio::task::spawn_blocking(move || {
+            let mut held = Held::to(&they, &i).expect("it is listening");
+            (
+                held.call_with("stop", Vec::new(), "guessed")
+                    .expect("answered"),
+                held.call_with("stop", Vec::new(), "the-real-one")
+                    .expect("answered"),
+            )
+        })
+        .await
+        .expect("the thread finished");
+
+        assert!(!guessed.ok, "a guess stopped it: {guessed:?}");
+        assert!(
+            guessed.error.unwrap_or_default().contains("secret"),
+            "and it did not say what was wrong"
+        );
+        assert!(
+            right.ok,
+            "the parent could not stop its own child: {right:?}"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), stopped.recv())
+                .await
+                .expect("the session was told")
+                .is_some()
+        );
+        tidy("secret");
+    }
+
+    #[tokio::test]
+    async fn a_sibling_tool_speaking_the_family_shape_is_understood() {
+        // Hand-written frames, the way anything that is not axon would send them. This is the
+        // test the encoding bug would have failed, and the only one that could have.
+        let them = named("sibling", "theta-mu");
+        let _bound = listening(&them).await;
+        let at = crate::instance::listening_at(&them);
+
+        let asked = tokio::task::spawn_blocking(move || {
+            use std::io::{Read, Write};
+            let mut sock = std::os::unix::net::UnixStream::connect(&at).expect("connected");
+            sock.set_read_timeout(Some(Duration::from_secs(5)))
+                .expect("a timeout");
+            ["verbs", "status"]
+                .into_iter()
+                .map(|verb| {
+                    let body = format!(r#"{{"call":"{verb}"}}"#);
+                    let mut frame = u32::try_from(body.len())
+                        .expect("fits")
+                        .to_be_bytes()
+                        .to_vec();
+                    frame.extend_from_slice(body.as_bytes());
+                    sock.write_all(&frame).expect("wrote");
+                    let mut header = [0_u8; 4];
+                    sock.read_exact(&mut header).expect("read a header");
+                    let mut answer = vec![0_u8; u32::from_be_bytes(header) as usize];
+                    sock.read_exact(&mut answer).expect("read a body");
+                    serde_json::from_slice::<serde_json::Value>(&answer).expect("it is JSON")
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .expect("the thread finished");
+
+        assert_eq!(asked[0]["ok"], true, "verbs answers anybody: {}", asked[0]);
+        assert!(asked[0]["result"].is_array(), "and in the family's shape");
+        // Everything else is about this session, and a stranger has no standing to ask.
+        assert_eq!(asked[1]["ok"], false, "status must not: {}", asked[1]);
+        tidy("sibling");
+    }
 }

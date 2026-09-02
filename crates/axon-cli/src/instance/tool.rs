@@ -26,11 +26,12 @@
 //! told about a cousin it will then be refused spends the turn planning around a wall it was
 //! never going to get through; see [`super::policy`] for where the walls are.
 
+pub mod doing;
 pub mod saying;
 
+use super::TOOL;
 use super::policy::{self, Relation, Whom};
-use super::wire::{Message, Sort};
-use super::{Address, Reach, TOOL};
+use super::wire::Message;
 use crate::identity::Identity;
 use axon_tools::{Cancel, Ops, Output, Tool};
 use serde_json::{Value, json};
@@ -275,111 +276,17 @@ impl Tool for Agent {
                  not wired into the turn loop."
             )),
             _ => match arguments.get("who").and_then(Value::as_str) {
-                Some(who) => reach(verb, who, arguments, &self.standing),
+                // Decided first, dialled second. Everything worth refusing is refused before
+                // the round trip, so a model that asked for something it may not have is told
+                // what it may do instead of paying for the answer.
+                Some(who) => match doing::decide(verb, who, arguments, &self.standing) {
+                    Ok(wanted) => doing::perform(&wanted, &self.standing),
+                    Err(refused) => refused,
+                },
                 None => Output::error(format!("`{verb}` needs `who` — which instance to reach.")),
             },
         }
     }
-}
-
-/// What sort of message a verb sends.
-///
-/// The verb *is* the sort, for everything but `send` — which takes one, because "put this in
-/// their inbox" is the general case and the others are it with a meaning attached.
-fn sorted(verb: &str, arguments: &Value) -> Sort {
-    match verb {
-        "ask" => Sort::Question,
-        "reply" => Sort::Answer,
-        "attention" => Sort::Attention,
-        "trouble" => Sort::Trouble,
-        "handoff" => Sort::Handoff,
-        "claim" => Sort::Claim,
-        "release" => Sort::Release,
-        _ => arguments
-            .get("sort")
-            .and_then(Value::as_str)
-            .and_then(Sort::read)
-            .unwrap_or(Sort::Note),
-    }
-}
-
-/// Everything that needs an instance to act on.
-///
-/// The call itself is not made here: this crate's tools are synchronous and the socket is not,
-/// so what comes back says what *would* be asked and of whom. The turn loop performs it — see
-/// [`Wanted`], which is what it is handed.
-fn reach(verb: &str, who: &str, arguments: &Value, standing: &Standing) -> Output {
-    let Some(address) = Address::read(who) else {
-        return Output::error(format!(
-            "`{who}` is not a name an instance can have. Names are `id` or `project/id`."
-        ));
-    };
-    if !VERBS.iter().any(|(name, _)| *name == verb) {
-        return Output::error(format!(
-            "`{verb}` is not one of {TOOL}'s verbs. Call it with `verb: \"help\"`."
-        ));
-    }
-    // Refused here rather than at the far end, so the model is told what it may do instead of
-    // spending a turn discovering it. The far end refuses it too, because a caller is not to be
-    // trusted with its own permissions.
-    let wanted = match verb {
-        "stop" => Reach::Stop,
-        _ if SPEAKS.contains(&verb) => Reach::Tell,
-        _ => Reach::Ask,
-    };
-    let me = standing.whom();
-    let whole = address.against(&standing.identity());
-    let relation = standing.stands(&whole);
-    if !policy::may(&me, relation, wanted) {
-        return Output::error(policy::refusal(&me, relation, wanted));
-    }
-    if matches!(verb, "send" | "ask") && arguments.get("message").is_none() {
-        return Output::error(format!("`{verb}` needs `message` — what to say."));
-    }
-    let wanted = Wanted {
-        verb: verb.to_owned(),
-        who: address.written(),
-        sort: sorted(verb, arguments),
-        message: arguments
-            .get("message")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
-        about: arguments
-            .get("about")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
-        // Attached here rather than looked up when the call is made, because this is where it is
-        // known which session is being reached. Only a `stop` carries one; everything else is
-        // answered on the strength of the name alone.
-        token: (wanted == Reach::Stop)
-            .then(|| standing.minted.get(&whole.full()).cloned())
-            .flatten(),
-    };
-    Output::ok(format!(
-        "`{}` is understood but not yet carried out: the socket call it makes is not wired into \
-         the turn loop.",
-        wanted.verb
-    ))
-}
-
-/// A call the tool decided on, for the turn loop to actually make.
-///
-/// The socket is asynchronous and [`Tool::run`] is not. Rather than block a turn thread on a
-/// peer that may be mid-turn itself, the tool decides *what* to ask and hands it over.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Wanted {
-    /// Which verb.
-    pub verb: String,
-    /// Which instance, written out.
-    pub who: String,
-    /// What kind of message it carries.
-    pub sort: Sort,
-    /// What to say, for the verbs that say something.
-    pub message: Option<String>,
-    /// The message being answered or released, for the verbs that quote one.
-    pub about: Option<String>,
-    /// The secret the far end was started with, for the one verb that has to prove itself.
-    pub token: Option<String>,
 }
 
 /// The tool refuses what it should and asks for what it needs.
@@ -461,11 +368,23 @@ mod tests {
     }
 
     #[test]
-    fn stopping_something_this_session_started_is_allowed() {
+    fn stopping_something_this_session_started_gets_past_both_gates() {
+        // Two gates, and this proves it clears both: the relation says it is this session's
+        // child, and the secret says this session is the one that started it. What stops it
+        // here is the socket, because nothing is listening in a test — and that failure
+        // arriving *is* the evidence, since a refusal would have come before the dial.
         let mut standing = standing();
         standing.forked.push("axon/iota-mu".to_owned());
+        standing
+            .minted
+            .insert("axon/iota-mu".to_owned(), "s3cret".to_owned());
         let out = call(json!({"verb": "stop", "who": "iota-mu"}), standing);
-        assert!(!out.is_error, "{}", out.content);
+        assert!(out.is_error);
+        assert!(
+            out.content.contains("nothing is listening"),
+            "it was refused before it got to the socket: {}",
+            out.content
+        );
     }
 
     #[test]
@@ -539,6 +458,7 @@ mod tests {
 #[cfg(test)]
 mod surface_tests {
     use super::*;
+    use crate::instance::wire::Sort;
 
     fn standing() -> Standing {
         Standing {
@@ -617,29 +537,6 @@ mod surface_tests {
         let said = call(json!({"verb": "whoami"}), standing).content;
         assert!(said.contains("axon/main/gamma"), "{said}");
         assert!(said.contains("may stop"), "{said}");
-    }
-
-    #[test]
-    fn the_verb_is_the_sort_for_everything_but_send() {
-        // `attention` and `send` travel identically and mean different things to whoever reads
-        // them. If the verb did not set the sort, every one of them would arrive as a note.
-        for (verb, want) in [
-            ("ask", Sort::Question),
-            ("reply", Sort::Answer),
-            ("attention", Sort::Attention),
-            ("trouble", Sort::Trouble),
-            ("handoff", Sort::Handoff),
-            ("claim", Sort::Claim),
-            ("release", Sort::Release),
-        ] {
-            assert_eq!(sorted(verb, &json!({})), want, "{verb}");
-        }
-        assert_eq!(sorted("send", &json!({})), Sort::Note, "the general case");
-        assert_eq!(
-            sorted("send", &json!({"sort": "attention"})),
-            Sort::Attention,
-            "which can be told what it is"
-        );
     }
 
     #[test]

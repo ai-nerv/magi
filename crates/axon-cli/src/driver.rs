@@ -35,6 +35,7 @@ pub async fn run(
     sessions: Option<std::path::PathBuf>,
     loaded: Option<crate::config::Loaded>,
     environ: std::collections::BTreeMap<String, String>,
+    identity: crate::identity::Identity,
 ) -> Result<()> {
     // **Before anything reads a setting.** `colour`, `glyph` and `metric` each hold their table
     // in a `OnceLock` that the first *read* fills with the built-in defaults, and `adopt` after
@@ -60,9 +61,10 @@ pub async fn run(
     }
 
     let mut app = App::new();
-    // Named after the config is adopted, so `axon.project` is read rather than the folder.
-    app.identity =
-        crate::identity::Identity::here(loaded.as_ref().and_then(|l| l.config.string("project")));
+    // Handed in rather than made here. The daemon was started with this name in its environment
+    // and every tool peer inherits it from there, so a UI that named itself independently would
+    // bind one socket and sign its messages as another.
+    app.identity = identity;
     // The prompts from previous runs, so the arrow keys reach past this one.
     app.editor = axon_tui::Editor::with_history(crate::history::load());
     if let Some(loaded) = &loaded {
