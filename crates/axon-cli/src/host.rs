@@ -26,6 +26,7 @@
 //! a UI that could only talk to something in its own address space could not be pointed at it.
 
 use anyhow::{Context, Result};
+use std::os::unix::fs::FileTypeExt;
 use std::path::Path;
 
 /// Open this session and start serving it, without waiting for it to finish.
@@ -58,6 +59,7 @@ pub async fn start(
     // one found here was left by a crash and is cleared rather than treated as somebody's.
     if let Some(parent) = socket.parent() {
         tokio::fs::create_dir_all(parent).await?;
+        sweep(parent);
     }
     let listener = axon_ipc::bind(socket)
         .await
@@ -79,6 +81,35 @@ pub async fn start(
 /// `axon` in this project would meet it as a name already taken.
 pub fn done(socket: &Path) {
     let _ = std::fs::remove_file(socket);
+    // And the directory, if this was the last session in the project. `remove_dir` refuses one
+    // that still holds something, which is the whole test: whoever leaves last does it, and a
+    // session binding at the same moment is not raced.
+    if let Some(parent) = socket.parent() {
+        let _ = std::fs::remove_dir(parent);
+    }
+}
+
+/// Clear out sockets in `dir` that nothing is serving.
+///
+/// Run at startup rather than only at exit, because the sessions that need clearing are the ones
+/// that never reached their exit path: a crash, a kill, or a build that named its socket
+/// differently. Ten of those had collected in one project here, and nothing would ever have
+/// removed them — the directory is how a session is found, so litter in it is not cosmetic.
+///
+/// Dialled, never guessed. Unlinking a path because it looks stale would take a live session's
+/// socket out from under it, and both would then believe they were reachable.
+fn sweep(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if entry.file_type().is_ok_and(|kind| kind.is_socket())
+            && std::os::unix::net::UnixStream::connect(&path).is_err()
+        {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 /// Seconds since the epoch, for naming a session.
@@ -288,5 +319,70 @@ mod tests {
             catalog.environ.get("ATOM_ID").map(String::as_str),
             Some("delta-rho")
         );
+    }
+}
+
+/// Nothing a session leaves behind outlives it.
+#[cfg(test)]
+mod leftovers {
+    use super::*;
+
+    #[test]
+    fn a_socket_nothing_answers_is_cleared_and_a_live_one_is_not() {
+        // Ten of these had collected in one project, from crashes and from a build that named
+        // its socket differently, and nothing would ever have removed them. The directory is how
+        // a session is found, so litter in it is not cosmetic.
+        let dir = std::env::temp_dir().join(format!("axon-sweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+
+        let live = std::os::unix::net::UnixListener::bind(dir.join("alive.host")).expect("bind");
+        // A socket with nothing behind it: bound, then the listener dropped.
+        let dead = dir.join("dead.host");
+        drop(std::os::unix::net::UnixListener::bind(&dead).expect("bind"));
+        // And something that is not a socket at all, which must be left alone.
+        std::fs::write(dir.join("keep.me"), b"not mine").expect("write");
+
+        sweep(&dir);
+
+        assert!(dir.join("alive.host").exists(), "a live session was swept");
+        assert!(!dead.exists(), "a dead socket was left behind");
+        assert!(
+            dir.join("keep.me").exists(),
+            "something not a socket was removed"
+        );
+        drop(live);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_last_session_out_takes_the_directory_with_it() {
+        let dir = std::env::temp_dir().join(format!("axon-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let socket = dir.join("one.host");
+        std::fs::write(&socket, b"").expect("write");
+
+        done(&socket);
+        assert!(!dir.exists(), "an empty project directory was left behind");
+    }
+
+    #[test]
+    fn a_directory_somebody_else_is_still_in_stays() {
+        // The test is `remove_dir` refusing a directory that holds something, which is what
+        // makes this safe without a listing and without racing a session that is binding.
+        let dir = std::env::temp_dir().join(format!("axon-busy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(dir.join("mine.host"), b"").expect("write");
+        std::fs::write(dir.join("theirs.host"), b"").expect("write");
+
+        done(&dir.join("mine.host"));
+        assert!(
+            dir.exists(),
+            "a directory with a session still in it was removed"
+        );
+        assert!(dir.join("theirs.host").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
