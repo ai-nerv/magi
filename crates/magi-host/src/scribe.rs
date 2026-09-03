@@ -77,12 +77,27 @@ impl Scribe {
 
     /// Everything this session said, in cursor order, as it finally stood.
     pub async fn replay(&mut self) -> Result<Vec<(Cursor, Entry)>, Fault> {
+        let session = self.session.clone();
+        self.replay_at(&session).await
+    }
+
+    /// The same, for a session this scribe is not bound to.
+    ///
+    /// Resuming reads somebody else's run before becoming it, so the id is the argument rather
+    /// than the one this connection was opened with.
+    pub async fn replay_of(&mut self, id: &str) -> Result<Vec<Entry>, Fault> {
+        Ok(self
+            .replay_at(id)
+            .await?
+            .into_iter()
+            .map(|(_, entry)| entry)
+            .collect())
+    }
+
+    async fn replay_at(&mut self, id: &str) -> Result<Vec<(Cursor, Entry)>, Fault> {
         let values = self
             .family
-            .call(
-                "replay",
-                vec![serde_json::Value::String(self.session.clone())],
-            )
+            .call("replay", vec![serde_json::Value::String(id.to_owned())])
             .await?;
         values.iter().flat_map(rows).map(rebuild).collect()
     }

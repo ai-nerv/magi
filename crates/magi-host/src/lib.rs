@@ -24,7 +24,8 @@ pub mod worker;
 use magi_ipc::{FrameReader, FrameWriter, IpcError, PeerCred};
 use magi_journal::JournalError;
 use magi_proto::{
-    AgentStatus, Cursor, Entry, ErrorClass, HarnessEvent, MessageId, StopReason, UiCommand,
+    AgentStatus, Cursor, Entry, ErrorClass, HarnessEvent, MessageId, SessionId, StopReason,
+    UiCommand,
 };
 
 use session::Session;
@@ -314,14 +315,29 @@ async fn connection(
                     Some(UiCommand::Resume { id }) => {
                         let cwd = catalog.cwd.display().to_string();
                         let dir = crate::paths::sessions_dir();
-                        let refusal = match crate::paths::journal_for(&dir, &id) {
-                            None => Some(format!("there is no session called {id:?}")),
-                            Some(path) => session
-                                .lock()
-                                .await
-                                .resume(&path, &cwd, seconds())
-                                .err()
-                                .map(|why| format!("{id} could not be opened: {why}")),
+                        // balthasar first, and by replay rather than by file: it is the store,
+                        // so a journal still on disk is either absent or behind.
+                        let replayed = match scribe.lock().await.as_mut() {
+                            Some(scribe) => scribe.replay_of(&id).await.ok(),
+                            None => None,
+                        };
+                        let refusal = match replayed {
+                            Some(entries) if !entries.is_empty() => {
+                                session
+                                    .lock()
+                                    .await
+                                    .resume_recorded(SessionId::new(id.clone()), entries);
+                                None
+                            }
+                            _ => match crate::paths::journal_for(&dir, &id) {
+                                None => Some(format!("there is no session called {id:?}")),
+                                Some(path) => session
+                                    .lock()
+                                    .await
+                                    .resume(&path, &cwd, seconds())
+                                    .err()
+                                    .map(|why| format!("{id} could not be opened: {why}")),
+                            },
                         };
                         if let Some(message) = refusal {
                             writer

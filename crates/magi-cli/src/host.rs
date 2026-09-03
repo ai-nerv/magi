@@ -46,14 +46,25 @@ pub async fn start(
 ) -> Result<()> {
     let dir = sessions.map_or_else(magi_host::paths::sessions_dir, Path::to_path_buf);
     let cwd = cwd.display().to_string();
-    let session = match resume.then(|| free(&dir, &cwd, socket.parent())).flatten() {
-        Some(path) => magi_host::session::Session::open(
-            &path,
-            magi_proto::SessionId::new(magi_host::paths::session_id(unix_seconds(), key)),
-            &cwd,
-            unix_seconds(),
-        )?,
-        None => magi_host::open_session(&dir, &cwd, unix_seconds(), key)?,
+    let id = magi_proto::SessionId::new(magi_host::paths::session_id(unix_seconds(), key));
+    // With balthasar running there is no journal on disk at all: it is the store, and a second
+    // copy is a copy that goes stale. Without it, the file is the store exactly as before.
+    let mut carried = match magi_ipc::family::Family::find(None).await {
+        Ok(family) => {
+            let mut scribe = magi_host::scribe::Scribe::over(family, &id);
+            Some(match resume.then(|| resumable(&mut scribe)) {
+                Some(fut) => fut.await,
+                None => Vec::new(),
+            })
+        }
+        Err(_) => None,
+    };
+    let session = match carried.take() {
+        Some(entries) => magi_host::session::Session::recorded(id, entries),
+        None => match resume.then(|| free(&dir, &cwd, socket.parent())).flatten() {
+            Some(path) => magi_host::session::Session::open(&path, id, &cwd, unix_seconds())?,
+            None => magi_host::open_session(&dir, &cwd, unix_seconds(), key)?,
+        },
     };
     // A stale socket cannot be a running session any more — nothing outlives its process — so
     // one found here was left by a crash and is cleared rather than treated as somebody's.
@@ -387,5 +398,31 @@ mod leftovers {
         );
         assert!(dir.join("theirs.host").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// The newest run balthasar holds for this project, for `--resume`.
+///
+/// Empty when there is nothing to carry on from, which is a fresh session rather than a
+/// refusal: somebody asking to resume wants to start working.
+async fn resumable(scribe: &mut magi_host::scribe::Scribe) -> Vec<magi_proto::Entry> {
+    let Ok(rows) = scribe.sessions().await else {
+        return Vec::new();
+    };
+    let newest = rows
+        .iter()
+        .flat_map(|value| match value.as_array() {
+            Some(list) => list.clone(),
+            None => vec![value.clone()],
+        })
+        .filter_map(|row| {
+            row.get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .next();
+    match newest {
+        Some(id) => scribe.replay_of(&id).await.unwrap_or_default(),
+        None => Vec::new(),
     }
 }

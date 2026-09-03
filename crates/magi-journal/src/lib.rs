@@ -59,7 +59,8 @@ pub enum JournalError {
 #[derive(Debug)]
 pub struct Journal {
     path: PathBuf,
-    writer: BufWriter<File>,
+    /// `None` when balthasar is the store and nothing is kept on disk.
+    writer: Option<BufWriter<File>>,
     session: SessionId,
     entries: Vec<Entry>,
     next: Cursor,
@@ -108,7 +109,7 @@ impl Journal {
                 }
                 Self {
                     path: path.to_owned(),
-                    writer: BufWriter::new(OpenOptions::new().append(true).open(path)?),
+                    writer: Some(BufWriter::new(OpenOptions::new().append(true).open(path)?)),
                     session: meta.session,
                     next: recovered.cursor.next(),
                     entries: recovered.entries,
@@ -117,9 +118,9 @@ impl Journal {
             None => {
                 let mut journal = Self {
                     path: path.to_owned(),
-                    writer: BufWriter::new(
+                    writer: Some(BufWriter::new(
                         OpenOptions::new().create(true).append(true).open(path)?,
-                    ),
+                    )),
                     session: session.clone(),
                     entries: Vec::new(),
                     next: Cursor::ZERO.next(),
@@ -133,8 +134,37 @@ impl Journal {
                 journal
             }
         };
-        journal.writer.flush()?;
+        if let Some(writer) = journal.writer.as_mut() {
+            writer.flush()?;
+        }
         Ok(journal)
+    }
+
+    /// A journal kept only in memory, holding what somebody else recorded.
+    ///
+    /// For a session whose store is balthasar: the transcript is still needed here, because
+    /// every read — a UI attaching, the context a turn is built from, the usage total — comes
+    /// from it, and a socket round trip per read would be absurd. What is gone is the second
+    /// copy on disk.
+    ///
+    /// Entries arrive in cursor order and the next cursor follows the last of them, so a resumed
+    /// session carries on numbering where it left off rather than overwriting its own history.
+    #[must_use]
+    pub fn recorded(session: SessionId, entries: Vec<Entry>) -> Self {
+        let next = Cursor(entries.len() as u64).next();
+        Self {
+            path: PathBuf::new(),
+            writer: None,
+            session,
+            entries,
+            next,
+        }
+    }
+
+    /// Whether anything is being written to disk.
+    #[must_use]
+    pub fn is_kept(&self) -> bool {
+        self.writer.is_some()
     }
 
     /// The session this journal holds.
@@ -194,7 +224,9 @@ impl Journal {
         })?;
         // Flushed per entry: an entry that reached the UI but not the disk is a session that
         // resumes missing something the user watched happen.
-        self.writer.flush()?;
+        if let Some(writer) = self.writer.as_mut() {
+            writer.flush()?;
+        }
         self.entries.push(entry);
         self.next = cursor.next();
         Ok(cursor)
@@ -237,16 +269,21 @@ impl Journal {
         };
         *slot = entry.clone();
         self.write(&Record::Entry { cursor, entry })?;
-        self.writer.flush()?;
+        if let Some(writer) = self.writer.as_mut() {
+            writer.flush()?;
+        }
         Ok(())
     }
 
     fn write(&mut self, record: &Record) -> Result<(), JournalError> {
+        let Some(writer) = self.writer.as_mut() else {
+            return Ok(());
+        };
         let line = serde_json::to_string(record).map_err(std::io::Error::other)?;
-        self.writer.write_all(line.as_bytes())?;
+        writer.write_all(line.as_bytes())?;
         // The terminator is what makes a record complete. Written after the body, so a crash
         // between the two leaves a torn tail the reader can recognise and drop.
-        self.writer.write_all(b"\n")?;
+        writer.write_all(b"\n")?;
         Ok(())
     }
 }

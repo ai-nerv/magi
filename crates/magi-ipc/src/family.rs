@@ -313,3 +313,85 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+/// The same protocol, without a runtime.
+///
+/// The UI asks balthasar what sessions there are while drawing a picker, and that path is
+/// synchronous: a blocking dial is the honest shape for it rather than borrowing a runtime.
+pub mod blocking {
+    use super::{Fault, candidates, unwrap};
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+    use std::path::Path;
+    use std::time::Duration;
+
+    /// How long a picker will wait before drawing without balthasar.
+    const PATIENCE: Duration = Duration::from_millis(2000);
+
+    /// One held connection.
+    pub struct Family {
+        stream: UnixStream,
+    }
+
+    impl Family {
+        /// Connect to a socket by path.
+        pub fn dial(path: impl AsRef<Path>) -> Result<Self, Fault> {
+            let path = path.as_ref();
+            let stream = UnixStream::connect(path)
+                .map_err(|e| Fault::Unavailable(format!("{}: {e}", path.display())))?;
+            let _ = stream.set_read_timeout(Some(PATIENCE));
+            let _ = stream.set_write_timeout(Some(PATIENCE));
+            Ok(Self { stream })
+        }
+
+        /// Connect to whichever socket answers first, newest tried first.
+        pub fn find() -> Result<Self, Fault> {
+            let mut last = None;
+            for path in candidates(None) {
+                match Self::dial(&path) {
+                    Ok(open) => return Ok(open),
+                    Err(e) => last = Some(e),
+                }
+            }
+            Err(last.unwrap_or_else(|| Fault::Unavailable("no socket to try".into())))
+        }
+
+        /// Send one call and wait for its answer.
+        pub fn call(
+            &mut self,
+            verb: &str,
+            args: Vec<serde_json::Value>,
+        ) -> Result<Vec<serde_json::Value>, Fault> {
+            let mut body = serde_json::Map::new();
+            body.insert("call".into(), serde_json::Value::String(verb.to_owned()));
+            if !args.is_empty() {
+                body.insert("args".into(), serde_json::Value::Array(args));
+            }
+            let body = serde_json::Value::Object(body).to_string();
+
+            let mut frame = Vec::with_capacity(4 + body.len());
+            frame.extend_from_slice(&(body.len() as u32).to_be_bytes());
+            frame.extend_from_slice(body.as_bytes());
+            self.stream
+                .write_all(&frame)
+                .map_err(|e| Fault::Unavailable(format!("sending {verb}: {e}")))?;
+
+            let mut head = [0_u8; 4];
+            self.stream
+                .read_exact(&mut head)
+                .map_err(|e| Fault::Unavailable(format!("awaiting {verb}: {e}")))?;
+            let len = u32::from_be_bytes(head) as usize;
+            if len > super::MAX_FRAME_BYTES {
+                return Err(Fault::Malformed(format!("{len} byte reply to {verb}")));
+            }
+            let mut rest = vec![0_u8; len];
+            self.stream
+                .read_exact(&mut rest)
+                .map_err(|e| Fault::Unavailable(format!("reading {verb}: {e}")))?;
+
+            let reply: serde_json::Value = serde_json::from_slice(&rest)
+                .map_err(|e| Fault::Malformed(format!("{verb}: {e}")))?;
+            unwrap(&reply, verb)
+        }
+    }
+}
