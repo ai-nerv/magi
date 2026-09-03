@@ -18,7 +18,7 @@ async fn scribe(name: &str) -> Option<Scribe> {
         }
     };
     let id = SessionId::new(format!("magi-scribe-{}-{name}", std::process::id()));
-    Some(Scribe::over(family, &id))
+    Some(Scribe::over(family, None, &id))
 }
 
 #[tokio::test]

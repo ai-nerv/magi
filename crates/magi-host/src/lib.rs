@@ -140,10 +140,10 @@ pub async fn serve_on(
     let scribe = Arc::new(Mutex::new({
         let id = session.lock().await.id().clone();
         match balthasar {
-            Some(path) => magi_ipc::family::Family::dial(path)
+            Some(path) => magi_ipc::family::Family::dial(&path)
                 .await
                 .ok()
-                .map(|family| crate::scribe::Scribe::over(family, &id)),
+                .map(|family| crate::scribe::Scribe::over(family, Some(path.clone()), &id)),
             None => crate::scribe::Scribe::find(&id).await.ok(),
         }
     }));

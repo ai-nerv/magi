@@ -16,6 +16,16 @@ use magi_proto::{Cursor, Entry, SessionId};
 /// A connection to balthasar, bound to one session.
 pub struct Scribe {
     family: Family,
+    /// Where to dial to get this connection back.
+    ///
+    /// A held connection is not a permanent one: balthasar can restart, and it drops a caller
+    /// that has been quiet — which, between one prompt and the next, magi always is. Without a
+    /// way back, the first such drop ended recording for the rest of the session and every turn
+    /// after it was written into the transcript as lost.
+    ///
+    /// `None` when the connection was found rather than named, which is the answer for a
+    /// balthasar magi did not start: the way back is to look again.
+    at: Option<std::path::PathBuf>,
     session: String,
     /// Cursors already sent, so a second write says `amend` rather than `observe`.
     ///
@@ -29,19 +39,33 @@ impl Scribe {
     pub async fn find(session: &SessionId) -> Result<Self, Fault> {
         Ok(Self {
             family: Family::find(None).await?,
+            at: None,
             session: session.as_str().to_owned(),
             sent: std::collections::BTreeSet::new(),
         })
     }
 
     /// Bind to a session over an already-open connection.
+    ///
+    /// `at` is where that connection came from, so a dropped one can be dialled again. Pass
+    /// `None` only when there is no such path.
     #[must_use]
-    pub fn over(family: Family, session: &SessionId) -> Self {
+    pub fn over(family: Family, at: Option<std::path::PathBuf>, session: &SessionId) -> Self {
         Self {
             family,
+            at,
             session: session.as_str().to_owned(),
             sent: std::collections::BTreeSet::new(),
         }
+    }
+
+    /// Open the connection again, after one that was dropped.
+    async fn redial(&mut self) -> Result<(), Fault> {
+        self.family = match &self.at {
+            Some(path) => Family::dial(path).await?,
+            None => Family::find(None).await?,
+        };
+        Ok(())
     }
 
     /// Record a settled entry. Durable when this returns.
@@ -65,12 +89,25 @@ impl Scribe {
 
     async fn write(&mut self, verb: &str, cursor: Cursor, entry: &Entry) -> Result<(), Fault> {
         let turn = turn(cursor, entry)?;
-        self.family
-            .call(
-                verb,
-                vec![serde_json::Value::String(self.session.clone()), turn],
-            )
-            .await?;
+        let args = vec![serde_json::Value::String(self.session.clone()), turn];
+        match self.family.call(verb, args.clone()).await {
+            Ok(_) => {}
+            // Dialled again and asked once more, and only for a connection that died: a
+            // refusal or a failed write is an answer, and asking twice would either repeat a
+            // refusal or record a turn twice. Once, because a second failure is an outage
+            // rather than a dropped handle, and a turn is not the place to sit retrying.
+            //
+            // Safe to repeat because the verb is addressed to a cursor: `observe` at a cursor
+            // that already has a row is what `amend` means, so the worst a retry can do is
+            // write what was already there.
+            Err(Fault::Unavailable(why)) => {
+                self.redial()
+                    .await
+                    .map_err(|again| Fault::Unavailable(format!("{why}; and again: {again}")))?;
+                self.family.call(verb, args).await?;
+            }
+            Err(other) => return Err(other),
+        }
         self.sent.insert(cursor.0);
         Ok(())
     }

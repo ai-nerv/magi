@@ -67,7 +67,7 @@ pub async fn start(
     };
     let mut carried = match dialled {
         Ok(family) => {
-            let mut scribe = magi_host::scribe::Scribe::over(family, &id);
+            let mut scribe = magi_host::scribe::Scribe::over(family, ours.clone(), &id);
             Some(match resume.then(|| resumable(&mut scribe)) {
                 Some(fut) => fut.await,
                 None => Vec::new(),
