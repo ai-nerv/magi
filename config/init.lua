@@ -13,18 +13,17 @@ magi.load("tools.lua")
 -- Which model to use, as `magi models` prints it.
 magi.model = "anthropic/claude-sonnet-4-5"
 
--- An endpoint of your own, if it speaks a dialect magi already knows. Registration is keyed,
--- so declaring the same id twice replaces rather than appends.
+-- An endpoint of your own goes in melchior's config, not here. melchior owns the model: which
+-- protocol one speaks, where it lives and what credential it takes are all its, and magi holds
+-- only the name you chose above. See `melchior needs` for what it takes.
 --
--- magi.provider("my-box", {
---   name = "My GPU box",
---   api = "openai-completions",
---   base_url = "http://10.0.0.7:8000/v1",
---   auth = { kind = "none" },
---   models = {
---     { id = "qwen3-coder", name = "Qwen3 Coder", context_window = 262144, max_tokens = 32768 },
---   },
--- })
+-- What this file can do is hand melchior its settings, so there is one place to edit rather
+-- than two. Anything under `magi.melchior` goes to melchior, and anything under
+-- `magi.balthasar` to balthasar -- in each sibling's own vocabulary, and a name it does not
+-- take is reported rather than ignored.
+--
+-- magi.melchior  = { max_tokens = 8192 }
+-- magi.balthasar = { promote_floor = 0.6 }
 
 -- Whether `read`, `write` and `edit` refuse paths outside the session's directory. Off: it
 -- moved work to the shell, which has no confinement at all. `bwrap` in front of the shell peer
@@ -77,9 +76,13 @@ magi.allow = {
 --
 -- magi.trusted = { "/home/you/work" }
 
--- The agent layer, as a program. melchior is a separate tool, in its own repository: it names this
--- session, holds the socket the others reach it on, and answers the `agent` tool. Named here
--- only if it is not on PATH, or to point at a build.
+-- Where melchior is, when it is not on PATH or you want to point at a build. melchior is a
+-- separate tool in its own repository: it owns the model, names this session, holds the socket
+-- the others reach it on, and answers the `agent` tool.
+--
+-- A string is the program; a table is its settings, as above. One name for both because they
+-- are the same subject -- "which melchior" and "what it should do" -- and nobody needs to say
+-- both in one file.
 --
 -- Not installed is not an error. A session without melchior has no name beyond its project and no
 -- siblings to talk to, and is otherwise a working session -- the same as balthasar being absent.

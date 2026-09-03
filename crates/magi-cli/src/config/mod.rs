@@ -407,7 +407,6 @@ fn kind(path: &str) -> Option<&'static str> {
 }
 
 #[cfg(test)]
-#[cfg(test)]
 mod staleness_tests {
     use super::*;
     use std::time::{Duration, SystemTime};

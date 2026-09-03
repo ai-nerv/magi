@@ -204,15 +204,14 @@ mod entry_point {
     }
 
     #[test]
-    fn a_protocol_is_named_before_the_catalog_that_picks_one() {
-        // `api = "openai-completions"` in a provider is a name that has to already mean
-        // something, so the order in the entry point is load-bearing rather than tidy.
+    fn the_entry_point_names_no_model_of_its_own() {
+        // Protocols and providers were magi's until melchior took the model. A tree that still
+        // shipped them would be a second catalog nobody reads and everybody has to keep in
+        // step -- and the drift would show up as a model that works from one program and not
+        // the other.
         let init = checkout("init.lua");
-        let apis = init.find("magi.load(\"apis").expect("protocols are loaded");
-        let catalog = init
-            .find("magi.load(\"providers")
-            .expect("the catalog is loaded");
-        assert!(apis < catalog);
+        assert!(!init.contains("magi.load(\"apis"), "{init}");
+        assert!(!init.contains("magi.load(\"providers"), "{init}");
     }
 
     #[test]
