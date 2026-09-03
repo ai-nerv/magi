@@ -12,7 +12,6 @@ path = "src/main.rs"
 [dependencies]
 rustix.workspace = true
 base64.workspace = true
-reqwest.workspace = true
 magi-model.workspace = true
 anyhow.workspace = true
 magi-ipc.workspace = true
