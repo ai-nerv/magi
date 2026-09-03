@@ -155,8 +155,31 @@ fn sweep(path: &Path) {
 mod tests {
     use super::*;
 
+    /// Held by every test here that binds a socket or starts a process.
+    ///
+    /// The two cannot overlap. `fork` copies the whole descriptor table, so a child spawned
+    /// while another thread holds a listening socket keeps that socket open until it `exec`s —
+    /// and for that moment a socket whose listener this process already dropped still answers a
+    /// dial. A sweep then finds it alive and leaves it, and the test that says stale sockets are
+    /// cleared fails perhaps twice in fifteen runs, in a module that looks single-threaded.
+    ///
+    /// `CLOEXEC` closes it at the `exec` and not before, so there is nothing to fix in the
+    /// spawn. Not sharing the moment is the fix.
+    static ALONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Take [`ALONE`], ignoring a poisoning left by some other test's failure.
+    ///
+    /// A panic elsewhere has already been reported; refusing to run the rest would turn one
+    /// failure into a page of them.
+    fn alone() -> std::sync::MutexGuard<'static, ()> {
+        ALONE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     #[tokio::test]
     async fn a_named_socket_is_not_taken_from_a_live_balthasar() {
+        let _alone = alone();
         // The sweep must dial rather than stat. A listener here stands in for a live one.
         let dir = std::env::temp_dir().join(format!("magi-sweep-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -171,6 +194,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_socket_nothing_answers_is_cleared() {
+        let _alone = alone();
         let dir = std::env::temp_dir().join(format!("magi-sweep-dead-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("mkdir");
@@ -199,6 +223,7 @@ mod tests {
 
     #[tokio::test]
     async fn every_socket_nobody_answers_is_cleared_not_only_this_sessions() {
+        let _alone = alone();
         // The leak. Sweeping one path cleared a corpse of this session's own, and a session id
         // is never reused — so nothing was ever cleared and every run left a file for good.
         let (dir, live, dead) = littered("directory");
@@ -215,6 +240,7 @@ mod tests {
 
     #[tokio::test]
     async fn what_is_not_a_socket_is_left_where_it_is() {
+        let _alone = alone();
         // The settings a coordinator wrote and the tool description sit in the same directory,
         // and a sweep that went by "everything here is stale" would take both.
         let (dir, _live, _dead) = littered("bystanders");
@@ -231,6 +257,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_session_takes_its_socket_with_it() {
+        let _alone = alone();
         // "Nothing outlives the window" should be true of the file as well as the process.
         // Left behind, it was cleared by the next magi rather than by this one -- so a machine
         // at rest always had one, and the directory never quite emptied.
@@ -264,6 +291,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_balthasar_that_never_bound_is_still_ended() {
+        let _alone = alone();
         // The timeout path into `stop`: the process started and never got as far as binding,
         // so there is a child to kill and no file to remove.
         let child = Command::new("sleep")
