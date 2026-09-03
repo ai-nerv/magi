@@ -10,6 +10,7 @@
 pub mod ask;
 mod ids;
 pub mod permit;
+pub mod setup;
 
 pub use ids::{MessageId, SessionId, ToolCallId};
 

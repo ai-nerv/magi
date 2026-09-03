@@ -9,6 +9,7 @@ mod balthasar;
 mod clipboard;
 mod config;
 mod driver;
+mod driving;
 mod ext_lua;
 mod external_editor;
 mod help;

@@ -153,20 +153,9 @@ or a closing remark — the summary itself is the whole reply.";
 mod tests {
     use super::*;
 
-    fn model(window: u64) -> Model {
-        Model {
-            id: "m".into(),
-            name: "M".into(),
-            provider: "p".into(),
-            api: magi_provider::model::Api::OpenAiCompletions,
-            reasoning: false,
-            input: Vec::new(),
-            context_window: window,
-            max_tokens: 100,
-            cost: magi_model::Cost::default(),
-            thinking: std::collections::BTreeMap::new(),
-            compat: None,
-        }
+    /// A window, which is all `needed` ever wanted from a model.
+    const fn model(window: u64) -> Option<u64> {
+        Some(window)
     }
 
     fn context(messages: usize, each: usize) -> Context {
@@ -180,13 +169,13 @@ mod tests {
 
     #[test]
     fn a_small_conversation_is_left_alone() {
-        assert!(!needed(&context(2, 100), &model(200_000)));
+        assert!(!needed(&context(2, 100), model(200_000)));
     }
 
     #[test]
     fn a_conversation_past_the_high_water_mark_is_compacted() {
         // 100 messages of 4,000 characters is ~100k tokens against a 100k window.
-        assert!(needed(&context(100, 4_000), &model(100_000)));
+        assert!(needed(&context(100, 4_000), model(100_000)));
     }
 
     #[test]
@@ -194,18 +183,18 @@ mod tests {
         // The case the extremes miss. 700 messages of 400 characters is ~70k tokens against a
         // 100k window: under 75%, so nothing happens. An earlier version compared
         // `estimate * 100` against `window * 75 / 100` and compacted here.
-        assert!(!needed(&context(700, 400), &model(100_000)));
+        assert!(!needed(&context(700, 400), model(100_000)));
     }
 
     #[test]
     fn a_conversation_just_over_the_mark_is_compacted() {
-        assert!(needed(&context(800, 400), &model(100_000)));
+        assert!(needed(&context(800, 400), model(100_000)));
     }
 
     #[test]
     fn a_model_declaring_no_window_is_never_over_it() {
         // Zero would otherwise read as "full", and every turn would compact.
-        assert!(!needed(&context(100, 4_000), &model(0)));
+        assert!(!needed(&context(100, 4_000), model(0)));
     }
 
     /// `n` entries, none of them a tool call.

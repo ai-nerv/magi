@@ -14,6 +14,7 @@ pub mod catalog;
 pub mod compact;
 pub mod context;
 pub mod declaring;
+pub mod driving;
 pub mod paths;
 pub mod remember;
 pub mod scribe;
@@ -726,17 +727,19 @@ mod no_model_tests {
 
     /// A catalog naming a model whose provider has no credential.
     fn wanting(name: &str) -> Catalog {
-        let providers =
-            serde_json::from_value::<Vec<magi_provider::provider::Provider>>(serde_json::json!([{
-                "id": "paid", "name": "Paid Co", "api": "openai-completions",
-                "base_url": "https://paid.test/v1",
-                "auth": { "kind": "api-key", "vars": ["MAGI_TEST_NOT_SET"] },
-                "models": [{ "id": "x", "name": "X", "context_window": 1000, "max_tokens": 100 }]
-            }]))
-            .expect("providers");
         Catalog {
             chosen: Some(name.to_owned()),
-            providers,
+            cards: vec![magi_proto::ask::Card {
+                id: "paid/x".to_owned(),
+                provider: "Paid Co".to_owned(),
+                name: "x".to_owned(),
+                api: "openai-completions".to_owned(),
+                context_window: Some(1000),
+                max_output: Some(100),
+                reasons: false,
+                ready: false,
+                needs: Some("MAGI_TEST_NOT_SET".to_owned()),
+            }],
             ..Catalog::empty()
         }
     }

@@ -280,7 +280,7 @@ mod tests {
         let trouble = ask(
             "openrouter/anything",
             &Context::default(),
-            &Options::default(),
+            &Wants::default(),
             |_| {},
         )
         .await

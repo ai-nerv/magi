@@ -177,8 +177,6 @@ mod ui_tests {
             config: engine.config(),
             tools: Vec::new(),
             clients: Vec::new(),
-            apis: Vec::new(),
-            providers: Vec::new(),
         }
     }
 
@@ -282,8 +280,6 @@ mod environ_tests {
             config: engine.config(),
             tools: Vec::new(),
             clients: Vec::new(),
-            apis: Vec::new(),
-            providers: Vec::new(),
         })
     }
 

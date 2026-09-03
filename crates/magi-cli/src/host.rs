@@ -47,6 +47,12 @@ pub async fn start(
     let dir = sessions.map_or_else(magi_host::paths::sessions_dir, Path::to_path_buf);
     let cwd = cwd.display().to_string();
     let id = magi_proto::SessionId::new(magi_host::paths::session_id(unix_seconds(), key));
+    // Told before started. A sibling reads what a coordinator said as it comes up, so saying it
+    // afterwards would configure the turn after this one.
+    if let Some(loaded) = loaded {
+        crate::driving::settle(loaded).await;
+    }
+
     // Started here, not found. magi convenes its siblings: a session whose transcript depended
     // on somebody else having launched a memory layer would record sometimes and not others.
     // Named after this session, so two windows in a project get one each and neither can take
@@ -223,27 +229,16 @@ mod tests {
     /// A catalog holding one model that needs no credential, so it yields a real backend.
     fn catalog() -> magi_host::catalog::Catalog {
         let mut catalog = magi_host::catalog::Catalog::empty();
-        catalog.providers = vec![magi_provider::provider::Provider {
-            id: "fake".into(),
-            name: "Fake".into(),
-            base_url: Some("http://127.0.0.1:1/v1".into()),
-            api: magi_provider::model::Api::OpenAiCompletions,
-            auth: magi_provider::provider::Auth::None,
-            compat: None,
-            models: vec![magi_provider::model::Model {
-                id: "m".into(),
-                provider: "fake".into(),
-                name: "M".into(),
-                api: magi_provider::model::Api::OpenAiCompletions,
-                reasoning: false,
-                input: magi_provider::model::default_input(),
-                context_window: 1000,
-                max_tokens: 100,
-                cost: magi_model::Cost::default(),
-                thinking: std::collections::BTreeMap::new(),
-                compat: None,
-            }],
-            discover: false,
+        catalog.cards = vec![magi_proto::ask::Card {
+            id: "fake/m".into(),
+            provider: "fake".into(),
+            name: "m".into(),
+            api: "openai-completions".into(),
+            context_window: Some(1000),
+            max_output: Some(100),
+            reasons: false,
+            ready: true,
+            needs: None,
         }];
         catalog
     }
