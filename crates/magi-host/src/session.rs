@@ -356,6 +356,11 @@ impl Session {
         for event in amendment_events(cursor, previous.as_ref(), &entry) {
             let _ = self.events.send(event);
         }
+        // Queued like a commit, though nothing is written yet. The queue coalesces by cursor, so
+        // this costs no extra write — and without it a flush landing between the entry's first
+        // commit and its settling amendment records the empty message it started as. That is
+        // what a spawned balthasar exposed: the timing changed, and a turn came back blank.
+        self.pending.insert(cursor.0, entry);
     }
 
     /// Tell everyone which model is answering now.

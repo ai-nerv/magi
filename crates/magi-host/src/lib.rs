@@ -94,9 +94,24 @@ pub async fn serve(
 /// switch would leave a person asking why it is using a model they did not choose.
 pub async fn serve_catalog(
     listener: UnixListener,
+    session: Session,
+    backend: Option<turn::Backend>,
+    catalog: crate::catalog::Catalog,
+) -> Result<(), HostError> {
+    serve_on(listener, session, backend, catalog, None).await
+}
+
+/// The same, told which balthasar to record into.
+///
+/// A path rather than a search. magi starts a balthasar of its own and must talk to *that* one:
+/// the newest socket in the directory is a neighbour's as often as not, and two windows writing
+/// each other's transcripts is the failure this naming exists to prevent.
+pub async fn serve_on(
+    listener: UnixListener,
     mut session: Session,
     backend: Option<turn::Backend>,
     catalog: crate::catalog::Catalog,
+    balthasar: Option<std::path::PathBuf>,
 ) -> Result<(), HostError> {
     // Told once, here, because this is the only place that knows both. A UI asking the
     // configuration for itself would report whatever is configured now rather than what this
@@ -122,7 +137,13 @@ pub async fn serve_catalog(
     // and the session behaves exactly as it did before balthasar existed.
     let scribe = Arc::new(Mutex::new({
         let id = session.lock().await.id().clone();
-        crate::scribe::Scribe::find(&id).await.ok()
+        match balthasar {
+            Some(path) => magi_ipc::family::Family::dial(path)
+                .await
+                .ok()
+                .map(|family| crate::scribe::Scribe::over(family, &id)),
+            None => crate::scribe::Scribe::find(&id).await.ok(),
+        }
     }));
     let _ = DRAINING.set((Arc::clone(&session), Arc::clone(&scribe)));
     // The asker publishes through the session's own broadcast handle rather than through the

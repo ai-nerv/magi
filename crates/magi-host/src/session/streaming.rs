@@ -146,3 +146,34 @@ fn an_ordinary_ending_is_still_one_delta_and_a_stop() {
         "it ended: {published:?}"
     );
 }
+
+/// The bug a spawned balthasar exposed: a message flushed mid-stream came back empty.
+///
+/// `revise` is what a streaming message calls per delta batch, and it did not queue. A flush
+/// landing between the entry's first commit and its settling amendment therefore recorded the
+/// empty message it started as, and that was the version the transcript kept.
+#[test]
+fn a_revised_message_is_queued_as_it_stands_not_as_it_started() {
+    let mut session = Session::recorded(SessionId::new("s1"), Vec::new());
+    let growing = |text: &str| Entry::Assistant {
+        id: MessageId::new("a1"),
+        text: text.into(),
+        thinking: String::new(),
+        stop_reason: None,
+        error: None,
+        signatures: Signatures::default(),
+        usage: Usage::default(),
+    };
+
+    session.commit(growing("")).expect("commit");
+    session.revise(growing("par"));
+    session.revise(growing("partial answer"));
+
+    let queued = session.take_pending();
+    assert_eq!(queued.len(), 1, "one cursor, one write: {queued:?}");
+    assert_eq!(
+        queued[0].1,
+        growing("partial answer"),
+        "the queue must hold the message as it stands"
+    );
+}

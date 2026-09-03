@@ -47,9 +47,19 @@ pub async fn start(
     let dir = sessions.map_or_else(magi_host::paths::sessions_dir, Path::to_path_buf);
     let cwd = cwd.display().to_string();
     let id = magi_proto::SessionId::new(magi_host::paths::session_id(unix_seconds(), key));
+    // Started here, not found. magi convenes its siblings: a session whose transcript depended
+    // on somebody else having launched a memory layer would record sometimes and not others.
+    // Named after this session, so two windows in a project get one each and neither can take
+    // the other's down.
+    let ours = crate::balthasar::start(&id.as_str().replace('/', "-"), Path::new(&cwd)).await;
+
     // With balthasar running there is no journal on disk at all: it is the store, and a second
     // copy is a copy that goes stale. Without it, the file is the store exactly as before.
-    let mut carried = match magi_ipc::family::Family::find(None).await {
+    let dialled = match &ours {
+        Some(socket) => magi_ipc::family::Family::dial(socket).await,
+        None => magi_ipc::family::Family::find(None).await,
+    };
+    let mut carried = match dialled {
         Ok(family) => {
             let mut scribe = magi_host::scribe::Scribe::over(family, &id);
             Some(match resume.then(|| resumable(&mut scribe)) {
@@ -81,7 +91,7 @@ pub async fn start(
         loaded.map_or_else(magi_host::catalog::Catalog::empty, crate::config::catalog);
     stamp(&mut backend, &mut catalog, environ);
     tokio::spawn(async move {
-        let _ = magi_host::serve_catalog(listener, session, backend, catalog).await;
+        let _ = magi_host::serve_on(listener, session, backend, catalog, ours).await;
     });
     Ok(())
 }
