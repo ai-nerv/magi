@@ -1,10 +1,8 @@
 //! Drawing the screen.
 //!
 //! magi owns every cell: the transcript is a buffer it keeps and scrolls, not lines handed to
-//! the terminal. That is what the scroll keys and the edge rules are written against.
-//!
-//! The mouse is not: magi asks for no tracking, so drag-to-select and copy stay the terminal's
-//! and the multiplexer's, working the way they do in every other program.
+//! the terminal. That is what the wheel, the scroll keys, the edge rule and clicking a block
+//! open are all written against.
 //!
 //! Below the transcript: the status line, then the prompt box — which holds whatever menu is
 //! open — then the footer. The two edge rules are the transcript's own, drawn against its top
@@ -138,6 +136,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     // first time and wrong for everybody after that. The prompt's own placeholder still names
     // `:`, which is the one line of it worth keeping.
     let laid = transcript::laid_out(app.entries(), area.width, app.detail, &app.flipped);
+    app.owners = laid.owners;
     app.scrollback.set_lines(laid.lines);
     // Each edge that has something past it takes a row out of the transcript for its rule, so
     // both sit against the text rather than out in the chrome.
@@ -158,6 +157,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
         height: used.min(live_area.height),
         ..live_area
     };
+    // The rows the transcript actually landed on, which is what a click is measured
+    // against. Bottom-anchored, so a short transcript does not start at the top.
+    app.live_rows = anchored.y..anchored.y + anchored.height;
     frame.render_widget(Paragraph::new(view), anchored);
     if above {
         frame.render_widget(
@@ -236,6 +238,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     // The box only. A glitch in the middle of a tool result is indistinguishable from a tool
     // that printed a glitch.
     magi_tui::decrypt::flicker(frame.buffer_mut(), prompt_area);
+    // Last of all, over everything: a selection is about what is on the screen, and a highlight
+    // drawn before the effects would be the one thing they could scribble on.
+    if let Some(selection) = app.selection {
+        magi_tui::select::over(frame.buffer_mut(), selection);
+    }
 
     place_hardware_cursor(frame, app, prompt_area, rows, &badge);
 }

@@ -18,17 +18,25 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::{Terminal, TerminalOptions, Viewport};
 use std::io::{self, IsTerminal, Stdout, Write};
 
-/// The mouse is the terminal's.
+/// Ask for presses, releases and drags — a click and a drag, nothing else.
 ///
-/// magi asks for no tracking at all. Mouse reporting is one terminal-wide switch: an application
-/// that turns it on to receive a click stops the terminal — and the multiplexer above it — from
-/// running their own drag-selection, and no choice of tracking mode changes that. Selecting text
-/// and copying it is the thing a terminal is *for*, it already works everywhere, and no click
-/// target magi could offer is worth taking it away.
+/// **Not `EnableMouseCapture`.** That sets `?1003h` — *any-event* tracking, which reports the
+/// pointer moving with no button down, every frame, forever. `?1002h` reports presses, releases
+/// and motion *while a button is held*, which is a click and a drag and nothing else. `?1006h`
+/// asks for SGR coordinates, without which a click past column 223 cannot be expressed.
 ///
-/// Sent on the way in as well as the way out, and every mode rather than only the ones magi used
-/// to ask for: a run killed before it could tear down leaves whatever it had set still set, and
-/// a terminal left in `?1002h` by an older build is one nothing else would clear.
+/// **Taking the mouse is why magi selects text itself.** Mouse reporting is one terminal-wide
+/// switch: an application that turns it on to receive a click stops the terminal running its own
+/// drag-selection, and no choice of tracking mode changes that. So a program that wants both a
+/// clickable element and selectable text has to do the selecting — see [`magi_tui::select`].
+/// neovim and tmux are in the same position and answer it the same way.
+const MOUSE_ON: &str = "\x1b[?1002h\x1b[?1006h";
+
+/// Give it back.
+///
+/// Every mode, not only the two [`MOUSE_ON`] asks for, and sent on the way in as well as the way
+/// out: a run killed before it could tear down leaves whatever it had set still set, and a
+/// terminal left in `?1003h` by an older build is one nothing here would otherwise clear.
 const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 
 /// A terminal in raw mode, restored on drop.
@@ -54,9 +62,10 @@ impl Session {
         let mut out = io::stdout();
         execute!(out, crossterm::event::EnableBracketedPaste)?;
         execute!(out, EnterAlternateScreen)?;
-        // Cleared and left cleared. See [`MOUSE_OFF`]: the mouse belongs to the terminal, and
-        // an older build that took it leaves modes set that nothing else here would undo.
-        write!(out, "{MOUSE_OFF}")?;
+        // Cleared first, because a killed run leaves its modes set and `?1003h` from an older
+        // build is one nothing here would otherwise undo. Then asked for what a click, a drag
+        // and the wheel need. See [`MOUSE_ON`] for why magi does the selecting.
+        write!(out, "{MOUSE_OFF}{MOUSE_ON}")?;
         out.flush()?;
 
         let enhanced = push_keyboard_enhancements(&mut out).unwrap_or(false);

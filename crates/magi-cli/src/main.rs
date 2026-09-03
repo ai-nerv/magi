@@ -6,6 +6,7 @@
 
 mod app;
 mod balthasar;
+mod clipboard;
 mod config;
 mod driver;
 mod driving;

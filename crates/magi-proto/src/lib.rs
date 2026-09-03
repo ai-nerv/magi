@@ -11,6 +11,7 @@ pub mod ask;
 mod ids;
 pub mod permit;
 pub mod setup;
+pub mod tooling;
 
 pub use ids::{MessageId, SessionId, ToolCallId};
 
