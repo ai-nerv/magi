@@ -53,11 +53,6 @@ pub enum Action {
     Recalled,
     /// Show tool results in full, or fold them back.
     ToggleDetail,
-    /// Take the mouse from the terminal for the wheel and for clicking, or give it back.
-    ///
-    /// A capture is all-or-nothing, and the terminal has it by default: dragging out a
-    /// selection is what a terminal is for, and magi holding the mouse is the only thing that
-    /// can stop it. This is the opt-in, and the footer says when it is on.
     /// A row was taken from an open selection list.
     Chose(String),
     /// A selection list was left without taking a row.

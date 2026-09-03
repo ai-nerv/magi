@@ -88,8 +88,8 @@ glyphs! {
     block_bottom_left = "└", "Where its bottom edge starts.";
     block_bottom_right = "┘", "Where it ends.";
     block_edge = "─", "Repeated along a transcript block's top and bottom edges.";
-    expand = "▸", "On the top edge of a folded tool block: click to open it.";
-    collapse = "▾", "On the top edge of an open tool block: click to fold it.";
+    expand = "▸", "On the top edge of a folded tool block.";
+    collapse = "▾", "On the top edge of an open tool block.";
     quote_rule = "│ ", "Down the left of a block quote.";
     notice_rule = "│ ", "Down the left of something the UI itself is saying.";
     placeholder = "ask anything, or : for commands", "The prompt, before you type anything.";

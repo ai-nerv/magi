@@ -139,23 +139,11 @@ pub struct App {
     pub granted: Vec<magi_proto::permit::Grant>,
     /// Whether the prompt was empty when it was last looked at.
     was_blank: bool,
-    /// The text being dragged over, or the last drag that finished.
-    ///
-    /// Kept after the button comes up so the highlight stays until the next click, which is how
-    /// a person checks they got what they meant before pasting it.
-    pub selection: Option<magi_tui::select::Selection>,
-    /// Tool blocks showing the opposite of `detail`, because they were clicked.
+    /// Tool blocks showing the opposite of `detail`.
     ///
     /// Membership rather than an absolute state, so the fold key still moves every block a
     /// person has not had an opinion about, and every block they have keeps the one they gave.
     pub flipped: std::collections::BTreeSet<ToolCallId>,
-    /// Which tool call each rendered line belongs to, parallel to the scrollback.
-    pub owners: Vec<Option<ToolCallId>>,
-    /// Which screen rows the transcript occupies, so a click can be turned into a line.
-    ///
-    /// Recorded by the drawing pass because only it knows: the live region ends where the
-    /// prompt begins, and the prompt grows with what has been typed into it.
-    pub live_rows: std::ops::Range<u16>,
 }
 
 impl Default for App {
@@ -193,10 +181,7 @@ impl App {
             waiting: 0,
             granted: Vec::new(),
             was_blank: true,
-            selection: None,
             flipped: std::collections::BTreeSet::new(),
-            owners: Vec::new(),
-            live_rows: 0..0,
             pending_notice: None,
             no_model: None,
             asking_about: magi_proto::permit::Action::Read {
@@ -756,8 +741,6 @@ impl App {
         });
     }
 }
-
-mod folding;
 
 /// A line for the box to open with.
 ///

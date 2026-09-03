@@ -27,22 +27,16 @@ pub fn render(entries: &[Entry], width: u16, detail: Detail) -> Vec<Line<'static
 }
 
 /// A rendered transcript, and which tool call each line came from.
-///
-/// The second half is what makes a click mean something. A row on the screen is a line in this
-/// list, and a line only belongs to a block if that block drew it — so the mapping is produced by
-/// the same pass that produces the lines, rather than by a second one that could disagree with it.
 pub struct Laid {
     /// Every line, in transcript order.
     pub lines: Vec<Line<'static>>,
-    /// For each line, the tool call it belongs to, if any.
-    pub owners: Vec<Option<ToolCallId>>,
 }
 
-/// Render the whole transcript, recording which block owns each line.
+/// Render the whole transcript.
 ///
-/// `flipped` names the tool calls showing the opposite of `detail`: a click toggles membership
-/// rather than storing a state, so the global fold key still moves every block that has not been
-/// clicked, and one that has keeps the answer the person gave it.
+/// `flipped` names the tool calls showing the opposite of `detail`, so the global fold key still
+/// moves every block a person has not had an opinion about, and every block they have keeps the
+/// one they gave.
 #[must_use]
 pub fn laid_out(
     entries: &[Entry],
@@ -50,17 +44,10 @@ pub fn laid_out(
     detail: Detail,
     flipped: &BTreeSet<ToolCallId>,
 ) -> Laid {
-    let mut laid = Laid {
-        lines: Vec::new(),
-        owners: Vec::new(),
-    };
+    let mut laid = Laid { lines: Vec::new() };
     for entry in entries {
-        let id = match entry {
-            Entry::Tool { id, .. } => Some(id.clone()),
-            _ => None,
-        };
-        let shown = match &id {
-            Some(id) if flipped.contains(id) => detail.other(),
+        let shown = match entry {
+            Entry::Tool { id, .. } if flipped.contains(id) => detail.other(),
             _ => detail,
         };
         let lines = entry_lines(entry, width, shown);
@@ -72,9 +59,7 @@ pub fn laid_out(
         // Nothing before the first: a gap at the very top separates a block from nothing.
         if !laid.lines.is_empty() && !blank_row(laid.lines.last()) && !blank_row(lines.first()) {
             laid.lines.push(Line::default());
-            laid.owners.push(None);
         }
-        laid.owners.extend(std::iter::repeat_n(id, lines.len()));
         laid.lines.extend(lines);
     }
     laid

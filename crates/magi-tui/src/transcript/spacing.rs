@@ -80,24 +80,26 @@ mod spacing {
     }
 
     #[test]
-    fn the_line_a_click_lands_on_still_belongs_to_its_block() {
-        // The separator is a row like any other on screen, so it has to be counted — an owner
-        // list a row short would map every click after it to the block above.
+    fn a_separator_is_a_row_like_any_other() {
+        // It used to have to be counted, because a row-to-block map one short mapped every
+        // click after it to the block above. Nothing maps rows to blocks now -- the mouse is
+        // the terminal's -- but the separator is still a row, and a renderer that stopped
+        // emitting one would run two blocks together.
         let laid = laid_out(
             &[user("one"), call("t1")],
             40,
             Detail::Preview,
             &BTreeSet::new(),
         );
-        assert_eq!(laid.lines.len(), laid.owners.len(), "a row with no owner");
         let top = laid
             .lines
             .iter()
             .rposition(|l| text_of(std::slice::from_ref(l))[0].starts_with('┌'))
             .expect("the call");
+        assert!(top > 0, "the block opens against the top of the screen");
         assert!(
-            laid.owners[top].is_some(),
-            "the block's own edge is unowned"
+            blank_row(laid.lines.get(top - 1)),
+            "nothing separates the message from the block after it"
         );
     }
 }

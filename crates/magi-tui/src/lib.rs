@@ -27,7 +27,6 @@ pub mod pick;
 pub mod picker;
 pub mod prompt;
 pub mod scrollback;
-pub mod select;
 pub mod status;
 pub mod table;
 pub mod tease;
