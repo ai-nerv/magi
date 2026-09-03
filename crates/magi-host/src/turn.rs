@@ -39,6 +39,12 @@ pub struct Backend {
     /// lives, or what credential it takes -- melchior owns all three, and a harness that held a
     /// second opinion about any of them would be a second thing to keep in step.
     pub model: String,
+    /// The program that owns the model, found on `PATH`.
+    ///
+    /// [`crate::broker::MELCHIOR`] in every session. Named per backend rather than compiled in
+    /// so a test can point one turn at a stand-in: `PATH` is process-wide, and tests that fought
+    /// over it would be tests that pass alone and fail together.
+    pub mind: String,
     /// What to ask for beyond the conversation.
     pub wants: magi_proto::ask::Wants,
     /// How much this model will read, as melchior's card reported it.
@@ -83,9 +89,14 @@ async fn compact(session: &tokio::sync::Mutex<Session>, backend: &Backend) -> bo
     let mut deltas = Vec::new();
     // The same mind that answers a turn writes the summary of one. Collected rather than
     // streamed: nobody watches a compaction, and the entry is written once at the end.
-    let outcome = crate::broker::ask(&backend.model, &asked, &backend.wants, |delta| {
-        deltas.push(delta);
-    })
+    let outcome = crate::broker::ask_through(
+        &backend.mind,
+        &backend.model,
+        &asked,
+        &backend.wants,
+        |delta| deltas.push(delta),
+        |_| {},
+    )
     .await;
     for delta in deltas {
         turn.apply(delta);
@@ -149,7 +160,8 @@ async fn one_turn(
         // melchior owns the model. magi gathers the context and writes down the answer; which
         // protocol this model speaks, where it lives and what credential it takes are not
         // magi's to know, and there is no second opinion here to drift from melchior's.
-        let streaming = crate::broker::ask_reporting(
+        let streaming = crate::broker::ask_through(
+            &backend.mind,
             &backend.model,
             &context,
             &backend.wants,

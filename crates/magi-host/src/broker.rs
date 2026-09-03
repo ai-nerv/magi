@@ -87,10 +87,11 @@ pub async fn ask_reporting(
 
 /// The program that owns the model.
 ///
-/// Found on `PATH`, like every other sibling. Named here rather than inline so a test can put
-/// something else in its place without touching the environment: `PATH` is process-wide, and
-/// tests that fought over it would be tests that pass alone and fail together.
-const MELCHIOR: &str = "melchior";
+/// Found on `PATH`, like every other sibling. Public because a [`crate::turn::Backend`] carries
+/// the name it will ask, so a test can put something else in its place without touching the
+/// environment: `PATH` is process-wide, and tests that fought over it would be tests that pass
+/// alone and fail together.
+pub const MELCHIOR: &str = "melchior";
 
 /// The same, against a named program.
 ///
@@ -139,7 +140,7 @@ pub async fn ask_through(
 
     let Some(stdout) = child.stdout.take() else {
         return Err(Trouble {
-            message: "melchior gave nothing to read".to_owned(),
+            message: format!("{program} gave nothing to read"),
             why: Refusal::Transport,
         });
     };
@@ -185,7 +186,7 @@ pub async fn ask_through(
     // returned as success. A turn that ends without a terminal lost its mind mid-sentence.
     ended.unwrap_or_else(|| {
         Err(Trouble {
-            message: "melchior stopped without finishing the turn".to_owned(),
+            message: format!("{program} stopped without finishing the turn"),
             why: Refusal::Transport,
         })
     })
@@ -208,6 +209,73 @@ fn carried(said: Said) -> Delta {
         Said::Stop { reason } => Delta::Stop(reason),
         Said::Failed { .. } | Said::Retrying { .. } => Delta::Stop(magi_model::StopReason::Error),
     }
+}
+
+/// Ask for a value rather than a conversation, and parse what comes back.
+///
+/// For the places magi wants a *shape* — the permissions a config declares it needs, and
+/// anything else that asks the model to fill in a schema. The stream is collected rather than
+/// published: nobody is watching, and half of a JSON object on screen is worse than none.
+///
+/// # Errors
+/// Whatever [`ask`] would return, and [`Refusal::Invalid`] when the answer will not parse as the
+/// shape that was asked for.
+pub async fn value(
+    model: &str,
+    context: &Context,
+    wants: &Wants,
+) -> Result<serde_json::Value, Trouble> {
+    let mut text = String::new();
+    let mut args = String::new();
+    ask(model, context, wants, |delta| match delta {
+        Delta::Text(chunk) => text.push_str(&chunk),
+        Delta::ToolCallArgs(chunk) => args.push_str(&chunk),
+        _ => {}
+    })
+    .await?;
+
+    // A call is preferred over prose: Anthropic answers a schema by calling a forced tool, and
+    // anything in the text beside it is commentary.
+    let raw = if args.trim().is_empty() { &text } else { &args };
+    serde_json::from_str(raw.trim()).map_err(|why| Trouble {
+        message: format!("the answer was not the shape that was asked for: {why}"),
+        why: Refusal::Invalid,
+    })
+}
+
+/// What melchior says this machine can talk to.
+///
+/// Asked once, when a session starts. A card is small and there are a few hundred of them, so
+/// the cost is a process and a parse — against which the alternative is magi keeping its own
+/// catalog, which is the thing that drifts.
+///
+/// Empty when melchior is not installed or would not answer. Not an error: a session with no
+/// models says so when a prompt arrives, which is where a person can act on it.
+pub async fn cards() -> Vec<magi_proto::ask::Card> {
+    let Ok(out) = tokio::process::Command::new("melchior")
+        .arg("models")
+        .arg("--json")
+        .stderr(std::process::Stdio::null())
+        .output()
+        .await
+    else {
+        return Vec::new();
+    };
+    let Ok(reply) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else {
+        return Vec::new();
+    };
+    if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+        return Vec::new();
+    }
+    reply
+        .get("result")
+        .and_then(serde_json::Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| serde_json::from_value(row.clone()).ok())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -287,71 +355,4 @@ mod tests {
         .expect_err("no melchior");
         assert!(trouble.message.contains("melchior"), "{trouble:?}");
     }
-}
-
-/// Ask for a value rather than a conversation, and parse what comes back.
-///
-/// For the places magi wants a *shape* — the permissions a config declares it needs, and
-/// anything else that asks the model to fill in a schema. The stream is collected rather than
-/// published: nobody is watching, and half of a JSON object on screen is worse than none.
-///
-/// # Errors
-/// Whatever [`ask`] would return, and [`Refusal::Invalid`] when the answer will not parse as the
-/// shape that was asked for.
-pub async fn value(
-    model: &str,
-    context: &Context,
-    wants: &Wants,
-) -> Result<serde_json::Value, Trouble> {
-    let mut text = String::new();
-    let mut args = String::new();
-    ask(model, context, wants, |delta| match delta {
-        Delta::Text(chunk) => text.push_str(&chunk),
-        Delta::ToolCallArgs(chunk) => args.push_str(&chunk),
-        _ => {}
-    })
-    .await?;
-
-    // A call is preferred over prose: Anthropic answers a schema by calling a forced tool, and
-    // anything in the text beside it is commentary.
-    let raw = if args.trim().is_empty() { &text } else { &args };
-    serde_json::from_str(raw.trim()).map_err(|why| Trouble {
-        message: format!("the answer was not the shape that was asked for: {why}"),
-        why: Refusal::Invalid,
-    })
-}
-
-/// What melchior says this machine can talk to.
-///
-/// Asked once, when a session starts. A card is small and there are a few hundred of them, so
-/// the cost is a process and a parse — against which the alternative is magi keeping its own
-/// catalog, which is the thing that drifts.
-///
-/// Empty when melchior is not installed or would not answer. Not an error: a session with no
-/// models says so when a prompt arrives, which is where a person can act on it.
-pub async fn cards() -> Vec<magi_proto::ask::Card> {
-    let Ok(out) = tokio::process::Command::new("melchior")
-        .arg("models")
-        .arg("--json")
-        .stderr(std::process::Stdio::null())
-        .output()
-        .await
-    else {
-        return Vec::new();
-    };
-    let Ok(reply) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else {
-        return Vec::new();
-    };
-    if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
-        return Vec::new();
-    }
-    reply
-        .get("result")
-        .and_then(serde_json::Value::as_array)
-        .map(|rows| {
-            rows.iter()
-                .filter_map(|row| serde_json::from_value(row.clone()).ok())
-                .collect()
-        })
-        .unwrap_or_default()
 }

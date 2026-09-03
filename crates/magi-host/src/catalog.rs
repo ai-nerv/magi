@@ -76,6 +76,7 @@ impl Catalog {
             environ: self.environ.clone(),
             cwd: self.cwd.clone(),
             model: card.id.clone(),
+            mind: crate::broker::MELCHIOR.to_owned(),
             wants: self.wants.clone(),
             context_window: card.context_window,
             system: self.system.clone(),
