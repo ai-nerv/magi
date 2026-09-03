@@ -207,8 +207,16 @@ pub fn candidates(dir: Option<&Path>) -> Vec<PathBuf> {
 
 /// Every `api@*.sock` in one directory, newest first.
 ///
-/// Split from [`candidates`] so it can be tested without setting a process-wide variable, which
-/// Rust 2024 makes `unsafe` and this crate denies.
+/// The directory and nothing else — no `$MAGI_API_SOCKET`, no default location. [`candidates`]
+/// answers "which one should I talk to", which an inherited variable settles outright; this
+/// answers "which are there", which is what a sweep needs and what a test can check without
+/// setting a process-wide variable that Rust 2024 makes `unsafe` and this crate denies.
+#[must_use]
+pub fn sockets_in(dir: &Path) -> Vec<PathBuf> {
+    listing(dir)
+}
+
+/// Every `api@*.sock` in one directory, newest first.
 #[must_use]
 fn listing(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {

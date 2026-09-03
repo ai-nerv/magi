@@ -35,8 +35,13 @@ pub async fn start(instance: &str, project: &Path) -> Option<PathBuf> {
         return None;
     }
 
-    let socket = magi_ipc::family::socket_dir().join(format!("api@{instance}.sock"));
-    sweep(&socket);
+    let dir = magi_ipc::family::socket_dir();
+    let socket = dir.join(format!("api@{instance}.sock"));
+    // The whole directory, not only the path about to be taken. A session id is unique per
+    // magi, so sweeping one path only ever cleared a corpse this same session had left --
+    // which, since the id is never reused, is none. Every run therefore left a file behind for
+    // good, and after a week the directory is a list of sessions that ended.
+    sweep_stale(&dir);
 
     let child = Command::new("balthasar")
         .arg("serve")
@@ -81,11 +86,27 @@ pub fn stop() {
     let _ = child.wait();
 }
 
+/// Clear every socket in `dir` that nothing is serving.
+///
+/// A pass over the directory rather than over one name, because the ones worth clearing are
+/// never the one this session is about to bind: the path is named after a session id that is
+/// unique per magi, so nothing can be squatting on it. What accumulates is the *predecessors* —
+/// a file per run, each outliving the balthasar that bound it.
+///
+/// Only `api@*.sock`, so the settings and the tool description sitting beside them are left
+/// alone. And on the way up rather than on the way down, because the runs that leave a file are
+/// exactly the ones that did not get to run anything on the way down.
+fn sweep_stale(dir: &Path) {
+    for path in magi_ipc::family::sockets_in(dir) {
+        sweep(&path);
+    }
+}
+
 /// Clear a socket at `path` that nothing is serving.
 ///
-/// Dialled, never guessed: unlinking a path because it looks stale would take a live balthasar's
-/// socket out from under it. A session id is unique per magi, so a file already at this path was
-/// left by a magi that died badly.
+/// Dialled, never guessed: a live balthasar's socket looks exactly like a dead one's, so
+/// unlinking on appearance would take another window's memory layer out from under it. Only a
+/// refused connection is proof, and the file left by a `kill -9` is the only thing that refuses.
 fn sweep(path: &Path) {
     if !path.exists() {
         return;
@@ -126,6 +147,57 @@ mod tests {
         sweep(&path);
         assert!(!path.exists(), "a socket nothing answers must be cleared");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A socket directory holding a live socket, a dead one, and two files that are not sockets.
+    fn littered(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("magi-sweep-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let dead = dir.join("api@00000000000000000001-alpha.sock");
+        {
+            let _listener = std::os::unix::net::UnixListener::bind(&dead).expect("bind");
+        }
+        let live = dir.join("api@00000000000000000002-beta.sock");
+        (dir, live, dead)
+    }
+
+    #[tokio::test]
+    async fn every_socket_nobody_answers_is_cleared_not_only_this_sessions() {
+        // The leak. Sweeping one path cleared a corpse of this session's own, and a session id
+        // is never reused — so nothing was ever cleared and every run left a file for good.
+        let (dir, live, dead) = littered("directory");
+        let _listener = std::os::unix::net::UnixListener::bind(&live).expect("bind");
+
+        sweep_stale(&dir);
+        assert!(!dead.exists(), "a predecessor's socket outlived it");
+        assert!(
+            live.exists(),
+            "another window's balthasar was taken down with it"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn what_is_not_a_socket_is_left_where_it_is() {
+        // The settings a coordinator wrote and the tool description sit in the same directory,
+        // and a sweep that went by "everything here is stale" would take both.
+        let (dir, _live, _dead) = littered("bystanders");
+        let given = dir.join("given.lua");
+        let tool = dir.join("balthasar.tool");
+        std::fs::write(&given, "balthasar.decay = 0.5\n").expect("write");
+        std::fs::write(&tool, "{}").expect("write");
+
+        sweep_stale(&dir);
+        assert!(given.exists(), "the settings went with the sockets");
+        assert!(tool.exists(), "the tool description went with the sockets");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_directory_that_is_not_there_is_not_an_error() {
+        // The first run on a machine. Nothing to sweep is the ordinary case, not a failure.
+        sweep_stale(Path::new("/nonexistent/magi-sweep-nothing-here"));
     }
 
     #[tokio::test]
