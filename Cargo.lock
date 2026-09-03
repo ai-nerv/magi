@@ -464,6 +464,7 @@ dependencies = [
  "magi-lua",
  "magi-model",
  "magi-proto",
+ "magi-testkit",
  "magi-tools",
  "serde",
  "serde_json",
