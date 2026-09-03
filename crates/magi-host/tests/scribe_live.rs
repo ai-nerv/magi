@@ -142,3 +142,79 @@ async fn cursor_order_is_what_comes_back_not_arrival_order() {
     let cursors: Vec<u64> = back.iter().map(|(c, _)| c.0).collect();
     assert_eq!(cursors, vec![1, 2, 3], "replay must be in cursor order");
 }
+
+/// The path a turn actually takes: commit into a session, then flush it out.
+#[tokio::test]
+async fn what_a_session_commits_reaches_balthasar_when_it_is_flushed() {
+    let Some(scribe) = scribe("flush").await else {
+        return;
+    };
+    let dir = std::env::temp_dir().join(format!("magi-flush-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    let journal = dir.join("session.jsonl");
+    let id = SessionId::new(format!("magi-scribe-{}-flush", std::process::id()));
+
+    let session = magi_host::session::Session::open(&journal, id, "/tmp", 1).expect("open");
+    let session = tokio::sync::Mutex::new(session);
+
+    {
+        let mut held = session.lock().await;
+        held.commit(Entry::User {
+            id: MessageId::new("u1"),
+            text: "asked".into(),
+            aside: String::new(),
+        })
+        .expect("commit");
+        // Amended twice, as a streaming message is. Both collapse into one write.
+        held.commit(Entry::Assistant {
+            id: MessageId::new("a1"),
+            text: "par".into(),
+            thinking: String::new(),
+            stop_reason: None,
+            error: None,
+            signatures: Default::default(),
+            usage: Usage::default(),
+        })
+        .expect("commit");
+        held.amend(Entry::Assistant {
+            id: MessageId::new("a1"),
+            text: "partial answer".into(),
+            thinking: String::new(),
+            stop_reason: Some(StopReason::EndTurn),
+            error: None,
+            signatures: Default::default(),
+            usage: Usage::default(),
+        })
+        .expect("amend");
+        assert!(held.has_pending(), "commits must queue for balthasar");
+    }
+
+    let mut scribe = Some(scribe);
+    magi_host::scribe::flush(&session, &mut scribe)
+        .await
+        .expect("flush");
+    assert!(!session.lock().await.has_pending(), "the queue must drain");
+
+    let back = scribe
+        .as_mut()
+        .expect("scribe")
+        .replay()
+        .await
+        .expect("replay");
+    assert_eq!(back.len(), 2, "two entries, not three: {back:?}");
+    assert_eq!(
+        back[1].1,
+        Entry::Assistant {
+            id: MessageId::new("a1"),
+            text: "partial answer".into(),
+            thinking: String::new(),
+            stop_reason: Some(StopReason::EndTurn),
+            error: None,
+            signatures: Default::default(),
+            usage: Usage::default(),
+        },
+        "the amendment must win"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}

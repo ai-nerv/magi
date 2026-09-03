@@ -93,6 +93,13 @@ pub async fn serve_catalog(
     // Shared with every connection, because a question raised by one turn has to be answerable
     // by whichever UI is attached when it arrives.
     let pending = Arc::new(crate::asking::Pending::new());
+    // Dialled once, here, and `None` when balthasar is not running. Absent is the ordinary case
+    // while the journal is still the copy of record: nothing is registered, nothing is written,
+    // and the session behaves exactly as it did before balthasar existed.
+    let scribe = Arc::new(Mutex::new({
+        let id = session.lock().await.id().clone();
+        crate::scribe::Scribe::find(&id).await.ok()
+    }));
     // The asker publishes through the session's own broadcast handle rather than through the
     // lock: the thread that asks is the thread running the turn, which is usually the one
     // holding it.
@@ -140,8 +147,12 @@ pub async fn serve_catalog(
         let catalog = Arc::clone(&catalog);
         let pending = Arc::clone(&pending);
         let approver = Arc::clone(&approver);
+        let scribe = Arc::clone(&scribe);
         tokio::spawn(async move {
-            let _ = connection(stream, session, &worker, &catalog, &pending, &approver).await;
+            let _ = connection(
+                stream, session, &worker, &catalog, &pending, &approver, &scribe,
+            )
+            .await;
         });
     }
 }
@@ -154,6 +165,7 @@ async fn connection(
     catalog: &crate::catalog::Catalog,
     pending: &crate::asking::Pending,
     approver: &Arc<dyn magi_tools::approve::Approver>,
+    scribe: &Arc<Mutex<Option<crate::scribe::Scribe>>>,
 ) -> Result<(), HostError> {
     let (read_half, write_half) = stream.into_split();
     let mut reader = FrameReader::new(read_half);
@@ -203,7 +215,7 @@ async fn connection(
                             id: MessageId::new(format!("u{}", session.lock().await.cursor().next().0)),
                             text,
                             aside,
-                        }, held, catalog).await?;
+                        }, held, catalog, scribe).await?;
                     }
                     Some(UiCommand::Arrived { who, kin, sort, text }) => {
                         let arrived = Entry::From { who, kin, sort, text };
@@ -223,7 +235,7 @@ async fn connection(
                             // message a *message*: without it the entry landed in the transcript
                             // and nothing read it, so an instance could be asked a question and
                             // would sit there until somebody typed at it.
-                            submit(&session, arrived, held, catalog).await?;
+                            submit(&session, arrived, held, catalog, scribe).await?;
                         } else {
                             // Committed and no more. A note is something to have seen by the
                             // time you next answer, not a reason to start answering.
@@ -492,6 +504,7 @@ async fn submit(
     opening: Entry,
     worker: Option<Arc<worker::Worker>>,
     catalog: &crate::catalog::Catalog,
+    scribe: &Arc<Mutex<Option<crate::scribe::Scribe>>>,
 ) -> Result<(), HostError> {
     {
         let mut held = session.lock().await;
@@ -524,7 +537,8 @@ async fn submit(
     // Overlapping turns are not a risk. The worker is one thread taking one job at a time, so
     // a second prompt queues behind the first exactly as it did when this awaited.
     let session = Arc::clone(session);
-    tokio::spawn(async move { after(session, worker).await });
+    let scribe = Arc::clone(scribe);
+    tokio::spawn(async move { after(session, worker, scribe).await });
     Ok(())
 }
 
@@ -538,9 +552,33 @@ async fn submit(
 /// A loop, because more can arrive during *that* turn. It ends when a turn finishes with an
 /// empty waiting room, which is the ordinary case: a session with nobody talking to it does one
 /// pass and stops.
-async fn after(session: Arc<Mutex<Session>>, worker: Arc<worker::Worker>) {
+async fn after(
+    session: Arc<Mutex<Session>>,
+    worker: Arc<worker::Worker>,
+    scribe: Arc<Mutex<Option<crate::scribe::Scribe>>>,
+) {
     loop {
         worker.run(Arc::clone(&session)).await;
+
+        // The turn boundary, which is where durability is owed. Amendments during streaming are
+        // coalesced by cursor in the session, so a message written a hundred times on the way
+        // through goes over once, as it finally stood.
+        if let Err(fault) = crate::scribe::flush(&session, &mut *scribe.lock().await).await {
+            // Said once, in the transcript, rather than swallowed. A session whose transcript
+            // stopped being recorded must not look like one that is fine, and while magi's own
+            // journal is still the copy of record this costs memory rather than the session.
+            let mut held = session.lock().await;
+            let id = MessageId::new(format!("n{}", held.cursor().next().0));
+            let _ = held.commit(Entry::Assistant {
+                id,
+                text: String::new(),
+                thinking: String::new(),
+                stop_reason: Some(StopReason::Error),
+                error: Some(format!("this turn was not recorded: {fault}")),
+                signatures: magi_proto::Signatures::default(),
+                usage: magi_proto::Usage::default(),
+            });
+        }
 
         let arrived = session.lock().await.release();
         if arrived.is_empty() {

@@ -39,6 +39,13 @@ pub struct Session {
     /// message between an assistant's tool call and its result puts a user turn inside an
     /// exchange, which is a conversation no provider accepts.
     waiting: Vec<Entry>,
+    /// Entries settled here and not yet handed to balthasar, by cursor.
+    ///
+    /// Keyed rather than appended, so a message amended once per delta batch is one write at the
+    /// end instead of one per batch. Drained by [`Self::take_pending`] under a short lock and
+    /// written outside it: a socket round trip held here would block every UI read behind
+    /// balthasar's `fsync`.
+    pending: std::collections::BTreeMap<u64, Entry>,
 }
 
 impl Session {
@@ -55,6 +62,7 @@ impl Session {
             thinking: "off".to_owned(),
             events,
             waiting: Vec::new(),
+            pending: std::collections::BTreeMap::new(),
         })
     }
 
@@ -75,6 +83,23 @@ impl Session {
     /// close together would otherwise both find it there.
     pub fn release(&mut self) -> Vec<Entry> {
         std::mem::take(&mut self.waiting)
+    }
+
+    /// Take what has settled since the last time, in cursor order.
+    ///
+    /// Cheap and synchronous on purpose: the caller drains here and does the writing after it
+    /// has let the lock go.
+    pub fn take_pending(&mut self) -> Vec<(Cursor, Entry)> {
+        std::mem::take(&mut self.pending)
+            .into_iter()
+            .map(|(cursor, entry)| (Cursor(cursor), entry))
+            .collect()
+    }
+
+    /// Whether anything is waiting to be written out.
+    #[must_use]
+    pub fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
     }
 
     /// Put this session onto a different journal, keeping everyone attached to it.
@@ -235,6 +260,7 @@ impl Session {
             // A send with no subscribers is not a failure: the daemon outlives its UIs.
             let _ = self.events.send(event);
         }
+        self.pending.insert(cursor.0, entry);
         Ok(cursor)
     }
 
@@ -250,6 +276,7 @@ impl Session {
         for event in amendment_events(cursor, previous.as_ref(), &entry) {
             let _ = self.events.send(event);
         }
+        self.pending.insert(cursor.0, entry);
         Ok(cursor)
     }
 
@@ -270,6 +297,7 @@ impl Session {
         for event in amendment_events(cursor, previous.as_ref(), &entry) {
             let _ = self.events.send(event);
         }
+        self.pending.insert(cursor.0, entry);
         Ok(())
     }
 

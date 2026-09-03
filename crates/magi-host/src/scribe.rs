@@ -17,6 +17,11 @@ use magi_proto::{Cursor, Entry, SessionId};
 pub struct Scribe {
     family: Family,
     session: String,
+    /// Cursors already sent, so a second write says `amend` rather than `observe`.
+    ///
+    /// The two land in the same place and the second wins either way, but which verb was meant
+    /// is not balthasar's to infer from whether a row happened to exist.
+    sent: std::collections::BTreeSet<u64>,
 }
 
 impl Scribe {
@@ -25,6 +30,7 @@ impl Scribe {
         Ok(Self {
             family: Family::find(None).await?,
             session: session.as_str().to_owned(),
+            sent: std::collections::BTreeSet::new(),
         })
     }
 
@@ -34,6 +40,7 @@ impl Scribe {
         Self {
             family,
             session: session.as_str().to_owned(),
+            sent: std::collections::BTreeSet::new(),
         }
     }
 
@@ -47,6 +54,15 @@ impl Scribe {
         self.write("amend", cursor, entry).await
     }
 
+    /// Record it, saying `amend` when this cursor has gone over before.
+    pub async fn settle(&mut self, cursor: Cursor, entry: &Entry) -> Result<(), Fault> {
+        if self.sent.contains(&cursor.0) {
+            self.amend(cursor, entry).await
+        } else {
+            self.observe(cursor, entry).await
+        }
+    }
+
     async fn write(&mut self, verb: &str, cursor: Cursor, entry: &Entry) -> Result<(), Fault> {
         let turn = turn(cursor, entry)?;
         self.family
@@ -54,8 +70,9 @@ impl Scribe {
                 verb,
                 vec![serde_json::Value::String(self.session.clone()), turn],
             )
-            .await
-            .map(|_| ())
+            .await?;
+        self.sent.insert(cursor.0);
+        Ok(())
     }
 
     /// Everything this session said, in cursor order, as it finally stood.
@@ -75,6 +92,36 @@ impl Scribe {
         let values = self.family.call("sessions", Vec::new()).await?;
         Ok(values.iter().flat_map(rows).cloned().collect())
     }
+}
+
+/// Hand everything a session has settled to balthasar.
+///
+/// The lock is taken to drain and released before a byte is written, so a UI reading the
+/// transcript is never queued behind balthasar's `fsync`. Draining first also means a failure
+/// does not re-send what already landed: the queue is empty either way, and the error says the
+/// turn may not continue.
+///
+/// # Errors
+/// Whatever balthasar answered. [`Fault::is_fatal`] says whether continuing would build on a
+/// hole.
+pub async fn flush(
+    session: &tokio::sync::Mutex<crate::session::Session>,
+    scribe: &mut Option<Scribe>,
+) -> Result<(), Fault> {
+    let Some(scribe) = scribe.as_mut() else {
+        return Ok(());
+    };
+    let settled = {
+        let mut held = session.lock().await;
+        if !held.has_pending() {
+            return Ok(());
+        }
+        held.take_pending()
+    };
+    for (cursor, entry) in settled {
+        scribe.settle(cursor, &entry).await?;
+    }
+    Ok(())
 }
 
 /// A reply value that is a list of rows, or the single row it is.
