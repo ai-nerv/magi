@@ -5,7 +5,6 @@
 //! a single artifact.
 
 mod app;
-mod auth;
 mod balthasar;
 mod clipboard;
 mod config;
@@ -68,9 +67,6 @@ enum Command {
     /// so `command = "magi"` in a declaration needs nothing else installed.
     #[command(subcommand)]
     Ext(Ext),
-    /// Sign in to a provider that uses a subscription rather than a key.
-    #[command(subcommand)]
-    Auth(AuthCommand),
     /// Print the Lua client library for magi's own surface.
     ///
     /// What a sibling needs in order to talk to a running magi: framing, encoding, discovery
@@ -114,9 +110,6 @@ async fn main() -> Result<()> {
         Some(Command::Ext(Ext::Shell)) => shell::run(),
 
         Some(Command::Ext(Ext::Lua { file })) => ext_lua::run(&file),
-        Some(Command::Auth(AuthCommand::Login { provider })) => auth::login(&provider).await,
-        Some(Command::Auth(AuthCommand::Logout { provider })) => auth::logout(&provider),
-        Some(Command::Auth(AuthCommand::Status)) => auth::status(),
         Some(Command::LuaApi) => {
             print!("{}", magi_lua::client::CLIENT);
             Ok(())
@@ -286,22 +279,6 @@ fn talk(loaded: Option<&crate::config::Loaded>) -> Option<&str> {
     loaded.and_then(|l| l.config.string("agent_talk"))
 }
 
-/// What `magi auth` can do.
-#[derive(Subcommand)]
-enum AuthCommand {
-    /// Sign in, through your browser.
-    Login {
-        /// The provider, as `magi models` names it.
-        provider: String,
-    },
-    /// Forget a provider's credentials.
-    Logout {
-        /// The provider to forget.
-        provider: String,
-    },
-    /// Show which providers are signed in.
-    Status,
-}
 
 /// The peers magi ships.
 #[derive(Subcommand)]

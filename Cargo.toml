@@ -1,7 +1,6 @@
 [workspace]
 members = [
   "crates/magi-proto",
-  "crates/magi-provider",
   "crates/magi-host",
   "crates/magi-ipc",
   "crates/magi-journal",
@@ -38,7 +37,6 @@ magi-journal = { path = "crates/magi-journal" }
 magi-lua = { path = "crates/magi-lua" }
 magi-model = { path = "crates/magi-model" }
 magi-proto = { path = "crates/magi-proto" }
-magi-provider = { path = "crates/magi-provider" }
 magi-testkit = { path = "crates/magi-testkit" }
 magi-tools = { path = "crates/magi-tools" }
 magi-tui = { path = "crates/magi-tui" }
@@ -65,7 +63,7 @@ sha2 = "0.10"
 thiserror = "2.0"
 tokio-stream = "0.1"
 unicode-width = "0.2"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "time", "sync", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "time", "sync", "signal", "process"] }
 
 # Pinned rather than left to defaults, the way Tau pins its release profile.
 #

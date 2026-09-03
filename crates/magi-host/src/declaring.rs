@@ -16,7 +16,7 @@
 //! This buys fewer interruptions, not more trust.
 
 use magi_proto::permit::{Grant, Scope};
-use magi_provider::api::Schema;
+use magi_proto::ask::Schema;
 
 /// What the model is asked, as a message of its own.
 ///

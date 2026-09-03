@@ -302,3 +302,32 @@ mod tests {
         assert!(ThinkingLevel::High < ThinkingLevel::Max);
     }
 }
+
+/// One thing that happened while an answer streamed.
+///
+/// Provider-neutral, and here rather than beside a provider because magi no longer has one:
+/// melchior speaks the protocols and hands back [`magi_proto::ask::Said`], which the broker
+/// turns into these. The turn loop has always been written against this vocabulary and did not
+/// need to change when the model moved.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Delta {
+    /// Response text.
+    Text(String),
+    /// Reasoning text.
+    Thinking(String),
+    /// Opaque provider state for the block being streamed, to be replayed verbatim.
+    Signature(String),
+    /// A tool call began.
+    ToolCallStart {
+        /// Provider-issued identity.
+        id: String,
+        /// Tool name.
+        name: String,
+    },
+    /// Arguments for the tool call in progress, as raw JSON text.
+    ToolCallArgs(String),
+    /// The turn finished.
+    Stop(StopReason),
+    /// Token counts, which arrive at their own pace.
+    Usage(Usage),
+}

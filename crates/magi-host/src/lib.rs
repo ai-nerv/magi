@@ -8,6 +8,7 @@
 //! one, so growing to a registry would be a lookup rather than a protocol change.
 
 pub mod asking;
+pub mod broker;
 pub mod cancel;
 pub mod catalog;
 pub mod compact;
@@ -118,8 +119,8 @@ pub async fn serve_on(
     // session is actually talking to.
     session.set_choices(catalog.choices());
     session.set_model(backend.as_ref().map(|backend| magi_proto::ModelInfo {
-        name: backend.model.qualified(),
-        context_window: backend.model.context_window,
+        name: backend.model.clone(),
+        context_window: backend.context_window.unwrap_or(0),
     }));
     let session = Arc::new(Mutex::new(session));
     // Turns run on the worker's own thread because a protocol lives in a Lua VM. A session
@@ -442,8 +443,8 @@ async fn switch_model(
     };
 
     let info = magi_proto::ModelInfo {
-        name: backend.model.qualified(),
-        context_window: backend.model.context_window,
+        name: backend.model.clone(),
+        context_window: backend.context_window.unwrap_or(0),
     };
     // Gated, like the one it replaces. `Worker::start` is `gated(backend, None)` — a worker
     // nothing asks — so switching the model used to switch the permission model off with it,
@@ -494,7 +495,7 @@ async fn switch_thinking(
     // way it would have been had the session started with it.
     let name = session.lock().await.model_name()?;
     let mut backend = catalog.backend(&name)?;
-    backend.options.thinking = Some(parsed);
+    backend.wants.thinking = Some(parsed);
     // Gated, like the one it replaces. `Worker::start` is `gated(backend, None)` — a worker
     // nothing asks — so switching the model used to switch the permission model off with it,
     // and every tool for the rest of the session ran without being asked about.

@@ -8,8 +8,6 @@
 magi.load("clients/hexe.lua")
 magi.load("clients/oslo.lua")
 magi.load("clients/balthasar.lua")
-magi.load("apis.lua")
-magi.load("providers.lua")
 magi.load("tools.lua")
 
 -- Which model to use, as `magi models` prints it.

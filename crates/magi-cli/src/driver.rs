@@ -67,8 +67,11 @@ pub async fn run(
         // Worked out here because the answer needs the catalog, and the snapshot carries only
         // whether there is a model — not why there is not. Same text the session refuses a prompt
         // with, so meeting the problem at attach and meeting it at the first prompt say one thing.
-        if crate::config::backend(loaded).is_none() {
-            app.no_model = Some(magi_host::no_model(&crate::config::catalog(loaded)));
+        // The cards come from melchior, so this asks it. One process at attach, against the
+        // alternative of a picker that lists what magi believed rather than what can be reached.
+        let catalog = crate::config::catalog(loaded, magi_host::broker::cards().await);
+        if crate::config::backend(&catalog).is_none() {
+            app.no_model = Some(magi_host::no_model(&catalog));
         }
     }
     // Before anything else, because the answer to "why is my new tool not there" has to arrive

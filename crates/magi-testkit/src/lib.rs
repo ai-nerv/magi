@@ -5,6 +5,8 @@
 //! fake, which is what makes this useful rather than a mock.
 
 pub mod conformance;
+pub mod mind;
 pub mod replay;
 
+pub use mind::Mind;
 pub use replay::{FakeHarness, Recording};

@@ -86,9 +86,13 @@ pub async fn start(
         .await
         .with_context(|| format!("binding {}", socket.display()))?;
 
-    let mut backend = loaded.and_then(crate::config::backend);
-    let mut catalog =
-        loaded.map_or_else(magi_host::catalog::Catalog::empty, crate::config::catalog);
+    // Asked once, here, and handed to the session. melchior owns the catalog; a session that
+    // re-read it per switch would answer with a model the person did not choose.
+    let mut catalog = match loaded {
+        Some(loaded) => crate::config::catalog(loaded, magi_host::broker::cards().await),
+        None => magi_host::catalog::Catalog::empty(),
+    };
+    let mut backend = crate::config::backend(&catalog);
     stamp(&mut backend, &mut catalog, environ);
     tokio::spawn(async move {
         let _ = magi_host::serve_on(listener, session, backend, catalog, ours).await;

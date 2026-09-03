@@ -106,6 +106,39 @@ pub struct Ask {
     pub about: String,
 }
 
+/// Why a mind could not answer.
+///
+/// The same seven a provider's own classifier produces, carried across so a broker can act on
+/// them rather than only report them. `Overflow` is the one that earns its place on its own:
+/// it is answered by compacting the conversation and asking again, and a broker told only
+/// "it failed, try later" would give up on a turn that a summary would have fixed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Refusal {
+    /// The connection failed before an answer arrived.
+    Transport,
+    /// The mind is busy. Worth waiting.
+    Overload,
+    /// Rate limited. Worth waiting longer.
+    Throttle,
+    /// Credentials are missing or rejected. Nothing to wait for.
+    Auth,
+    /// The request was malformed, or asked for something unavailable.
+    Invalid,
+    /// The context window overflowed. Compact and ask again.
+    Overflow,
+    /// Unrecognised.
+    Unknown,
+}
+
+impl Refusal {
+    /// Whether asking again, unchanged, could work.
+    #[must_use]
+    pub fn is_retryable(self) -> bool {
+        matches!(self, Self::Transport | Self::Overload | Self::Throttle)
+    }
+}
+
 /// One thing that happened while an answer streamed.
 ///
 /// Smaller than any protocol's own event set on purpose: a broker wants to know that text
@@ -150,6 +183,22 @@ pub enum Said {
         /// Tokens, by kind.
         usage: Usage,
     },
+    /// An attempt failed and another is starting.
+    ///
+    /// Everything said so far belongs to the attempt that failed and is retracted by this: half
+    /// an answer concatenated with a whole one parses as neither. Reported *during* the wait
+    /// rather than after it, because the whole value of saying "retrying" is saying it while
+    /// somebody is watching a spinner and wondering whether it has hung.
+    Retrying {
+        /// Which attempt just failed, counting from one.
+        attempt: u32,
+        /// How many will be made in all.
+        of: u32,
+        /// How long before the next one, in seconds.
+        seconds: f64,
+        /// What went wrong, for the person watching.
+        why: String,
+    },
     /// The turn finished, and why.
     Stop {
         /// What ended it.
@@ -162,8 +211,8 @@ pub enum Said {
     Failed {
         /// What went wrong, in a sentence.
         message: String,
-        /// Whether asking again could work.
-        retryable: bool,
+        /// Which kind of failure, so a broker can act rather than only report.
+        why: Refusal,
     },
 }
 
@@ -243,7 +292,7 @@ mod tests {
             },
             Said::Failed {
                 message: "no credential".into(),
-                retryable: false,
+                why: Refusal::Auth,
             },
         ];
         for said in stream {
@@ -264,7 +313,7 @@ mod tests {
         assert!(
             Said::Failed {
                 message: String::new(),
-                retryable: true
+                why: Refusal::Transport
             }
             .is_last()
         );

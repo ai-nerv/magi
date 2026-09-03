@@ -19,7 +19,6 @@ magi-ipc.workspace = true
 magi-proto.workspace = true
 magi-host.workspace = true
 magi-lua.workspace = true
-magi-provider.workspace = true
 magi-tools.workspace = true
 magi-testkit.workspace = true
 magi-tui.workspace = true

@@ -11,7 +11,6 @@
 
 use magi_model::{Content, Context, Message, Role};
 use magi_proto::Entry;
-use magi_provider::model::Model;
 
 /// The percentage of the window at which a conversation is compacted.
 ///
@@ -60,8 +59,8 @@ pub fn estimate(context: &Context) -> usize {
 
 /// Whether this context should be compacted before it is sent.
 #[must_use]
-pub fn needed(context: &Context, model: &Model) -> bool {
-    let window = usize::try_from(model.context_window).unwrap_or(usize::MAX);
+pub fn needed(context: &Context, window: Option<u64>) -> bool {
+    let window = window.map_or(0, |n| usize::try_from(n).unwrap_or(usize::MAX));
     // A model that declares no window cannot be over it. Better than treating zero as full
     // and compacting on every turn.
     // Multiplied out rather than divided, so a small window does not round its threshold to
