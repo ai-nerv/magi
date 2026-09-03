@@ -18,8 +18,20 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 
-/// The child this process started, so it can be ended.
-static STARTED: Mutex<Option<Child>> = Mutex::new(None);
+/// The balthasar this process started, so it can be ended and its path cleared.
+static STARTED: Mutex<Option<Ours>> = Mutex::new(None);
+
+/// A balthasar this magi started, and the path it was told to bind.
+///
+/// The path is kept beside the child because only the two together can be tidied up: the child
+/// is stopped with a signal it cannot handle, so it never unlinks its own socket, and the path
+/// alone is not enough to know whether unlinking it is safe.
+struct Ours {
+    /// The process, to end.
+    child: Child,
+    /// Where it was told to listen, to unlink once it has.
+    socket: PathBuf,
+}
 
 /// How long to wait for a freshly started balthasar to bind.
 const PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
@@ -58,7 +70,10 @@ pub async fn start(instance: &str, project: &Path) -> Option<PathBuf> {
         .spawn()
         .ok()?;
     if let Ok(mut held) = STARTED.lock() {
-        *held = Some(child);
+        *held = Some(Ours {
+            child,
+            socket: socket.clone(),
+        });
     }
 
     // Polled rather than assumed. A socket appears when balthasar binds it, and dialling before
@@ -74,16 +89,36 @@ pub async fn start(instance: &str, project: &Path) -> Option<PathBuf> {
     None
 }
 
-/// End the balthasar this process started.
+/// End the balthasar this process started, and clear the path it was listening on.
+///
+/// Reaped before the socket is unlinked, and in that order. The rule everywhere else here is
+/// that a path is only ever removed once something has proved nothing is serving it — a dial
+/// that was refused, for [`sweep`]. This is the other proof, and the stronger one: after
+/// [`std::process::Child::wait`] the process is gone, so the name cannot still be answering.
+/// Unlinking first would remove a name a live balthasar was serving on, which is the mistake
+/// `sweep` exists to avoid.
+///
+/// Leaving it would not break anything — the next magi sweeps it — but "nothing outlives the
+/// window" should be true of the file as well as the process.
 pub fn stop() {
     let Ok(mut held) = STARTED.lock() else {
         return;
     };
-    let Some(mut child) = held.take() else {
+    let Some(ours) = held.take() else {
         return;
     };
+    ended(ours);
+}
+
+/// Stop one balthasar and clear the path it was listening on.
+///
+/// Split from [`stop`] so the order can be tested without the static, which is process-wide and
+/// would make two tests that used it pass alone and fail together.
+fn ended(Ours { mut child, socket }: Ours) {
     let _ = child.kill();
     let _ = child.wait();
+    // Absent when it never got as far as binding, which is the timeout path into here.
+    let _ = std::fs::remove_file(&socket);
 }
 
 /// Clear every socket in `dir` that nothing is serving.
@@ -192,6 +227,65 @@ mod tests {
         assert!(given.exists(), "the settings went with the sockets");
         assert!(tool.exists(), "the tool description went with the sockets");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_session_takes_its_socket_with_it() {
+        // "Nothing outlives the window" should be true of the file as well as the process.
+        // Left behind, it was cleared by the next magi rather than by this one -- so a machine
+        // at rest always had one, and the directory never quite emptied.
+        let dir = std::env::temp_dir().join(format!("magi-ended-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let socket = dir.join("api@00000000000000000003-gamma.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+        // A stand-in for balthasar: something that is running and holds the socket open, so
+        // this is a kill and an unlink rather than a tidy exit.
+        let child = Command::new("sleep")
+            .arg("30")
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("a child to end");
+        let id = child.id();
+
+        ended(Ours {
+            child,
+            socket: socket.clone(),
+        });
+        drop(listener);
+
+        assert!(!socket.exists(), "the socket outlived the session");
+        assert!(
+            !Path::new(&format!("/proc/{id}")).exists(),
+            "the child outlived the session"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_balthasar_that_never_bound_is_still_ended() {
+        // The timeout path into `stop`: the process started and never got as far as binding,
+        // so there is a child to kill and no file to remove.
+        let child = Command::new("sleep")
+            .arg("30")
+            .stdout(Stdio::null())
+            .spawn()
+            .expect("a child to end");
+        let id = child.id();
+        ended(Ours {
+            child,
+            socket: std::env::temp_dir().join("magi-never-bound-anything.sock"),
+        });
+        assert!(
+            !Path::new(&format!("/proc/{id}")).exists(),
+            "a missing socket left the child running"
+        );
+    }
+
+    #[tokio::test]
+    async fn stopping_what_was_never_started_is_quiet() {
+        // The ordinary case on a machine without balthasar: `stop` runs at every exit.
+        stop();
     }
 
     #[tokio::test]
