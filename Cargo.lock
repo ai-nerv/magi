@@ -1000,6 +1000,7 @@ dependencies = [
 name = "magi-proto"
 version = "0.1.0"
 dependencies = [
+ "ciborium",
  "magi-model",
  "serde",
  "serde_json",
