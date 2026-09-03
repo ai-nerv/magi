@@ -19,6 +19,7 @@ thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+magi-testkit.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
