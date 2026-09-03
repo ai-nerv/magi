@@ -179,6 +179,9 @@ async fn main() -> Result<()> {
             )
             .await?;
             let outcome = print::run(&socket, prompt).await;
+            // Before the socket goes: the turn's own flush runs on a spawned task, which a
+            // process exiting this promptly can outrun.
+            magi_host::drain().await;
             host::done(&socket);
             let outcome = outcome?;
             if !outcome.text.is_empty() {
@@ -237,6 +240,7 @@ async fn main() -> Result<()> {
             let ran = driver::run(&socket, cli.prompt, loaded, &project, started).await;
             // Not on a signal, and not by anybody else: the session is this process, so the
             // only thing that ends it is this process ending.
+            magi_host::drain().await;
             host::done(&socket);
             ran
         }

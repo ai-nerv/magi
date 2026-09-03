@@ -34,6 +34,29 @@ use std::sync::Arc;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
 
+/// What [`drain`] needs to reach, set once the session is serving.
+///
+/// A process-global because the process *is* one session — see this module's own note — so
+/// there is nothing to disambiguate. It exists because a turn's flush runs on a spawned task
+/// and a process can exit before that task is scheduled: `magi -p` prints its answer the moment
+/// the assistant entry settles, which is earlier than the turn boundary the flush waits for.
+type Draining = (
+    Arc<Mutex<Session>>,
+    Arc<Mutex<Option<crate::scribe::Scribe>>>,
+);
+static DRAINING: std::sync::OnceLock<Draining> = std::sync::OnceLock::new();
+
+/// Hand over anything a turn settled that has not reached balthasar yet.
+///
+/// Called on the way out, after the last turn and before the socket goes. Does nothing when no
+/// session is serving or no balthasar was found.
+pub async fn drain() {
+    let Some((session, scribe)) = DRAINING.get() else {
+        return;
+    };
+    let _ = crate::scribe::flush(session, &mut *scribe.lock().await).await;
+}
+
 /// Anything that stops the session.
 #[derive(Debug, thiserror::Error)]
 pub enum HostError {
@@ -100,6 +123,7 @@ pub async fn serve_catalog(
         let id = session.lock().await.id().clone();
         crate::scribe::Scribe::find(&id).await.ok()
     }));
+    let _ = DRAINING.set((Arc::clone(&session), Arc::clone(&scribe)));
     // The asker publishes through the session's own broadcast handle rather than through the
     // lock: the thread that asks is the thread running the turn, which is usually the one
     // holding it.
