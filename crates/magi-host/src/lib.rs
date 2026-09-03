@@ -15,6 +15,7 @@ pub mod context;
 pub mod declaring;
 pub mod paths;
 pub mod remember;
+pub mod scribe;
 pub mod session;
 pub mod system;
 pub mod turn;

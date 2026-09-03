@@ -7,6 +7,7 @@
 -- Clients first — a tool loads its sibling's client library as it declares itself.
 magi.load("clients/hexe.lua")
 magi.load("clients/oslo.lua")
+magi.load("clients/balthasar.lua")
 magi.load("apis.lua")
 magi.load("providers.lua")
 magi.load("tools.lua")
