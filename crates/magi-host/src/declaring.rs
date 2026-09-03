@@ -6,7 +6,7 @@
 //! the whole job — and the only party that knows the shape of the job before it starts is the
 //! model.
 //!
-//! So it is asked, in a [schema](magi_provider::api::Schema) rather than in prose: what verbs,
+//! So it is asked, in a [schema](magi_proto::ask::Schema) rather than in prose: what verbs,
 //! on what, and why. The answer is a *proposal*, not a decision. It is turned into the same
 //! prompt every other request goes through, and the person can grant all of it, some of it, or
 //! none — the model has no more authority over the ledger than it had before.

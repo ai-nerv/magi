@@ -156,8 +156,8 @@ const NEVER_ANSWERED: &str =
 
 /// Make the conversation one a provider will accept.
 ///
-/// Two shapes break it, in opposite directions, and both reach the provider as a 400 that
-/// [`magi_provider::retry`] classifies `Invalid` — neither retryable nor `Overflow` — so nothing
+/// Two shapes break it, in opposite directions, and both come back from melchior as
+/// [`magi_proto::ask::Refusal::Invalid`] — neither retryable nor `Overflow` — so nothing
 /// recovers and `/clear` is the only way out.
 ///
 /// **A result with no call.** A compaction or a branch whose boundary fell between an assistant
