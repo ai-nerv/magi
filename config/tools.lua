@@ -268,26 +268,78 @@ do -- balthasar
   -- is the only place that id is held, because nothing else in magi needs to know it exists.
   local injection = nil
 
-  local asked, offered = pcall(function() return balthasar and balthasar.tools() end)
-  if asked and offered then
-    for _, t in ipairs(offered) do
-      magi.tool(t.name, {
-        description = t.description,
-        parameters = t.parameters,
-        transport = { kind = "lua" },
-        run = function(args)
-          local answer, why = balthasar.fetch({ tool = "balthasar" }, t.verb, args)
-          if not answer then return { content = tostring(why), is_error = true } end
-          -- Kept, and stripped from what the model sees. The id is bookkeeping between magi
-          -- and balthasar; putting it in the context would spend tokens on a handle the model can
-          -- do nothing with, and invite it to make one up.
-          if type(answer) == "table" and answer.injection then
-            injection = answer.injection
-            answer = answer.memories or answer
-          end
-          return { content = magi.json.encode(answer) }
-        end,
-      })
+  -- Which verbs the model gets. balthasar serves nineteen; the rest are the harness's --
+  -- `observe`, `replay` and the transcript plumbing magi drives in Rust, not through here.
+  -- The prose comes from balthasar's own `verbs()`; the schemas do not, because balthasar
+  -- publishes no argument shapes and a tool cannot be declared without them.
+  local MEMORY = {
+    recall = {
+      args = { "query" },
+      parameters = {
+        type = "object",
+        properties = {
+          query = { type = "string", description = "What to look for." },
+        },
+        required = { "query" },
+      },
+    },
+    remember = {
+      args = { "text" },
+      parameters = {
+        type = "object",
+        properties = {
+          text = { type = "string", description = "The thing worth keeping." },
+        },
+        required = { "text" },
+      },
+    },
+    forget = {
+      args = { "id" },
+      parameters = {
+        type = "object",
+        properties = { id = { type = "string", description = "Which memory." } },
+        required = { "id" },
+      },
+    },
+    why = {
+      args = { "id" },
+      parameters = {
+        type = "object",
+        properties = { id = { type = "string", description = "Which memory." } },
+        required = { "id" },
+      },
+    },
+  }
+
+  local asked, offered = pcall(function()
+    return balthasar and balthasar.fetch({ tool = "balthasar" }, "verbs")
+  end)
+  if asked and type(offered) == "table" then
+    for _, v in ipairs(offered) do
+      local shape = MEMORY[v.name]
+      if shape then
+        magi.tool(v.name, {
+          description = v.about or v.name,
+          parameters = shape.parameters,
+          transport = { kind = "lua" },
+          run = function(args)
+            args = args or {}
+            local positional = {}
+            for i, name in ipairs(shape.args) do positional[i] = args[name] end
+            local answer, why =
+              balthasar.fetch({ tool = "balthasar" }, v.name, table.unpack(positional, 1, #shape.args))
+            if not answer then return { content = tostring(why), is_error = true } end
+            -- Kept, and stripped from what the model sees. The id is bookkeeping between magi
+            -- and balthasar; putting it in the context would spend tokens on a handle the model
+            -- can do nothing with, and invite it to make one up.
+            if type(answer) == "table" and answer.injection then
+              injection = answer.injection
+              answer = answer.memories or answer
+            end
+            return { content = magi.json.encode(answer) }
+          end,
+        })
+      end
     end
   end
 

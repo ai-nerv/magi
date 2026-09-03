@@ -235,3 +235,51 @@ pub fn journal_for(dir: &std::path::Path, id: &str) -> Option<PathBuf> {
     let path = dir.join(format!("{id}.jsonl"));
     (path.parent() == Some(dir) && path.is_file()).then_some(path)
 }
+
+/// Every session balthasar holds for this project, newest first.
+///
+/// Asked rather than listed off disk. Once balthasar is the store, a directory of journals is
+/// either absent or stale, and a picker built from stale files offers sessions that cannot be
+/// resumed.
+///
+/// `None` when balthasar is not reachable, which is the caller's cue to fall back to the files
+/// while a journal is still being kept.
+#[must_use]
+pub fn recorded() -> Option<Vec<Summary>> {
+    let mut family = magi_ipc::family::blocking::Family::find().ok()?;
+    let rows = family.call("sessions", Vec::new()).ok()?;
+    Some(
+        rows.iter()
+            .flat_map(|value| match value.as_array() {
+                Some(list) => list.clone(),
+                None => vec![value.clone()],
+            })
+            .filter_map(|row| summary_of(&row))
+            .collect(),
+    )
+}
+
+/// One of balthasar's session rows, as a picker needs it.
+///
+/// `path` is empty: there is no file, and a caller that needs one is on the old path.
+fn summary_of(row: &serde_json::Value) -> Option<Summary> {
+    let id = row
+        .get("id")
+        .and_then(serde_json::Value::as_str)?
+        .to_owned();
+    let title = row
+        .get("title")
+        .or_else(|| row.get("name"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    Some(Summary {
+        id,
+        path: PathBuf::new(),
+        title: title.split_whitespace().collect::<Vec<_>>().join(" "),
+        entries: row
+            .get("turns")
+            .or_else(|| row.get("entries"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as usize,
+    })
+}

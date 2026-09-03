@@ -86,12 +86,12 @@ fn today() -> String {
 /// it existed in every protocol description with nothing ever setting this, so asking was
 /// impossible rather than merely off.
 #[must_use]
-pub fn options(loaded: &Loaded) -> magi_provider::api::Options {
+pub fn options(loaded: &Loaded) -> magi_proto::ask::Wants {
     let thinking = loaded
         .config
         .string("thinking")
         .and_then(|level| serde_json::from_value(serde_json::Value::String(level.to_owned())).ok());
-    magi_provider::api::Options {
+    magi_proto::ask::Wants {
         // Set per request, not per session: a schema belongs to one question.
         schema: None,
         thinking,
@@ -177,8 +177,6 @@ mod ui_tests {
             config: engine.config(),
             tools: Vec::new(),
             clients: Vec::new(),
-            apis: Vec::new(),
-            providers: Vec::new(),
         }
     }
 
@@ -282,8 +280,6 @@ mod environ_tests {
             config: engine.config(),
             tools: Vec::new(),
             clients: Vec::new(),
-            apis: Vec::new(),
-            providers: Vec::new(),
         })
     }
 

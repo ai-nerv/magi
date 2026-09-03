@@ -6,6 +6,7 @@
 use magi_host::{open_session, serve};
 use magi_ipc::{FrameReader, FrameWriter};
 use magi_proto::{Cursor, Entry, HarnessEvent, UiCommand};
+use magi_testkit::Mind;
 use std::path::{Path, PathBuf};
 
 fn temp(name: &str) -> (PathBuf, PathBuf) {
@@ -203,56 +204,18 @@ async fn the_journal_outlives_the_daemon() {
     let _ = std::fs::remove_file(&socket);
 }
 
-/// A provider that accepts a request and never answers, leaving a turn in flight.
-fn serve_silently() -> String {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
-    std::thread::spawn(move || {
-        let mut held = Vec::new();
-        for socket in listener.incoming() {
-            held.push(socket);
-        }
-    });
-    format!("http://127.0.0.1:{port}")
-}
-
-/// A daemon with a real backend, so a submitted prompt starts a turn that does not end.
-async fn start_with_backend(name: &str, base_url: String) -> (PathBuf, PathBuf) {
-    use magi_provider::model::{Api, Modality, Model};
-    use magi_provider::provider::{Auth, Provider};
-
+/// A daemon that asks `mind`, so a submitted prompt starts a real turn.
+async fn start_with_mind(name: &str, mind: &Mind) -> (PathBuf, PathBuf) {
     let (dir, socket) = temp(name);
     let session = open_session(&dir, "/tmp", 1, "").expect("session");
-    let model = Model {
-        id: "m".into(),
-        name: "M".into(),
-        provider: "fake".into(),
-        api: Api::AnthropicMessages,
-        reasoning: false,
-        input: vec![Modality::Text],
-        context_window: 200_000,
-        max_tokens: 4096,
-        cost: magi_model::Cost::default(),
-        thinking: std::collections::BTreeMap::new(),
-        compat: None,
-    };
     let backend = magi_host::turn::Backend {
-        apis: magi_lua::adapter::shipped_apis().expect("the checkout's protocols"),
         tools: Vec::new(),
         clients: Vec::new(),
         cwd: std::env::temp_dir(),
-        provider: Provider {
-            id: "fake".into(),
-            name: "Fake".into(),
-            base_url: Some(base_url),
-            api: Api::AnthropicMessages,
-            auth: Auth::None,
-            compat: None,
-            models: vec![model.clone()],
-            discover: false,
-        },
-        model,
-        options: magi_provider::api::Options::default(),
+        model: "fake/one".to_owned(),
+        mind: mind.program().display().to_string(),
+        wants: magi_proto::ask::Wants::default(),
+        context_window: Some(200_000),
         system: Some("You are magi.".to_owned()),
         confine: false,
         grants: Vec::new(),
@@ -269,7 +232,8 @@ async fn events_reach_the_ui_while_the_turn_is_still_running() {
     // forwards events. Nothing reached the screen until the turn was over, so a streaming
     // response arrived in one piece at the end and a slow one looked like a hang. Every other
     // test passed throughout, because they all use a provider that answers immediately.
-    let (dir, socket) = start_with_backend("streaming", serve_silently()).await;
+    let mind = Mind::silent("rt-streaming");
+    let (dir, socket) = start_with_mind("streaming", &mind).await;
     let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
     client.submit("this will not be answered").await;
 
@@ -300,7 +264,8 @@ async fn events_reach_the_ui_while_the_turn_is_still_running() {
 async fn an_interrupt_is_answered_while_a_turn_holds_the_connection() {
     // The interrupt has to be read by the same loop the turn used to block, so this fails the
     // same way the streaming test does if a turn ever goes back to being awaited inline.
-    let (dir, socket) = start_with_backend("interrupt", serve_silently()).await;
+    let mind = Mind::silent("rt-interrupt");
+    let (dir, socket) = start_with_mind("interrupt", &mind).await;
     let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
     client.submit("this will be stopped").await;
 
@@ -497,39 +462,33 @@ async fn what_a_turn_cost_reaches_the_ui() {
 }
 
 /// A catalog with two reachable models and one that needs a key nobody has set.
+///
+/// Cards, because that is what melchior sends: a name, a window and whether it is ready. Where
+/// the model lives and what credential it takes are melchior's, and this is the whole of what
+/// magi is given to pick from.
 fn two_models() -> magi_host::catalog::Catalog {
-    let providers =
-        serde_json::from_value::<Vec<magi_provider::provider::Provider>>(serde_json::json!([
-            {
-                "id": "local", "name": "Local", "api": "openai-completions",
-                "base_url": "http://127.0.0.1:1/v1", "auth": { "kind": "none" },
-                "models": [
-                    { "id": "a", "name": "A", "context_window": 1000, "max_tokens": 100 },
-                    { "id": "b", "name": "B", "context_window": 2000, "max_tokens": 100 }
-                ]
-            },
-            {
-                "id": "paid", "name": "Paid Co", "api": "openai-completions",
-                "base_url": "https://paid.test/v1",
-                "auth": { "kind": "api-key", "vars": ["MAGI_TEST_UNSET_KEY"] },
-                "models": [
-                    { "id": "x", "name": "X", "context_window": 1000, "max_tokens": 100 }
-                ]
-            }
-        ]))
-        .expect("providers");
+    let cards = serde_json::from_value::<Vec<magi_proto::ask::Card>>(serde_json::json!([
+        {
+            "id": "local/a", "provider": "local", "name": "a",
+            "api": "openai-completions", "context_window": 1000,
+            "max_output": 100, "reasons": false, "ready": true
+        },
+        {
+            "id": "local/b", "provider": "local", "name": "b",
+            "api": "openai-completions", "context_window": 2000,
+            "max_output": 100, "reasons": false, "ready": true
+        },
+        {
+            "id": "paid/x", "provider": "paid", "name": "x",
+            "api": "openai-completions", "context_window": 1000,
+            "max_output": 100, "reasons": false, "ready": false,
+            "needs": "MAGI_TEST_UNSET_KEY"
+        }
+    ]))
+    .expect("cards");
     magi_host::catalog::Catalog {
-        apis: magi_lua::adapter::shipped_apis().expect("the checkout's protocols"),
-        tools: Vec::new(),
-        clients: Vec::new(),
-        cwd: std::env::temp_dir(),
-        providers,
-        options: magi_provider::api::Options::default(),
-        system: None,
-        confine: false,
-        grants: Vec::new(),
-        environ: std::collections::BTreeMap::new(),
-        chosen: None,
+        cards,
+        ..magi_host::catalog::Catalog::empty()
     }
 }
 
@@ -649,54 +608,37 @@ async fn a_refused_switch_leaves_the_session_answering_with_what_it_had() {
     let _ = std::fs::remove_file(&socket);
 }
 
-/// A provider that keeps the request body it was sent, and then goes quiet.
-fn serve_recording() -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
-    use std::io::Read;
-    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
-    let kept = std::sync::Arc::clone(&seen);
-    std::thread::spawn(move || {
-        let mut held = Vec::new();
-        for socket in listener.incoming() {
-            let Ok(mut socket) = socket else { continue };
-            let mut buf = vec![0u8; 65_536];
-            if let Ok(n) = socket.read(&mut buf) {
-                kept.lock()
-                    .expect("lock")
-                    .push(String::from_utf8_lossy(&buf[..n]).into_owned());
-            }
-            held.push(socket);
-        }
-    });
-    (format!("http://127.0.0.1:{port}"), seen)
-}
-
 #[tokio::test]
 async fn the_model_is_told_what_it_is_before_the_conversation() {
-    // Every adapter reads `ctx.system` and has since the first milestone. Nothing ever set it,
-    // so six milestones of turns went out with tool schemas and no idea what the model was,
-    // where it was, or what machine it was on. Five hundred tests passed throughout.
-    let (base_url, seen) = serve_recording();
-    let (dir, socket) = start_with_backend("system-prompt", base_url).await;
+    // Every adapter reads the system prompt and has since the first milestone. Nothing ever
+    // set it, so six milestones of turns went out with tool schemas and no idea what the model
+    // was, where it was, or what machine it was on. Five hundred tests passed throughout.
+    //
+    // Still worth its own test now that melchior does the sending: what magi has to get right
+    // is putting it in the ask, and a prompt that reached the struct and not the pipe looks
+    // exactly like one that worked.
+    let mind = Mind::answering("rt-system", "hello yourself");
+    let (dir, socket) = start_with_mind("system-prompt", &mind).await;
     let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
     client.submit("hello").await;
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let body = loop {
-        if let Some(request) = seen.lock().expect("lock").first().cloned() {
-            break request;
+    let ask = loop {
+        let heard = mind.heard();
+        if !heard.is_empty() {
+            break heard;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "the provider was never called"
+            "the mind was never asked"
         );
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     };
     assert!(
-        body.contains("You are magi."),
-        "the system prompt has to reach the wire, not just the struct: {body}"
+        ask.contains("You are magi."),
+        "the system prompt has to reach the pipe, not just the struct: {ask}"
     );
+    assert!(ask.contains("hello"), "and the conversation with it: {ask}");
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_file(&socket);
 }

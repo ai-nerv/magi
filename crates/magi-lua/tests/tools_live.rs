@@ -294,3 +294,68 @@ fn what_the_model_sends_arrives_as_what_it_meant() {
     assert!(argv.contains(&"--message=x = y + 1".to_owned()), "{argv:?}");
     assert!(argv.contains(&"--about=m1".to_owned()), "{argv:?}");
 }
+
+#[test]
+fn the_memory_tools_register_and_answer_when_balthasar_is_running() {
+    let mut engine = Engine::new();
+    engine.install_clients(&[("balthasar".to_owned(), config("clients/balthasar.lua"))]);
+    engine
+        .run(&config("tools.lua"), "tools.lua")
+        .expect("the tool declaration must run");
+
+    let engine = Rc::new(RefCell::new(engine));
+    let mut registry = Registry::new();
+    magi_lua::tool::install(Rc::clone(&engine), &mut registry, &Default::default());
+
+    if !answers("balthasar") {
+        // Nothing to register from: the vocabulary is balthasar's, so with balthasar absent
+        // there are no memory tools rather than empty ones.
+        assert!(
+            registry.get("recall").is_none(),
+            "declared without a source"
+        );
+        return;
+    }
+
+    for verb in ["recall", "remember", "forget", "why"] {
+        assert!(registry.get(verb).is_some(), "{verb} did not register");
+    }
+
+    let ops = magi_tools::ops::Real::new(std::env::temp_dir());
+    let phrase = format!("the wire held at {}", std::process::id());
+
+    let kept = registry.call(
+        "remember",
+        &serde_json::json!({ "text": phrase }),
+        &ops,
+        &magi_tools::Uncancelled,
+    );
+    assert!(!kept.is_error, "remember failed: {}", kept.content);
+
+    let found = registry.call(
+        "recall",
+        &serde_json::json!({ "query": "wire held" }),
+        &ops,
+        &magi_tools::Uncancelled,
+    );
+    assert!(!found.is_error, "recall failed: {}", found.content);
+    eprintln!(
+        "recall answered: {}",
+        &found.content[..found.content.len().min(200)]
+    );
+}
+
+/// Whether a sibling is actually serving, rather than merely having left a socket behind.
+///
+/// A socket file outlives the process that bound it, so listing the directory answers "did one
+/// run here" and not "is one running". Connecting is the only test that cannot be raced.
+fn answers(name: &str) -> bool {
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    std::fs::read_dir(runtime.join(name)).is_ok_and(|dir| {
+        dir.flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("api@"))
+            .any(|e| std::os::unix::net::UnixStream::connect(e.path()).is_ok())
+    })
+}

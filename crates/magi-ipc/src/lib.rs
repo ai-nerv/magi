@@ -9,6 +9,7 @@
 
 pub mod blocking;
 mod codec;
+pub mod family;
 mod peer;
 
 pub use codec::{FrameReader, FrameWriter, MAX_FRAME_BYTES};

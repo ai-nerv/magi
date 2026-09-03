@@ -8,13 +8,16 @@
 //! one, so growing to a registry would be a lookup rather than a protocol change.
 
 pub mod asking;
+pub mod broker;
 pub mod cancel;
 pub mod catalog;
 pub mod compact;
 pub mod context;
 pub mod declaring;
+pub mod driving;
 pub mod paths;
 pub mod remember;
+pub mod scribe;
 pub mod session;
 pub mod system;
 pub mod turn;
@@ -23,7 +26,8 @@ pub mod worker;
 use magi_ipc::{FrameReader, FrameWriter, IpcError, PeerCred};
 use magi_journal::JournalError;
 use magi_proto::{
-    AgentStatus, Cursor, Entry, ErrorClass, HarnessEvent, MessageId, StopReason, UiCommand,
+    AgentStatus, Cursor, Entry, ErrorClass, HarnessEvent, MessageId, SessionId, StopReason,
+    UiCommand,
 };
 
 use session::Session;
@@ -32,6 +36,29 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
+
+/// What [`drain`] needs to reach, set once the session is serving.
+///
+/// A process-global because the process *is* one session — see this module's own note — so
+/// there is nothing to disambiguate. It exists because a turn's flush runs on a spawned task
+/// and a process can exit before that task is scheduled: `magi -p` prints its answer the moment
+/// the assistant entry settles, which is earlier than the turn boundary the flush waits for.
+type Draining = (
+    Arc<Mutex<Session>>,
+    Arc<Mutex<Option<crate::scribe::Scribe>>>,
+);
+static DRAINING: std::sync::OnceLock<Draining> = std::sync::OnceLock::new();
+
+/// Hand over anything a turn settled that has not reached balthasar yet.
+///
+/// Called on the way out, after the last turn and before the socket goes. Does nothing when no
+/// session is serving or no balthasar was found.
+pub async fn drain() {
+    let Some((session, scribe)) = DRAINING.get() else {
+        return;
+    };
+    let _ = crate::scribe::flush(session, &mut *scribe.lock().await).await;
+}
 
 /// Anything that stops the session.
 #[derive(Debug, thiserror::Error)]
@@ -69,17 +96,32 @@ pub async fn serve(
 /// switch would leave a person asking why it is using a model they did not choose.
 pub async fn serve_catalog(
     listener: UnixListener,
+    session: Session,
+    backend: Option<turn::Backend>,
+    catalog: crate::catalog::Catalog,
+) -> Result<(), HostError> {
+    serve_on(listener, session, backend, catalog, None).await
+}
+
+/// The same, told which balthasar to record into.
+///
+/// A path rather than a search. magi starts a balthasar of its own and must talk to *that* one:
+/// the newest socket in the directory is a neighbour's as often as not, and two windows writing
+/// each other's transcripts is the failure this naming exists to prevent.
+pub async fn serve_on(
+    listener: UnixListener,
     mut session: Session,
     backend: Option<turn::Backend>,
     catalog: crate::catalog::Catalog,
+    balthasar: Option<std::path::PathBuf>,
 ) -> Result<(), HostError> {
     // Told once, here, because this is the only place that knows both. A UI asking the
     // configuration for itself would report whatever is configured now rather than what this
     // session is actually talking to.
     session.set_choices(catalog.choices());
     session.set_model(backend.as_ref().map(|backend| magi_proto::ModelInfo {
-        name: backend.model.qualified(),
-        context_window: backend.model.context_window,
+        name: backend.model.clone(),
+        context_window: backend.context_window.unwrap_or(0),
     }));
     let session = Arc::new(Mutex::new(session));
     // Turns run on the worker's own thread because a protocol lives in a Lua VM. A session
@@ -92,6 +134,20 @@ pub async fn serve_catalog(
     // Shared with every connection, because a question raised by one turn has to be answerable
     // by whichever UI is attached when it arrives.
     let pending = Arc::new(crate::asking::Pending::new());
+    // Dialled once, here, and `None` when balthasar is not running. Absent is the ordinary case
+    // while the journal is still the copy of record: nothing is registered, nothing is written,
+    // and the session behaves exactly as it did before balthasar existed.
+    let scribe = Arc::new(Mutex::new({
+        let id = session.lock().await.id().clone();
+        match balthasar {
+            Some(path) => magi_ipc::family::Family::dial(path)
+                .await
+                .ok()
+                .map(|family| crate::scribe::Scribe::over(family, &id)),
+            None => crate::scribe::Scribe::find(&id).await.ok(),
+        }
+    }));
+    let _ = DRAINING.set((Arc::clone(&session), Arc::clone(&scribe)));
     // The asker publishes through the session's own broadcast handle rather than through the
     // lock: the thread that asks is the thread running the turn, which is usually the one
     // holding it.
@@ -139,8 +195,12 @@ pub async fn serve_catalog(
         let catalog = Arc::clone(&catalog);
         let pending = Arc::clone(&pending);
         let approver = Arc::clone(&approver);
+        let scribe = Arc::clone(&scribe);
         tokio::spawn(async move {
-            let _ = connection(stream, session, &worker, &catalog, &pending, &approver).await;
+            let _ = connection(
+                stream, session, &worker, &catalog, &pending, &approver, &scribe,
+            )
+            .await;
         });
     }
 }
@@ -153,6 +213,7 @@ async fn connection(
     catalog: &crate::catalog::Catalog,
     pending: &crate::asking::Pending,
     approver: &Arc<dyn magi_tools::approve::Approver>,
+    scribe: &Arc<Mutex<Option<crate::scribe::Scribe>>>,
 ) -> Result<(), HostError> {
     let (read_half, write_half) = stream.into_split();
     let mut reader = FrameReader::new(read_half);
@@ -202,7 +263,7 @@ async fn connection(
                             id: MessageId::new(format!("u{}", session.lock().await.cursor().next().0)),
                             text,
                             aside,
-                        }, held, catalog).await?;
+                        }, held, catalog, scribe).await?;
                     }
                     Some(UiCommand::Arrived { who, kin, sort, text }) => {
                         let arrived = Entry::From { who, kin, sort, text };
@@ -222,7 +283,7 @@ async fn connection(
                             // message a *message*: without it the entry landed in the transcript
                             // and nothing read it, so an instance could be asked a question and
                             // would sit there until somebody typed at it.
-                            submit(&session, arrived, held, catalog).await?;
+                            submit(&session, arrived, held, catalog, scribe).await?;
                         } else {
                             // Committed and no more. A note is something to have seen by the
                             // time you next answer, not a reason to start answering.
@@ -277,14 +338,29 @@ async fn connection(
                     Some(UiCommand::Resume { id }) => {
                         let cwd = catalog.cwd.display().to_string();
                         let dir = crate::paths::sessions_dir();
-                        let refusal = match crate::paths::journal_for(&dir, &id) {
-                            None => Some(format!("there is no session called {id:?}")),
-                            Some(path) => session
-                                .lock()
-                                .await
-                                .resume(&path, &cwd, seconds())
-                                .err()
-                                .map(|why| format!("{id} could not be opened: {why}")),
+                        // balthasar first, and by replay rather than by file: it is the store,
+                        // so a journal still on disk is either absent or behind.
+                        let replayed = match scribe.lock().await.as_mut() {
+                            Some(scribe) => scribe.replay_of(&id).await.ok(),
+                            None => None,
+                        };
+                        let refusal = match replayed {
+                            Some(entries) if !entries.is_empty() => {
+                                session
+                                    .lock()
+                                    .await
+                                    .resume_recorded(SessionId::new(id.clone()), entries);
+                                None
+                            }
+                            _ => match crate::paths::journal_for(&dir, &id) {
+                                None => Some(format!("there is no session called {id:?}")),
+                                Some(path) => session
+                                    .lock()
+                                    .await
+                                    .resume(&path, &cwd, seconds())
+                                    .err()
+                                    .map(|why| format!("{id} could not be opened: {why}")),
+                            },
                         };
                         if let Some(message) = refusal {
                             writer
@@ -368,8 +444,8 @@ async fn switch_model(
     };
 
     let info = magi_proto::ModelInfo {
-        name: backend.model.qualified(),
-        context_window: backend.model.context_window,
+        name: backend.model.clone(),
+        context_window: backend.context_window.unwrap_or(0),
     };
     // Gated, like the one it replaces. `Worker::start` is `gated(backend, None)` — a worker
     // nothing asks — so switching the model used to switch the permission model off with it,
@@ -420,7 +496,7 @@ async fn switch_thinking(
     // way it would have been had the session started with it.
     let name = session.lock().await.model_name()?;
     let mut backend = catalog.backend(&name)?;
-    backend.options.thinking = Some(parsed);
+    backend.wants.thinking = Some(parsed);
     // Gated, like the one it replaces. `Worker::start` is `gated(backend, None)` — a worker
     // nothing asks — so switching the model used to switch the permission model off with it,
     // and every tool for the rest of the session ran without being asked about.
@@ -491,6 +567,7 @@ async fn submit(
     opening: Entry,
     worker: Option<Arc<worker::Worker>>,
     catalog: &crate::catalog::Catalog,
+    scribe: &Arc<Mutex<Option<crate::scribe::Scribe>>>,
 ) -> Result<(), HostError> {
     {
         let mut held = session.lock().await;
@@ -523,7 +600,8 @@ async fn submit(
     // Overlapping turns are not a risk. The worker is one thread taking one job at a time, so
     // a second prompt queues behind the first exactly as it did when this awaited.
     let session = Arc::clone(session);
-    tokio::spawn(async move { after(session, worker).await });
+    let scribe = Arc::clone(scribe);
+    tokio::spawn(async move { after(session, worker, scribe).await });
     Ok(())
 }
 
@@ -537,9 +615,33 @@ async fn submit(
 /// A loop, because more can arrive during *that* turn. It ends when a turn finishes with an
 /// empty waiting room, which is the ordinary case: a session with nobody talking to it does one
 /// pass and stops.
-async fn after(session: Arc<Mutex<Session>>, worker: Arc<worker::Worker>) {
+async fn after(
+    session: Arc<Mutex<Session>>,
+    worker: Arc<worker::Worker>,
+    scribe: Arc<Mutex<Option<crate::scribe::Scribe>>>,
+) {
     loop {
         worker.run(Arc::clone(&session)).await;
+
+        // The turn boundary, which is where durability is owed. Amendments during streaming are
+        // coalesced by cursor in the session, so a message written a hundred times on the way
+        // through goes over once, as it finally stood.
+        if let Err(fault) = crate::scribe::flush(&session, &mut *scribe.lock().await).await {
+            // Said once, in the transcript, rather than swallowed. A session whose transcript
+            // stopped being recorded must not look like one that is fine, and while magi's own
+            // journal is still the copy of record this costs memory rather than the session.
+            let mut held = session.lock().await;
+            let id = MessageId::new(format!("n{}", held.cursor().next().0));
+            let _ = held.commit(Entry::Assistant {
+                id,
+                text: String::new(),
+                thinking: String::new(),
+                stop_reason: Some(StopReason::Error),
+                error: Some(format!("this turn was not recorded: {fault}")),
+                signatures: magi_proto::Signatures::default(),
+                usage: magi_proto::Usage::default(),
+            });
+        }
 
         let arrived = session.lock().await.release();
         if arrived.is_empty() {
@@ -625,17 +727,19 @@ mod no_model_tests {
 
     /// A catalog naming a model whose provider has no credential.
     fn wanting(name: &str) -> Catalog {
-        let providers =
-            serde_json::from_value::<Vec<magi_provider::provider::Provider>>(serde_json::json!([{
-                "id": "paid", "name": "Paid Co", "api": "openai-completions",
-                "base_url": "https://paid.test/v1",
-                "auth": { "kind": "api-key", "vars": ["MAGI_TEST_NOT_SET"] },
-                "models": [{ "id": "x", "name": "X", "context_window": 1000, "max_tokens": 100 }]
-            }]))
-            .expect("providers");
         Catalog {
             chosen: Some(name.to_owned()),
-            providers,
+            cards: vec![magi_proto::ask::Card {
+                id: "paid/x".to_owned(),
+                provider: "Paid Co".to_owned(),
+                name: "x".to_owned(),
+                api: "openai-completions".to_owned(),
+                context_window: Some(1000),
+                max_output: Some(100),
+                reasons: false,
+                ready: false,
+                needs: Some("MAGI_TEST_NOT_SET".to_owned()),
+            }],
             ..Catalog::empty()
         }
     }

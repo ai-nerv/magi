@@ -46,14 +46,41 @@ pub async fn start(
 ) -> Result<()> {
     let dir = sessions.map_or_else(magi_host::paths::sessions_dir, Path::to_path_buf);
     let cwd = cwd.display().to_string();
-    let session = match resume.then(|| free(&dir, &cwd, socket.parent())).flatten() {
-        Some(path) => magi_host::session::Session::open(
-            &path,
-            magi_proto::SessionId::new(magi_host::paths::session_id(unix_seconds(), key)),
-            &cwd,
-            unix_seconds(),
-        )?,
-        None => magi_host::open_session(&dir, &cwd, unix_seconds(), key)?,
+    let id = magi_proto::SessionId::new(magi_host::paths::session_id(unix_seconds(), key));
+    // Told before started. A sibling reads what a coordinator said as it comes up, so saying it
+    // afterwards would configure the turn after this one.
+    if let Some(loaded) = loaded {
+        crate::driving::settle(loaded).await;
+    }
+
+    // Started here, not found. magi convenes its siblings: a session whose transcript depended
+    // on somebody else having launched a memory layer would record sometimes and not others.
+    // Named after this session, so two windows in a project get one each and neither can take
+    // the other's down.
+    let ours = crate::balthasar::start(&id.as_str().replace('/', "-"), Path::new(&cwd)).await;
+
+    // With balthasar running there is no journal on disk at all: it is the store, and a second
+    // copy is a copy that goes stale. Without it, the file is the store exactly as before.
+    let dialled = match &ours {
+        Some(socket) => magi_ipc::family::Family::dial(socket).await,
+        None => magi_ipc::family::Family::find(None).await,
+    };
+    let mut carried = match dialled {
+        Ok(family) => {
+            let mut scribe = magi_host::scribe::Scribe::over(family, &id);
+            Some(match resume.then(|| resumable(&mut scribe)) {
+                Some(fut) => fut.await,
+                None => Vec::new(),
+            })
+        }
+        Err(_) => None,
+    };
+    let session = match carried.take() {
+        Some(entries) => magi_host::session::Session::recorded(id, entries),
+        None => match resume.then(|| free(&dir, &cwd, socket.parent())).flatten() {
+            Some(path) => magi_host::session::Session::open(&path, id, &cwd, unix_seconds())?,
+            None => magi_host::open_session(&dir, &cwd, unix_seconds(), key)?,
+        },
     };
     // A stale socket cannot be a running session any more — nothing outlives its process — so
     // one found here was left by a crash and is cleared rather than treated as somebody's.
@@ -65,12 +92,16 @@ pub async fn start(
         .await
         .with_context(|| format!("binding {}", socket.display()))?;
 
-    let mut backend = loaded.and_then(crate::config::backend);
-    let mut catalog =
-        loaded.map_or_else(magi_host::catalog::Catalog::empty, crate::config::catalog);
+    // Asked once, here, and handed to the session. melchior owns the catalog; a session that
+    // re-read it per switch would answer with a model the person did not choose.
+    let mut catalog = match loaded {
+        Some(loaded) => crate::config::catalog(loaded, magi_host::broker::cards().await),
+        None => magi_host::catalog::Catalog::empty(),
+    };
+    let mut backend = crate::config::backend(&catalog);
     stamp(&mut backend, &mut catalog, environ);
     tokio::spawn(async move {
-        let _ = magi_host::serve_catalog(listener, session, backend, catalog).await;
+        let _ = magi_host::serve_on(listener, session, backend, catalog, ours).await;
     });
     Ok(())
 }
@@ -198,27 +229,16 @@ mod tests {
     /// A catalog holding one model that needs no credential, so it yields a real backend.
     fn catalog() -> magi_host::catalog::Catalog {
         let mut catalog = magi_host::catalog::Catalog::empty();
-        catalog.providers = vec![magi_provider::provider::Provider {
-            id: "fake".into(),
-            name: "Fake".into(),
-            base_url: Some("http://127.0.0.1:1/v1".into()),
-            api: magi_provider::model::Api::OpenAiCompletions,
-            auth: magi_provider::provider::Auth::None,
-            compat: None,
-            models: vec![magi_provider::model::Model {
-                id: "m".into(),
-                provider: "fake".into(),
-                name: "M".into(),
-                api: magi_provider::model::Api::OpenAiCompletions,
-                reasoning: false,
-                input: magi_provider::model::default_input(),
-                context_window: 1000,
-                max_tokens: 100,
-                cost: magi_model::Cost::default(),
-                thinking: std::collections::BTreeMap::new(),
-                compat: None,
-            }],
-            discover: false,
+        catalog.cards = vec![magi_proto::ask::Card {
+            id: "fake/m".into(),
+            provider: "fake".into(),
+            name: "m".into(),
+            api: "openai-completions".into(),
+            context_window: Some(1000),
+            max_output: Some(100),
+            reasons: false,
+            ready: true,
+            needs: None,
         }];
         catalog
     }
@@ -387,5 +407,31 @@ mod leftovers {
         );
         assert!(dir.join("theirs.host").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// The newest run balthasar holds for this project, for `--resume`.
+///
+/// Empty when there is nothing to carry on from, which is a fresh session rather than a
+/// refusal: somebody asking to resume wants to start working.
+async fn resumable(scribe: &mut magi_host::scribe::Scribe) -> Vec<magi_proto::Entry> {
+    let Ok(rows) = scribe.sessions().await else {
+        return Vec::new();
+    };
+    let newest = rows
+        .iter()
+        .flat_map(|value| match value.as_array() {
+            Some(list) => list.clone(),
+            None => vec![value.clone()],
+        })
+        .filter_map(|row| {
+            row.get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
+        .next();
+    match newest {
+        Some(id) => scribe.replay_of(&id).await.unwrap_or_default(),
+        None => Vec::new(),
     }
 }

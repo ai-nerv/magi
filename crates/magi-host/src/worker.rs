@@ -10,7 +10,6 @@
 
 use crate::session::Session;
 use crate::turn::{self, Backend};
-use magi_provider::client::Client;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc, oneshot};
 
@@ -79,11 +78,6 @@ impl Worker {
             let mut engine = magi_lua::Engine::new();
             engine.install_clients(&backend.clients);
             let mut broken = None;
-            for (name, source) in &backend.apis {
-                if let Err(why) = engine.run(source, name) {
-                    broken = Some(why.to_string());
-                }
-            }
             for (name, source) in &backend.tools {
                 if let Err(why) = engine.run(source, name) {
                     broken = Some(why.to_string());
@@ -119,37 +113,17 @@ impl Worker {
             // actually implement rather than the one a config file claimed for them.
             registry.probe(&*ops);
 
-            let built = magi_lua::adapter::LuaAdapter::from_shared(
-                std::rc::Rc::clone(&engine),
-                backend.model.api.as_str(),
-            );
-            let adapter = match built {
-                Ok(adapter) => adapter,
-                Err(why) => {
-                    eprintln!("magi host: {why}");
-                    return;
-                }
-            };
-            let client = Client::new();
             runtime.block_on(async {
                 while let Some(job) = queue.recv().await {
                     match job.kind {
                         // A failed turn is already journalled as an error entry by `turn::run`;
                         // there is nothing further to report and nothing to abort the daemon for.
                         Work::Turn => {
-                            let _ = turn::run(
-                                &job.session,
-                                &backend,
-                                &adapter,
-                                &client,
-                                &registry,
-                                &*ops,
-                            )
-                            .await;
+                            let _ = turn::run(&job.session, &backend, &registry, &*ops).await;
                         }
                         Work::TakeOn(grants) => ops.take_on(grants),
                         Work::Declare => {
-                            declare(&job.session, &backend, &adapter, &client, &*ops).await;
+                            declare(&job.session, &backend, &*ops).await;
                         }
                     }
                     let _ = job.done.send(());
@@ -205,13 +179,7 @@ impl Worker {
 /// makes — so the person sees the same prompt and the ledger is written by the same path. The
 /// model gains nothing it did not have; what changes is that the questions arrive together, in
 /// front of the work, described by the only party that knows the shape of it.
-async fn declare(
-    session: &Arc<Mutex<Session>>,
-    backend: &Backend,
-    adapter: &dyn magi_provider::api::Adapter,
-    client: &Client,
-    ops: &dyn magi_tools::Ops,
-) {
+async fn declare(session: &Arc<Mutex<Session>>, backend: &Backend, ops: &dyn magi_tools::Ops) {
     // Said, not journalled. `Entry::Notice` is the UI's own device -- the protocol says the
     // daemon never authors one -- and a transcript replayed later should hold the conversation
     // rather than a proposal that was answered at the time. `Refused` is the existing path for
@@ -250,21 +218,17 @@ async fn declare(
             &backend.cwd,
         )));
 
-    let options = magi_provider::api::Options {
+    let wants = magi_proto::ask::Wants {
         schema: Some(crate::declaring::schema()),
-        ..backend.options.clone()
-    };
-    let call = magi_provider::client::Call {
-        adapter,
-        provider: &backend.provider,
-        model: &backend.model,
-        context: &context,
-        options: &options,
+        ..backend.wants.clone()
     };
 
-    // Bounded. A provider that never answers must not hold the worker thread for the life of
-    // the daemon, which is what a plain await here did.
-    let asked = tokio::time::timeout(std::time::Duration::from_secs(120), client.value(&call));
+    // Bounded. A mind that never answers must not hold the worker thread for the life of the
+    // daemon, which is what a plain await here did.
+    let asked = tokio::time::timeout(
+        std::time::Duration::from_secs(120),
+        crate::broker::value(&backend.model, &context, &wants),
+    );
     let answer = match asked.await {
         Err(_) => {
             say(

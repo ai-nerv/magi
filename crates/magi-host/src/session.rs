@@ -39,6 +39,13 @@ pub struct Session {
     /// message between an assistant's tool call and its result puts a user turn inside an
     /// exchange, which is a conversation no provider accepts.
     waiting: Vec<Entry>,
+    /// Entries settled here and not yet handed to balthasar, by cursor.
+    ///
+    /// Keyed rather than appended, so a message amended once per delta batch is one write at the
+    /// end instead of one per batch. Drained by [`Self::take_pending`] under a short lock and
+    /// written outside it: a socket round trip held here would block every UI read behind
+    /// balthasar's `fsync`.
+    pending: std::collections::BTreeMap<u64, Entry>,
 }
 
 impl Session {
@@ -55,7 +62,47 @@ impl Session {
             thinking: "off".to_owned(),
             events,
             waiting: Vec::new(),
+            pending: std::collections::BTreeMap::new(),
         })
+    }
+
+    /// Open a session on what balthasar holds, keeping nothing on disk.
+    ///
+    /// The transcript still lives here — every read comes from it — but this session's copy of
+    /// record is balthasar's, and the entries it starts with are the ones balthasar replayed.
+    #[must_use]
+    pub fn recorded(id: SessionId, entries: Vec<Entry>) -> Self {
+        let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
+        Self {
+            journal: Journal::recorded(id, entries),
+            status: AgentStatus::Idle,
+            cancel: crate::cancel::Cancel::default(),
+            model: None,
+            choices: Vec::new(),
+            thinking: "off".to_owned(),
+            events,
+            waiting: Vec::new(),
+            pending: std::collections::BTreeMap::new(),
+        }
+    }
+
+    /// Take up what balthasar holds for another session, keeping everyone attached.
+    ///
+    /// The counterpart to [`Self::resume`] for a store that is not a file. The journal is
+    /// swapped rather than the `Session` replaced, for the same reason: the broadcast channel is
+    /// what every attached UI holds, and building a new one would leave every subscriber quiet
+    /// on a resume that looked like it worked.
+    pub fn resume_recorded(&mut self, id: SessionId, entries: Vec<Entry>) {
+        self.journal = Journal::recorded(id, entries);
+        self.status = AgentStatus::Idle;
+        self.pending.clear();
+        let _ = self.events.send(self.snapshot(self.cursor()));
+    }
+
+    /// Whether this session's transcript is also being written to disk.
+    #[must_use]
+    pub fn is_kept(&self) -> bool {
+        self.journal.is_kept()
     }
 
     /// Whether nothing is running, so something new may start.
@@ -75,6 +122,23 @@ impl Session {
     /// close together would otherwise both find it there.
     pub fn release(&mut self) -> Vec<Entry> {
         std::mem::take(&mut self.waiting)
+    }
+
+    /// Take what has settled since the last time, in cursor order.
+    ///
+    /// Cheap and synchronous on purpose: the caller drains here and does the writing after it
+    /// has let the lock go.
+    pub fn take_pending(&mut self) -> Vec<(Cursor, Entry)> {
+        std::mem::take(&mut self.pending)
+            .into_iter()
+            .map(|(cursor, entry)| (Cursor(cursor), entry))
+            .collect()
+    }
+
+    /// Whether anything is waiting to be written out.
+    #[must_use]
+    pub fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
     }
 
     /// Put this session onto a different journal, keeping everyone attached to it.
@@ -235,6 +299,7 @@ impl Session {
             // A send with no subscribers is not a failure: the daemon outlives its UIs.
             let _ = self.events.send(event);
         }
+        self.pending.insert(cursor.0, entry);
         Ok(cursor)
     }
 
@@ -250,6 +315,7 @@ impl Session {
         for event in amendment_events(cursor, previous.as_ref(), &entry) {
             let _ = self.events.send(event);
         }
+        self.pending.insert(cursor.0, entry);
         Ok(cursor)
     }
 
@@ -270,6 +336,7 @@ impl Session {
         for event in amendment_events(cursor, previous.as_ref(), &entry) {
             let _ = self.events.send(event);
         }
+        self.pending.insert(cursor.0, entry);
         Ok(())
     }
 
@@ -289,6 +356,11 @@ impl Session {
         for event in amendment_events(cursor, previous.as_ref(), &entry) {
             let _ = self.events.send(event);
         }
+        // Queued like a commit, though nothing is written yet. The queue coalesces by cursor, so
+        // this costs no extra write — and without it a flush landing between the entry's first
+        // commit and its settling amendment records the empty message it started as. That is
+        // what a spawned balthasar exposed: the timing changed, and a turn came back blank.
+        self.pending.insert(cursor.0, entry);
     }
 
     /// Tell everyone which model is answering now.
@@ -609,152 +681,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod streaming_tests {
-    use super::*;
-    use magi_proto::{MessageId, Signatures, StopReason, Usage};
-
-    fn journal_path(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("magi-stream-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        dir.join("s.jsonl")
-    }
-
-    fn session(path: &std::path::Path) -> Session {
-        Session::open(path, SessionId::new("s1"), "/tmp", 0).expect("open")
-    }
-
-    fn assistant(text: &str) -> Entry {
-        Entry::Assistant {
-            id: MessageId::new("a1"),
-            text: text.to_owned(),
-            thinking: String::new(),
-            stop_reason: None,
-            error: None,
-            signatures: Signatures::default(),
-            usage: Usage::default(),
-        }
-    }
-
-    /// Everything published since the receiver was made.
-    fn drain(events: &mut tokio::sync::broadcast::Receiver<HarnessEvent>) -> Vec<HarnessEvent> {
-        let mut out = Vec::new();
-        while let Ok(event) = events.try_recv() {
-            out.push(event);
-        }
-        out
-    }
-
-    #[test]
-    fn a_message_still_arriving_is_published_a_piece_at_a_time() {
-        // The milestone: a three-hundred word answer was fourteen seconds of spinner and then
-        // the whole text at once, because nothing left the daemon until the message was done.
-        let mut s = session(&journal_path("progressive"));
-        s.commit(assistant("")).expect("commit");
-        let mut events = s.subscribe();
-
-        s.revise(assistant("Hello"));
-        s.revise(assistant("Hello there"));
-
-        let said: Vec<String> = drain(&mut events)
-            .into_iter()
-            .filter_map(|event| match event {
-                HarnessEvent::AssistantDelta { text, .. } => Some(text),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(said, vec!["Hello", " there"], "each piece, once");
-    }
-
-    #[test]
-    fn a_revision_is_not_written_down_until_the_message_ends() {
-        // Correct and unusable the other way: `amend` appends a whole record and flushes, so a
-        // thousand-token answer would write the message a thousand times, each copy longer than
-        // the last. The transcript is still current in memory.
-        let path = journal_path("unwritten");
-        let mut s = session(&path);
-        s.commit(assistant("")).expect("commit");
-        s.revise(assistant("Hello"));
-
-        assert!(
-            matches!(s.entries().last(), Some(Entry::Assistant { text, .. }) if text == "Hello"),
-            "a UI attaching now sees what has arrived"
-        );
-        let written = std::fs::read_to_string(&path).expect("read");
-        assert_eq!(
-            written.matches("Hello").count(),
-            0,
-            "and nothing was flushed"
-        );
-
-        s.amend(assistant("Hello")).expect("amend");
-        let written = std::fs::read_to_string(&path).expect("read");
-        assert_eq!(
-            written.matches("Hello").count(),
-            1,
-            "the end writes it once"
-        );
-    }
-
-    #[test]
-    fn a_message_taken_back_is_described_in_full_rather_than_as_an_append() {
-        // What a retry mid-answer needs. A delta is an append, so describing a retraction as one
-        // would leave both copies on screen.
-        let mut s = session(&journal_path("retract"));
-        s.commit(assistant("")).expect("commit");
-        s.revise(assistant("half an answer"));
-        let mut events = s.subscribe();
-
-        s.revise(assistant(""));
-
-        let published = drain(&mut events);
-        assert!(
-            published
-                .iter()
-                .any(|e| matches!(e, HarnessEvent::AssistantStarted { .. })),
-            "the message begins again: {published:?}"
-        );
-        let appended: Vec<String> = published
-            .into_iter()
-            .filter_map(|event| match event {
-                HarnessEvent::AssistantDelta { text, .. } => Some(text),
-                _ => None,
-            })
-            .collect();
-        assert!(
-            appended.iter().all(String::is_empty),
-            "and nothing is appended: {appended:?}"
-        );
-    }
-
-    #[test]
-    fn an_ordinary_ending_is_still_one_delta_and_a_stop() {
-        // The repair must be invisible when a message merely finishes.
-        let mut s = session(&journal_path("ending"));
-        s.commit(assistant("")).expect("commit");
-        s.revise(assistant("done"));
-        let mut events = s.subscribe();
-
-        let mut ended = assistant("done");
-        if let Entry::Assistant { stop_reason, .. } = &mut ended {
-            *stop_reason = Some(StopReason::EndTurn);
-        }
-        s.amend(ended).expect("amend");
-
-        let published = drain(&mut events);
-        assert!(
-            !published
-                .iter()
-                .any(|e| matches!(e, HarnessEvent::AssistantStarted { .. })),
-            "nothing began again: {published:?}"
-        );
-        assert!(
-            published
-                .iter()
-                .any(|e| matches!(e, HarnessEvent::AssistantEnded { .. })),
-            "it ended: {published:?}"
-        );
-    }
-}
+mod waiting;
 
 #[cfg(test)]
-mod waiting;
+mod streaming;

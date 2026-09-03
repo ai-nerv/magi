@@ -7,8 +7,10 @@
 //! that is the direct cause of its 34,875-line daemon. Growth past the cap means capabilities
 //! are being added where they should be composed.
 
+pub mod ask;
 mod ids;
 pub mod permit;
+pub mod setup;
 
 pub use ids::{MessageId, SessionId, ToolCallId};
 

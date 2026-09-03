@@ -7,7 +7,6 @@ version.workspace = true
 
 [dependencies]
 magi-model.workspace = true
-magi-provider.workspace = true
 serde_json.workspace = true
 
 [lints]

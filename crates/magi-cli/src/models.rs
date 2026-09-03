@@ -1,109 +1,137 @@
 //! `magi models` — what magi can talk to, and what it would take to enable it.
+//!
+//! Asked of melchior, which owns the catalog. magi kept its own once and this printed that; the
+//! two were the same file copied twice, and the copy here was the one that went stale.
 
-use magi_provider::provider::Provider;
+use magi_proto::ask::Card;
 
 /// Print the catalog.
 ///
-/// Unconfigured providers are listed too, with the variable that would enable them: someone
+/// Models that are not ready are listed too, with the variable that would enable them: somebody
 /// choosing a model wants to see what exists, not a list narrowed to whatever happens to be
 /// exported in this shell.
 pub fn print(all: bool) {
-    let (providers, default) = match crate::config::load() {
-        Ok(loaded) => {
-            let default = loaded.config.string("model").map(str::to_owned);
-            (loaded.providers, default)
-        }
-        Err(e) => {
-            eprintln!("{e}");
-            (crate::config::builtin().unwrap_or_default(), None)
-        }
-    };
-    let configured = providers.iter().filter(|p| p.is_configured()).count();
+    let default = crate::config::load()
+        .ok()
+        .and_then(|loaded| loaded.config.string("model").map(str::to_owned));
 
-    for provider in &providers {
-        if !all && !provider.is_configured() {
+    let cards = melchior();
+    if cards.is_empty() {
+        eprintln!("magi: melchior is not answering, so there are no models to list.");
+        eprintln!("      install it, or run `melchior models` to see what it says.");
+        return;
+    }
+
+    let ready = cards.iter().filter(|card| card.ready).count();
+    let mut provider = String::new();
+    for card in &cards {
+        if !all && !card.ready {
             continue;
         }
-        print_provider(provider, default.as_deref());
+        // Grouped under the provider, printed when it changes. The cards arrive sorted, so this
+        // is a header rather than a sort of its own.
+        if card.provider != provider {
+            provider.clone_from(&card.provider);
+            println!("\n{provider}");
+        }
+        print_card(card, default.as_deref());
     }
 
-    if !all && configured < providers.len() {
+    if !all && ready < cards.len() {
         println!(
-            "\n{} of {} providers configured. `magi models --all` shows the rest.",
-            configured,
-            providers.len()
+            "\n{} more not ready. `magi models --all` lists them with what each needs.",
+            cards.len() - ready
         );
     }
 }
 
-fn print_provider(provider: &Provider, default: Option<&str>) {
-    // A protocol magi cannot speak matters more than a missing key: no amount of configuring
-    // will help, and finding that out after setting one is a waste of the reader's time.
-    let status = if let Some(why) = magi_lua::adapter::why_unspoken(provider.api.as_str()) {
-        format!("  (not yet spoken: {})", first_sentence(why))
-    } else if provider.is_configured() {
-        String::new()
+/// One card, as a line.
+fn print_card(card: &Card, default: Option<&str>) {
+    let marker = if default == Some(card.id.as_str()) {
+        "*"
     } else {
-        format!("  ({})", provider.auth.requirement())
+        " "
     };
-    println!("\n{} — {}{}", provider.name, provider.api.as_str(), status);
-
-    for model in &provider.models {
-        let qualified = model.qualified();
-        // The chosen model is marked in place rather than listed apart: a person scanning for
-        // it wants to see it beside the alternatives they might switch to.
-        let marker = if default == Some(qualified.as_str()) {
-            "*"
-        } else {
-            " "
-        };
-        let reasoning = if model.reasoning { " reasoning" } else { "" };
-        println!(
-            "{marker} {:<44} {:>9} ctx  ${:.2}/${:.2}{}",
-            qualified,
-            thousands(model.context_window),
-            model.cost.input,
-            model.cost.output,
-            reasoning
-        );
-    }
+    let window = card
+        .context_window
+        .map(|n| format!("{}k", n / 1000))
+        .unwrap_or_default();
+    let note = match (&card.needs, card.ready) {
+        (_, true) => String::new(),
+        (Some(variable), _) => format!("  needs {variable}"),
+        (None, _) => "  not reachable".to_owned(),
+    };
+    let reasons = if card.reasons { " reasons" } else { "" };
+    println!("{marker} {:<48} {window:>7}{reasons}{note}", card.id);
 }
 
-/// `200000` becomes `200k`, because a context window is compared, not counted.
-fn thousands(n: u64) -> String {
-    match n {
-        0..=9_999 => n.to_string(),
-        10_000..=999_999 => format!("{}k", n / 1000),
-        _ => format!("{:.1}M", n as f64 / 1_000_000.0),
+/// Every card melchior offers, or nothing when it will not answer.
+///
+/// Blocking, because this is a command rather than a session: there is no runtime to borrow and
+/// nothing else to get on with while it answers.
+fn melchior() -> Vec<Card> {
+    let Ok(out) = std::process::Command::new("melchior")
+        .arg("models")
+        .arg("--json")
+        .stderr(std::process::Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    let Ok(reply) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else {
+        return Vec::new();
+    };
+    if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+        return Vec::new();
     }
-}
-
-/// The first sentence of an explanation, for a line that has to fit on a terminal.
-fn first_sentence(text: &str) -> String {
-    text.split_once(". ")
-        .map_or_else(|| text.to_owned(), |(first, _)| format!("{first}."))
+    reply
+        .get("result")
+        .and_then(serde_json::Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| serde_json::from_value(row.clone()).ok())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn windows_abbreviate() {
-        assert_eq!(thousands(8192), "8192");
-        assert_eq!(thousands(200_000), "200k");
-        assert_eq!(thousands(1_048_576), "1.0M");
+    fn card(ready: bool) -> Card {
+        Card {
+            id: "p/m".into(),
+            provider: "p".into(),
+            name: "m".into(),
+            api: "openai-completions".into(),
+            context_window: Some(128_000),
+            max_output: None,
+            reasons: false,
+            ready,
+            needs: if ready { None } else { Some("P_KEY".into()) },
+        }
     }
 
     #[test]
-    fn the_lua_catalog_is_reachable_from_the_binary() {
-        assert!(!crate::config::builtin().expect("the catalog").is_empty());
+    fn a_card_that_is_not_ready_names_the_variable_rather_than_hiding() {
+        // Printed rather than asserted on, because the value here is that the reason reaches a
+        // person at all: a list that silently omits the model they wanted is the failure.
+        let card = card(false);
+        assert_eq!(card.needs.as_deref(), Some("P_KEY"));
+        print_card(&card, None);
     }
 
     #[test]
-    fn local_providers_need_no_variable_named() {
-        let providers = crate::config::builtin().expect("the catalog");
-        let ollama = providers.iter().find(|p| p.id == "ollama").expect("ollama");
-        assert!(ollama.auth.vars().is_empty());
+    fn an_absent_melchior_is_no_models_rather_than_a_panic() {
+        // Whatever is on this machine, the shape of the answer is a list.
+        let _: Vec<Card> = melchior();
+    }
+
+    #[test]
+    fn the_chosen_model_is_the_one_marked() {
+        let card = card(true);
+        assert_eq!(card.id, "p/m");
+        print_card(&card, Some("p/m"));
     }
 }

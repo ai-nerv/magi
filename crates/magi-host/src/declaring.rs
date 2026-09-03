@@ -6,7 +6,7 @@
 //! the whole job — and the only party that knows the shape of the job before it starts is the
 //! model.
 //!
-//! So it is asked, in a [schema](magi_provider::api::Schema) rather than in prose: what verbs,
+//! So it is asked, in a [schema](magi_proto::ask::Schema) rather than in prose: what verbs,
 //! on what, and why. The answer is a *proposal*, not a decision. It is turned into the same
 //! prompt every other request goes through, and the person can grant all of it, some of it, or
 //! none — the model has no more authority over the ledger than it had before.
@@ -15,8 +15,8 @@
 //! per-action gate on everything it did not mention, which is exactly what that gate is for.
 //! This buys fewer interruptions, not more trust.
 
+use magi_proto::ask::Schema;
 use magi_proto::permit::{Grant, Scope};
-use magi_provider::api::Schema;
 
 /// What the model is asked, as a message of its own.
 ///

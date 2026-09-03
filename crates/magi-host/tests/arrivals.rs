@@ -11,103 +11,29 @@ use magi_host::session::Session;
 use magi_host::turn::Backend;
 use magi_ipc::{FrameReader, FrameWriter};
 use magi_proto::{Cursor, HarnessEvent, SessionId, UiCommand};
-use magi_provider::api::Options;
-use magi_provider::model::{Api, Modality, Model};
-use magi_provider::provider::{Auth, Provider};
-use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Write};
-use std::net::TcpListener;
+use magi_testkit::Mind;
 
-/// A recorded Anthropic response: a little text, then a clean stop.
-const STREAM: &str = "\
-event: message_start\n\
-data: {\"message\":{\"usage\":{\"input_tokens\":11,\"output_tokens\":0}}}\n\
-\n\
-event: content_block_start\n\
-data: {\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\
-\n\
-event: content_block_delta\n\
-data: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"thanks\"}}\n\
-\n\
-event: message_delta\n\
-data: {\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\
-\n";
-
-/// Answer one request with `STREAM`, and report whether anything ever asked.
-///
-/// The flag is the real assertion in the negative case: "no turn ran" has to mean the provider
-/// was never called, not merely that no event happened to arrive before a timeout.
-fn serve_once() -> (String, std::sync::Arc<std::sync::atomic::AtomicBool>) {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
-    let port = listener.local_addr().expect("addr").port();
-    let asked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let flag = std::sync::Arc::clone(&asked);
-    std::thread::spawn(move || {
-        let Ok((mut socket, _)) = listener.accept() else {
-            return;
-        };
-        flag.store(true, std::sync::atomic::Ordering::SeqCst);
-        let mut reader = BufReader::new(socket.try_clone().expect("clone"));
-        let mut line = String::new();
-        while reader.read_line(&mut line).unwrap_or(0) > 0 {
-            if line == "\r\n" {
-                break;
-            }
-            line.clear();
-        }
-        let _ = write!(
-            socket,
-            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{STREAM}",
-            STREAM.len()
-        );
-        let _ = socket.flush();
-    });
-    (format!("http://127.0.0.1:{port}"), asked)
-}
-
-fn backend(base_url: String) -> Backend {
-    let model = Model {
-        id: "claude-sonnet-4-5".into(),
-        name: "Claude Sonnet 4.5".into(),
-        provider: "fake".into(),
-        api: Api::AnthropicMessages,
-        reasoning: false,
-        input: vec![Modality::Text],
-        context_window: 200_000,
-        max_tokens: 8192,
-        cost: magi_model::Cost::default(),
-        thinking: BTreeMap::new(),
-        compat: None,
-    };
+fn backend(mind: &Mind) -> Backend {
     Backend {
-        // The real ones, because the worker builds its own adapter out of them: a backend with
-        // no protocol description cannot answer at all, and the failure would read as "the
-        // arrival did not wake it".
-        apis: magi_lua::adapter::shipped_apis().expect("the shipped protocols"),
         tools: Vec::new(),
         clients: Vec::new(),
         cwd: std::env::temp_dir(),
-        provider: Provider {
-            id: "fake".into(),
-            name: "Fake".into(),
-            base_url: Some(base_url),
-            api: Api::AnthropicMessages,
-            auth: Auth::None,
-            compat: None,
-            models: vec![model.clone()],
-            discover: false,
-        },
-        model,
-        options: Options::default(),
+        model: "fake/one".to_owned(),
+        // A real path to a real program, because the worker spawns it: a backend that cannot be
+        // asked cannot answer at all, and the failure would read as "the arrival did not wake
+        // it" rather than "there was nothing to wake".
+        mind: mind.program().display().to_string(),
+        wants: magi_proto::ask::Wants::default(),
+        context_window: Some(200_000),
         system: None,
         confine: false,
         grants: Vec::new(),
-        environ: BTreeMap::new(),
+        environ: std::collections::BTreeMap::new(),
     }
 }
 
 /// A session serving on its own socket, and the path to reach it at.
-async fn serving(name: &str, base_url: String) -> std::path::PathBuf {
+async fn serving(name: &str, mind: &Mind) -> std::path::PathBuf {
     // Short: a scratch directory path does not fit in `SUN_LEN`.
     let path = std::env::temp_dir().join(format!("magi-arr-{}-{name}.sock", std::process::id()));
     let _ = std::fs::remove_file(&path);
@@ -116,7 +42,7 @@ async fn serving(name: &str, base_url: String) -> std::path::PathBuf {
     std::fs::create_dir_all(&dir).expect("mkdir");
     let session = Session::open(&dir.join("s.jsonl"), SessionId::new("s"), "/tmp", 0).expect("s");
     let listener = magi_ipc::bind(&path).await.expect("bind");
-    let backend = backend(base_url);
+    let backend = backend(mind);
     tokio::spawn(async move {
         let _ = magi_host::serve_catalog(
             listener,
@@ -130,9 +56,12 @@ async fn serving(name: &str, base_url: String) -> std::path::PathBuf {
 }
 
 /// Attach, hand over one arrival, and report every event that follows within `patience`.
+///
+/// The second half of the answer is whether the mind was asked at all. "No turn ran" has to
+/// mean nothing was spawned, not merely that no event happened to arrive before a timeout.
 async fn arrival_of(sort: &str, name: &str) -> (Vec<HarnessEvent>, bool) {
-    let (base_url, asked) = serve_once();
-    let path = serving(name, base_url).await;
+    let mind = Mind::answering(&format!("arr-{name}"), "thanks");
+    let path = serving(name, &mind).await;
     let stream = magi_ipc::connect(&path).await.expect("connect");
     let (read_half, write_half) = stream.into_split();
     let mut reader = FrameReader::new(read_half);
@@ -168,7 +97,9 @@ async fn arrival_of(sort: &str, name: &str) -> (Vec<HarnessEvent>, bool) {
             break;
         }
     }
-    (seen, asked.load(std::sync::atomic::Ordering::SeqCst))
+    // Read before the mind drops, which takes the program with it.
+    let asked = mind.asked() > 0;
+    (seen, asked)
 }
 
 fn started_a_turn(seen: &[HarnessEvent]) -> bool {

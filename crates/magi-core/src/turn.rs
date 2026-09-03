@@ -1,7 +1,7 @@
 //! One turn: provider deltas in, a decision out.
 
+use magi_model::Delta;
 use magi_model::{Content, Message, Role, StopReason, Usage};
-use magi_provider::api::Delta;
 
 /// What a turn is doing.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -5,10 +5,11 @@
 //! a single artifact.
 
 mod app;
-mod auth;
+mod balthasar;
 mod clipboard;
 mod config;
 mod driver;
+mod driving;
 mod ext_lua;
 mod external_editor;
 mod help;
@@ -67,9 +68,6 @@ enum Command {
     /// so `command = "magi"` in a declaration needs nothing else installed.
     #[command(subcommand)]
     Ext(Ext),
-    /// Sign in to a provider that uses a subscription rather than a key.
-    #[command(subcommand)]
-    Auth(AuthCommand),
     /// Print the Lua client library for magi's own surface.
     ///
     /// What a sibling needs in order to talk to a running magi: framing, encoding, discovery
@@ -113,9 +111,6 @@ async fn main() -> Result<()> {
         Some(Command::Ext(Ext::Shell)) => shell::run(),
 
         Some(Command::Ext(Ext::Lua { file })) => ext_lua::run(&file),
-        Some(Command::Auth(AuthCommand::Login { provider })) => auth::login(&provider).await,
-        Some(Command::Auth(AuthCommand::Logout { provider })) => auth::logout(&provider),
-        Some(Command::Auth(AuthCommand::Status)) => auth::status(),
         Some(Command::LuaApi) => {
             print!("{}", magi_lua::client::CLIENT);
             Ok(())
@@ -179,6 +174,10 @@ async fn main() -> Result<()> {
             )
             .await?;
             let outcome = print::run(&socket, prompt).await;
+            // Before the socket goes: the turn's own flush runs on a spawned task, which a
+            // process exiting this promptly can outrun.
+            magi_host::drain().await;
+            balthasar::stop();
             host::done(&socket);
             let outcome = outcome?;
             if !outcome.text.is_empty() {
@@ -237,6 +236,8 @@ async fn main() -> Result<()> {
             let ran = driver::run(&socket, cli.prompt, loaded, &project, started).await;
             // Not on a signal, and not by anybody else: the session is this process, so the
             // only thing that ends it is this process ending.
+            magi_host::drain().await;
+            balthasar::stop();
             host::done(&socket);
             ran
         }
@@ -277,23 +278,6 @@ fn inherited(
 /// the spelling would put the list of them in two programs.
 fn talk(loaded: Option<&crate::config::Loaded>) -> Option<&str> {
     loaded.and_then(|l| l.config.string("agent_talk"))
-}
-
-/// What `magi auth` can do.
-#[derive(Subcommand)]
-enum AuthCommand {
-    /// Sign in, through your browser.
-    Login {
-        /// The provider, as `magi models` names it.
-        provider: String,
-    },
-    /// Forget a provider's credentials.
-    Logout {
-        /// The provider to forget.
-        provider: String,
-    },
-    /// Show which providers are signed in.
-    Status,
 }
 
 /// The peers magi ships.

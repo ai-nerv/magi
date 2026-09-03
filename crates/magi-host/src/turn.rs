@@ -7,10 +7,6 @@ use crate::session::Session;
 use magi_core::{Step, Turn};
 use magi_model::StopReason;
 use magi_proto::{AgentStatus, Entry, MessageId, ToolCallId};
-use magi_provider::api::Options;
-use magi_provider::client::Client;
-use magi_provider::model::Model;
-use magi_provider::provider::Provider;
 use magi_tools::{Ops, Registry};
 
 /// What the daemon needs to reach a model.
@@ -37,19 +33,25 @@ pub struct Backend {
     /// Off unless a config asks. See [`magi_tools::ops::Real`] for why a wall only the careful
     /// tools obey is worse than no wall.
     pub confine: bool,
-    /// The protocol descriptions to build the VM from, as `(name, source)`.
+    /// Which model to ask for, as melchior names it: `provider/model`.
     ///
-    /// Carried as text rather than as a built VM because a VM cannot cross a thread boundary,
-    /// and read from the same place the catalog was so that a protocol the user edited is the
-    /// one the daemon speaks. Building from the compiled-in copies instead was a bug: an
-    /// edited `apis/*.lua` changed what `magi models` reported and nothing else.
-    pub apis: Vec<(String, String)>,
-    /// The provider offering the model.
-    pub provider: Provider,
-    /// The model to call.
-    pub model: Model,
+    /// A name and nothing else. magi does not know which protocol this model speaks, where it
+    /// lives, or what credential it takes -- melchior owns all three, and a harness that held a
+    /// second opinion about any of them would be a second thing to keep in step.
+    pub model: String,
+    /// The program that owns the model, found on `PATH`.
+    ///
+    /// [`crate::broker::MELCHIOR`] in every session. Named per backend rather than compiled in
+    /// so a test can point one turn at a stand-in: `PATH` is process-wide, and tests that fought
+    /// over it would be tests that pass alone and fail together.
+    pub mind: String,
     /// What to ask for beyond the conversation.
-    pub options: Options,
+    pub wants: magi_proto::ask::Wants,
+    /// How much this model will read, as melchior's card reported it.
+    ///
+    /// Carried rather than looked up, because the only thing magi does with it is decide when to
+    /// compact -- and asking melchior that on every turn would be a process per decision.
+    pub context_window: Option<u64>,
     /// What the model is told it is, before the conversation starts.
     ///
     /// Assembled once, when the daemon starts. Rebuilding it per turn would let a project file
@@ -63,12 +65,7 @@ pub struct Backend {
 /// Returns whether anything was compacted. A failure is not fatal: the turn goes ahead with
 /// the context it has and either fits or is refused by the provider, which is no worse than
 /// not having tried. Losing the conversation because the summariser had a bad minute would be.
-async fn compact(
-    session: &tokio::sync::Mutex<Session>,
-    backend: &Backend,
-    adapter: &dyn magi_provider::api::Adapter,
-    client: &Client,
-) -> bool {
+async fn compact(session: &tokio::sync::Mutex<Session>, backend: &Backend) -> bool {
     let (context, entries) = {
         let held = session.lock().await;
         (crate::context::of(&held), held.entries().to_vec())
@@ -90,18 +87,17 @@ async fn compact(
     let asked = crate::compact::request(&context, through);
     let mut turn = magi_core::Turn::new();
     let mut deltas = Vec::new();
-    let outcome = client
-        .stream(
-            &magi_provider::client::Call {
-                adapter,
-                provider: &backend.provider,
-                model: &backend.model,
-                context: &asked,
-                options: &backend.options,
-            },
-            |delta| deltas.push(delta),
-        )
-        .await;
+    // The same mind that answers a turn writes the summary of one. Collected rather than
+    // streamed: nobody watches a compaction, and the entry is written once at the end.
+    let outcome = crate::broker::ask_through(
+        &backend.mind,
+        &backend.model,
+        &asked,
+        &backend.wants,
+        |delta| deltas.push(delta),
+        |_| {},
+    )
+    .await;
     for delta in deltas {
         turn.apply(delta);
     }
@@ -127,8 +123,6 @@ async fn compact(
 async fn one_turn(
     session: &tokio::sync::Mutex<Session>,
     backend: &Backend,
-    adapter: &dyn magi_provider::api::Adapter,
-    client: &Client,
     tools: Vec<magi_model::Tool>,
     cancel: &crate::cancel::Cancel,
 ) -> Result<Round, crate::HostError> {
@@ -163,21 +157,24 @@ async fn one_turn(
         // The provider call is raced against the interrupt rather than polled after it: a model
         // mid-answer holds this future for as long as it keeps talking, and a flag checked when
         // it returns is a stop that arrives once the work it was stopping is already paid for.
-        let call = magi_provider::client::Call {
-            adapter,
-            provider: &backend.provider,
-            model: &backend.model,
-            context: &context,
-            options: &backend.options,
-        };
-        let streaming = client.stream_reporting(
-            &call,
-            // A closed receiver means the turn is over; there is nobody to tell.
+        // melchior owns the model. magi gathers the context and writes down the answer; which
+        // protocol this model speaks, where it lives and what credential it takes are not
+        // magi's to know, and there is no second opinion here to drift from melchior's.
+        let streaming = crate::broker::ask_through(
+            &backend.mind,
+            &backend.model,
+            &context,
+            &backend.wants,
             |delta| {
+                // A closed receiver means the turn is over; there is nobody to tell.
                 let _ = arrivals.send(Arrival::Delta(delta));
             },
             |retry| {
-                let _ = retries.send(Arrival::Retrying(retry));
+                let _ = retries.send(Arrival::Retrying {
+                    attempt: retry.attempt,
+                    max_attempts: retry.max_attempts,
+                    delay_ms: retry.delay_ms,
+                });
             },
         );
         let mut streaming = std::pin::pin!(streaming);
@@ -195,7 +192,7 @@ async fn one_turn(
                             turn.apply(delta);
                             session.lock().await.revise(assistant(&id, &turn));
                         }
-                        Arrival::Retrying(retry) => {
+                        Arrival::Retrying { attempt, max_attempts, delay_ms } => {
                             // What the attempt published has to be taken back. The transcript
                             // can say so — a message that is not an extension of itself is
                             // described in full rather than as an append — so this is one
@@ -207,10 +204,9 @@ async fn one_turn(
                             // during an overload a person saw "Thinking" for a minute with no
                             // sign that anything had gone wrong or would be tried again.
                             held.set_status(AgentStatus::Retrying {
-                                attempt: retry.attempt,
-                                max_attempts: retry.max_attempts,
-                                delay_ms: u64::try_from(retry.delay.as_millis())
-                                    .unwrap_or(u64::MAX),
+                                attempt,
+                                max_attempts,
+                                delay_ms,
                             });
                         }
                     }
@@ -253,7 +249,7 @@ async fn one_turn(
     if let Err(error) = outcome {
         // An error is a value, not an exception: the transcript stays well-formed and the UI
         // needs no error branch. Pi's discipline, and the reason its renderer has none.
-        let class = error.class;
+        let refused = error.why;
         turn.abort(StopReason::Error);
         let mut held = session.lock().await;
         held.amend(Entry::Assistant {
@@ -268,7 +264,7 @@ async fn one_turn(
         held.set_status(AgentStatus::Idle);
         return Ok(Round {
             turn,
-            failed: Some(class),
+            failed: Some(refused),
         });
     }
 
@@ -292,7 +288,7 @@ async fn one_turn(
 struct Round {
     turn: Turn,
     /// Set when the provider refused, and the class it refused with.
-    failed: Option<magi_provider::retry::RetryClass>,
+    failed: Option<magi_proto::ask::Refusal>,
 }
 
 /// Something the provider call said, in the order it said it.
@@ -302,9 +298,17 @@ struct Round {
 /// with it, and two channels have no way to promise it does not.
 enum Arrival {
     /// Part of the answer.
-    Delta(magi_provider::api::Delta),
+    Delta(magi_model::Delta),
     /// The attempt failed and another is starting. Everything published so far is retracted.
-    Retrying(magi_provider::client::Retrying),
+    /// The mind said an attempt failed and another is starting.
+    Retrying {
+        /// Which attempt just failed, counting from one.
+        attempt: u32,
+        /// How many will be made in all.
+        max_attempts: u32,
+        /// How long before the next one.
+        delay_ms: u64,
+    },
 }
 
 /// The assistant entry for a turn in its current state.
@@ -347,8 +351,6 @@ const MAX_ROUNDS: usize = 24;
 pub async fn run(
     session: &tokio::sync::Mutex<Session>,
     backend: &Backend,
-    adapter: &dyn magi_provider::api::Adapter,
-    client: &Client,
     registry: &Registry,
     ops: &dyn Ops,
 ) -> Result<(), crate::HostError> {
@@ -361,10 +363,10 @@ pub async fn run(
     // still in the middle of.
     let over = {
         let held = session.lock().await;
-        crate::compact::needed(&crate::context::of(&held), &backend.model)
+        crate::compact::needed(&crate::context::of(&held), backend.context_window)
     };
     if over {
-        compact(session, backend, adapter, client).await;
+        compact(session, backend).await;
     }
 
     // One reactive compaction per prompt. A second overflow after summarising is not a
@@ -373,22 +375,14 @@ pub async fn run(
     let mut compacted = false;
 
     for _ in 0..MAX_ROUNDS {
-        let round = one_turn(
-            session,
-            backend,
-            adapter,
-            client,
-            registry.declarations(),
-            &cancel,
-        )
-        .await?;
+        let round = one_turn(session, backend, registry.declarations(), &cancel).await?;
 
         // The estimate above is deliberately rough; this is the provider's own answer. The
         // failed round stays in the transcript, because a reader who notices the model
         // forgetting something deserves to see that this is why.
-        if round.failed == Some(magi_provider::retry::RetryClass::Overflow) && !compacted {
+        if round.failed == Some(magi_proto::ask::Refusal::Overflow) && !compacted {
             compacted = true;
-            if compact(session, backend, adapter, client).await {
+            if compact(session, backend).await {
                 continue;
             }
         }

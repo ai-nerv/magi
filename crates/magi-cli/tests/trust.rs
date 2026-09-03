@@ -227,9 +227,11 @@ magi.tool("ours", {
 "#,
     );
     let output = magi(&dir, &["models", "--all"]);
-    let listed = String::from_utf8_lossy(&output.stdout);
     let said = String::from_utf8_lossy(&output.stderr);
-    assert!(listed.contains("mine/m"), "{listed}");
+    // Not refused, which is the whole of what vouching does. Whether the provider then works
+    // is no longer visible from here and is not this test's business: melchior owns the
+    // catalog, so a provider named in magi's config declares to nobody -- see `config/mod.rs`.
+    // What is on trial is the gate, and a vouched file passes it silently.
     assert!(
         !said.contains("will not be used"),
         "nothing was refused: {said}"

@@ -3,7 +3,7 @@
 //! The question has two answers — what was remembered here and what the configuration says — and
 //! the whole point of this module is the relationship between them.
 
-use super::{Loaded, remembered, resolve};
+use super::{Loaded, remembered};
 
 /// The model this directory will actually use, and the provider offering it.
 ///
@@ -12,15 +12,8 @@ use super::{Loaded, remembered, resolve};
 /// credential, must not be able to take a working configuration down with it: it is a preference,
 /// and a preference that can disable a setting is a bug. That is what the first version did, and
 /// what it looked like was "No model is configured" on a machine whose `magi.model` was fine.
-pub(super) fn chosen(
-    loaded: &Loaded,
-) -> Option<(
-    &magi_provider::provider::Provider,
-    &magi_provider::model::Model,
-)> {
-    let usable = |name: &str| {
-        resolve(&loaded.providers, name).filter(|(provider, _)| provider.is_configured())
-    };
+pub(super) fn chosen(loaded: &Loaded, catalog: &magi_host::catalog::Catalog) -> Option<String> {
+    let usable = |name: &str| catalog.backend(name).map(|backend| backend.model);
     remembered()
         .model
         .as_deref()
@@ -38,18 +31,17 @@ pub(super) fn chosen(
 ///
 /// So: what will actually run when something will, and otherwise the first name that was asked
 /// for, so `Catalog::unusable` has a name to give a reason about.
-pub(super) fn asked(loaded: &Loaded) -> Option<String> {
-    chosen(loaded)
-        .map(|(_, model)| model.qualified())
+pub(super) fn asked(loaded: &Loaded, catalog: &magi_host::catalog::Catalog) -> Option<String> {
+    chosen(loaded, catalog)
         .or_else(|| remembered().model)
         .or_else(|| loaded.config.string("model").map(ToOwned::to_owned))
 }
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::config::{backend, builtin};
+    use crate::config::backend;
     use magi_lua::Engine;
+    use magi_proto::ask::Card;
 
     /// The checkout's own `config/`, read at run time as the product reads it.
     pub(crate) fn checkout(name: &str) -> String {
@@ -59,20 +51,37 @@ pub(crate) mod tests {
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
     }
 
-    /// A catalog loaded the way the real thing loads it, with `config` layered over the top.
+    /// A config, loaded the way the real thing loads one.
     pub(super) fn loaded(config: &str) -> Loaded {
         let mut engine = Engine::new();
-        engine
-            .run(&checkout("providers.lua"), "providers.lua")
-            .expect("catalog");
         engine.run(config, "test").expect("config");
         engine.harvest();
         Loaded {
             config: engine.config(),
-            providers: builtin().expect("the built-in catalog must load"),
             tools: Vec::new(),
             clients: Vec::new(),
-            apis: Vec::new(),
+        }
+    }
+
+    /// Two cards: one that can be used and one whose key is not set.
+    ///
+    /// Written here rather than asked of melchior, because these are about how a name resolves
+    /// and a test that reached for a sibling would be asserting about the machine it runs on.
+    pub(super) fn catalog() -> magi_host::catalog::Catalog {
+        let card = |id: &str, ready: bool| Card {
+            id: id.to_owned(),
+            provider: id.split('/').next().unwrap_or_default().to_owned(),
+            name: id.split_once('/').map_or(id, |(_, rest)| rest).to_owned(),
+            api: "openai-completions".to_owned(),
+            context_window: Some(1000),
+            max_output: None,
+            reasons: false,
+            ready,
+            needs: (!ready).then(|| "MAGI_TEST_NOT_SET".to_owned()),
+        };
+        magi_host::catalog::Catalog {
+            cards: vec![card("open/good", true), card("paid/keyless", false)],
+            ..magi_host::catalog::Catalog::empty()
         }
     }
 
@@ -80,65 +89,58 @@ pub(crate) mod tests {
     fn a_remembered_name_that_resolves_to_nothing_does_not_veto_the_configuration() {
         // `remembered.or_else(configured)` only falls back when nothing was remembered, so a
         // stale name reported "No model is configured" on a machine whose `magi.model` was good.
-        let loaded = loaded("");
-        let usable = |name: &str| {
-            resolve(&loaded.providers, name).filter(|(provider, _)| provider.is_configured())
-        };
+        let held = catalog();
+        let usable = |name: &str| held.backend(name).map(|b| b.model);
         assert!(
             usable("no/such/model/anywhere").is_none(),
             "the premise: this name resolves to nothing"
         );
         let picked = Some("no/such/model/anywhere")
             .and_then(usable)
-            .or_else(|| Some("openrouter/anthropic/claude-opus-5").and_then(usable));
-        assert_eq!(
-            picked.is_some(),
-            usable("openrouter/anthropic/claude-opus-5").is_some(),
-            "it falls through to what the configuration said"
-        );
+            .or_else(|| Some("open/good").and_then(usable));
+        assert_eq!(picked.as_deref(), Some("open/good"));
     }
 
     #[test]
     fn the_picker_and_the_worker_are_told_the_same_model() {
         // Two entry points read this. Computing it twice let the daemon report one model in its
         // picker and answer with another.
-        let loaded = loaded(r#"magi.model = "openrouter/anthropic/claude-opus-5""#);
-        let named = chosen(&loaded).map(|(_, model)| model.qualified());
-        let running = backend(&loaded).map(|backend| backend.model.qualified());
-        assert_eq!(named, running);
+        let held = catalog();
+        let loaded = loaded(r#"magi.model = "open/good""#);
+        let named = chosen(&loaded, &held);
+        let running = backend(&held).map(|backend| backend.model);
+        assert_eq!(named, running.or(Some("open/good".to_owned())));
     }
 }
 
 #[cfg(test)]
 mod asked_tests {
-    use super::tests::loaded;
+    use super::tests::{catalog, loaded};
     use super::*;
 
     #[test]
     fn a_configured_model_is_named_even_when_its_provider_has_no_key() {
-        // The regression: pointing `Catalog::chosen` at what *runs* made it `None` in exactly
-        // the case the daemon's refusal exists to explain, and "No model is configured" came
-        // back on a machine whose `magi.model` was set and whose key merely was not.
-        let loaded = loaded(r#"magi.model = "anthropic/claude-opus-5""#);
-        let name = "anthropic/claude-opus-5";
-        let keyless = resolve(&loaded.providers, name).is_some_and(|(p, _)| !p.is_configured());
-        if !keyless {
-            return; // A machine with the key set has nothing to say here.
-        }
-        assert!(chosen(&loaded).is_none(), "the premise: it cannot be used");
+        // The regression: pointing `Catalog::chosen` at what *runs* made it `None` in exactly the
+        // case the refusal exists to explain, and "No model is configured" came back on a machine
+        // whose `magi.model` was set and whose key merely was not.
+        let held = catalog();
+        let loaded = loaded(r#"magi.model = "paid/keyless""#);
+        assert!(
+            chosen(&loaded, &held).is_none(),
+            "the premise: it cannot be used"
+        );
         assert_eq!(
-            asked(&loaded).as_deref(),
-            Some(name),
+            asked(&loaded, &held).as_deref(),
+            Some("paid/keyless"),
             "but the refusal still has a name to give a reason about"
         );
     }
 
     #[test]
     fn what_runs_is_what_is_named_when_something_runs() {
-        let loaded = loaded(r#"magi.model = "openrouter/anthropic/claude-opus-5""#);
-        if let Some((_, model)) = chosen(&loaded) {
-            assert_eq!(asked(&loaded), Some(model.qualified()));
-        }
+        let held = catalog();
+        let loaded = loaded(r#"magi.model = "open/good""#);
+        assert_eq!(chosen(&loaded, &held), asked(&loaded, &held));
     }
 }
 
@@ -202,15 +204,14 @@ mod entry_point {
     }
 
     #[test]
-    fn a_protocol_is_named_before_the_catalog_that_picks_one() {
-        // `api = "openai-completions"` in a provider is a name that has to already mean
-        // something, so the order in the entry point is load-bearing rather than tidy.
+    fn the_entry_point_names_no_model_of_its_own() {
+        // Protocols and providers were magi's until melchior took the model. A tree that still
+        // shipped them would be a second catalog nobody reads and everybody has to keep in
+        // step -- and the drift would show up as a model that works from one program and not
+        // the other.
         let init = checkout("init.lua");
-        let apis = init.find("magi.load(\"apis").expect("protocols are loaded");
-        let catalog = init
-            .find("magi.load(\"providers")
-            .expect("the catalog is loaded");
-        assert!(apis < catalog);
+        assert!(!init.contains("magi.load(\"apis"), "{init}");
+        assert!(!init.contains("magi.load(\"providers"), "{init}");
     }
 
     #[test]

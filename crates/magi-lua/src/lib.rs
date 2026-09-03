@@ -37,7 +37,6 @@
 //! not escape. That keeps the lifetime out of the twelve crates that have nothing to do with
 //! Lua.
 
-pub mod adapter;
 pub mod client;
 mod convert;
 mod engine;

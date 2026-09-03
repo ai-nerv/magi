@@ -718,7 +718,11 @@ impl App {
     pub fn open_session_picker(&mut self) {
         let cwd = std::env::current_dir().unwrap_or_default();
         let dir = magi_host::paths::sessions_dir();
-        let found = magi_host::paths::summaries(&dir, &cwd.display().to_string());
+        // balthasar first: it is the store, so a directory of journals is either absent or
+        // stale, and a picker built from stale files offers sessions that cannot be resumed.
+        let found = magi_host::paths::recorded()
+            .filter(|found| !found.is_empty())
+            .unwrap_or_else(|| magi_host::paths::summaries(&dir, &cwd.display().to_string()));
         if found.is_empty() {
             self.show_notice(
                 "No earlier sessions in this directory. This one is the first.".to_owned(),

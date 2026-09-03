@@ -9,7 +9,6 @@
 //! ...)` replaces it by the ordinary rule that registration is keyed. One mechanism, not two.
 
 use magi_lua::{Config, Engine, LuaError};
-use magi_provider::provider::Provider;
 use std::collections::BTreeSet;
 
 /// Everything the config files said, in one value.
@@ -20,14 +19,6 @@ pub struct Loaded {
     pub tools: Vec<(String, String)>,
     /// The family's client libraries, as `(name, source)`.
     pub clients: Vec<(String, String)>,
-    /// Every protocol description that was run, in order, as `(name, source)`.
-    ///
-    /// Kept so the daemon's worker can build its VM from exactly what the catalog was read
-    /// with. Rebuilding from the compiled-in copies would mean an edited protocol changed what
-    /// `magi models` printed and nothing the daemon actually did.
-    pub apis: Vec<(String, String)>,
-    /// Every provider declared, built-ins first and user files layered over them.
-    pub providers: Vec<Provider>,
 }
 
 /// Run `init.lua`, then everything it asked for, and collect what they declared.
@@ -42,7 +33,6 @@ pub struct Loaded {
 /// `make configs` is what puts them there.
 pub fn load() -> Result<Loaded, LuaError> {
     let mut engine = Engine::new();
-    let mut apis: Vec<(String, String)> = Vec::new();
     let mut tools: Vec<(String, String)> = Vec::new();
     let mut clients: Vec<(String, String)> = Vec::new();
 
@@ -85,10 +75,10 @@ pub fn load() -> Result<Loaded, LuaError> {
         for (path, source) in &round {
             match kind(path) {
                 Some("clients") => continue,
-                Some("apis") => {
-                    engine.run(source, path)?;
-                    layer(&mut apis, stem(path), source.clone());
-                }
+                // Read and run like any other file, but nothing is kept: a protocol description
+                // is melchior's now, and a copy held here would be a copy that drifts. A config
+                // that still names one is not an error — it simply declares to nobody.
+                Some("apis") => engine.run(source, path)?,
                 Some("tools") => {
                     engine.run(source, path)?;
                     layer(&mut tools, stem(path), source.clone());
@@ -128,13 +118,7 @@ pub fn load() -> Result<Loaded, LuaError> {
             eprintln!("magi: {refused}");
         }
     }
-    let mut loaded = collect(engine.config(), apis, tools, clients, machine.as_ref())?;
-    // Here rather than in `collect`, which `builtin` also uses. `builtin` is the catalog on its
-    // own, for when the rest of a config is broken -- a fallback that reaches the network is a
-    // fallback that hangs, and it is what the tests read, which would make them ask the internet
-    // what they are asserting about.
-    catalog::discover(&mut loaded.providers);
-    Ok(loaded)
+    collect(engine.config(), tools, clients)
 }
 
 /// Whether the working directory is one the machine's config vouched for.
@@ -166,79 +150,21 @@ fn layer(files: &mut Vec<(String, String)>, name: String, source: String) {
     }
 }
 
-/// Turn what the registrar collected into providers.
+/// Everything the registrar collected, as one value.
+///
+/// No providers. A catalog of models was read here once, from `providers.lua`, and it is
+/// melchior's now: which models exist, which protocol each speaks and what credential each takes
+/// are one subject, and magi keeping half of it was a second thing to keep in step.
 fn collect(
     config: Config,
-    apis: Vec<(String, String)>,
     tools: Vec<(String, String)>,
     clients: Vec<(String, String)>,
-    machine: Option<&Trusted>,
 ) -> Result<Loaded, LuaError> {
-    let mut providers = Vec::new();
-    for (id, spec) in config.all("provider") {
-        // Refused rather than declared: `refusals` has already said why on stderr, and a
-        // provider that is never built is one no model can be resolved against. `None` is a
-        // directory the user vouched for, where there is nothing to refuse.
-        if machine.is_some_and(|m| !m.allows(id)) {
-            continue;
-        }
-        providers.push(declare(id, spec).map_err(|message| LuaError::Shape {
-            what: format!("magi.provider({id:?})"),
-            message,
-        })?);
-    }
     Ok(Loaded {
         config,
-        apis,
         tools,
         clients,
-        providers,
     })
-}
-
-/// Build a provider from what the config handed the registrar.
-///
-/// The id comes from the registration rather than the table, so a config cannot declare one
-/// name and register another — and a loop over a directory names each entry by its file.
-fn declare(id: &str, spec: &serde_json::Value) -> Result<Provider, String> {
-    let mut object = spec.as_object().cloned().unwrap_or_default();
-    object.insert("id".into(), serde_json::Value::String(id.to_owned()));
-    object
-        .entry("name")
-        .or_insert_with(|| serde_json::Value::String(id.to_owned()));
-    serde_json::from_value(serde_json::Value::Object(object)).map_err(|e| e.to_string())
-}
-
-/// The catalog alone, for when the rest of a config is broken or irrelevant.
-pub fn builtin() -> Result<Vec<Provider>, LuaError> {
-    let mut engine = Engine::new();
-    if let Some(source) = source_of("providers.lua") {
-        engine.run(&source, "providers.lua")?;
-    }
-    engine.harvest();
-    Ok(collect(engine.config(), Vec::new(), Vec::new(), Vec::new(), None)?.providers)
-}
-
-/// Find the model the config chose, and the provider offering it.
-///
-/// `provider/model`, as `magi models` prints it. A bare model id is matched too, because a
-/// person who has one provider configured should not have to say which — but an ambiguous bare
-/// id resolves to the first declared, which is why the qualified form is what gets printed.
-#[must_use]
-pub fn resolve<'a>(
-    providers: &'a [Provider],
-    name: &str,
-) -> Option<(&'a Provider, &'a magi_provider::model::Model)> {
-    if let Some((provider_id, model_id)) = name.split_once('/') {
-        // Split at the first slash only: several catalogs use slashes inside a model id, so
-        // `openrouter/anthropic/claude-sonnet-4.5` is one provider and one model.
-        if let Some(provider) = providers.iter().find(|p| p.id == provider_id)
-            && let Some(model) = provider.model(model_id)
-        {
-            return Some((provider, model));
-        }
-    }
-    providers.iter().find_map(|p| p.model(name).map(|m| (p, m)))
 }
 
 /// Everything the daemon could talk to, so `:model` has something to pick among.
@@ -246,26 +172,28 @@ pub fn resolve<'a>(
 /// Built once at start rather than re-read on each switch: a session should keep answering
 /// with what it was started with, and picking up an edit made since would leave a person
 /// asking why it is using a model they did not choose.
+/// The cards come from melchior, which owns them.
 #[must_use]
-pub fn catalog(loaded: &Loaded) -> magi_host::catalog::Catalog {
-    magi_host::catalog::Catalog {
-        apis: loaded.apis.clone(),
+pub fn catalog(loaded: &Loaded, cards: Vec<magi_proto::ask::Card>) -> magi_host::catalog::Catalog {
+    let mut catalog = magi_host::catalog::Catalog {
         tools: loaded.tools.clone(),
         clients: loaded.clients.clone(),
         cwd: std::env::current_dir().unwrap_or_default(),
-        providers: loaded.providers.clone(),
-        options: options(loaded),
+        cards,
+        wants: options(loaded),
         system: system(loaded),
         grants: grants(loaded),
         environ: environ(loaded),
-        chosen: asked(loaded),
+        chosen: None,
         confine: loaded.config.boolean("confine").unwrap_or(false),
-    }
+    };
+    // After the cards: resolving what was asked for needs something to resolve it against.
+    catalog.chosen = asked(loaded, &catalog);
+    catalog
 }
 
 pub(crate) mod chosen;
-use chosen::{asked, chosen};
-mod catalog;
+use chosen::asked;
 mod settings;
 
 use settings::{grants, options, system};
@@ -286,21 +214,13 @@ pub fn remembered() -> magi_host::remember::Chosen {
 /// daemon still starts, and the refusal it journals names what to set. A daemon that would not
 /// start because a key was missing is a worse answer than a session that says so.
 #[must_use]
-pub fn backend(loaded: &Loaded) -> Option<magi_host::turn::Backend> {
-    let (provider, model) = chosen(loaded)?;
-    Some(magi_host::turn::Backend {
-        apis: loaded.apis.clone(),
-        tools: loaded.tools.clone(),
-        clients: loaded.clients.clone(),
-        cwd: std::env::current_dir().unwrap_or_default(),
-        provider: provider.clone(),
-        model: model.clone(),
-        options: options(loaded),
-        system: system(loaded),
-        grants: grants(loaded),
-        environ: environ(loaded),
-        confine: loaded.config.boolean("confine").unwrap_or(false),
-    })
+pub fn backend(catalog: &magi_host::catalog::Catalog) -> Option<magi_host::turn::Backend> {
+    // A lookup rather than a second assembly. It was a second assembly, and the two disagreed
+    // about what "configured" meant more than once.
+    catalog
+        .chosen()
+        .as_deref()
+        .and_then(|name| catalog.backend(name))
 }
 
 /// Configuration files edited since the daemon on `socket` started.
@@ -485,10 +405,6 @@ fn kind(path: &str) -> Option<&'static str> {
     }
     None
 }
-
-#[cfg(test)]
-#[path = "catalog_tests.rs"]
-mod catalog_tests;
 
 #[cfg(test)]
 mod staleness_tests {
