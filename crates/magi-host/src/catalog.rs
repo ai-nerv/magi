@@ -286,6 +286,9 @@ mod tests {
         let mut catalog = Catalog::empty();
         assert!(catalog.chosen().is_none());
         catalog.chosen = Some("anthropic/claude-sonnet-4-5".into());
-        assert_eq!(catalog.chosen().as_deref(), Some("anthropic/claude-sonnet-4-5"));
+        assert_eq!(
+            catalog.chosen().as_deref(),
+            Some("anthropic/claude-sonnet-4-5")
+        );
     }
 }

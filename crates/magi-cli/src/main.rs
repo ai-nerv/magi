@@ -280,7 +280,6 @@ fn talk(loaded: Option<&crate::config::Loaded>) -> Option<&str> {
     loaded.and_then(|l| l.config.string("agent_talk"))
 }
 
-
 /// The peers magi ships.
 #[derive(Subcommand)]
 enum Ext {

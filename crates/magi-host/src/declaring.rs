@@ -15,8 +15,8 @@
 //! per-action gate on everything it did not mention, which is exactly what that gate is for.
 //! This buys fewer interruptions, not more trust.
 
-use magi_proto::permit::{Grant, Scope};
 use magi_proto::ask::Schema;
+use magi_proto::permit::{Grant, Scope};
 
 /// What the model is asked, as a message of its own.
 ///

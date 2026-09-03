@@ -144,7 +144,6 @@ mod asked_tests {
     }
 }
 
-
 /// One entry point, reading a tree the binary does not carry.
 #[cfg(test)]
 mod entry_point {

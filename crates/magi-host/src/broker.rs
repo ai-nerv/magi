@@ -12,8 +12,8 @@
 //! rather than watched, this becomes a socket; until then a pipe is the honest shape.
 
 use magi_model::Context;
-use magi_proto::ask::{Ask, Refusal, Said, Wants};
 use magi_model::Delta;
+use magi_proto::ask::{Ask, Refusal, Said, Wants};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 /// What went wrong asking, when the asking itself failed.
