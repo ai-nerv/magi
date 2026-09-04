@@ -401,9 +401,9 @@ mod permitting {
     use magi_tools::approve::Approver;
 
     /// A holder that answers every surface with `chosen`, and records what it was shown.
-    struct Fixed {
+    pub(super) struct Fixed {
         chosen: Option<String>,
-        shown: Mutex<Vec<serde_json::Value>>,
+        pub(super) shown: Mutex<Vec<serde_json::Value>>,
     }
 
     impl magi_tools::holding::Holds for Fixed {
@@ -419,7 +419,9 @@ mod permitting {
     }
 
     /// An asker whose prompt is drawn by `chosen`, and the events it publishes.
-    fn asking(chosen: Option<String>) -> (Asker, Arc<Fixed>, Arc<Mutex<Vec<HarnessEvent>>>) {
+    pub(super) fn asking(
+        chosen: Option<String>,
+    ) -> (Asker, Arc<Fixed>, Arc<Mutex<Vec<HarnessEvent>>>) {
         let holder = Arc::new(Fixed {
             chosen,
             shown: Mutex::new(Vec::new()),
@@ -556,6 +558,155 @@ mod permitting {
         assert!(
             offers.iter().any(|s| matches!(s, Scope::Once)),
             "{offers:?}"
+        );
+    }
+}
+
+/// Every gated tool, not only the ones that run commands.
+///
+/// The claim this file makes is that a permission is a surface now. Tested through the real
+/// gate — the one `read`, `write` and every casper tool go through — rather than by calling the
+/// asker directly, because "the same `Approver` is used for all of them" is exactly the kind of
+/// thing that stays true right up until somebody adds a second path.
+#[cfg(test)]
+mod every_verb {
+    use super::permitting::{Fixed, asking};
+    use magi_proto::permit::Decision;
+    use magi_tools::registry::Tool;
+
+    /// A gated session rooted at `dir`, whose prompt is answered with `chosen`.
+    fn gated(
+        dir: &std::path::Path,
+        chosen: Option<String>,
+    ) -> (magi_tools::ops::Real, std::sync::Arc<Fixed>) {
+        let (asker, holder, _) = asking(chosen);
+        let ops = magi_tools::ops::Real::gated(
+            dir.to_path_buf(),
+            magi_tools::permit::Ledger::new(),
+            std::sync::Arc::new(asker),
+        );
+        (ops, holder)
+    }
+
+    /// What the prompt was shown, if it was shown anything.
+    fn shown(holder: &Fixed) -> Option<serde_json::Value> {
+        holder.shown.lock().expect("held").first().cloned()
+    }
+
+    #[test]
+    fn reading_a_file_puts_the_question_on_a_surface() {
+        let dir = std::env::temp_dir().join(format!("magi-asking-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a directory");
+        std::fs::write(dir.join("note.txt"), "hello").expect("a file");
+        // "no", so nothing is granted and the test leaves no standing permission behind.
+        let (ops, holder) = gated(&dir, Some("no".to_owned()));
+        let out = magi_tools::builtin::Read.run(
+            &serde_json::json!({"path": "note.txt"}),
+            &ops,
+            &magi_tools::cancel::Uncancelled,
+        );
+        let args = shown(&holder).expect("the prompt was never drawn");
+        assert_eq!(args["tool"], "read");
+        assert_eq!(args["verb"], "read");
+        assert!(
+            args["subject"].as_str().unwrap_or_default().ends_with("note.txt"),
+            "{args}"
+        );
+        assert!(out.is_error, "denied, so the read must not have happened");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn writing_a_file_puts_the_question_on_a_surface_too() {
+        let dir = std::env::temp_dir().join(format!("magi-asking-w-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a directory");
+        let (ops, holder) = gated(&dir, Some("no".to_owned()));
+        let out = magi_tools::builtin::Write.run(
+            &serde_json::json!({"path": "new.txt", "contents": "x"}),
+            &ops,
+            &magi_tools::cancel::Uncancelled,
+        );
+        let args = shown(&holder).expect("the prompt was never drawn");
+        assert_eq!(args["verb"], "write");
+        assert!(out.is_error);
+        assert!(!dir.join("new.txt").exists(), "a refused write happened anyway");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_yes_on_the_surface_lets_the_read_through() {
+        // The other half. A prompt that could only refuse would pass the test above and be
+        // useless, and "the surface said allow" has to reach the file.
+        let dir = std::env::temp_dir().join(format!("magi-asking-y-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a directory");
+        std::fs::write(dir.join("note.txt"), "hello").expect("a file");
+        // Row zero, which is `Once` for every action: allowed, and nothing left standing.
+        let (ops, _) = gated(&dir, Some("0".to_owned()));
+        let out = magi_tools::builtin::Read.run(
+            &serde_json::json!({"path": "note.txt"}),
+            &ops,
+            &magi_tools::cancel::Uncancelled,
+        );
+        assert!(!out.is_error, "{}", out.content);
+        assert!(out.content.contains("hello"), "{}", out.content);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_ledger_still_answers_the_second_time() {
+        // The surface is asked once. A prompt per file in a directory somebody already allowed
+        // is the difference between a permission and a nuisance, and moving the prompt out of
+        // magi must not have moved the remembering with it.
+        let dir = std::env::temp_dir().join(format!("magi-asking-l-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a directory");
+        std::fs::write(dir.join("a.txt"), "one").expect("a file");
+        std::fs::write(dir.join("b.txt"), "two").expect("a file");
+        let action = magi_proto::permit::Action::Read {
+            path: dir.join("a.txt").display().to_string(),
+        };
+        // The directory the file is in, which is what covers the sibling beside it.
+        let nth = magi_tools::permit::Ledger::offers(&action)
+            .iter()
+            .position(|scope| {
+                matches!(scope, magi_proto::permit::Scope::Directory { path } if *path == dir.display().to_string())
+            })
+            .expect("the containing directory is on offer");
+        let (ops, holder) = gated(&dir, Some(nth.to_string()));
+        for file in ["a.txt", "b.txt"] {
+            let out = magi_tools::builtin::Read.run(
+                &serde_json::json!({"path": file}),
+                &ops,
+                &magi_tools::cancel::Uncancelled,
+            );
+            assert!(!out.is_error, "{file}: {}", out.content);
+        }
+        assert_eq!(
+            holder.shown.lock().expect("held").len(),
+            1,
+            "asked twice about one directory"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nobody_attached_is_still_a_refusal_whoever_would_have_drawn_it() {
+        // The rule the whole mechanism exists for, and the surface must not have opened a way
+        // round it: a question nobody can see is not a question.
+        let asker = super::Asker::new(
+            std::sync::Arc::new(super::Pending::new()),
+            Box::new(|_| {}),
+            Box::new(|| magi_proto::Cursor::ZERO),
+            Box::new(|| false),
+        );
+        use magi_tools::approve::Approver;
+        assert_eq!(
+            asker.ask(
+                "read",
+                &magi_proto::permit::Action::Read {
+                    path: "/etc/shadow".to_owned()
+                }
+            ),
+            Decision::Deny
         );
     }
 }
