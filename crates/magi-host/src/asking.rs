@@ -151,6 +151,59 @@ impl magi_tools::approve::Approver for Asker {
     }
 }
 
+impl magi_tools::question::Asks for Asker {
+    fn ask(&self, tool: &str, ask: &magi_proto::tooling::Ask) -> Option<String> {
+        if !(self.attached)() {
+            // Nobody is looking, so nobody can answer. Choosing on their behalf is the failure
+            // this mechanism exists to prevent, and it matters most on exactly the sessions
+            // where nobody is watching.
+            return None;
+        }
+        let n = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let id = ToolCallId::new(format!("q{n}"));
+        let receiver = self.pending.awaiting(id.clone())?;
+
+        (self.publish)(HarnessEvent::Asked {
+            cursor: (self.cursor)(),
+            id: id.clone(),
+            tool: tool.to_owned(),
+            question: ask.question.clone(),
+            options: ask.options.clone(),
+            detail: ask.detail.clone(),
+        });
+
+        // The same patience a permission gets. A turn that waited forever on a UI that has gone
+        // is a daemon nothing can recover, and an unanswered question is not a refusal — the
+        // tool decides what to make of it.
+        let answer = receiver.recv_timeout(PATIENCE).ok();
+        self.pending.drop_choice(&id);
+        answer
+    }
+}
+
+/// The two ways a turn reaches whoever is attached.
+///
+/// One [`Asker`] answers both, and they have never travelled apart. Carrying them as two
+/// parameters said they were two things.
+#[derive(Clone)]
+pub struct Person {
+    /// Asked before a tool that needs permission runs.
+    pub approver: Arc<dyn magi_tools::approve::Approver>,
+    /// Asked when a tool has a question of its own.
+    pub asks: Arc<dyn magi_tools::question::Asks>,
+}
+
+impl Person {
+    /// Both faces of one asker.
+    #[must_use]
+    pub fn of(asker: Arc<Asker>) -> Self {
+        Self {
+            approver: Arc::clone(&asker) as Arc<_>,
+            asks: asker as Arc<_>,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -226,35 +279,5 @@ mod tests {
         // The turn it belonged to is over; acting on it would allow something unwatched.
         let pending = Pending::new();
         pending.answer(&ToolCallId::new("gone"), Decision::Deny);
-    }
-}
-
-impl magi_tools::question::Asks for Asker {
-    fn ask(&self, tool: &str, ask: &magi_proto::tooling::Ask) -> Option<String> {
-        if !(self.attached)() {
-            // Nobody is looking, so nobody can answer. Choosing on their behalf is the failure
-            // this mechanism exists to prevent, and it matters most on exactly the sessions
-            // where nobody is watching.
-            return None;
-        }
-        let n = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let id = ToolCallId::new(format!("q{n}"));
-        let receiver = self.pending.awaiting(id.clone())?;
-
-        (self.publish)(HarnessEvent::Asked {
-            cursor: (self.cursor)(),
-            id: id.clone(),
-            tool: tool.to_owned(),
-            question: ask.question.clone(),
-            options: ask.options.clone(),
-            detail: ask.detail.clone(),
-        });
-
-        // The same patience a permission gets. A turn that waited forever on a UI that has gone
-        // is a daemon nothing can recover, and an unanswered question is not a refusal — the
-        // tool decides what to make of it.
-        let answer = receiver.recv_timeout(PATIENCE).ok();
-        self.pending.drop_choice(&id);
-        answer
     }
 }

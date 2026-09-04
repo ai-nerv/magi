@@ -171,12 +171,15 @@ pub async fn serve_on(
             Box::new(move || watched.receiver_count() > 0),
         ))
     };
-    let approver: Arc<dyn magi_tools::approve::Approver> = Arc::clone(&asker) as Arc<_>;
-    let asks: Arc<dyn magi_tools::question::Asks> = Arc::clone(&asker) as Arc<_>;
+    let person = crate::asking::Person::of(asker);
     let worker = Arc::new(tokio::sync::RwLock::new(
         backend
             .map(|backend| {
-                worker::Worker::gated(backend, Some(Arc::clone(&approver)), Arc::clone(&asks))
+                worker::Worker::gated(
+                    backend,
+                    Some(Arc::clone(&person.approver)),
+                    Arc::clone(&person.asks),
+                )
             })
             .map(Arc::new),
     ));
@@ -201,12 +204,11 @@ pub async fn serve_on(
         let worker = Arc::clone(&worker);
         let catalog = Arc::clone(&catalog);
         let pending = Arc::clone(&pending);
-        let approver = Arc::clone(&approver);
-        let asks = Arc::clone(&asks);
+        let person = person.clone();
         let scribe = Arc::clone(&scribe);
         tokio::spawn(async move {
             let _ = connection(
-                stream, session, &worker, &catalog, &pending, &approver, &asks, &scribe,
+                stream, session, &worker, &catalog, &pending, &person, &scribe,
             )
             .await;
         });
@@ -220,8 +222,7 @@ async fn connection(
     worker: &tokio::sync::RwLock<Option<Arc<worker::Worker>>>,
     catalog: &crate::catalog::Catalog,
     pending: &crate::asking::Pending,
-    approver: &Arc<dyn magi_tools::approve::Approver>,
-    asks: &Arc<dyn magi_tools::question::Asks>,
+    person: &crate::asking::Person,
     scribe: &Arc<Mutex<Option<crate::scribe::Scribe>>>,
 ) -> Result<(), HostError> {
     let (read_half, write_half) = stream.into_split();
@@ -319,7 +320,7 @@ async fn connection(
                     }
                     Some(UiCommand::SetModel { name }) => {
                         if let Some(refusal) =
-                            switch_model(&session, worker, catalog, approver, asks, &name).await
+                            switch_model(&session, worker, catalog, person, &name).await
                         {
                             // On the stream rather than in the transcript: the request was
                             // understood and declined, which is a fact about the UI's ask and
@@ -334,7 +335,7 @@ async fn connection(
                     }
                     Some(UiCommand::SetThinking { level }) => {
                         if let Some(refusal) =
-                            switch_thinking(&session, worker, catalog, approver, asks, &level).await
+                            switch_thinking(&session, worker, catalog, person, &level).await
                         {
                             writer
                                 .write(&HarnessEvent::Refused {
@@ -439,8 +440,7 @@ async fn switch_model(
     session: &Arc<Mutex<Session>>,
     worker: &tokio::sync::RwLock<Option<Arc<worker::Worker>>>,
     catalog: &crate::catalog::Catalog,
-    approver: &Arc<dyn magi_tools::approve::Approver>,
-    asks: &Arc<dyn magi_tools::question::Asks>,
+    person: &crate::asking::Person,
     name: &str,
 ) -> Option<String> {
     let Some(backend) = catalog.backend(name) else {
@@ -466,8 +466,8 @@ async fn switch_model(
     // and every tool for the rest of the session ran without being asked about.
     let fresh = Arc::new(worker::Worker::gated(
         backend,
-        Some(Arc::clone(approver)),
-        Arc::clone(asks),
+        Some(Arc::clone(&person.approver)),
+        Arc::clone(&person.asks),
     ));
     *worker.write().await = Some(fresh);
     {
@@ -498,8 +498,7 @@ async fn switch_thinking(
     session: &Arc<Mutex<Session>>,
     worker: &tokio::sync::RwLock<Option<Arc<worker::Worker>>>,
     catalog: &crate::catalog::Catalog,
-    approver: &Arc<dyn magi_tools::approve::Approver>,
-    asks: &Arc<dyn magi_tools::question::Asks>,
+    person: &crate::asking::Person,
     level: &str,
 ) -> Option<String> {
     let Ok(parsed) = serde_json::from_value::<magi_model::ThinkingLevel>(
@@ -521,8 +520,8 @@ async fn switch_thinking(
     // and every tool for the rest of the session ran without being asked about.
     let fresh = Arc::new(worker::Worker::gated(
         backend,
-        Some(Arc::clone(approver)),
-        Arc::clone(asks),
+        Some(Arc::clone(&person.approver)),
+        Arc::clone(&person.asks),
     ));
     *worker.write().await = Some(fresh);
     let mut held = session.lock().await;
