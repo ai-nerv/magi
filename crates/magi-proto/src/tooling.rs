@@ -156,6 +156,27 @@ pub struct Span {
     pub role: Role,
     /// The text itself.
     pub text: String,
+    /// A colour chosen outright, overriding the role.
+    ///
+    /// **The exception to "a tool never chooses a colour", and it is narrow.** Roles exist so a
+    /// `patch` and a highlighted `cat` agree with the rest of the screen: they are *output*, they
+    /// are read alongside everything else, and a tool picking its own green would be a second
+    /// palette to keep in step. A [`Shown::Surface`] is not that. It is a picture in rows nothing
+    /// else is drawn in, and a dinosaur is brown whatever anybody's theme says — asking for
+    /// `added` there would mean "green, because I want green", which is a role lying about itself.
+    ///
+    /// So: surfaces may use this, tool output should not. `None` everywhere else, and the role
+    /// answers — which is what every tool that is not a picture keeps doing.
+    ///
+    /// Needs a terminal that speaks 24-bit colour. One that does not will approximate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rgb: Option<[u8; 3]>,
+    /// A background chosen outright, for the same narrow reason as [`Span::rgb`].
+    ///
+    /// What makes a run of text read as *inverted* rather than merely coloured, which is how a
+    /// picture says "this is held down right now" without a second row to say it in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bg: Option<[u8; 3]>,
 }
 
 impl Span {
@@ -165,6 +186,22 @@ impl Span {
         Self {
             role,
             text: text.into(),
+            rgb: None,
+            bg: None,
+        }
+    }
+
+    /// A span of `text` in a colour of its own.
+    ///
+    /// For a surface drawing a picture. See [`Span::rgb`] for why that is the one place a chosen
+    /// colour belongs.
+    #[must_use]
+    pub fn painted(rgb: [u8; 3], text: impl Into<String>) -> Self {
+        Self {
+            role: Role::Text,
+            text: text.into(),
+            rgb: Some(rgb),
+            bg: None,
         }
     }
 }

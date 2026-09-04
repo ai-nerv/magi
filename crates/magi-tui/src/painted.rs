@@ -64,7 +64,20 @@ pub fn line(spans: &[Span], on: Style) -> Line<'static> {
     Line::from(
         spans
             .iter()
-            .map(|span| ratatui::text::Span::styled(span.text.clone(), on.fg(of(span.role))))
+            .map(|span| {
+                // **A colour asked for outright wins over the role.** Only a surface does this —
+                // see the contract — and only because it is drawing a picture rather than saying
+                // something. Everything else names a role and gets the palette, which is what
+                // keeps a `patch` and a `cat` agreeing with the screen around them.
+                let fg = span
+                    .rgb
+                    .map_or_else(|| of(span.role), |[r, g, b]| Color::Rgb(r, g, b));
+                let style = match span.bg {
+                    Some([r, g, b]) => on.fg(fg).bg(Color::Rgb(r, g, b)),
+                    None => on.fg(fg),
+                };
+                ratatui::text::Span::styled(span.text.clone(), style)
+            })
             .collect::<Vec<_>>(),
     )
 }
