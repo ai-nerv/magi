@@ -54,22 +54,25 @@ pub fn of(role: Role) -> Color {
 }
 
 /// One painted line, as the renderer draws it.
+///
+/// `on` is the style of whatever is drawing it, and only the foreground is replaced. A role says
+/// what a span *means*, which is a colour of text and never a background: built from
+/// `Style::default()` instead, every painted row came out with no fill behind it and a
+/// highlighted `cat` punched holes in the block it sat in.
 #[must_use]
-pub fn line(spans: &[Span]) -> Line<'static> {
+pub fn line(spans: &[Span], on: Style) -> Line<'static> {
     Line::from(
         spans
             .iter()
-            .map(|span| {
-                ratatui::text::Span::styled(span.text.clone(), Style::default().fg(of(span.role)))
-            })
+            .map(|span| ratatui::text::Span::styled(span.text.clone(), on.fg(of(span.role))))
             .collect::<Vec<_>>(),
     )
 }
 
 /// A whole painted document.
 #[must_use]
-pub fn lines(painted: &[Vec<Span>]) -> Vec<Line<'static>> {
-    painted.iter().map(|spans| line(spans)).collect()
+pub fn lines(painted: &[Vec<Span>], on: Style) -> Vec<Line<'static>> {
+    painted.iter().map(|spans| line(spans, on)).collect()
 }
 
 #[cfg(test)]
@@ -135,18 +138,24 @@ mod tests {
     fn the_text_survives_whatever_the_roles_do() {
         // A renderer that lost a character while colouring it would be worse than one that drew
         // everything grey.
-        let drawn = line(&[
-            Span::new(Role::Removed, "-was"),
-            Span::new(Role::Text, "  "),
-            Span::new(Role::Added, "+now"),
-        ]);
+        let drawn = line(
+            &[
+                Span::new(Role::Removed, "-was"),
+                Span::new(Role::Text, "  "),
+                Span::new(Role::Added, "+now"),
+            ],
+            Style::default(),
+        );
         let text: String = drawn.spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "-was  +now");
     }
 
     #[test]
     fn each_span_keeps_its_own_colour() {
-        let drawn = line(&[Span::new(Role::Added, "+a"), Span::new(Role::Removed, "-b")]);
+        let drawn = line(
+            &[Span::new(Role::Added, "+a"), Span::new(Role::Removed, "-b")],
+            Style::default(),
+        );
         assert_eq!(drawn.spans[0].style.fg, Some(colour::diff_added()));
         assert_eq!(drawn.spans[1].style.fg, Some(colour::diff_removed()));
     }
@@ -154,11 +163,14 @@ mod tests {
     #[test]
     fn a_blank_line_is_still_a_line() {
         // Lines map one to one, or every line number after a blank one is wrong.
-        let drawn = lines(&[
-            vec![Span::new(Role::Text, "one")],
-            vec![Span::new(Role::Text, "")],
-            vec![Span::new(Role::Text, "two")],
-        ]);
+        let drawn = lines(
+            &[
+                vec![Span::new(Role::Text, "one")],
+                vec![Span::new(Role::Text, "")],
+                vec![Span::new(Role::Text, "two")],
+            ],
+            Style::default(),
+        );
         assert_eq!(drawn.len(), 3);
     }
 }

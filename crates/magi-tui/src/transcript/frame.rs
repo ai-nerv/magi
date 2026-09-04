@@ -49,10 +49,10 @@ pub(super) fn held(width: u16) -> u16 {
 /// `handle` is the fold state — `>` shut, `v` open — and is left off entirely for a block that
 /// does not fold. A handle on something that cannot be opened is an affordance that lies.
 pub(super) fn top(label: &str, chip: Style, handle: Option<&str>, width: u16) -> Line<'static> {
-    // **The frame's own colour, which is the prompt box's.** Every drawn line on the screen is
-    // one thing — the box you type in and the boxes above it — so they are one colour, and a
-    // reader's eye is not asked to sort three greys into a hierarchy that means nothing.
-    let edge = Style::default().fg(colour::border());
+    // **A block's frame, which is not the prompt's border.** They were one colour, on the argument
+    // that every drawn line is one thing. They are not: the prompt is what you are typing into and
+    // a block is a record of what already happened, so the record sits further back.
+    let edge = Style::default().fg(colour::block_frame());
     // The brackets belong to the frame, not to the name. Only the name carries a colour of its
     // own: what the block *is* is the one thing worth telling apart at a glance, and punctuation
     // painted with it made the whole chip read as the signal.
@@ -91,7 +91,7 @@ pub(super) fn bottom(width: u16) -> Line<'static> {
     // The block's background is *not* on the edge. The frame is the outer thing and the
     // coloured box sits inside it, so a border painted with the block's own fill would put
     // colour outside the box it is drawing.
-    let edge = Style::default().fg(colour::border());
+    let edge = Style::default().fg(colour::block_frame());
     Line::from(vec![
         Span::styled(glyph::block_bottom_left().to_owned(), edge),
         Span::styled(
@@ -244,6 +244,24 @@ pub(super) fn inside(line: Line<'static>, width: u16, style: Style, lead: usize)
     Line::from(spans)
 }
 
+/// The seam between what a call was asked and what it answered.
+///
+/// Inside the fill rather than across it: a column of block either side, so the rule reads as
+/// something within the box and not as a second edge cutting it in half.
+pub(super) fn rule(width: u16, style: Style) -> Line<'static> {
+    let room = usize::from(held(width));
+    // One column of fill at each end. A rule the full width of the inside met the frame at both
+    // sides and turned the block into two boxes.
+    let span = room.saturating_sub(2);
+    Line::from(vec![
+        Span::raw(" ".repeat(MARGIN)),
+        Span::styled(" ", style),
+        Span::styled("─".repeat(span), style.fg(crate::colour::tool_seam())),
+        Span::styled(" ", style),
+        Span::raw(" ".repeat(MARGIN)),
+    ])
+}
+
 /// The frame is outside, the fill is inside.
 #[cfg(test)]
 mod nesting {
@@ -332,9 +350,9 @@ pub(super) fn lone(label: &str, chip: Style, beside: &str, width: u16) -> Line<'
     let named = format!("[ {label} ]");
     let mut spans = vec![
         Span::raw(" ".repeat(MARGIN)),
-        Span::styled("[ ".to_owned(), Style::default().fg(colour::border())),
+        Span::styled("[ ".to_owned(), Style::default().fg(colour::block_frame())),
         Span::styled(label.to_owned(), chip),
-        Span::styled(" ]".to_owned(), Style::default().fg(colour::border())),
+        Span::styled(" ]".to_owned(), Style::default().fg(colour::block_frame())),
     ];
     let mut used = MARGIN + crate::wrap::columns(&named);
     if !beside.trim().is_empty() {

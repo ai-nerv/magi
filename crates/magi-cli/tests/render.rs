@@ -92,6 +92,9 @@ fn a_conversation_renders_the_way_pi_lays_it_out() {
             // what the call was *given* is the block's first row, where it has room to be read.
             "┌──[ bash ]─────────────────────────[ ▸ ]──┐",
             "    cargo test",
+            // The seam between what the call was given and what it answered, a column of block
+            // fill either side so it reads as something inside the box rather than a second edge.
+            "   ──────────────────────────────────────",
             // The output sits a step further in than the edge, so the two are not one column of
             // text under a coloured word.
             "    test result: ok. 42 passed",

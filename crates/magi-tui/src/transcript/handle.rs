@@ -57,7 +57,7 @@ mod tests {
             .expect("the name")
             .clone();
         let handle = handle_span(&line);
-        assert_eq!(handle.style.fg, Some(colour::border()));
+        assert_eq!(handle.style.fg, Some(colour::block_frame()));
         assert_ne!(handle.style.fg, name.style.fg, "the handle apes the name");
     }
 
@@ -67,7 +67,12 @@ mod tests {
         // read as the signal and every block wore a solid tag.
         let line = header_of(false);
         for span in line.spans.iter().filter(|s| s.content.contains('[')) {
-            assert_eq!(span.style.fg, Some(colour::border()), "{:?}", span.content);
+            assert_eq!(
+                span.style.fg,
+                Some(colour::block_frame()),
+                "{:?}",
+                span.content
+            );
         }
     }
 

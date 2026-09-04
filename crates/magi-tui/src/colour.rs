@@ -93,6 +93,8 @@ palette! {
     tool_failed = 9, "The tool's name, when it failed.";
     tool_output = 251, "A tool's output.";
     tool_fold = 246, "The note saying how much of a result is not shown.";
+    tool_seam = 235, "The rule between what a call was asked and what it answered. A line rather than a surface, so it may sit below the floor a fill has to keep.";
+    block_frame = 237, "A transcript block's own frame. Not the prompt's border: a box in a scrolling record should sit further back than the thing you are typing into.";
 
     // ---------------------------------------------------------------- menus
     menu_selected_bg = 241, "Behind the row you are on.";

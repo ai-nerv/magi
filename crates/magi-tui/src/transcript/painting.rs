@@ -131,3 +131,25 @@ fn a_preview_still_cuts_a_painted_row_to_the_width() {
         assert!(wide <= 60, "{wide} columns on a 60-wide block");
     }
 }
+
+#[test]
+fn a_painted_row_sits_on_the_block_it_is_in() {
+    // The bug: roles were resolved onto `Style::default()`, which has no background, so every
+    // syntax-highlighted row came out with the terminal showing through it while the plain rows
+    // either side kept the block's fill. A `cat` read as a block with holes punched in it.
+    let painted = Shown::Painted {
+        lines: vec![vec![Painted::new(Role::Keyword, "fn")]],
+    };
+    let fill = |lines: &[Line<'static>]| {
+        lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|span| span.content.contains("fn"))
+            .and_then(|span| span.style.bg)
+    };
+    assert_eq!(
+        fill(&block_of(Some(painted), "fn", Detail::Full)),
+        fill(&block_of(None, "fn", Detail::Full)),
+        "a painted row lost the block's fill"
+    );
+}

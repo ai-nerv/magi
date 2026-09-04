@@ -159,14 +159,26 @@ mod tests {
 
     #[test]
     fn opening_a_block_does_not_repeat_what_the_header_said() {
-        // A block used to list its arguments when opened, above a rule, above the output. For an
-        // `edit` that is the same thing twice -- `old` and `new`, then a diff of `old` and `new`.
-        // The summary beside the name is what the call was given, and once is enough.
+        // A block used to list its arguments a second time when opened. For an `edit` that is
+        // the same thing twice -- `old` and `new`, then a diff of `old` and `new`. The summary
+        // row is what the call was given, and once is enough.
         let shown = rows(Detail::Full);
         assert!(!shown.iter().any(|l| l == "one"), "{shown:#?}");
-        assert!(
-            !shown.iter().any(|l| l.starts_with('─')),
-            "no rule: {shown:#?}"
-        );
+    }
+
+    #[test]
+    fn one_rule_separates_what_was_asked_from_what_came_back() {
+        // Between the two halves and nowhere else: a block draws what it was given, the seam,
+        // then the result.
+        let shown = rows(Detail::Full);
+        let at: Vec<usize> = shown
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.starts_with('─'))
+            .map(|(nth, _)| nth)
+            .collect();
+        assert_eq!(at.len(), 1, "{shown:#?}");
+        // Not against either edge, which is where a rule stops being a seam and becomes a lid.
+        assert!(at[0] > 1 && at[0] < shown.len() - 2, "{shown:#?}");
     }
 }

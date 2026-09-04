@@ -132,7 +132,7 @@ pub(super) fn block(
             };
             for (nth, line) in all[..shown].iter().enumerate() {
                 let drawn = match painted.and_then(|lines| lines.get(nth)) {
-                    Some(spans) if !result.is_error => crate::painted::line(spans),
+                    Some(spans) if !result.is_error => crate::painted::line(spans, style),
                     _ => {
                         let fg = if result.is_error {
                             colour::tool_failed()
@@ -173,7 +173,14 @@ pub(super) fn block(
         return out;
     }
     out.push(super::frame::top(name, label, Some(handle), width));
+    // Only between two things. A block showing arguments and nothing else, or a result whose
+    // call had no arguments worth a row, has one half — and a rule under the only thing in the
+    // box reads as a heading for an answer that never came.
+    let seam = !said.is_empty() && !rows.is_empty();
     out.extend(said);
+    if seam {
+        out.push(super::frame::rule(width, style));
+    }
     out.extend(rows);
     out.push(super::frame::bottom(width));
     out
