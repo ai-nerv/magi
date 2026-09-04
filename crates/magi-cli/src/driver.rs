@@ -158,6 +158,9 @@ pub async fn run(
     // that produce text, and asking for those globally stops `:` opening the command line — so the
     // layer goes on when a surface takes the keyboard and comes off when it gives it back.
     let mut keys_held = false;
+    // Whether the last key a surface was sent was an escape. Two in a row take the screen back,
+    // so `esc` itself stays a key the tenant can read -- see where a surface is handed one.
+    let mut escaped = false;
     // What shape the terminal was last told to draw its cursor in. Insert mode is a bar and
     // normal mode a block, which is the one cue that says which mode you are in without
     // looking away from what you are typing.
@@ -253,15 +256,24 @@ pub async fn run(
                         // name and not interpreted: what `j` means is the tenant's business, and
                         // a driver that decided would be back to owning what it just handed over.
                         //
-                        // `esc` is the exception, and it is magi's: it is how a person takes the
-                        // screen back from a tenant that has stopped answering, and a surface
-                        // that could swallow it would be a surface nothing could close.
+                        // **Escape twice takes the screen back.** It used to be once, which is
+                        // how a person gets out of a tenant that has stopped answering — and then
+                        // a tenant turned out to be able to hold a pty, where `esc` is a key the
+                        // program inside wants and closes nothing. So a single one is forwarded
+                        // like any other, and only a second with nothing between them is magi's.
+                        // Every existing tenant answers the first one anyway, so the second never
+                        // arrives; a program in a pty gets both.
                         if let Some(held) = app.holding() {
                             let id = held.id.clone();
-                            if key.code == crossterm::event::KeyCode::Esc
-                                && key.kind != crossterm::event::KeyEventKind::Release
-                            {
-                                app.surface = None;
+                            if key.kind != crossterm::event::KeyEventKind::Release {
+                                if key.code == crossterm::event::KeyCode::Esc {
+                                    if escaped {
+                                        app.surface = None;
+                                    }
+                                    escaped = true;
+                                } else {
+                                    escaped = false;
+                                }
                             }
                             if let Some(named) = crate::keying::named(key) {
                                 let _ = command_tx
