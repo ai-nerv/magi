@@ -107,6 +107,64 @@ mod verbs {
     }
 
     #[test]
+    fn an_answer_is_written_the_way_casper_reads_one() {
+        // **The one thing a test in this repository can get wrong for free.** casper is a separate
+        // checkout with its own copy of these frames, so nothing here fails when the two spellings
+        // drift — the surface simply stops being answered. Pinned against a literal for that
+        // reason: this is the shape casper's own test reads back.
+        let told = crate::surfacing::ToSurface::Answer {
+            wondered: Wondered(3),
+            answered: Answered::Told {
+                said: serde_json::json!({ "id": "s-7" }),
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&told).expect("encodes"),
+            serde_json::json!({
+                "to": "answer",
+                "wondered": 3,
+                "answer": "told",
+                "said": { "id": "s-7" },
+            })
+        );
+
+        let refused = crate::surfacing::ToSurface::Answer {
+            wondered: Wondered(4),
+            answered: Answered::Refused {
+                because: "memories: there is no balthasar in this session".to_owned(),
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&refused).expect("encodes"),
+            serde_json::json!({
+                "to": "answer",
+                "wondered": 4,
+                "answer": "refused",
+                "because": "memories: there is no balthasar in this session",
+            })
+        );
+    }
+
+    #[test]
+    fn a_question_is_read_the_way_casper_writes_one() {
+        // The other direction, and the same reason. This literal is what casper puts on the pipe.
+        let asked: crate::surfacing::FromSurface =
+            serde_json::from_str(r#"{"from":"ask","wondered":3,"wonder":"memories","args":{"query":"deploy","limit":3}}"#)
+                .expect("decodes");
+        let crate::surfacing::FromSurface::Ask {
+            wondered,
+            wonder,
+            args,
+        } = asked
+        else {
+            panic!("a surface asked something: {asked:?}");
+        };
+        assert_eq!(wondered, Wondered(3));
+        assert_eq!(Wonder::named(&wonder), Some(Wonder::Memories));
+        assert_eq!(args["query"], "deploy");
+    }
+
+    #[test]
     fn a_refusal_says_why_rather_than_saying_nothing() {
         let refused = Answered::Refused {
             because: "there is no balthasar here".to_owned(),
