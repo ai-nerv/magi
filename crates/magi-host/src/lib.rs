@@ -434,7 +434,7 @@ async fn connection(
                     }
                     // How wide the screen is. The session has no terminal, so this is the only
                     // way anything drawing on one can know what it has.
-                    Some(UiCommand::Sized { cols }) => person.surfaces.sized(cols),
+                    Some(UiCommand::Sized { cols, holds }) => person.surfaces.sized(cols, holds),
                     // A key aimed at rows a tool is holding. Not interpreted on the way through:
                     // what `j` means is the tenant's business, and a harness that decided would
                     // be back to owning the thing it just handed over.

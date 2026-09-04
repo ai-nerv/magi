@@ -61,6 +61,12 @@ pub struct Holding {
     /// A count rather than a flag, because a session may be attached to twice: a surface is worth
     /// reserving while at least one client that can draw one is still there.
     screens: std::sync::atomic::AtomicUsize,
+    /// Whether the screen can report a key being held.
+    ///
+    /// The Kitty keyboard protocol. A tenant is told at open, so one that would otherwise wait for
+    /// a release knows there is never going to be one here and can behave accordingly rather than
+    /// look broken on the terminals that cannot send one.
+    holds: std::sync::atomic::AtomicBool,
 }
 
 /// One attached client's ability to draw, for as long as it is attached.
@@ -135,11 +141,19 @@ impl Holding {
         self.screens.load(std::sync::atomic::Ordering::Relaxed) > 0
     }
 
-    /// Note how wide the screen is, and tell anything drawing on it.
+    /// Whether the screen can report a key being held.
+    #[must_use]
+    pub fn reports_holds(&self) -> bool {
+        self.holds.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Note how wide the screen is and what its keyboard can say, and tell anything drawing on it.
     ///
     /// Told rather than left to be read: a tenant is asleep between frames, and one that only
     /// learned the width when it next happened to wake would draw at the old one until then.
-    pub fn sized(&self, cols: u16) {
+    pub fn sized(&self, cols: u16, holds: bool) {
+        self.holds
+            .store(holds, std::sync::atomic::Ordering::Relaxed);
         if self.cols.swap(cols, std::sync::atomic::Ordering::Relaxed) == cols {
             return;
         }
@@ -252,6 +266,7 @@ impl Holder {
         let opened = ToSurface::Open {
             rows: surface.rows,
             cols: self.held.across(),
+            holds: self.held.reports_holds(),
             args: args.clone(),
         };
         if send(&mut writing, &opened).is_none() {
@@ -373,7 +388,7 @@ mod tests {
         // learned the width when it next happened to wake would draw at the old one until then.
         let held = Holding::new();
         let nudges = held.opening(ToolCallId::new("s0")).expect("registered");
-        held.sized(120);
+        held.sized(120, false);
         assert_eq!(
             nudges.recv_timeout(Duration::from_secs(1)).ok(),
             Some(Nudge::Across(120))
@@ -386,9 +401,9 @@ mod tests {
         // A redraw sends the size every frame. Forwarding each one would wake a tenant on every
         // keystroke anybody typed anywhere, to tell it something it already knows.
         let held = Holding::new();
-        held.sized(120);
+        held.sized(120, false);
         let nudges = held.opening(ToolCallId::new("s0")).expect("registered");
-        held.sized(120);
+        held.sized(120, false);
         assert!(nudges.recv_timeout(Duration::from_millis(50)).is_err());
     }
 

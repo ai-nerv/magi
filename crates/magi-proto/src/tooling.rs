@@ -416,6 +416,12 @@ pub enum ToSurface {
         rows: u16,
         /// Columns granted.
         cols: u16,
+        /// Whether this terminal reports key repeats and releases.
+        ///
+        /// `false` on a terminal without the Kitty keyboard protocol, where every key arrives as
+        /// a bare press. A tenant that would wait for a release is told there will never be one.
+        #[serde(default)]
+        holds: bool,
         /// The call's arguments.
         #[serde(default)]
         args: serde_json::Value,
@@ -516,6 +522,7 @@ mod surfacing {
         let open = serde_json::to_string(&ToSurface::Open {
             rows: 5,
             cols: 92,
+            holds: true,
             args: serde_json::Value::Null,
         })
         .expect("encodes");

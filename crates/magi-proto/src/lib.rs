@@ -632,13 +632,20 @@ pub enum UiCommand {
         #[serde(default)]
         draws: bool,
     },
-    /// How wide the screen is, so a tool given rows can lay itself out for them.
+    /// How wide the screen is, and what its keyboard can say.
     ///
-    /// Sent at attach and again when the window changes. The session cannot know this — it has no
-    /// terminal — and a tenant told a made-up width draws for a screen that is not there.
+    /// Sent at attach and again when the window changes. The session cannot know either — it has
+    /// no terminal — and a tenant told a made-up width draws for a screen that is not there.
     Sized {
         /// Columns.
         cols: u16,
+        /// Whether this terminal reports key repeats and releases.
+        ///
+        /// The Kitty keyboard protocol. Without it every key arrives as a bare press, so nothing
+        /// drawing in a surface can tell a tap from a hold — and one waiting for a release that is
+        /// never coming would look broken on precisely the terminals that cannot send one.
+        #[serde(default)]
+        holds: bool,
     },
     /// Submit a prompt.
     SubmitPrompt {

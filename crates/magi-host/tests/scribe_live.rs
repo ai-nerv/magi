@@ -8,6 +8,16 @@ use magi_host::scribe::Scribe;
 use magi_ipc::family::Family;
 use magi_proto::{Cursor, Entry, MessageId, SessionId, StopReason, ToolCallId, ToolResult, Usage};
 
+/// How long a balthasar has to prove it is answering before this gives up on it.
+///
+/// **Dialling is not liveness.** A socket accepts as long as its listener exists, so one belonging
+/// to a balthasar that is shutting down — or that has wedged — connects instantly and then never
+/// answers. Under a workspace test run there are several: every test that spawns `magi` starts one
+/// in the same user-wide directory, and this picks the newest, which is as likely to be one that
+/// is about to be killed as one that is ready. Six tests each waiting out a read timeout on such a
+/// socket is how a suite that skips in milliseconds turned into fifty-two minutes of failure.
+const ANSWERS_WITHIN: std::time::Duration = std::time::Duration::from_secs(3);
+
 async fn scribe(name: &str) -> Option<Scribe> {
     let path = magi_ipc::family::candidates(None).into_iter().next()?;
     let family = match Family::dial(&path).await {
@@ -18,7 +28,20 @@ async fn scribe(name: &str) -> Option<Scribe> {
         }
     };
     let id = SessionId::new(format!("magi-scribe-{}-{name}", std::process::id()));
-    Some(Scribe::over(family, None, &id))
+    let mut scribe = Scribe::over(family, None, &id);
+    // One cheap round trip against a session nothing has written to, which comes back empty. What
+    // is being asked is not "what is in it" but "does it answer at all".
+    match tokio::time::timeout(ANSWERS_WITHIN, scribe.replay()).await {
+        Ok(Ok(_)) => Some(scribe),
+        Ok(Err(e)) => {
+            eprintln!("skipping: {} refused: {e}", path.display());
+            None
+        }
+        Err(_) => {
+            eprintln!("skipping: {} accepted and did not answer", path.display());
+            None
+        }
+    }
 }
 
 #[tokio::test]

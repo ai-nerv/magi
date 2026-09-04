@@ -75,6 +75,7 @@ impl Session {
         out.flush()?;
 
         let enhanced = push_keyboard_enhancements(&mut out).unwrap_or(false);
+        REPORTS_HOLDS.store(enhanced, std::sync::atomic::Ordering::Relaxed);
 
         let terminal = Terminal::with_options(
             CrosstermBackend::new(out),
@@ -84,6 +85,22 @@ impl Session {
         )?;
         Ok(Self { terminal, enhanced })
     }
+}
+
+/// Whether the terminal this process is attached to reports key holds.
+///
+/// A process-global for the same reason the session's drain handle is one: there is a single
+/// terminal, it is negotiated once before anything is drawn, and it cannot change afterwards. The
+/// connection task needs it and runs nowhere near the [`Session`] that learned it.
+static REPORTS_HOLDS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether this process's terminal reports key repeats and releases.
+///
+/// `false` before a session is open, which is the honest answer: nothing has asked the terminal
+/// yet, and claiming otherwise would have a tenant waiting for releases that may never come.
+#[must_use]
+pub fn reports_holds() -> bool {
+    REPORTS_HOLDS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Ask for the Kitty keyboard protocol, so Shift+Enter is distinguishable from Enter.
