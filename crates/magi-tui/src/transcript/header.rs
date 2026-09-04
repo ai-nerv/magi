@@ -14,6 +14,7 @@ mod tests {
             Some(&magi_proto::ToolResult {
                 output: "wrote /tmp/x".to_owned(),
                 is_error: false,
+                shown: None,
             }),
             50,
             detail,
@@ -109,6 +110,7 @@ mod tests {
         let failed = &magi_proto::ToolResult {
             output: "no".to_owned(),
             is_error: true,
+            shown: None,
         };
         let lines = block("shell", "{}", Some(failed), 50, Detail::Preview);
         let name = lines[0]
@@ -128,6 +130,7 @@ mod tests {
         let done = magi_proto::ToolResult {
             output: "done".to_owned(),
             is_error: false,
+            shown: None,
         };
         for width in [20u16, 30, 44, 100] {
             let lines = block(

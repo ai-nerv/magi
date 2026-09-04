@@ -25,6 +25,7 @@ mod spacing {
             result: Some(ToolResult {
                 output: "out".into(),
                 is_error: false,
+                shown: None,
             }),
             thought_signature: None,
         }

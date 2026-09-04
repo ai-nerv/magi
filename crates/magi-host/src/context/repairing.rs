@@ -44,6 +44,7 @@ mod repair_tests {
             result: answered.then(|| ToolResult {
                 output: "contents".into(),
                 is_error: false,
+                shown: None,
             }),
             thought_signature: None,
         })

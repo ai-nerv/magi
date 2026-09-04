@@ -413,6 +413,7 @@ pub async fn run(
                                  Re-issue it with complete arguments."
                             .to_owned(),
                         is_error: true,
+                        shown: None,
                     }),
                 })?;
             }
@@ -494,6 +495,11 @@ pub async fn run(
                     result: Some(magi_proto::ToolResult {
                         output: output.content,
                         is_error: output.is_error,
+                        // The other face, carried into the transcript so the renderer can draw
+                        // what the tool *meant* rather than guess at it from the text. A tool
+                        // that said nothing about how it looks leaves this empty, which is
+                        // what every tool did before casper existed.
+                        shown: output.shown,
                     }),
                 },
             )?;

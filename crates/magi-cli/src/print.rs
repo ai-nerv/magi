@@ -124,6 +124,40 @@ pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
                     })
                     .await?;
             }
+            // The same, for a question a tool asked in its own words. Answered rather than
+            // ignored, and for the identical reason: a `-p` run that left one unanswered would
+            // sit there until the question timed itself out, with nothing on screen saying what
+            // it was waiting for.
+            //
+            // The *last* option, by convention, because a tool lists what it is asking for
+            // first and the way out last — `once`, `always`, then `no`. There is no better
+            // guess available here: nobody is attached, and choosing the first would be
+            // choosing the most permissive thing on somebody's behalf.
+            HarnessEvent::Asked {
+                id,
+                tool,
+                question,
+                options,
+                ..
+            } => {
+                let Some(last) = options.last() else {
+                    // A question with no answers cannot be answered. The tool will give up on
+                    // its own, and saying so is better than a silent wait.
+                    eprintln!("· {tool} asked \"{question}\" and offered nothing to answer with");
+                    continue;
+                };
+                eprintln!(
+                    "· {tool} asked \"{question}\" -- nothing is attached to answer, so `{}` \
+                     was taken",
+                    last.label
+                );
+                writer
+                    .write(&UiCommand::Answered {
+                        id,
+                        choice: last.id.clone(),
+                    })
+                    .await?;
+            }
             HarnessEvent::Error { message, .. } => {
                 error = Some(message);
                 break;

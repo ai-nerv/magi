@@ -135,7 +135,15 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     // directory and four key hints — and it was right for somebody meeting the thing for the
     // first time and wrong for everybody after that. The prompt's own placeholder still names
     // `:`, which is the one line of it worth keeping.
-    let laid = transcript::laid_out(app.entries(), area.width, app.detail, &app.flipped);
+    let mut laid = transcript::laid_out(app.entries(), area.width, app.detail, &app.flipped);
+    // After the layout and before the lines are handed over, because the highlight is a fact
+    // about the pointer rather than about the transcript: it must not survive into the next
+    // frame on its own, and re-rendering is what clears it.
+    if let Some((line, column)) = app.hovering
+        && let Some(under) = laid.lines.get_mut(line)
+    {
+        transcript::hovered(under, column);
+    }
     app.owners = laid.owners;
     app.scrollback.set_lines(laid.lines);
     // Each edge that has something past it takes a row out of the transcript for its rule, so

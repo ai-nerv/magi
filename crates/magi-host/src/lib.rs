@@ -154,7 +154,10 @@ pub async fn serve_on(
     //
     // "Is anybody attached" is the subscriber count on that same channel, which is exactly the
     // question — a UI is attached precisely when it is listening.
-    let approver: Arc<dyn magi_tools::approve::Approver> = {
+    // One asker, two traits. It answers both kinds of question — a permission and anything else
+    // a tool wants to put to the person — and both travel the same way: out as an event, back on
+    // a channel. Two askers would be two ids counting from zero into one map.
+    let asker = {
         let events = session.lock().await.publisher();
         let watched = events.clone();
         Arc::new(crate::asking::Asker::new(
@@ -168,9 +171,13 @@ pub async fn serve_on(
             Box::new(move || watched.receiver_count() > 0),
         ))
     };
+    let approver: Arc<dyn magi_tools::approve::Approver> = Arc::clone(&asker) as Arc<_>;
+    let asks: Arc<dyn magi_tools::question::Asks> = Arc::clone(&asker) as Arc<_>;
     let worker = Arc::new(tokio::sync::RwLock::new(
         backend
-            .map(|backend| worker::Worker::gated(backend, Some(Arc::clone(&approver))))
+            .map(|backend| {
+                worker::Worker::gated(backend, Some(Arc::clone(&approver)), Arc::clone(&asks))
+            })
             .map(Arc::new),
     ));
     let catalog = Arc::new(catalog);
@@ -195,10 +202,11 @@ pub async fn serve_on(
         let catalog = Arc::clone(&catalog);
         let pending = Arc::clone(&pending);
         let approver = Arc::clone(&approver);
+        let asks = Arc::clone(&asks);
         let scribe = Arc::clone(&scribe);
         tokio::spawn(async move {
             let _ = connection(
-                stream, session, &worker, &catalog, &pending, &approver, &scribe,
+                stream, session, &worker, &catalog, &pending, &approver, &asks, &scribe,
             )
             .await;
         });
@@ -213,6 +221,7 @@ async fn connection(
     catalog: &crate::catalog::Catalog,
     pending: &crate::asking::Pending,
     approver: &Arc<dyn magi_tools::approve::Approver>,
+    asks: &Arc<dyn magi_tools::question::Asks>,
     scribe: &Arc<Mutex<Option<crate::scribe::Scribe>>>,
 ) -> Result<(), HostError> {
     let (read_half, write_half) = stream.into_split();
@@ -310,7 +319,7 @@ async fn connection(
                     }
                     Some(UiCommand::SetModel { name }) => {
                         if let Some(refusal) =
-                            switch_model(&session, worker, catalog, approver, &name).await
+                            switch_model(&session, worker, catalog, approver, asks, &name).await
                         {
                             // On the stream rather than in the transcript: the request was
                             // understood and declined, which is a fact about the UI's ask and
@@ -325,7 +334,7 @@ async fn connection(
                     }
                     Some(UiCommand::SetThinking { level }) => {
                         if let Some(refusal) =
-                            switch_thinking(&session, worker, catalog, approver, &level).await
+                            switch_thinking(&session, worker, catalog, approver, asks, &level).await
                         {
                             writer
                                 .write(&HarnessEvent::Refused {
@@ -387,6 +396,10 @@ async fn connection(
                     Some(UiCommand::Permit { id, decision }) => {
                         pending.answer(&id, decision);
                     }
+                    // The same, for a question a tool asked in its own words.
+                    Some(UiCommand::Answered { id, choice }) => {
+                        pending.chose(&id, choice);
+                    }
                     Some(UiCommand::Interrupt) => {
                         // The status is set here as well as by the turn: a stop the user asked for
                         // should show as stopped at once, not once the provider notices.
@@ -427,6 +440,7 @@ async fn switch_model(
     worker: &tokio::sync::RwLock<Option<Arc<worker::Worker>>>,
     catalog: &crate::catalog::Catalog,
     approver: &Arc<dyn magi_tools::approve::Approver>,
+    asks: &Arc<dyn magi_tools::question::Asks>,
     name: &str,
 ) -> Option<String> {
     let Some(backend) = catalog.backend(name) else {
@@ -450,7 +464,11 @@ async fn switch_model(
     // Gated, like the one it replaces. `Worker::start` is `gated(backend, None)` — a worker
     // nothing asks — so switching the model used to switch the permission model off with it,
     // and every tool for the rest of the session ran without being asked about.
-    let fresh = Arc::new(worker::Worker::gated(backend, Some(Arc::clone(approver))));
+    let fresh = Arc::new(worker::Worker::gated(
+        backend,
+        Some(Arc::clone(approver)),
+        Arc::clone(asks),
+    ));
     *worker.write().await = Some(fresh);
     {
         let mut held = session.lock().await;
@@ -481,6 +499,7 @@ async fn switch_thinking(
     worker: &tokio::sync::RwLock<Option<Arc<worker::Worker>>>,
     catalog: &crate::catalog::Catalog,
     approver: &Arc<dyn magi_tools::approve::Approver>,
+    asks: &Arc<dyn magi_tools::question::Asks>,
     level: &str,
 ) -> Option<String> {
     let Ok(parsed) = serde_json::from_value::<magi_model::ThinkingLevel>(
@@ -500,7 +519,11 @@ async fn switch_thinking(
     // Gated, like the one it replaces. `Worker::start` is `gated(backend, None)` — a worker
     // nothing asks — so switching the model used to switch the permission model off with it,
     // and every tool for the rest of the session ran without being asked about.
-    let fresh = Arc::new(worker::Worker::gated(backend, Some(Arc::clone(approver))));
+    let fresh = Arc::new(worker::Worker::gated(
+        backend,
+        Some(Arc::clone(approver)),
+        Arc::clone(asks),
+    ));
     *worker.write().await = Some(fresh);
     let mut held = session.lock().await;
     held.set_thinking(level.to_owned());

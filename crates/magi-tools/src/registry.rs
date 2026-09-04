@@ -206,6 +206,7 @@ impl Registry {
                 Output {
                     content: crate::bound::apply(name, output.content),
                     is_error: output.is_error,
+                    shown: None,
                 }
             }
             None => {
@@ -309,6 +310,7 @@ impl Registry {
         Output {
             content: crate::bound::apply(&name, output.content),
             is_error: output.is_error,
+            shown: None,
         }
     }
 }

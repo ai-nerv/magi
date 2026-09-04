@@ -79,6 +79,25 @@ pub struct Ran {
     pub shown: Option<Shown>,
 }
 
+/// The outcome of a tool call.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolResult {
+    /// Text the model sees.
+    pub output: String,
+    /// Whether the tool failed.
+    pub is_error: bool,
+    /// What the *person* sees, when a tool said more than the text.
+    ///
+    /// The second of the two faces — see [`crate::tooling`]. `None` is what every tool produced
+    /// before casper existed and what most still produce: draw `output` as plain text.
+    ///
+    /// Optional on the wire as well as in the type, so a journal written by a build that had
+    /// never heard of it still loads. A transcript is the record of what happened, and a field
+    /// added later must not make yesterday's session unreadable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shown: Option<Shown>,
+}
+
 /// What magi draws for this result.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "shown")]
@@ -230,7 +249,10 @@ mod tests {
         };
         let wire = serde_json::to_string(&ran).expect("encodes");
         assert!(wire.contains(r#""role":"removed""#), "{wire}");
-        assert!(!wire.contains("colour") && !wire.contains("color"), "{wire}");
+        assert!(
+            !wire.contains("colour") && !wire.contains("color"),
+            "{wire}"
+        );
         assert_eq!(serde_json::from_str::<Ran>(&wire).expect("decodes"), ran);
     }
 
@@ -259,7 +281,10 @@ mod tests {
         };
         assert!(ran.said.is_empty());
         let wire = serde_json::to_string(&ran).expect("encodes");
-        assert!(!wire.contains(r#""said""#), "an unfinished call said: {wire}");
+        assert!(
+            !wire.contains(r#""said""#),
+            "an unfinished call said: {wire}"
+        );
         assert_eq!(serde_json::from_str::<Ran>(&wire).expect("decodes"), ran);
     }
 

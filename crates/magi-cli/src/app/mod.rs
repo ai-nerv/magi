@@ -139,6 +139,11 @@ pub struct App {
     pub granted: Vec<magi_proto::permit::Grant>,
     /// Whether the prompt was empty when it was last looked at.
     was_blank: bool,
+    /// Which transcript line and column the pointer is over, when it is over a handle.
+    ///
+    /// A transcript coordinate rather than a screen one, so scrolling carries the highlight with
+    /// the block it belongs to instead of leaving it on whatever moved under it.
+    pub hovering: Option<(usize, u16)>,
     /// The text being dragged over, or the last drag that finished.
     ///
     /// Kept after the button comes up so the highlight stays until the next click, which is how
@@ -193,6 +198,7 @@ impl App {
             waiting: 0,
             granted: Vec::new(),
             was_blank: true,
+            hovering: None,
             selection: None,
             flipped: std::collections::BTreeSet::new(),
             owners: Vec::new(),
@@ -497,6 +503,14 @@ impl App {
                 self.asking_about = action;
                 self.picking = Some(Picking::Permission { id, offers });
             }
+            // The general question, drawn with the same picker a permission is — see `asked`.
+            HarnessEvent::Asked {
+                id,
+                tool,
+                question,
+                options,
+                ..
+            } => self.asked(id, &tool, &question, options),
             HarnessEvent::ModelChanged { model, .. } => {
                 let before = self.model.as_ref().map(|m| m.name.clone());
                 let after = model.as_ref().map(|m| m.name.clone());
@@ -757,6 +771,7 @@ impl App {
     }
 }
 
+mod asked;
 mod folding;
 
 /// A line for the box to open with.

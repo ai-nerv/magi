@@ -32,6 +32,7 @@ mod tests {
         let result = magi_proto::ToolResult {
             output: "out".to_owned(),
             is_error: err,
+            shown: None,
         };
         block(
             "shell",
@@ -88,6 +89,7 @@ mod tests {
         let result = magi_proto::ToolResult {
             output: "out".to_owned(),
             is_error: false,
+            shown: None,
         };
         let lines = block("shell", "{}", Some(&result), 50, Detail::Preview);
         assert_eq!(

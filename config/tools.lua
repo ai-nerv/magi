@@ -35,6 +35,14 @@ do -- shell
   })
 end
 
+-- `ls`, `find` and `grep` were declared here and are casper's now. Not copied -- moved: two
+-- declarations of one name is the state where somebody edits the wrong one, and registration is
+-- keyed, so the copy that lost would have sat here doing nothing and still looking maintained.
+--
+-- `shell` stays. casper's `bash` runs one command per exec, and this one holds a process: `cd
+-- build` and then `make` has to work, and a stateless shell would quietly stop being able to do
+-- it. It moves when casper's can keep a working directory between calls, not before.
+
 do -- hexe
   -- The client arrives as source in `magi.clients`: a config cannot open files.
   local function client()
@@ -142,106 +150,6 @@ do -- oslo
         return { content = "oslo refused " .. what .. ": " .. tostring(answer), is_error = true }
       end
       return { content = magi.json.encode(answer) }
-    end,
-  })
-end
-
-do -- find
-  magi.tool("find", {
-    description = [[
-  Find files and directories by name. Returns one path a line.
-
-  Honours .gitignore. Results are capped; narrow the glob or the path rather than raising it.]],
-
-    parameters = {
-      type = "object",
-      properties = {
-        glob = { type = "string", description = "Name pattern, e.g. `*.rs` or `Cargo.toml`." },
-        path = { type = "string", description = "Where to look. Defaults to the session's directory." },
-        limit = {
-          type = "integer", minimum = 1, maximum = 5000, default = 1000,
-          description = "Most paths to return.",
-        },
-      },
-    },
-
-    -- `--glob` is a boolean and the pattern is positional, so an absent glob leaves the flag
-    -- behind with nothing to match, which is fd's own way of saying "everything".
-    transport = {
-      kind = "command",
-      command = "fd",
-      args = {
-        "--color=never", "--glob",
-        "--max-results={limit}",
-        "{glob}",
-        "--search-path={path}",
-      },
-      timeout = 30,
-    },
-  })
-end
-
-do -- ls
-  magi.tool("ls", {
-    description = [[
-  List a directory. Returns one entry a line, with a trailing `/` on directories.]],
-
-    parameters = {
-      type = "object",
-      properties = {
-        path = { type = "string", description = "The directory. Defaults to the session's directory." },
-      },
-    },
-
-    transport = {
-      kind = "command",
-      command = "ls",
-      args = { "-1", "-p", "-A", "--color=never", "{path}" },
-      timeout = 10,
-    },
-  })
-end
-
-do -- grep
-  -- What the `command` transport cannot express: choosing the program at call time. `rg` honours
-  -- ignore files and is faster; `grep` is everywhere. Both go through the same gate.
-  local function search(pattern, path, limit)
-    local where = path or "."
-    local out, err = magi.shell(
-      ("rg --line-number --no-heading --color=never --max-count=%d --regexp=%q %q")
-        :format(limit, pattern, where))
-    if out and out ~= "" then return out end
-    -- `rg` absent, or nothing matched. `grep` tells the two apart by trying.
-    return magi.shell(
-      ("grep -rnI --exclude-dir=.git --max-count=%d -e %q %q")
-        :format(limit, pattern, where)) or (err or "no matches")
-  end
-
-  magi.tool("grep", {
-    description = [[
-  Search file contents, preferring ripgrep and falling back to grep.
-
-  Honours .gitignore when ripgrep is available. Returns `path:line:text`, one match a line.]],
-
-    parameters = {
-      type = "object",
-      properties = {
-        pattern = { type = "string", description = "The pattern to search for." },
-        path = { type = "string", description = "Where to search. Defaults to the session's directory." },
-        limit = {
-          type = "integer", minimum = 1, maximum = 500, default = 100,
-          description = "Most matches to return.",
-        },
-      },
-      required = { "pattern" },
-    },
-
-    transport = { kind = "lua" },
-
-    run = function(args)
-      local found = search(args.pattern, args.path, args.limit or 100)
-      if not found or found == "" then return { content = "no matches" } end
-      return { content = found }
     end,
   })
 end

@@ -176,11 +176,22 @@ pub async fn run(
 
         if dirty {
             let _ = session.terminal.autoresize();
-            session.terminal.draw(|frame| {
+            let drawn = session.terminal.draw(|frame| {
                 let footer = footer_data(&app);
                 app.queued = command_tx.max_capacity() - command_tx.capacity();
                 ui::draw(frame, &mut app, &footer);
             })?;
+            // Read out of the frame that was just drawn, which is what `draw` hands back.
+            //
+            // **Not `current_buffer_mut`.** ratatui keeps two buffers and ends every draw with
+            // `swap_buffers`, which *resets* the one it is about to make current — so the
+            // "current" buffer after a draw is blank, and the text taken from it was always the
+            // empty string. Nothing ever reached the clipboard: the highlight appeared, the
+            // release was seen, and the copy silently did nothing.
+            let copy = copied
+                .take()
+                .map(|sel| magi_tui::select::text(drawn.buffer, sel, drawn.area))
+                .filter(|text| !text.is_empty());
             dirty = false;
             // After the frame, and only when it has changed: the shape is the terminal's own
             // cursor, so it outlives a redraw and does not need setting on every one.
@@ -188,12 +199,8 @@ pub async fn run(
                 shown = app.modal.mode;
                 let _ = crossterm::execute!(std::io::stdout(), crate::terminal::shape(shown));
             }
-            if let Some(sel) = copied.take() {
-                let area = session.terminal.get_frame().area();
-                let text = magi_tui::select::text(session.terminal.current_buffer_mut(), sel, area);
-                if !text.is_empty() {
-                    crate::clipboard::put(&text);
-                }
+            if let Some(text) = copy {
+                crate::clipboard::put(&text);
             }
         }
 
@@ -301,6 +308,22 @@ pub async fn run(
                                             .map(|(_, id)| id.clone());
                                         match found {
                                             Some(id) => UiCommand::Resume { id },
+                                            None => continue,
+                                        }
+                                    }
+                                    // Matched back by label, because that is what the person
+                                    // read and chose, and the picker that held the positions is
+                                    // already gone by here. The tool asked to get an id back,
+                                    // which is not what a row says.
+                                    Some(crate::app::Picking::Asked { id, rows }) => {
+                                        let chosen = rows
+                                            .iter()
+                                            .find(|(label, _)| *label == value)
+                                            .map(|(_, choice)| choice.clone());
+                                        match chosen {
+                                            Some(choice) => UiCommand::Answered { id, choice },
+                                            // Nothing to send: no row matches, so answering
+                                            // would resume a tool with a choice nobody made.
                                             None => continue,
                                         }
                                     }
@@ -425,6 +448,14 @@ pub async fn run(
                         match mouse.kind {
                             MouseEventKind::ScrollUp => app.scrollback.scroll_up(3),
                             MouseEventKind::ScrollDown => app.scrollback.scroll_down(3, view),
+                            // The pointer passing over a fold handle lights it up. Every cell it
+                            // crosses arrives here and all but a handful change nothing —
+                            // `hover_at` says which, and only those cost a frame.
+                            MouseEventKind::Moved => {
+                                if !app.hover_at(mouse.row, mouse.column) {
+                                    continue;
+                                }
+                            }
                             // A tool block opens and closes under the pointer. Ctrl+O still
                             // moves the whole transcript at once; this is for the one result
                             // you actually want to read, which is usually not the newest.

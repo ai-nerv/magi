@@ -18,19 +18,25 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::{Terminal, TerminalOptions, Viewport};
 use std::io::{self, IsTerminal, Stdout, Write};
 
-/// Ask for presses, releases and drags — a click and a drag, nothing else.
+/// Ask for presses, releases, drags and where the pointer is.
 ///
-/// **Not `EnableMouseCapture`.** That sets `?1003h` — *any-event* tracking, which reports the
-/// pointer moving with no button down, every frame, forever. `?1002h` reports presses, releases
-/// and motion *while a button is held*, which is a click and a drag and nothing else. `?1006h`
-/// asks for SGR coordinates, without which a click past column 223 cannot be expressed.
+/// `?1002h` reports presses, releases, the wheel, and motion *while a button is held* — a click
+/// and a drag. `?1003h` adds motion with no button down, which is the only way to know what the
+/// pointer is merely *over*, and is what lights a fold handle up under it. It is a message per
+/// cell crossed, so nothing redraws for motion that does not change which handle is lit; the
+/// cost of the rest is a parse. `?1006h` asks for SGR coordinates, without which a click past
+/// column 223 cannot be expressed.
+///
+/// **Not `EnableMouseCapture`.** That sets `?1015h` as well — urxvt coordinates, an alternative
+/// to SGR that crossterm asks for beside it and takes whichever arrives. One encoding is enough
+/// when it is the one everything speaks.
 ///
 /// **Taking the mouse is why magi selects text itself.** Mouse reporting is one terminal-wide
 /// switch: an application that turns it on to receive a click stops the terminal running its own
 /// drag-selection, and no choice of tracking mode changes that. So a program that wants both a
 /// clickable element and selectable text has to do the selecting — see [`magi_tui::select`].
 /// neovim and tmux are in the same position and answer it the same way.
-const MOUSE_ON: &str = "\x1b[?1002h\x1b[?1006h";
+const MOUSE_ON: &str = "\x1b[?1002h\x1b[?1003h\x1b[?1006h";
 
 /// Give it back.
 ///

@@ -388,7 +388,11 @@ impl ProcessTool {
                 })) if got == *id => {
                     let mut content = progress;
                     content.push_str(&output);
-                    return Ended::Answered(Output { content, is_error });
+                    return Ended::Answered(Output {
+                        content,
+                        is_error,
+                        shown: None,
+                    });
                 }
                 // A report for a call that is not this one, or a declaration arriving late.
                 // Skipped rather than treated as an answer: the peer may serve several tools.

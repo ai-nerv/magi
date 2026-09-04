@@ -34,6 +34,7 @@ impl Tool for Fake {
             Output {
                 content: "ok".to_owned(),
                 is_error: false,
+                shown: None,
             }
         }
     }

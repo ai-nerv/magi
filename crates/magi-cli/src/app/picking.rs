@@ -24,6 +24,22 @@ pub enum Picking {
         /// Every row, as `(what it said, which session it was)`.
         rows: Vec<(String, String)>,
     },
+    /// A question a tool asked in its own words.
+    ///
+    /// The general form of [`Self::Permission`]. Carries the question's id, because the answer
+    /// has to find the turn blocked on it, and each row as `(what it said, what it means)` —
+    /// the same shape [`Self::Session`] needs and for the same reason: the picker is taken by
+    /// the keypress that chose a row, so by the time this is read there is no list left to
+    /// index by position.
+    Asked {
+        /// Which question is being answered.
+        id: ToolCallId,
+        /// Every row, as `(the label drawn, the option id that goes back)`.
+        ///
+        /// A tool that labelled two options identically gets the first of them, which is also
+        /// what a person choosing between two identical rows would expect.
+        rows: Vec<(String, String)>,
+    },
     /// Whether a tool may do what it is about to do.
     ///
     /// Carries the question's id, because the answer has to find its way back to the turn that

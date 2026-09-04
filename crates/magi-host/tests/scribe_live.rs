@@ -77,6 +77,7 @@ async fn a_tool_signature_is_not_flattened_into_the_projection() {
         result: Some(ToolResult {
             output: "a\nb\n".into(),
             is_error: false,
+            shown: None,
         }),
         thought_signature: Some("opaque-provider-state".into()),
     };

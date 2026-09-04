@@ -328,6 +328,7 @@ mod tests {
             *result = Some(ToolResult {
                 output: "done".into(),
                 is_error: false,
+                shown: None,
             });
         }
         assert_eq!(kind(&call), "tool_result");

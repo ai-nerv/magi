@@ -24,9 +24,14 @@ use std::time::Duration;
 const PATIENCE: Duration = Duration::from_secs(300);
 
 /// The questions currently outstanding.
+///
+/// Two maps, because the two kinds of question carry different answers: a permission comes back
+/// as a [`Decision`], and a general one as the id of a chosen option. One map holding an enum of
+/// both would make every reader unpack a thing it already knows the shape of.
 #[derive(Default)]
 pub struct Pending {
     waiting: Mutex<HashMap<ToolCallId, std::sync::mpsc::Sender<Decision>>>,
+    choosing: Mutex<HashMap<ToolCallId, std::sync::mpsc::Sender<String>>>,
 }
 
 impl Pending {
@@ -54,6 +59,33 @@ impl Pending {
         let (sender, receiver) = std::sync::mpsc::channel();
         self.waiting.lock().ok()?.insert(id, sender);
         Some(receiver)
+    }
+
+    /// Deliver a chosen option to whoever is waiting for it.
+    ///
+    /// An id nobody is waiting on is dropped, for the same reason a permission's is: the turn it
+    /// belonged to is over, and acting on it would resume something nobody is watching.
+    pub fn chose(&self, id: &ToolCallId, choice: String) {
+        let Ok(mut choosing) = self.choosing.lock() else {
+            return;
+        };
+        if let Some(sender) = choosing.remove(id) {
+            let _ = sender.send(choice);
+        }
+    }
+
+    /// Register a general question and hand back the end to wait on.
+    fn awaiting(&self, id: ToolCallId) -> Option<std::sync::mpsc::Receiver<String>> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.choosing.lock().ok()?.insert(id, sender);
+        Some(receiver)
+    }
+
+    /// Forget a chosen-option question.
+    fn drop_choice(&self, id: &ToolCallId) {
+        if let Ok(mut choosing) = self.choosing.lock() {
+            choosing.remove(id);
+        }
     }
 
     /// Forget a question, so a timed-out one does not sit in the map for the session.
@@ -194,5 +226,35 @@ mod tests {
         // The turn it belonged to is over; acting on it would allow something unwatched.
         let pending = Pending::new();
         pending.answer(&ToolCallId::new("gone"), Decision::Deny);
+    }
+}
+
+impl magi_tools::question::Asks for Asker {
+    fn ask(&self, tool: &str, ask: &magi_proto::tooling::Ask) -> Option<String> {
+        if !(self.attached)() {
+            // Nobody is looking, so nobody can answer. Choosing on their behalf is the failure
+            // this mechanism exists to prevent, and it matters most on exactly the sessions
+            // where nobody is watching.
+            return None;
+        }
+        let n = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let id = ToolCallId::new(format!("q{n}"));
+        let receiver = self.pending.awaiting(id.clone())?;
+
+        (self.publish)(HarnessEvent::Asked {
+            cursor: (self.cursor)(),
+            id: id.clone(),
+            tool: tool.to_owned(),
+            question: ask.question.clone(),
+            options: ask.options.clone(),
+            detail: ask.detail.clone(),
+        });
+
+        // The same patience a permission gets. A turn that waited forever on a UI that has gone
+        // is a daemon nothing can recover, and an unanswered question is not a refusal — the
+        // tool decides what to make of it.
+        let answer = receiver.recv_timeout(PATIENCE).ok();
+        self.pending.drop_choice(&id);
+        answer
     }
 }

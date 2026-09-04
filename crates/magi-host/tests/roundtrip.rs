@@ -335,6 +335,7 @@ async fn an_amended_entry_is_not_announced_as_a_new_one() {
             result: Some(ToolResult {
                 output: "done".into(),
                 is_error: false,
+                shown: None,
             }),
             thought_signature: None,
         })

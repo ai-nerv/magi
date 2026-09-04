@@ -29,7 +29,12 @@ pub fn print() -> Result<(), magi_lua::LuaError> {
     // tools` answers "what can the model call", and a listing that left them out would be
     // answering a different question from the one a session acts on.
     let mut from_casper = std::collections::BTreeSet::new();
-    for tool in magi_tools::casper::CasperTool::all(magi_tools::casper::CASPER) {
+    // Nobody to ask: `magi tools` lists what exists and runs nothing, so a tool that would have
+    // stopped to ask never gets the chance to.
+    for tool in magi_tools::casper::CasperTool::all(
+        magi_tools::casper::CASPER,
+        std::sync::Arc::new(magi_tools::question::Unanswered),
+    ) {
         from_casper.insert(tool.name().to_owned());
         registry.register(Box::new(tool));
     }

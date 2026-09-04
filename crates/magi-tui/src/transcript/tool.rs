@@ -119,13 +119,30 @@ pub(super) fn block(
                 Detail::Preview => all.len().min(usize::from(crate::metric::preview_lines())),
                 Detail::Full => all.len(),
             };
-            for line in &all[..shown] {
-                let fg = if result.is_error {
-                    colour::tool_failed()
-                } else {
-                    change_colour(line)
+            // **What the tool said it meant, when it said anything.** A painted result carries
+            // a role per span and those resolve against magi's own palette, so a diff from
+            // casper and a diff from `edit` come out the same. Without one there is only
+            // `change_colour`, which reads the first character and guesses -- right for a patch
+            // and wrong for a `bash` running `git log --oneline`.
+            let painted = match &result.shown {
+                Some(magi_proto::tooling::Shown::Painted { lines }) => Some(lines),
+                // A question is not output. It is drawn by whoever can answer it, and a block
+                // that rendered it as text would show a picker nobody could use.
+                _ => None,
+            };
+            for (nth, line) in all[..shown].iter().enumerate() {
+                let drawn = match painted.and_then(|lines| lines.get(nth)) {
+                    Some(spans) if !result.is_error => crate::painted::line(spans),
+                    _ => {
+                        let fg = if result.is_error {
+                            colour::tool_failed()
+                        } else {
+                            change_colour(line)
+                        };
+                        Line::from(Span::styled((*line).to_owned(), style.fg(fg)))
+                    }
                 };
-                rows.extend(laid(line, style.fg(fg), detail, width, body, lead));
+                rows.extend(wrapped(drawn, style, detail, width, body, lead));
             }
             // The affordance goes on the fold, because that is where a reader is
             // looking when they wonder where the rest went.
@@ -239,6 +256,7 @@ mod diff_tests {
             result: Some(ToolResult {
                 output: output.to_owned(),
                 is_error: false,
+                shown: None,
             }),
             thought_signature: None,
         }
@@ -294,6 +312,7 @@ mod diff_tests {
             result: Some(ToolResult {
                 output: "-was\n+now\n".into(),
                 is_error: true,
+                shown: None,
             }),
             thought_signature: None,
         };
@@ -438,6 +457,7 @@ mod detail_tests {
                     .collect::<Vec<_>>()
                     .join("\n"),
                 is_error: false,
+                shown: None,
             }),
             thought_signature: None,
         }
@@ -515,6 +535,7 @@ mod fold_tests {
         let result = magi_proto::ToolResult {
             output: body,
             is_error: false,
+            shown: None,
         };
         block(
             "bash",
@@ -582,6 +603,7 @@ mod block_tests {
         let ok = ToolResult {
             output: "hi".into(),
             is_error: false,
+            shown: None,
         };
         let bad = ToolResult {
             is_error: true,
@@ -619,6 +641,61 @@ mod handle_tests;
 ///
 /// So: a preview cuts, because a preview is a glance and one row per line is what makes it
 /// scannable. Open, nothing is hidden — a long line wraps and every character of it is there.
+/// The same, for a line that is already spans.
+///
+/// [`laid`] builds its own line out of one string; a painted row arrives with a colour per span
+/// and must keep them, so the clipping and wrapping are applied to what it already is. One
+/// function doing both would either lose the spans or wrap the string twice.
+fn wrapped(
+    line: Line<'static>,
+    style: Style,
+    detail: Detail,
+    width: u16,
+    body: usize,
+    lead: usize,
+) -> Vec<Line<'static>> {
+    // **Before anything measures.** A tab is one character and any number of columns, so a row
+    // that still held one would be counted short and drawn long — out past the frame it was
+    // just clipped to fit inside. `laid` expands on the way in for the same reason.
+    let line = Line::from(
+        line.spans
+            .into_iter()
+            .map(|span| Span::styled(crate::wrap::expand_tabs(&span.content), span.style))
+            .collect::<Vec<_>>(),
+    );
+    match detail {
+        // A preview cuts rather than wraps, so a long line costs one row here as it does
+        // everywhere else in a folded block.
+        Detail::Preview => {
+            let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+            let room = crate::wrap::columns(&clip(&text, body));
+            let mut kept = Vec::new();
+            let mut used = 0_usize;
+            for span in line.spans {
+                if used >= room {
+                    break;
+                }
+                let wide = crate::wrap::columns(&span.content);
+                if used + wide <= room {
+                    used += wide;
+                    kept.push(span);
+                } else {
+                    // The span that straddles the edge is cut, and keeps its colour: a row that
+                    // dropped it would end early, and one that kept it whole would overrun.
+                    let content = clip(&span.content, room - used);
+                    used = room;
+                    kept.push(Span::styled(content, span.style));
+                }
+            }
+            vec![super::frame::inside(Line::from(kept), width, style, lead)]
+        }
+        Detail::Full => crate::wrap::line(line, u16::try_from(body).unwrap_or(u16::MAX))
+            .into_iter()
+            .map(|part| super::frame::inside(part, width, style, lead))
+            .collect(),
+    }
+}
+
 fn laid(
     text: &str,
     style: Style,
@@ -646,87 +723,9 @@ fn laid(
 
 /// Opening a block shows what a preview cut, and nothing ever leaves the frame.
 #[cfg(test)]
-mod revealing {
-    use super::*;
+#[path = "revealing.rs"]
+mod revealing;
 
-    const LONG: &str =
-        "the quick brown fox jumps over the lazy dog and keeps running well past the edge";
-
-    fn rows(detail: Detail, width: u16) -> Vec<String> {
-        block(
-            "shell",
-            r#"{"command":"grep -rn 'a pattern long enough to need cutting' crates/"}"#,
-            Some(&magi_proto::ToolResult {
-                output: format!("{LONG}\nshort\n{LONG}"),
-                is_error: false,
-            }),
-            width,
-            detail,
-        )
-        .iter()
-        .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
-        .collect()
-    }
-
-    #[test]
-    fn opening_shows_the_end_of_a_line_a_preview_cut() {
-        // The complaint this is here for. Every row was cut whichever way the block was showing,
-        // so a long line ended in `…` open or shut — and the key that was meant to reveal it
-        // added rows underneath without touching the thing being read. On a short result it did
-        // nothing visible at all.
-        let folded = rows(Detail::Preview, 56).join("\n");
-        assert!(folded.contains('…'), "the premise: it was cut\n{folded}");
-        assert!(
-            !folded.contains("past the edge"),
-            "the tail is showing while folded\n{folded}"
-        );
-
-        let open = rows(Detail::Full, 56).join("\n");
-        assert!(
-            open.contains("past the edge"),
-            "opening it did not show the rest\n{open}"
-        );
-        assert!(!open.contains('…'), "still cutting when open\n{open}");
-    }
-
-    #[test]
-    fn nothing_reaches_past_the_frame_either_way() {
-        // The width the body was laid out to subtracted one column on the right where the block
-        // keeps two, so a line that filled it came out a character wider than the frame — and
-        // the `…` saying it had been cut was the thing hanging past the corner.
-        for width in [24u16, 40, 56, 100] {
-            for detail in [Detail::Preview, Detail::Full] {
-                for row in rows(detail, width) {
-                    assert_eq!(
-                        row.chars().count(),
-                        usize::from(width),
-                        "at {width} ({detail:?}): {row:?}"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn a_preview_is_still_one_row_a_line() {
-        // The other half: a preview is a glance, and a wrapped one is not scannable. Three lines
-        // of output, three rows, plus the arguments and the two edges.
-        let shown = rows(Detail::Preview, 56);
-        assert_eq!(shown.len(), 6, "{shown:#?}");
-    }
-
-    #[test]
-    fn a_long_argument_is_shown_in_full_when_the_block_is() {
-        // The arguments are a row like any other now, so they wrap with the rest.
-        let open = rows(Detail::Full, 40).join("\n");
-        assert!(
-            open.contains("crates/"),
-            "the end of the command is missing\n{open}"
-        );
-    }
-}
-
-/// A long command is cut in a preview and shown in full when the block is opened.
 #[cfg(test)]
 mod arguments {
     use super::*;
@@ -761,6 +760,7 @@ mod arguments {
             result: Some(magi_proto::ToolResult {
                 output: "done".into(),
                 is_error: false,
+                shown: None,
             }),
             thought_signature: None,
         };
@@ -774,3 +774,8 @@ mod arguments {
         );
     }
 }
+
+/// What a tool *said it meant*, drawn rather than guessed at.
+#[cfg(test)]
+#[path = "painting.rs"]
+mod painting;

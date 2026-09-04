@@ -155,16 +155,19 @@ impl Finished {
             return Output {
                 content: self.out,
                 is_error: false,
+                shown: None,
             };
         }
         match self.code {
             Some(0) => Output {
                 content: String::new(),
                 is_error: false,
+                shown: None,
             },
             Some(code) if self.err.is_empty() => Output {
                 content: format!("{program} exited {code} with no output"),
                 is_error: false,
+                shown: None,
             },
             Some(code) => Output::error(format!("{program} exited {code}: {}", self.err.trim())),
             None => Output::error(format!("{program} was killed: {}", self.err.trim())),

@@ -7,13 +7,38 @@
 use super::App;
 
 impl App {
+    /// Note where the pointer is, and say whether the screen has to be redrawn.
+    ///
+    /// **Only when the answer changes.** Any-event tracking reports a message per cell the
+    /// pointer crosses, and redrawing for each would repaint the screen continuously while
+    /// somebody moves the mouse across it. Almost every one of those messages lands on the same
+    /// answer as the last — usually "over no handle at all" — and this is what makes them free.
+    pub fn hover_at(&mut self, row: u16, column: u16) -> bool {
+        let was = self.hovering;
+        self.hovering = self
+            .live_rows
+            .contains(&row)
+            .then(|| {
+                let into = usize::from(row - self.live_rows.start);
+                (self.scrollback.hidden_above() + into, column)
+            })
+            // A pointer that has left the transcript lights nothing, and the handle it was over
+            // has to go dark: a highlight left behind points at something nobody is aiming at.
+            .filter(|(line, column)| {
+                self.scrollback
+                    .line(*line)
+                    .is_some_and(|drawn| magi_tui::transcript::hovered(&mut drawn.clone(), *column))
+            });
+        was != self.hovering
+    }
+
     /// Fold or unfold the tool block whose handle is at `row`, `column`.
     ///
     /// Returns whether the handle was there. **The handle, not the block.** Every row a block
     /// drew used to answer a click anywhere along it, which made most of the screen a button:
     /// with the mouse captured there was nothing left to aim at, and a click meant to place a
-    /// cursor collapsed whatever it landed on. The `»` is the affordance and it is the only
-    /// thing that acts.
+    /// cursor collapsed whatever it landed on. The chip is the affordance and it is the only
+    /// thing that acts — which is also what lights up when the pointer is on it.
     pub fn toggle_at(&mut self, row: u16, column: u16, width: u16) -> bool {
         if !self.live_rows.contains(&row) {
             return false;
@@ -73,6 +98,7 @@ mod clicking {
                     .collect::<Vec<_>>()
                     .join("\n"),
                 is_error: false,
+                shown: None,
             }),
             thought_signature: None,
         }

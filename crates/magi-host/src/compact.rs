@@ -217,6 +217,7 @@ mod tests {
             result: Some(magi_proto::ToolResult {
                 output: "ok".into(),
                 is_error: false,
+                shown: None,
             }),
             thought_signature: None,
         }

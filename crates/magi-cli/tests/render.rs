@@ -66,6 +66,7 @@ fn a_conversation_renders_the_way_pi_lays_it_out() {
             result: Some(ToolResult {
                 output: "test result: ok. 42 passed".into(),
                 is_error: false,
+                shown: None,
             }),
             thought_signature: None,
         },
@@ -108,6 +109,7 @@ fn a_failed_tool_still_shows_its_output() {
         result: Some(ToolResult {
             output: "error: could not compile".into(),
             is_error: true,
+            shown: None,
         }),
         thought_signature: None,
     }];

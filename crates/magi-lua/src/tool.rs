@@ -137,6 +137,14 @@ impl Tool for LuaTool {
                     .get("is_error")
                     .and_then(serde_json::Value::as_bool)
                     .unwrap_or(false),
+                // A tool declared here may paint its output too, in the same vocabulary
+                // casper's use. Not a privilege of the far side: what makes the colours agree
+                // is the roles, and a Lua tool that has structure worth naming should be able
+                // to name it. Absent, or in a shape this build cannot read, is plain text —
+                // the answer a tool gets for saying nothing.
+                shown: value
+                    .get("shown")
+                    .and_then(|shown| serde_json::from_value(shown.clone()).ok()),
             },
             // A description that raised, returned nothing, or has no `run` at all. Reported as
             // a result rather than a fault: the model asked for it and needs to be told.

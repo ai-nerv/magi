@@ -322,6 +322,7 @@ mod context_tests {
             result: Some(ToolResult {
                 output: "contents".into(),
                 is_error: false,
+                shown: None,
             }),
             thought_signature: Some("sig-call".into()),
         })?;
@@ -447,6 +448,7 @@ mod context_tests {
                 result: Some(ToolResult {
                     output: "x".into(),
                     is_error: false,
+                    shown: None,
                 }),
                 thought_signature: None,
             })

@@ -120,6 +120,7 @@ mod framing {
                 result: Some(ToolResult {
                     output: "one\ntwo".into(),
                     is_error: false,
+                    shown: None,
                 }),
                 thought_signature: None,
             },
@@ -407,6 +408,7 @@ mod emptiness {
         let shown = call(Some(ToolResult {
             output: String::new(),
             is_error: false,
+            shown: None,
         }));
         assert!(shown.iter().all(|l| !l.contains('┌')), "{shown:#?}");
     }
@@ -416,6 +418,7 @@ mod emptiness {
         let shown = call(Some(ToolResult {
             output: "one line".into(),
             is_error: false,
+            shown: None,
         }));
         assert!(shown.iter().any(|l| l.contains('┌')), "{shown:#?}");
         assert!(shown.iter().any(|l| l.contains('└')), "{shown:#?}");
@@ -492,6 +495,7 @@ mod alignment {
                 result: Some(ToolResult {
                     output: "one".into(),
                     is_error: false,
+                    shown: None,
                 }),
                 thought_signature: None,
             },
@@ -556,6 +560,7 @@ mod wide {
                     result: Some(ToolResult {
                         output: format!("{WIDE}\n{WIDE}"),
                         is_error: false,
+                        shown: None,
                     }),
                     thought_signature: None,
                 },

@@ -474,6 +474,7 @@ mod amend_at_tests {
             result: answered.then(|| ToolResult {
                 output: format!("answer {at}"),
                 is_error: false,
+                shown: None,
             }),
             thought_signature: None,
         }

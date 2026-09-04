@@ -18,8 +18,10 @@
 //! `shown` is a painted view or a question. This module keeps `said`, because a [`Tool`] returns
 //! text; the view is carried alongside by [`Ran::shown`] for the caller that draws.
 
+use crate::question::Asks;
 use crate::{Cancel, Ops, Output, Tool};
-use magi_proto::tooling::{Call, Card, Ran};
+use magi_proto::tooling::{Call, Card, Ran, Shown};
+use std::sync::Arc;
 
 /// The program that owns the tools.
 ///
@@ -110,17 +112,23 @@ pub fn run(program: &str, call: &Call) -> Result<Ran, String> {
 pub struct CasperTool {
     card: Card,
     program: String,
+    asks: Arc<dyn Asks>,
 }
 
 impl CasperTool {
     /// Every tool casper offers, ready to register.
+    ///
+    /// `asks` is how a question reaches the person. A tool that never asks never uses it; one
+    /// that does cannot finish without it, which is why it is taken here rather than looked up
+    /// when the question arrives.
     #[must_use]
-    pub fn all(program: &str) -> Vec<Self> {
+    pub fn all(program: &str, asks: Arc<dyn Asks>) -> Vec<Self> {
         cards_from(program)
             .into_iter()
             .map(|card| Self {
                 card,
                 program: program.to_owned(),
+                asks: Arc::clone(&asks),
             })
             .collect()
     }
@@ -140,19 +148,50 @@ impl Tool for CasperTool {
     }
 
     fn run(&self, arguments: &serde_json::Value, ops: &dyn Ops, _cancel: &dyn Cancel) -> Output {
-        let call = Call {
+        let mut call = Call {
             tool: self.card.name.clone(),
             args: arguments.clone(),
             cwd: ops.cwd().display().to_string(),
             answered: None,
         };
-        match run(&self.program, &call) {
-            // A refusal is still something the model reads: it asked for a tool that could not
-            // be reached, and the answer is to try another way rather than to end the turn.
-            Err(why) => Output::error(why),
-            Ok(ran) if ran.failed => Output::error(ran.said),
-            Ok(ran) => Output::ok(ran.said),
+        // **magi decides, casper describes.** The card says which verb this tool acts under and
+        // the ledger answers — the same ledger, the same prompt and the same standing grants
+        // every tool here goes through. Without this a tool could be moved out of magi's config
+        // and quietly leave the gate behind it, which is the one thing that must not happen
+        // while tools are being moved.
+        if let Some(action) = wants(&self.card, arguments)
+            && let Err(why) = ops.allow(&self.card.name, &action)
+        {
+            return Output::error(why);
         }
+        // **A call may stop and ask, and then go on.** Bounded, because a tool that asked
+        // forever would hold the turn open forever: two questions is a permission and then a
+        // confirmation, which is as far as anything has needed to go, and a third is a
+        // declaration in a loop rather than one talking to a person.
+        for _ in 0..3 {
+            let ran = match run(&self.program, &call) {
+                // A refusal is still something the model reads: it asked for a tool that could
+                // not be reached, and the answer is to try another way rather than end the turn.
+                Err(why) => return Output::error(why),
+                Ok(ran) => ran,
+            };
+            let Some(Shown::Ask(ask)) = &ran.shown else {
+                return finished(ran);
+            };
+            let Some(choice) = self.asks.ask(&self.card.name, ask) else {
+                // Nobody answered. Told to the model rather than left as an empty result: a
+                // blank answer to a call it made reads as a tool that silently does nothing.
+                return Output::error(format!(
+                    "{} stopped to ask \"{}\" and nobody answered",
+                    self.card.name, ask.question
+                ));
+            };
+            call.answered = Some(choice);
+        }
+        Output::error(format!(
+            "{} kept asking rather than answering",
+            self.card.name
+        ))
     }
 }
 
@@ -189,6 +228,134 @@ mod tests {
         assert_eq!(
             rows(br#"{"ok":true,"n":1,"result":[1]}"#).map(|r| r.len()),
             Some(1)
+        );
+    }
+}
+
+/// One finished call, as the registry wants it.
+///
+/// Both faces cross: `said` for the model, `shown` for the screen. A tool that reported a
+/// problem is still a result — the model needs to read what went wrong in order to do something
+/// about it — so a failure carries its view too.
+fn finished(ran: Ran) -> Output {
+    Output {
+        content: ran.said,
+        is_error: ran.failed,
+        shown: ran.shown,
+    }
+}
+
+/// What this call is about to do, in magi's own vocabulary.
+///
+/// `None` when the card names no verb, or names one this build has no meaning for: a tool that
+/// touches nothing a person would want a say over is not gated, and a verb nobody recognises is
+/// *not* silently treated as harmless — it is treated as `run`, which is the most guarded thing
+/// there is. A newer casper inventing a verb should be asked about, not waved through.
+fn wants(card: &Card, arguments: &serde_json::Value) -> Option<magi_proto::permit::Action> {
+    use magi_proto::permit::Action;
+    let needs = card.needs.as_deref()?;
+    // The argument a person would judge it by, when there is an obvious one. A tool with no
+    // path in its arguments is asked about by name, which is still better than not being asked.
+    let text = |key: &str| {
+        arguments
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_owned()
+    };
+    let path = || {
+        let path = text("path");
+        if path.is_empty() {
+            card.name.clone()
+        } else {
+            path
+        }
+    };
+    Some(match needs {
+        "read" => Action::Read { path: path() },
+        "write" => Action::Write { path: path() },
+        "reach" => Action::Network { host: text("host") },
+        _ => {
+            let command = {
+                let command = text("command");
+                if command.is_empty() {
+                    card.name.clone()
+                } else {
+                    command
+                }
+            };
+            let program = command
+                .split_whitespace()
+                .next()
+                .unwrap_or(&card.name)
+                .to_owned();
+            Action::Run { command, program }
+        }
+    })
+}
+
+/// What a card asks magi to decide before it runs.
+#[cfg(test)]
+mod gating {
+    use super::*;
+    use magi_proto::permit::Action;
+
+    fn card(needs: Option<&str>) -> Card {
+        Card {
+            name: "bash".to_owned(),
+            description: String::new(),
+            parameters: serde_json::json!({}),
+            needs: needs.map(ToOwned::to_owned),
+        }
+    }
+
+    #[test]
+    fn a_tool_that_needs_nothing_is_not_gated() {
+        // Asking about something nobody would want a say over is how a permission prompt
+        // becomes a nuisance, and a nuisance is answered without being read.
+        assert!(wants(&card(None), &serde_json::json!({})).is_none());
+    }
+
+    #[test]
+    fn a_verb_becomes_the_action_magi_already_knows_how_to_ask_about() {
+        let read = wants(&card(Some("read")), &serde_json::json!({"path": "/tmp/x"}));
+        assert_eq!(
+            read,
+            Some(Action::Read {
+                path: "/tmp/x".to_owned()
+            })
+        );
+        let run = wants(
+            &card(Some("run")),
+            &serde_json::json!({"command": "rm -rf build"}),
+        );
+        assert_eq!(
+            run,
+            Some(Action::Run {
+                command: "rm -rf build".to_owned(),
+                program: "rm".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_verb_nobody_recognises_is_guarded_rather_than_waved_through() {
+        // A newer casper inventing a verb must not be treated as harmless: the safe reading of
+        // "I do not know what this is" is the most guarded thing there is, not the least.
+        let odd = wants(&card(Some("teleport")), &serde_json::json!({}));
+        assert!(matches!(odd, Some(Action::Run { .. })), "{odd:?}");
+    }
+
+    #[test]
+    fn a_tool_with_nothing_to_name_is_asked_about_by_its_own_name() {
+        // Better than an empty prompt: "bash wants to run bash" is odd, and "bash wants to run"
+        // with a blank where the command goes is worse.
+        let bare = wants(&card(Some("read")), &serde_json::json!({}));
+        assert_eq!(
+            bare,
+            Some(Action::Read {
+                path: "bash".to_owned()
+            })
         );
     }
 }

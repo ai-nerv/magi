@@ -14,10 +14,12 @@ use std::collections::BTreeSet;
 
 /// Horizontal padding inside a block, in cells. Pi's `outputPad`.
 mod frame;
+mod hover;
 mod tool;
 
 use frame::{MARGIN, bottom, inside, top};
 
+pub use hover::hovered;
 pub use tool::Detail;
 
 /// Render the whole transcript.
@@ -493,6 +495,7 @@ mod tests {
             result: Some(ToolResult {
                 output,
                 is_error: false,
+                shown: None,
             }),
             thought_signature: None,
         };
@@ -565,6 +568,7 @@ mod tab_tests {
             result: Some(ToolResult {
                 output: "     1\tfn main() {\n     3\t}\n".into(),
                 is_error: false,
+                shown: None,
             }),
             thought_signature: None,
         };

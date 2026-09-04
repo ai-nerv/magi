@@ -56,6 +56,7 @@ mod reduction {
                 result: ToolResult {
                     output: "ok".into(),
                     is_error: false,
+                    shown: None,
                 },
             },
         ]);

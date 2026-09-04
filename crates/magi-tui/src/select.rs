@@ -131,6 +131,57 @@ pub fn text(buffer: &Buffer, selection: Selection, area: Rect) -> String {
 mod tests {
     use super::*;
 
+    /// Which buffer a finished frame's text has to be read out of.
+    ///
+    /// The copy was silently empty for as long as it existed, and nothing here could see it:
+    /// every other test in this file builds a `Buffer` by hand, so the text extraction was right
+    /// and the *source* was wrong. This is the missing half.
+    mod out_of_the_frame_that_was_drawn {
+        use super::*;
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::text::Line;
+        use ratatui::widgets::Paragraph;
+
+        /// Draw one line of text and hand back the terminal and what `draw` reported.
+        fn drawn() -> (Terminal<TestBackend>, String, Selection) {
+            let mut terminal = Terminal::new(TestBackend::new(20, 3)).expect("a terminal");
+            let completed = terminal
+                .draw(|frame| {
+                    frame.render_widget(Paragraph::new(Line::from("hello there")), frame.area());
+                })
+                .expect("a frame");
+            let mut sel = Selection::begin(0, 0);
+            sel.drag_to(0, 11);
+            sel.finish();
+            let from_frame = text(completed.buffer, sel, completed.area);
+            (terminal, from_frame, sel)
+        }
+
+        #[test]
+        fn the_frame_that_was_drawn_still_holds_its_text() {
+            let (_terminal, from_frame, _) = drawn();
+            assert_eq!(from_frame, "hello there");
+        }
+
+        #[test]
+        fn the_current_buffer_after_a_draw_is_blank() {
+            // The trap, written down. `draw` ends with `swap_buffers`, which *resets* the buffer
+            // it is about to make current -- so asking the terminal for its "current" buffer
+            // after drawing hands back an empty one. Reading the selection from there produced
+            // the empty string every time, and an empty string was taken for "nothing was
+            // selected" rather than for "we looked in the wrong place".
+            let (mut terminal, _, sel) = drawn();
+            let area = terminal.get_frame().area();
+            let from_current = text(terminal.current_buffer_mut(), sel, area);
+            assert!(
+                from_current.trim().is_empty(),
+                "if this ever holds the text, the reason for reading the frame is gone: \
+                 {from_current:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_press_with_no_drag_covers_nothing() {
         // Otherwise every click leaves a mark on the cell under it.

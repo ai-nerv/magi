@@ -14,6 +14,9 @@ pub mod setup;
 pub mod tooling;
 
 pub use ids::{MessageId, SessionId, ToolCallId};
+// Re-exported: it is what a tool produced, so it lives beside the rest of that contract, and
+// every reader of a transcript already reaches for it here.
+pub use tooling::ToolResult;
 
 use serde::{Deserialize, Serialize};
 
@@ -150,15 +153,6 @@ impl ErrorClass {
     pub const fn is_retryable(self) -> bool {
         matches!(self, Self::Transport | Self::Overload | Self::Throttle)
     }
-}
-
-/// The outcome of a tool call.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ToolResult {
-    /// Text the model sees.
-    pub output: String,
-    /// Whether the tool failed.
-    pub is_error: bool,
 }
 
 /// One rendered entry in a transcript.
@@ -471,6 +465,30 @@ pub enum HarnessEvent {
         /// The widths this may be answered at, narrowest first.
         offers: Vec<crate::permit::Scope>,
     },
+    /// A tool is asking the person something, and waiting.
+    ///
+    /// The general form of [`Self::PermissionAsked`]: any tool may stop and put a question, with
+    /// its own options rather than permission's scopes. That is what makes a selection tool, a
+    /// confirmation and a form one mechanism instead of three. Answered with
+    /// [`UiCommand::Answered`].
+    ///
+    /// The turn stops here, exactly as it does for a permission: a tool that asked and carried
+    /// on would be asking for a record rather than a decision.
+    Asked {
+        /// Position of this event.
+        cursor: Cursor,
+        /// Which question this is, so the answer can be matched to it.
+        id: ToolCallId,
+        /// The tool that is asking.
+        tool: String,
+        /// What is being asked, in one line.
+        question: String,
+        /// What may be answered, in the order they should be offered.
+        options: Vec<crate::tooling::Answer>,
+        /// More about what is being asked, painted, for the rows under the question.
+        #[serde(default)]
+        detail: Vec<Vec<crate::tooling::Span>>,
+    },
     /// Something the UI asked for could not be done, with the reason.
     ///
     /// Distinct from [`Self::Error`], which is the session going wrong. This is a request that
@@ -532,6 +550,7 @@ impl HarnessEvent {
             | Self::StatusChanged { cursor, .. }
             | Self::Compacted { cursor, .. }
             | Self::PermissionAsked { cursor, .. }
+            | Self::Asked { cursor, .. }
             | Self::Refused { cursor, .. }
             | Self::ModelChanged { cursor, .. }
             | Self::Branched { cursor, .. }
@@ -606,6 +625,16 @@ pub enum UiCommand {
         id: ToolCallId,
         /// What was decided.
         decision: crate::permit::Decision,
+    },
+    /// Answer a [`HarnessEvent::Asked`].
+    ///
+    /// An answer that names an unknown id is dropped, for the same reason a permission's is: the
+    /// turn it belonged to is over, and acting on it would resume something nobody is waiting on.
+    Answered {
+        /// Which question is being answered.
+        id: ToolCallId,
+        /// The id of the option that was chosen.
+        choice: String,
     },
     /// Ask the model what the work ahead will need, and offer those permissions.
     ///

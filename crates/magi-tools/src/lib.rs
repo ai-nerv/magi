@@ -20,6 +20,7 @@ pub mod environ;
 pub mod ops;
 pub mod permit;
 pub mod process;
+pub mod question;
 pub mod registry;
 pub mod repair;
 pub mod schema;
@@ -31,7 +32,11 @@ pub use registry::{Prepared, Registry, Sending, Tool, Watch};
 use serde::{Deserialize, Serialize};
 
 /// What a tool produced.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Two faces, and they are not the same content: `content` is what the model reads and `shown`
+/// is what the person is drawn. A tool with nothing to add about how it should look leaves the
+/// second empty, which is what every tool here does.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Output {
     /// Text the model sees.
     pub content: String,
@@ -40,6 +45,9 @@ pub struct Output {
     /// A tool that ran and reported a problem is still a result, not an error: the model needs
     /// to read what went wrong in order to do something about it.
     pub is_error: bool,
+    /// What the person sees, when it is more than the text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shown: Option<magi_proto::tooling::Shown>,
 }
 
 impl Output {
@@ -49,6 +57,7 @@ impl Output {
         Self {
             content: content.into(),
             is_error: false,
+            shown: None,
         }
     }
 
@@ -58,6 +67,7 @@ impl Output {
         Self {
             content: content.into(),
             is_error: true,
+            shown: None,
         }
     }
 }

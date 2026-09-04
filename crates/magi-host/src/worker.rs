@@ -50,7 +50,13 @@ impl Worker {
     /// is one description of each protocol, and a second would be a second copy to keep in step.
     #[must_use]
     pub fn start(backend: Backend) -> Self {
-        Self::gated(backend, None)
+        // Nobody to ask, which is the same thing as nobody to gate: a worker with no UI behind
+        // it refuses a permission and answers no question, and a tool that wanted one is told so.
+        Self::gated(
+            backend,
+            None,
+            std::sync::Arc::new(magi_tools::question::Unanswered),
+        )
     }
 
     /// The same, with somebody to ask when a tool wants to do something new.
@@ -60,6 +66,7 @@ impl Worker {
     pub fn gated(
         backend: Backend,
         approver: Option<std::sync::Arc<dyn magi_tools::approve::Approver>>,
+        asks: std::sync::Arc<dyn magi_tools::question::Asks>,
     ) -> Self {
         let (jobs, mut queue) = mpsc::channel::<Job>(32);
         std::thread::spawn(move || {
@@ -100,7 +107,10 @@ impl Worker {
             // Nothing when casper is not installed: a session then has exactly the tools it had
             // before casper existed, which is what makes this safe to ship before anything is
             // taken away.
-            for tool in magi_tools::casper::CasperTool::all(magi_tools::casper::CASPER) {
+            for tool in magi_tools::casper::CasperTool::all(
+                magi_tools::casper::CASPER,
+                std::sync::Arc::clone(&asks),
+            ) {
                 registry.register(Box::new(tool));
             }
             // Gated when there is somebody to ask. The ledger starts with whatever the
