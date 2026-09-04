@@ -158,23 +158,9 @@ pub async fn serve_on(
     // One asker, two traits. It answers both kinds of question — a permission and anything else
     // a tool wants to put to the person — and both travel the same way: out as an event, back on
     // a channel. Two askers would be two ids counting from zero into one map.
-    let asker = {
-        let events = session.lock().await.publisher();
-        let watched = events.clone();
-        Arc::new(crate::asking::Asker::new(
-            Arc::clone(&pending),
-            Box::new(move |event| {
-                let _ = events.send(event);
-            }),
-            // Transient rather than journalled: a question is not part of the conversation, and
-            // the UI tracks the highest cursor it has seen with a max, so zero disturbs nothing.
-            Box::new(|| Cursor::ZERO),
-            Box::new(move || watched.receiver_count() > 0),
-        ))
-    };
-    // Rows a tool asks for, and the keys going back to whoever holds them. The same "is anybody
-    // attached" the asker uses, for the same reason: reserving space on a screen nobody is looking
-    // at holds the turn open until it times out.
+    //
+    // Built before the asker, because the asker draws its permission prompt on one: the prompt is
+    // casper's now, and magi keeps only the deciding.
     let holding = Arc::new(crate::holder::Holding::new());
     let holds: Arc<dyn magi_tools::holding::Holds> = {
         let events = session.lock().await.publisher();
@@ -187,6 +173,24 @@ pub async fn serve_on(
             Box::new(move || watched.receiver_count() > 0),
             magi_tools::casper::CASPER,
         ))
+    };
+    let asker = {
+        let events = session.lock().await.publisher();
+        let watched = events.clone();
+        Arc::new(
+            crate::asking::Asker::new(
+                Arc::clone(&pending),
+                Box::new(move |event| {
+                    let _ = events.send(event);
+                }),
+                // Transient rather than journalled: a question is not part of the conversation,
+                // and the UI tracks the highest cursor it has seen with a max, so zero disturbs
+                // nothing.
+                Box::new(|| Cursor::ZERO),
+                Box::new(move || watched.receiver_count() > 0),
+            )
+            .drawn_by(Arc::clone(&holds)),
+        )
     };
     let person = crate::asking::Person::of(asker, holds, Arc::clone(&holding));
     let worker = Arc::new(tokio::sync::RwLock::new(
@@ -247,11 +251,20 @@ async fn connection(
     let mut reader = FrameReader::new(read_half);
     let mut writer = FrameWriter::new(write_half);
 
-    let from = match reader.read::<UiCommand>().await? {
-        UiCommand::Attach { from_cursor, .. } => from_cursor,
+    let (from, draws) = match reader.read::<UiCommand>().await? {
+        UiCommand::Attach {
+            from_cursor, draws, ..
+        } => (from_cursor, draws),
         // Anything before an attach is a peer that does not speak the protocol.
         _ => return Ok(()),
     };
+    // **Whether anybody here can draw rows a tool asks for.** `magi -p` cannot, and a session that
+    // reserved rows for it would hold the turn open until the surface timed out, waiting on a
+    // keypress that was never coming.
+    //
+    // Held for the life of the connection, so a UI that goes away takes its screen with it rather
+    // than leaving the session believing there is still one.
+    let _drawing = crate::holder::Drawing::attach(&person.surfaces, draws);
 
     // Subscribe before reading state, so an entry committed between the two arrives on the
     // stream rather than falling into the gap.

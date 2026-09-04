@@ -34,6 +34,43 @@ const IDLE: Duration = Duration::from_millis(250);
 #[derive(Default)]
 pub struct Holding {
     typing: Mutex<std::collections::HashMap<ToolCallId, std::sync::mpsc::Sender<String>>>,
+    /// How many attached clients can draw rows a tool asks for.
+    ///
+    /// A count rather than a flag, because a session may be attached to twice: a surface is worth
+    /// reserving while at least one client that can draw one is still there.
+    screens: std::sync::atomic::AtomicUsize,
+}
+
+/// One attached client's ability to draw, for as long as it is attached.
+///
+/// A guard rather than a pair of calls, because the interesting case is the connection that ends
+/// without saying so — a UI that was killed — and a decrement somebody has to remember is a
+/// decrement that gets skipped exactly then.
+pub struct Drawing<'a> {
+    held: Option<&'a Holding>,
+}
+
+impl<'a> Drawing<'a> {
+    /// Count this client, if it draws.
+    #[must_use]
+    pub fn attach(held: &'a Holding, draws: bool) -> Self {
+        if draws {
+            held.screens
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        Self {
+            held: draws.then_some(held),
+        }
+    }
+}
+
+impl Drop for Drawing<'_> {
+    fn drop(&mut self) {
+        if let Some(held) = self.held {
+            held.screens
+                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
 }
 
 impl Holding {
@@ -69,6 +106,12 @@ impl Holding {
             typing.remove(id);
         }
     }
+
+    /// Whether anybody attached can draw rows a tool asks for.
+    #[must_use]
+    pub fn on_a_screen(&self) -> bool {
+        self.screens.load(std::sync::atomic::Ordering::Relaxed) > 0
+    }
 }
 
 /// Gives a tool rows by publishing, and drives its tenant over a spawn.
@@ -101,9 +144,10 @@ impl Holder {
 
 impl magi_tools::holding::Holds for Holder {
     fn hold(&self, tool: &str, surface: &Surface, args: &serde_json::Value) -> Option<String> {
-        if !(self.attached)() {
-            // Nobody is looking, so nobody can play, choose or answer. Reserving rows on a screen
-            // that does not exist would hold the turn open until it timed out.
+        // Nobody is looking, or nobody looking can draw. Reserving rows on a screen that does not
+        // exist holds the turn open until the surface times out, waiting on a keypress that was
+        // never coming — which is exactly what `magi -p` would do.
+        if !(self.attached)() || !self.held.on_a_screen() {
             return None;
         }
         let n = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -346,5 +390,67 @@ mod tests {
             seen.lock().expect("held").first(),
             Some(HarnessEvent::Drew { .. })
         ));
+    }
+}
+
+/// Who can be given rows, and who cannot.
+#[cfg(test)]
+mod screens {
+    use super::*;
+
+    #[test]
+    fn a_client_that_cannot_draw_is_not_a_screen() {
+        // `magi -p`. Reserving rows for it would hold the turn open until the surface timed out,
+        // waiting on a keypress from a terminal that is not there.
+        let held = Holding::new();
+        let _print = Drawing::attach(&held, false);
+        assert!(!held.on_a_screen());
+    }
+
+    #[test]
+    fn a_ui_is_a_screen_for_as_long_as_it_is_attached() {
+        let held = Holding::new();
+        {
+            let _ui = Drawing::attach(&held, true);
+            assert!(held.on_a_screen());
+        }
+        // Dropped with the connection, so a UI that was killed takes its screen with it rather
+        // than leaving the session believing there is still one.
+        assert!(!held.on_a_screen());
+    }
+
+    #[test]
+    fn one_screen_among_several_clients_is_enough() {
+        // A session can be attached to twice. A surface is worth reserving while at least one
+        // client that can draw it is still there.
+        let held = Holding::new();
+        let _print = Drawing::attach(&held, false);
+        let ui = Drawing::attach(&held, true);
+        assert!(held.on_a_screen());
+        drop(ui);
+        assert!(!held.on_a_screen());
+    }
+
+    #[test]
+    fn nothing_is_reserved_when_no_screen_can_draw_it() {
+        use magi_tools::holding::Holds;
+        let held = Arc::new(Holding::new());
+        let holder = Holder::new(
+            Arc::clone(&held),
+            Box::new(|_| {}),
+            // Attached — something is listening to events — but nothing that can draw.
+            Box::new(|| true),
+            "casper",
+        );
+        let _print = Drawing::attach(&held, false);
+        let surface = Surface {
+            rows: 8,
+            about: "a game".to_owned(),
+            tick: Some(60),
+        };
+        assert_eq!(
+            holder.hold("dino", &surface, &serde_json::Value::Null),
+            None
+        );
     }
 }

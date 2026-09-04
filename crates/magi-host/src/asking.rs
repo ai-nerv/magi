@@ -96,9 +96,16 @@ impl Pending {
     }
 }
 
+/// The tool casper draws a permission with.
+///
+/// Named here rather than in the config, because magi is what opens it: a name only one side knew
+/// would be a prompt that silently stopped appearing the day somebody renamed it.
+const PROMPT: &str = "permission";
+
 /// Asks by publishing an event, and waits on the channel.
 pub struct Asker {
     pending: Arc<Pending>,
+    holds: Option<Arc<dyn magi_tools::holding::Holds>>,
     publish: Box<dyn Fn(HarnessEvent) + Send + Sync>,
     cursor: Box<dyn Fn() -> Cursor + Send + Sync>,
     attached: Box<dyn Fn() -> bool + Send + Sync>,
@@ -116,11 +123,22 @@ impl Asker {
     ) -> Self {
         Self {
             pending,
+            holds: None,
             publish,
             cursor,
             attached,
             next: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// The same, drawing its permission prompt on a surface rather than in magi's own picker.
+    ///
+    /// Separate from [`Self::new`] because a magi with no casper has no surface to draw on, and
+    /// an asker that required one could not ask at all.
+    #[must_use]
+    pub fn drawn_by(mut self, holds: Arc<dyn magi_tools::holding::Holds>) -> Self {
+        self.holds = Some(holds);
+        self
     }
 }
 
@@ -130,6 +148,16 @@ impl magi_tools::approve::Approver for Asker {
             // Nobody is looking. Saying yes here would make the gate a formality on exactly the
             // sessions nobody is watching, which are the ones it matters on.
             return Decision::Deny;
+        }
+        // **Drawn by whoever can draw it.** The prompt is a surface now: magi decides that a
+        // permission is needed and what it is about, and casper draws the question and collects
+        // the keystroke. What comes back is the id of a row — magi maps that onto its own scopes
+        // here, because a sibling that answered "allowed" would make this ledger a suggestion.
+        //
+        // Falling back to the built-in picker when there is no surface to be had. A magi with no
+        // casper installed must still be able to ask, or every gated tool becomes a refusal.
+        if let Some(decision) = self.through_a_surface(tool, action) {
+            return decision;
         }
         let n = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let id = ToolCallId::new(format!("p{n}"));
@@ -148,6 +176,72 @@ impl magi_tools::approve::Approver for Asker {
         let answer = receiver.recv_timeout(PATIENCE).unwrap_or(Decision::Deny);
         self.pending.forget(&id);
         answer
+    }
+}
+
+impl Asker {
+    /// Put the permission on a surface, and read back what was chosen.
+    ///
+    /// `None` when there is no surface to put it on — no casper, or nobody attached — and the
+    /// caller falls back to the picker magi draws itself.
+    fn through_a_surface(&self, tool: &str, action: &Action) -> Option<Decision> {
+        let holds = self.holds.as_ref()?;
+        let offers = magi_tools::permit::Ledger::offers(action);
+        // The rows a prompt this size needs: a heading, the subject, a blank, a row per offer and
+        // the Deny beneath them, and the line saying which keys do what. Asked for rather than
+        // assumed, because only the thing drawing it knows how tall it is.
+        let rows = u16::try_from(offers.len() + 6).unwrap_or(u16::MAX);
+        let mut rows_json: Vec<serde_json::Value> = offers
+            .iter()
+            .enumerate()
+            .map(|(nth, scope)| {
+                serde_json::json!({"id": nth.to_string(), "label": scope.label(action)})
+            })
+            .collect();
+        rows_json.push(serde_json::json!({
+            "id": "no",
+            "label": "Deny",
+            "about": "the model is told, and carries on",
+        }));
+        let asked = magi_proto::tooling::Surface {
+            rows,
+            about: format!("{tool} wants to {} {}", action.verb(), action.subject()),
+            // No tick: a prompt redraws when a key arrives and at no other time.
+            tick: None,
+        };
+        let chosen = holds.hold(
+            PROMPT,
+            &asked,
+            &serde_json::json!({
+                "tool": tool,
+                "verb": action.verb(),
+                "subject": action.subject(),
+                "offers": rows_json,
+            }),
+        )?;
+        // **An id, mapped here.** Anything that is not an offer's index is a refusal, which covers
+        // "no", a surface that ended without answering, and a casper newer than this build
+        // offering something it has no name for. Denying is the safe reading of all three.
+        let decision = chosen
+            .parse::<usize>()
+            .ok()
+            .and_then(|nth| offers.get(nth))
+            .map_or(Decision::Deny, |scope| Decision::Allow {
+                scope: scope.clone(),
+                lifetime: magi_proto::permit::Lifetime::Session,
+            });
+        // Told to whoever is attached, because the UI is where a grant is remembered and this one
+        // was decided on the tool thread. Without it a session that lends its permissions to a
+        // child would lend everything answered at a picker and nothing answered at a surface.
+        if let Decision::Allow { scope, .. } = &decision
+            && let Some(grant) = magi_tools::permit::standing(action, scope)
+        {
+            (self.publish)(HarnessEvent::Granted {
+                cursor: (self.cursor)(),
+                grant,
+            });
+        }
+        Some(decision)
     }
 }
 
@@ -296,5 +390,172 @@ mod tests {
         // The turn it belonged to is over; acting on it would allow something unwatched.
         let pending = Pending::new();
         pending.answer(&ToolCallId::new("gone"), Decision::Deny);
+    }
+}
+
+/// The permission prompt, drawn by somebody else and decided here.
+#[cfg(test)]
+mod permitting {
+    use super::*;
+    use magi_proto::permit::{Lifetime, Scope};
+    use magi_tools::approve::Approver;
+
+    /// A holder that answers every surface with `chosen`, and records what it was shown.
+    struct Fixed {
+        chosen: Option<String>,
+        shown: Mutex<Vec<serde_json::Value>>,
+    }
+
+    impl magi_tools::holding::Holds for Fixed {
+        fn hold(
+            &self,
+            _tool: &str,
+            _surface: &magi_proto::tooling::Surface,
+            args: &serde_json::Value,
+        ) -> Option<String> {
+            self.shown.lock().expect("held").push(args.clone());
+            self.chosen.clone()
+        }
+    }
+
+    /// An asker whose prompt is drawn by `chosen`, and the events it publishes.
+    fn asking(chosen: Option<String>) -> (Asker, Arc<Fixed>, Arc<Mutex<Vec<HarnessEvent>>>) {
+        let holder = Arc::new(Fixed {
+            chosen,
+            shown: Mutex::new(Vec::new()),
+        });
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let kept = Arc::clone(&seen);
+        let asker = Asker::new(
+            Arc::new(Pending::new()),
+            Box::new(move |event| kept.lock().expect("held").push(event)),
+            Box::new(|| Cursor::ZERO),
+            Box::new(|| true),
+        )
+        .drawn_by(Arc::clone(&holder) as Arc<_>);
+        (asker, holder, seen)
+    }
+
+    fn running(command: &str) -> Action {
+        Action::Run {
+            command: command.to_owned(),
+            program: command.split(' ').next().unwrap_or(command).to_owned(),
+        }
+    }
+
+    #[test]
+    fn the_surface_is_shown_what_is_being_decided_and_told_nothing_it_could_decide_with() {
+        // The trust boundary. It gets the tool, the verb, the subject and the rows to draw — and
+        // no field it could set to "allowed", because the scopes never leave this side.
+        let (asker, holder, _) = asking(Some("no".to_owned()));
+        asker.ask("shell", &running("rm -rf build"));
+        let shown = holder.shown.lock().expect("held");
+        let args = shown.first().expect("it was shown something");
+        assert_eq!(args["tool"], "shell");
+        assert_eq!(args["subject"], "rm -rf build");
+        let wire = args.to_string();
+        for granting in ["\"scope\"", "\"lifetime\"", "\"allow\"", "\"decision\""] {
+            assert!(!wire.contains(granting), "{granting} crossed: {wire}");
+        }
+    }
+
+    #[test]
+    fn the_id_a_surface_returns_is_mapped_onto_a_scope_here() {
+        // It answers with the index of a row it drew. What that *means* is worked out on this
+        // side, from the offers this side produced.
+        let action = running("cargo test");
+        let offers = magi_tools::permit::Ledger::offers(&action);
+        let (asker, _, _) = asking(Some("0".to_owned()));
+        assert_eq!(
+            asker.ask("shell", &action),
+            Decision::Allow {
+                scope: offers[0].clone(),
+                lifetime: Lifetime::Session,
+            }
+        );
+    }
+
+    #[test]
+    fn an_answer_that_names_no_offer_is_a_refusal() {
+        // Covers "no", a surface that ended without answering, and a casper newer than this build
+        // offering something it has no name for. Denying is the safe reading of all three.
+        for said in ["no", "", "17", "allow-everything"] {
+            let (asker, _, _) = asking(Some(said.to_owned()));
+            assert_eq!(
+                asker.ask("shell", &running("rm -rf /")),
+                Decision::Deny,
+                "{said:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_grant_made_on_a_surface_is_still_told_to_the_screen() {
+        // The UI remembers what this session holds so a child can be lent it, and it learns that
+        // from the answers it sends. This one never passes through it.
+        let action = running("cargo test");
+        // A row that actually stands. "just this once" is not remembered and should not be —
+        // there is nothing standing about it — so choosing it here would test nothing.
+        let nth = magi_tools::permit::Ledger::offers(&action)
+            .iter()
+            .position(|scope| magi_tools::permit::standing(&action, scope).is_some())
+            .expect("something on offer outlasts the call");
+        let (asker, _, seen) = asking(Some(nth.to_string()));
+        asker.ask("shell", &action);
+        assert!(
+            seen.lock()
+                .expect("held")
+                .iter()
+                .any(|event| matches!(event, HarnessEvent::Granted { .. })),
+            "nothing said a grant was made"
+        );
+    }
+
+    #[test]
+    fn without_a_surface_the_question_still_gets_asked() {
+        // A magi with no casper installed. Falling through to the picker rather than refusing,
+        // because an asker that could not ask would make every gated tool a refusal.
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let kept = Arc::clone(&seen);
+        let asker = Asker::new(
+            Arc::new(Pending::new()),
+            Box::new(move |event| kept.lock().expect("held").push(event)),
+            Box::new(|| Cursor::ZERO),
+            Box::new(|| true),
+        );
+        // Nobody answers, so it times out into a refusal — but the *question* is what is under
+        // test, and it was published.
+        std::thread::spawn(move || asker.ask("shell", &running("ls")));
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            seen.lock()
+                .expect("held")
+                .iter()
+                .any(|event| matches!(event, HarnessEvent::PermissionAsked { .. })),
+            "no question reached the screen"
+        );
+    }
+
+    #[test]
+    fn a_scope_offered_is_a_scope_that_can_be_chosen() {
+        // Every row the surface is given maps back to something, or a person could pick a row
+        // that quietly did nothing.
+        let action = running("git status");
+        let offers = magi_tools::permit::Ledger::offers(&action);
+        for (nth, scope) in offers.iter().enumerate() {
+            let (asker, _, _) = asking(Some(nth.to_string()));
+            assert_eq!(
+                asker.ask("shell", &action),
+                Decision::Allow {
+                    scope: scope.clone(),
+                    lifetime: Lifetime::Session,
+                },
+                "row {nth} did not map back"
+            );
+        }
+        assert!(
+            offers.iter().any(|s| matches!(s, Scope::Once)),
+            "{offers:?}"
+        );
     }
 }

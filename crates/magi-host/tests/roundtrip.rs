@@ -45,6 +45,7 @@ impl Client {
             .write(&UiCommand::Attach {
                 session: None,
                 from_cursor: from,
+                draws: false,
             })
             .await
             .expect("attach");
@@ -69,6 +70,7 @@ impl Client {
             .write(&UiCommand::Attach {
                 session: None,
                 from_cursor: Cursor::ZERO,
+                draws: false,
             })
             .await
             .expect("attach");

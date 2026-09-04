@@ -41,6 +41,7 @@ async fn attach(path: &Path, from: Cursor, take: usize) -> (Vec<Entry>, Vec<Harn
         .write(&UiCommand::Attach {
             session: None,
             from_cursor: from,
+            draws: false,
         })
         .await
         .expect("attach");
@@ -147,7 +148,8 @@ fn fold(mut entries: Vec<Entry>, events: &[HarnessEvent]) -> Vec<Entry> {
             HarnessEvent::PermissionAsked { .. } => {}
             HarnessEvent::Surfaced { .. }
             | HarnessEvent::Drew { .. }
-            | HarnessEvent::Unsurfaced { .. } => {}
+            | HarnessEvent::Unsurfaced { .. }
+            | HarnessEvent::Granted { .. } => {}
             HarnessEvent::UserMessage { id, text, .. } => entries.push(Entry::User {
                 id,
                 text,

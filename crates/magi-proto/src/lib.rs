@@ -523,6 +523,18 @@ pub enum HarnessEvent {
         /// Which surface ended.
         id: ToolCallId,
     },
+    /// A standing permission was given, on a prompt the UI did not draw.
+    ///
+    /// The UI remembers what this session holds so it can lend it to a child, and it learns that
+    /// from the answers it *sends*. A permission answered on a surface is decided on the tool
+    /// thread and never passes through it — so it is told, or a child would inherit everything
+    /// answered at a picker and nothing answered at a surface.
+    Granted {
+        /// Position of this event.
+        cursor: Cursor,
+        /// What was allowed.
+        grant: crate::permit::Grant,
+    },
     /// Something the UI asked for could not be done, with the reason.
     ///
     /// Distinct from [`Self::Error`], which is the session going wrong. This is a request that
@@ -587,6 +599,7 @@ impl HarnessEvent {
             | Self::Asked { cursor, .. }
             | Self::Surfaced { cursor, .. }
             | Self::Unsurfaced { cursor, .. }
+            | Self::Granted { cursor, .. }
             | Self::Refused { cursor, .. }
             | Self::ModelChanged { cursor, .. }
             | Self::Branched { cursor, .. }
@@ -608,6 +621,16 @@ pub enum UiCommand {
         session: Option<SessionId>,
         /// Replay position; [`Cursor::ZERO`] means "from the beginning".
         from_cursor: Cursor,
+        /// Whether this client can draw rows a tool asks for, and send it keys.
+        ///
+        /// `magi -p` cannot: it has no terminal and nobody is watching it. A session that
+        /// reserved rows for it would hold the turn open until the surface timed out, waiting on
+        /// a keypress that was never coming.
+        ///
+        /// Defaulted to false so a client that predates surfaces is treated as one that cannot
+        /// draw them, which is exactly what it is.
+        #[serde(default)]
+        draws: bool,
     },
     /// Submit a prompt.
     SubmitPrompt {

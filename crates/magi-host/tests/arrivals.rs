@@ -70,6 +70,7 @@ async fn arrival_of(sort: &str, name: &str) -> (Vec<HarnessEvent>, bool) {
         .write(&UiCommand::Attach {
             session: None,
             from_cursor: Cursor(0),
+            draws: false,
         })
         .await
         .expect("attach");

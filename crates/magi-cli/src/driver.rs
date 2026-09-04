@@ -641,6 +641,8 @@ async fn connection_loop(
             .write(&UiCommand::Attach {
                 session: None,
                 from_cursor,
+                // There is a terminal on this end, so a tool may be given rows in it.
+                draws: true,
             })
             .await
             .is_err()

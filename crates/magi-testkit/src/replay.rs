@@ -157,7 +157,8 @@ impl Recording {
                 // reconstruct a game somebody played.
                 HarnessEvent::Surfaced { .. }
                 | HarnessEvent::Drew { .. }
-                | HarnessEvent::Unsurfaced { .. } => {}
+                | HarnessEvent::Unsurfaced { .. }
+                | HarnessEvent::Granted { .. } => {}
                 HarnessEvent::SessionSnapshot { .. } | HarnessEvent::Error { .. } => {}
             }
         }
@@ -303,6 +304,7 @@ mod tests {
             .write(&UiCommand::Attach {
                 session: None,
                 from_cursor: Cursor::ZERO,
+                draws: false,
             })
             .await
             .expect("attach");
@@ -357,6 +359,7 @@ mod tests {
             .write(&UiCommand::Attach {
                 session: None,
                 from_cursor: Cursor(2),
+                draws: false,
             })
             .await
             .expect("attach");

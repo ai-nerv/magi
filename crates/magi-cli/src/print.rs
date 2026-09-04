@@ -50,6 +50,9 @@ pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
         .write(&UiCommand::Attach {
             session: None,
             from_cursor: FROM_END,
+            // No terminal and nobody watching. A session told otherwise would reserve rows for
+            // a surface nothing here could draw or answer.
+            draws: false,
         })
         .await?;
     if !matches!(
