@@ -148,6 +148,17 @@ fn push_keyboard_enhancements(out: &mut Stdout) -> Result<bool> {
         PushKeyboardEnhancementFlags(
             KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
                 | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                // **Without this there are no releases for keys that produce text.**
+                //
+                // `REPORT_EVENT_TYPES` is not enough on its own, and the protocol says so: a key
+                // that generates text — space, a letter — still arrives as text, so the terminal
+                // reports its press and its repeats and never its release. Space is exactly such
+                // a key, which is why holding it registered as held and never as let go.
+                //
+                // Asking for every key as an escape code is what makes a release exist for them.
+                // crossterm decodes them back into the same `KeyEvent`s, so nothing that reads
+                // keys has to change — what changes is that `up` now happens at all.
+                | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
         )
     )?;
     out.flush()?;

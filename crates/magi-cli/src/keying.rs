@@ -80,6 +80,9 @@ mod probe {
         // Compile-time only: this asserts the symbols exist in the crossterm we build against,
         // so the release-reporting path below is not written against an API that is not there.
         let _ = crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES;
+        // The one that makes a release arrive for a key that produces text — space, a letter.
+        // Without it the protocol reports press and repeat for those and never an `up`.
+        let _ = crossterm::event::KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES;
         let _ = crossterm::event::KeyEventKind::Release;
         let _ = crossterm::event::KeyEventKind::Repeat;
     }
