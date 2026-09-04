@@ -113,6 +113,32 @@ pub enum Shown {
     /// [`Call::answered`], and the call resumes — which is the same mechanism a permission, a
     /// file picker and a confirmation all need.
     Ask(Ask),
+    /// Rows the tool is asking for, and will fill itself.
+    ///
+    /// The general form of [`Ask`]. A question has a shape magi chose; a surface has whatever
+    /// shape its tenant draws, and magi cannot tell a permission prompt from a file picker from a
+    /// game — which is the point. The list of things that can appear there is not a list anybody
+    /// has to extend.
+    ///
+    /// magi owns *how much* room there is, because only magi knows what else is on the screen. It
+    /// reserves, clips to the reservation, forwards input while the surface holds it, and blits
+    /// back what comes out without reading it.
+    Surface(Surface),
+}
+
+/// Rows a tool has asked for, and what to open to fill them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Surface {
+    /// How many rows it wants.
+    ///
+    /// A request, not a grant: magi gives it this many or fewer, and says which in the first
+    /// frame. A tenant that drew past what it was given would run over whatever is below it.
+    pub rows: u16,
+    /// What this surface is for, in one line, for a harness that cannot draw it.
+    ///
+    /// `magi -p` has no screen and no person, and a run that silently drew nothing would look
+    /// like a hang. It says this instead and declines.
+    pub about: String,
 }
 
 /// A run of text with one meaning.
@@ -343,5 +369,122 @@ mod tests {
             assert_eq!(wire, format!("\"{name}\""));
             assert_eq!(serde_json::from_str::<Role>(&wire).expect("decodes"), role);
         }
+    }
+}
+
+/// What magi sends a surface while it holds its rows.
+///
+/// Frames rather than calls: a surface redraws per keystroke, so the spawn lives for the length of
+/// the reservation instead of one exec per event.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "to")]
+pub enum ToSurface {
+    /// The room it actually got, which may be less than it asked for.
+    Open {
+        /// Rows granted.
+        rows: u16,
+        /// Columns granted.
+        cols: u16,
+    },
+    /// A key the person pressed while this surface held the rows.
+    ///
+    /// Named, not a scancode: a tenant should not have to know how this terminal encodes a
+    /// keypress, and magi has already decoded one to get here.
+    Key {
+        /// `j`, `enter`, `esc`, `ctrl+c`.
+        key: String,
+    },
+    /// The room changed under it, because the window did.
+    Resize {
+        /// Rows now.
+        rows: u16,
+        /// Columns now.
+        cols: u16,
+    },
+    /// The reservation is over and nothing more will be read.
+    ///
+    /// Sent when the turn is cancelled or the session ends, so a tenant holding state can put it
+    /// down rather than being killed mid-write.
+    Close,
+}
+
+/// What a surface sends back.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "from")]
+pub enum FromSurface {
+    /// What to put in the rows, in the same roles everything else is painted in.
+    ///
+    /// Clipped to the reservation, never grown by it: a tenant that sent more rows than it was
+    /// given would run over whatever is below it, and magi is the only one that knows what that
+    /// is.
+    Draw {
+        /// Each row, as the spans it is made of.
+        lines: Vec<Vec<Span>>,
+    },
+    /// The surface is finished, and this is what the person chose.
+    ///
+    /// An *id*, never a decision. A surface that returned "allowed" would be a sibling granting
+    /// itself a permission, which is what the ledger exists to prevent — magi maps this id onto
+    /// its own scopes and applies it.
+    Done {
+        /// The id of whatever was chosen, as the tool named it.
+        answered: String,
+    },
+}
+
+/// Rows a tool asks for, and what may cross while it holds them.
+#[cfg(test)]
+mod surfacing {
+    use super::*;
+
+    #[test]
+    fn a_surface_asks_for_room_and_says_what_it_is_for() {
+        // The second half is not decoration: `magi -p` has no screen, and a run that silently
+        // drew nothing would look like a hang rather than like something declining.
+        let asked = Shown::Surface(Surface {
+            rows: 5,
+            about: "a permission for `rm -rf build`".to_owned(),
+        });
+        let wire = serde_json::to_string(&asked).expect("encodes");
+        assert!(wire.contains(r#""shown":"surface""#), "{wire}");
+        assert_eq!(
+            serde_json::from_str::<Shown>(&wire).expect("decodes"),
+            asked
+        );
+    }
+
+    #[test]
+    fn a_surface_can_say_what_was_chosen_and_not_what_it_means() {
+        // The whole trust boundary in one assertion. There is no field here a tenant could set to
+        // "allowed", "always" or any other scope: it returns the id it drew, and magi decides.
+        let done = FromSurface::Done {
+            answered: "once".to_owned(),
+        };
+        let wire = serde_json::to_string(&done).expect("encodes");
+        for granting in ["allow", "grant", "scope", "permit", "decision"] {
+            assert!(!wire.contains(granting), "{granting} crossed: {wire}");
+        }
+    }
+
+    #[test]
+    fn what_magi_sends_and_what_comes_back_are_different_types() {
+        // One enum for both directions would let a tenant send `Key` and magi send `Draw`, and
+        // the first thing either did with the other's frame would be to ask what it was.
+        let open = serde_json::to_string(&ToSurface::Open { rows: 5, cols: 92 }).expect("encodes");
+        assert!(
+            serde_json::from_str::<FromSurface>(&open).is_err(),
+            "{open}"
+        );
+    }
+
+    #[test]
+    fn a_key_crosses_by_name_rather_than_by_scancode() {
+        // magi has already decoded a keypress to get here. Handing on the bytes would make every
+        // tenant learn this terminal's encoding to read an `enter`.
+        let wire = serde_json::to_string(&ToSurface::Key {
+            key: "ctrl+c".to_owned(),
+        })
+        .expect("encodes");
+        assert!(wire.contains(r#""key":"ctrl+c""#), "{wire}");
     }
 }
