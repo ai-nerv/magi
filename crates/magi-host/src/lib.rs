@@ -438,8 +438,8 @@ async fn connection(
                     // A key aimed at rows a tool is holding. Not interpreted on the way through:
                     // what `j` means is the tenant's business, and a harness that decided would
                     // be back to owning the thing it just handed over.
-                    Some(UiCommand::Keyed { id, key }) => {
-                        person.surfaces.keyed(&id, key);
+                    Some(UiCommand::Keyed { id, key, state }) => {
+                        person.surfaces.keyed(&id, key, state);
                     }
                     Some(UiCommand::Interrupt) => {
                         // The status is set here as well as by the turn: a stop the user asked for

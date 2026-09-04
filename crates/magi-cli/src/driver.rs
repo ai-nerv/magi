@@ -211,7 +211,11 @@ pub async fn run(
             }
             Some(Ok(event)) = terminal_events.next() => {
                 match event {
-                    Event::Key(key) if key.kind == crossterm::event::KeyEventKind::Press => {
+                    // **Every kind of key event, not only presses.** With the Kitty protocol a
+                    // held key arrives as `Repeat` and a released one as `Release`, and both are
+                    // needed: a surface cannot tell "tapped" from "still holding" without them.
+                    // Which of the three each reader wants is decided below rather than here.
+                    Event::Key(key) => {
                         // Somebody is here. Whatever the box was writing to itself, it stops and
                         // starts its wait over -- including on the keys that leave the prompt
                         // empty, which is most of them at this point.
@@ -225,12 +229,27 @@ pub async fn run(
                         // that could swallow it would be a surface nothing could close.
                         if let Some(held) = app.holding() {
                             let id = held.id.clone();
-                            if key.code == crossterm::event::KeyCode::Esc {
+                            if key.code == crossterm::event::KeyCode::Esc
+                                && key.kind != crossterm::event::KeyEventKind::Release
+                            {
                                 app.surface = None;
                             }
-                            if let Some(key) = crate::keying::named(key) {
-                                let _ = command_tx.send(UiCommand::Keyed { id, key }).await;
+                            if let Some(named) = crate::keying::named(key) {
+                                let _ = command_tx
+                                    .send(UiCommand::Keyed {
+                                        id,
+                                        key: named,
+                                        state: crate::keying::held(key),
+                                    })
+                                    .await;
                             }
+                            continue;
+                        }
+                        // The prompt is text, and text has no use for a release. A *repeat* it
+                        // very much has: with the protocol on, holding backspace arrives as
+                        // repeats, and a reader that took only presses would delete one character
+                        // and then stop — on exactly the terminals that support this.
+                        if key.kind == crossterm::event::KeyEventKind::Release {
                             continue;
                         }
                         let busy = app.is_busy();
@@ -525,10 +544,10 @@ pub async fn run(
                         app.refresh_completion(&list_paths);
                         dirty = true;
                     }
-                    Event::Resize(cols, _) => {
+                    Event::Resize(..) => {
                         // The width is the terminal's and changes under whatever is drawing in
                         // the rows a tool was given. Only the height is magi's to grant.
-                        let _ = command_tx.send(UiCommand::Sized { cols }).await;
+                        let _ = command_tx.send(UiCommand::Sized { cols: inner() }).await;
                         dirty = true;
                     }
                     _ => {}
@@ -658,11 +677,7 @@ async fn connection_loop(
         // Straight after the attach, and again on every resize. The session has no terminal, so a
         // tool given rows in this one has no other way to know how wide they are — and this is
         // sent on reconnect too, because the window may have changed while nothing was attached.
-        let _ = writer
-            .write(&UiCommand::Sized {
-                cols: crossterm::terminal::size().map_or(80, |(cols, _)| cols),
-            })
-            .await;
+        let _ = writer.write(&UiCommand::Sized { cols: inner() }).await;
 
         // Reads run in their own task because `FrameReader::read` is not cancel-safe: it takes
         // a length and then a body, and a `select!` that drops it between the two leaves the
@@ -741,48 +756,8 @@ fn footer_data(app: &App) -> FooterData {
 /// The colon commands. A closed list, in a file of its own.
 mod commands;
 use commands::{Control, run_command};
-/// Hand the prompt to `$EDITOR`, releasing the terminal for the duration.
-///
-/// The raw-mode session is dropped first and rebuilt after: a full-screen editor and a TUI
-/// cannot share a tty, and leaving raw mode on would hand the editor unreadable input.
-fn external_edit(session: &mut Session, app: &mut App) -> Result<()> {
-    let before = app.editor.text();
-    let Some(editor) = crate::external_editor::editor_command() else {
-        app.show_notice("no $EDITOR or $VISUAL is set".into());
-        return Ok(());
-    };
 
-    let placeholder = Session::open()?;
-    let previous = std::mem::replace(session, placeholder);
-    drop(previous);
-
-    let edited = crate::external_editor::edit_with(&editor, &before);
-
-    *session = Session::open()?;
-    session.terminal.clear()?;
-
-    match edited {
-        Ok(Some(text)) => app.editor.set_text(&text),
-        Ok(None) => {}
-        Err(e) => app.show_notice(format!("editor failed: {e}")),
-    }
-    Ok(())
-}
-
-/// Append a line to `$MAGI_DEBUG_LOG`, if it is set.
-///
-/// A UI owns the terminal, so `eprintln!` is not available for diagnosis — it would land in
-/// the middle of the frame. This is the only way to see what the loop actually did.
-fn debug_log(args: std::fmt::Arguments<'_>) {
-    let Some(path) = std::env::var_os("MAGI_DEBUG_LOG") else {
-        return;
-    };
-    use std::io::Write;
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(file, "{args}");
-    }
-}
+/// Handing the prompt to an editor, and what the screen says about itself.
+#[path = "editing.rs"]
+mod editing;
+use editing::{debug_log, external_edit, inner};

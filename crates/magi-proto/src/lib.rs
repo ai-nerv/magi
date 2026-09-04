@@ -716,6 +716,9 @@ pub enum UiCommand {
         id: ToolCallId,
         /// The key, named.
         key: String,
+        /// Whether it went down, repeated, or came back up.
+        #[serde(default)]
+        state: crate::tooling::Held,
     },
     /// Ask the model what the work ahead will need, and offer those permissions.
     ///

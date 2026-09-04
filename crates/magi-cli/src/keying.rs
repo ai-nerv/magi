@@ -71,3 +71,32 @@ mod tests {
         assert_eq!(named(key(KeyCode::F(7))), None);
     }
 }
+
+/// Whether this terminal reports key releases, and can be asked to.
+#[cfg(test)]
+mod probe {
+    #[test]
+    fn the_enhancement_api_is_available() {
+        // Compile-time only: this asserts the symbols exist in the crossterm we build against,
+        // so the release-reporting path below is not written against an API that is not there.
+        let _ = crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES;
+        let _ = crossterm::event::KeyEventKind::Release;
+        let _ = crossterm::event::KeyEventKind::Repeat;
+    }
+}
+
+/// What this key event did: went down, repeated, or came back up.
+///
+/// A terminal that does not speak the Kitty protocol only ever sends presses, so everything is
+/// [`magi_proto::tooling::Held::Down`] there — which is what a tenant reading only `down`
+/// already expects.
+#[must_use]
+pub fn held(key: KeyEvent) -> magi_proto::tooling::Held {
+    use crossterm::event::KeyEventKind;
+    use magi_proto::tooling::Held;
+    match key.kind {
+        KeyEventKind::Press => Held::Down,
+        KeyEventKind::Repeat => Held::Repeat,
+        KeyEventKind::Release => Held::Up,
+    }
+}

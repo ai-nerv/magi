@@ -91,13 +91,26 @@ impl Session {
 /// `supports_keyboard_enhancement` probes with the DA1 sentinel Pi uses: a terminal that does
 /// not implement the protocol still answers the device-attributes query that follows it, so
 /// the absence of a reply is proven by DA1 arriving rather than by a timeout expiring.
+///
+/// **`REPORT_EVENT_TYPES` is what makes a held key knowable.** Without it a terminal sends one
+/// indistinguishable press per repeat and never says when a key came back up, so nothing can tell
+/// "tapped" from "still holding" — which is the difference between a hop and a jump in anything
+/// that reads the keyboard as a control rather than as text. With it, presses, repeats and
+/// releases arrive labelled.
+///
+/// It changes what the *prompt* sees too: a held key now arrives as `Repeat` where it used to
+/// arrive as another `Press`. Whatever reads keys has to accept both, or holding backspace stops
+/// deleting on the terminals that support this and keeps working on the ones that do not.
 fn push_keyboard_enhancements(out: &mut Stdout) -> Result<bool> {
     if !crossterm::terminal::supports_keyboard_enhancement()? {
         return Ok(false);
     }
     queue!(
         out,
-        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+        )
     )?;
     out.flush()?;
     Ok(true)

@@ -38,7 +38,7 @@ const IDLE: Duration = Duration::from_millis(250);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Nudge {
     /// A key the person pressed.
-    Key(String),
+    Key(String, magi_proto::tooling::Held),
     /// The screen got wider or narrower.
     ///
     /// **Width is the terminal's, not magi's.** The height is a reservation and magi decides it;
@@ -107,11 +107,11 @@ impl Holding {
     /// A key for a surface nobody is holding is dropped rather than queued: it belonged to rows
     /// that are gone, and delivering it to whatever holds them now would be acting on a keypress
     /// the person aimed somewhere else.
-    pub fn keyed(&self, id: &ToolCallId, key: String) {
+    pub fn keyed(&self, id: &ToolCallId, key: String, state: magi_proto::tooling::Held) {
         if let Ok(typing) = self.typing.lock()
             && let Some(sender) = typing.get(id)
         {
-            let _ = sender.send(Nudge::Key(key));
+            let _ = sender.send(Nudge::Key(key, state));
         }
     }
 
@@ -275,7 +275,7 @@ impl Holder {
             // every time nobody has pressed anything for that long, which is one loop rather than
             // a thread and a timer that would have to be cancelled.
             let frame = match nudges.recv_timeout(waiting) {
-                Ok(Nudge::Key(key)) => ToSurface::Key { key },
+                Ok(Nudge::Key(key, state)) => ToSurface::Key { key, state },
                 // The window changed. The rows it was granted have not — those are magi's, and a
                 // reservation that moved with the window would push the transcript around every
                 // time somebody dragged an edge.
@@ -346,23 +346,24 @@ fn send<W: Write>(writing: &mut W, frame: &ToSurface) -> Option<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use magi_proto::tooling::Held;
 
     #[test]
     fn a_key_for_a_surface_nobody_holds_is_dropped() {
         // Its rows are gone. Delivering it to whatever holds them now would act on a keypress the
         // person aimed somewhere else entirely.
         let held = Holding::new();
-        held.keyed(&ToolCallId::new("gone"), "j".to_owned());
+        held.keyed(&ToolCallId::new("gone"), "j".to_owned(), Held::Down);
     }
 
     #[test]
     fn a_key_reaches_the_surface_it_was_meant_for() {
         let held = Holding::new();
         let keys = held.opening(ToolCallId::new("s0")).expect("registered");
-        held.keyed(&ToolCallId::new("s0"), "space".to_owned());
+        held.keyed(&ToolCallId::new("s0"), "space".to_owned(), Held::Down);
         assert_eq!(
             keys.recv_timeout(Duration::from_secs(1)).ok(),
-            Some(Nudge::Key("space".to_owned()))
+            Some(Nudge::Key("space".to_owned(), Held::Down))
         );
     }
 
@@ -403,7 +404,7 @@ mod tests {
         let held = Holding::new();
         let keys = held.opening(ToolCallId::new("s0")).expect("registered");
         held.close(&ToolCallId::new("s0"));
-        held.keyed(&ToolCallId::new("s0"), "j".to_owned());
+        held.keyed(&ToolCallId::new("s0"), "j".to_owned(), Held::Down);
         assert!(keys.recv_timeout(Duration::from_millis(50)).is_err());
     }
 

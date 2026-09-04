@@ -379,6 +379,27 @@ mod tests {
     }
 }
 
+/// What a key did.
+///
+/// **A terminal only says this when it speaks the Kitty keyboard protocol.** Without it there is
+/// one indistinguishable press per repeat and no word at all when a key comes back up, so nothing
+/// can tell "tapped" from "still holding" — which is the whole difference between a hop and a jump
+/// in anything reading the keyboard as a control rather than as text.
+///
+/// [`Self::Down`] is the default, and is what every key looks like on a terminal that cannot say
+/// more. A tenant that only reads `Down` behaves the same either way.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Held {
+    /// It went down.
+    #[default]
+    Down,
+    /// It is still down, and the terminal is repeating it.
+    Repeat,
+    /// It came back up.
+    Up,
+}
+
 /// What magi sends a surface while it holds its rows.
 ///
 /// Frames rather than calls: a surface redraws per keystroke, so the spawn lives for the length of
@@ -406,6 +427,9 @@ pub enum ToSurface {
     Key {
         /// `j`, `enter`, `esc`, `ctrl+c`.
         key: String,
+        /// Whether it went down, repeated, or came back up.
+        #[serde(default)]
+        state: Held,
     },
     /// The room changed under it, because the window did.
     Resize {
@@ -507,8 +531,46 @@ mod surfacing {
         // tenant learn this terminal's encoding to read an `enter`.
         let wire = serde_json::to_string(&ToSurface::Key {
             key: "ctrl+c".to_owned(),
+            state: Held::Down,
         })
         .expect("encodes");
         assert!(wire.contains(r#""key":"ctrl+c""#), "{wire}");
+    }
+
+    #[test]
+    fn a_terminal_that_says_nothing_about_holding_says_down() {
+        // Most of them, and every one before the Kitty protocol. A tenant that reads only `down`
+        // behaves identically whether or not the terminal can say more.
+        let plain: ToSurface =
+            serde_json::from_str(r#"{"to":"key","key":"space"}"#).expect("decodes");
+        assert_eq!(
+            plain,
+            ToSurface::Key {
+                key: "space".to_owned(),
+                state: Held::Down,
+            }
+        );
+    }
+
+    #[test]
+    fn a_held_key_and_a_released_one_are_told_apart() {
+        // The whole point of asking for event types: without them there is one indistinguishable
+        // press per repeat and no word at all when a key comes back up.
+        for (wire, state) in [
+            (
+                r#"{"to":"key","key":"space","state":"repeat"}"#,
+                Held::Repeat,
+            ),
+            (r#"{"to":"key","key":"space","state":"up"}"#, Held::Up),
+        ] {
+            let read: ToSurface = serde_json::from_str(wire).expect("decodes");
+            assert_eq!(
+                read,
+                ToSurface::Key {
+                    key: "space".to_owned(),
+                    state,
+                }
+            );
+        }
     }
 }
