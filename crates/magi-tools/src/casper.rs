@@ -1,0 +1,194 @@
+//! Tools that live in casper.
+//!
+//! magi keeps `read`, `write` and `edit` — the floor it can never be without. Everything else is
+//! casper's, and this is how it is reached: ask what exists, hand over a call, read back what it
+//! produced.
+//!
+//! # Why a spawn and not a socket
+//!
+//! casper runs programs, and *a socket that runs commands is remote code execution*. So its
+//! socket answers only what exists, and a call goes over the spawn link — argv and stdin, from a
+//! process that could have run the command itself. One exec per call, which is the same shape
+//! [`crate::process`] pays for and for the same reason: the boundary is the point.
+//!
+//! # What comes back is two things
+//!
+//! A tool result is read by the model *and* drawn for the person, and those are not the same
+//! content. [`magi_proto::tooling::Ran`] carries both: `said` is what the model reads, and
+//! `shown` is a painted view or a question. This module keeps `said`, because a [`Tool`] returns
+//! text; the view is carried alongside by [`Ran::shown`] for the caller that draws.
+
+use crate::{Cancel, Ops, Output, Tool};
+use magi_proto::tooling::{Call, Card, Ran};
+
+/// The program that owns the tools.
+///
+/// Found on `PATH`, like every other sibling. Named here rather than inline so a test can put
+/// something else in its place without touching the environment: `PATH` is process-wide, and
+/// tests that fought over it would be tests that pass alone and fail together.
+pub const CASPER: &str = "casper";
+
+/// What casper says it offers.
+///
+/// Empty when casper is not installed or would not answer. Not an error: a session without it
+/// keeps the tools magi declares itself, exactly as it did before casper existed.
+#[must_use]
+pub fn cards() -> Vec<Card> {
+    cards_from(CASPER)
+}
+
+/// The same, against a named program.
+#[must_use]
+pub fn cards_from(program: &str) -> Vec<Card> {
+    let Ok(out) = std::process::Command::new(program)
+        .arg("tools")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+    else {
+        return Vec::new();
+    };
+    rows(&out.stdout)
+        .and_then(|rows| rows.first().cloned())
+        .and_then(|first| serde_json::from_value(first).ok())
+        .unwrap_or_default()
+}
+
+/// The rows of a family reply, or nothing when it was not one.
+fn rows(body: &[u8]) -> Option<Vec<serde_json::Value>> {
+    let reply: serde_json::Value = serde_json::from_slice(body).ok()?;
+    if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+        return None;
+    }
+    reply
+        .get("result")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+}
+
+/// Hand one call to casper and read back what it produced.
+///
+/// # Errors
+/// A refusal — casper could not be started, or would not take the call. Distinct from a tool that
+/// *ran* and reported a problem, which comes back as [`Ran::failed`] and is something the model
+/// should read.
+pub fn run(program: &str, call: &Call) -> Result<Ran, String> {
+    use std::io::Write;
+    let body =
+        serde_json::to_vec(call).map_err(|why| format!("this call will not encode: {why}"))?;
+
+    let mut child = std::process::Command::new(program)
+        .arg("run")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|why| format!("{program} could not be started: {why}"))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        // Written and closed. casper reads to end of file, so a handle left open is a call that
+        // never starts.
+        let _ = stdin.write_all(&body);
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|why| format!("{program} did not finish: {why}"))?;
+
+    let rows = rows(&out.stdout).ok_or_else(|| {
+        // The reply shape is what a client parses; anything else is a casper that answered
+        // something this build cannot read, which is worth saying rather than swallowing.
+        format!("{program} answered something unreadable")
+    })?;
+    let first = rows
+        .first()
+        .cloned()
+        .ok_or_else(|| format!("{program} answered nothing"))?;
+    serde_json::from_value(first).map_err(|why| format!("{program}: {why}"))
+}
+
+/// One of casper's tools, as magi's registry sees it.
+pub struct CasperTool {
+    card: Card,
+    program: String,
+}
+
+impl CasperTool {
+    /// Every tool casper offers, ready to register.
+    #[must_use]
+    pub fn all(program: &str) -> Vec<Self> {
+        cards_from(program)
+            .into_iter()
+            .map(|card| Self {
+                card,
+                program: program.to_owned(),
+            })
+            .collect()
+    }
+}
+
+impl Tool for CasperTool {
+    fn name(&self) -> &str {
+        &self.card.name
+    }
+
+    fn description(&self) -> &str {
+        &self.card.description
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        self.card.parameters.clone()
+    }
+
+    fn run(&self, arguments: &serde_json::Value, ops: &dyn Ops, _cancel: &dyn Cancel) -> Output {
+        let call = Call {
+            tool: self.card.name.clone(),
+            args: arguments.clone(),
+            cwd: ops.cwd().display().to_string(),
+            answered: None,
+        };
+        match run(&self.program, &call) {
+            // A refusal is still something the model reads: it asked for a tool that could not
+            // be reached, and the answer is to try another way rather than to end the turn.
+            Err(why) => Output::error(why),
+            Ok(ran) if ran.failed => Output::error(ran.said),
+            Ok(ran) => Output::ok(ran.said),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_casper_that_is_not_there_offers_nothing_rather_than_failing() {
+        // The ordinary case on a machine without it. A session then keeps the tools magi
+        // declares itself, exactly as it did before casper existed.
+        assert!(cards_from("magi-no-such-casper-anywhere").is_empty());
+    }
+
+    #[test]
+    fn a_call_to_something_absent_says_which_program() {
+        let why = run(
+            "magi-no-such-casper-anywhere",
+            &Call {
+                tool: "ls".to_owned(),
+                args: serde_json::Value::Null,
+                cwd: String::new(),
+                answered: None,
+            },
+        )
+        .expect_err("nothing to call");
+        assert!(why.contains("magi-no-such-casper-anywhere"), "{why}");
+    }
+
+    #[test]
+    fn a_reply_that_is_not_the_familys_shape_yields_nothing() {
+        assert!(rows(b"not json at all").is_none());
+        assert!(rows(br#"{"ok":false,"error":"no"}"#).is_none());
+        assert_eq!(
+            rows(br#"{"ok":true,"n":1,"result":[1]}"#).map(|r| r.len()),
+            Some(1)
+        );
+    }
+}

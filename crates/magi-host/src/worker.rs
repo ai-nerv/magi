@@ -92,6 +92,17 @@ impl Worker {
             let mut registry = magi_tools::Registry::new();
             magi_tools::builtin::install(&mut registry);
             magi_lua::tool::install(std::rc::Rc::clone(&engine), &mut registry, &backend.environ);
+            // casper's, after magi's own. Registration is keyed, so a name declared in both
+            // places resolves to casper's — which is the direction the tools are moving, and it
+            // means a tool can be lifted out of magi's config by deleting it rather than by
+            // deleting it *and* remembering to add it over there in the same breath.
+            //
+            // Nothing when casper is not installed: a session then has exactly the tools it had
+            // before casper existed, which is what makes this safe to ship before anything is
+            // taken away.
+            for tool in magi_tools::casper::CasperTool::all(magi_tools::casper::CASPER) {
+                registry.register(Box::new(tool));
+            }
             // Gated when there is somebody to ask. The ledger starts with whatever the
             // configuration already granted, so a rule written down is not a question asked.
             let ops: std::rc::Rc<dyn magi_tools::Ops> = match (&approver, backend.confine) {

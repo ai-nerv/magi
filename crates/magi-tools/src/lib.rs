@@ -14,6 +14,7 @@ pub mod approve;
 pub mod bound;
 pub mod builtin;
 pub mod cancel;
+pub mod casper;
 pub mod command;
 pub mod environ;
 pub mod ops;

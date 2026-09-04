@@ -1,6 +1,6 @@
 //! `magi tools` — what the model can call, and how each one is reached.
 
-use magi_tools::Registry;
+use magi_tools::{Registry, Tool};
 
 /// Print the registry, transport and all.
 ///
@@ -24,6 +24,15 @@ pub fn print() -> Result<(), magi_lua::LuaError> {
         &mut registry,
         &Default::default(),
     );
+    // casper's, after magi's own, and by the same rule the worker uses: registration is keyed,
+    // so a name declared in both places resolves to casper's. Listed here too because `magi
+    // tools` answers "what can the model call", and a listing that left them out would be
+    // answering a different question from the one a session acts on.
+    let mut from_casper = std::collections::BTreeSet::new();
+    for tool in magi_tools::casper::CasperTool::all(magi_tools::casper::CASPER) {
+        from_casper.insert(tool.name().to_owned());
+        registry.register(Box::new(tool));
+    }
     // Asked rather than assumed. `magi tools` answers "what can the model call", and the only
     // thing that knows what a peer offers is the peer.
     registry.probe(&magi_tools::ops::Real::new(
@@ -31,13 +40,17 @@ pub fn print() -> Result<(), magi_lua::LuaError> {
     ));
 
     for tool in registry.declarations() {
-        let transport = declared
-            .iter()
-            .find(|(name, _)| *name == tool.name)
-            .and_then(|(_, spec)| spec.get("transport"))
-            .and_then(|t| t.get("kind"))
-            .and_then(|k| k.as_str())
-            .unwrap_or("builtin");
+        let transport = if from_casper.contains(&tool.name) {
+            "casper"
+        } else {
+            declared
+                .iter()
+                .find(|(name, _)| *name == tool.name)
+                .and_then(|(_, spec)| spec.get("transport"))
+                .and_then(|t| t.get("kind"))
+                .and_then(|k| k.as_str())
+                .unwrap_or("builtin")
+        };
         println!(
             "{:<10} {:<9} {}",
             tool.name,
