@@ -38,6 +38,12 @@ pub struct Laid {
     pub lines: Vec<Line<'static>>,
     /// For each line, the tool call it belongs to, if any.
     pub owners: Vec<Option<ToolCallId>>,
+    /// For each line, which entry drew it.
+    ///
+    /// Every block, not only the ones that fold: copying wants the rows of *this* answer, and an
+    /// assistant message has no id of its own to key that on. The gap rows between entries belong
+    /// to neither and are `None`.
+    pub blocks: Vec<Option<usize>>,
 }
 
 /// Render the whole transcript, recording which block owns each line.
@@ -55,8 +61,9 @@ pub fn laid_out(
     let mut laid = Laid {
         lines: Vec::new(),
         owners: Vec::new(),
+        blocks: Vec::new(),
     };
-    for entry in entries {
+    for (nth, entry) in entries.iter().enumerate() {
         let id = match entry {
             Entry::Tool { id, .. } => Some(id.clone()),
             _ => None,
@@ -75,8 +82,11 @@ pub fn laid_out(
         if !laid.lines.is_empty() && !blank_row(laid.lines.last()) && !blank_row(lines.first()) {
             laid.lines.push(Line::default());
             laid.owners.push(None);
+            laid.blocks.push(None);
         }
         laid.owners.extend(std::iter::repeat_n(id, lines.len()));
+        laid.blocks
+            .extend(std::iter::repeat_n(Some(nth), lines.len()));
         laid.lines.extend(lines);
     }
     laid
@@ -225,10 +235,14 @@ fn said(label: &str, tag: ratatui::style::Color, text: &str, width: u16) -> Vec<
 
     // No handle: neither of these folds, and a handle on something that cannot be opened is an
     // affordance that lies.
-    let mut out = vec![top(label, chip, None, width)];
+    let mut out = vec![
+        top(label, chip, None, true, width),
+        frame::breath(width, style),
+    ];
     for line in body {
         out.push(inside(line, width, style, MARGIN));
     }
+    out.push(frame::breath(width, style));
     out.push(bottom(width));
     out
 }
@@ -261,10 +275,19 @@ fn assistant(
         }
     }
 
+    // **Rails around the answer, and only the answer.** The model's prose is the one thing on the
+    // screen a person wants to take away whole, and a copy chip has to sit in an edge — so the
+    // answer gets edges. Thinking does not: it is how the answer was arrived at rather than the
+    // answer, and railing it would put two boxes on screen where one of them is not the point.
+    //
+    // No fill. A tool block is a box with something in it; this is prose with a line above and
+    // below, and a background here would make the whole transcript a stack of coloured slabs.
     if !text.trim().is_empty() {
+        out.push(frame::top("", base, None, true, width));
         for line in markdown::render(text.trim(), inner, base) {
             out.push(indent(line));
         }
+        out.push(bottom(width));
     }
 
     // A truncated response is surfaced here even when tool calls follow, because a length stop
@@ -365,14 +388,19 @@ mod tests {
         };
         let lines = entry_lines(&entry, 20, Detail::Preview);
         let rendered = text_of(&lines);
-        assert_eq!(rendered.len(), 3, "top edge, body, bottom edge");
-        // Inside the frame, not under the corner it shares a row with.
-        assert_eq!(rendered[1], "  hello             ");
+        assert_eq!(
+            rendered.len(),
+            5,
+            "an edge, a row of fill, the body, a row of fill, an edge"
+        );
+        // Inside the frame, not under the corner it shares a row with, and not pressed against
+        // the edge above it.
+        assert_eq!(rendered[2], "  hello             ");
         assert!(rendered[0].starts_with('┌') && rendered[0].ends_with('┐'));
-        assert!(rendered[2].starts_with('└') && rendered[2].ends_with('┘'));
+        assert!(rendered[4].starts_with('└') && rendered[4].ends_with('┘'));
         // No sides. Two columns of every row spent drawing a line nobody reads is two columns
         // taken off the text on the terminal where they are least affordable.
-        assert!(!rendered[1].contains('│'), "{rendered:?}");
+        assert!(!rendered[2].contains('│'), "{rendered:?}");
         assert!(rendered.iter().all(|l| l.chars().count() == 20));
     }
 
@@ -387,7 +415,9 @@ mod tests {
         };
         let rendered = text_of(&entry_lines(&entry, 20, Detail::Preview));
         assert!(rendered[0].contains("[ USER ]"), "{rendered:?}");
-        assert_eq!(rendered.len(), 3, "it grew a row: {rendered:?}");
+        // Five: the two edges, a row of fill inside each, and the text. The tag is not one of
+        // them — that is what this is checking.
+        assert_eq!(rendered.len(), 5, "the tag grew a row: {rendered:?}");
         assert!(
             rendered[0].starts_with('┌'),
             "the tag rides the top edge: {rendered:?}"
@@ -407,7 +437,12 @@ mod tests {
             rendered[0].contains("[ PARENT::alpha-rho ]"),
             "{rendered:?}"
         );
-        assert!(rendered[1].contains("the parser is done"), "{rendered:?}");
+        assert!(
+            rendered
+                .iter()
+                .any(|row| row.contains("the parser is done")),
+            "{rendered:?}"
+        );
     }
 
     #[test]
@@ -448,7 +483,12 @@ mod tests {
             40,
             Detail::Preview,
         ));
-        assert!(rendered[1].contains("the parser is done"), "{rendered:?}");
+        assert!(
+            rendered
+                .iter()
+                .any(|row| row.contains("the parser is done")),
+            "{rendered:?}"
+        );
     }
 
     #[test]
@@ -462,10 +502,19 @@ mod tests {
             signatures: magi_proto::Signatures::default(),
             usage: magi_proto::Usage::default(),
         };
-        let rendered = text_of(&entry_lines(&entry, 20, Detail::Preview));
+        let lines = entry_lines(&entry, 20, Detail::Preview);
+        // Rails, but no fill behind any of it. The answer is railed so it has an edge to carry a
+        // copy chip; a background here would make the transcript a stack of coloured slabs.
+        assert!(
+            lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .all(|span| span.style.bg.is_none()),
+            "{lines:#?}"
+        );
         // Two columns in — the same column a block's fill starts at, so prose and boxes share
         // one text column down the left rather than each having their own.
-        assert_eq!(rendered, vec!["", "  sure"]);
+        assert!(text_of(&lines).contains(&"  sure".to_owned()), "{lines:#?}");
     }
 
     #[test]
@@ -649,134 +698,10 @@ mod notice_tests {
     }
 }
 
+/// A turn that stopped early, and a rewind.
 #[cfg(test)]
-mod stop_tests {
-    use super::tests::text_of;
-    use super::*;
-    use magi_proto::MessageId;
-
-    fn stopped(reason: StopReason, error: Option<&str>) -> Entry {
-        Entry::Assistant {
-            id: MessageId::new("s"),
-            text: "half an answer".into(),
-            thinking: String::new(),
-            stop_reason: Some(reason),
-            error: error.map(ToOwned::to_owned),
-            signatures: magi_proto::Signatures::default(),
-            usage: magi_proto::Usage::default(),
-        }
-    }
-
-    #[test]
-    fn an_interrupt_reads_as_one() {
-        // "Operation aborted" is a machine's word for a key the reader just pressed.
-        let lines = text_of(&entry_lines(
-            &stopped(StopReason::Aborted, None),
-            40,
-            Detail::Preview,
-        ));
-        assert!(lines.iter().any(|l| l.contains("Interrupted")), "{lines:?}");
-        assert!(!lines.iter().any(|l| l.contains("aborted")), "{lines:?}");
-    }
-
-    #[test]
-    fn an_interrupt_is_not_coloured_as_a_failure() {
-        // Red claims something went wrong; the reader asked for this.
-        let rendered = entry_lines(&stopped(StopReason::Aborted, None), 40, Detail::Preview);
-        let note = rendered
-            .iter()
-            .flat_map(|l| l.spans.iter())
-            .find(|s| s.content.contains("Interrupted"))
-            .expect("the note");
-        assert_ne!(note.style.fg, Some(colour::error()));
-    }
-
-    #[test]
-    fn what_arrived_before_the_interrupt_is_kept() {
-        let lines = text_of(&entry_lines(
-            &stopped(StopReason::Aborted, None),
-            40,
-            Detail::Preview,
-        ));
-        assert!(
-            lines.iter().any(|l| l.contains("half an answer")),
-            "{lines:?}"
-        );
-    }
-
-    #[test]
-    fn a_real_failure_is_still_red() {
-        let rendered = entry_lines(
-            &stopped(StopReason::Error, Some("no route")),
-            40,
-            Detail::Preview,
-        );
-        let note = rendered
-            .iter()
-            .flat_map(|l| l.spans.iter())
-            .find(|s| s.content.contains("no route"))
-            .expect("the note");
-        assert_eq!(note.style.fg, Some(colour::error()));
-    }
-
-    #[test]
-    fn an_abort_that_came_with_a_reason_says_the_reason() {
-        let lines = text_of(&entry_lines(
-            &stopped(StopReason::Aborted, Some("the daemon went away")),
-            40,
-            Detail::Preview,
-        ));
-        assert!(
-            lines.iter().any(|l| l.contains("daemon went away")),
-            "{lines:?}"
-        );
-    }
-}
-
-#[cfg(test)]
-mod branch_tests {
-    use super::tests::text_of;
-    use super::*;
-    use magi_proto::MessageId;
-
-    fn rewound(keeps: usize) -> Entry {
-        Entry::Branch {
-            id: MessageId::new("b"),
-            keeps,
-        }
-    }
-
-    #[test]
-    fn a_rewind_says_what_it_did_rather_than_where_it_landed() {
-        // "rewound to message 0" is a journal index. Nobody has one of those in mind.
-        let lines = text_of(&entry_lines(&rewound(0), 80, Detail::Preview));
-        let joined = lines.join(" ");
-        assert!(joined.contains("nothing above is sent"), "{joined}");
-        assert!(!joined.contains("message 0"), "{joined}");
-    }
-
-    #[test]
-    fn a_partial_rewind_says_how_much_it_kept() {
-        let lines = text_of(&entry_lines(&rewound(4), 80, Detail::Preview));
-        assert!(lines.join(" ").contains("first 4"), "{lines:?}");
-    }
-
-    #[test]
-    fn the_rule_still_spans_the_width() {
-        let lines = entry_lines(&rewound(2), 60, Detail::Preview);
-        let widest = lines
-            .iter()
-            .map(|l| {
-                l.spans
-                    .iter()
-                    .map(|s| crate::wrap::columns(&s.content))
-                    .sum::<usize>()
-            })
-            .max()
-            .unwrap_or(0);
-        assert_eq!(widest, 60);
-    }
-}
+#[path = "stopping.rs"]
+mod stopping;
 
 #[cfg(test)]
 #[path = "spacing.rs"]

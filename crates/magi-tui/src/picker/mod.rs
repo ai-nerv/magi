@@ -45,6 +45,12 @@ pub struct Picker {
     /// "that one needs a key" is to choose a different one, and closing the list means
     /// reopening it and retyping the query to do so.
     notice: Option<String>,
+    /// What is being decided about, shown under the heading and above the rows.
+    ///
+    /// The question is one line and what it is *about* is often not: a command, a diff, a path
+    /// too long for a title. Crammed into the heading it was clipped, and clipped in the middle
+    /// of a command is exactly where a person needs to read it.
+    about: Vec<String>,
 }
 
 impl Picker {
@@ -67,7 +73,21 @@ impl Picker {
             choices,
             selected,
             notice: None,
+            about: Vec::new(),
         }
+    }
+
+    /// The same list, with what it is deciding about set out under the heading.
+    #[must_use]
+    pub fn about(mut self, rows: Vec<String>) -> Self {
+        self.about = rows;
+        self
+    }
+
+    /// What this list is deciding about.
+    #[must_use]
+    pub fn asking_about(&self) -> &[String] {
+        &self.about
     }
 
     /// Try to take the highlighted row.

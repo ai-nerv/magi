@@ -48,7 +48,17 @@ pub(super) fn held(width: u16) -> u16 {
 ///
 /// `handle` is the fold state — `>` shut, `v` open — and is left off entirely for a block that
 /// does not fold. A handle on something that cannot be opened is an affordance that lies.
-pub(super) fn top(label: &str, chip: Style, handle: Option<&str>, width: u16) -> Line<'static> {
+///
+/// `copy` puts a second chip in the edge, inboard of the handle, that puts what the block says on
+/// the clipboard. Inboard because the handle is the older affordance and moving it would move the
+/// thing people already aim at.
+pub(super) fn top(
+    label: &str,
+    chip: Style,
+    handle: Option<&str>,
+    copy: bool,
+    width: u16,
+) -> Line<'static> {
     // **A block's frame, which is not the prompt's border.** They were one colour, on the argument
     // that every drawn line is one thing. They are not: the prompt is what you are typing into and
     // a block is a record of what already happened, so the record sits further back.
@@ -56,25 +66,43 @@ pub(super) fn top(label: &str, chip: Style, handle: Option<&str>, width: u16) ->
     // The brackets belong to the frame, not to the name. Only the name carries a colour of its
     // own: what the block *is* is the one thing worth telling apart at a glance, and punctuation
     // painted with it made the whole chip read as the signal.
-    let named = format!("[ {label} ]");
     let mut spans = vec![
         Span::styled(glyph::block_top_left().to_owned(), edge),
         Span::styled(glyph::block_edge().repeat(2), edge),
-        Span::styled("[ ".to_owned(), edge),
-        Span::styled(label.to_owned(), chip),
-        Span::styled(" ]".to_owned(), edge),
     ];
-    let used = 3 + crate::wrap::columns(&named);
+    // **No name, no chip.** An empty label drew `[  ]`: a bracket around nothing, which reads as
+    // a control somebody forgot to fill in. A block with nothing to be called is just an edge.
+    let used = if label.is_empty() {
+        3
+    } else {
+        spans.push(Span::styled("[ ".to_owned(), edge));
+        spans.push(Span::styled(label.to_owned(), chip));
+        spans.push(Span::styled(" ]".to_owned(), edge));
+        3 + crate::wrap::columns(&format!("[ {label} ]"))
+    };
 
     // The chip, plus two edge cells after it so the handle sits *in* the edge rather than
     // wedged against the corner.
-    let worn = handle.map_or(0, |handle| crate::wrap::columns(handle) + 6);
+    let held = handle.map_or(0, |handle| crate::wrap::columns(handle) + 6);
+    let takes = crate::wrap::columns(glyph::copy()) + 6;
+    // **The copy chip goes first when the edge runs out.** On a narrow screen there is not room
+    // for a name and two chips, and pushing both anyway made the row wider than the frame — the
+    // corner ended up a column past the edge every other row was clipped to. The handle is the
+    // older affordance and the one a fold depends on, so it is the one that stays.
+    let copy = copy && used + held + takes < usize::from(width);
+    let worn = held + usize::from(copy) * takes;
     // **The name, and then edge.** What a call was *given* used to sit here too, and it made the
     // one row that says what this block is into the row that also says what it was asked — a
     // long path pushed against the handle, and a clipped one said neither thing properly. The
     // arguments are the block's first row now, where they have the width to be read.
     let fill = usize::from(width).saturating_sub(used + worn + 1);
     spans.push(Span::styled(glyph::block_edge().repeat(fill), edge));
+    if copy {
+        // The frame's, like the handle: it is the same affordance on every block that has one,
+        // so it belongs to the drawn line rather than standing out from it.
+        spans.push(Span::styled(format!("[ {} ]", glyph::copy()), edge));
+        spans.push(Span::styled(glyph::block_edge().repeat(2), edge));
+    }
     if let Some(handle) = handle {
         // The arrow is the frame's too. It is not *about* this block the way its name is — it is
         // the same affordance on every block that has one, so it belongs to the drawn line rather
@@ -88,16 +116,50 @@ pub(super) fn top(label: &str, chip: Style, handle: Option<&str>, width: u16) ->
 
 /// The bottom edge, corner to corner.
 pub(super) fn bottom(width: u16) -> Line<'static> {
+    closed(width, None)
+}
+
+/// The bottom edge, with what became of the call set into it.
+///
+/// `outcome` is `Some(true)` for a call that came back clean and `Some(false)` for one that
+/// reported a problem; `None` leaves the edge plain, which is what a block that is not a call —
+/// or one still running — gets.
+///
+/// **At the bottom, because that is when it is known.** The name at the top already carries the
+/// outcome in its colour, but a person reading a long result finishes at the other end of the
+/// block, and asking them to look back up to find out whether it worked is asking them to
+/// remember where they came in.
+pub(super) fn closed(width: u16, outcome: Option<bool>) -> Line<'static> {
     // The block's background is *not* on the edge. The frame is the outer thing and the
     // coloured box sits inside it, so a border painted with the block's own fill would put
     // colour outside the box it is drawing.
     let edge = Style::default().fg(colour::block_frame());
+    let Some(worked) = outcome else {
+        return Line::from(vec![
+            Span::styled(glyph::block_bottom_left().to_owned(), edge),
+            Span::styled(
+                glyph::block_edge().repeat(usize::from(width).saturating_sub(2)),
+                edge,
+            ),
+            Span::styled(glyph::block_bottom_right().to_owned(), edge),
+        ]);
+    };
+    let (mark, ink) = if worked {
+        (glyph::outcome_ok(), colour::tool_ok())
+    } else {
+        (glyph::outcome_failed(), colour::tool_failed())
+    };
+    // The mark carries the colour and the brackets do not, the same way a block's name is the
+    // only coloured thing in the top edge. A bracket painted with it made the chip the signal.
+    let worn = crate::wrap::columns(mark) + 6;
+    let fill = usize::from(width).saturating_sub(worn + 2);
     Line::from(vec![
         Span::styled(glyph::block_bottom_left().to_owned(), edge),
-        Span::styled(
-            glyph::block_edge().repeat(usize::from(width).saturating_sub(2)),
-            edge,
-        ),
+        Span::styled(glyph::block_edge().repeat(fill), edge),
+        Span::styled("[ ".to_owned(), edge),
+        Span::styled(mark.to_owned(), Style::default().fg(ink)),
+        Span::styled(" ]".to_owned(), edge),
+        Span::styled(glyph::block_edge().repeat(2), edge),
         Span::styled(glyph::block_bottom_right().to_owned(), edge),
     ])
 }
@@ -244,6 +306,15 @@ pub(super) fn inside(line: Line<'static>, width: u16, style: Style, lead: usize)
     Line::from(spans)
 }
 
+/// A row of nothing but the block's own fill.
+///
+/// One under the top edge and one above the bottom, so the first and last lines of a block are
+/// not pressed against the frame. Filled rather than skipped: a bare blank row would show the
+/// screen through the box and read as a gap between two blocks rather than as room inside one.
+pub(super) fn breath(width: u16, style: Style) -> Line<'static> {
+    inside(Line::default(), width, style, MARGIN)
+}
+
 /// The seam between what a call was asked and what it answered.
 ///
 /// Inside the fill rather than across it: a column of block either side, so the rule reads as
@@ -323,7 +394,7 @@ mod nesting {
             assert!(!on || (3..12).contains(&at), "column {at} of the top edge");
         }
         assert!(
-            rows[2].iter().all(|on| !on),
+            rows.last().expect("a bottom edge").iter().all(|on| !on),
             "the bottom edge is painted with the block's fill"
         );
     }
@@ -482,18 +553,31 @@ mod alignment {
         ));
         let prose = said("hello");
         let column = |line: &str| line.len() - line.trim_start().len();
+        // Found by the text, not by a row number: a block pads inside its frame and prose does
+        // not, so a fixed index compares a padding row against a line of words.
+        let saying = |rows: &[String]| {
+            rows.iter()
+                .find(|row| row.contains("hello"))
+                .expect("the row that says it")
+                .clone()
+        };
         assert_eq!(
-            column(&block[1]),
-            column(&prose[1]),
+            column(&saying(&block)),
+            column(&saying(&prose)),
             "{block:#?} against {prose:#?}"
         );
     }
 
     #[test]
     fn prose_stops_where_a_block_stops() {
-        // The right margin too, or long prose runs out past the corner above it.
+        // The right margin too, or long prose runs out past the corner above it. The edges are
+        // exempt: a frame spans the whole width, which is what makes it a frame.
         let long = "word ".repeat(40);
-        for line in said(&long).iter().filter(|l| !l.trim().is_empty()) {
+        let framing = |line: &str| line.starts_with('┌') || line.starts_with('└');
+        for line in said(&long)
+            .iter()
+            .filter(|l| !l.trim().is_empty() && !framing(l))
+        {
             assert!(
                 line.chars().count() <= 40 - super::MARGIN,
                 "{line:?} reaches past the frame"

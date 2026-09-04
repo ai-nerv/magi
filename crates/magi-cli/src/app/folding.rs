@@ -295,3 +295,175 @@ mod clicking {
         panic!("no handle came into view");
     }
 }
+
+/// Putting what a block says on the clipboard.
+impl App {
+    /// The text of the block whose copy chip is at `row`, `column`.
+    ///
+    /// `None` when the pointer is not on a chip. **As drawn, minus the chrome**: the frame, the
+    /// padding rows and the block's own left inset come off, and what is left is what a person
+    /// sees — wrapped where the screen wrapped it, because that is what they are pointing at.
+    pub fn copy_at(&self, row: u16, column: u16, width: u16) -> Option<String> {
+        if !self.live_rows.contains(&row) {
+            return None;
+        }
+        let into = usize::from(row - self.live_rows.start);
+        let line = self.scrollback.hidden_above() + into;
+        if !on_the_copy(self.scrollback.line(line), column, width) {
+            return None;
+        }
+        let block = (*self.blocks.get(line)?)?;
+        Some(said_by(&self.scrollback, &self.blocks, block))
+    }
+}
+
+/// Whether `column` of this line is the copy chip.
+///
+/// Asked of the line the renderer produced, like the fold handle next door: where a chip sits is
+/// the renderer's business, and a second place that knew would be a second place to fix.
+fn on_the_copy(line: Option<&ratatui::text::Line<'static>>, column: u16, width: u16) -> bool {
+    let Some(line) = line else {
+        return false;
+    };
+    let mut at = 0_u16;
+    for span in &line.spans {
+        let wide = u16::try_from(span.content.chars().count()).unwrap_or(0);
+        if span.content.contains(magi_tui::glyph::copy())
+            && (at..at.saturating_add(wide)).contains(&column)
+        {
+            return true;
+        }
+        at = at.saturating_add(wide);
+        if at >= width {
+            break;
+        }
+    }
+    false
+}
+
+/// Every row `block` drew, as text, with the chrome taken off.
+fn said_by(
+    scrollback: &magi_tui::scrollback::Scrollback,
+    blocks: &[Option<usize>],
+    block: usize,
+) -> String {
+    let mut rows: Vec<String> = Vec::new();
+    for (line, owner) in blocks.iter().enumerate() {
+        if *owner != Some(block) {
+            continue;
+        }
+        let Some(drawn) = scrollback.line(line) else {
+            continue;
+        };
+        let text: String = drawn
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        // The edges are the block, not what it says.
+        if text.trim_start().starts_with('┌') || text.trim_start().starts_with('└') {
+            continue;
+        }
+        rows.push(text.trim_end().to_owned());
+    }
+    // The block's own inset comes off every row at once, so what was indented *within* the block
+    // still is. Taking the whitespace off each row separately would flatten a code fence.
+    let inset = rows
+        .iter()
+        .filter(|row| !row.trim().is_empty())
+        .map(|row| row.len() - row.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    while rows.last().is_some_and(|row| row.trim().is_empty()) {
+        rows.pop();
+    }
+    let mut out: Vec<&str> = Vec::new();
+    for row in &rows {
+        out.push(if row.len() >= inset {
+            &row[inset..]
+        } else {
+            ""
+        });
+    }
+    while out.first().is_some_and(|row| row.trim().is_empty()) {
+        out.remove(0);
+    }
+    out.join("\n")
+}
+
+/// What a copy chip puts on the clipboard.
+#[cfg(test)]
+mod copying {
+    use super::App;
+    use magi_proto::{Entry, MessageId};
+
+    /// An app showing one assistant answer, laid out and ready to be clicked.
+    fn answering(text: &str) -> App {
+        let mut app = App::new();
+        app.entries = vec![Entry::Assistant {
+            id: MessageId::new("m1"),
+            text: text.to_owned(),
+            thinking: String::new(),
+            stop_reason: None,
+            error: None,
+            usage: magi_proto::Usage::default(),
+            signatures: magi_proto::Signatures::default(),
+        }];
+        let laid = magi_tui::transcript::laid_out(
+            app.entries(),
+            60,
+            magi_tui::transcript::Detail::Preview,
+            &app.flipped,
+        );
+        app.owners = laid.owners;
+        app.blocks = laid.blocks;
+        app.live_rows = 0..u16::try_from(laid.lines.len()).expect("short");
+        app.scrollback.set_lines(laid.lines);
+        app
+    }
+
+    /// The row and column of the copy chip, found the way a pointer would.
+    fn chip(app: &App) -> (u16, u16) {
+        for row in 0..1000 {
+            let Some(line) = app.scrollback.line(row) else {
+                break;
+            };
+            let mut at = 0_u16;
+            for span in &line.spans {
+                if span.content.contains(magi_tui::glyph::copy()) {
+                    return (u16::try_from(row).expect("short"), at);
+                }
+                at += u16::try_from(span.content.chars().count()).expect("short");
+            }
+        }
+        panic!("no copy chip was drawn");
+    }
+
+    #[test]
+    fn the_chip_copies_what_the_block_says_and_not_its_frame() {
+        let app = answering("Here is the fix.");
+        let (row, column) = chip(&app);
+        let copied = app.copy_at(row, column, 60).expect("the chip was there");
+        assert_eq!(copied, "Here is the fix.");
+    }
+
+    #[test]
+    fn indentation_within_the_block_survives_the_inset_coming_off() {
+        // The block's own left margin comes off every row at once. Taken off each row separately
+        // it would flatten a code fence into prose, which is the one thing a copy is for.
+        let app = answering("Try this:\n\n    let x = 1;");
+        let (row, column) = chip(&app);
+        let copied = app.copy_at(row, column, 60).expect("the chip was there");
+        assert!(copied.contains("    let x = 1;"), "{copied:?}");
+        assert!(copied.starts_with("Try this:"), "{copied:?}");
+    }
+
+    #[test]
+    fn a_press_that_is_not_on_the_chip_copies_nothing() {
+        // Otherwise the whole edge is a button, and a click meant to place a cursor quietly
+        // replaces whatever was on the clipboard.
+        let app = answering("Here is the fix.");
+        let (row, column) = chip(&app);
+        assert!(app.copy_at(row, column.saturating_sub(4), 60).is_none());
+    }
+}

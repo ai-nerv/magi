@@ -68,7 +68,7 @@ fn a_preview_is_still_one_row_a_line() {
     // The other half: a preview is a glance, and a wrapped one is not scannable. Three lines
     // of output, three rows, plus the arguments, the seam under them, and the two edges.
     let shown = rows(Detail::Preview, 56);
-    assert_eq!(shown.len(), 7, "{shown:#?}");
+    assert_eq!(shown.len(), 9, "{shown:#?}");
 }
 
 #[test]

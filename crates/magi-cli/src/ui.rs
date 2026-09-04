@@ -145,6 +145,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
         transcript::hovered(under, column);
     }
     app.owners = laid.owners;
+    app.blocks = laid.blocks;
     app.scrollback.set_lines(laid.lines);
     // Each edge that has something past it takes a row out of the transcript for its rule, so
     // both sit against the text rather than out in the chrome.

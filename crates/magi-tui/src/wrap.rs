@@ -280,3 +280,61 @@ pub fn columns(text: &str) -> usize {
     use unicode_width::UnicodeWidthStr;
     UnicodeWidthStr::width(expand_tabs(text).as_str())
 }
+
+/// Break `text` into rows of at most `width` columns, at a space where there is one.
+///
+/// For things that are not prose — a command, a path — so it falls back to breaking mid-word
+/// rather than letting a long unbroken run overrun the box it is being drawn in.
+#[must_use]
+pub fn hard(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut rows = Vec::new();
+    for line in text.lines() {
+        let mut rest = line.trim_end();
+        while columns(rest) > width {
+            // A space inside the budget, if there is one: breaking a command at an argument
+            // boundary keeps each row readable, and breaking mid-token does not.
+            let take = rest
+                .char_indices()
+                .map(|(at, c)| at + c.len_utf8())
+                .take_while(|end| columns(&rest[..*end]) <= width)
+                .last()
+                .unwrap_or(rest.len());
+            let cut = rest[..take].rfind(' ').map_or(take, |at| at + 1);
+            rows.push(rest[..cut].trim_end().to_owned());
+            rest = &rest[cut..];
+        }
+        rows.push(rest.to_owned());
+    }
+    rows
+}
+
+/// Breaking something that is not prose.
+#[cfg(test)]
+mod breaking {
+    use super::hard;
+
+    #[test]
+    fn a_short_line_is_left_alone() {
+        assert_eq!(hard("cargo test", 40), vec!["cargo test"]);
+    }
+
+    #[test]
+    fn a_long_command_breaks_at_an_argument() {
+        let rows = hard("cargo test --workspace --all-targets", 20);
+        assert!(rows.iter().all(|row| row.chars().count() <= 20), "{rows:?}");
+        assert_eq!(
+            rows.concat().replace(' ', ""),
+            "cargotest--workspace--all-targets"
+        );
+    }
+
+    #[test]
+    fn a_run_with_no_spaces_is_still_broken() {
+        // A path with no break in it must not overrun the box it is drawn in.
+        let long = "a".repeat(50);
+        let rows = hard(&long, 20);
+        assert!(rows.iter().all(|row| row.chars().count() <= 20), "{rows:?}");
+        assert_eq!(rows.concat(), long);
+    }
+}

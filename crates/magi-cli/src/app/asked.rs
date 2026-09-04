@@ -17,6 +17,7 @@ impl App {
         tool: &str,
         question: &str,
         options: Vec<Answer>,
+        detail: Vec<Vec<magi_proto::tooling::Span>>,
     ) {
         let choices = options
             .iter()
@@ -26,8 +27,21 @@ impl App {
                 ready: true,
             })
             .collect();
+        // What the tool put in its `detail` -- the command, the diff, whatever the question is
+        // about. It was being dropped: casper sent it, the event carried it, and the picker drew
+        // a question with nothing under it.
+        let about = detail
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|span| span.text.as_str())
+                    .collect::<String>()
+            })
+            .collect();
         self.overlay = Some(
-            magi_tui::picker::Picker::new(format!("{tool}: {question}"), choices, None).into(),
+            magi_tui::picker::Picker::new(format!("{tool}: {question}"), choices, None)
+                .about(about)
+                .into(),
         );
         // The rows are kept as `(label, id)` because the picker that held their order is taken
         // by the keypress that chooses one — so by the time the answer is sent there is nothing
@@ -62,6 +76,7 @@ mod tests {
             "bash",
             "run a shell command?",
             vec![answer("once", "Allow once"), answer("no", "Deny")],
+            Vec::new(),
         );
         let open = app
             .overlay
@@ -87,6 +102,7 @@ mod tests {
             "pick",
             "which file?",
             vec![answer("a.rs", "src/a.rs"), answer("b.rs", "src/b.rs")],
+            Vec::new(),
         );
         let Some(Picking::Asked { id, rows }) = app.picking else {
             panic!("nothing is being picked");
@@ -110,6 +126,7 @@ mod tests {
             "note",
             "ready?",
             vec![answer("ok", "OK")],
+            Vec::new(),
         );
         assert!(app.picking.is_some());
     }

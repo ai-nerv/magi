@@ -172,17 +172,24 @@ pub(super) fn block(
         ));
         return out;
     }
-    out.push(super::frame::top(name, label, Some(handle), width));
+    out.push(super::frame::top(name, label, Some(handle), true, width));
     // Only between two things. A block showing arguments and nothing else, or a result whose
     // call had no arguments worth a row, has one half — and a rule under the only thing in the
     // box reads as a heading for an answer that never came.
     let seam = !said.is_empty() && !rows.is_empty();
+    out.push(super::frame::breath(width, style));
     out.extend(said);
     if seam {
         out.push(super::frame::rule(width, style));
     }
     out.extend(rows);
-    out.push(super::frame::bottom(width));
+    out.push(super::frame::breath(width, style));
+    // What became of the call, at the end of it. `None` while it is still running: a mark either
+    // way would claim an outcome nothing has reached yet.
+    out.push(super::frame::closed(
+        width,
+        result.map(|result| !result.is_error),
+    ));
     out
 }
 

@@ -17,7 +17,7 @@ use super::*;
 /// Returns whether anything changed, so a caller can leave the screen alone when the pointer
 /// moved within the same chip — which, with motion reported per cell, is most of the time.
 pub fn hovered(line: &mut Line<'static>, column: u16) -> bool {
-    let handles = [glyph::expand(), glyph::collapse()];
+    let handles = [glyph::expand(), glyph::collapse(), glyph::copy()];
     let mut at = 0_u16;
     for span in &mut line.spans {
         let wide = u16::try_from(span.content.chars().count()).unwrap_or(0);
@@ -73,9 +73,12 @@ mod pointing {
     fn the_handle_lights_up_and_the_edge_around_it_does_not() {
         let line = edge();
         let lit = lit(&line);
-        // The whole chip, `[ ▸ ]` — five columns, and nothing either side of them.
-        assert_eq!(lit.len(), 5, "{lit:?}");
-        assert!(lit.windows(2).all(|pair| pair[1] == pair[0] + 1), "{lit:?}");
+        // Two chips of five columns each — `[ ⧉ ]` and `[ ▸ ]` — and nothing either side of
+        // them. Both act on a click, so both answer the pointer.
+        assert_eq!(lit.len(), 10, "{lit:?}");
+        // Contiguous within each chip, with the edge between them dark.
+        let breaks = lit.windows(2).filter(|pair| pair[1] != pair[0] + 1).count();
+        assert_eq!(breaks, 1, "one gap, between the two chips: {lit:?}");
         let first = *lit.first().expect("something lit");
         assert!(!hovered(&mut line.clone(), first.saturating_sub(1)));
         assert!(!hovered(&mut line.clone(), lit[lit.len() - 1] + 1));

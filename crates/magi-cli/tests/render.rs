@@ -79,18 +79,27 @@ fn a_conversation_renders_the_way_pi_lays_it_out() {
             // A block is a top edge with its name set into it, its rows one column further in,
             // and a bottom edge. No sides: two columns of every row spent drawing a line nobody
             // reads are two columns taken off the text.
-            "┌──[ USER ]────────────────────────────────┐",
+            // `[ ⧉ ]` puts what the block says on the clipboard, inboard of the fold handle so
+            // the older affordance stays where people already aim at it.
+            "┌──[ USER ]─────────────────────────[ ⧉ ]──┐",
+            "", // a row of the block's own fill, so the text is not against the edge
             "  run the tests",
+            "",
             "└──────────────────────────────────────────┘",
             "", // assistant: leading blank
+            // Rails around the answer, so it has an edge to carry a copy chip — and no fill,
+            // because this is prose with a line above and below rather than a box.
+            "┌───────────────────────────────────[ ⧉ ]──┐",
             // Two columns in, the same as a block's inside: prose and boxes share one text
             // column down the left, so the only things reaching past it are the frames.
             "  Running them now.",
+            "└──────────────────────────────────────────┘",
             "", // the gap between blocks, unpainted
             // The name in the outcome's colour, and the fold handle at the far end of the same
             // edge — `▸` shut, `▾` open, saying which way it will go. Nothing else on the edge:
             // what the call was *given* is the block's first row, where it has room to be read.
-            "┌──[ bash ]─────────────────────────[ ▸ ]──┐",
+            "┌──[ bash ]──────────────────[ ⧉ ]──[ ▸ ]──┐",
+            "",
             "    cargo test",
             // The seam between what the call was given and what it answered, a column of block
             // fill either side so it reads as something inside the box rather than a second edge.
@@ -98,7 +107,10 @@ fn a_conversation_renders_the_way_pi_lays_it_out() {
             // The output sits a step further in than the edge, so the two are not one column of
             // text under a coloured word.
             "    test result: ok. 42 passed",
-            "└──────────────────────────────────────────┘",
+            "",
+            // What became of the call, at the end of it. A person reading a long result finishes
+            // here, and looking back up to the name to find out whether it worked is looking back.
+            "└───────────────────────────────────[ ✓ ]──┘",
         ]
     );
 }

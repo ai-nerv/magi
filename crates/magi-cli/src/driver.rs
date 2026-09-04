@@ -464,7 +464,15 @@ pub async fn run(
                             // one-character selection.
                             MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
                                 app.selection = None;
-                                if !app.toggle_at(mouse.row, mouse.column, terminal_size().0) {
+                                // Copy first: both chips sit in the same edge, and a press that
+                                // fell through to the fold would open the block a person meant to
+                                // take a copy of.
+                                if let Some(text) =
+                                    app.copy_at(mouse.row, mouse.column, terminal_size().0)
+                                {
+                                    crate::clipboard::put(&text);
+                                } else if !app.toggle_at(mouse.row, mouse.column, terminal_size().0)
+                                {
                                     app.selection =
                                         Some(magi_tui::select::Selection::begin(mouse.row, mouse.column));
                                 }

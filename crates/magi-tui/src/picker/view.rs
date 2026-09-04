@@ -56,6 +56,15 @@ pub fn render(picker: &Picker, width: u16) -> Vec<Line<'static>> {
     };
 
     let mut out = vec![crate::menu::heading(&picker.title, &note, width)];
+    // What is being decided about, before the answers. Above them because a person reads what
+    // they are being asked before they read what they may say, and a command underneath the
+    // options is a command they answer first and check second.
+    out.extend(picker.asking_about().iter().map(|row| {
+        ratatui::text::Line::from(ratatui::text::Span::styled(
+            format!("  {row}"),
+            ratatui::style::Style::default().fg(crate::colour::muted()),
+        ))
+    }));
     out.extend(
         picker.choices[window.clone()]
             .iter()
