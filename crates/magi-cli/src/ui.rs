@@ -132,7 +132,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
         &menu,
         saying,
     );
-    let prompt_rows = u16::try_from(prompt_lines.len())
+    let prompt_rows = u16::try_from(prompt_lines.lines.len())
         .unwrap_or(u16::MAX)
         .min(rows.saturating_sub(around - 1))
         .max(1);
@@ -236,7 +236,17 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     if !app.connected {
         status_line.spans.extend(status::queued(app.queued));
     }
-    frame.render_widget(Paragraph::new(prompt_lines), prompt_area);
+    // Where the tenant's rows actually landed, which is what a click on them is measured against.
+    // Recorded here for the same reason `live_rows` is: the layout is the only thing that knows,
+    // and it knows it only once. Cleared when nothing is holding them, so a pointer over a picker
+    // is not translated into coordinates for a surface that closed.
+    app.surface_rect = app.holding().map(|_| Rect {
+        x: prompt_area.x + prompt::INSET,
+        y: prompt_area.y + u16::try_from(prompt_lines.menu.start).unwrap_or(u16::MAX),
+        width: area.width.saturating_sub(prompt::INSET + 1),
+        height: u16::try_from(prompt_lines.menu.len()).unwrap_or(u16::MAX),
+    });
+    frame.render_widget(Paragraph::new(prompt_lines.lines), prompt_area);
     frame.render_widget(
         Paragraph::new(footer::render(footer_data, &status_line.spans, area.width)),
         footer_area,

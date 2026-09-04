@@ -441,6 +441,11 @@ async fn connection(
                     Some(UiCommand::Keyed { id, key, state }) => {
                         person.surfaces.keyed(&id, key, state);
                     }
+                    // The pointer, already in the surface's own coordinates. The session has no
+                    // screen and cannot translate one; the UI that drew the rows did it.
+                    Some(UiCommand::Moused { id, kind, button, row, col }) => {
+                        person.surfaces.moused(&id, kind, button, row, col);
+                    }
                     Some(UiCommand::Interrupt) => {
                         // The status is set here as well as by the turn: a stop the user asked for
                         // should show as stopped at once, not once the provider notices.

@@ -501,72 +501,26 @@ pub async fn run(
                             app.refresh_completion(&list_paths);
                         }
                     }
-                    // magi never turns mouse reporting on -- a terminal that has handed the mouse
-                    // to an application stops selecting text everywhere. These arrive only if
-                    // something between here and the terminal sends them anyway, and a
-                    // multiplexer that does its own selection may well. Answered rather than
-                    // dropped: the events are free, and refusing them buys nothing back.
+                    // magi asks for the pointer -- see `terminal::MOUSE_ON` -- which is why it
+                    // does its own text selection: mouse reporting is one terminal-wide switch,
+                    // and an application holding it stops the terminal running its own drag.
                     Event::Mouse(mouse) => {
-                        use crossterm::event::MouseEventKind;
-                        let rows = terminal_size().1;
-                        let view = rows.saturating_sub(ui::chrome_rows());
-                        match mouse.kind {
-                            MouseEventKind::ScrollUp => app.scrollback.scroll_up(3),
-                            MouseEventKind::ScrollDown => app.scrollback.scroll_down(3, view),
-                            // The pointer passing over a fold handle lights it up. Every cell it
-                            // crosses arrives here and all but a handful change nothing —
-                            // `hover_at` says which, and only those cost a frame.
-                            MouseEventKind::Moved => {
-                                if !app.hover_at(mouse.row, mouse.column) {
-                                    continue;
-                                }
-                            }
-                            // A tool block opens and closes under the pointer. Ctrl+O still
-                            // moves the whole transcript at once; this is for the one result
-                            // you actually want to read, which is usually not the newest.
-                            // The handle first: it is the one thing on screen that is a button,
-                            // and a press on it is a press on it rather than the start of a
-                            // one-character selection.
-                            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                                app.selection = None;
-                                // Copy first: both chips sit in the same edge, and a press that
-                                // fell through to the fold would open the block a person meant to
-                                // take a copy of.
-                                if let Some(text) =
-                                    app.copy_at(mouse.row, mouse.column, terminal_size().0)
-                                {
-                                    crate::clipboard::put(&text);
-                                } else if !app.toggle_at(mouse.row, mouse.column, terminal_size().0)
-                                {
-                                    app.selection =
-                                        Some(magi_tui::select::Selection::begin(mouse.row, mouse.column));
-                                }
-                            }
-                            MouseEventKind::Drag(crossterm::event::MouseButton::Left) => {
-                                if let Some(sel) = app.selection.as_mut() {
-                                    sel.drag_to(mouse.row, mouse.column);
-                                } else {
-                                    continue;
-                                }
-                            }
-                            // Copied on release, because that is when a person has finished
-                            // choosing. Through OSC 52, which is the clipboard a terminal will
-                            // accept through a multiplexer and over ssh alike.
-                            MouseEventKind::Up(crossterm::event::MouseButton::Left) => {
-                                let Some(sel) = app.selection.as_mut() else {
-                                    continue;
-                                };
-                                sel.drag_to(mouse.row, mouse.column);
-                                sel.finish();
-                                if sel.is_empty() {
-                                    app.selection = None;
-                                } else {
-                                    copied = app.selection;
-                                }
-                            }
-                            _ => continue,
+                        // A surface first, when the pointer landed on the rows one is holding.
+                        // Everything else on the screen is magi's -- see `driver::pointing`.
+                        if pointing::to_surface(&app, mouse, &command_tx).await {
+                            continue;
                         }
-                        dirty = true;
+                        let view = terminal_size().1.saturating_sub(ui::chrome_rows());
+                        match pointing::on_the_screen(
+                            &mut app,
+                            mouse,
+                            view,
+                            terminal_size().0,
+                            &mut copied,
+                        ) {
+                            pointing::Pointing::Redraw => dirty = true,
+                            pointing::Pointing::Nothing => continue,
+                        }
                     }
                     Event::Paste(text) => {
                         app.editor.insert_str(&text);
@@ -788,6 +742,9 @@ fn footer_data(app: &App) -> FooterData {
         }),
     }
 }
+
+/// The pointer, and which of two readers it belongs to.
+mod pointing;
 
 /// The colon commands. A closed list, in a file of its own.
 mod commands;

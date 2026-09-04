@@ -104,6 +104,39 @@ pub fn held(key: KeyEvent) -> magi_proto::tooling::Held {
     }
 }
 
+/// What the pointer did, and with which button, or `None` for something a surface has no name for.
+///
+/// The middle and right buttons cross even though nothing in magi's own chrome uses them: a tenant
+/// is a program with a screen, and deciding for it which buttons exist is the sort of narrowing
+/// that has to be undone one tool at a time.
+#[must_use]
+pub fn pointed(
+    kind: crossterm::event::MouseEventKind,
+) -> Option<(
+    magi_proto::tooling::Pointed,
+    Option<magi_proto::tooling::Button>,
+)> {
+    use crossterm::event::{MouseButton, MouseEventKind};
+    use magi_proto::tooling::{Button, Pointed};
+    let button = |which| {
+        Some(match which {
+            MouseButton::Left => Button::Left,
+            MouseButton::Middle => Button::Middle,
+            MouseButton::Right => Button::Right,
+        })
+    };
+    Some(match kind {
+        MouseEventKind::Down(which) => (Pointed::Press, button(which)),
+        MouseEventKind::Drag(which) => (Pointed::Drag, button(which)),
+        MouseEventKind::Up(which) => (Pointed::Release, button(which)),
+        MouseEventKind::Moved => (Pointed::Moved, None),
+        MouseEventKind::ScrollUp => (Pointed::ScrollUp, None),
+        MouseEventKind::ScrollDown => (Pointed::ScrollDown, None),
+        // Horizontal scrolling, which almost nothing sends and nothing here reads.
+        MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => return None,
+    })
+}
+
 /// What magi would forward for each kind of key event.
 ///
 /// Isolates magi's own plumbing from the terminal's: if a `Repeat` arrives, this proves it
@@ -134,6 +167,37 @@ mod forwarding {
         assert_ne!(
             held(kind(KeyEventKind::Repeat)),
             held(kind(KeyEventKind::Press))
+        );
+    }
+
+    #[test]
+    fn a_press_a_drag_and_a_release_stay_three_things() {
+        // A tenant that could not tell them apart could not have a button you hold, which is what
+        // both games use the pointer for.
+        use crossterm::event::{MouseButton, MouseEventKind};
+        use magi_proto::tooling::{Button, Pointed};
+        assert_eq!(
+            pointed(MouseEventKind::Down(MouseButton::Left)),
+            Some((Pointed::Press, Some(Button::Left)))
+        );
+        assert_eq!(
+            pointed(MouseEventKind::Up(MouseButton::Left)),
+            Some((Pointed::Release, Some(Button::Left)))
+        );
+        assert_eq!(
+            pointed(MouseEventKind::Drag(MouseButton::Right)),
+            Some((Pointed::Drag, Some(Button::Right)))
+        );
+    }
+
+    #[test]
+    fn motion_and_the_wheel_have_no_button_to_report() {
+        use crossterm::event::MouseEventKind;
+        use magi_proto::tooling::Pointed;
+        assert_eq!(pointed(MouseEventKind::Moved), Some((Pointed::Moved, None)));
+        assert_eq!(
+            pointed(MouseEventKind::ScrollDown),
+            Some((Pointed::ScrollDown, None))
         );
     }
 

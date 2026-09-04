@@ -120,6 +120,21 @@ pub fn text_rows(editor: &Editor, rows: u16, width: u16, badge: &str) -> usize {
     (offset + max_visible).min(total) - offset
 }
 
+/// The prompt box, and where inside it the menu landed.
+///
+/// The rows are needed by anything that has to translate a click into the menu's own coordinates,
+/// and only the renderer knows where they are: the divider sits under however many text rows the
+/// prompt happens to have, which changes as somebody types.
+pub struct Boxed {
+    /// The box, row by row.
+    pub lines: Vec<Line<'static>>,
+    /// Which of those rows the menu occupies. Empty when nothing is open.
+    pub menu: std::ops::Range<usize>,
+}
+
+/// How far in from the left edge a menu row's text starts: the side, then a space.
+pub const INSET: u16 = 2;
+
 /// Render the prompt as a box, with `menu` inside it under a divider.
 ///
 /// Was a rule above and a rule below, which is Pi's shape. A box says where the field is, and
@@ -143,7 +158,7 @@ pub fn render(
     scan: crate::border::Scan,
     menu: &[Line<'static>],
     saying: crate::tease::Saying<'_>,
-) -> Vec<Line<'static>> {
+) -> Boxed {
     let badge = saying.badge;
     let text_style = Style::default().fg(colour::text());
     // What is left for text once the sides, the padding and the badge's strip are taken out.
@@ -191,8 +206,10 @@ pub fn render(
         ));
     }
 
+    let mut opened = 0..0;
     if !menu.is_empty() {
         out.push(divider(width, content, shown, tick, scan));
+        opened = out.len()..out.len() + menu.len();
         for (row, line) in menu.iter().enumerate() {
             let at = shown + 1 + row;
             out.push(framed(
@@ -211,7 +228,10 @@ pub fn render(
 
     let below = total_rows.saturating_sub(end);
     out.push(hidden(bottom, Direction::Down, below));
-    out
+    Boxed {
+        lines: out,
+        menu: opened,
+    }
 }
 
 /// Line `row` with anything typed a moment ago still on its way to being itself.
@@ -437,8 +457,9 @@ mod tests {
         e
     }
 
-    fn rows_of(lines: &[Line<'_>]) -> Vec<String> {
-        lines
+    fn rows_of(drawn: &Boxed) -> Vec<String> {
+        drawn
+            .lines
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
             .collect()
@@ -518,7 +539,8 @@ mod tests {
             crate::border::Scan::Off,
             &[],
             crate::tease::Saying::default(),
-        );
+        )
+        .lines;
         let cursor = lines[1]
             .spans
             .iter()
@@ -537,7 +559,8 @@ mod tests {
             crate::border::Scan::Off,
             &[],
             crate::tease::Saying::default(),
-        );
+        )
+        .lines;
         let cursor = lines[1]
             .spans
             .iter()
@@ -556,7 +579,8 @@ mod tests {
             crate::border::Scan::Off,
             &[],
             crate::tease::Saying::default(),
-        );
+        )
+        .lines;
         for index in [0, lines.len() - 1] {
             let width: usize = lines[index]
                 .spans
@@ -643,7 +667,8 @@ mod narrow_tests {
                 block: false,
                 marked: None,
             },
-        )[1]
+        )
+        .lines[1]
         .spans
         .iter()
         .map(|s| s.content.as_ref())

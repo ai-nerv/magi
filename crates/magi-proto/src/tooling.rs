@@ -437,6 +437,41 @@ pub enum Held {
     Up,
 }
 
+/// What the pointer did.
+///
+/// The wheel is here rather than beside it because a surface that scrolls and a surface that is
+/// clicked are the same surface, and a tenant reading one field decides what it cares about.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Pointed {
+    /// A button went down.
+    #[default]
+    Press,
+    /// The pointer moved with a button held.
+    Drag,
+    /// A button came back up.
+    Release,
+    /// The pointer moved with nothing held.
+    Moved,
+    /// The wheel went up.
+    ScrollUp,
+    /// The wheel went down.
+    ScrollDown,
+}
+
+/// Which button.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Button {
+    /// The one everything uses.
+    #[default]
+    Left,
+    /// The middle button, which on most mice is the wheel.
+    Middle,
+    /// The right button.
+    Right,
+}
+
 /// What magi sends a surface while it holds its rows.
 ///
 /// Frames rather than calls: a surface redraws per keystroke, so the spawn lives for the length of
@@ -473,6 +508,26 @@ pub enum ToSurface {
         /// Whether it went down, repeated, or came back up.
         #[serde(default)]
         state: Held,
+    },
+    /// The pointer, somewhere over the rows this surface holds.
+    ///
+    /// **In the surface's own coordinates.** Row 0, column 0 is its top-left cell, and nothing
+    /// landing outside the reservation is forwarded at all. magi never says where those rows are
+    /// on screen: they move whenever the prompt grows a line, and a tenant that had been told
+    /// would be one magi could no longer place freely.
+    ///
+    /// This is what makes the rows a *screen* rather than somewhere keys are echoed. A picker can
+    /// be clicked, a diff can be scrolled, and neither had to be given the keyboard first.
+    Mouse {
+        /// What it did.
+        kind: Pointed,
+        /// Which button, for the things a button does. Absent for motion and the wheel.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        button: Option<Button>,
+        /// Rows down from the surface's own first row.
+        row: u16,
+        /// Columns across from the surface's own first column.
+        col: u16,
     },
     /// The room changed under it, because the window did.
     Resize {
@@ -623,5 +678,44 @@ mod surfacing {
                 }
             );
         }
+    }
+
+    #[test]
+    fn a_click_crosses_in_the_surface_own_coordinates() {
+        // Row zero is the tenant's first row, not the screen's. magi never says where the
+        // reservation is, so a surface that had been told its own y would be one magi could no
+        // longer move when the prompt grew a line.
+        let wire = serde_json::to_string(&ToSurface::Mouse {
+            kind: Pointed::Press,
+            button: Some(Button::Left),
+            row: 2,
+            col: 11,
+        })
+        .expect("encodes");
+        assert!(wire.contains(r#""row":2"#), "{wire}");
+        assert!(wire.contains(r#""kind":"press""#), "{wire}");
+        assert_eq!(
+            serde_json::from_str::<ToSurface>(&wire).expect("decodes"),
+            ToSurface::Mouse {
+                kind: Pointed::Press,
+                button: Some(Button::Left),
+                row: 2,
+                col: 11,
+            }
+        );
+    }
+
+    #[test]
+    fn the_wheel_and_the_pointer_carry_no_button() {
+        // There is none. A default `left` on the wire would have a tenant reading a scroll as a
+        // click somebody never made.
+        let wire = serde_json::to_string(&ToSurface::Mouse {
+            kind: Pointed::ScrollDown,
+            button: None,
+            row: 0,
+            col: 0,
+        })
+        .expect("encodes");
+        assert!(!wire.contains("button"), "{wire}");
     }
 }

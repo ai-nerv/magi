@@ -171,6 +171,13 @@ pub struct App {
     /// Recorded by the drawing pass because only it knows: the live region ends where the
     /// prompt begins, and the prompt grows with what has been typed into it.
     pub live_rows: std::ops::Range<u16>,
+    /// Where the rows a tool is holding landed on screen, when one is holding any.
+    ///
+    /// The whole of what magi knows about a surface's position, and the whole of what a tenant is
+    /// never told: this is how a click at row 31 becomes "row 2 of your own rows", and the tenant
+    /// gets the second half of that sentence. `None` when nothing is holding rows, so a pointer
+    /// over an ordinary picker is not translated into coordinates for a surface that has closed.
+    pub surface_rect: Option<ratatui::layout::Rect>,
 }
 
 impl Default for App {
@@ -215,6 +222,7 @@ impl App {
             blocks: Vec::new(),
             surface: None,
             live_rows: 0..0,
+            surface_rect: None,
             pending_notice: None,
             no_model: None,
             asking_about: magi_proto::permit::Action::Read {

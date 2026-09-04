@@ -62,6 +62,22 @@ impl super::App {
     pub fn holding(&self) -> Option<&Surfacing> {
         self.surface.as_ref()
     }
+
+    /// Turn a screen cell into one of the tenant's own, when it landed on its rows.
+    ///
+    /// `None` for anywhere else, and that is the whole of the filtering: a surface hears about the
+    /// pointer over its rows and about nothing else on the screen. Clicking the transcript above
+    /// it is the transcript's business, and forwarding it would let a tenant watch the pointer
+    /// wander around a window it was given eight rows of.
+    #[must_use]
+    pub fn pointed_at(&self, row: u16, column: u16) -> Option<(u16, u16)> {
+        let rect = self.surface_rect?;
+        let inside = row >= rect.y
+            && row < rect.y + rect.height
+            && column >= rect.x
+            && column < rect.x + rect.width;
+        inside.then(|| (row - rect.y, column - rect.x))
+    }
 }
 
 #[cfg(test)]
@@ -99,6 +115,46 @@ mod tests {
         );
         app.drew(&ToolCallId::new("s0"), span("stale"));
         assert!(app.holding().expect("held").drawn.is_empty());
+    }
+
+    #[test]
+    fn a_click_arrives_in_the_tenant_own_coordinates() {
+        // The whole of magi's share of the pointer: it knows where it drew the rows, and turns a
+        // screen cell into one of the tenant's. The tenant is never told the other half.
+        let mut app = App::new();
+        app.surface_rect = Some(ratatui::layout::Rect {
+            x: 2,
+            y: 20,
+            width: 40,
+            height: 8,
+        });
+        assert_eq!(app.pointed_at(22, 6), Some((2, 4)));
+        // Its own top-left.
+        assert_eq!(app.pointed_at(20, 2), Some((0, 0)));
+    }
+
+    #[test]
+    fn the_pointer_anywhere_else_is_not_the_surface_business() {
+        // A surface hears about its own rows and about nothing else on the screen. Forwarding the
+        // rest would let a tenant granted eight rows watch the pointer cross the whole window.
+        let mut app = App::new();
+        app.surface_rect = Some(ratatui::layout::Rect {
+            x: 2,
+            y: 20,
+            width: 40,
+            height: 8,
+        });
+        assert_eq!(app.pointed_at(19, 6), None, "above it");
+        assert_eq!(app.pointed_at(28, 6), None, "below it");
+        assert_eq!(app.pointed_at(22, 1), None, "left of it");
+        assert_eq!(app.pointed_at(22, 42), None, "right of it");
+    }
+
+    #[test]
+    fn nothing_holding_rows_translates_nothing() {
+        // A picker is drawn in the same slot. A click on one must not arrive as coordinates for
+        // a surface that closed.
+        assert_eq!(App::new().pointed_at(22, 6), None);
     }
 
     #[test]

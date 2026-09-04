@@ -39,6 +39,17 @@ const IDLE: Duration = Duration::from_millis(250);
 pub enum Nudge {
     /// A key the person pressed.
     Key(String, magi_proto::tooling::Held),
+    /// The pointer, in the surface's own coordinates.
+    ///
+    /// Translated before it got here, by the only thing that knows where the rows landed. What
+    /// arrives is a row and a column inside the reservation, and anything outside it never
+    /// arrives at all.
+    Pointer(
+        magi_proto::tooling::Pointed,
+        Option<magi_proto::tooling::Button>,
+        u16,
+        u16,
+    ),
     /// The screen got wider or narrower.
     ///
     /// **Width is the terminal's, not magi's.** The height is a reservation and magi decides it;
@@ -118,6 +129,25 @@ impl Holding {
             && let Some(sender) = typing.get(id)
         {
             let _ = sender.send(Nudge::Key(key, state));
+        }
+    }
+
+    /// Deliver a pointer event to the surface it landed in.
+    ///
+    /// Dropped for a surface nobody holds, for the same reason a key is: those rows are gone, and
+    /// whatever is there now is not what the person clicked on.
+    pub fn moused(
+        &self,
+        id: &ToolCallId,
+        kind: magi_proto::tooling::Pointed,
+        button: Option<magi_proto::tooling::Button>,
+        row: u16,
+        col: u16,
+    ) {
+        if let Ok(typing) = self.typing.lock()
+            && let Some(sender) = typing.get(id)
+        {
+            let _ = sender.send(Nudge::Pointer(kind, button, row, col));
         }
     }
 
@@ -295,6 +325,12 @@ impl Holder {
             // a thread and a timer that would have to be cancelled.
             let frame = match nudges.recv_timeout(waiting) {
                 Ok(Nudge::Key(key, state)) => ToSurface::Key { key, state },
+                Ok(Nudge::Pointer(kind, button, row, col)) => ToSurface::Mouse {
+                    kind,
+                    button,
+                    row,
+                    col,
+                },
                 // The window changed. The rows it was granted have not — those are magi's, and a
                 // reservation that moved with the window would push the transcript around every
                 // time somebody dragged an edge.
@@ -385,6 +421,33 @@ mod tests {
             keys.recv_timeout(Duration::from_secs(1)).ok(),
             Some(Nudge::Key("space".to_owned(), Held::Down))
         );
+    }
+
+    #[test]
+    fn the_pointer_reaches_the_surface_it_landed_in() {
+        use magi_proto::tooling::{Button, Pointed};
+        let held = Holding::new();
+        let nudges = held.opening(ToolCallId::new("s0")).expect("registered");
+        held.moused(
+            &ToolCallId::new("s0"),
+            Pointed::Press,
+            Some(Button::Left),
+            2,
+            11,
+        );
+        assert_eq!(
+            nudges.recv_timeout(Duration::from_secs(1)).ok(),
+            Some(Nudge::Pointer(Pointed::Press, Some(Button::Left), 2, 11))
+        );
+    }
+
+    #[test]
+    fn a_click_on_rows_nobody_holds_is_dropped() {
+        // The same rule a key follows. Those rows are gone, and whatever is drawn there now is
+        // not what the person aimed at.
+        use magi_proto::tooling::Pointed;
+        let held = Holding::new();
+        held.moused(&ToolCallId::new("gone"), Pointed::Press, None, 0, 0);
     }
 
     #[test]
