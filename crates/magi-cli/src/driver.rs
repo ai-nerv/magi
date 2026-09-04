@@ -154,6 +154,10 @@ pub async fn run(
     }
 
     let mut dirty = true;
+    // Whether the extra keyboard layer is up. A surface reading a *hold* needs releases on keys
+    // that produce text, and asking for those globally stops `:` opening the command line — so the
+    // layer goes on when a surface takes the keyboard and comes off when it gives it back.
+    let mut keys_held = false;
     // What shape the terminal was last told to draw its cursor in. Insert mode is a bar and
     // normal mode a block, which is the one cue that says which mode you are in without
     // looking away from what you are typing.
@@ -172,6 +176,14 @@ pub async fn run(
         if attached_now != app.connected {
             app.connected = attached_now;
             dirty = true;
+        }
+        // Compared each pass rather than hooked onto the events, because a surface can end several
+        // ways — answered, cancelled, its tenant gone — and every one of them has to give the
+        // keyboard back. What matters is whether one is holding it now.
+        let holding_now = app.holding().is_some();
+        if holding_now != keys_held {
+            crate::terminal::hold_keys(holding_now);
+            keys_held = holding_now;
         }
 
         if dirty {
