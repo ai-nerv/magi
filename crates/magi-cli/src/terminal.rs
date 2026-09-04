@@ -75,7 +75,8 @@ impl Session {
         out.flush()?;
 
         let enhanced = push_keyboard_enhancements(&mut out).unwrap_or(false);
-        REPORTS_HOLDS.store(enhanced, std::sync::atomic::Ordering::Relaxed);
+        // Not set from `enhanced`: asking for the flags says nothing about whether the terminal
+        // honoured them. The first `Repeat` or `Release` to arrive says it, and nothing else does.
 
         let terminal = Terminal::with_options(
             CrosstermBackend::new(out),
@@ -96,11 +97,22 @@ static REPORTS_HOLDS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 
 /// Whether this process's terminal reports key repeats and releases.
 ///
-/// `false` before a session is open, which is the honest answer: nothing has asked the terminal
-/// yet, and claiming otherwise would have a tenant waiting for releases that may never come.
+/// **Learned rather than predicted.** The flags are asked for unconditionally, so this cannot be
+/// answered by whether the asking worked — nothing says whether the terminal honoured it. What
+/// does say is a `Repeat` or a `Release` actually arriving: no terminal sends one unless the
+/// protocol is live. So this is `false` until the first one is seen and true forever after, which
+/// is the difference between believing a probe and knowing.
 #[must_use]
 pub fn reports_holds() -> bool {
     REPORTS_HOLDS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Note that a key repeat or release arrived, and say whether that is news.
+///
+/// `true` only the first time, so a caller can tell an open surface once rather than on every
+/// keystroke for the rest of the session.
+pub fn noticed_hold() -> bool {
+    !REPORTS_HOLDS.swap(true, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Ask for the Kitty keyboard protocol, so Shift+Enter is distinguishable from Enter.
@@ -118,10 +130,19 @@ pub fn reports_holds() -> bool {
 /// It changes what the *prompt* sees too: a held key now arrives as `Repeat` where it used to
 /// arrive as another `Press`. Whatever reads keys has to accept both, or holding backspace stops
 /// deleting on the terminals that support this and keeps working on the ones that do not.
+/// **Asked for unconditionally, not gated on a probe.**
+///
+/// `supports_keyboard_enhancement` is a query and a reply: it writes `CSI ? u` followed by a
+/// device-attributes request and reads stdin for the answer. Under a multiplexer that is three
+/// things that must all go right — the query forwarded out, the reply forwarded back, and neither
+/// racing whatever else is about to read stdin — and when any of them does not, the probe says
+/// "unsupported" about a terminal that supports it perfectly well. Gated on that, magi never even
+/// asked, so a held key arrived as a stream of presses and a jump re-fired on every landing.
+///
+/// The push costs nothing to be wrong about. `CSI > flags u` is defined so a terminal that does
+/// not implement it ignores it, and so is the pop. Asking and being ignored is strictly better
+/// than not asking because a round trip through a mux did not come back.
 fn push_keyboard_enhancements(out: &mut Stdout) -> Result<bool> {
-    if !crossterm::terminal::supports_keyboard_enhancement()? {
-        return Ok(false);
-    }
     queue!(
         out,
         PushKeyboardEnhancementFlags(

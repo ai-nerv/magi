@@ -220,6 +220,23 @@ pub async fn run(
                         // starts its wait over -- including on the keys that leave the prompt
                         // empty, which is most of them at this point.
                         app.tease.interrupt();
+                        // **This is how magi learns the protocol is live.** No terminal sends a
+                        // repeat or a release unless it is, so the first one is proof where the
+                        // startup probe was only a guess — and a surface already on screen is told,
+                        // once, so it can offer the control it now knows it has.
+                        if matches!(
+                            key.kind,
+                            crossterm::event::KeyEventKind::Repeat
+                                | crossterm::event::KeyEventKind::Release
+                        ) && crate::terminal::noticed_hold()
+                        {
+                            let _ = command_tx
+                                .send(UiCommand::Sized {
+                                    cols: inner(),
+                                    holds: true,
+                                })
+                                .await;
+                        }
                         // **A surface has the keyboard while it has the rows.** Forwarded by
                         // name and not interpreted: what `j` means is the tenant's business, and
                         // a driver that decided would be back to owning what it just handed over.

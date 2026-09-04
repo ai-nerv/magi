@@ -44,7 +44,7 @@ pub enum Nudge {
     /// **Width is the terminal's, not magi's.** The height is a reservation and magi decides it;
     /// the width is whatever the window happens to be and changes while a surface is open. So it
     /// is forwarded rather than promised once, and the tenant lays itself out again.
-    Across(u16),
+    Across(u16, bool),
 }
 
 /// Surfaces currently on screen, and what reaches them.
@@ -152,14 +152,18 @@ impl Holding {
     /// Told rather than left to be read: a tenant is asleep between frames, and one that only
     /// learned the width when it next happened to wake would draw at the old one until then.
     pub fn sized(&self, cols: u16, holds: bool) {
-        self.holds
-            .store(holds, std::sync::atomic::Ordering::Relaxed);
-        if self.cols.swap(cols, std::sync::atomic::Ordering::Relaxed) == cols {
+        // **Either can be news.** The width changes when the window does; what the keyboard can say
+        // changes the first time a repeat or a release arrives, which may be long after a surface
+        // opened. Waking only on the width would leave a game that had just been proved able to
+        // read a hold still offering the control it had at open.
+        let grew = self.cols.swap(cols, std::sync::atomic::Ordering::Relaxed) != cols;
+        let learned = !self.holds.swap(holds, std::sync::atomic::Ordering::Relaxed) && holds;
+        if !grew && !learned {
             return;
         }
         if let Ok(typing) = self.typing.lock() {
             for sender in typing.values() {
-                let _ = sender.send(Nudge::Across(cols));
+                let _ = sender.send(Nudge::Across(cols, holds));
             }
         }
     }
@@ -294,9 +298,10 @@ impl Holder {
                 // The window changed. The rows it was granted have not — those are magi's, and a
                 // reservation that moved with the window would push the transcript around every
                 // time somebody dragged an edge.
-                Ok(Nudge::Across(cols)) => ToSurface::Resize {
+                Ok(Nudge::Across(cols, holds)) => ToSurface::Resize {
                     rows: surface.rows,
                     cols,
+                    holds,
                 },
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) if surface.tick.is_some() => {
                     ToSurface::Tick
@@ -391,7 +396,7 @@ mod tests {
         held.sized(120, false);
         assert_eq!(
             nudges.recv_timeout(Duration::from_secs(1)).ok(),
-            Some(Nudge::Across(120))
+            Some(Nudge::Across(120, false))
         );
         assert_eq!(held.across(), 120);
     }

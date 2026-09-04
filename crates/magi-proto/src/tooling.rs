@@ -443,6 +443,13 @@ pub enum ToSurface {
         rows: u16,
         /// Columns now.
         cols: u16,
+        /// Whether the keyboard reports holds, as currently known.
+        ///
+        /// Carried here as well as at open because it is *learned*: nothing proves the protocol is
+        /// live until a repeat or a release arrives, which may be after the surface opened. A
+        /// tenant told only at open would offer the lesser control for the rest of its life.
+        #[serde(default)]
+        holds: bool,
     },
     /// Time passed, for a surface that asked for it.
     ///
