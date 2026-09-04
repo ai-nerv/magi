@@ -632,6 +632,14 @@ pub enum UiCommand {
         #[serde(default)]
         draws: bool,
     },
+    /// How wide the screen is, so a tool given rows can lay itself out for them.
+    ///
+    /// Sent at attach and again when the window changes. The session cannot know this — it has no
+    /// terminal — and a tenant told a made-up width draws for a screen that is not there.
+    Sized {
+        /// Columns.
+        cols: u16,
+    },
     /// Submit a prompt.
     SubmitPrompt {
         /// Markdown source.

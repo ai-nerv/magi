@@ -525,7 +525,12 @@ pub async fn run(
                         app.refresh_completion(&list_paths);
                         dirty = true;
                     }
-                    Event::Resize(_, _) => dirty = true,
+                    Event::Resize(cols, _) => {
+                        // The width is the terminal's and changes under whatever is drawing in
+                        // the rows a tool was given. Only the height is magi's to grant.
+                        let _ = command_tx.send(UiCommand::Sized { cols }).await;
+                        dirty = true;
+                    }
                     _ => {}
                 }
             }
@@ -650,6 +655,14 @@ async fn connection_loop(
             tokio::time::sleep(RECONNECT_DELAY).await;
             continue;
         }
+        // Straight after the attach, and again on every resize. The session has no terminal, so a
+        // tool given rows in this one has no other way to know how wide they are — and this is
+        // sent on reconnect too, because the window may have changed while nothing was attached.
+        let _ = writer
+            .write(&UiCommand::Sized {
+                cols: crossterm::terminal::size().map_or(80, |(cols, _)| cols),
+            })
+            .await;
 
         // Reads run in their own task because `FrameReader::read` is not cancel-safe: it takes
         // a length and then a body, and a `select!` that drops it between the two leaves the

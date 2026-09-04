@@ -30,10 +30,32 @@ const PATIENCE: Duration = Duration::from_secs(900);
 /// surface that wants no ticks simply is not sent one when this elapses.
 const IDLE: Duration = Duration::from_millis(250);
 
-/// Surfaces currently on screen, and the keys going to them.
+/// Something for an open surface to wake up about.
+///
+/// Two things reach a tenant from outside its own clock, and both arrive on one channel because
+/// the loop that reads them is the loop that blocks: a second source would need a second thread to
+/// wait on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Nudge {
+    /// A key the person pressed.
+    Key(String),
+    /// The screen got wider or narrower.
+    ///
+    /// **Width is the terminal's, not magi's.** The height is a reservation and magi decides it;
+    /// the width is whatever the window happens to be and changes while a surface is open. So it
+    /// is forwarded rather than promised once, and the tenant lays itself out again.
+    Across(u16),
+}
+
+/// Surfaces currently on screen, and what reaches them.
 #[derive(Default)]
 pub struct Holding {
-    typing: Mutex<std::collections::HashMap<ToolCallId, std::sync::mpsc::Sender<String>>>,
+    typing: Mutex<std::collections::HashMap<ToolCallId, std::sync::mpsc::Sender<Nudge>>>,
+    /// How wide the screen is, as the client last reported it.
+    ///
+    /// Zero until one says. The session has no terminal of its own, and a tenant told a width
+    /// nobody measured lays itself out for a screen that is not there.
+    cols: std::sync::atomic::AtomicU16,
     /// How many attached clients can draw rows a tool asks for.
     ///
     /// A count rather than a flag, because a session may be attached to twice: a surface is worth
@@ -89,12 +111,12 @@ impl Holding {
         if let Ok(typing) = self.typing.lock()
             && let Some(sender) = typing.get(id)
         {
-            let _ = sender.send(key);
+            let _ = sender.send(Nudge::Key(key));
         }
     }
 
-    /// Register a surface and hand back the end its keys arrive on.
-    fn opening(&self, id: ToolCallId) -> Option<std::sync::mpsc::Receiver<String>> {
+    /// Register a surface and hand back the end its nudges arrive on.
+    fn opening(&self, id: ToolCallId) -> Option<std::sync::mpsc::Receiver<Nudge>> {
         let (sender, receiver) = std::sync::mpsc::channel();
         self.typing.lock().ok()?.insert(id, sender);
         Some(receiver)
@@ -111,6 +133,33 @@ impl Holding {
     #[must_use]
     pub fn on_a_screen(&self) -> bool {
         self.screens.load(std::sync::atomic::Ordering::Relaxed) > 0
+    }
+
+    /// Note how wide the screen is, and tell anything drawing on it.
+    ///
+    /// Told rather than left to be read: a tenant is asleep between frames, and one that only
+    /// learned the width when it next happened to wake would draw at the old one until then.
+    pub fn sized(&self, cols: u16) {
+        if self.cols.swap(cols, std::sync::atomic::Ordering::Relaxed) == cols {
+            return;
+        }
+        if let Ok(typing) = self.typing.lock() {
+            for sender in typing.values() {
+                let _ = sender.send(Nudge::Across(cols));
+            }
+        }
+    }
+
+    /// How wide a surface may draw, falling back to a width most terminals have.
+    ///
+    /// The fallback is for the moment before the first client says: a tenant asked to lay itself
+    /// out for zero columns would draw nothing at all.
+    #[must_use]
+    pub fn across(&self) -> u16 {
+        match self.cols.load(std::sync::atomic::Ordering::Relaxed) {
+            0 => 80,
+            cols => cols,
+        }
     }
 }
 
@@ -183,7 +232,7 @@ impl Holder {
         tool: &str,
         surface: &Surface,
         args: &serde_json::Value,
-        keys: &std::sync::mpsc::Receiver<String>,
+        nudges: &std::sync::mpsc::Receiver<Nudge>,
     ) -> Option<String> {
         let mut child = std::process::Command::new(&self.program)
             .arg("surface")
@@ -196,12 +245,13 @@ impl Holder {
         let mut writing = child.stdin.take()?;
         let mut reading = std::io::BufReader::new(child.stdout.take()?);
 
-        // Columns are not the harness's to promise: the surface is drawn inside whatever the
-        // transcript is wide, and the tenant is clipped to it either way. A generous number here
-        // beats a wrong one, because a layout built for eighty is readable at a hundred.
+        // **The height is granted, the width is reported.** magi decides how many rows a tool
+        // gets, because only magi knows what else is on the screen. It decides nothing about the
+        // width: that is whatever the window happens to be, it changes while the surface is open,
+        // and it arrives here from the client that measured it.
         let opened = ToSurface::Open {
             rows: surface.rows,
-            cols: 92,
+            cols: self.held.across(),
             args: args.clone(),
         };
         if send(&mut writing, &opened).is_none() {
@@ -224,8 +274,15 @@ impl Holder {
             // The blocking receive is also the clock. A tenant that asked for a tick gets one
             // every time nobody has pressed anything for that long, which is one loop rather than
             // a thread and a timer that would have to be cancelled.
-            let frame = match keys.recv_timeout(waiting) {
-                Ok(key) => ToSurface::Key { key },
+            let frame = match nudges.recv_timeout(waiting) {
+                Ok(Nudge::Key(key)) => ToSurface::Key { key },
+                // The window changed. The rows it was granted have not — those are magi's, and a
+                // reservation that moved with the window would push the transcript around every
+                // time somebody dragged an edge.
+                Ok(Nudge::Across(cols)) => ToSurface::Resize {
+                    rows: surface.rows,
+                    cols,
+                },
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) if surface.tick.is_some() => {
                     ToSurface::Tick
                 }
@@ -305,8 +362,40 @@ mod tests {
         held.keyed(&ToolCallId::new("s0"), "space".to_owned());
         assert_eq!(
             keys.recv_timeout(Duration::from_secs(1)).ok(),
-            Some("space".to_owned())
+            Some(Nudge::Key("space".to_owned()))
         );
+    }
+
+    #[test]
+    fn a_width_that_changed_reaches_everything_drawing() {
+        // Told rather than left to be read. A tenant is asleep between frames, and one that only
+        // learned the width when it next happened to wake would draw at the old one until then.
+        let held = Holding::new();
+        let nudges = held.opening(ToolCallId::new("s0")).expect("registered");
+        held.sized(120);
+        assert_eq!(
+            nudges.recv_timeout(Duration::from_secs(1)).ok(),
+            Some(Nudge::Across(120))
+        );
+        assert_eq!(held.across(), 120);
+    }
+
+    #[test]
+    fn a_width_that_did_not_change_wakes_nothing() {
+        // A redraw sends the size every frame. Forwarding each one would wake a tenant on every
+        // keystroke anybody typed anywhere, to tell it something it already knows.
+        let held = Holding::new();
+        held.sized(120);
+        let nudges = held.opening(ToolCallId::new("s0")).expect("registered");
+        held.sized(120);
+        assert!(nudges.recv_timeout(Duration::from_millis(50)).is_err());
+    }
+
+    #[test]
+    fn a_width_nobody_has_measured_is_one_a_tenant_can_draw_in() {
+        // Before the first client says. A tenant asked to lay itself out for zero columns would
+        // draw nothing at all.
+        assert_eq!(Holding::new().across(), 80);
     }
 
     #[test]
