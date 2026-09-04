@@ -52,9 +52,14 @@ pub(super) fn held(width: u16) -> u16 {
 /// `copy` puts a second chip in the edge, inboard of the handle, that puts what the block says on
 /// the clipboard. Inboard because the handle is the older affordance and moving it would move the
 /// thing people already aim at.
+///
+/// `mark` is a second chip set into the edge right after the name — `·` while the call is out,
+/// `✓` or `✗` when it lands. Beside the name because that is the one row a person looks at to see
+/// what this block *is*, and what became of it is the other half of that.
 pub(super) fn top(
     label: &str,
     chip: Style,
+    mark: Option<(&str, Style)>,
     handle: Option<&str>,
     copy: bool,
     width: u16,
@@ -72,7 +77,7 @@ pub(super) fn top(
     ];
     // **No name, no chip.** An empty label drew `[  ]`: a bracket around nothing, which reads as
     // a control somebody forgot to fill in. A block with nothing to be called is just an edge.
-    let used = if label.is_empty() {
+    let mut used = if label.is_empty() {
         3
     } else {
         spans.push(Span::styled("[ ".to_owned(), edge));
@@ -80,17 +85,29 @@ pub(super) fn top(
         spans.push(Span::styled(" ]".to_owned(), edge));
         3 + crate::wrap::columns(&format!("[ {label} ]"))
     };
-
-    // The chip, plus two edge cells after it so the handle sits *in* the edge rather than
-    // wedged against the corner.
+    // The chips, in the order they are given up when the edge runs out. A narrow terminal cannot
+    // hold a name and three chips, and pushing them anyway made the row wider than the frame —
+    // the corner landed a column past the edge every other row is clipped to. The handle goes
+    // last because folding depends on it; the copy chip goes first because nothing is lost by
+    // scrolling to the text and selecting it.
     let held = handle.map_or(0, |handle| crate::wrap::columns(handle) + 6);
-    let takes = crate::wrap::columns(glyph::copy()) + 6;
-    // **The copy chip goes first when the edge runs out.** On a narrow screen there is not room
-    // for a name and two chips, and pushing both anyway made the row wider than the frame — the
-    // corner ended up a column past the edge every other row was clipped to. The handle is the
-    // older affordance and the one a fold depends on, so it is the one that stays.
-    let copy = copy && used + held + takes < usize::from(width);
-    let worn = held + usize::from(copy) * takes;
+    let worn_mark = mark.map_or(0, |(mark, _)| crate::wrap::columns(mark) + 6);
+    let worn_copy = crate::wrap::columns(glyph::copy()) + 6;
+    let room = usize::from(width);
+    let copy = copy && used + held + worn_mark + worn_copy < room;
+    let mark = mark.filter(|_| used + held + worn_mark < room);
+
+    if let Some((glyph, ink)) = mark {
+        // Two edge cells between the two chips, the same gap the handle keeps from the corner, so
+        // the pair reads as two things set into one line rather than as one long tag.
+        spans.push(Span::styled(glyph::block_edge().repeat(2), edge));
+        spans.push(Span::styled("[ ".to_owned(), edge));
+        spans.push(Span::styled(glyph.to_owned(), ink));
+        spans.push(Span::styled(" ]".to_owned(), edge));
+        used += 2 + crate::wrap::columns(&format!("[ {glyph} ]"));
+    }
+
+    let worn = held + usize::from(copy) * worn_copy;
     // **The name, and then edge.** What a call was *given* used to sit here too, and it made the
     // one row that says what this block is into the row that also says what it was asked — a
     // long path pushed against the handle, and a clipped one said neither thing properly. The
@@ -115,51 +132,18 @@ pub(super) fn top(
 }
 
 /// The bottom edge, corner to corner.
+///
+/// Plain. What became of a call is drawn beside the call itself, at the top of the block, rather
+/// than down here: on a block with a hundred rows of output between the two, the end of the frame
+/// is a long way from the command it would have been reporting on.
 pub(super) fn bottom(width: u16) -> Line<'static> {
-    closed(width, None)
-}
-
-/// The bottom edge, with what became of the call set into it.
-///
-/// `outcome` is `Some(true)` for a call that came back clean and `Some(false)` for one that
-/// reported a problem; `None` leaves the edge plain, which is what a block that is not a call —
-/// or one still running — gets.
-///
-/// **At the bottom, because that is when it is known.** The name at the top already carries the
-/// outcome in its colour, but a person reading a long result finishes at the other end of the
-/// block, and asking them to look back up to find out whether it worked is asking them to
-/// remember where they came in.
-pub(super) fn closed(width: u16, outcome: Option<bool>) -> Line<'static> {
-    // The block's background is *not* on the edge. The frame is the outer thing and the
-    // coloured box sits inside it, so a border painted with the block's own fill would put
-    // colour outside the box it is drawing.
     let edge = Style::default().fg(colour::block_frame());
-    let Some(worked) = outcome else {
-        return Line::from(vec![
-            Span::styled(glyph::block_bottom_left().to_owned(), edge),
-            Span::styled(
-                glyph::block_edge().repeat(usize::from(width).saturating_sub(2)),
-                edge,
-            ),
-            Span::styled(glyph::block_bottom_right().to_owned(), edge),
-        ]);
-    };
-    let (mark, ink) = if worked {
-        (glyph::outcome_ok(), colour::tool_ok())
-    } else {
-        (glyph::outcome_failed(), colour::tool_failed())
-    };
-    // The mark carries the colour and the brackets do not, the same way a block's name is the
-    // only coloured thing in the top edge. A bracket painted with it made the chip the signal.
-    let worn = crate::wrap::columns(mark) + 6;
-    let fill = usize::from(width).saturating_sub(worn + 2);
     Line::from(vec![
         Span::styled(glyph::block_bottom_left().to_owned(), edge),
-        Span::styled(glyph::block_edge().repeat(fill), edge),
-        Span::styled("[ ".to_owned(), edge),
-        Span::styled(mark.to_owned(), Style::default().fg(ink)),
-        Span::styled(" ]".to_owned(), edge),
-        Span::styled(glyph::block_edge().repeat(2), edge),
+        Span::styled(
+            glyph::block_edge().repeat(usize::from(width).saturating_sub(2)),
+            edge,
+        ),
         Span::styled(glyph::block_bottom_right().to_owned(), edge),
     ])
 }
@@ -419,13 +403,18 @@ mod nesting {
 /// that is not there. It grows its box when it has a result.
 pub(super) fn lone(label: &str, chip: Style, beside: &str, width: u16) -> Line<'static> {
     let named = format!("[ {label} ]");
+    // The dot the mark beside a finished call grows out of. A call with no result yet is exactly
+    // the one still out, so this row always wears it — and when the result lands the block turns
+    // into a box whose command row carries the same mark in the same place.
+    let waiting = format!("{} ", glyph::running());
     let mut spans = vec![
         Span::raw(" ".repeat(MARGIN)),
+        Span::styled(waiting.clone(), Style::default().fg(colour::tool_title())),
         Span::styled("[ ".to_owned(), Style::default().fg(colour::block_frame())),
         Span::styled(label.to_owned(), chip),
         Span::styled(" ]".to_owned(), Style::default().fg(colour::block_frame())),
     ];
-    let mut used = MARGIN + crate::wrap::columns(&named);
+    let mut used = MARGIN + crate::wrap::columns(&waiting) + crate::wrap::columns(&named);
     if !beside.trim().is_empty() {
         let beside = clip(
             &format!(" {}", beside.trim()),

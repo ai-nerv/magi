@@ -83,22 +83,27 @@ fn a_conversation_renders_the_way_pi_lays_it_out() {
             // the older affordance stays where people already aim at it.
             "┌──[ USER ]─────────────────────────[ ⧉ ]──┐",
             "", // a row of the block's own fill, so the text is not against the edge
-            "  run the tests",
+            // A step in from the fill on both sides, so the box holds the words rather than
+            // reading as a highlight drawn behind them.
+            "    run the tests",
             "",
             "└──────────────────────────────────────────┘",
             "", // assistant: leading blank
             // Rails around the answer, so it has an edge to carry a copy chip — and no fill,
             // because this is prose with a line above and below rather than a box.
             "┌───────────────────────────────────[ ⧉ ]──┐",
-            // Two columns in, the same as a block's inside: prose and boxes share one text
-            // column down the left, so the only things reaching past it are the frames.
-            "  Running them now.",
+            // The same inset the message box above takes, so a question and its answer begin in
+            // the same column and the only things reaching past it are the frames.
+            "    Running them now.",
             "└──────────────────────────────────────────┘",
             "", // the gap between blocks, unpainted
             // The name in the outcome's colour, and the fold handle at the far end of the same
             // edge — `▸` shut, `▾` open, saying which way it will go. Nothing else on the edge:
             // what the call was *given* is the block's first row, where it has room to be read.
-            "┌──[ bash ]──────────────────[ ⧉ ]──[ ▸ ]──┐",
+            // A second chip beside the name says what became of the call: `·` while it is out,
+            // `✓` or `✗` when it lands. Beside the name because that is the row a person reads to
+            // see what this block is, and what became of it is the other half of that.
+            "┌──[ bash ]──[ ✓ ]───────────[ ⧉ ]──[ ▸ ]──┐",
             "",
             "    cargo test",
             // The seam between what the call was given and what it answered, a column of block
@@ -108,9 +113,7 @@ fn a_conversation_renders_the_way_pi_lays_it_out() {
             // text under a coloured word.
             "    test result: ok. 42 passed",
             "",
-            // What became of the call, at the end of it. A person reading a long result finishes
-            // here, and looking back up to the name to find out whether it worked is looking back.
-            "└───────────────────────────────────[ ✓ ]──┘",
+            "└──────────────────────────────────────────┘",
         ]
     );
 }

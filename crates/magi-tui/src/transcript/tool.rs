@@ -42,7 +42,7 @@ impl Detail {
 ///
 /// A step rather than a second helping of [`crate::metric::block_pad`], which defaults to one:
 /// a single column is not an indent, it is a misalignment.
-const STEP: usize = 2;
+pub(super) const STEP: usize = 2;
 
 /// A padded box whose title states the outcome: pending, success, or error.
 ///
@@ -172,7 +172,24 @@ pub(super) fn block(
         ));
         return out;
     }
-    out.push(super::frame::top(name, label, Some(handle), true, width));
+    // **What became of the call, beside its name.** A dot while it is out, a tick or a cross when
+    // it lands. Nothing is patched into the buffer to make it change: the transcript is rebuilt
+    // from the entries every frame, so the edge is simply drawn from whatever the result is now.
+    let mark = match result {
+        None => crate::glyph::running(),
+        Some(r) if r.is_error => crate::glyph::outcome_failed(),
+        Some(_) => crate::glyph::outcome_ok(),
+    };
+    // `outcome` already is the colour of what happened — the same one the name wears — so the two
+    // chips say one thing in one colour rather than two greens that have to be matched by eye.
+    out.push(super::frame::top(
+        name,
+        label,
+        Some((mark, Style::default().fg(outcome))),
+        Some(handle),
+        true,
+        width,
+    ));
     // Only between two things. A block showing arguments and nothing else, or a result whose
     // call had no arguments worth a row, has one half — and a rule under the only thing in the
     // box reads as a heading for an answer that never came.
@@ -184,12 +201,7 @@ pub(super) fn block(
     }
     out.extend(rows);
     out.push(super::frame::breath(width, style));
-    // What became of the call, at the end of it. `None` while it is still running: a mark either
-    // way would claim an outcome nothing has reached yet.
-    out.push(super::frame::closed(
-        width,
-        result.map(|result| !result.is_error),
-    ));
+    out.push(super::frame::bottom(width));
     out
 }
 

@@ -91,8 +91,9 @@ glyphs! {
     expand = "▸", "On the top edge of a folded tool block: click to open it.";
     collapse = "▾", "On the top edge of an open tool block: click to fold it.";
     copy = "⧉", "On the top edge of a block: click to put what it says on the clipboard.";
-    outcome_ok = "✓", "On the bottom edge of a tool block whose call came back without an error.";
-    outcome_failed = "✗", "On the bottom edge of a tool block whose call reported a problem.";
+    running = "·", "Beside a call that has been made and has not come back.";
+    outcome_ok = "✓", "Beside a call that came back without an error.";
+    outcome_failed = "✗", "Beside a call that reported a problem.";
     quote_rule = "│ ", "Down the left of a block quote.";
     notice_rule = "│ ", "Down the left of something the UI itself is saying.";
     placeholder = "ask anything, or : for commands", "The prompt, before you type anything.";

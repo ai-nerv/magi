@@ -18,6 +18,7 @@ mod hover;
 mod tool;
 
 use frame::{MARGIN, bottom, inside, top};
+use tool::STEP;
 
 pub use hover::hovered;
 pub use tool::Detail;
@@ -228,19 +229,22 @@ fn said(label: &str, tag: ratatui::style::Color, text: &str, width: u16) -> Vec<
     // the one solid thing on the edge, reading as a sticker stuck to the box rather than as its
     // name.
     let chip = Style::default().fg(tag).add_modifier(Modifier::BOLD);
-    // One column narrower each side than the frame, so the text sits inside the edges rather
-    // than running under the corners.
-    let inner = frame::held(width);
+    // **A step in from the fill, on both sides.** The text used to start at the column the fill
+    // starts at, so it was against the edge of its own box with nothing between the two — the
+    // box read as a highlight behind the words rather than as something holding them. A tool
+    // block already steps its rows in for the same reason.
+    let lead = MARGIN + STEP;
+    let inner = frame::held(width).saturating_sub(u16::try_from(STEP * 2).unwrap_or(4));
     let body = markdown::render(text, inner, style);
 
     // No handle: neither of these folds, and a handle on something that cannot be opened is an
     // affordance that lies.
     let mut out = vec![
-        top(label, chip, None, true, width),
+        top(label, chip, None, None, true, width),
         frame::breath(width, style),
     ];
     for line in body {
-        out.push(inside(line, width, style, MARGIN));
+        out.push(inside(line, width, style, lead));
     }
     out.push(frame::breath(width, style));
     out.push(bottom(width));
@@ -283,9 +287,13 @@ fn assistant(
     // No fill. A tool block is a box with something in it; this is prose with a line above and
     // below, and a background here would make the whole transcript a stack of coloured slabs.
     if !text.trim().is_empty() {
-        out.push(frame::top("", base, None, true, width));
-        for line in markdown::render(text.trim(), inner, base) {
-            out.push(indent(line));
+        // A step in from the rails, the same one a message box takes, so an answer and the
+        // question above it begin in the same column instead of one starting two cells inside
+        // the other.
+        let held = frame::held(width).saturating_sub(u16::try_from(STEP * 2).unwrap_or(4));
+        out.push(frame::top("", base, None, None, true, width));
+        for line in markdown::render(text.trim(), held, base) {
+            out.push(indent(step(line)));
         }
         out.push(bottom(width));
     }
@@ -358,6 +366,13 @@ fn indent(line: Line<'static>) -> Line<'static> {
     Line::from(spans)
 }
 
+/// One more step in, for prose that sits inside rails of its own.
+fn step(line: Line<'static>) -> Line<'static> {
+    let mut spans = vec![Span::raw(" ".repeat(STEP))];
+    spans.extend(line.spans);
+    Line::from(spans)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,7 +410,7 @@ mod tests {
         );
         // Inside the frame, not under the corner it shares a row with, and not pressed against
         // the edge above it.
-        assert_eq!(rendered[2], "  hello             ");
+        assert_eq!(rendered[2], "    hello           ");
         assert!(rendered[0].starts_with('┌') && rendered[0].ends_with('┐'));
         assert!(rendered[4].starts_with('└') && rendered[4].ends_with('┘'));
         // No sides. Two columns of every row spent drawing a line nobody reads is two columns
@@ -512,9 +527,12 @@ mod tests {
                 .all(|span| span.style.bg.is_none()),
             "{lines:#?}"
         );
-        // Two columns in — the same column a block's fill starts at, so prose and boxes share
-        // one text column down the left rather than each having their own.
-        assert!(text_of(&lines).contains(&"  sure".to_owned()), "{lines:#?}");
+        // A step in from the rails, the same inset a message box takes, so an answer and the
+        // question above it begin in the same column.
+        assert!(
+            text_of(&lines).contains(&"    sure".to_owned()),
+            "{lines:#?}"
+        );
     }
 
     #[test]
