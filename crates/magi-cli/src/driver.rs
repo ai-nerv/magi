@@ -276,6 +276,15 @@ pub async fn run(
                                 }
                             }
                             if let Some(named) = crate::keying::named(key) {
+                                // **What the terminal actually sent.** The one question nobody
+                                // can answer by looking at the screen: a list stepping two rows
+                                // for one press is a release being read as a press, or the same
+                                // press arriving twice, and those are bugs in different programs.
+                                // One line per event settles which — see `debug_log`.
+                                debug_log(format_args!(
+                                    "surface key {named} {:?}",
+                                    crate::keying::held(key)
+                                ));
                                 let _ = command_tx
                                     .send(UiCommand::Keyed {
                                         id,
