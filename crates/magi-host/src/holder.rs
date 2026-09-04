@@ -50,12 +50,13 @@ pub enum Nudge {
         u16,
         u16,
     ),
-    /// The screen got wider or narrower.
+    /// The room under it changed, because the window or the prompt did.
     ///
-    /// **Width is the terminal's, not magi's.** The height is a reservation and magi decides it;
-    /// the width is whatever the window happens to be and changes while a surface is open. So it
-    /// is forwarded rather than promised once, and the tenant lays itself out again.
-    Across(u16, bool),
+    /// **Width is the terminal's, height is magi's — but neither is promised once.** The width
+    /// travels here, because it is whatever the window happens to be and nothing else knows it.
+    /// The height does not: it is a grant, so it is worked out again where grants are made, out of
+    /// the room now reported. Otherwise the number would be decided in two places.
+    Room(u16, bool),
 }
 
 /// Surfaces currently on screen, and what reaches them.
@@ -67,6 +68,18 @@ pub struct Holding {
     /// Zero until one says. The session has no terminal of its own, and a tenant told a width
     /// nobody measured lays itself out for a screen that is not there.
     cols: std::sync::atomic::AtomicU16,
+    /// How many rows a surface could be drawn in, as the client last reported them.
+    ///
+    /// Meaningless until [`Holding::measured`] is set, because zero is a real answer here — a
+    /// window short enough to have no room at all — and one that has to be told apart from nobody
+    /// having said yet.
+    rows: std::sync::atomic::AtomicU16,
+    /// Whether any client has reported its room.
+    ///
+    /// Before the first [`Holding::sized`] a tool gets what it asked for. It is the only honest
+    /// answer: refusing would deny a surface on a screen that has room for it, and granting a
+    /// measured zero would deny one on the strength of a number nobody supplied.
+    measured: std::sync::atomic::AtomicBool,
     /// How many attached clients can draw rows a tool asks for.
     ///
     /// A count rather than a flag, because a session may be attached to twice: a surface is worth
@@ -177,23 +190,34 @@ impl Holding {
         self.holds.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// Note how wide the screen is and what its keyboard can say, and tell anything drawing on it.
+    /// Note how much room the screen has and what its keyboard can say, and tell anything drawing
+    /// on it.
     ///
     /// Told rather than left to be read: a tenant is asleep between frames, and one that only
     /// learned the width when it next happened to wake would draw at the old one until then.
-    pub fn sized(&self, cols: u16, holds: bool) {
-        // **Either can be news.** The width changes when the window does; what the keyboard can say
-        // changes the first time a repeat or a release arrives, which may be long after a surface
-        // opened. Waking only on the width would leave a game that had just been proved able to
-        // read a hold still offering the control it had at open.
+    pub fn sized(&self, rows: Option<u16>, cols: u16, holds: bool) {
+        // **Any of the three can be news.** The width and the room change when the window does;
+        // what the keyboard can say changes the first time a repeat or a release arrives, which may
+        // be long after a surface opened. Waking only on the width would leave a game that had just
+        // been proved able to read a hold still offering the control it had at open.
         let grew = self.cols.swap(cols, std::sync::atomic::Ordering::Relaxed) != cols;
+        // Both swaps, then the question. Written as one `||` the second never ran once the first
+        // was true, so the very first report — which always changes the room — was the one that
+        // left `measured` unset, and every grant after it was made as though nobody had looked.
+        let room = rows.is_some_and(|rows| {
+            let moved = self.rows.swap(rows, std::sync::atomic::Ordering::Relaxed) != rows;
+            let first = !self
+                .measured
+                .swap(true, std::sync::atomic::Ordering::Relaxed);
+            moved || first
+        });
         let learned = !self.holds.swap(holds, std::sync::atomic::Ordering::Relaxed) && holds;
-        if !grew && !learned {
+        if !grew && !room && !learned {
             return;
         }
         if let Ok(typing) = self.typing.lock() {
             for sender in typing.values() {
-                let _ = sender.send(Nudge::Across(cols, holds));
+                let _ = sender.send(Nudge::Room(cols, holds));
             }
         }
     }
@@ -207,6 +231,33 @@ impl Holding {
         match self.cols.load(std::sync::atomic::Ordering::Relaxed) {
             0 => 80,
             cols => cols,
+        }
+    }
+
+    /// How many rows there are to grant, or `None` while nobody has measured.
+    ///
+    /// No fallback, unlike the width. A made-up width costs a tenant one badly wrapped frame; a
+    /// made-up height is a tenant laying itself out below the bottom of the screen, believing the
+    /// rows are there, and reading keys aimed at the part of it nobody can see.
+    #[must_use]
+    pub fn down(&self) -> Option<u16> {
+        self.measured
+            .load(std::sync::atomic::Ordering::Relaxed)
+            .then(|| self.rows.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// The rows a surface asking for `wanted` may actually have.
+    ///
+    /// **The grant is the smaller of what was asked and what is there.** A tool asks for the size
+    /// it would like to be; only magi knows what else is on the screen, and it is the one that
+    /// says. `None` is a screen with no room at all, where the honest answer is that this surface
+    /// cannot open rather than that it opened into nothing.
+    #[must_use]
+    pub fn granting(&self, wanted: u16) -> Option<u16> {
+        match self.down() {
+            None => Some(wanted),
+            Some(0) => None,
+            Some(room) => Some(wanted.min(room)),
         }
     }
 }
@@ -247,6 +298,10 @@ impl magi_tools::holding::Holds for Holder {
         if !(self.attached)() || !self.held.on_a_screen() {
             return None;
         }
+        // **What it gets, not what it asked for.** A window too short for any of it is the same
+        // case as nobody looking: there is nowhere to draw, and reserving rows that are not there
+        // would hold the turn open on a keypress aimed at nothing.
+        let granted = self.held.granting(surface.rows)?;
         let n = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let id = ToolCallId::new(format!("s{n}"));
         let keys = self.held.opening(id.clone())?;
@@ -257,11 +312,11 @@ impl magi_tools::holding::Holds for Holder {
             cursor: Cursor::ZERO,
             id: id.clone(),
             tool: tool.to_owned(),
-            rows: surface.rows,
+            rows: granted,
             about: surface.about.clone(),
         });
 
-        let answered = self.pump(&id, tool, surface, args, &keys);
+        let answered = self.pump(&id, tool, surface, granted, args, &keys);
 
         self.held.close(&id);
         (self.publish)(HarnessEvent::Unsurfaced {
@@ -279,6 +334,7 @@ impl Holder {
         id: &ToolCallId,
         tool: &str,
         surface: &Surface,
+        granted: u16,
         args: &serde_json::Value,
         nudges: &std::sync::mpsc::Receiver<Nudge>,
     ) -> Option<String> {
@@ -298,7 +354,7 @@ impl Holder {
         // width: that is whatever the window happens to be, it changes while the surface is open,
         // and it arrives here from the client that measured it.
         let opened = ToSurface::Open {
-            rows: surface.rows,
+            rows: granted,
             cols: self.held.across(),
             holds: self.held.reports_holds(),
             args: args.clone(),
@@ -331,11 +387,13 @@ impl Holder {
                     row,
                     col,
                 },
-                // The window changed. The rows it was granted have not — those are magi's, and a
-                // reservation that moved with the window would push the transcript around every
-                // time somebody dragged an edge.
-                Ok(Nudge::Across(cols, holds)) => ToSurface::Resize {
-                    rows: surface.rows,
+                // The room changed, so the grant is made again out of the room there is now. It
+                // never grows past what the tool asked for — a surface that swelled to fill a
+                // maximised window would push the transcript around every time somebody dragged an
+                // edge — and it shrinks, including to nothing, because rows below the fold are
+                // rows the person can neither see nor aim at.
+                Ok(Nudge::Room(cols, holds)) => ToSurface::Resize {
+                    rows: self.held.granting(surface.rows).unwrap_or_default(),
                     cols,
                     holds,
                 },
@@ -457,10 +515,10 @@ mod tests {
         // learned the width when it next happened to wake would draw at the old one until then.
         let held = Holding::new();
         let nudges = held.opening(ToolCallId::new("s0")).expect("registered");
-        held.sized(120, false);
+        held.sized(Some(20), 120, false);
         assert_eq!(
             nudges.recv_timeout(Duration::from_secs(1)).ok(),
-            Some(Nudge::Across(120, false))
+            Some(Nudge::Room(120, false))
         );
         assert_eq!(held.across(), 120);
     }
@@ -470,9 +528,9 @@ mod tests {
         // A redraw sends the size every frame. Forwarding each one would wake a tenant on every
         // keystroke anybody typed anywhere, to tell it something it already knows.
         let held = Holding::new();
-        held.sized(120, false);
+        held.sized(Some(20), 120, false);
         let nudges = held.opening(ToolCallId::new("s0")).expect("registered");
-        held.sized(120, false);
+        held.sized(Some(20), 120, false);
         assert!(nudges.recv_timeout(Duration::from_millis(50)).is_err());
     }
 
@@ -481,6 +539,33 @@ mod tests {
         // Before the first client says. A tenant asked to lay itself out for zero columns would
         // draw nothing at all.
         assert_eq!(Holding::new().across(), 80);
+    }
+
+    #[test]
+    fn the_room_that_shrank_reaches_everything_drawing() {
+        // The room changes without the width doing: a prompt that grew a line took a row off
+        // every surface on the screen, and a tenant not told is one drawing below the fold.
+        let held = Holding::new();
+        held.sized(Some(20), 120, false);
+        let nudges = held.opening(ToolCallId::new("s0")).expect("registered");
+        held.sized(Some(6), 120, false);
+        assert_eq!(
+            nudges.recv_timeout(Duration::from_secs(1)).ok(),
+            Some(Nudge::Room(120, false))
+        );
+    }
+
+    #[test]
+    fn a_grant_is_the_smaller_of_what_was_asked_and_what_is_there() {
+        let held = Holding::new();
+        // Nobody has measured, so what was asked for is the only number there is.
+        assert_eq!(held.granting(8), Some(8));
+        held.sized(Some(20), 120, false);
+        assert_eq!(held.granting(8), Some(8), "there is room for all of it");
+        held.sized(Some(3), 120, false);
+        assert_eq!(held.granting(8), Some(3), "there is room for three rows");
+        held.sized(Some(0), 120, false);
+        assert_eq!(held.granting(8), None, "a screen with no room grants none");
     }
 
     #[test]
@@ -512,6 +597,66 @@ mod tests {
             holder.hold("dino", &surface, &serde_json::Value::Null),
             None
         );
+    }
+
+    /// A holder on a screen with `room` rows, and everything it published.
+    fn on_a_screen_of(room: u16) -> (Arc<Holding>, Holder, Arc<Mutex<Vec<HarnessEvent>>>) {
+        let held = Arc::new(Holding::new());
+        held.screens
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        held.sized(Some(room), 120, false);
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let kept = Arc::clone(&seen);
+        let holder = Holder::new(
+            Arc::clone(&held),
+            Box::new(move |event| kept.lock().expect("nothing panicked").push(event)),
+            Box::new(|| true),
+            // Nothing to spawn, so the surface ends the moment it opens. What is being read here
+            // is the reservation, which is published before the tenant exists.
+            "not-a-program-anybody-has",
+        );
+        (held, holder, seen)
+    }
+
+    #[test]
+    fn a_tenant_is_given_the_rows_there_are_not_the_rows_it_asked_for() {
+        use magi_tools::holding::Holds;
+        // The gap this closes: a tool asking for eight on a window with three used to be granted
+        // eight, and laid itself out for five rows nobody could see or aim a key at.
+        let (_held, holder, seen) = on_a_screen_of(3);
+        let surface = Surface {
+            rows: 8,
+            about: "a game".to_owned(),
+            tick: None,
+        };
+        let _ = holder.hold("dino", &surface, &serde_json::Value::Null);
+        let granted = seen
+            .lock()
+            .expect("nothing panicked")
+            .iter()
+            .find_map(|event| match event {
+                HarnessEvent::Surfaced { rows, .. } => Some(*rows),
+                _ => None,
+            });
+        assert_eq!(granted, Some(3));
+    }
+
+    #[test]
+    fn a_screen_with_no_room_reserves_nothing() {
+        use magi_tools::holding::Holds;
+        // The same case as nobody looking. Reserving rows that are not there holds the turn open
+        // waiting on a keypress aimed at nothing.
+        let (_held, holder, seen) = on_a_screen_of(0);
+        let surface = Surface {
+            rows: 8,
+            about: "a game".to_owned(),
+            tick: None,
+        };
+        assert_eq!(
+            holder.hold("dino", &surface, &serde_json::Value::Null),
+            None
+        );
+        assert!(seen.lock().expect("nothing panicked").is_empty());
     }
 
     #[test]
