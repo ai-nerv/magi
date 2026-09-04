@@ -139,6 +139,13 @@ pub struct Surface {
     /// `magi -p` has no screen and no person, and a run that silently drew nothing would look
     /// like a hang. It says this instead and declines.
     pub about: String,
+    /// Milliseconds between ticks, for a surface that moves on its own.
+    ///
+    /// `None` for one that only answers input — a picker redraws when a key arrives and at no
+    /// other time, and ticking it would be a wakeup a hundred times a second to draw the same
+    /// rows. Something animating asks for a tick and gets one whether or not anybody is typing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tick: Option<u16>,
 }
 
 /// A run of text with one meaning.
@@ -379,12 +386,18 @@ mod tests {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "to")]
 pub enum ToSurface {
-    /// The room it actually got, which may be less than it asked for.
+    /// The room it actually got, and what the call was given.
+    ///
+    /// The arguments travel with it so a surface opens knowing what it is about — a permission
+    /// needs the command, a picker needs the list — rather than being told on some later frame.
     Open {
-        /// Rows granted.
+        /// Rows granted, which may be fewer than were asked for.
         rows: u16,
         /// Columns granted.
         cols: u16,
+        /// The call's arguments.
+        #[serde(default)]
+        args: serde_json::Value,
     },
     /// A key the person pressed while this surface held the rows.
     ///
@@ -401,6 +414,11 @@ pub enum ToSurface {
         /// Columns now.
         cols: u16,
     },
+    /// Time passed, for a surface that asked for it.
+    ///
+    /// Only sent to one that named a [`Surface::tick`]. A game needs the world to move while
+    /// nobody is pressing anything, and a picker does not.
+    Tick,
     /// The reservation is over and nothing more will be read.
     ///
     /// Sent when the turn is cancelled or the session ends, so a tenant holding state can put it
@@ -444,6 +462,7 @@ mod surfacing {
         let asked = Shown::Surface(Surface {
             rows: 5,
             about: "a permission for `rm -rf build`".to_owned(),
+            tick: None,
         });
         let wire = serde_json::to_string(&asked).expect("encodes");
         assert!(wire.contains(r#""shown":"surface""#), "{wire}");
@@ -470,7 +489,12 @@ mod surfacing {
     fn what_magi_sends_and_what_comes_back_are_different_types() {
         // One enum for both directions would let a tenant send `Key` and magi send `Draw`, and
         // the first thing either did with the other's frame would be to ask what it was.
-        let open = serde_json::to_string(&ToSurface::Open { rows: 5, cols: 92 }).expect("encodes");
+        let open = serde_json::to_string(&ToSurface::Open {
+            rows: 5,
+            cols: 92,
+            args: serde_json::Value::Null,
+        })
+        .expect("encodes");
         assert!(
             serde_json::from_str::<FromSurface>(&open).is_err(),
             "{open}"
