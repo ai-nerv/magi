@@ -27,6 +27,7 @@ pub fn print() -> Result<(), magi_lua::LuaError> {
     for tool in magi_tools::casper::CasperTool::all(
         magi_tools::casper::CASPER,
         std::sync::Arc::new(magi_tools::question::Unanswered),
+        std::sync::Arc::new(magi_tools::holding::Screenless),
     ) {
         from_casper.insert(tool.name().to_owned());
         registry.register(Box::new(tool));

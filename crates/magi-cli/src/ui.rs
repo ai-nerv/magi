@@ -122,8 +122,18 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     // the footer draws — what the agent is doing, then usage, then the model. The status line had
     // a row of its own above the box, which is a row of chrome for one word, in the one place
     // where nothing should stand between what was said and where you answer it.
-    let [live_area, prompt_area, footer_area] = Layout::vertical([
+    // **Rows a tool is holding, taken out of the transcript's share.** Between what was said and
+    // where you answer it, because that is where you are looking while it is there. magi decides
+    // how many — the reservation is clipped to what is actually left after the prompt and a row of
+    // transcript — and what goes in them is entirely the tenant's.
+    let asked = app.holding().map_or(0, |held| held.rows);
+    let spare = area
+        .height
+        .saturating_sub(prompt_rows + metric::footer_rows() + 1);
+    let held_rows = asked.min(spare);
+    let [live_area, surface_area, prompt_area, footer_area] = Layout::vertical([
         Constraint::Min(0),
+        Constraint::Length(held_rows),
         Constraint::Length(prompt_rows),
         Constraint::Length(metric::footer_rows()),
     ])
@@ -170,6 +180,24 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     // against. Bottom-anchored, so a short transcript does not start at the top.
     app.live_rows = anchored.y..anchored.y + anchored.height;
     frame.render_widget(Paragraph::new(view), anchored);
+    // **Blitted, not read.** The rows are resolved from roles to colours the way every other
+    // painted thing is, clipped to the reservation, and drawn. Nothing here asks what they mean:
+    // magi could not tell a permission prompt from a game, and does not need to.
+    if held_rows > 0
+        && let Some(held) = app.holding()
+    {
+        let mut rows = magi_tui::painted::lines(&held.drawn, ratatui::style::Style::default());
+        if rows.is_empty() {
+            // Until its first frame arrives. A reservation that drew nothing would be a band of
+            // blank rows opening under the transcript for no visible reason.
+            rows.push(ratatui::text::Line::from(ratatui::text::Span::styled(
+                format!("  {}", held.about),
+                ratatui::style::Style::default().fg(magi_tui::colour::dim()),
+            )));
+        }
+        rows.truncate(held_rows as usize);
+        frame.render_widget(Paragraph::new(rows), surface_area);
+    }
     if above {
         frame.render_widget(
             Paragraph::new(status::more(area.width)),

@@ -113,6 +113,7 @@ pub struct CasperTool {
     card: Card,
     program: String,
     asks: Arc<dyn Asks>,
+    holds: Arc<dyn crate::holding::Holds>,
 }
 
 impl CasperTool {
@@ -122,13 +123,18 @@ impl CasperTool {
     /// that does cannot finish without it, which is why it is taken here rather than looked up
     /// when the question arrives.
     #[must_use]
-    pub fn all(program: &str, asks: Arc<dyn Asks>) -> Vec<Self> {
+    pub fn all(
+        program: &str,
+        asks: Arc<dyn Asks>,
+        holds: Arc<dyn crate::holding::Holds>,
+    ) -> Vec<Self> {
         cards_from(program)
             .into_iter()
             .map(|card| Self {
                 card,
                 program: program.to_owned(),
                 asks: Arc::clone(&asks),
+                holds: Arc::clone(&holds),
             })
             .collect()
     }
@@ -175,6 +181,20 @@ impl Tool for CasperTool {
                 Err(why) => return Output::error(why),
                 Ok(ran) => ran,
             };
+            // **Rows a tool fills itself.** The general form of a question: magi reserves the
+            // space and drives the surface, and what goes in it is the tool's business. The
+            // answer comes back as an id and resumes the call exactly as an answered question
+            // does — one mechanism, so a picker, a permission and a game are one code path.
+            if let Some(Shown::Surface(surface)) = &ran.shown {
+                let Some(chosen) = self.holds.hold(&self.card.name, surface, arguments) else {
+                    return Output::error(format!(
+                        "{} wanted the screen for {} and there was none",
+                        self.card.name, surface.about
+                    ));
+                };
+                call.answered = Some(chosen);
+                continue;
+            }
             let Some(Shown::Ask(ask)) = &ran.shown else {
                 return finished(ran);
             };

@@ -15,6 +15,7 @@ mod external_editor;
 mod help;
 mod history;
 mod host;
+mod keying;
 mod keys;
 mod melchior;
 mod models;

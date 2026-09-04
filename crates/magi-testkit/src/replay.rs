@@ -152,6 +152,12 @@ impl Recording {
                     }
                 }
                 HarnessEvent::StatusChanged { status: s, .. } => status = s,
+                // A surface is on the screen, not in the transcript: rows a tool held for a while
+                // and what it drew in them are not entries, and replaying a session should not
+                // reconstruct a game somebody played.
+                HarnessEvent::Surfaced { .. }
+                | HarnessEvent::Drew { .. }
+                | HarnessEvent::Unsurfaced { .. } => {}
                 HarnessEvent::SessionSnapshot { .. } | HarnessEvent::Error { .. } => {}
             }
         }

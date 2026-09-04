@@ -141,9 +141,13 @@ async fn the_two_paths_agree_on_the_final_transcript() {
 fn fold(mut entries: Vec<Entry>, events: &[HarnessEvent]) -> Vec<Entry> {
     for event in events {
         match event.clone() {
-            // Not part of a transcript: a question nobody is there to answer has no place in one.
+            // Not part of a transcript: a question nobody is there to answer has no place in one,
+            // and rows a tool held for a while are on the screen rather than in the record.
             HarnessEvent::Asked { .. } => {}
             HarnessEvent::PermissionAsked { .. } => {}
+            HarnessEvent::Surfaced { .. }
+            | HarnessEvent::Drew { .. }
+            | HarnessEvent::Unsurfaced { .. } => {}
             HarnessEvent::UserMessage { id, text, .. } => entries.push(Entry::User {
                 id,
                 text,

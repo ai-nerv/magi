@@ -489,6 +489,40 @@ pub enum HarnessEvent {
         #[serde(default)]
         detail: Vec<Vec<crate::tooling::Span>>,
     },
+    /// A tool has been given rows, and will fill them itself.
+    ///
+    /// The UI reserves the space and forwards what the person does to it. It does not know or ask
+    /// what goes in there — a permission prompt, a file picker and a game are the same event.
+    Surfaced {
+        /// Position of this event.
+        cursor: Cursor,
+        /// Which surface this is, so keys and frames can be matched to it.
+        id: ToolCallId,
+        /// The tool holding the rows.
+        tool: String,
+        /// How many rows it was given.
+        rows: u16,
+        /// What it is for, for a UI that cannot draw it.
+        about: String,
+    },
+    /// What a surface drew, this frame.
+    ///
+    /// Sent as often as the surface redraws, which for something animating is many times a
+    /// second. Transient by construction: it is not in the transcript, because what a game looked
+    /// like three frames ago is not part of the conversation.
+    Drew {
+        /// Which surface drew it.
+        id: ToolCallId,
+        /// The rows, in the same roles everything else is painted in.
+        lines: Vec<Vec<crate::tooling::Span>>,
+    },
+    /// A surface has finished and its rows are given back.
+    Unsurfaced {
+        /// Position of this event.
+        cursor: Cursor,
+        /// Which surface ended.
+        id: ToolCallId,
+    },
     /// Something the UI asked for could not be done, with the reason.
     ///
     /// Distinct from [`Self::Error`], which is the session going wrong. This is a request that
@@ -551,10 +585,15 @@ impl HarnessEvent {
             | Self::Compacted { cursor, .. }
             | Self::PermissionAsked { cursor, .. }
             | Self::Asked { cursor, .. }
+            | Self::Surfaced { cursor, .. }
+            | Self::Unsurfaced { cursor, .. }
             | Self::Refused { cursor, .. }
             | Self::ModelChanged { cursor, .. }
             | Self::Branched { cursor, .. }
             | Self::Error { cursor, .. } => *cursor,
+            // A frame is not a position. What a surface drew three frames ago is not part of the
+            // conversation and nothing replays it, so it occupies no place in the log.
+            Self::Drew { .. } => Cursor::ZERO,
         }
     }
 }
@@ -636,6 +675,17 @@ pub enum UiCommand {
         /// The id of the option that was chosen.
         choice: String,
     },
+    /// A key the person pressed while a surface held the rows.
+    ///
+    /// By name — `j`, `enter`, `esc`, `ctrl+c` — not as the bytes the terminal sent. The UI has
+    /// already decoded one to get here, and handing on the encoding would make every tenant learn
+    /// this terminal's.
+    Keyed {
+        /// Which surface it was meant for.
+        id: ToolCallId,
+        /// The key, named.
+        key: String,
+    },
     /// Ask the model what the work ahead will need, and offer those permissions.
     ///
     /// A proposal, not a decision: every need it names goes through the same prompt any other
@@ -699,97 +749,10 @@ impl<T> Envelope<T> {
     }
 }
 
+/// What the protocol's own types encode to.
 #[cfg(test)]
-mod tests {
-    use super::*;
+#[path = "encoding.rs"]
+mod encoding;
 
-    #[test]
-    fn cursor_advances() {
-        assert_eq!(Cursor::ZERO.next(), Cursor(1));
-    }
-
-    #[test]
-    fn transport_errors_retry_and_auth_errors_do_not() {
-        assert!(ErrorClass::Transport.is_retryable());
-        assert!(ErrorClass::Overload.is_retryable());
-        assert!(!ErrorClass::Auth.is_retryable());
-        assert!(!ErrorClass::Invalid.is_retryable());
-    }
-
-    #[test]
-    fn every_event_reports_its_cursor() {
-        let event = HarnessEvent::UserMessage {
-            cursor: Cursor(7),
-            id: MessageId::new("m1"),
-            text: "hi".into(),
-        };
-        assert_eq!(event.cursor(), Cursor(7));
-    }
-
-    #[test]
-    fn envelope_stamps_the_current_version() {
-        let envelope = Envelope::new(UiCommand::Interrupt);
-        assert_eq!(envelope.version, PROTOCOL_VERSION);
-    }
-}
-
-/// Host → tool peer.
-///
-/// Five messages, against Tau's sixty-four. What is kept from Tau is the part that matters:
-/// a call is journalled before the registry is consulted, so a call that went nowhere is still
-/// auditable, and a finished call cannot be resurrected by a repeated id.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "message")]
-pub enum ToolRequest {
-    /// Run this.
-    Call {
-        /// Identity the peer must quote back.
-        id: ToolCallId,
-        /// Which tool, since one peer may offer several.
-        name: String,
-        /// Arguments, as the model produced them.
-        arguments: serde_json::Value,
-    },
-    /// Stop the call, because the user interrupted or the turn was abandoned.
-    ///
-    /// Cancellation is in the first cut rather than added later: `esc` has to kill a running
-    /// shell, and that cannot be retrofitted onto a bare request/response pair.
-    Cancel {
-        /// The call to stop.
-        id: ToolCallId,
-    },
-}
-
-/// Tool peer → host.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "message")]
-pub enum ToolReport {
-    /// What this peer offers, sent once on connect.
-    ///
-    /// Declared by the peer rather than configured by the host: the peer is the only thing
-    /// that knows what it can actually do, and a host that guessed would drift.
-    Declare {
-        /// Tool name, which is also its identity in the registry.
-        name: String,
-        /// What it does, in the model's terms.
-        description: String,
-        /// JSON Schema for its arguments.
-        parameters: serde_json::Value,
-    },
-    /// Output so far, for a tool that takes long enough to be worth watching.
-    Progress {
-        /// The call this belongs to.
-        id: ToolCallId,
-        /// Text appended to what the call has produced.
-        chunk: String,
-    },
-    /// The call finished.
-    Result {
-        /// The call that finished.
-        id: ToolCallId,
-        /// What it produced.
-        output: String,
-        /// Whether it failed. A tool that ran and reported a problem is still a result.
-        is_error: bool,
-    },
-}
+mod peering;
+pub use peering::{ToolReport, ToolRequest};

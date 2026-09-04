@@ -181,25 +181,42 @@ impl magi_tools::question::Asks for Asker {
     }
 }
 
-/// The two ways a turn reaches whoever is attached.
+/// The three ways a turn reaches whoever is attached.
 ///
-/// One [`Asker`] answers both, and they have never travelled apart. Carrying them as two
-/// parameters said they were two things.
+/// A permission, a question, and rows a tool draws in itself. They have never travelled apart —
+/// each is the same UI seen from a different distance — and carrying them as three parameters
+/// said they were three things.
 #[derive(Clone)]
 pub struct Person {
     /// Asked before a tool that needs permission runs.
     pub approver: Arc<dyn magi_tools::approve::Approver>,
     /// Asked when a tool has a question of its own.
     pub asks: Arc<dyn magi_tools::question::Asks>,
+    /// Given the rows when a tool wants to draw its own.
+    pub holds: Arc<dyn magi_tools::holding::Holds>,
+    /// The surfaces currently on screen, so a keypress reaches the one holding the rows.
+    ///
+    /// Here rather than a parameter of its own because it travels with the rest: the command loop
+    /// that delivers an answer to a question is the loop that delivers a key to a surface.
+    pub surfaces: Arc<crate::holder::Holding>,
 }
 
 impl Person {
-    /// Both faces of one asker.
+    /// Every face of one asker, and the holder that gives out rows.
+    ///
+    /// The holder is separate because it is not an asker: it spawns a process and pumps frames,
+    /// which has nothing to do with putting a question on a channel.
     #[must_use]
-    pub fn of(asker: Arc<Asker>) -> Self {
+    pub fn of(
+        asker: Arc<Asker>,
+        holds: Arc<dyn magi_tools::holding::Holds>,
+        surfaces: Arc<crate::holder::Holding>,
+    ) -> Self {
         Self {
             approver: Arc::clone(&asker) as Arc<_>,
             asks: asker as Arc<_>,
+            holds,
+            surfaces,
         }
     }
 }

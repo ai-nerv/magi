@@ -94,6 +94,11 @@ pub struct App {
     /// this is the one thing about it only its opener knows. Without it every list's answer
     /// went to the same place, and picking a thinking level asked for a model called "medium".
     pub picking: Option<Picking>,
+    /// Rows a tool is holding, and the last frame it drew in them.
+    ///
+    /// One at a time: a turn runs its tool calls in order, so two tools cannot be holding the
+    /// screen at once, and a list would be a queue nothing ever puts a second thing in.
+    pub surface: Option<surfacing::Surfacing>,
     /// How much of each tool result to show.
     pub detail: magi_tui::transcript::Detail,
     /// What this session is called, as the footer shows it.
@@ -208,6 +213,7 @@ impl App {
             flipped: std::collections::BTreeSet::new(),
             owners: Vec::new(),
             blocks: Vec::new(),
+            surface: None,
             live_rows: 0..0,
             pending_notice: None,
             no_model: None,
@@ -522,6 +528,16 @@ impl App {
                 detail,
                 ..
             } => self.asked(id, &tool, &question, options, detail),
+            // Rows a tool asked for. Nothing here reads what goes in them — see `surfacing`.
+            HarnessEvent::Surfaced {
+                id,
+                tool,
+                rows,
+                about,
+                ..
+            } => self.surfaced(id, tool, rows, about),
+            HarnessEvent::Drew { id, lines } => self.drew(&id, lines),
+            HarnessEvent::Unsurfaced { id, .. } => self.unsurfaced(&id),
             HarnessEvent::ModelChanged { model, .. } => {
                 let before = self.model.as_ref().map(|m| m.name.clone());
                 let after = model.as_ref().map(|m| m.name.clone());
@@ -734,6 +750,7 @@ mod folding;
 #[cfg(test)]
 mod retracting;
 mod sessions;
+pub mod surfacing;
 #[cfg(test)]
 mod tests;
 

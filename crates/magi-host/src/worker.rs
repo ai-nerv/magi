@@ -56,6 +56,7 @@ impl Worker {
             backend,
             None,
             std::sync::Arc::new(magi_tools::question::Unanswered),
+            std::sync::Arc::new(magi_tools::holding::Screenless),
         )
     }
 
@@ -67,6 +68,7 @@ impl Worker {
         backend: Backend,
         approver: Option<std::sync::Arc<dyn magi_tools::approve::Approver>>,
         asks: std::sync::Arc<dyn magi_tools::question::Asks>,
+        holds: std::sync::Arc<dyn magi_tools::holding::Holds>,
     ) -> Self {
         let (jobs, mut queue) = mpsc::channel::<Job>(32);
         std::thread::spawn(move || {
@@ -111,6 +113,7 @@ impl Worker {
             for tool in magi_tools::casper::CasperTool::all(
                 magi_tools::casper::CASPER,
                 std::sync::Arc::clone(&asks),
+                std::sync::Arc::clone(&holds),
             ) {
                 registry.register(Box::new(tool));
             }

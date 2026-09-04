@@ -216,6 +216,23 @@ pub async fn run(
                         // starts its wait over -- including on the keys that leave the prompt
                         // empty, which is most of them at this point.
                         app.tease.interrupt();
+                        // **A surface has the keyboard while it has the rows.** Forwarded by
+                        // name and not interpreted: what `j` means is the tenant's business, and
+                        // a driver that decided would be back to owning what it just handed over.
+                        //
+                        // `esc` is the exception, and it is magi's: it is how a person takes the
+                        // screen back from a tenant that has stopped answering, and a surface
+                        // that could swallow it would be a surface nothing could close.
+                        if let Some(held) = app.holding() {
+                            let id = held.id.clone();
+                            if key.code == crossterm::event::KeyCode::Esc {
+                                app.surface = None;
+                            }
+                            if let Some(key) = crate::keying::named(key) {
+                                let _ = command_tx.send(UiCommand::Keyed { id, key }).await;
+                            }
+                            continue;
+                        }
                         let busy = app.is_busy();
                         let action = keys::handle(
                             key,
