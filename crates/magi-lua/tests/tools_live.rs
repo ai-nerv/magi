@@ -18,89 +18,12 @@ fn config(name: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
-fn is_live(name: &str) -> bool {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    std::fs::read_dir(runtime.join(name)).is_ok_and(|dir| {
-        dir.flatten()
-            .any(|e| e.file_name().to_string_lossy().starts_with("api@"))
-    })
-}
-
-#[test]
-fn the_hexe_tool_answers_when_a_mux_is_running() {
-    let mut engine = Engine::new();
-    engine.install_clients(&[("hexe".to_owned(), config("clients/hexe.lua"))]);
-    engine
-        .run(&config("tools.lua"), "tools.lua")
-        .expect("the tool declaration must run");
-
-    let engine = Rc::new(RefCell::new(engine));
-    let mut registry = Registry::new();
-    magi_lua::tool::install(Rc::clone(&engine), &mut registry, &Default::default());
-
-    assert!(registry.get("hexe").is_some(), "the tool registered");
-
-    let ops = magi_tools::ops::Real::new(std::env::temp_dir());
-    let output = registry.call(
-        "hexe",
-        &serde_json::json!({ "what": "verbs" }),
-        &ops,
-        &magi_tools::Uncancelled,
-    );
-
-    if !is_live("hexe") {
-        // No mux: the tool must say so plainly rather than fail. A tool that errors when the
-        // thing it asks about is simply absent teaches the model to stop asking.
-        assert!(!output.is_error, "{}", output.content);
-        assert!(
-            output.content.contains("no hexe session"),
-            "{}",
-            output.content
-        );
-        return;
-    }
-
-    assert!(
-        !output.is_error,
-        "hexe is running but the tool failed: {}",
-        output.content
-    );
-    assert!(
-        output.content.contains("panes") || output.content.contains("verbs"),
-        "the mux answered with something unexpected: {}",
-        output.content
-    );
-    eprintln!(
-        "hexe tool answered: {}",
-        &output.content[..output.content.len().min(120)]
-    );
-}
-
-#[test]
-fn a_lua_tool_reports_an_absent_sibling_as_information_not_a_failure() {
-    let mut engine = Engine::new();
-    // No clients installed at all, which is what an install without `make configs` looks like.
-    engine.run(&config("tools.lua"), "tools.lua").expect("run");
-    let engine = Rc::new(RefCell::new(engine));
-    let mut registry = Registry::new();
-    magi_lua::tool::install(Rc::clone(&engine), &mut registry, &Default::default());
-
-    let ops = magi_tools::ops::Real::new(std::env::temp_dir());
-    let output = registry.call(
-        "hexe",
-        &serde_json::json!({}),
-        &ops,
-        &magi_tools::Uncancelled,
-    );
-    assert!(output.is_error, "a missing client is a real problem");
-    assert!(
-        output.content.contains("make configs"),
-        "{}",
-        output.content
-    );
-}
+// `hexe` and the missing-client case were tested here and are casper's now, along with the tool
+// itself. A test that kept asking magi's registry for `hexe` would fail for the right reason and
+// read as a regression: the tool is not missing, it moved.
+//
+// What is left is what magi still declares — `agent`, which reaches the other sessions through
+// melchior, and the memory tools balthasar registers into this session.
 
 /// A live `melchior serve`: the child, what it says, and the name it chose for itself.
 ///

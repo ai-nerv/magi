@@ -379,16 +379,23 @@ fn a_peer_that_cannot_start_says_why() {
 }
 
 #[test]
-fn the_shipped_config_names_the_binary_that_is_running() {
-    // `command = "magi"` resolves through PATH, so it finds whichever copy the shell sees --
-    // an older install, or none. `magi.self` is the one actually running.
-    // Read, not compiled in: the product reads its configuration and carries no copy.
+fn the_shipped_config_never_finds_magi_through_the_path() {
+    // `command = "magi"` resolves through PATH, so it finds whichever copy the shell sees -- an
+    // older install, or none. `magi.self` is the one actually running, and a declaration that
+    // needs magi must say so.
+    //
+    // This used to assert that `magi.self` was *present*, because the shell peer was this same
+    // binary under another name. The shell is casper's now and runs `sh` directly, so what is
+    // left to protect is the rule rather than the one tool that needed it: nothing here may
+    // reach for magi by name and hope PATH agrees.
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/tools.lua");
     let source = std::fs::read_to_string(&path).expect("the checkout's tools");
-    assert!(
-        source.contains("command = magi.self"),
-        "bash.lua must not rely on PATH"
-    );
+    for shape in ["command = \"magi\"", "command = 'magi'"] {
+        assert!(
+            !source.contains(shape),
+            "a declaration reaches magi through PATH: {shape}"
+        );
+    }
 }
 
 #[test]

@@ -18,25 +18,30 @@ pub fn print() -> Result<(), magi_lua::LuaError> {
 
     let engine = std::rc::Rc::new(std::cell::RefCell::new(engine));
     let mut registry = Registry::new();
-    magi_tools::builtin::install(&mut registry);
-    magi_lua::tool::install(
-        std::rc::Rc::clone(&engine),
-        &mut registry,
-        &Default::default(),
-    );
-    // casper's, after magi's own, and by the same rule the worker uses: registration is keyed,
-    // so a name declared in both places resolves to casper's. Listed here too because `magi
-    // tools` answers "what can the model call", and a listing that left them out would be
-    // answering a different question from the one a session acts on.
-    let mut from_casper = std::collections::BTreeSet::new();
+    // casper first, so anything nearer wins — the same order the worker uses, because a listing
+    // that disagreed with what a session runs would be answering a different question.
+    //
     // Nobody to ask: `magi tools` lists what exists and runs nothing, so a tool that would have
     // stopped to ask never gets the chance to.
+    let mut from_casper = std::collections::BTreeSet::new();
     for tool in magi_tools::casper::CasperTool::all(
         magi_tools::casper::CASPER,
         std::sync::Arc::new(magi_tools::question::Unanswered),
     ) {
         from_casper.insert(tool.name().to_owned());
         registry.register(Box::new(tool));
+    }
+    magi_tools::builtin::install(&mut registry);
+    magi_lua::tool::install(
+        std::rc::Rc::clone(&engine),
+        &mut registry,
+        &Default::default(),
+    );
+    // A name a config declared for itself is that config's, however far it also travelled.
+    for tool in registry.declarations() {
+        if from_casper.contains(&tool.name) && declared.iter().any(|(name, _)| *name == tool.name) {
+            from_casper.remove(&tool.name);
+        }
     }
     // Asked rather than assumed. `magi tools` answers "what can the model call", and the only
     // thing that knows what a peer offers is the peer.

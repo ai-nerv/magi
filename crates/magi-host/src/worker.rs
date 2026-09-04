@@ -97,22 +97,25 @@ impl Worker {
 
             let engine = std::rc::Rc::new(std::cell::RefCell::new(engine));
             let mut registry = magi_tools::Registry::new();
-            magi_tools::builtin::install(&mut registry);
-            magi_lua::tool::install(std::rc::Rc::clone(&engine), &mut registry, &backend.environ);
-            // casper's, after magi's own. Registration is keyed, so a name declared in both
-            // places resolves to casper's — which is the direction the tools are moving, and it
-            // means a tool can be lifted out of magi's config by deleting it rather than by
-            // deleting it *and* remembering to add it over there in the same breath.
+            // **casper first, so anything nearer wins.** Registration is keyed, so the last
+            // declaration of a name is the one that runs — and the order is a precedence rule:
+            // casper is the furthest away, the compiled-in floor is next, and a person's own
+            // `tools.lua` is nearest and beats both. A config that declares `shell` means it.
+            //
+            // It used to be last, which was right while the shipped config still declared the
+            // same names: a tool could then be lifted out of magi by deleting it. Nothing here
+            // declares them any more, so all that ordering did was override the person.
             //
             // Nothing when casper is not installed: a session then has exactly the tools it had
-            // before casper existed, which is what makes this safe to ship before anything is
-            // taken away.
+            // before casper existed.
             for tool in magi_tools::casper::CasperTool::all(
                 magi_tools::casper::CASPER,
                 std::sync::Arc::clone(&asks),
             ) {
                 registry.register(Box::new(tool));
             }
+            magi_tools::builtin::install(&mut registry);
+            magi_lua::tool::install(std::rc::Rc::clone(&engine), &mut registry, &backend.environ);
             // Gated when there is somebody to ask. The ledger starts with whatever the
             // configuration already granted, so a rule written down is not a question asked.
             let ops: std::rc::Rc<dyn magi_tools::Ops> = match (&approver, backend.confine) {
