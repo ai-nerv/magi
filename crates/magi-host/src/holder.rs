@@ -374,10 +374,11 @@ impl Holder {
             return Some(String::new());
         }
         match serde_json::from_str(line.trim()) {
-            Ok(FromSurface::Draw { lines }) => {
+            Ok(FromSurface::Draw { lines, cursor }) => {
                 (self.publish)(HarnessEvent::Drew {
                     id: id.clone(),
                     lines,
+                    cursor,
                 });
                 None
             }

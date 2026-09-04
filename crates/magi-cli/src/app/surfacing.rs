@@ -24,6 +24,12 @@ pub struct Surfacing {
     pub about: String,
     /// The last frame it drew.
     pub drawn: Vec<Vec<Span>>,
+    /// Where it asked for the terminal's own cursor, in its own coordinates.
+    ///
+    /// `None` for almost every surface: a game paints its own picture and wants nothing blinking
+    /// in it. A tenant that draws a field somebody types into asks for it, and then the caret an
+    /// IME and a screen reader follow is in the field rather than back in the prompt.
+    pub cursor: Option<magi_proto::tooling::At>,
 }
 
 impl super::App {
@@ -35,6 +41,7 @@ impl super::App {
             rows,
             about,
             drawn: Vec::new(),
+            cursor: None,
         });
     }
 
@@ -42,11 +49,19 @@ impl super::App {
     ///
     /// A frame for a surface that is not on screen is dropped. It belonged to rows that are gone,
     /// and drawing it into whatever is there now would put one tool's output inside another's.
-    pub(super) fn drew(&mut self, id: &ToolCallId, lines: Vec<Vec<Span>>) {
+    pub(super) fn drew(
+        &mut self,
+        id: &ToolCallId,
+        lines: Vec<Vec<Span>>,
+        cursor: Option<magi_proto::tooling::At>,
+    ) {
         if let Some(surface) = self.surface.as_mut()
             && surface.id == *id
         {
             surface.drawn = lines;
+            // Per frame, like the rows: a caret that stayed where the last frame put it would be
+            // one a tenant could never take back.
+            surface.cursor = cursor;
         }
     }
 
@@ -98,7 +113,7 @@ mod tests {
             8,
             "a game".to_owned(),
         );
-        app.drew(&ToolCallId::new("s0"), span("running"));
+        app.drew(&ToolCallId::new("s0"), span("running"), None);
         assert_eq!(app.holding().expect("held").drawn, span("running"));
     }
 
@@ -113,7 +128,7 @@ mod tests {
             8,
             "a game".to_owned(),
         );
-        app.drew(&ToolCallId::new("s0"), span("stale"));
+        app.drew(&ToolCallId::new("s0"), span("stale"), None);
         assert!(app.holding().expect("held").drawn.is_empty());
     }
 

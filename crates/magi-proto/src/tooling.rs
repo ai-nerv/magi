@@ -472,6 +472,19 @@ pub enum Button {
     Right,
 }
 
+/// A cell, in the coordinates of whatever names it.
+///
+/// Always the surface's own: row 0, column 0 is its top-left. The same convention in both
+/// directions, so a tenant told where a click landed can answer with where the cursor should go
+/// without converting anything.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct At {
+    /// Rows down from the surface's first row.
+    pub row: u16,
+    /// Columns across from the surface's first column.
+    pub col: u16,
+}
+
 /// What magi sends a surface while it holds its rows.
 ///
 /// Frames rather than calls: a surface redraws per keystroke, so the spawn lives for the length of
@@ -567,6 +580,14 @@ pub enum FromSurface {
     Draw {
         /// Each row, as the spans it is made of.
         lines: Vec<Vec<Span>>,
+        /// Where the terminal's own cursor belongs, in this surface's coordinates.
+        ///
+        /// `None` — almost always — leaves it in the prompt, where it was. A tenant that draws a
+        /// field somebody types into wants it here instead: the block a surface paints itself is
+        /// a picture of a cursor, and an IME candidate window and a screen reader both follow the
+        /// real one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<At>,
     },
     /// The surface is finished, and this is what the person chose.
     ///
@@ -702,6 +723,33 @@ mod surfacing {
                 row: 2,
                 col: 11,
             }
+        );
+    }
+
+    #[test]
+    fn a_frame_that_wants_no_cursor_says_nothing_about_one() {
+        // Nearly every frame. A `"cursor":null` on each one would be a field every reader has to
+        // look at to find out that no surface has ever used it.
+        let wire = serde_json::to_string(&FromSurface::Draw {
+            lines: vec![vec![Span::new(Role::Text, "hi")]],
+            cursor: None,
+        })
+        .expect("encodes");
+        assert!(!wire.contains("cursor"), "{wire}");
+    }
+
+    #[test]
+    fn a_tenant_that_wants_the_caret_says_where_in_its_own_rows() {
+        // The same coordinates a click arrives in, so a field can put the caret where the pointer
+        // just landed without converting anything.
+        let drew = FromSurface::Draw {
+            lines: vec![vec![Span::new(Role::Text, "name: ")]],
+            cursor: Some(At { row: 0, col: 6 }),
+        };
+        let wire = serde_json::to_string(&drew).expect("encodes");
+        assert_eq!(
+            serde_json::from_str::<FromSurface>(&wire).expect("decodes"),
+            drew
         );
     }
 

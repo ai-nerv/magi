@@ -515,6 +515,12 @@ pub enum HarnessEvent {
         id: ToolCallId,
         /// The rows, in the same roles everything else is painted in.
         lines: Vec<Vec<crate::tooling::Span>>,
+        /// Where the terminal's own cursor belongs, in the surface's coordinates.
+        ///
+        /// `None` leaves it in the prompt. Carried through rather than resolved here, because the
+        /// session has no screen: only the client that drew the rows knows where they landed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<crate::tooling::At>,
     },
     /// A surface has finished and its rows are given back.
     Unsurfaced {

@@ -544,7 +544,7 @@ impl App {
                 about,
                 ..
             } => self.surfaced(id, tool, rows, about),
-            HarnessEvent::Drew { id, lines } => self.drew(&id, lines),
+            HarnessEvent::Drew { id, lines, cursor } => self.drew(&id, lines, cursor),
             HarnessEvent::Unsurfaced { id, .. } => self.unsurfaced(&id),
             // A permission answered on a surface. Remembered here because a session lends what it
             // holds to a child, and this one was decided on the tool thread without passing

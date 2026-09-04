@@ -282,6 +282,17 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
         magi_tui::select::over(frame.buffer_mut(), selection);
     }
 
+    // **A tenant that asked for the cursor gets it.** While a surface holds the keyboard the
+    // prompt is not where you are typing, so leaving the caret parked in it points an IME and a
+    // screen reader at a box nothing is going into. Only when it asks: a game wants nothing
+    // blinking in its picture, and that is nearly every surface.
+    if let Some((rect, at)) = app.surface_rect.zip(app.holding().and_then(|held| held.cursor)) {
+        frame.set_cursor_position((
+            rect.x + at.col.min(rect.width.saturating_sub(1)),
+            rect.y + at.row.min(rect.height.saturating_sub(1)),
+        ));
+        return;
+    }
     place_hardware_cursor(frame, app, prompt_area, rows, &badge);
 }
 
@@ -486,5 +497,110 @@ mod inside_the_box {
             .position(|row| row.contains(":model"))
             .expect("what it offered");
         assert!(offered < bottom, "the menu fell out of the box: {rows:#?}");
+    }
+}
+
+/// Where a surface landed, which is what a click on it is measured against.
+///
+/// The one thing in the whole surface path that can be silently wrong: an off-by-one here is a
+/// game that jumps when you click one row above it, and nothing about the picture says so.
+#[cfg(test)]
+mod where_the_rows_landed {
+    use super::*;
+    use magi_proto::tooling::{At, Role, Span};
+    use magi_proto::{Cursor, HarnessEvent, ToolCallId};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    /// A screen with a two-row surface open, drawing `MARK` on its second row.
+    const MARK: &str = "second-row";
+
+    fn played(cursor: Option<At>) -> (App, Terminal<TestBackend>) {
+        let mut app = App::new();
+        app.apply(HarnessEvent::Surfaced {
+            cursor: Cursor(1),
+            id: ToolCallId::new("s0"),
+            tool: "dino".to_owned(),
+            rows: 2,
+            about: "a game".to_owned(),
+        });
+        app.apply(HarnessEvent::Drew {
+            id: ToolCallId::new("s0"),
+            lines: vec![
+                vec![Span::new(Role::Text, "first")],
+                vec![Span::new(Role::Text, MARK)],
+            ],
+            cursor,
+        });
+        let footer = FooterData::default();
+        let mut terminal = Terminal::new(TestBackend::new(60, 16)).expect("test terminal");
+        terminal
+            .draw(|frame| draw(frame, &mut app, &footer))
+            .expect("draw");
+        (app, terminal)
+    }
+
+    fn rows(terminal: &Terminal<TestBackend>) -> Vec<String> {
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .chunks(60)
+            .map(|row| row.iter().map(ratatui::buffer::Cell::symbol).collect())
+            .collect()
+    }
+
+    #[test]
+    fn the_rect_names_the_rows_the_tenant_actually_drew_on() {
+        // Checked against the frame rather than against the arithmetic that produced it. The two
+        // agreeing is the whole claim: a click at screen row `rect.y + 1` is the tenant's row 1.
+        let (app, terminal) = played(None);
+        let drawn = rows(&terminal);
+        let rect = app.surface_rect.expect("the rows were recorded");
+        let mark = drawn
+            .iter()
+            .position(|row| row.contains(MARK))
+            .expect("the tenant's second row is on screen");
+        assert_eq!(usize::from(rect.y) + 1, mark, "{drawn:#?}");
+        assert_eq!(rect.height, 2, "both rows, and no more");
+        // And the column. Counted in characters, because the side of the box is three bytes.
+        let from: String = drawn[mark].chars().skip(usize::from(rect.x)).collect();
+        assert!(
+            from.starts_with(MARK),
+            "{:?} does not begin at column {}",
+            drawn[mark],
+            rect.x
+        );
+    }
+
+    #[test]
+    fn a_click_on_the_row_it_drew_arrives_as_that_row() {
+        // The round trip: screen coordinates in, the tenant's own out.
+        let (app, _drawn) = played(None);
+        let rect = app.surface_rect.expect("the rows were recorded");
+        assert_eq!(app.pointed_at(rect.y + 1, rect.x + 3), Some((1, 3)));
+    }
+
+    #[test]
+    fn a_tenant_that_asked_for_the_caret_gets_it_in_its_own_rows() {
+        let (app, mut terminal) = played(Some(At { row: 1, col: 4 }));
+        let rect = app.surface_rect.expect("the rows were recorded");
+        assert_eq!(
+            terminal.get_cursor_position().expect("a cursor"),
+            ratatui::layout::Position {
+                x: rect.x + 4,
+                y: rect.y + 1
+            }
+        );
+    }
+
+    #[test]
+    fn a_surface_that_asked_for_nothing_leaves_the_caret_in_the_prompt() {
+        // Nearly every one. A game wants nothing blinking in its picture.
+        let (_, mut terminal) = played(None);
+        let at = terminal.get_cursor_position().expect("a cursor");
+        // Row 1 of the box, which is the text row -- above the divider, and so above the surface.
+        let rect = played(None).0.surface_rect.expect("recorded");
+        assert!(at.y < rect.y, "the caret went into the tenant's rows");
     }
 }
