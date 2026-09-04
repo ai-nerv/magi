@@ -11,7 +11,9 @@ pub mod ask;
 mod ids;
 pub mod permit;
 pub mod setup;
+pub mod surfacing;
 pub mod tooling;
+pub mod wondering;
 
 pub use ids::{MessageId, SessionId, ToolCallId};
 // Re-exported: it is what a tool produced, so it lives beside the rest of that contract, and
@@ -520,7 +522,7 @@ pub enum HarnessEvent {
         /// `None` leaves it in the prompt. Carried through rather than resolved here, because the
         /// session has no screen: only the client that drew the rows knows where they landed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        cursor: Option<crate::tooling::At>,
+        cursor: Option<crate::surfacing::At>,
     },
     /// A surface has finished and its rows are given back.
     Unsurfaced {

@@ -12,10 +12,11 @@
 //! **magi reserves; the tenant draws.** What comes back is blitted without being read. magi could
 //! not tell a permission prompt from a game if it wanted to, and it does not want to.
 
-use magi_proto::tooling::{FromSurface, Surface, ToSurface};
+use magi_proto::surfacing::{FromSurface, ToSurface};
+use magi_proto::tooling::Surface;
 use magi_proto::{Cursor, HarnessEvent, ToolCallId};
 use std::io::{BufRead, Write};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// How long a surface may hold the screen with nobody touching it.
@@ -30,249 +31,26 @@ const PATIENCE: Duration = Duration::from_secs(900);
 /// surface that wants no ticks simply is not sent one when this elapses.
 const IDLE: Duration = Duration::from_millis(250);
 
-/// Something for an open surface to wake up about.
-///
-/// Two things reach a tenant from outside its own clock, and both arrive on one channel because
-/// the loop that reads them is the loop that blocks: a second source would need a second thread to
-/// wait on it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Nudge {
-    /// A key the person pressed.
-    Key(String, magi_proto::tooling::Held),
-    /// The pointer, in the surface's own coordinates.
-    ///
-    /// Translated before it got here, by the only thing that knows where the rows landed. What
-    /// arrives is a row and a column inside the reservation, and anything outside it never
-    /// arrives at all.
-    Pointer(
-        magi_proto::tooling::Pointed,
-        Option<magi_proto::tooling::Button>,
-        u16,
-        u16,
-    ),
-    /// The room under it changed, because the window or the prompt did.
-    ///
-    /// **Width is the terminal's, height is magi's — but neither is promised once.** The width
-    /// travels here, because it is whatever the window happens to be and nothing else knows it.
-    /// The height does not: it is a grant, so it is worked out again where grants are made, out of
-    /// the room now reported. Otherwise the number would be decided in two places.
-    Room(u16, bool),
-}
-
-/// Surfaces currently on screen, and what reaches them.
-#[derive(Default)]
-pub struct Holding {
-    typing: Mutex<std::collections::HashMap<ToolCallId, std::sync::mpsc::Sender<Nudge>>>,
-    /// How wide the screen is, as the client last reported it.
-    ///
-    /// Zero until one says. The session has no terminal of its own, and a tenant told a width
-    /// nobody measured lays itself out for a screen that is not there.
-    cols: std::sync::atomic::AtomicU16,
-    /// How many rows a surface could be drawn in, as the client last reported them.
-    ///
-    /// Meaningless until [`Holding::measured`] is set, because zero is a real answer here — a
-    /// window short enough to have no room at all — and one that has to be told apart from nobody
-    /// having said yet.
-    rows: std::sync::atomic::AtomicU16,
-    /// Whether any client has reported its room.
-    ///
-    /// Before the first [`Holding::sized`] a tool gets what it asked for. It is the only honest
-    /// answer: refusing would deny a surface on a screen that has room for it, and granting a
-    /// measured zero would deny one on the strength of a number nobody supplied.
-    measured: std::sync::atomic::AtomicBool,
-    /// How many attached clients can draw rows a tool asks for.
-    ///
-    /// A count rather than a flag, because a session may be attached to twice: a surface is worth
-    /// reserving while at least one client that can draw one is still there.
-    screens: std::sync::atomic::AtomicUsize,
-    /// Whether the screen can report a key being held.
-    ///
-    /// The Kitty keyboard protocol. A tenant is told at open, so one that would otherwise wait for
-    /// a release knows there is never going to be one here and can behave accordingly rather than
-    /// look broken on the terminals that cannot send one.
-    holds: std::sync::atomic::AtomicBool,
-}
-
-/// One attached client's ability to draw, for as long as it is attached.
-///
-/// A guard rather than a pair of calls, because the interesting case is the connection that ends
-/// without saying so — a UI that was killed — and a decrement somebody has to remember is a
-/// decrement that gets skipped exactly then.
-pub struct Drawing<'a> {
-    held: Option<&'a Holding>,
-}
-
-impl<'a> Drawing<'a> {
-    /// Count this client, if it draws.
-    #[must_use]
-    pub fn attach(held: &'a Holding, draws: bool) -> Self {
-        if draws {
-            held.screens
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-        Self {
-            held: draws.then_some(held),
-        }
-    }
-}
-
-impl Drop for Drawing<'_> {
-    fn drop(&mut self) {
-        if let Some(held) = self.held {
-            held.screens
-                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-        }
-    }
-}
-
-impl Holding {
-    /// Nothing held.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Deliver a key to the surface it was meant for.
-    ///
-    /// A key for a surface nobody is holding is dropped rather than queued: it belonged to rows
-    /// that are gone, and delivering it to whatever holds them now would be acting on a keypress
-    /// the person aimed somewhere else.
-    pub fn keyed(&self, id: &ToolCallId, key: String, state: magi_proto::tooling::Held) {
-        if let Ok(typing) = self.typing.lock()
-            && let Some(sender) = typing.get(id)
-        {
-            let _ = sender.send(Nudge::Key(key, state));
-        }
-    }
-
-    /// Deliver a pointer event to the surface it landed in.
-    ///
-    /// Dropped for a surface nobody holds, for the same reason a key is: those rows are gone, and
-    /// whatever is there now is not what the person clicked on.
-    pub fn moused(
-        &self,
-        id: &ToolCallId,
-        kind: magi_proto::tooling::Pointed,
-        button: Option<magi_proto::tooling::Button>,
-        row: u16,
-        col: u16,
-    ) {
-        if let Ok(typing) = self.typing.lock()
-            && let Some(sender) = typing.get(id)
-        {
-            let _ = sender.send(Nudge::Pointer(kind, button, row, col));
-        }
-    }
-
-    /// Register a surface and hand back the end its nudges arrive on.
-    fn opening(&self, id: ToolCallId) -> Option<std::sync::mpsc::Receiver<Nudge>> {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        self.typing.lock().ok()?.insert(id, sender);
-        Some(receiver)
-    }
-
-    /// Forget one, so its rows are not held for a session that has moved on.
-    fn close(&self, id: &ToolCallId) {
-        if let Ok(mut typing) = self.typing.lock() {
-            typing.remove(id);
-        }
-    }
-
-    /// Whether anybody attached can draw rows a tool asks for.
-    #[must_use]
-    pub fn on_a_screen(&self) -> bool {
-        self.screens.load(std::sync::atomic::Ordering::Relaxed) > 0
-    }
-
-    /// Whether the screen can report a key being held.
-    #[must_use]
-    pub fn reports_holds(&self) -> bool {
-        self.holds.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// Note how much room the screen has and what its keyboard can say, and tell anything drawing
-    /// on it.
-    ///
-    /// Told rather than left to be read: a tenant is asleep between frames, and one that only
-    /// learned the width when it next happened to wake would draw at the old one until then.
-    pub fn sized(&self, rows: Option<u16>, cols: u16, holds: bool) {
-        // **Any of the three can be news.** The width and the room change when the window does;
-        // what the keyboard can say changes the first time a repeat or a release arrives, which may
-        // be long after a surface opened. Waking only on the width would leave a game that had just
-        // been proved able to read a hold still offering the control it had at open.
-        let grew = self.cols.swap(cols, std::sync::atomic::Ordering::Relaxed) != cols;
-        // Both swaps, then the question. Written as one `||` the second never ran once the first
-        // was true, so the very first report — which always changes the room — was the one that
-        // left `measured` unset, and every grant after it was made as though nobody had looked.
-        let room = rows.is_some_and(|rows| {
-            let moved = self.rows.swap(rows, std::sync::atomic::Ordering::Relaxed) != rows;
-            let first = !self
-                .measured
-                .swap(true, std::sync::atomic::Ordering::Relaxed);
-            moved || first
-        });
-        let learned = !self.holds.swap(holds, std::sync::atomic::Ordering::Relaxed) && holds;
-        if !grew && !room && !learned {
-            return;
-        }
-        if let Ok(typing) = self.typing.lock() {
-            for sender in typing.values() {
-                let _ = sender.send(Nudge::Room(cols, holds));
-            }
-        }
-    }
-
-    /// How wide a surface may draw, falling back to a width most terminals have.
-    ///
-    /// The fallback is for the moment before the first client says: a tenant asked to lay itself
-    /// out for zero columns would draw nothing at all.
-    #[must_use]
-    pub fn across(&self) -> u16 {
-        match self.cols.load(std::sync::atomic::Ordering::Relaxed) {
-            0 => 80,
-            cols => cols,
-        }
-    }
-
-    /// How many rows there are to grant, or `None` while nobody has measured.
-    ///
-    /// No fallback, unlike the width. A made-up width costs a tenant one badly wrapped frame; a
-    /// made-up height is a tenant laying itself out below the bottom of the screen, believing the
-    /// rows are there, and reading keys aimed at the part of it nobody can see.
-    #[must_use]
-    pub fn down(&self) -> Option<u16> {
-        self.measured
-            .load(std::sync::atomic::Ordering::Relaxed)
-            .then(|| self.rows.load(std::sync::atomic::Ordering::Relaxed))
-    }
-
-    /// The rows a surface asking for `wanted` may actually have.
-    ///
-    /// **The grant is the smaller of what was asked and what is there.** A tool asks for the size
-    /// it would like to be; only magi knows what else is on the screen, and it is the one that
-    /// says. `None` is a screen with no room at all, where the honest answer is that this surface
-    /// cannot open rather than that it opened into nothing.
-    #[must_use]
-    pub fn granting(&self, wanted: u16) -> Option<u16> {
-        match self.down() {
-            None => Some(wanted),
-            Some(0) => None,
-            Some(room) => Some(wanted.min(room)),
-        }
-    }
-}
+/// Which surfaces are open, and what reaches them.
+mod holding;
+pub use holding::{Drawing, Holding, Nudge};
 
 /// Gives a tool rows by publishing, and drives its tenant over a spawn.
 pub struct Holder {
     held: Arc<Holding>,
     publish: Box<dyn Fn(HarnessEvent) + Send + Sync>,
     attached: Box<dyn Fn() -> bool + Send + Sync>,
+    knows: Arc<dyn magi_tools::holding::Answers>,
     program: String,
     next: std::sync::atomic::AtomicU64,
 }
 
 impl Holder {
     /// A holder that publishes through `publish` and spawns `program`.
+    ///
+    /// It answers nothing until it is given something that can — see [`Holder::knowing`]. A
+    /// holder built for a screen and nothing else is the ordinary case in a test, and one that
+    /// invented answers there would be one whose tests prove nothing.
     #[must_use]
     pub fn new(
         held: Arc<Holding>,
@@ -284,9 +62,17 @@ impl Holder {
             held,
             publish,
             attached,
+            knows: Arc::new(magi_tools::holding::Incurious),
             program: program.to_owned(),
             next: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+
+    /// Let its surfaces ask `knows` about the session.
+    #[must_use]
+    pub fn knowing(mut self, knows: Arc<dyn magi_tools::holding::Answers>) -> Self {
+        self.knows = knows;
+        self
     }
 }
 
@@ -366,7 +152,7 @@ impl Holder {
 
         // The first frame is drawn before anything is pressed, so the rows are filled the moment
         // they appear rather than looking empty until somebody types.
-        let mut answered = self.take(id, &mut reading);
+        let mut answered = self.take(id, &mut reading, &mut writing);
         let waiting = surface
             .tick
             .map_or(IDLE, |ms| Duration::from_millis(ms.into()));
@@ -409,7 +195,7 @@ impl Holder {
             if send(&mut writing, &frame).is_none() {
                 break;
             }
-            answered = self.take(id, &mut reading);
+            answered = self.take(id, &mut reading, &mut writing);
         }
 
         // Told rather than killed, so a tenant holding something can put it down. Killed after,
@@ -424,26 +210,53 @@ impl Holder {
     /// Read frames until the surface says it is done, publishing each one it drew.
     ///
     /// `None` while it is still drawing — the caller sends the next event and asks again.
-    fn take<R: BufRead>(&self, id: &ToolCallId, reading: &mut R) -> Option<String> {
-        let mut line = String::new();
-        if reading.read_line(&mut line).ok()? == 0 {
-            // The tenant closed its output: it exited, or it was killed. Either way the rows will
-            // not be filled again, and holding them would leave a hole nothing can close.
-            return Some(String::new());
-        }
-        match serde_json::from_str(line.trim()) {
-            Ok(FromSurface::Draw { lines, cursor }) => {
-                (self.publish)(HarnessEvent::Drew {
-                    id: id.clone(),
-                    lines,
-                    cursor,
-                });
-                None
+    fn take<R: BufRead, W: Write>(
+        &self,
+        id: &ToolCallId,
+        reading: &mut R,
+        writing: &mut W,
+    ) -> Option<String> {
+        // A question is not the tenant's turn. It asks, magi answers, and the frame it was going
+        // to send is still coming — so reading stops at the first thing that is not one, rather
+        // than treating an `Ask` as the frame this cycle was waiting for and leaving the surface
+        // a frame behind for the rest of its life.
+        loop {
+            let mut line = String::new();
+            if reading.read_line(&mut line).ok()? == 0 {
+                // The tenant closed its output: it exited, or it was killed. Either way the rows
+                // will not be filled again, and holding them would leave a hole nothing can close.
+                return Some(String::new());
             }
-            Ok(FromSurface::Done { answered }) => Some(answered),
-            // A frame this build cannot read is a newer casper saying something with no name here.
-            // Skipped rather than fatal, so the surface survives a protocol that grew.
-            Err(_) => None,
+            match serde_json::from_str(line.trim()) {
+                Ok(FromSurface::Draw { lines, cursor }) => {
+                    (self.publish)(HarnessEvent::Drew {
+                        id: id.clone(),
+                        lines,
+                        cursor,
+                    });
+                    return None;
+                }
+                Ok(FromSurface::Done { answered }) => return Some(answered),
+                Ok(FromSurface::Ask {
+                    wondered,
+                    wonder,
+                    args,
+                }) => {
+                    let answered = match magi_proto::wondering::Wonder::named(&wonder) {
+                        Some(wonder) => self.knows.answer(wonder, &args),
+                        // A newer casper asking something with no name here. Told rather than
+                        // dropped: silence and a refusal look identical from inside a tenant,
+                        // right up until it is still waiting.
+                        None => magi_proto::wondering::Answered::Refused {
+                            because: format!("this magi has no `{wonder}` to ask about"),
+                        },
+                    };
+                    send(writing, &ToSurface::Answer { wondered, answered })?;
+                }
+                // A frame this build cannot read is a newer casper saying something with no name
+                // here. Skipped rather than fatal, so the surface survives a protocol that grew.
+                Err(_) => return None,
+            }
         }
     }
 }
@@ -461,121 +274,7 @@ fn send<W: Write>(writing: &mut W, frame: &ToSurface) -> Option<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use magi_proto::tooling::Held;
-
-    #[test]
-    fn a_key_for_a_surface_nobody_holds_is_dropped() {
-        // Its rows are gone. Delivering it to whatever holds them now would act on a keypress the
-        // person aimed somewhere else entirely.
-        let held = Holding::new();
-        held.keyed(&ToolCallId::new("gone"), "j".to_owned(), Held::Down);
-    }
-
-    #[test]
-    fn a_key_reaches_the_surface_it_was_meant_for() {
-        let held = Holding::new();
-        let keys = held.opening(ToolCallId::new("s0")).expect("registered");
-        held.keyed(&ToolCallId::new("s0"), "space".to_owned(), Held::Down);
-        assert_eq!(
-            keys.recv_timeout(Duration::from_secs(1)).ok(),
-            Some(Nudge::Key("space".to_owned(), Held::Down))
-        );
-    }
-
-    #[test]
-    fn the_pointer_reaches_the_surface_it_landed_in() {
-        use magi_proto::tooling::{Button, Pointed};
-        let held = Holding::new();
-        let nudges = held.opening(ToolCallId::new("s0")).expect("registered");
-        held.moused(
-            &ToolCallId::new("s0"),
-            Pointed::Press,
-            Some(Button::Left),
-            2,
-            11,
-        );
-        assert_eq!(
-            nudges.recv_timeout(Duration::from_secs(1)).ok(),
-            Some(Nudge::Pointer(Pointed::Press, Some(Button::Left), 2, 11))
-        );
-    }
-
-    #[test]
-    fn a_click_on_rows_nobody_holds_is_dropped() {
-        // The same rule a key follows. Those rows are gone, and whatever is drawn there now is
-        // not what the person aimed at.
-        use magi_proto::tooling::Pointed;
-        let held = Holding::new();
-        held.moused(&ToolCallId::new("gone"), Pointed::Press, None, 0, 0);
-    }
-
-    #[test]
-    fn a_width_that_changed_reaches_everything_drawing() {
-        // Told rather than left to be read. A tenant is asleep between frames, and one that only
-        // learned the width when it next happened to wake would draw at the old one until then.
-        let held = Holding::new();
-        let nudges = held.opening(ToolCallId::new("s0")).expect("registered");
-        held.sized(Some(20), 120, false);
-        assert_eq!(
-            nudges.recv_timeout(Duration::from_secs(1)).ok(),
-            Some(Nudge::Room(120, false))
-        );
-        assert_eq!(held.across(), 120);
-    }
-
-    #[test]
-    fn a_width_that_did_not_change_wakes_nothing() {
-        // A redraw sends the size every frame. Forwarding each one would wake a tenant on every
-        // keystroke anybody typed anywhere, to tell it something it already knows.
-        let held = Holding::new();
-        held.sized(Some(20), 120, false);
-        let nudges = held.opening(ToolCallId::new("s0")).expect("registered");
-        held.sized(Some(20), 120, false);
-        assert!(nudges.recv_timeout(Duration::from_millis(50)).is_err());
-    }
-
-    #[test]
-    fn a_width_nobody_has_measured_is_one_a_tenant_can_draw_in() {
-        // Before the first client says. A tenant asked to lay itself out for zero columns would
-        // draw nothing at all.
-        assert_eq!(Holding::new().across(), 80);
-    }
-
-    #[test]
-    fn the_room_that_shrank_reaches_everything_drawing() {
-        // The room changes without the width doing: a prompt that grew a line took a row off
-        // every surface on the screen, and a tenant not told is one drawing below the fold.
-        let held = Holding::new();
-        held.sized(Some(20), 120, false);
-        let nudges = held.opening(ToolCallId::new("s0")).expect("registered");
-        held.sized(Some(6), 120, false);
-        assert_eq!(
-            nudges.recv_timeout(Duration::from_secs(1)).ok(),
-            Some(Nudge::Room(120, false))
-        );
-    }
-
-    #[test]
-    fn a_grant_is_the_smaller_of_what_was_asked_and_what_is_there() {
-        let held = Holding::new();
-        // Nobody has measured, so what was asked for is the only number there is.
-        assert_eq!(held.granting(8), Some(8));
-        held.sized(Some(20), 120, false);
-        assert_eq!(held.granting(8), Some(8), "there is room for all of it");
-        held.sized(Some(3), 120, false);
-        assert_eq!(held.granting(8), Some(3), "there is room for three rows");
-        held.sized(Some(0), 120, false);
-        assert_eq!(held.granting(8), None, "a screen with no room grants none");
-    }
-
-    #[test]
-    fn a_closed_surface_stops_taking_keys() {
-        let held = Holding::new();
-        let keys = held.opening(ToolCallId::new("s0")).expect("registered");
-        held.close(&ToolCallId::new("s0"));
-        held.keyed(&ToolCallId::new("s0"), "j".to_owned(), Held::Down);
-        assert!(keys.recv_timeout(Duration::from_millis(50)).is_err());
-    }
+    use std::sync::Mutex;
 
     #[test]
     fn nobody_attached_reserves_nothing() {
@@ -600,10 +299,13 @@ mod tests {
     }
 
     /// A holder on a screen with `room` rows, and everything it published.
+    ///
+    /// The screen is counted with a [`Drawing`] that is deliberately leaked: it stands for a UI
+    /// that is attached for as long as the test runs, and one dropped at the end of this function
+    /// would be a client that detached before the surface opened.
     fn on_a_screen_of(room: u16) -> (Arc<Holding>, Holder, Arc<Mutex<Vec<HarnessEvent>>>) {
         let held = Arc::new(Holding::new());
-        held.screens
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::mem::forget(Drawing::attach(&held, true));
         held.sized(Some(room), 120, false);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let kept = Arc::clone(&seen);
@@ -671,7 +373,7 @@ mod tests {
         );
         let mut empty = std::io::BufReader::new(&b""[..]);
         assert_eq!(
-            holder.take(&ToolCallId::new("s0"), &mut empty),
+            holder.take(&ToolCallId::new("s0"), &mut empty, &mut Vec::new()),
             Some(String::new())
         );
     }
@@ -687,7 +389,93 @@ mod tests {
             "casper",
         );
         let mut odd = std::io::BufReader::new(&b"{\"from\":\"something_new\"}\n"[..]);
-        assert_eq!(holder.take(&ToolCallId::new("s0"), &mut odd), None);
+        assert_eq!(
+            holder.take(&ToolCallId::new("s0"), &mut odd, &mut Vec::new()),
+            None
+        );
+    }
+
+    #[test]
+    fn a_question_is_answered_without_costing_the_surface_its_frame() {
+        // The whole ask-back channel in one read. A tenant asks, magi answers, and the frame the
+        // tenant was already sending still arrives — reading the question as though it were that
+        // frame would leave the surface one behind for the rest of its life.
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let kept = Arc::clone(&seen);
+        let holder = Holder::new(
+            Arc::new(Holding::new()),
+            Box::new(move |event| kept.lock().expect("held").push(event)),
+            Box::new(|| true),
+            "casper",
+        )
+        .knowing(Arc::new(crate::knowing::Knows::of(
+            &magi_proto::SessionId::new("s-7"),
+            "/tmp/project",
+        )));
+
+        let said = concat!(
+            r#"{"from":"ask","wondered":3,"wonder":"session"}"#,
+            "\n",
+            r#"{"from":"draw","lines":[[{"role":"text","text":"hi"}]]}"#,
+            "\n"
+        );
+        let mut both = std::io::BufReader::new(said.as_bytes());
+        let mut answered = Vec::new();
+        assert_eq!(
+            holder.take(&ToolCallId::new("s0"), &mut both, &mut answered),
+            None,
+            "the draw was the frame, not the question"
+        );
+        let back: ToSurface =
+            serde_json::from_slice(answered.trim_ascii_end()).expect("an answer was written");
+        let ToSurface::Answer {
+            wondered,
+            answered: magi_proto::wondering::Answered::Told { said },
+        } = back
+        else {
+            panic!("a session always knows which one it is: {back:?}");
+        };
+        assert_eq!(wondered, magi_proto::wondering::Wondered(3));
+        assert_eq!(said["id"], "s-7");
+        assert!(matches!(
+            seen.lock().expect("held").first(),
+            Some(HarnessEvent::Drew { .. })
+        ));
+    }
+
+    #[test]
+    fn a_verb_this_magi_does_not_know_is_refused_by_name() {
+        // Silence and a refusal look the same from inside a tenant, right up until it is still
+        // waiting. A newer casper asking something with no name here is told so, and told which
+        // of its questions went unanswered.
+        let holder = Holder::new(
+            Arc::new(Holding::new()),
+            Box::new(|_| {}),
+            Box::new(|| true),
+            "casper",
+        );
+        let asked = concat!(
+            r#"{"from":"ask","wondered":1,"wonder":"siblings"}"#,
+            "\n",
+            r#"{"from":"done","answered":"once"}"#,
+            "\n"
+        );
+        let mut both = std::io::BufReader::new(asked.as_bytes());
+        let mut answered = Vec::new();
+        assert_eq!(
+            holder.take(&ToolCallId::new("s0"), &mut both, &mut answered),
+            Some("once".to_owned())
+        );
+        let back: ToSurface =
+            serde_json::from_slice(answered.trim_ascii_end()).expect("an answer was written");
+        let ToSurface::Answer {
+            answered: magi_proto::wondering::Answered::Refused { because },
+            ..
+        } = back
+        else {
+            panic!("there is no such verb here: {back:?}");
+        };
+        assert!(because.contains("siblings"), "{because}");
     }
 
     #[test]
@@ -704,72 +492,13 @@ mod tests {
         );
         let drew = br#"{"from":"draw","lines":[[{"role":"text","text":"hi"}]]}"#;
         let mut one = std::io::BufReader::new(&drew[..]);
-        assert_eq!(holder.take(&ToolCallId::new("s0"), &mut one), None);
+        assert_eq!(
+            holder.take(&ToolCallId::new("s0"), &mut one, &mut Vec::new()),
+            None
+        );
         assert!(matches!(
             seen.lock().expect("held").first(),
             Some(HarnessEvent::Drew { .. })
         ));
-    }
-}
-
-/// Who can be given rows, and who cannot.
-#[cfg(test)]
-mod screens {
-    use super::*;
-
-    #[test]
-    fn a_client_that_cannot_draw_is_not_a_screen() {
-        // `magi -p`. Reserving rows for it would hold the turn open until the surface timed out,
-        // waiting on a keypress from a terminal that is not there.
-        let held = Holding::new();
-        let _print = Drawing::attach(&held, false);
-        assert!(!held.on_a_screen());
-    }
-
-    #[test]
-    fn a_ui_is_a_screen_for_as_long_as_it_is_attached() {
-        let held = Holding::new();
-        {
-            let _ui = Drawing::attach(&held, true);
-            assert!(held.on_a_screen());
-        }
-        // Dropped with the connection, so a UI that was killed takes its screen with it rather
-        // than leaving the session believing there is still one.
-        assert!(!held.on_a_screen());
-    }
-
-    #[test]
-    fn one_screen_among_several_clients_is_enough() {
-        // A session can be attached to twice. A surface is worth reserving while at least one
-        // client that can draw it is still there.
-        let held = Holding::new();
-        let _print = Drawing::attach(&held, false);
-        let ui = Drawing::attach(&held, true);
-        assert!(held.on_a_screen());
-        drop(ui);
-        assert!(!held.on_a_screen());
-    }
-
-    #[test]
-    fn nothing_is_reserved_when_no_screen_can_draw_it() {
-        use magi_tools::holding::Holds;
-        let held = Arc::new(Holding::new());
-        let holder = Holder::new(
-            Arc::clone(&held),
-            Box::new(|_| {}),
-            // Attached — something is listening to events — but nothing that can draw.
-            Box::new(|| true),
-            "casper",
-        );
-        let _print = Drawing::attach(&held, false);
-        let surface = Surface {
-            rows: 8,
-            about: "a game".to_owned(),
-            tick: Some(60),
-        };
-        assert_eq!(
-            holder.hold("dino", &surface, &serde_json::Value::Null),
-            None
-        );
     }
 }

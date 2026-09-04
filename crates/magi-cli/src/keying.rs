@@ -132,12 +132,12 @@ mod probe {
 /// What this key event did: went down, repeated, or came back up.
 ///
 /// A terminal that does not speak the Kitty protocol only ever sends presses, so everything is
-/// [`magi_proto::tooling::Held::Down`] there — which is what a tenant reading only `down`
+/// [`magi_proto::surfacing::Held::Down`] there — which is what a tenant reading only `down`
 /// already expects.
 #[must_use]
-pub fn held(key: KeyEvent) -> magi_proto::tooling::Held {
+pub fn held(key: KeyEvent) -> magi_proto::surfacing::Held {
     use crossterm::event::KeyEventKind;
-    use magi_proto::tooling::Held;
+    use magi_proto::surfacing::Held;
     match key.kind {
         KeyEventKind::Press => Held::Down,
         KeyEventKind::Repeat => Held::Repeat,
@@ -154,11 +154,11 @@ pub fn held(key: KeyEvent) -> magi_proto::tooling::Held {
 pub fn pointed(
     kind: crossterm::event::MouseEventKind,
 ) -> Option<(
-    magi_proto::tooling::Pointed,
-    Option<magi_proto::tooling::Button>,
+    magi_proto::surfacing::Pointed,
+    Option<magi_proto::surfacing::Button>,
 )> {
     use crossterm::event::{MouseButton, MouseEventKind};
-    use magi_proto::tooling::{Button, Pointed};
+    use magi_proto::surfacing::{Button, Pointed};
     let button = |which| {
         Some(match which {
             MouseButton::Left => Button::Left,
@@ -185,7 +185,7 @@ pub fn pointed(
 #[cfg(test)]
 mod forwarding {
     use super::*;
-    use magi_proto::tooling::Held;
+    use magi_proto::surfacing::Held;
 
     fn kind(kind: crossterm::event::KeyEventKind) -> KeyEvent {
         KeyEvent::new_with_kind(KeyCode::Char(' '), KeyModifiers::NONE, kind)
@@ -216,7 +216,7 @@ mod forwarding {
         // A tenant that could not tell them apart could not have a button you hold, which is what
         // both games use the pointer for.
         use crossterm::event::{MouseButton, MouseEventKind};
-        use magi_proto::tooling::{Button, Pointed};
+        use magi_proto::surfacing::{Button, Pointed};
         assert_eq!(
             pointed(MouseEventKind::Down(MouseButton::Left)),
             Some((Pointed::Press, Some(Button::Left)))
@@ -234,7 +234,7 @@ mod forwarding {
     #[test]
     fn motion_and_the_wheel_have_no_button_to_report() {
         use crossterm::event::MouseEventKind;
-        use magi_proto::tooling::Pointed;
+        use magi_proto::surfacing::Pointed;
         assert_eq!(pointed(MouseEventKind::Moved), Some((Pointed::Moved, None)));
         assert_eq!(
             pointed(MouseEventKind::ScrollDown),

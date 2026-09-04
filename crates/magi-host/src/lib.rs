@@ -16,6 +16,7 @@ pub mod context;
 pub mod declaring;
 pub mod driving;
 pub mod holder;
+pub mod knowing;
 pub mod paths;
 pub mod remember;
 pub mod scribe;
@@ -162,17 +163,34 @@ pub async fn serve_on(
     // Built before the asker, because the asker draws its permission prompt on one: the prompt is
     // casper's now, and magi keeps only the deciding.
     let holding = Arc::new(crate::holder::Holding::new());
+    // What a surface may ask back. Questions it cannot answer out of its own memory go to a task
+    // of the session's own rather than to a connection's loop: a tenant asked its question of
+    // magi, not of whichever UI happened to be attached when it thought of it.
+    let knows = {
+        let (asking, asked) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(crate::knowing::serve(
+            asked,
+            Arc::clone(&scribe),
+            Arc::clone(&session),
+        ));
+        let held = session.lock().await;
+        let cwd = catalog.cwd.display().to_string();
+        Arc::new(crate::knowing::Knows::of(held.id(), &cwd).asking(asking))
+    };
     let holds: Arc<dyn magi_tools::holding::Holds> = {
         let events = session.lock().await.publisher();
         let watched = events.clone();
-        Arc::new(crate::holder::Holder::new(
-            Arc::clone(&holding),
-            Box::new(move |event| {
-                let _ = events.send(event);
-            }),
-            Box::new(move || watched.receiver_count() > 0),
-            magi_tools::casper::CASPER,
-        ))
+        Arc::new(
+            crate::holder::Holder::new(
+                Arc::clone(&holding),
+                Box::new(move |event| {
+                    let _ = events.send(event);
+                }),
+                Box::new(move || watched.receiver_count() > 0),
+                magi_tools::casper::CASPER,
+            )
+            .knowing(Arc::clone(&knows) as Arc<dyn magi_tools::holding::Answers>),
+        )
     };
     let asker = {
         let events = session.lock().await.publisher();

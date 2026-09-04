@@ -525,7 +525,8 @@ mod inside_the_box {
 #[cfg(test)]
 mod where_the_rows_landed {
     use super::*;
-    use magi_proto::tooling::{At, Role, Span};
+    use magi_proto::surfacing::At;
+    use magi_proto::tooling::{Role, Span};
     use magi_proto::{Cursor, HarnessEvent, ToolCallId};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;

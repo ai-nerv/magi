@@ -133,7 +133,7 @@ pub enum UiCommand {
         key: String,
         /// Whether it went down, repeated, or came back up.
         #[serde(default)]
-        state: crate::tooling::Held,
+        state: crate::surfacing::Held,
     },
     /// The pointer, over rows a surface holds.
     ///
@@ -144,10 +144,10 @@ pub enum UiCommand {
         /// Which surface it was meant for.
         id: ToolCallId,
         /// What the pointer did.
-        kind: crate::tooling::Pointed,
+        kind: crate::surfacing::Pointed,
         /// Which button, for the things a button does.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        button: Option<crate::tooling::Button>,
+        button: Option<crate::surfacing::Button>,
         /// Rows down from the surface's own first row.
         row: u16,
         /// Columns across from the surface's own first column.
