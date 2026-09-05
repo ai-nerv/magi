@@ -305,14 +305,25 @@ mod tests {
 
     #[test]
     fn only_api_sockets_are_offered_and_the_newest_comes_first() {
-        let dir = std::env::temp_dir().join("magi-family-listing");
+        // Named after this process. A fixed path under a shared directory is one collision away
+        // from two test binaries deleting each other's fixture.
+        let dir = std::env::temp_dir().join(format!("magi-family-listing-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("mkdir");
         for name in ["api@old.sock", "api@new.sock", "notes.txt", "api@x.other"] {
             std::fs::write(dir.join(name), b"").expect("write");
         }
-        // Ordering is by mtime, so the one that must come first is touched last.
-        std::fs::write(dir.join("api@new.sock"), b"").expect("touch");
+        // The gap is *set*, not hoped for. Writing one file after another and trusting the two
+        // mtimes to differ works on a laptop and fails on a fast machine, where both land in the
+        // same filesystem tick: the sort is stable, so equal times leave `read_dir` order, which
+        // is arbitrary. CI failed on exactly that.
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(dir.join("api@old.sock"))
+            .expect("open")
+            .set_modified(old)
+            .expect("set mtime");
 
         let found = listing(&dir);
         assert_eq!(found.len(), 2, "only api@*.sock: {found:?}");
