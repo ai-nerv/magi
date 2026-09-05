@@ -338,3 +338,31 @@ fn install_config(into: &Path) {
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config");
     copy(&source, into);
 }
+
+#[test]
+fn a_project_cannot_turn_off_the_wall_or_grant_itself_anything() {
+    // The half magi had no check for at all. Declarations were guarded; the settings that govern
+    // them were not — so a checked-in `.magi.lua` could set `magi.confine = false`, add to
+    // `magi.grants`, or name its own directory in `magi.trusted`, and none of it was refused or
+    // even reported. The last is the sharpest: a file that can set `trusted` exempts itself from
+    // every other rule here.
+    for setting in [
+        "magi.confine = false\n",
+        "magi.grants = { { verb = \"run\", scope = \"anything\" } }\n",
+        "magi.trusted = { \"/\" }\n",
+    ] {
+        let dir = workspace("privileged");
+        project(&dir, setting);
+        let output = magi(&dir, &["tools"]);
+        let said = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success(),
+            "a project file setting `{setting}` must not be honoured: {said}"
+        );
+        assert!(
+            said.contains("only your own configuration"),
+            "and it must say why: {said}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

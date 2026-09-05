@@ -114,6 +114,20 @@ pub fn load() -> Result<Loaded, LuaError> {
     }
     engine.harvest();
     if let Some(machine) = &machine {
+        // A changed privileged setting is fatal, not a warning. The others describe something a
+        // project file offered that will not be used, and carrying on without it is right. This
+        // one is a project file having *already* changed how the rest of the session is
+        // governed — `confine` off, a grant added, itself vouched for — and there is nothing
+        // sensible to carry on with: the value it wanted is the value the config now holds.
+        if let Some(name) = machine.altered(&mut engine) {
+            return Err(LuaError::Runtime {
+                file: ".magi.lua".to_owned(),
+                message: format!(
+                    "a project file set `magi.{name}`, which decides what this session may do \
+                     without asking; only your own configuration can set it"
+                ),
+            });
+        }
         for refused in machine.refusals(&mut engine) {
             eprintln!("magi: {refused}");
         }
@@ -326,7 +340,23 @@ pub fn config_dir() -> Option<std::path::PathBuf> {
 pub struct Trusted {
     providers: BTreeSet<String>,
     tools: BTreeSet<String>,
+    /// What [`PRIVILEGED_SETTINGS`] were before a project file ran.
+    ///
+    /// magi had no equivalent of this at all, and it is the half that matters most: a checked-in
+    /// `.magi.lua` could set `magi.confine = false`, add to `magi.grants`, or name its own
+    /// directory in `magi.trusted` — turning off the wall, granting itself permissions, or
+    /// vouching for itself — and none of it was refused or even reported. Declarations were
+    /// guarded and the switches that govern them were not.
+    settings: Vec<Option<serde_json::Value>>,
 }
+
+/// Settings a project's own file may not assign.
+///
+/// `confine` is the wall; `grants` is what may happen without asking; `trusted` decides which
+/// files this rule applies to at all — a file that could set the last one could exempt itself.
+/// Named here rather than inferred, the way balthasar names its own: the list is short, and a
+/// rule about which settings are dangerous should be readable in one place.
+const PRIVILEGED_SETTINGS: &[&str] = &["confine", "grants", "trusted"];
 
 impl Trusted {
     /// Record what has been declared so far.
@@ -339,7 +369,31 @@ impl Trusted {
                 .map(|(id, _)| id.to_owned())
                 .collect(),
             tools: engine.tools().into_iter().map(|(name, _)| name).collect(),
+            settings: Self::privileged(engine),
         }
+    }
+
+    /// The privileged settings as they stand, in `PRIVILEGED_SETTINGS` order.
+    fn privileged(engine: &mut Engine) -> Vec<Option<serde_json::Value>> {
+        let config = engine.config();
+        PRIVILEGED_SETTINGS
+            .iter()
+            .map(|name| config.get(name).cloned())
+            .collect()
+    }
+
+    /// Which privileged setting a project file changed, if it changed one.
+    ///
+    /// Compared by value against the snapshot taken before it ran. Byte-equal is no change: a
+    /// project file may read `magi.confine` and assign it back — configs do that, and refusing
+    /// it would make the rule fire on a file that changed nothing.
+    fn altered(&self, engine: &mut Engine) -> Option<&'static str> {
+        let now = Self::privileged(engine);
+        PRIVILEGED_SETTINGS
+            .iter()
+            .enumerate()
+            .find(|(index, _)| now.get(*index) != self.settings.get(*index))
+            .map(|(_, name)| *name)
     }
 
     /// Whether a provider was declared by the machine rather than by a project file.
