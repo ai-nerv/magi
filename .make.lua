@@ -521,9 +521,23 @@ make.recipe{ name = "clean", desc = "remove every build output",
 make.recipe{ name = "compile", desc = "clean, then build", deps = { "clean", "build" } }
 make.alias("c", "compile")
 
+
+-- Runs the whole suite a second time, under a `TMPDIR` of its own, and asserts the directory is
+-- empty afterwards. Its own recipe rather than one of the `gates` above, because those are greps
+-- that finish instantly and this one costs a full test run — and because a failure here is a
+-- leaking test, not a violated rule about how the code is written.
+make.recipe{
+  name = "gate-hermetic",
+  desc = "the suite leaves nothing behind in the temporary directory",
+  run = function()
+    local ran = oslo.run{ "scripts/gate-hermetic.sh" }
+    assert(ran.ok, "gate-hermetic failed")
+  end,
+}
+
 make.recipe{
   name = "verify",
   desc = "the whole local gate",
-  deps = { "fmt-check", "check", "test", "clippy", "gates", "rustdoc" },
+  deps = { "fmt-check", "check", "test", "clippy", "gates", "gate-hermetic", "rustdoc" },
 }
 make.alias("v", "verify")

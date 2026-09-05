@@ -60,8 +60,9 @@ jobs:
           for g in scripts/gate-*.sh; do
             [ -e "$g" ] || continue
             case "$g" in
-              # Re-runs the whole suite under a scrubbed environment; its own step, below.
-              */gate-no-llm.sh) continue ;;
+              # Both re-run the whole suite; they get their own steps, below, so a failure is
+              # attributable to one of them rather than to "the gates".
+              */gate-no-llm.sh|*/gate-hermetic.sh) continue ;;
             esac
             printf '\n== %s\n' "$g"
             nix develop --command "$g"
@@ -75,4 +76,15 @@ jobs:
             nix develop --command ./scripts/gate-no-llm.sh
           else
             echo "no gate-no-llm in this repository"
+          fi
+
+      # The property the trailing `remove_dir_all` in every test claimed and did not have: an
+      # `assert!` unwinds straight past a cleanup line, so a failing test always leaked. Under a
+      # `TMPDIR` of its own the answer is about this run and nothing else on the machine.
+      - name: The suite leaves nothing behind
+        run: |
+          if [ -x scripts/gate-hermetic.sh ]; then
+            nix develop --command ./scripts/gate-hermetic.sh
+          else
+            echo "no gate-hermetic in this repository"
           fi
