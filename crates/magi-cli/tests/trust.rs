@@ -7,15 +7,16 @@
 //! Run through the binary rather than the library, because the boundary is between two files on
 //! disk and only a real process reads them in the real order.
 
+use magi_model::scratch::Scratch;
+
 use magi_testkit::Mind;
 use magi_testkit::mind::MODEL;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 /// A machine config and a project directory, kept apart.
-fn workspace(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("magi-trust-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn workspace(name: &str) -> Scratch {
+    let dir = Scratch::new("magi-trust", name);
     install_config(&dir.join("config/magi"));
     std::fs::create_dir_all(dir.join("config/magi/tools")).expect("mkdir");
     std::fs::create_dir_all(dir.join("project")).expect("mkdir");
@@ -96,7 +97,6 @@ magi.provider("evil", {
         said.contains("evil") && said.contains("project file"),
         "the refusal is reported rather than silent: {said}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -122,7 +122,6 @@ magi.tool("mine", {
         said.contains("mine") && said.contains("project file"),
         "the refusal is reported: {said}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -146,7 +145,6 @@ fn a_project_may_still_choose_among_what_the_machine_offers() {
             .any(|l| l.starts_with('*') && l.contains(MODEL)),
         "the project's choice is honoured: {listed}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -181,7 +179,6 @@ magi.tool("mine", {
         listed.contains("process"),
         "and its transport is reported: {listed}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -219,7 +216,6 @@ magi.tool("shell", {
         bash.contains("not a peer"),
         "and its description is the installed one: {bash}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -271,7 +267,6 @@ magi.tool("ours", {
         listed.contains("ours"),
         "the vouched tool is offered: {listed}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -363,6 +358,5 @@ fn a_project_cannot_turn_off_the_wall_or_grant_itself_anything() {
             said.contains("only your own configuration"),
             "and it must say why: {said}"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -123,7 +123,11 @@ const SPILL_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 /// Best effort. A result that could not be spilled is still capped; losing the overflow is
 /// better than passing it on, which is the thing this exists to prevent.
 fn spill(tool: &str, content: &str) -> Option<PathBuf> {
-    let dir = std::env::temp_dir().join("magi-output");
+    // Per user. The temporary directory is shared: a fixed name there belongs to whoever created
+    // it first, and every later user either fails to write or writes their tool output into a
+    // directory somebody else owns and can read. The siblings already name theirs this way.
+    let uid = rustix::process::getuid().as_raw();
+    let dir = std::env::temp_dir().join(format!("magi-output-{uid}"));
     std::fs::create_dir_all(&dir).ok()?;
     expire(&dir);
     let stamp = std::time::SystemTime::now()
@@ -173,7 +177,14 @@ mod tests {
     fn applied(tool: &str, content: String) -> String {
         let out = apply(tool, content);
         if let Some(path) = spilled_path(&out) {
-            let _ = std::fs::remove_file(path);
+            let path = std::path::PathBuf::from(path);
+            let _ = std::fs::remove_file(&path);
+            // And the directory `spill` made on the way, when nothing else is using it.
+            // `remove_dir` refuses a directory with anything in it, so a spill belonging to
+            // another test or another process is left where it is.
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::remove_dir(parent);
+            }
         }
         out
     }
@@ -218,7 +229,7 @@ mod tests {
             .find(|l| l.contains("cut from the middle"))
             .expect("a note");
         assert!(note.contains("of 10000 lines"), "{note}");
-        assert!(note.contains("/magi-output/"), "it names the spill: {note}");
+        assert!(note.contains("/magi-output-"), "it names the spill: {note}");
     }
 
     #[test]
@@ -231,7 +242,11 @@ mod tests {
             .expect("a path");
         let spilled = std::fs::read_to_string(&path).expect("the spill file");
         assert_eq!(spilled, full);
+        let path = std::path::PathBuf::from(&path);
         let _ = std::fs::remove_file(&path);
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::remove_dir(parent);
+        }
     }
 
     #[test]
@@ -252,15 +267,14 @@ mod tests {
 #[cfg(test)]
 mod expiry_tests {
     use super::*;
+    use magi_model::scratch::Scratch;
 
     #[test]
     fn a_stale_spill_is_dropped_on_the_way_past() {
         // Without this the directory grows for the life of the machine: nothing else knows the
         // files exist, because the note that named one is in a transcript and the session that
         // produced it is gone.
-        let dir = std::env::temp_dir().join(format!("magi-expire-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let dir = Scratch::new("magi-expire", "one");
         let old = dir.join("old.txt");
         std::fs::write(&old, "x").expect("write");
         // Backdated past the ttl by touching, which is the only portable way to age a file.
@@ -273,14 +287,11 @@ mod expiry_tests {
 
         expire(&dir);
         assert!(!old.exists(), "the stale one is gone");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_fresh_spill_is_left_alone() {
-        let dir = std::env::temp_dir().join(format!("magi-fresh-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let dir = Scratch::new("magi-fresh", "one");
         let new = dir.join("new.txt");
         std::fs::write(&new, "x").expect("write");
         expire(&dir);
@@ -288,7 +299,6 @@ mod expiry_tests {
             new.exists(),
             "a spill named in this session's transcript survives"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

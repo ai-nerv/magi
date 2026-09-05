@@ -291,12 +291,13 @@ impl Journal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use magi_model::scratch::Scratch;
     use magi_proto::{MessageId, StopReason};
 
-    fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("magi-journal-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        dir.join("session.jsonl")
+    fn temp(name: &str) -> (Scratch, PathBuf) {
+        let dir = Scratch::new("magi-journal", name);
+        let path = dir.join("session.jsonl");
+        (dir, path)
     }
 
     fn user(text: &str) -> Entry {
@@ -309,17 +310,16 @@ mod tests {
 
     #[test]
     fn a_new_journal_starts_with_a_meta_line() {
-        let path = temp("meta");
+        let (_dir, path) = temp("meta");
         let journal = Journal::open(&path, SessionId::new("s1"), "/tmp", 7).expect("open");
         assert_eq!(journal.session().as_str(), "s1");
         let source = std::fs::read_to_string(&path).expect("read");
         assert!(source.starts_with(r#"{"record":"meta""#), "{source}");
-        let _ = std::fs::remove_dir_all(path.parent().expect("parent"));
     }
 
     #[test]
     fn appended_entries_survive_a_reopen() {
-        let path = temp("reopen");
+        let (_dir, path) = temp("reopen");
         {
             let mut journal = Journal::open(&path, SessionId::new("s1"), "/tmp", 0).expect("open");
             journal.append(user("one")).expect("append");
@@ -328,24 +328,22 @@ mod tests {
         let journal = Journal::open(&path, SessionId::new("s1"), "/tmp", 0).expect("reopen");
         assert_eq!(journal.entries().len(), 2);
         assert_eq!(journal.cursor(), Cursor(2));
-        let _ = std::fs::remove_dir_all(path.parent().expect("parent"));
     }
 
     #[test]
     fn cursors_continue_where_the_file_left_off() {
-        let path = temp("cursors");
+        let (_dir, path) = temp("cursors");
         {
             let mut journal = Journal::open(&path, SessionId::new("s1"), "/tmp", 0).expect("open");
             assert_eq!(journal.append(user("one")).expect("append"), Cursor(1));
         }
         let mut journal = Journal::open(&path, SessionId::new("s1"), "/tmp", 0).expect("reopen");
         assert_eq!(journal.append(user("two")).expect("append"), Cursor(2));
-        let _ = std::fs::remove_dir_all(path.parent().expect("parent"));
     }
 
     #[test]
     fn a_torn_tail_is_truncated_and_the_journal_stays_writable() {
-        let path = temp("torn");
+        let (_dir, path) = temp("torn");
         {
             let mut journal = Journal::open(&path, SessionId::new("s1"), "/tmp", 0).expect("open");
             journal.append(user("kept")).expect("append");
@@ -367,12 +365,11 @@ mod tests {
             2,
             "the append landed on a boundary"
         );
-        let _ = std::fs::remove_dir_all(path.parent().expect("parent"));
     }
 
     #[test]
     fn a_complete_but_invalid_record_fails_the_load() {
-        let path = temp("corrupt");
+        let (_dir, path) = temp("corrupt");
         {
             let mut journal = Journal::open(&path, SessionId::new("s1"), "/tmp", 0).expect("open");
             journal.append(user("kept")).expect("append");
@@ -386,12 +383,11 @@ mod tests {
             matches!(error, JournalError::Corrupt { line: 3, .. }),
             "{error:?}"
         );
-        let _ = std::fs::remove_dir_all(path.parent().expect("parent"));
     }
 
     #[test]
     fn amending_replaces_the_last_entry_without_rewriting_the_file() {
-        let path = temp("amend");
+        let (_dir, path) = temp("amend");
         let mut journal = Journal::open(&path, SessionId::new("s1"), "/tmp", 0).expect("open");
         journal
             .append(Entry::Assistant {
@@ -432,12 +428,11 @@ mod tests {
             }
             other => panic!("expected an assistant entry, got {other:?}"),
         }
-        let _ = std::fs::remove_dir_all(path.parent().expect("parent"));
     }
 
     #[test]
     fn a_journal_from_a_future_version_is_refused() {
-        let path = temp("version");
+        let (_dir, path) = temp("version");
         std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
         std::fs::write(
             &path,
@@ -449,21 +444,20 @@ mod tests {
             matches!(error, JournalError::Version { found: 99, .. }),
             "{error:?}"
         );
-        let _ = std::fs::remove_dir_all(path.parent().expect("parent"));
     }
 }
 
 #[cfg(test)]
 mod amend_at_tests {
     use super::*;
+    use magi_model::scratch::Scratch;
     use magi_proto::{MessageId, ToolCallId, ToolResult};
 
-    fn journal(name: &str) -> (Journal, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("magi-amendat-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn journal(name: &str) -> (Journal, PathBuf, Scratch) {
+        let dir = Scratch::new("magi-amendat", name);
         let path = dir.join("s.jsonl");
         let journal = Journal::open(&path, SessionId::new("s"), "/tmp", 0).expect("open");
-        (journal, path)
+        (journal, path, dir)
     }
 
     fn call(at: usize, answered: bool) -> Entry {
@@ -497,7 +491,7 @@ mod amend_at_tests {
         // the first result arrives there are two more entries after it. Amending "the last
         // entry" put every result but the last on the wrong one, and the model was left with
         // calls it had made and never got an answer to.
-        let (mut journal, _) = journal("round");
+        let (mut journal, _, _dir) = journal("round");
         let at: Vec<Cursor> = (0..3)
             .map(|n| journal.append(call(n, false)).expect("append"))
             .collect();
@@ -513,7 +507,7 @@ mod amend_at_tests {
     fn an_amendment_to_an_earlier_entry_survives_a_reload() {
         // The record already carried the cursor it belonged to; nothing read it back, so a
         // reload turned each amendment into a fourth, fifth and sixth entry.
-        let (mut journal, path) = journal("reload");
+        let (mut journal, path, _dir) = journal("reload");
         let at: Vec<Cursor> = (0..3)
             .map(|n| journal.append(call(n, false)).expect("append"))
             .collect();
@@ -530,7 +524,7 @@ mod amend_at_tests {
     #[test]
     fn amending_the_last_entry_still_works_the_way_it_did() {
         // What a streaming message uses, and the path everything else still takes.
-        let (mut journal, _) = journal("last");
+        let (mut journal, _, _dir) = journal("last");
         journal
             .append(Entry::User {
                 id: MessageId::new("u1"),
@@ -549,7 +543,7 @@ mod amend_at_tests {
     fn a_cursor_naming_no_entry_is_ignored_rather_than_appended() {
         // It can only come from a caller holding a cursor from another session, and there is
         // nothing to amend.
-        let (mut journal, _) = journal("stray");
+        let (mut journal, _, _dir) = journal("stray");
         journal.append(call(0, false)).expect("append");
         journal.amend_at(Cursor(99), call(9, true)).expect("amend");
         assert_eq!(journal.entries().len(), 1);

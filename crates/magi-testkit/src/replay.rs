@@ -286,8 +286,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_ui_receives_a_snapshot_then_the_recorded_events() {
-        let dir = std::env::temp_dir().join(format!("magi-replay-{}", std::process::id()));
-        tokio::fs::create_dir_all(&dir).await.expect("mkdir");
+        let dir = crate::Scratch::new("magi-replay", "one");
         let path = dir.join("test.sock");
         let listener = magi_ipc::bind(&path).await.expect("bind");
 
@@ -316,8 +315,6 @@ mod tests {
             let event: HarnessEvent = reader.read().await.expect("event");
             assert_eq!(event.cursor().0, expected);
         }
-
-        tokio::fs::remove_dir_all(&dir).await.ok();
     }
 
     #[test]
@@ -341,8 +338,7 @@ mod tests {
 
     #[tokio::test]
     async fn attaching_with_a_cursor_replays_only_what_follows() {
-        let dir = std::env::temp_dir().join(format!("magi-resume-{}", std::process::id()));
-        tokio::fs::create_dir_all(&dir).await.expect("mkdir");
+        let dir = crate::Scratch::new("magi-resume", "one");
         let path = dir.join("test.sock");
         let listener = magi_ipc::bind(&path).await.expect("bind");
 
@@ -376,7 +372,5 @@ mod tests {
 
         let event: HarnessEvent = reader.read().await.expect("event");
         assert_eq!(event.cursor().0, 3, "only events past the cursor replay");
-
-        tokio::fs::remove_dir_all(&dir).await.ok();
     }
 }

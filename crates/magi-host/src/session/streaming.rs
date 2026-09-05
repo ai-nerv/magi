@@ -3,12 +3,11 @@
 //! Split from [`super`] under THE RULE, which caps a file at 800 lines.
 
 use super::*;
+use magi_model::scratch::{Scratch, ScratchFile};
 use magi_proto::{MessageId, Signatures, StopReason, Usage};
 
-fn journal_path(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("magi-stream-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    dir.join("s.jsonl")
+fn journal_path(name: &str) -> ScratchFile {
+    Scratch::file("magi-stream", name, "s.jsonl")
 }
 
 fn session(path: &std::path::Path) -> Session {
@@ -40,7 +39,8 @@ fn drain(events: &mut tokio::sync::broadcast::Receiver<HarnessEvent>) -> Vec<Har
 fn a_message_still_arriving_is_published_a_piece_at_a_time() {
     // The milestone: a three-hundred word answer was fourteen seconds of spinner and then
     // the whole text at once, because nothing left the daemon until the message was done.
-    let mut s = session(&journal_path("progressive"));
+    let path = journal_path("progressive");
+    let mut s = session(&path);
     s.commit(assistant("")).expect("commit");
     let mut events = s.subscribe();
 
@@ -91,7 +91,8 @@ fn a_revision_is_not_written_down_until_the_message_ends() {
 fn a_message_taken_back_is_described_in_full_rather_than_as_an_append() {
     // What a retry mid-answer needs. A delta is an append, so describing a retraction as one
     // would leave both copies on screen.
-    let mut s = session(&journal_path("retract"));
+    let path = journal_path("retract");
+    let mut s = session(&path);
     s.commit(assistant("")).expect("commit");
     s.revise(assistant("half an answer"));
     let mut events = s.subscribe();
@@ -121,7 +122,8 @@ fn a_message_taken_back_is_described_in_full_rather_than_as_an_append() {
 #[test]
 fn an_ordinary_ending_is_still_one_delta_and_a_stop() {
     // The repair must be invisible when a message merely finishes.
-    let mut s = session(&journal_path("ending"));
+    let path = journal_path("ending");
+    let mut s = session(&path);
     s.commit(assistant("")).expect("commit");
     s.revise(assistant("done"));
     let mut events = s.subscribe();

@@ -316,6 +316,7 @@ async fn declare(session: &Arc<Mutex<Session>>, backend: &Backend, ops: &dyn mag
 #[cfg(test)]
 mod tests {
     use super::*;
+    use magi_model::scratch::Scratch;
     use magi_proto::{Entry, SessionId};
 
     /// A worker with no backend cannot be built, so this checks the queue rather than a turn:
@@ -326,8 +327,7 @@ mod tests {
         drop(queue);
         let worker = Worker { jobs };
 
-        let dir = std::env::temp_dir().join(format!("magi-worker-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = Scratch::new("magi-worker", "one");
         let session =
             Session::open(&dir.join("s.jsonl"), SessionId::new("s"), "/tmp", 0).expect("session");
         let session = Arc::new(Mutex::new(session));
@@ -335,7 +335,6 @@ mod tests {
         // Returns rather than hanging: the send fails and there is nothing to wait for.
         worker.run(Arc::clone(&session)).await;
         assert!(session.lock().await.entries().is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -344,8 +343,7 @@ mod tests {
         drop(queue);
         let worker = Worker { jobs };
 
-        let dir = std::env::temp_dir().join(format!("magi-worker2-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = Scratch::new("magi-worker2", "one");
         let session =
             Session::open(&dir.join("s.jsonl"), SessionId::new("s"), "/tmp", 0).expect("session");
         let session = Arc::new(Mutex::new(session));
@@ -361,6 +359,5 @@ mod tests {
             })
             .expect("commit");
         assert_eq!(session.lock().await.entries().len(), 1);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

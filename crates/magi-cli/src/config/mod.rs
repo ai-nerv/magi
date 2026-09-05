@@ -463,13 +463,11 @@ fn kind(path: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod staleness_tests {
     use super::*;
+    use magi_model::scratch::Scratch;
     use std::time::{Duration, SystemTime};
 
-    fn scratch(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("magi-stale-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
-        dir
+    fn scratch(name: &str) -> Scratch {
+        Scratch::new("magi-stale", name)
     }
 
     #[test]
@@ -481,7 +479,6 @@ mod staleness_tests {
         std::fs::write(&file, "x").expect("write");
         let started = SystemTime::now() - Duration::from_secs(3600);
         assert_eq!(newer_than(std::slice::from_ref(&file), started), vec![file]);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -491,7 +488,6 @@ mod staleness_tests {
         std::fs::write(&file, "x").expect("write");
         let started = SystemTime::now() + Duration::from_secs(3600);
         assert!(newer_than(&[file], started).is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -500,7 +496,6 @@ mod staleness_tests {
         let dir = scratch("absent");
         let started = SystemTime::now() - Duration::from_secs(3600);
         assert!(newer_than(&[dir.join("nothing.lua")], started).is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -509,7 +504,6 @@ mod staleness_tests {
         // first start in a directory.
         let dir = scratch("nopid");
         assert!(edited_since_start(&dir.join("a.sock")).is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -524,6 +518,5 @@ mod staleness_tests {
         std::thread::sleep(Duration::from_millis(20));
         std::fs::write(&new, "y").expect("rewrite");
         assert_eq!(newer_than(&[old, new.clone()], started), vec![new]);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

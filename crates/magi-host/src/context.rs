@@ -286,11 +286,11 @@ pub fn rewind_point(entries: &[Entry]) -> Option<usize> {
 mod context_tests {
     use super::*;
     use magi_journal::JournalError;
+    use magi_model::scratch::Scratch;
     use magi_proto::{MessageId, SessionId, Signatures, ToolCallId, ToolResult};
 
-    fn session(name: &str) -> (Session, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("magi-ctx-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn session(name: &str) -> (Session, Scratch) {
+        let dir = Scratch::new("magi-ctx", name);
         let session =
             Session::open(&dir.join("s.jsonl"), SessionId::new("s"), "/tmp", 0).expect("session");
         (session, dir)
@@ -334,7 +334,7 @@ mod context_tests {
         // A tool result with no preceding tool call is not a conversation. Anthropic rejects
         // it outright; an OpenAI-compatible endpoint takes it and leaves the model with no
         // record of what it asked for, which is worse because it looks like it worked.
-        let (mut session, dir) = session("callback");
+        let (mut session, _dir) = session("callback");
         tool_round(&mut session).expect("journal");
 
         let context = of(&session);
@@ -359,12 +359,11 @@ mod context_tests {
         assert_eq!(call.0, "c1");
         assert_eq!(call.1, "read");
         assert_eq!(call.2["path"], "a.rs");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn the_call_comes_before_the_result_it_answers() {
-        let (mut session, dir) = session("order");
+        let (mut session, _dir) = session("order");
         tool_round(&mut session).expect("journal");
 
         let context = of(&session);
@@ -387,7 +386,6 @@ mod context_tests {
             })
             .expect("a result");
         assert!(asked < answered, "{asked} came after {answered}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -395,7 +393,7 @@ mod context_tests {
         // A reasoning model does not send back reasoning you can re-send; it sends a token
         // standing for it. Dropping it makes the next request a 400 on the providers that
         // check, which is the second round trip of every tool-using turn.
-        let (mut session, dir) = session("signatures");
+        let (mut session, _dir) = session("signatures");
         tool_round(&mut session).expect("journal");
 
         let context = of(&session);
@@ -421,14 +419,13 @@ mod context_tests {
             _ => None,
         });
         assert_eq!(carried.flatten().as_deref(), Some("sig-call"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_message_that_only_asked_for_a_tool_is_still_a_message() {
         // Empty text and empty thinking, which is the common shape: the model says nothing and
         // calls something. Dropping it takes the tool call with it.
-        let (mut session, dir) = session("silent");
+        let (mut session, _dir) = session("silent");
         session
             .commit(Entry::Assistant {
                 id: MessageId::new("a1"),
@@ -463,14 +460,13 @@ mod context_tests {
             "{:?}",
             context.messages
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn an_assistant_message_with_nothing_at_all_is_still_dropped() {
         // The empty entry the turn loop commits before the first delta. Sending it would be
         // a message with no content, which providers reject.
-        let (mut session, dir) = session("empty");
+        let (mut session, _dir) = session("empty");
         session
             .commit(Entry::Assistant {
                 id: MessageId::new("a1"),
@@ -483,18 +479,17 @@ mod context_tests {
             })
             .expect("journal");
         assert!(of(&session).messages.is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
 #[cfg(test)]
 mod branch_tests {
     use super::*;
+    use magi_model::scratch::Scratch;
     use magi_proto::{MessageId, SessionId, Signatures};
 
-    fn session(name: &str) -> (Session, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("magi-branch-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn session(name: &str) -> (Session, Scratch) {
+        let dir = Scratch::new("magi-branch", name);
         let session =
             Session::open(&dir.join("s.jsonl"), SessionId::new("s"), "/tmp", 0).expect("session");
         (session, dir)
@@ -523,7 +518,7 @@ mod branch_tests {
 
     #[test]
     fn a_branch_hides_what_came_after_it_without_deleting_it() {
-        let (mut session, dir) = session("hide");
+        let (mut session, _dir) = session("hide");
         exchange(&mut session, 1);
         exchange(&mut session, 2);
         session
@@ -538,7 +533,6 @@ mod branch_tests {
         assert!(!sent.contains("question 2"), "{sent}");
         // Append-only: what happened is still in the journal and still on screen.
         assert_eq!(session.entries().len(), 5);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -546,7 +540,7 @@ mod branch_tests {
         // Rewinding twice must go back twice. Counting from the journal instead of the live
         // view would name a message the first rewind already dropped, and the second would do
         // nothing.
-        let (mut session, dir) = session("twice");
+        let (mut session, _dir) = session("twice");
         exchange(&mut session, 1);
         exchange(&mut session, 2);
 
@@ -561,21 +555,19 @@ mod branch_tests {
 
         let second = rewind_point(session.entries()).expect("a point");
         assert_eq!(second, 0, "the first question, not the second again");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn rewinding_an_empty_session_has_nowhere_to_go() {
-        let (session, dir) = session("empty");
+        let (session, _dir) = session("empty");
         assert_eq!(rewind_point(session.entries()), None);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_branch_and_a_compaction_compose() {
         // Both answer the same question — which entries are live — so they have to agree.
         // A branch after a compaction drops the tail of what survived it.
-        let (mut session, dir) = session("compose");
+        let (mut session, _dir) = session("compose");
         for n in 1..=6 {
             exchange(&mut session, n);
         }
@@ -607,7 +599,6 @@ mod branch_tests {
             !sent.contains("question 6"),
             "dropped by the branch: {sent}"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

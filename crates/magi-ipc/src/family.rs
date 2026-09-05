@@ -307,9 +307,7 @@ mod tests {
     fn only_api_sockets_are_offered_and_the_newest_comes_first() {
         // Named after this process. A fixed path under a shared directory is one collision away
         // from two test binaries deleting each other's fixture.
-        let dir = std::env::temp_dir().join(format!("magi-family-listing-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let dir = magi_model::scratch::Scratch::new("magi-family-listing", "one");
         for name in ["api@old.sock", "api@new.sock", "notes.txt", "api@x.other"] {
             std::fs::write(dir.join(name), b"").expect("write");
         }
@@ -331,7 +329,6 @@ mod tests {
             found[0].ends_with("api@new.sock"),
             "newest first: {found:?}"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

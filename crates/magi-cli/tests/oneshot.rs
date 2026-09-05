@@ -10,6 +10,8 @@
 //! a sibling and nothing in a config can point it elsewhere. A config that could name the
 //! program that owns the model could name any program at all.
 
+use magi_model::scratch::Scratch;
+
 use magi_testkit::Mind;
 use magi_testkit::mind::{MODEL, call_lines, stop_line, text_line};
 use std::path::{Path, PathBuf};
@@ -20,9 +22,8 @@ use std::process::Command;
 /// No provider and no protocol: which endpoint that model lives at and what credential it takes
 /// are melchior's, and a config here that held an opinion about either would be a second
 /// catalog to keep in step.
-fn workspace(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("magi-one-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn workspace(name: &str) -> Scratch {
+    let dir = Scratch::new("magi-one", name);
     std::fs::create_dir_all(dir.join("run")).expect("mkdir");
     std::fs::create_dir_all(dir.join("sessions")).expect("mkdir");
     absent(&dir, "balthasar");
@@ -108,9 +109,7 @@ fn absent(dir: &Path, program: &str) {
 /// It used to have to hunt down daemons first, by recorded pid, and assert that each had died.
 /// There is nothing to hunt: a session is the process that shows it, so `magi` returning means
 /// its session is already over.
-fn teardown(dir: &Path) {
-    let _ = std::fs::remove_dir_all(dir);
-}
+fn teardown(_dir: &Path) {}
 
 /// Every socket left under `dir`, at any depth.
 fn sockets(dir: &Path) -> Vec<PathBuf> {

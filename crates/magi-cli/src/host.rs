@@ -215,6 +215,7 @@ fn stamp(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use magi_model::scratch::Scratch;
 
     fn environ() -> std::collections::BTreeMap<String, String> {
         [
@@ -296,38 +297,29 @@ mod tests {
     fn resuming_takes_the_newest_journal_nobody_is_writing_to() {
         // Two `magi -r` in one project both used to take the newest, both open it, and append
         // into one file in whatever order they happened to write.
-        let dir = std::env::temp_dir().join(format!("magi-free-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let dir = Scratch::new("magi-free", "one");
         journal(&dir, "00000000000000000001-alpha-rho", "/work");
         journal(&dir, "00000000000000000002-beta-nu", "/work");
 
         // Nothing is listening in either name, so the newest wins as it always did.
         let found = free(&dir, "/work", Some(&dir)).expect("a journal");
         assert!(found.to_string_lossy().contains("beta-nu"), "{found:?}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_journal_from_before_names_is_still_resumable() {
         // Written when a session id was a bare timestamp. Nothing can be checked about it, and
         // refusing to resume it would lose somebody their history over a naming change.
-        let dir = std::env::temp_dir().join(format!("magi-old-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let dir = Scratch::new("magi-old", "one");
         journal(&dir, "00000000000000000007", "/work");
         assert!(free(&dir, "/work", Some(&dir)).is_some());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn nothing_to_resume_is_a_fresh_session_rather_than_a_refusal() {
         // Somebody asking to resume wants to start working.
-        let dir = std::env::temp_dir().join(format!("magi-none-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let dir = Scratch::new("magi-none", "one");
         assert!(free(&dir, "/work", Some(&dir)).is_none());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -349,15 +341,14 @@ mod tests {
 #[cfg(test)]
 mod leftovers {
     use super::*;
+    use magi_model::scratch::Scratch;
 
     #[test]
     fn a_socket_nothing_answers_is_cleared_and_a_live_one_is_not() {
         // Ten of these had collected in one project, from crashes and from a build that named
         // its socket differently, and nothing would ever have removed them. The directory is how
         // a session is found, so litter in it is not cosmetic.
-        let dir = std::env::temp_dir().join(format!("magi-sweep-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let dir = Scratch::new("magi-sweep", "one");
 
         let live = std::os::unix::net::UnixListener::bind(dir.join("alive.host")).expect("bind");
         // A socket with nothing behind it: bound, then the listener dropped.
@@ -375,14 +366,11 @@ mod leftovers {
             "something not a socket was removed"
         );
         drop(live);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn the_last_session_out_takes_the_directory_with_it() {
-        let dir = std::env::temp_dir().join(format!("magi-empty-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let dir = Scratch::new("magi-empty", "one");
         let socket = dir.join("one.host");
         std::fs::write(&socket, b"").expect("write");
 
@@ -394,9 +382,7 @@ mod leftovers {
     fn a_directory_somebody_else_is_still_in_stays() {
         // The test is `remove_dir` refusing a directory that holds something, which is what
         // makes this safe without a listing and without racing a session that is binding.
-        let dir = std::env::temp_dir().join(format!("magi-busy-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let dir = Scratch::new("magi-busy", "one");
         std::fs::write(dir.join("mine.host"), b"").expect("write");
         std::fs::write(dir.join("theirs.host"), b"").expect("write");
 
@@ -406,7 +392,6 @@ mod leftovers {
             "a directory with a session still in it was removed"
         );
         assert!(dir.join("theirs.host").exists());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

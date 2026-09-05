@@ -319,28 +319,24 @@ impl Ops for Real {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use magi_model::scratch::Scratch;
 
-    fn rooted(name: &str) -> (Real, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("magi-ops-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
-        (Real::new(dir.clone()), dir)
+    fn rooted(name: &str) -> (Real, Scratch) {
+        let dir = Scratch::new("magi-ops", name);
+        (Real::new(dir.to_path_buf()), dir)
     }
 
     /// The same, with the wall on: `magi.confine` is where that rule lives now.
-    fn walled(name: &str) -> (Real, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("magi-wall-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
-        (Real::confined(dir.clone()), dir)
+    fn walled(name: &str) -> (Real, Scratch) {
+        let dir = Scratch::new("magi-wall", name);
+        (Real::confined(dir.to_path_buf()), dir)
     }
 
     #[test]
     fn a_write_then_a_read_round_trips() {
-        let (ops, dir) = rooted("roundtrip");
+        let (ops, _dir) = rooted("roundtrip");
         ops.write(Path::new("a.txt"), "hello").expect("write");
         assert_eq!(ops.read(Path::new("a.txt")).expect("read"), "hello");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -349,73 +345,64 @@ mod tests {
         ops.write(Path::new("deep/nested/a.txt"), "x")
             .expect("write");
         assert!(dir.join("deep/nested/a.txt").exists());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_confined_path_that_escapes_the_root_is_refused() {
-        let (ops, dir) = walled("escape");
+        let (ops, _dir) = walled("escape");
         let error = ops
             .read(Path::new("../../etc/passwd"))
             .expect_err("must refuse");
         assert!(error.contains("outside"), "{error}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn an_escape_hidden_behind_a_descent_is_still_refused() {
         // `a/../../etc` has no leading `..` and still escapes, which is why the check happens
         // after normalising rather than on the text.
-        let (ops, dir) = rooted("hidden");
+        let (ops, _dir) = rooted("hidden");
         assert!(ops.read(Path::new("a/../../etc/passwd")).is_err());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_confined_absolute_path_outside_the_root_is_refused() {
-        let (ops, dir) = walled("absolute");
+        let (ops, _dir) = walled("absolute");
         assert!(ops.read(Path::new("/etc/passwd")).is_err());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_command_that_fails_is_output_not_an_error() {
         // The model needs to see what it said; a non-zero exit is information, not a fault.
-        let (ops, dir) = rooted("failing");
+        let (ops, _dir) = rooted("failing");
         let result = ops.shell("echo out; echo err >&2; exit 3").expect("it ran");
         assert_eq!(result.code, Some(3));
         assert!(!result.ok());
         assert_eq!(result.stdout.trim(), "out");
         assert_eq!(result.stderr.trim(), "err");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_command_runs_in_the_session_directory() {
-        let (ops, dir) = rooted("cwd");
+        let (ops, _dir) = rooted("cwd");
         let result = ops.shell("pwd").expect("it ran");
         assert!(result.stdout.contains("magi-ops-"), "{}", result.stdout);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn reading_a_missing_file_names_it() {
-        let (ops, dir) = rooted("missing");
+        let (ops, _dir) = rooted("missing");
         let error = ops.read(Path::new("nope.txt")).expect_err("must fail");
         assert!(error.contains("nope.txt"), "{error}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
 #[cfg(test)]
 mod reach_tests {
     use super::*;
+    use magi_model::scratch::Scratch;
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("magi-reach-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
-        dir
+    fn scratch(name: &str) -> Scratch {
+        Scratch::new("magi-reach", name)
     }
 
     #[test]
@@ -428,16 +415,13 @@ mod reach_tests {
         let file = elsewhere.join("hello.py");
         std::fs::write(&file, "print('a')\n").expect("write");
 
-        let ops = Real::new(session.clone());
+        let ops = Real::new(session.to_path_buf());
         assert_eq!(ops.read(&file).expect("read"), "print('a')\n");
         ops.write(&file, "print('b')\n").expect("write");
         assert_eq!(
             std::fs::read_to_string(&file).expect("read back"),
             "print('b')\n"
         );
-
-        let _ = std::fs::remove_dir_all(&session);
-        let _ = std::fs::remove_dir_all(&elsewhere);
     }
 
     #[test]
@@ -446,37 +430,35 @@ mod reach_tests {
         let session = scratch("relative");
         std::fs::create_dir_all(session.join("src")).expect("mkdir");
         std::fs::write(session.join("src/main.rs"), "fn main() {}\n").expect("write");
-        let ops = Real::new(session.clone());
+        let ops = Real::new(session.to_path_buf());
         assert_eq!(
             ops.read(Path::new("src/main.rs")).expect("read"),
             "fn main() {}\n"
         );
-        let _ = std::fs::remove_dir_all(&session);
     }
 
     #[test]
     fn confined_ops_still_refuse_and_say_why() {
         let session = scratch("wall");
-        let ops = Real::confined(session.clone());
+        let ops = Real::confined(session.to_path_buf());
         let outside = std::env::temp_dir().join("magi-not-here.txt");
         let why = ops.read(&outside).expect_err("refused");
         assert!(why.contains("magi.confine"), "it names the setting: {why}");
-        let _ = std::fs::remove_dir_all(&session);
     }
 
     #[test]
     fn confinement_still_catches_a_path_that_climbs_out() {
         // `a/../../etc` has no leading `..` and still escapes.
         let session = scratch("climb");
-        let ops = Real::confined(session.clone());
+        let ops = Real::confined(session.to_path_buf());
         assert!(ops.read(Path::new("a/../../etc/passwd")).is_err());
-        let _ = std::fs::remove_dir_all(&session);
     }
 }
 
 #[cfg(test)]
 mod gate_tests {
     use super::*;
+    use magi_model::scratch::Scratch;
     use magi_proto::permit::{Action, Decision, Lifetime, Scope};
     use std::sync::Arc;
 
@@ -517,11 +499,8 @@ mod gate_tests {
         }
     }
 
-    fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("magi-gate-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
-        dir
+    fn scratch(name: &str) -> Scratch {
+        Scratch::new("magi-gate", name)
     }
 
     #[test]
@@ -529,16 +508,19 @@ mod gate_tests {
         // Every `Ops` but `Real` is a test double, and one that had to be taught about
         // permissions would make every tool test a permissions test.
         let dir = scratch("ungated");
-        let ops = Real::new(dir.clone());
+        let ops = Real::new(dir.to_path_buf());
         assert!(ops.allow("t", &Action::Read { path: "/x".into() }).is_ok());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_gated_ops_asks_and_a_refusal_reaches_the_model() {
         let dir = scratch("refused");
         let approver = Scripted::new(vec![Decision::Deny]);
-        let ops = Real::gated(dir.clone(), crate::permit::Ledger::new(), approver.clone());
+        let ops = Real::gated(
+            dir.to_path_buf(),
+            crate::permit::Ledger::new(),
+            approver.clone(),
+        );
         let why = ops
             .allow(
                 "t",
@@ -553,7 +535,6 @@ mod gate_tests {
             "it says what was refused: {why}"
         );
         assert_eq!(approver.asked().len(), 1);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -566,7 +547,11 @@ mod gate_tests {
             },
             lifetime: Lifetime::Session,
         }]);
-        let ops = Real::gated(dir.clone(), crate::permit::Ledger::new(), approver.clone());
+        let ops = Real::gated(
+            dir.to_path_buf(),
+            crate::permit::Ledger::new(),
+            approver.clone(),
+        );
         for file in ["a.rs", "b.rs", "c.rs"] {
             ops.allow(
                 "t",
@@ -577,7 +562,6 @@ mod gate_tests {
             .expect("allowed");
         }
         assert_eq!(approver.asked().len(), 1, "asked once, not three times");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -621,7 +605,6 @@ mod gate_tests {
             ops.read(Path::new("../outside/secret")).is_err(),
             "confinement holds even with an approver that allows everything"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -645,7 +628,11 @@ mod gate_tests {
             },
             Decision::Deny,
         ]);
-        let ops = Real::gated(dir.clone(), crate::permit::Ledger::new(), approver.clone());
+        let ops = Real::gated(
+            dir.to_path_buf(),
+            crate::permit::Ledger::new(),
+            approver.clone(),
+        );
         ops.allow(
             "t",
             &Action::Read {
@@ -667,7 +654,6 @@ mod gate_tests {
             .is_err(),
             "a grant on `work` must not cover a path that leaves it"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -682,7 +668,11 @@ mod gate_tests {
             },
             Decision::Deny,
         ]);
-        let ops = Real::gated(dir.clone(), crate::permit::Ledger::new(), approver.clone());
+        let ops = Real::gated(
+            dir.to_path_buf(),
+            crate::permit::Ledger::new(),
+            approver.clone(),
+        );
         ops.allow(
             "t",
             &Action::Read {
@@ -701,7 +691,6 @@ mod gate_tests {
             "a second directory is a second question"
         );
         assert_eq!(approver.asked().len(), 2);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -713,7 +702,7 @@ mod gate_tests {
             },
             lifetime: Lifetime::Always,
         }]);
-        let ops = Real::gated(dir.clone(), crate::permit::Ledger::new(), approver);
+        let ops = Real::gated(dir.to_path_buf(), crate::permit::Ledger::new(), approver);
         ops.allow(
             "t",
             &Action::Run {
@@ -723,7 +712,6 @@ mod gate_tests {
         )
         .expect("allowed");
         assert_eq!(ops.grants().len(), 1);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

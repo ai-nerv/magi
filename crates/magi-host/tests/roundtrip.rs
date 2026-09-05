@@ -3,23 +3,23 @@
 //! M1's claim is that `magi host` can stand in for the replay host without the UI changing.
 //! These drive the same protocol the UI drives, so the claim is tested rather than asserted.
 
+use magi_model::scratch::Scratch;
+
 use magi_host::{open_session, serve};
 use magi_ipc::{FrameReader, FrameWriter};
 use magi_proto::{Cursor, Entry, HarnessEvent, UiCommand};
 use magi_testkit::Mind;
 use std::path::{Path, PathBuf};
 
-fn temp(name: &str) -> (PathBuf, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("magi-host-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
-    // Short enough to stay under SUN_LEN, which a scratch directory path is not.
-    let socket = std::env::temp_dir().join(format!("magi-h-{}-{name}.sock", std::process::id()));
-    let _ = std::fs::remove_file(&socket);
+fn temp(name: &str) -> (Scratch, PathBuf) {
+    let dir = Scratch::new("magi-host", name);
+    // Inside the scratch, so the guard takes it with the rest. Still well under SUN_LEN: the
+    // whole path is the temporary directory, one short name and `s.sock`.
+    let socket = dir.join("s.sock");
     (dir, socket)
 }
 
-async fn start(name: &str) -> (PathBuf, PathBuf) {
+async fn start(name: &str) -> (Scratch, PathBuf) {
     let (dir, socket) = temp(name);
     let session = open_session(&dir, "/tmp", 1, "").expect("session");
     let listener = magi_ipc::bind(&socket).await.expect("bind");
@@ -97,7 +97,7 @@ impl Client {
 
 #[tokio::test]
 async fn a_submitted_prompt_comes_back_as_events() {
-    let (dir, socket) = start("submit").await;
+    let (_dir, socket) = start("submit").await;
     let (mut client, entries) = Client::attach(&socket, Cursor::ZERO).await;
     assert!(entries.is_empty(), "a fresh session has no history");
 
@@ -112,14 +112,11 @@ async fn a_submitted_prompt_comes_back_as_events() {
         client.next().await,
         HarnessEvent::AssistantStarted { .. }
     ));
-
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_file(&socket);
 }
 
 #[tokio::test]
 async fn a_prompt_survives_the_ui_and_is_replayed_on_reattach() {
-    let (dir, socket) = start("reattach").await;
+    let (_dir, socket) = start("reattach").await;
     {
         let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
         client.submit("remember me").await;
@@ -135,14 +132,11 @@ async fn a_prompt_survives_the_ui_and_is_replayed_on_reattach() {
         Entry::User { text, .. } => assert_eq!(text, "remember me"),
         other => panic!("expected a user entry, got {other:?}"),
     }
-
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_file(&socket);
 }
 
 #[tokio::test]
 async fn a_cold_reattach_replays_the_whole_session() {
-    let (dir, socket) = start("cold").await;
+    let (_dir, socket) = start("cold").await;
     {
         let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
         client.submit("one").await;
@@ -157,14 +151,11 @@ async fn a_cold_reattach_replays_the_whole_session() {
         matches!(client.next().await, HarnessEvent::UserMessage { .. }),
         "it arrives as replayed events instead"
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_file(&socket);
 }
 
 #[tokio::test]
 async fn two_uis_both_see_a_prompt_either_one_submits() {
-    let (dir, socket) = start("two").await;
+    let (_dir, socket) = start("two").await;
     let (mut a, _) = Client::attach(&socket, Cursor::ZERO).await;
     let (mut b, _) = Client::attach(&socket, Cursor::ZERO).await;
 
@@ -176,9 +167,6 @@ async fn two_uis_both_see_a_prompt_either_one_submits() {
             other => panic!("both attached UIs see it, got {other:?}"),
         }
     }
-
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_file(&socket);
 }
 
 #[tokio::test]
@@ -201,13 +189,10 @@ async fn the_journal_outlives_the_daemon() {
     let source = std::fs::read_to_string(&journal).expect("read");
     assert!(source.contains("persisted"), "the prompt reached the disk");
     assert!(source.lines().count() >= 3, "meta, prompt, reply");
-
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_file(&socket);
 }
 
 /// A daemon that asks `mind`, so a submitted prompt starts a real turn.
-async fn start_with_mind(name: &str, mind: &Mind) -> (PathBuf, PathBuf) {
+async fn start_with_mind(name: &str, mind: &Mind) -> (Scratch, PathBuf) {
     let (dir, socket) = temp(name);
     let session = open_session(&dir, "/tmp", 1, "").expect("session");
     let backend = magi_host::turn::Backend {
@@ -235,7 +220,7 @@ async fn events_reach_the_ui_while_the_turn_is_still_running() {
     // response arrived in one piece at the end and a slow one looked like a hang. Every other
     // test passed throughout, because they all use a provider that answers immediately.
     let mind = Mind::silent("rt-streaming");
-    let (dir, socket) = start_with_mind("streaming", &mind).await;
+    let (_dir, socket) = start_with_mind("streaming", &mind).await;
     let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
     client.submit("this will not be answered").await;
 
@@ -258,8 +243,6 @@ async fn events_reach_the_ui_while_the_turn_is_still_running() {
         ),
         "{event:?}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_file(&socket);
 }
 
 #[tokio::test]
@@ -267,7 +250,7 @@ async fn an_interrupt_is_answered_while_a_turn_holds_the_connection() {
     // The interrupt has to be read by the same loop the turn used to block, so this fails the
     // same way the streaming test does if a turn ever goes back to being awaited inline.
     let mind = Mind::silent("rt-interrupt");
-    let (dir, socket) = start_with_mind("interrupt", &mind).await;
+    let (_dir, socket) = start_with_mind("interrupt", &mind).await;
     let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
     client.submit("this will be stopped").await;
 
@@ -303,8 +286,6 @@ async fn an_interrupt_is_answered_while_a_turn_holds_the_connection() {
         }
     }
     assert!(aborted, "the turn ended as aborted");
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_file(&socket);
 }
 
 #[tokio::test]
@@ -315,7 +296,7 @@ async fn an_amended_entry_is_not_announced_as_a_new_one() {
     // and every message once empty and once full.
     use magi_proto::{Entry, MessageId, ToolCallId, ToolResult};
 
-    let (dir, socket) = temp("amend");
+    let (dir, _socket) = temp("amend");
     let session = open_session(&dir, "/tmp", 1, "").expect("session");
     let session = std::sync::Arc::new(tokio::sync::Mutex::new(session));
 
@@ -398,9 +379,6 @@ async fn an_amended_entry_is_not_announced_as_a_new_one() {
         "{ended:?}"
     );
     assert!(live.try_recv().is_err(), "nothing else was published");
-
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_file(&socket);
 }
 
 #[tokio::test]
@@ -411,7 +389,7 @@ async fn what_a_turn_cost_reaches_the_ui() {
     // only a cold replay uses, had the right one, so nothing that replayed noticed.
     use magi_proto::{Entry, MessageId, Signatures, StopReason, Usage};
 
-    let (dir, socket) = temp("usage");
+    let (dir, _socket) = temp("usage");
     let session = open_session(&dir, "/tmp", 1, "").expect("session");
     let session = std::sync::Arc::new(tokio::sync::Mutex::new(session));
     let mut live = session.lock().await.subscribe();
@@ -460,8 +438,6 @@ async fn what_a_turn_cost_reaches_the_ui() {
 
     // And the session's own total agrees, which is what a resumed footer reads.
     assert_eq!(session.lock().await.usage(), spent);
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_file(&socket);
 }
 
 /// A catalog with two reachable models and one that needs a key nobody has set.
@@ -495,7 +471,7 @@ fn two_models() -> magi_host::catalog::Catalog {
     }
 }
 
-async fn start_with_catalog(name: &str) -> (PathBuf, PathBuf) {
+async fn start_with_catalog(name: &str) -> (Scratch, PathBuf) {
     let (dir, socket) = temp(name);
     let session = open_session(&dir, "/tmp", 1, "").expect("session");
     let catalog = two_models();
@@ -512,7 +488,7 @@ async fn switching_model_is_announced_so_the_footer_can_follow() {
     // Republishing the status does not do it: a status event carries a status. A UI learns
     // which model is answering from the snapshot it attached with, and without an event of its
     // own there is nothing to change its mind — the switch worked and the footer lied.
-    let (dir, socket) = start_with_catalog("switch").await;
+    let (_dir, socket) = start_with_catalog("switch").await;
     let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
 
     client
@@ -533,13 +509,11 @@ async fn switching_model_is_announced_so_the_footer_can_follow() {
     let model = announced.expect("the switch was announced");
     assert_eq!(model.name, "local/b");
     assert_eq!(model.context_window, 2000, "and its window came with it");
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_file(&socket);
 }
 
 #[tokio::test]
 async fn a_model_that_does_not_exist_is_refused_with_the_ones_that_do() {
-    let (dir, socket) = start_with_catalog("unknown").await;
+    let (_dir, socket) = start_with_catalog("unknown").await;
     let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
 
     client
@@ -560,14 +534,12 @@ async fn a_model_that_does_not_exist_is_refused_with_the_ones_that_do() {
     );
     // And not what does not: a list of models you cannot reach is one nobody reads.
     assert!(!message.contains("paid/x"), "{message}");
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_file(&socket);
 }
 
 #[tokio::test]
 async fn a_model_with_no_credential_is_refused_with_what_to_set() {
     // "No such model" and "you have not set a key" send a person to two different places.
-    let (dir, socket) = start_with_catalog("uncredentialed").await;
+    let (_dir, socket) = start_with_catalog("uncredentialed").await;
     let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
 
     client
@@ -582,8 +554,6 @@ async fn a_model_with_no_credential_is_refused_with_what_to_set() {
         panic!("expected a refusal");
     };
     assert!(message.contains("MAGI_TEST_UNSET_KEY"), "{message}");
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_file(&socket);
 }
 
 #[tokio::test]
@@ -591,7 +561,7 @@ async fn a_refused_switch_leaves_the_session_answering_with_what_it_had() {
     // The new worker is built before the old one is dropped, so a switch that fails costs
     // nothing. A session that stopped working because a name was mistyped would be worse than
     // no `/model` at all.
-    let (dir, socket) = start_with_catalog("kept").await;
+    let (_dir, socket) = start_with_catalog("kept").await;
     let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
 
     client
@@ -607,8 +577,6 @@ async fn a_refused_switch_leaves_the_session_answering_with_what_it_had() {
     // do is change which model answers, and that is a question with a direct answer.
     let model = Client::model_of(&socket).await.expect("still a model");
     assert_eq!(model.name, "local/a", "the switch was refused, not applied");
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_file(&socket);
 }
 
 #[tokio::test]
@@ -621,7 +589,7 @@ async fn the_model_is_told_what_it_is_before_the_conversation() {
     // is putting it in the ask, and a prompt that reached the struct and not the pipe looks
     // exactly like one that worked.
     let mind = Mind::answering("rt-system", "hello yourself");
-    let (dir, socket) = start_with_mind("system-prompt", &mind).await;
+    let (_dir, socket) = start_with_mind("system-prompt", &mind).await;
     let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
     client.submit("hello").await;
 
@@ -642,6 +610,4 @@ async fn the_model_is_told_what_it_is_before_the_conversation() {
         "the system prompt has to reach the pipe, not just the struct: {ask}"
     );
     assert!(ask.contains("hello"), "and the conversation with it: {ask}");
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_file(&socket);
 }

@@ -8,11 +8,11 @@ mod repair_tests {
     use super::super::*;
     use crate::session::Session;
     use magi_journal::JournalError;
+    use magi_model::scratch::Scratch;
     use magi_proto::{MessageId, SessionId, Signatures, ToolCallId, ToolResult};
 
-    fn session(name: &str) -> (Session, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("magi-repair-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn session(name: &str) -> (Session, Scratch) {
+        let dir = Scratch::new("magi-repair", name);
         let session =
             Session::open(&dir.join("s.jsonl"), SessionId::new("s"), "/tmp", 0).expect("session");
         (session, dir)
@@ -82,7 +82,7 @@ mod repair_tests {
         // What a daemon killed mid-tool leaves behind: the entry was committed before the
         // registry was consulted -- which is what makes an unrouted call auditable -- and
         // nobody was left to amend it.
-        let (mut session, dir) = session("unanswered");
+        let (mut session, _dir) = session("unanswered");
         session
             .commit(Entry::User {
                 id: MessageId::new("u1"),
@@ -111,13 +111,12 @@ mod repair_tests {
             .expect("a synthesised result");
         assert!(answer.1, "and it is an error, not a silent success");
         assert!(answer.0.contains("no result was recorded"), "{}", answer.0);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn the_synthesised_result_follows_the_message_that_made_the_call() {
         // Where a provider looks for it. Anywhere else is the same 400 by another route.
-        let (mut session, dir) = session("adjacent");
+        let (mut session, _dir) = session("adjacent");
         calling(&mut session, 1).expect("journal");
         call(&mut session, 1, false).expect("journal");
 
@@ -132,7 +131,6 @@ mod repair_tests {
             Role::Tool,
             "the answer is the very next message"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -140,7 +138,7 @@ mod repair_tests {
         // The other direction, and the one that ended every long tool-heavy session: a cut
         // between the assistant message and the entries answering it. `covers` no longer places
         // one there, but a rewind can, and a session recorded by an older build already has one.
-        let (mut session, dir) = session("orphan");
+        let (mut session, _dir) = session("orphan");
         session
             .commit(Entry::User {
                 id: MessageId::new("u1"),
@@ -163,13 +161,12 @@ mod repair_tests {
         assert_sound(&context);
         let (calls, results) = calls_and_results(&context);
         assert!(calls.is_empty() && results.is_empty(), "both went with it");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn an_ordinary_round_is_left_exactly_as_it_was() {
         // The repair must be invisible when there is nothing to repair.
-        let (mut session, dir) = session("intact");
+        let (mut session, _dir) = session("intact");
         calling(&mut session, 1).expect("journal");
         call(&mut session, 1, true).expect("journal");
 
@@ -179,13 +176,12 @@ mod repair_tests {
         assert_eq!(calls, vec!["c1"]);
         assert_eq!(results, vec!["c1"]);
         assert_eq!(context.messages.len(), 2, "no message was added");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn several_calls_in_one_message_are_each_answered() {
         // One assistant message can make several calls, and a provider wants every one closed.
-        let (mut session, dir) = session("several");
+        let (mut session, _dir) = session("several");
         calling(&mut session, 1).expect("journal");
         call(&mut session, 1, true).expect("journal");
         call(&mut session, 2, false).expect("journal");
@@ -195,6 +191,5 @@ mod repair_tests {
         assert_sound(&context);
         let (calls, _) = calls_and_results(&context);
         assert_eq!(calls.len(), 3);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

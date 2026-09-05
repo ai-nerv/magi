@@ -477,6 +477,7 @@ name = "magi-ipc"
 version = "0.1.0"
 dependencies = [
  "ciborium",
+ "magi-model",
  "magi-proto",
  "rustix",
  "serde",
@@ -489,6 +490,7 @@ dependencies = [
 name = "magi-journal"
 version = "0.1.0"
 dependencies = [
+ "magi-model",
  "magi-proto",
  "serde",
  "serde_json",
@@ -530,6 +532,7 @@ name = "magi-testkit"
 version = "0.1.0"
 dependencies = [
  "magi-ipc",
+ "magi-model",
  "magi-proto",
  "serde_json",
  "tokio",
@@ -542,6 +545,7 @@ dependencies = [
  "magi-ipc",
  "magi-model",
  "magi-proto",
+ "rustix",
  "serde",
  "serde_json",
  "similar",

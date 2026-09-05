@@ -7,6 +7,7 @@ version.workspace = true
 
 [dependencies]
 magi-ipc.workspace = true
+magi-model.workspace = true
 magi-proto.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

@@ -154,6 +154,7 @@ fn sweep(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use magi_model::scratch::Scratch;
 
     /// Held by every test here that binds a socket or starts a process.
     ///
@@ -181,23 +182,18 @@ mod tests {
     async fn a_named_socket_is_not_taken_from_a_live_balthasar() {
         let _alone = alone();
         // The sweep must dial rather than stat. A listener here stands in for a live one.
-        let dir = std::env::temp_dir().join(format!("magi-sweep-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let dir = Scratch::new("magi-sweep", "one");
         let path = dir.join("api@live.sock");
         let _listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
 
         sweep(&path);
         assert!(path.exists(), "a socket something is serving must survive");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
     async fn a_socket_nothing_answers_is_cleared() {
         let _alone = alone();
-        let dir = std::env::temp_dir().join(format!("magi-sweep-dead-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let dir = Scratch::new("magi-sweep-dead", "one");
         let path = dir.join("api@dead.sock");
         {
             let _listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
@@ -205,14 +201,11 @@ mod tests {
 
         sweep(&path);
         assert!(!path.exists(), "a socket nothing answers must be cleared");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A socket directory holding a live socket, a dead one, and two files that are not sockets.
-    fn littered(name: &str) -> (PathBuf, PathBuf, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("magi-sweep-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+    fn littered(name: &str) -> (Scratch, PathBuf, PathBuf) {
+        let dir = Scratch::new("magi-sweep", name);
         let dead = dir.join("api@00000000000000000001-alpha.sock");
         {
             let _listener = std::os::unix::net::UnixListener::bind(&dead).expect("bind");
@@ -235,7 +228,6 @@ mod tests {
             live.exists(),
             "another window's balthasar was taken down with it"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -252,7 +244,6 @@ mod tests {
         sweep_stale(&dir);
         assert!(given.exists(), "the settings went with the sockets");
         assert!(tool.exists(), "the tool description went with the sockets");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -261,9 +252,7 @@ mod tests {
         // "Nothing outlives the window" should be true of the file as well as the process.
         // Left behind, it was cleared by the next magi rather than by this one -- so a machine
         // at rest always had one, and the directory never quite emptied.
-        let dir = std::env::temp_dir().join(format!("magi-ended-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let dir = Scratch::new("magi-ended", "one");
         let socket = dir.join("api@00000000000000000003-gamma.sock");
         let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
         // A stand-in for balthasar: something that is running and holds the socket open, so
@@ -286,7 +275,6 @@ mod tests {
             !Path::new(&format!("/proc/{id}")).exists(),
             "the child outlived the session"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

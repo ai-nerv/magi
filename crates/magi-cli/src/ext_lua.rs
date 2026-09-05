@@ -96,11 +96,10 @@ pub fn run(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use magi_model::scratch::{Scratch, ScratchFile};
 
-    fn peer_file(name: &str, source: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("magi-extlua-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join(format!("{name}.lua"));
+    fn peer_file(name: &str, source: &str) -> ScratchFile {
+        let path = Scratch::file("magi-extlua", name, &format!("{name}.lua"));
         std::fs::write(&path, source).expect("write");
         path
     }

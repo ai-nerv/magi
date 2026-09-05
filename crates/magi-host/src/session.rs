@@ -584,16 +584,17 @@ fn events_for(cursor: Cursor, entry: &Entry) -> Vec<HarnessEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use magi_model::scratch::{Scratch, ScratchFile};
     use magi_proto::{MessageId, StopReason};
 
-    fn temp(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("magi-session-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        dir.join("s.jsonl")
+    fn temp(name: &str) -> ScratchFile {
+        Scratch::file("magi-session", name, "s.jsonl")
     }
 
-    fn session(name: &str) -> Session {
-        Session::open(&temp(name), SessionId::new("s1"), "/tmp", 0).expect("open")
+    fn session(name: &str) -> (Session, ScratchFile) {
+        let path = temp(name);
+        let session = Session::open(&path, SessionId::new("s1"), "/tmp", 0).expect("open");
+        (session, path)
     }
 
     #[test]
@@ -606,7 +607,7 @@ mod tests {
         //
         // Asserted here rather than through a turn, because in one process the `amend` always
         // wins the race and any end-to-end test passes whether or not this holds.
-        let mut session = session("revise-ending");
+        let (mut session, _dir) = session("revise-ending");
         let mut live = session.subscribe();
         let id = MessageId::new("a1");
         let started = Entry::Assistant {
@@ -661,7 +662,7 @@ mod tests {
 
     #[test]
     fn committing_publishes_to_subscribers() {
-        let mut s = session("publish");
+        let (mut s, _dir) = session("publish");
         let mut rx = s.subscribe();
         s.commit(user("hi")).expect("commit");
         let event = rx.try_recv().expect("an event");
@@ -670,7 +671,7 @@ mod tests {
 
     #[test]
     fn a_cold_snapshot_carries_nothing() {
-        let mut s = session("cold");
+        let (mut s, _dir) = session("cold");
         s.commit(user("hi")).expect("commit");
         match s.snapshot(Cursor::ZERO) {
             HarnessEvent::SessionSnapshot { entries, .. } => assert!(entries.is_empty()),
@@ -680,7 +681,7 @@ mod tests {
 
     #[test]
     fn a_resume_snapshot_carries_what_the_ui_already_saw() {
-        let mut s = session("resume");
+        let (mut s, _dir) = session("resume");
         s.commit(user("one")).expect("commit");
         s.commit(user("two")).expect("commit");
         match s.snapshot(Cursor(1)) {
@@ -691,7 +692,7 @@ mod tests {
 
     #[test]
     fn replay_covers_only_what_follows_the_cursor() {
-        let mut s = session("replay");
+        let (mut s, _dir) = session("replay");
         s.commit(user("one")).expect("commit");
         s.commit(user("two")).expect("commit");
         let events = s.replay(Cursor(1));
@@ -701,7 +702,7 @@ mod tests {
 
     #[test]
     fn an_unfinished_assistant_entry_replays_without_an_end_event() {
-        let mut s = session("unfinished");
+        let (mut s, _dir) = session("unfinished");
         s.commit(Entry::Assistant {
             id: MessageId::new("a1"),
             text: "partial".into(),
@@ -723,7 +724,7 @@ mod tests {
 
     #[test]
     fn a_finished_assistant_entry_replays_start_delta_and_end() {
-        let mut s = session("finished");
+        let (mut s, _dir) = session("finished");
         s.commit(Entry::Assistant {
             id: MessageId::new("a1"),
             text: "done".into(),
@@ -739,7 +740,7 @@ mod tests {
 
     #[test]
     fn status_is_published_but_not_journalled() {
-        let mut s = session("status");
+        let (mut s, _dir) = session("status");
         let mut rx = s.subscribe();
         s.set_status(AgentStatus::Working {
             label: "Thinking".into(),

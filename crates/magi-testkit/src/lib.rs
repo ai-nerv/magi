@@ -9,4 +9,7 @@ pub mod mind;
 pub mod replay;
 
 pub use mind::Mind;
+
+/// A temporary directory that removes itself, even when a test panics. See [`magi_model::scratch`].
+pub use magi_model::scratch::Scratch;
 pub use replay::{FakeHarness, Recording};
