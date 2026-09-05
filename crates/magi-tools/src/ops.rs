@@ -188,6 +188,22 @@ impl Real {
         }
     }
 
+    /// Keep this one inside its root, or do not.
+    ///
+    /// **Confinement and gating are independent, and used not to be.** There were three
+    /// constructors and no way to ask for both, so `magi.confine = true` was honoured only by
+    /// `confined` — the arm with no approver — and every session with a UI attached silently
+    /// dropped it. The setting therefore applied exactly to the runs nobody was watching, which
+    /// is the opposite of what somebody turning it on is asking for.
+    ///
+    /// A method rather than a fourth constructor: the two are orthogonal, and the combinations
+    /// grow by multiplication.
+    #[must_use]
+    pub fn confining(mut self, confined: bool) -> Self {
+        self.confined = confined;
+        self
+    }
+
     /// Resolve a path against the root, refusing anything that escapes it when confined.
     ///
     /// Checked after normalising rather than by looking for `..` in the text: `a/../../etc` has
@@ -561,6 +577,50 @@ mod gate_tests {
             .expect("allowed");
         }
         assert_eq!(approver.asked().len(), 1, "asked once, not three times");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_gated_session_is_still_confined() {
+        // `magi.confine = true` used to be dropped whenever there was somebody to ask, so it
+        // held only for headless runs. Asserted with an approver that would allow anything: if
+        // the wall works, the question is never reached, and an allowing approver proves that
+        // more sharply than a refusing one — a refusal would pass either way.
+        let dir = scratch("confined-gate");
+        std::fs::create_dir_all(dir.join("inside")).expect("mkdir");
+        std::fs::create_dir_all(dir.join("outside")).expect("mkdir");
+        // The file has to *exist*, or the read fails because it is missing and the test passes
+        // whether or not the wall is there. Confinement must be the only thing in the way.
+        std::fs::write(dir.join("outside/secret"), "a key").expect("write");
+
+        let approver = Scripted::new(vec![Decision::Allow {
+            scope: Scope::Anything,
+            lifetime: Lifetime::Session,
+        }]);
+        let ops = Real::gated(
+            dir.join("inside"),
+            crate::permit::Ledger::new(),
+            approver.clone(),
+        )
+        .confining(true);
+
+        // Reachable without the wall: the same path, read by an ops that is gated and not
+        // confined, comes back with the contents.
+        let open = Real::gated(
+            dir.join("inside"),
+            crate::permit::Ledger::new(),
+            approver.clone(),
+        );
+        assert_eq!(
+            open.read(Path::new("../outside/secret")).as_deref(),
+            Ok("a key"),
+            "the file is readable when nothing is confining"
+        );
+
+        assert!(
+            ops.read(Path::new("../outside/secret")).is_err(),
+            "confinement holds even with an approver that allows everything"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

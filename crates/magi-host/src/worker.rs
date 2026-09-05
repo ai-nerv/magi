@@ -122,11 +122,18 @@ impl Worker {
             // Gated when there is somebody to ask. The ledger starts with whatever the
             // configuration already granted, so a rule written down is not a question asked.
             let ops: std::rc::Rc<dyn magi_tools::Ops> = match (&approver, backend.confine) {
-                (Some(approver), _) => std::rc::Rc::new(magi_tools::ops::Real::gated(
-                    backend.cwd.clone(),
-                    magi_tools::permit::Ledger::with(backend.grants.clone()),
-                    std::sync::Arc::clone(approver),
-                )),
+                // `confine` is honoured here too. The arm used to be `(Some(approver), _)`,
+                // discarding it, so the setting applied only to sessions with nobody attached --
+                // exactly the runs where a wall matters least, and never the ones where somebody
+                // turned it on and watched it do nothing.
+                (Some(approver), confine) => std::rc::Rc::new(
+                    magi_tools::ops::Real::gated(
+                        backend.cwd.clone(),
+                        magi_tools::permit::Ledger::with(backend.grants.clone()),
+                        std::sync::Arc::clone(approver),
+                    )
+                    .confining(confine),
+                ),
                 (None, true) => {
                     std::rc::Rc::new(magi_tools::ops::Real::confined(backend.cwd.clone()))
                 }
