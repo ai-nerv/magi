@@ -162,8 +162,15 @@ impl Grant {
             Scope::Once => false,
             Scope::Anything => true,
             Scope::Exact => false,
+            // A host belongs here as well as a path. `offers` has always produced a
+            // `Directory` for `Action::Network` — a socket lives at a path, and "any socket
+            // under this directory" is the useful width — but this arm answered only about
+            // reads and writes, so every network grant ever made was inert and the person was
+            // asked again on the next connect.
             Scope::Directory { path } => match action {
-                Action::Read { path: at } | Action::Write { path: at } => under(at, path),
+                Action::Read { path: at }
+                | Action::Write { path: at }
+                | Action::Network { host: at } => under(at, path),
                 _ => false,
             },
             Scope::Program { program } => match action {
@@ -227,6 +234,25 @@ mod tests {
             },
         };
         assert!(!grant.covers(&read("/home/x/work-secrets/f")));
+    }
+
+    #[test]
+    fn a_network_grant_answers_a_network_action() {
+        // It did not, for as long as `Action::Network` existed. `offers` produced a `Directory`
+        // for a host and `covers` matched `Directory` only against a read or a write, so the
+        // grant was written down, looked right in the ledger, and answered nothing.
+        let grant = Grant {
+            verb: "reach".to_owned(),
+            scope: Scope::Directory {
+                path: "/run/user/1000/magi".to_owned(),
+            },
+        };
+        assert!(grant.covers(&Action::Network {
+            host: "/run/user/1000/magi/casper.sock".to_owned(),
+        }));
+        assert!(!grant.covers(&Action::Network {
+            host: "/run/user/1000/other/casper.sock".to_owned(),
+        }));
     }
 
     #[test]
