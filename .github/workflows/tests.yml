@@ -13,9 +13,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+
+      # The toolchain comes from `flake.nix`, which already pins it and says why: *"a newer rustc
+      # brings newer clippy lints, and `make verify` denies warnings. Raise it deliberately, not
+      # as a side effect."* CI used to take `dtolnay/rust-toolchain@stable` instead — whatever
+      # `stable` meant that morning — so it checked a different compiler from the one anybody
+      # develops against. Every run on `develop` failed for days on lints no local shell could
+      # see, and because nothing depended on CI, nobody noticed.
+      #
+      # Using the flake makes the two the same toolchain by construction rather than by two
+      # version strings that happen to agree.
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
       - uses: actions/cache@v4
         with:
           path: |
@@ -25,16 +35,17 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             cargo-${{ runner.os }}-
+
       - name: Verify
         run: |
-          cargo fmt --all -- --check
-          cargo check --all-targets --all-features
-          cargo clippy --all-targets --all-features -- -Dwarnings
-          cargo test --all-targets --all-features
+          nix develop --command cargo fmt --all -- --check
+          nix develop --command cargo check --all-targets --all-features
+          nix develop --command cargo clippy --all-targets --all-features -- -Dwarnings
+          nix develop --command cargo test --all-targets --all-features
 
-      # The architectural gates, which until now ran only on whoever remembered. `README.md`
-      # says they are not advisory and `PLAN.md` says they go into CI at the first commit; both
-      # were untrue for as long as this file ran four cargo commands and nothing else.
+      # The architectural gates, which until now ran only on whoever remembered. `README.md` says
+      # they are not advisory and `PLAN.md` says they go into CI at the first commit; both were
+      # untrue for as long as this file ran four cargo commands and nothing else.
       #
       # Globbed rather than listed. The recipe in `.make.lua` names its gates one by one, so a
       # gate added to `scripts/` and forgotten there would be invisible; a glob cannot forget.
@@ -42,8 +53,8 @@ jobs:
       # repositories while each enforces its own rules.
       #
       # Executed, never `sh "$g"`. Two of these used process substitution and two used
-      # `set -o pipefail`, so under this runner's /bin/sh -- dash -- the first pair died at
-      # parse and the second at the first line. The shebang is the contract.
+      # `set -o pipefail`, so under this runner's /bin/sh — dash — the first pair died at parse
+      # and the second at the first line. The shebang is the contract.
       - name: Gates
         run: |
           for g in scripts/gate-*.sh; do
@@ -53,16 +64,15 @@ jobs:
               */gate-no-llm.sh) continue ;;
             esac
             printf '\n== %s\n' "$g"
-            "$g"
+            nix develop --command "$g"
           done
 
-      # Separate because it compiles nothing new but runs every test a second time, and because
-      # a repo without one should skip it rather than fail. Same flags as the step above, so it
-      # reuses that build rather than resolving a different feature set and starting over.
+      # Separate because it compiles nothing new but runs every test a second time, and because a
+      # repo without one should skip it rather than fail.
       - name: The suite with no model reachable
         run: |
           if [ -x scripts/gate-no-llm.sh ]; then
-            ./scripts/gate-no-llm.sh
+            nix develop --command ./scripts/gate-no-llm.sh
           else
             echo "no gate-no-llm in this repository"
           fi

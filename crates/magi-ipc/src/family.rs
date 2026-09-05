@@ -239,7 +239,9 @@ fn listing(dir: &Path) -> Vec<PathBuf> {
         })
         .collect();
 
-    found.sort_by(|a, b| b.0.cmp(&a.0));
+    // Newest first, so `by_key` on the key alone would put it the wrong way round; reversing the
+    // key is what clippy asks for here and it says the same thing.
+    found.sort_by_key(|(when, _)| std::cmp::Reverse(*when));
     found.into_iter().map(|(_, path)| path).collect()
 }
 
