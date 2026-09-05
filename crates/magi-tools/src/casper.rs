@@ -304,11 +304,17 @@ fn wants(card: &Card, arguments: &serde_json::Value) -> Option<magi_proto::permi
                     command
                 }
             };
-            let program = command
-                .split_whitespace()
-                .next()
-                .unwrap_or(&card.name)
-                .to_owned();
+            // The same reading the process transport uses. Two of them disagreed: this one took
+            // the first word outright, so `FOO=1 git status` offered "any `FOO=1` command" — a
+            // question nobody could answer sensibly, and one whose grant then covered every
+            // command line starting `FOO=1`, including one that goes on to say something else
+            // entirely. A permission subject that differs by transport is its own bug.
+            let program = crate::process::first_word(&command);
+            let program = if program.is_empty() {
+                card.name.clone()
+            } else {
+                program
+            };
             Action::Run { command, program }
         }
     })
