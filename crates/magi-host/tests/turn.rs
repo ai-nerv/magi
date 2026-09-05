@@ -389,17 +389,26 @@ async fn the_wait_is_announced_while_it_is_happening() {
     let mut live = session.lock().await.subscribe();
     turn(&session, &backend(&mind)).await;
 
+    // Waited for rather than drained. `try_recv` in a loop asks what is in the channel at this
+    // instant, and the publisher is another task: this test failed about one run in three
+    // because the drain won the race and found nothing. A bounded wait is not a weaker
+    // assertion — an event that never arrives still fails, it just no longer fails when the
+    // event is merely late.
     let mut announced = None;
-    while let Ok(event) = live.try_recv() {
-        if let magi_proto::HarnessEvent::StatusChanged {
-            status:
-                magi_proto::AgentStatus::Retrying {
-                    attempt, delay_ms, ..
-                },
-            ..
-        } = event
-        {
-            announced = Some((attempt, delay_ms));
+    let deadline = std::time::Duration::from_secs(5);
+    while announced.is_none() {
+        match tokio::time::timeout(deadline, live.recv()).await {
+            Ok(Ok(magi_proto::HarnessEvent::StatusChanged {
+                status:
+                    magi_proto::AgentStatus::Retrying {
+                        attempt, delay_ms, ..
+                    },
+                ..
+            })) => announced = Some((attempt, delay_ms)),
+            Ok(Ok(_)) => {}
+            // Lagged means the buffer wrapped; the next read still returns the newer events.
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) | Err(_) => break,
         }
     }
     let (attempt, delay_ms) = announced.expect("the wait was published");
