@@ -28,6 +28,59 @@ const MAX_RECV: usize = 16 * 1024 * 1024;
 /// A connected socket, shared between the handle's methods.
 type Handle = Rc<RefCell<Option<UnixStream>>>;
 
+/// Whether `path` is a socket a config may dial.
+///
+/// **This user's own socket directories and nothing else.** This primitive used to call `UnixStream::connect`
+/// on whatever it was handed, from a callback with no [`magi_tools::Ops`] in scope at all — so
+/// `ops.allow` was never consulted, `Action::Network` was never constructed for it, and any Lua
+/// a config could reach could open any socket this user can: the host's own control socket, a
+/// sibling's, a container runtime's.
+///
+/// Narrowed rather than asked, because there is no one place to ask from. A config file is read
+/// before a session exists and before any `Ops` is lent, and that read is exactly when an
+/// untrusted `.magi.lua` runs — so a check that only worked inside a session would be absent in
+/// the window that matters most. Every legitimate caller is already here: oslo, hexe and
+/// balthasar all put their sockets under `$XDG_RUNTIME_DIR`, and so does magi.
+///
+/// Lexical, on a normalised path: `..` is resolved first, so a name cannot climb out of the
+/// directory it appears to be in.
+fn dialable(path: &std::path::Path) -> bool {
+    roots().iter().any(|root| under(path, root))
+}
+
+/// Where this user's sockets may live.
+///
+/// Both, not one. `magi_ipc::family::socket_dir` uses `$XDG_RUNTIME_DIR` when it is set and falls
+/// back to the temporary directory when it is not, so a rule naming only the first refuses the
+/// family's own sockets on any machine without that variable — and a rule naming only the second
+/// refuses them everywhere else. Checking one root broke `peer`'s round-trip test the moment it
+/// landed, which is exactly the case a real deployment without `$XDG_RUNTIME_DIR` would hit.
+fn roots() -> Vec<std::path::PathBuf> {
+    let mut out = vec![std::env::temp_dir()];
+    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
+        out.push(std::path::PathBuf::from(runtime));
+    }
+    out
+}
+
+/// Whether `path`, once `..` is resolved, is inside `root`.
+///
+/// Split out so it can be tested against a root of the test's choosing: the alternative is
+/// setting `XDG_RUNTIME_DIR`, and `std::env::set_var` is `unsafe`, which this workspace denies.
+fn under(path: &std::path::Path, root: &std::path::Path) -> bool {
+    let mut out = std::path::PathBuf::new();
+    for part in path.components() {
+        match part {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out.starts_with(root)
+}
+
 /// Build the `stream` table.
 pub fn table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
     let stream = Table::new(&ctx);
@@ -38,6 +91,20 @@ pub fn table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
             return Ok(CallbackReturn::Return);
         };
         let path = String::from_utf8_lossy(path.as_bytes()).into_owned();
+
+        // Refused as an ordinary answer, the way a failed connect already is: `nil` and a reason
+        // the caller can put on screen. Raising would make a config that probed for an absent
+        // sibling die instead of carrying on without it.
+        if !dialable(std::path::Path::new(&path)) {
+            stack.replace(
+                ctx,
+                (
+                    Value::Nil,
+                    "a socket outside the runtime directory is not this VM's to open",
+                ),
+            );
+            return Ok(CallbackReturn::Return);
+        }
 
         // A default rather than a wait forever: a stale socket left by a killed peer accepts
         // and never answers, which is indistinguishable from a hang without one.
@@ -131,4 +198,39 @@ fn handle_table<'gc>(ctx: Context<'gc>, socket: Handle) -> Table<'gc> {
     handle.set(ctx, "close", close).ok();
 
     handle
+}
+
+#[cfg(test)]
+mod tests {
+    use super::under;
+    use std::path::Path;
+
+    #[test]
+    fn only_a_socket_directory_of_this_users_is_dialable() {
+        // The hole this closes: this callback has no `Ops` in scope, so `ops.allow` was never
+        // consulted and `Action::Network` was never built for it. Any Lua a config could reach
+        // could open any socket this user can -- the host's own control socket included.
+        //
+        // Tested against a root of our choosing rather than the real one: reading the answer out
+        // of the environment would mean setting a variable, and `set_var` is `unsafe`.
+        let root = Path::new("/run/user/1000");
+
+        assert!(under(
+            Path::new("/run/user/1000/balthasar/api@1.sock"),
+            root
+        ));
+        assert!(
+            under(Path::new("/run/user/1000/oslo/shell.sock"), root),
+            "a sibling's own socket"
+        );
+        assert!(!under(Path::new("/var/run/docker.sock"), root));
+        assert!(!under(Path::new("/etc/passwd"), root));
+        assert!(
+            !under(
+                Path::new("/run/user/1000/../../../var/run/docker.sock"),
+                root
+            ),
+            "`..` is resolved before the prefix is compared"
+        );
+    }
 }
