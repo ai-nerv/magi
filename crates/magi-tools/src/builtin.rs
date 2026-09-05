@@ -84,7 +84,7 @@ impl Tool for Read {
         if let Err(why) = ops.allow(
             "read",
             &magi_proto::permit::Action::Read {
-                path: ops.cwd().join(path).display().to_string(),
+                path: ops.resolved(Path::new(path)).display().to_string(),
             },
         ) {
             return Output::error(why);
@@ -163,7 +163,7 @@ impl Tool for Write {
         if let Err(why) = ops.allow(
             "write",
             &magi_proto::permit::Action::Write {
-                path: ops.cwd().join(path).display().to_string(),
+                path: ops.resolved(Path::new(path)).display().to_string(),
             },
         ) {
             return Output::error(why);
@@ -228,7 +228,7 @@ impl Tool for Edit {
                 if let Err(why) = ops.allow(
                     "edit",
                     &magi_proto::permit::Action::Write {
-                        path: ops.cwd().join(path).display().to_string(),
+                        path: ops.resolved(Path::new(path)).display().to_string(),
                     },
                 ) {
                     return Output::error(why);
