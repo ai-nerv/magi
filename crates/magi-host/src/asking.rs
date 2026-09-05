@@ -609,7 +609,10 @@ mod every_verb {
         assert_eq!(args["tool"], "read");
         assert_eq!(args["verb"], "read");
         assert!(
-            args["subject"].as_str().unwrap_or_default().ends_with("note.txt"),
+            args["subject"]
+                .as_str()
+                .unwrap_or_default()
+                .ends_with("note.txt"),
             "{args}"
         );
         assert!(out.is_error, "denied, so the read must not have happened");
@@ -629,7 +632,10 @@ mod every_verb {
         let args = shown(&holder).expect("the prompt was never drawn");
         assert_eq!(args["verb"], "write");
         assert!(out.is_error);
-        assert!(!dir.join("new.txt").exists(), "a refused write happened anyway");
+        assert!(
+            !dir.join("new.txt").exists(),
+            "a refused write happened anyway"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

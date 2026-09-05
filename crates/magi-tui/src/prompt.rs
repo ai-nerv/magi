@@ -669,10 +669,10 @@ mod narrow_tests {
             },
         )
         .lines[1]
-        .spans
-        .iter()
-        .map(|s| s.content.as_ref())
-        .collect()
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
     }
 
     #[test]

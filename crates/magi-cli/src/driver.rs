@@ -11,12 +11,11 @@ use crate::terminal::Session;
 use crate::ui;
 use anyhow::Result;
 use crossterm::event::{Event, EventStream};
-use magi_ipc::{FrameReader, FrameWriter};
-use magi_proto::{Cursor, HarnessEvent, UiCommand};
+use magi_proto::{HarnessEvent, UiCommand};
 use magi_tui::footer::FooterData;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
@@ -172,6 +171,11 @@ pub async fn run(
     // arrival, and neither side of the pipe can see it: melchior cannot see a turn at all, and the
     // session publishes what it is doing rather than what it just stopped doing.
     let mut was_busy = false;
+    // The room a surface would have had in the last frame drawn. The session grants rows out of
+    // this, and it moves without the window doing: a prompt that wrapped onto a second line took
+    // a row off it. Compared rather than sent every frame, so a redraw per keystroke is not also
+    // a command per keystroke.
+    let mut told_room = None;
     loop {
         // Read each pass rather than tracked here: the connection lives in another task, and
         // this is the one thing about it the screen has to show.
@@ -191,11 +195,25 @@ pub async fn run(
 
         if dirty {
             let _ = session.terminal.autoresize();
+            let mut room = told_room.unwrap_or_default();
             let drawn = session.terminal.draw(|frame| {
                 let footer = footer_data(&app);
                 app.queued = command_tx.max_capacity() - command_tx.capacity();
-                ui::draw(frame, &mut app, &footer);
+                room = ui::draw(frame, &mut app, &footer);
             })?;
+            // Measured in the draw, told after it. The session has no terminal and cannot work
+            // this out, so a tool asking for eight rows on a window with three would be granted
+            // eight and lay itself out for five nobody can see.
+            if told_room != Some(room) {
+                told_room = Some(room);
+                let _ = command_tx
+                    .send(UiCommand::Sized {
+                        rows: Some(room),
+                        cols: inner(),
+                        holds: crate::terminal::reports_holds(),
+                    })
+                    .await;
+            }
             // Read out of the frame that was just drawn, which is what `draw` hands back.
             //
             // **Not `current_buffer_mut`.** ratatui keeps two buffers and ends every draw with
@@ -247,6 +265,7 @@ pub async fn run(
                         {
                             let _ = command_tx
                                 .send(UiCommand::Sized {
+                                    rows: None,
                                     cols: inner(),
                                     holds: true,
                                 })
@@ -552,7 +571,7 @@ pub async fn run(
                         // The width is the terminal's and changes under whatever is drawing in
                         // the rows a tool was given. Only the height is magi's to grant.
                         let _ = command_tx
-                            .send(UiCommand::Sized { cols: inner(), holds: crate::terminal::reports_holds() })
+                            .send(UiCommand::Sized { rows: None, cols: inner(), holds: crate::terminal::reports_holds() })
                             .await;
                         dirty = true;
                     }
@@ -635,104 +654,6 @@ pub async fn run(
     Ok(())
 }
 
-/// Keep a connection to the session, redialling when it drops.
-///
-/// A dead session is not an error for the UI: it is the detach case, and reattaching with the
-/// last cursor is how an in-flight turn is rejoined rather than replayed.
-async fn connection_loop(
-    socket: std::path::PathBuf,
-    events: mpsc::Sender<HarnessEvent>,
-    mut commands: mpsc::Receiver<UiCommand>,
-    mut from_cursor: Cursor,
-    attached: Arc<std::sync::atomic::AtomicBool>,
-) {
-    loop {
-        attached.store(false, Ordering::Relaxed);
-        let Ok(stream) = magi_ipc::connect(&socket).await else {
-            debug_log(format_args!("connect failed"));
-            // Waited out rather than restarted. There is nothing to restart: the session is a
-            // task in this process, so a socket that will not answer means this process is
-            // still binding it — the only race left — or has begun shutting it down, and
-            // either way the loop ends when the process does.
-            //
-            // This used to spawn a session. It had to: the session was a separate process that
-            // could crash, be killed, or be lost to a sleeping machine, and a UI with nothing
-            // to talk to had to build itself a new one and resume the journal. None of those
-            // can happen to something that dies exactly when its window does.
-            tokio::time::sleep(RECONNECT_DELAY).await;
-            continue;
-        };
-
-        let (read_half, write_half) = stream.into_split();
-        let mut reader = FrameReader::new(read_half);
-        let mut writer = FrameWriter::new(write_half);
-
-        if writer
-            .write(&UiCommand::Attach {
-                session: None,
-                from_cursor,
-                // There is a terminal on this end, so a tool may be given rows in it.
-                draws: true,
-            })
-            .await
-            .is_err()
-        {
-            tokio::time::sleep(RECONNECT_DELAY).await;
-            continue;
-        }
-        // Straight after the attach, and again on every resize. The session has no terminal, so a
-        // tool given rows in this one has no other way to know how wide they are — and this is
-        // sent on reconnect too, because the window may have changed while nothing was attached.
-        let _ = writer
-            .write(&UiCommand::Sized {
-                cols: inner(),
-                holds: crate::terminal::reports_holds(),
-            })
-            .await;
-
-        // Reads run in their own task because `FrameReader::read` is not cancel-safe: it takes
-        // a length and then a body, and a `select!` that drops it between the two leaves the
-        // next read parsing body bytes as a length. Sending a command used to do exactly that,
-        // which desynced the stream on the first prompt.
-        attached.store(true, Ordering::Relaxed);
-        let cursor = Arc::new(AtomicU64::new(from_cursor.0));
-        let reader_cursor = Arc::clone(&cursor);
-        let reader_events = events.clone();
-        let mut reading = tokio::spawn(async move {
-            loop {
-                match reader.read::<HarnessEvent>().await {
-                    Ok(event) => {
-                        reader_cursor.fetch_max(event.cursor().0, Ordering::Relaxed);
-                        if reader_events.send(event).await.is_err() {
-                            return;
-                        }
-                    }
-                    Err(_) => return,
-                }
-            }
-        });
-
-        loop {
-            tokio::select! {
-                command = commands.recv() => {
-                    let Some(command) = command else { return };
-                    // Awaited in the branch body, not as a select arm: a cancelled write
-                    // desyncs the stream the same way a cancelled read does.
-                    if writer.write(&command).await.is_err() {
-                        break;
-                    }
-                }
-                _ = &mut reading => break,
-            }
-        }
-
-        reading.abort();
-        from_cursor = Cursor(cursor.load(Ordering::Relaxed));
-
-        tokio::time::sleep(RECONNECT_DELAY).await;
-    }
-}
-
 fn terminal_size() -> (u16, u16) {
     crossterm::terminal::size().unwrap_or((80, 24))
 }
@@ -763,6 +684,10 @@ fn footer_data(app: &App) -> FooterData {
         }),
     }
 }
+
+/// The socket to the session, and redialling one that dropped.
+mod connecting;
+use connecting::connection_loop;
 
 /// The pointer, and which of two readers it belongs to.
 mod pointing;

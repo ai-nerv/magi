@@ -144,6 +144,25 @@ impl Scribe {
         let values = self.family.call("sessions", Vec::new()).await?;
         Ok(values.iter().flat_map(rows).cloned().collect())
     }
+
+    /// What this memory holds about `query`, nearest first.
+    ///
+    /// An empty query is what balthasar takes to mean "whatever is nearest", which is the answer
+    /// to "what does this session remember" — so it is passed through rather than refused here.
+    /// This session's own id travels with it, or a run could not find what it was told a minute
+    /// ago: freshly written memories live in the run's own scratch until they are distilled.
+    pub async fn nearest(
+        &mut self,
+        query: &str,
+        limit: u64,
+    ) -> Result<Vec<serde_json::Value>, Fault> {
+        let args = vec![
+            serde_json::Value::String(query.to_owned()),
+            serde_json::json!({ "limit": limit, "session": self.session }),
+        ];
+        let values = self.family.call("recall", args).await?;
+        Ok(values.iter().flat_map(rows).cloned().collect())
+    }
 }
 
 /// Hand everything a session has settled to balthasar.

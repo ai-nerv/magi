@@ -28,11 +28,23 @@ pub enum UiCommand {
         #[serde(default)]
         draws: bool,
     },
-    /// How wide the screen is, and what its keyboard can say.
+    /// How big the screen is, and what its keyboard can say.
     ///
     /// Sent at attach and again when the window changes. The session cannot know either — it has
     /// no terminal — and a tenant told a made-up width draws for a screen that is not there.
     Sized {
+        /// Rows a surface could be drawn in, as the client measured them.
+        ///
+        /// Not the height of the window: the room left over once the transcript, the footer and
+        /// however many lines the prompt currently occupies have taken theirs. The session grants
+        /// out of this rather than out of what a tool asked for, so a surface is never told it has
+        /// rows nobody can see.
+        ///
+        /// `None` where the sender has not measured — this is sent from places that know the
+        /// width and nothing about the layout, and a zero from one of them would read as a window
+        /// with no room in it and refuse every surface.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rows: Option<u16>,
         /// Columns.
         cols: u16,
         /// Whether this terminal reports key repeats and releases.
@@ -49,7 +61,7 @@ pub enum UiCommand {
         text: String,
         /// Context for the model that is not part of what the person typed.
         ///
-        /// See [`Entry::User::aside`]. Separate on the wire so the session can journal the two
+        /// See [`crate::Entry::User::aside`]. Separate on the wire so the session can journal the two
         /// apart: one is the conversation, the other is what the harness knew at the time.
         #[serde(default, skip_serializing_if = "String::is_empty")]
         aside: String,
@@ -89,7 +101,7 @@ pub enum UiCommand {
         /// A level, as `magi.thinking` names them.
         level: String,
     },
-    /// Answer a [`HarnessEvent::PermissionAsked`].
+    /// Answer a [`crate::HarnessEvent::PermissionAsked`].
     ///
     /// An answer that names an unknown id is dropped: the turn it belonged to is over, and
     /// acting on it would allow something nobody is waiting for.
@@ -99,7 +111,7 @@ pub enum UiCommand {
         /// What was decided.
         decision: crate::permit::Decision,
     },
-    /// Answer a [`HarnessEvent::Asked`].
+    /// Answer a [`crate::HarnessEvent::Asked`].
     ///
     /// An answer that names an unknown id is dropped, for the same reason a permission's is: the
     /// turn it belonged to is over, and acting on it would resume something nobody is waiting on.
@@ -121,7 +133,7 @@ pub enum UiCommand {
         key: String,
         /// Whether it went down, repeated, or came back up.
         #[serde(default)]
-        state: crate::tooling::Held,
+        state: crate::surfacing::Held,
     },
     /// The pointer, over rows a surface holds.
     ///
@@ -132,10 +144,10 @@ pub enum UiCommand {
         /// Which surface it was meant for.
         id: ToolCallId,
         /// What the pointer did.
-        kind: crate::tooling::Pointed,
+        kind: crate::surfacing::Pointed,
         /// Which button, for the things a button does.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        button: Option<crate::tooling::Button>,
+        button: Option<crate::surfacing::Button>,
         /// Rows down from the surface's own first row.
         row: u16,
         /// Columns across from the surface's own first column.

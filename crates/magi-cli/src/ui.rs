@@ -23,8 +23,13 @@ pub fn chrome_rows() -> u16 {
     metric::prompt_min_rows() + metric::footer_rows()
 }
 
-/// Draw the live region.
-pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
+/// Draw the live region, and say how many rows a surface could have had in it.
+///
+/// **The room is measured where it is drawn.** It depends on the footer, the rule above the
+/// prompt and however many lines the prompt is currently wrapped over, so anything working it out
+/// a second time would be a copy of this arithmetic that drifts from it. The session is the one
+/// that grants rows and has no terminal to measure, so what comes back here is what it is told.
+pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u16 {
     let area = frame.area();
     // Before anything is measured: an emptied prompt gets a new placeholder, and the one it
     // gets is what this frame draws.
@@ -75,6 +80,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     };
     let text_rows = prompt::text_rows(&app.editor, rows, area.width, &badge);
     let room = usize::from(rows.saturating_sub(around)).saturating_sub(text_rows + 3);
+    // The same number the menu is cut to, which is the point: a surface is drawn in the menu's
+    // slot, so the rows it may have are the rows a list may have.
+    let granted = u16::try_from(room).unwrap_or(u16::MAX);
     // Keyed on what is open, so a permission ask after a model list is a second opening while
     // either one narrowing under a query is still the first.
     app.landing
@@ -286,14 +294,18 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) {
     // prompt is not where you are typing, so leaving the caret parked in it points an IME and a
     // screen reader at a box nothing is going into. Only when it asks: a game wants nothing
     // blinking in its picture, and that is nearly every surface.
-    if let Some((rect, at)) = app.surface_rect.zip(app.holding().and_then(|held| held.cursor)) {
+    if let Some((rect, at)) = app
+        .surface_rect
+        .zip(app.holding().and_then(|held| held.cursor))
+    {
         frame.set_cursor_position((
             rect.x + at.col.min(rect.width.saturating_sub(1)),
             rect.y + at.row.min(rect.height.saturating_sub(1)),
         ));
-        return;
+        return granted;
     }
     place_hardware_cursor(frame, app, prompt_area, rows, &badge);
+    granted
 }
 
 /// Park the terminal cursor on the same cell the inverted block is drawn on.
@@ -348,13 +360,17 @@ mod continues_past_the_edge {
         let mut terminal = Terminal::new(TestBackend::new(60, 16)).expect("test terminal");
         // Drawn once so the scrollback learns how tall its view is, then scrolled and redrawn.
         terminal
-            .draw(|frame| draw(frame, &mut app, &footer))
+            .draw(|frame| {
+                draw(frame, &mut app, &footer);
+            })
             .expect("draw");
         if lines > 0 {
             app.scrollback.scroll_up(lines);
         }
         terminal
-            .draw(|frame| draw(frame, &mut app, &footer))
+            .draw(|frame| {
+                draw(frame, &mut app, &footer);
+            })
             .expect("draw");
         terminal
             .backend()
@@ -445,7 +461,9 @@ mod inside_the_box {
         let footer = FooterData::default();
         let mut terminal = Terminal::new(TestBackend::new(60, 16)).expect("test terminal");
         terminal
-            .draw(|frame| draw(frame, &mut app, &footer))
+            .draw(|frame| {
+                draw(frame, &mut app, &footer);
+            })
             .expect("draw");
         terminal
             .backend()
@@ -507,7 +525,8 @@ mod inside_the_box {
 #[cfg(test)]
 mod where_the_rows_landed {
     use super::*;
-    use magi_proto::tooling::{At, Role, Span};
+    use magi_proto::surfacing::At;
+    use magi_proto::tooling::{Role, Span};
     use magi_proto::{Cursor, HarnessEvent, ToolCallId};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -535,7 +554,9 @@ mod where_the_rows_landed {
         let footer = FooterData::default();
         let mut terminal = Terminal::new(TestBackend::new(60, 16)).expect("test terminal");
         terminal
-            .draw(|frame| draw(frame, &mut app, &footer))
+            .draw(|frame| {
+                draw(frame, &mut app, &footer);
+            })
             .expect("draw");
         (app, terminal)
     }

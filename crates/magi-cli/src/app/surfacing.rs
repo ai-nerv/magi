@@ -29,7 +29,7 @@ pub struct Surfacing {
     /// `None` for almost every surface: a game paints its own picture and wants nothing blinking
     /// in it. A tenant that draws a field somebody types into asks for it, and then the caret an
     /// IME and a screen reader follow is in the field rather than back in the prompt.
-    pub cursor: Option<magi_proto::tooling::At>,
+    pub cursor: Option<magi_proto::surfacing::At>,
 }
 
 impl super::App {
@@ -53,7 +53,7 @@ impl super::App {
         &mut self,
         id: &ToolCallId,
         lines: Vec<Vec<Span>>,
-        cursor: Option<magi_proto::tooling::At>,
+        cursor: Option<magi_proto::surfacing::At>,
     ) {
         if let Some(surface) = self.surface.as_mut()
             && surface.id == *id

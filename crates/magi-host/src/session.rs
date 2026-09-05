@@ -185,6 +185,12 @@ impl Session {
         self.model.as_ref().map(|m| m.name.clone())
     }
 
+    /// The model this session talks to, and what it says about itself.
+    #[must_use]
+    pub fn model(&self) -> Option<magi_proto::ModelInfo> {
+        self.model.clone()
+    }
+
     /// Say how much reasoning is being asked for.
     pub fn set_thinking(&mut self, level: String) {
         self.thinking = level;
