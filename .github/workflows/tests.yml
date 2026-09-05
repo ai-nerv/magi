@@ -32,3 +32,37 @@ jobs:
           cargo clippy --all-targets --all-features -- -Dwarnings
           cargo test --all-targets --all-features
 
+      # The architectural gates, which until now ran only on whoever remembered. `README.md`
+      # says they are not advisory and `PLAN.md` says they go into CI at the first commit; both
+      # were untrue for as long as this file ran four cargo commands and nothing else.
+      #
+      # Globbed rather than listed. The recipe in `.make.lua` names its gates one by one, so a
+      # gate added to `scripts/` and forgotten there would be invisible; a glob cannot forget.
+      # `scripts/` deciding what runs is also what lets this step be identical in all four
+      # repositories while each enforces its own rules.
+      #
+      # Executed, never `sh "$g"`. Two of these used process substitution and two used
+      # `set -o pipefail`, so under this runner's /bin/sh -- dash -- the first pair died at
+      # parse and the second at the first line. The shebang is the contract.
+      - name: Gates
+        run: |
+          for g in scripts/gate-*.sh; do
+            [ -e "$g" ] || continue
+            case "$g" in
+              # Re-runs the whole suite under a scrubbed environment; its own step, below.
+              */gate-no-llm.sh) continue ;;
+            esac
+            printf '\n== %s\n' "$g"
+            "$g"
+          done
+
+      # Separate because it compiles nothing new but runs every test a second time, and because
+      # a repo without one should skip it rather than fail. Same flags as the step above, so it
+      # reuses that build rather than resolving a different feature set and starting over.
+      - name: The suite with no model reachable
+        run: |
+          if [ -x scripts/gate-no-llm.sh ]; then
+            ./scripts/gate-no-llm.sh
+          else
+            echo "no gate-no-llm in this repository"
+          fi

@@ -13,7 +13,9 @@ ROOT="${GATE_ROOT:-crates}"
 # The offenders are collected as output rather than counted into a flag: a `while` loop on the
 # right of a pipe runs in a subshell, so a flag set inside it is lost on the way out.
 offenders=$(
-  find "$ROOT" -name '*.rs' -type f -not -path '*/target/*' | sort | while IFS= read -r file; do
+  # Deliberately unquoted: ROOT may name more than one tree ("src tests").
+  # shellcheck disable=SC2086
+  find $ROOT -name '*.rs' -type f -not -path '*/target/*' | sort | while IFS= read -r file; do
     lines=$(wc -l < "$file")
     if [ "$lines" -gt "$LIMIT" ]; then
       printf '%s: %s lines (limit %s)\n' "$file" "$lines" "$LIMIT"
