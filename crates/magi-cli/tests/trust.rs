@@ -7,6 +7,8 @@
 //! Run through the binary rather than the library, because the boundary is between two files on
 //! disk and only a real process reads them in the real order.
 
+use magi_testkit::Mind;
+use magi_testkit::mind::MODEL;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -45,6 +47,24 @@ fn magi(dir: &Path, args: &[&str]) -> std::process::Output {
         .current_dir(dir.join("project"))
         .env("XDG_CONFIG_HOME", dir.join("config"))
         .env("XDG_RUNTIME_DIR", dir.join("run"))
+        .args(args)
+        .output()
+        .expect("run magi")
+}
+
+/// The same, with a fake melchior in front of whatever this machine has.
+///
+/// Anything that reads the model catalog needs one: `magi models` shells out to
+/// `melchior models --json`, so without it the catalog is empty and a test about *choosing* a
+/// model has nothing to choose between. In front rather than instead, for the same reason
+/// `oneshot.rs` does it: the run still needs an ordinary `PATH` for everything else.
+fn with_melchior(dir: &Path, mind: &Mind, args: &[&str]) -> std::process::Output {
+    let inherited = std::env::var("PATH").unwrap_or_default();
+    Command::new(env!("CARGO_BIN_EXE_magi"))
+        .current_dir(dir.join("project"))
+        .env("XDG_CONFIG_HOME", dir.join("config"))
+        .env("XDG_RUNTIME_DIR", dir.join("run"))
+        .env("PATH", format!("{}:{inherited}", mind.on_path().display()))
         .args(args)
         .output()
         .expect("run magi")
@@ -108,16 +128,22 @@ magi.tool("mine", {
 #[test]
 fn a_project_may_still_choose_among_what_the_machine_offers() {
     // The useful half, and the half that carries no authority: picking a model.
+    //
+    // The catalog comes from a fake melchior on the run's own `PATH`, not from the one this
+    // machine happens to have installed. It used to name a model the shipped catalog declares,
+    // which passes wherever melchior exists and fails everywhere else — `magi models` shells out
+    // to `melchior models --json` and gets nothing, so the list is empty and the assertion reads
+    // as "the project's choice was ignored" when the truth is that nothing offered anything.
+    // CI found it the first time these tests ran somewhere without the siblings.
     let dir = workspace("choose");
-    // A model the catalog *declares*, not one it discovers: `ollama` asks a local server what
-    // it has, and a test that needs one running is a test that fails on a build machine.
-    project(&dir, "magi.model = \"deepseek/deepseek-chat\"\n");
-    let output = magi(&dir, &["models", "--all"]);
+    let mind = Mind::answering("trust-choose", "unused");
+    project(&dir, &format!("magi.model = \"{MODEL}\"\n"));
+    let output = with_melchior(&dir, &mind, &["models", "--all"]);
     let listed = String::from_utf8_lossy(&output.stdout);
     assert!(
         listed
             .lines()
-            .any(|l| l.starts_with('*') && l.contains("deepseek/deepseek-chat")),
+            .any(|l| l.starts_with('*') && l.contains(MODEL)),
         "the project's choice is honoured: {listed}"
     );
     let _ = std::fs::remove_dir_all(&dir);
