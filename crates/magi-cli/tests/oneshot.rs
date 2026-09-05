@@ -424,19 +424,24 @@ fn a_permission_question_nobody_can_answer_ends_the_run_rather_than_hanging() {
     // watching is the wrong place to widen what a tool may do. `magi.allow` is how a person
     // says in advance what an unattended run may do.
     //
-    // `shell` because it is gated on every call, which is the point: the question has to be
-    // answered by somebody, and in `-p` there is nobody.
+    // `write` because it is gated on a path nobody has answered for yet, which is the point: the
+    // question has to be answered by somebody, and in `-p` there is nobody.
+    //
+    // A builtin, deliberately. This used to call casper's `shell`, and casper is another program
+    // in another repository — so on a machine without it installed there was no such tool, the
+    // run stopped for an entirely different reason, and the assertion failed while appearing to
+    // be about permissions. A test for magi's own behaviour must not need a sibling present.
     let dir = workspace("declined");
     let mind = calling(
         "one-declined",
-        "shell",
-        "{\"command\":\"echo hi\"}",
-        "I could not run it.",
+        "write",
+        "{\"path\":\"note.txt\",\"contents\":\"hi\"}",
+        "I could not write it.",
     );
     let output = magi(
         &dir,
         &mind,
-        &["--sessions", "sessions", "-p", "run echo hi"],
+        &["--sessions", "sessions", "-p", "write a note"],
     );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -450,7 +455,7 @@ fn a_permission_question_nobody_can_answer_ends_the_run_rather_than_hanging() {
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
-        "I could not run it.",
+        "I could not write it.",
         "the model was told, and said so"
     );
     teardown(&dir);
