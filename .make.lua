@@ -498,7 +498,10 @@ make.recipe{
     local names = { "gate-file-size", "gate-modules", "gate-proto-size", "gate-reachable" }
     local failed = {}
     for _, name in ipairs(names) do
-      local result = oslo.run{ "sh", "scripts/" .. name .. ".sh", capture = true }
+      -- Executed, not handed to `sh`. The shebang is the portability contract: these run on a
+      -- runner whose /bin/sh is dash, and `sh script` would silently use whatever shell is
+      -- lying around here instead of the one the script says it needs.
+      local result = oslo.run{ "scripts/" .. name .. ".sh", capture = true }
       local mark = result.ok and oslo.ui.style("✓", { fg = "green" })
                              or oslo.ui.style("✗", { fg = "red" })
       print(("%s  %s"):format(mark, name))
