@@ -219,8 +219,32 @@ async fn one_turn(
     // Whatever the select! did not get to before the stream ended. A delta and the end of the
     // stream can arrive in the same poll, and the loop breaks on the outcome.
     while let Ok(arrival) = arriving.try_recv() {
-        if let Arrival::Delta(delta) = arrival {
-            turn.apply(delta);
+        match arrival {
+            Arrival::Delta(delta) => turn.apply(delta),
+            // **A retry that landed in the same poll the stream ended in.** This arm used to be
+            // absent, so the arrival was read out of the channel and dropped: the status was
+            // never set and nothing was ever published. It cost a person the one thing they
+            // needed to know — that the answer took two attempts and the first was thrown away —
+            // and it did so about one turn in three, which is how it was found.
+            //
+            // Handled exactly as the loop handles it, because the ordering is the same: a retry
+            // is announced before the attempt that follows it streams, and everything after it
+            // in a FIFO channel is that attempt. Resetting here discards the abandoned attempt's
+            // text and keeps the one that succeeded.
+            Arrival::Retrying {
+                attempt,
+                max_attempts,
+                delay_ms,
+            } => {
+                turn = Turn::new();
+                let mut held = session.lock().await;
+                held.revise(assistant(&id, &turn));
+                held.set_status(AgentStatus::Retrying {
+                    attempt,
+                    max_attempts,
+                    delay_ms,
+                });
+            }
         }
     }
     session.lock().await.revise(assistant(&id, &turn));
