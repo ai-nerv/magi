@@ -249,6 +249,26 @@ impl Scribe {
         Ok(values.first().cloned().unwrap_or(serde_json::Value::Null))
     }
 
+    /// The Lua library that speaks balthasar's surface, as balthasar itself ships it.
+    ///
+    /// **A consumer keeping its own copy is a consumer whose copy goes stale**, and this one did:
+    /// magi's copy predated a fix to the connect path, so every session on that machine silently
+    /// had no memory tools and nothing anywhere said why. The chicken and egg is real — a client
+    /// is needed to ask for the client — and the answer is the one melchior already uses: connect
+    /// with the copy you have, then take the one the server serves.
+    ///
+    /// # Errors
+    /// Whatever balthasar answered. An older balthasar does not know the verb, which is not a
+    /// failure: the bundled copy is then what runs, exactly as before.
+    pub async fn library(&mut self) -> Result<String, Fault> {
+        let values = self.family.call("client", Vec::new()).await?;
+        values
+            .first()
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| Fault::Malformed("client answered no source".to_owned()))
+    }
+
     /// Keep something durably, and answer by the id it landed under.
     ///
     /// Deliberately separate from [`Self::observe`], which writes a run's *scratch* — that is

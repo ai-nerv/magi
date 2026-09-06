@@ -24,7 +24,7 @@ const WINDOW: usize = 200_000;
 ///
 /// `None` when balthasar is not installed, which is the ordinary case on a machine that has not
 /// got one and not a failure: this file is about the seam, not about the layer.
-async fn own_balthasar(name: &str, ledger: bool) -> Option<(Scribe, Scratch, std::process::Child)> {
+async fn own_balthasar(name: &str, ledger: bool) -> Option<(Scribe, Scratch, Serving)> {
     let dir = Scratch::new("magi-inject", name);
     // The ledger is off by default, and rightly: it costs writes on the recall path, and a
     // memory layer that silently started recording what a person searches for because a new
@@ -67,19 +67,34 @@ async fn own_balthasar(name: &str, ledger: bool) -> Option<(Scribe, Scratch, std
             let mut scribe = Scribe::over(family, Some(socket.clone()), &id);
             // Answering, not merely bound: a socket file outlives the process that made it.
             if let Ok(Ok(_)) = tokio::time::timeout(ANSWERS_WITHIN, scribe.replay()).await {
-                return Some((scribe, dir, child));
+                return Some((scribe, dir, Serving(child)));
             }
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
-    let mut child = child;
-    let _ = child.kill();
+    let _ = Serving(child);
     None
+}
+
+/// A `balthasar serve` this test started, killed when the test ends.
+///
+/// **A guard, not a line at the bottom.** The first version killed the child on the last line of
+/// each test, and a test that returned early — no balthasar installed — or failed an assertion
+/// left one running: a `verify` on this machine found nine of them, and the suite that started
+/// them took half an hour. It is the same failure the trailing `remove_dir_all` was, in a
+/// process instead of a directory.
+struct Serving(std::process::Child);
+
+impl Drop for Serving {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 #[tokio::test]
 async fn something_remembered_comes_back_without_being_asked_for() {
-    let Some((mut scribe, _dir, mut balthasar)) = own_balthasar("recalled", false).await else {
+    let Some((mut scribe, _dir, _balthasar)) = own_balthasar("recalled", false).await else {
         // The ordinary case on a machine with no balthasar, and the session magi had before
         // there was one. Not a failure: this file is about the seam, not about the layer.
         eprintln!("no balthasar is answering; skipped");
@@ -123,7 +138,6 @@ async fn something_remembered_comes_back_without_being_asked_for() {
         "the thing that was kept is the thing the turn is shown: {said}"
     );
 
-    let _ = balthasar.kill();
 }
 
 #[tokio::test]
@@ -142,7 +156,7 @@ async fn what_the_turn_did_next_goes_back_to_the_memory_layer() {
     //
     // It is also the axis MemoryArena separates from LoCoMo, and the one neither pi nor deepseek
     // has anything for.
-    let Some((mut scribe, _dir, mut balthasar)) = own_balthasar("outcome", true).await else {
+    let Some((mut scribe, _dir, _balthasar)) = own_balthasar("outcome", true).await else {
         eprintln!("no balthasar is installed; skipped");
         return;
     };
@@ -183,5 +197,33 @@ async fn what_the_turn_did_next_goes_back_to_the_memory_layer() {
         "the outcome was written down, not just acknowledged"
     );
 
-    let _ = balthasar.kill();
+}
+
+#[tokio::test]
+async fn balthasar_serves_the_library_that_speaks_it() {
+    // **A consumer keeping its own copy is a consumer whose copy goes stale**, and this one did:
+    // magi's copy of the client library predated a fix to the connect path, so every session on
+    // that machine silently had no memory tools and nothing anywhere said why. Connect with the
+    // copy you have, take the one the server serves.
+    let Some((mut scribe, _dir, _balthasar)) = own_balthasar("library", false).await else {
+        eprintln!("no balthasar is installed; skipped");
+        return;
+    };
+
+    let served = tokio::time::timeout(ANSWERS_WITHIN, scribe.library())
+        .await
+        .expect("balthasar answers")
+        .expect("it serves its own library");
+
+    assert!(
+        served.contains("client library"),
+        "it is the file balthasar ships: {served:.120}"
+    );
+    // The property that matters: what it serves is what it is actually running, so a consumer
+    // taking this cannot be holding a copy older than the server.
+    assert!(
+        served.contains("FAMILY"),
+        "and it is current — the wire version is in it"
+    );
+
 }

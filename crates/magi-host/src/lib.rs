@@ -151,6 +151,30 @@ pub async fn serve_on(
         }
     }));
     let _ = DRAINING.set((Arc::clone(&session), Arc::clone(&scribe)));
+
+    // **The library balthasar ships, in place of the copy this build carries.** A consumer
+    // keeping its own copy is a consumer whose copy goes stale, and this one did: magi's copy
+    // predated a fix to the connect path, and every session on that machine silently had no
+    // memory tools. Connect with the copy you have, then take the one the server serves — which
+    // is what melchior has always done and what makes a stale copy unable to persist.
+    //
+    // Best effort and silent when it fails: an older balthasar does not know the verb, and the
+    // bundled copy then runs exactly as before.
+    let mut catalog = catalog;
+    if let Some(served) = {
+        let mut open = scribe.lock().await;
+        match open.as_mut() {
+            Some(open) => open.library().await.ok(),
+            None => None,
+        }
+    } {
+        for (name, source) in &mut catalog.clients {
+            if name == "balthasar" && *source != served {
+                magi_model::noted!("clients: balthasar's own library replaced this build's copy");
+                source.clone_from(&served);
+            }
+        }
+    }
     // The asker publishes through the session's own broadcast handle rather than through the
     // lock: the thread that asks is the thread running the turn, which is usually the one
     // holding it.
