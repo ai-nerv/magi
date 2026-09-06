@@ -112,7 +112,15 @@ impl Family {
             .await
             .map_err(|e| Fault::Unavailable(format!("sending {verb}: {e}")))?;
 
-        self.read_reply(verb).await
+        // **On a clock, here, so no caller can forget one.** The blocking half has had
+        // `set_read_timeout` since it was written; this half had nothing at all, so every
+        // asynchronous call — a recall before a turn, a flush at the turn boundary, a
+        // cross-check at start-up — waited forever on a balthasar that accepted the connection
+        // and then thought about it. A socket that accepts and never replies is the ordinary
+        // shape of a wedged process, not an exotic one.
+        tokio::time::timeout(PATIENCE, self.read_reply(verb))
+            .await
+            .map_err(|_| Fault::Unavailable(format!("{verb}: no answer in {PATIENCE:?}")))?
     }
 
     /// Read one framed reply and unwrap the family's envelope.
@@ -145,6 +153,13 @@ impl Family {
 /// Duplicated in each sibling rather than shared, like the types themselves: a crate held in
 /// common would be a dependency between repositories, and this family has none.
 pub const FAMILY: u16 = 1;
+
+/// How long a call waits for its answer.
+///
+/// The same number the blocking half uses, and for the same reason: a memory layer is on the
+/// turn path, and a caller that waits forever turns "balthasar is wedged" into "magi is wedged".
+/// Generous for a local socket answering out of its own memory.
+const PATIENCE: std::time::Duration = std::time::Duration::from_millis(2000);
 
 /// Split a reply into its return values, or into the fault it names.
 ///

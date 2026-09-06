@@ -40,6 +40,14 @@ use std::sync::Arc;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Mutex;
 
+/// How long balthasar has to answer a question asked while the session is starting.
+///
+/// Short, because nothing asked here is needed for the session to run: a cross-check, and a copy
+/// of a file this build already has. A memory layer that is slow, wedged or thinking must not be
+/// something a session waits on before it will serve its own socket — which is what happened
+/// when these were written without a clock.
+const GREETING: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// What [`drain`] needs to reach, set once the session is serving.
 ///
 /// A process-global because the process *is* one session — see this module's own note — so
@@ -165,15 +173,23 @@ pub async fn serve_on(
     // and resuming from balthasar would mean rebuilding the transcript from a projection of
     // itself — but if balthasar holds fewer turns than magi has entries, its scrollback is
     // incomplete, and everything computed from it is answering about a different conversation.
+    //
+    // **Both are on a clock**, and that is not a detail: this runs before the socket is served,
+    // so a balthasar that accepts and then thinks about it holds up the whole session. They were
+    // written without one, and the suite hung — every session in it waiting on a memory layer
+    // for a cross-check and a copy of a file, neither of which the session needs to start.
     {
         let held = session.lock().await.entries().len();
-        let theirs = {
+        let theirs = tokio::time::timeout(GREETING, async {
             let mut open = scribe.lock().await;
             match open.as_mut() {
                 Some(open) => open.resumes().await.ok(),
                 None => None,
             }
-        };
+        })
+        .await
+        .ok()
+        .flatten();
         if let Some(theirs) = theirs
             && held > 0
             && theirs == 0
@@ -185,13 +201,17 @@ pub async fn serve_on(
         }
     }
     let mut catalog = catalog;
-    if let Some(served) = {
+    let served = tokio::time::timeout(GREETING, async {
         let mut open = scribe.lock().await;
         match open.as_mut() {
             Some(open) => open.library().await.ok(),
             None => None,
         }
-    } {
+    })
+    .await
+    .ok()
+    .flatten();
+    if let Some(served) = served {
         for (name, source) in &mut catalog.clients {
             if name == "balthasar" && *source != served {
                 magi_model::noted!("clients: balthasar's own library replaced this build's copy");
