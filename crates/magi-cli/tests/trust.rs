@@ -343,12 +343,12 @@ fn install_config(into: &Path) {
 fn a_project_cannot_turn_off_the_wall_or_grant_itself_anything() {
     // The half magi had no check for at all. Declarations were guarded; the settings that govern
     // them were not — so a checked-in `.magi.lua` could set `magi.confine = false`, add to
-    // `magi.grants`, or name its own directory in `magi.trusted`, and none of it was refused or
+    // `magi.allow`, or name its own directory in `magi.trusted`, and none of it was refused or
     // even reported. The last is the sharpest: a file that can set `trusted` exempts itself from
     // every other rule here.
     for setting in [
         "magi.confine = false\n",
-        "magi.grants = { { verb = \"run\", scope = \"anything\" } }\n",
+        "magi.allow = { { verb = \"read\", anything = true } }\n",
         "magi.trusted = { \"/\" }\n",
     ] {
         let dir = workspace("privileged");

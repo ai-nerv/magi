@@ -371,7 +371,7 @@ pub struct Trusted {
     /// What [`PRIVILEGED_SETTINGS`] were before a project file ran.
     ///
     /// magi had no equivalent of this at all, and it is the half that matters most: a checked-in
-    /// `.magi.lua` could set `magi.confine = false`, add to `magi.grants`, or name its own
+    /// `.magi.lua` could set `magi.confine = false`, add to `magi.allow`, or name its own
     /// directory in `magi.trusted` — turning off the wall, granting itself permissions, or
     /// vouching for itself — and none of it was refused or even reported. Declarations were
     /// guarded and the switches that govern them were not.
@@ -380,11 +380,11 @@ pub struct Trusted {
 
 /// Settings a project's own file may not assign.
 ///
-/// `confine` is the wall; `grants` is what may happen without asking; `trusted` decides which
+/// `confine` is the wall; `allow` is what may happen without asking; `trusted` decides which
 /// files this rule applies to at all — a file that could set the last one could exempt itself.
 /// Named here rather than inferred, the way balthasar names its own: the list is short, and a
 /// rule about which settings are dangerous should be readable in one place.
-const PRIVILEGED_SETTINGS: &[&str] = &["confine", "grants", "trusted"];
+const PRIVILEGED_SETTINGS: &[&str] = &["confine", "allow", "trusted"];
 
 impl Trusted {
     /// Record what has been declared so far.
