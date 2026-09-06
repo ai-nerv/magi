@@ -24,8 +24,19 @@ const WINDOW: usize = 200_000;
 ///
 /// `None` when balthasar is not installed, which is the ordinary case on a machine that has not
 /// got one and not a failure: this file is about the seam, not about the layer.
-async fn own_balthasar(name: &str) -> Option<(Scribe, Scratch, std::process::Child)> {
+async fn own_balthasar(name: &str, ledger: bool) -> Option<(Scribe, Scratch, std::process::Child)> {
     let dir = Scratch::new("magi-inject", name);
+    // The ledger is off by default, and rightly: it costs writes on the recall path, and a
+    // memory layer that silently started recording what a person searches for because a new
+    // version shipped is not one anybody should install. It is what makes `used` and `outcome`
+    // answer, so the test that exercises them turns it on for its own balthasar only.
+    if ledger {
+        std::fs::write(
+            dir.join(".balthasar.lua"),
+            "balthasar.outcome = { capture = true, retention_days = 90 }\n",
+        )
+        .expect("write");
+    }
     let instance = format!("magi-inject-{}-{name}", std::process::id());
     let child = std::process::Command::new("balthasar")
         .arg("serve")
@@ -68,7 +79,7 @@ async fn own_balthasar(name: &str) -> Option<(Scribe, Scratch, std::process::Chi
 
 #[tokio::test]
 async fn something_remembered_comes_back_without_being_asked_for() {
-    let Some((mut scribe, _dir, mut balthasar)) = own_balthasar("recalled").await else {
+    let Some((mut scribe, _dir, mut balthasar)) = own_balthasar("recalled", false).await else {
         // The ordinary case on a machine with no balthasar, and the session magi had before
         // there was one. Not a failure: this file is about the seam, not about the layer.
         eprintln!("no balthasar is answering; skipped");
@@ -92,7 +103,7 @@ async fn something_remembered_comes_back_without_being_asked_for() {
         .expect("balthasar answers")
         .expect("a recall");
 
-    let message = magi_host::injecting::preface(&found, WINDOW)
+    let message = magi_host::injecting::preface(&found.memories, WINDOW)
         .expect("what was kept a moment ago is what a turn is shown");
 
     let said: String = message
@@ -120,4 +131,57 @@ async fn a_session_with_no_balthasar_is_told_nothing_and_still_runs() {
     // The property that lets this be unconditional. A machine without a memory layer gets the
     // session magi had before there was one, rather than an error or a wait.
     assert!(magi_host::injecting::preface(&[], WINDOW).is_none());
+}
+
+#[tokio::test]
+async fn what_the_turn_did_next_goes_back_to_the_memory_layer() {
+    // **The loop that decides whether a memory was any good.** Everything else is one direction:
+    // the transcript goes over, memories come back. This is the only signal balthasar has for
+    // whether anything it offered was worth offering — without it, a memory layer ranks by
+    // recency and similarity forever.
+    //
+    // It is also the axis MemoryArena separates from LoCoMo, and the one neither pi nor deepseek
+    // has anything for.
+    let Some((mut scribe, _dir, mut balthasar)) = own_balthasar("outcome", true).await else {
+        eprintln!("no balthasar is installed; skipped");
+        return;
+    };
+
+    scribe
+        .keep("the deploy command here is `oslo make install`")
+        .await
+        .expect("balthasar keeps it");
+
+    let found = tokio::time::timeout(ANSWERS_WITHIN, scribe.nearest("deploy", 12))
+        .await
+        .expect("balthasar answers")
+        .expect("a recall");
+
+    // With the ledger on, a recall is an *injection*: memories handed to something about to put
+    // them in a model's context. The id is what makes an outcome attributable to them.
+    let injection = found
+        .injection
+        .expect("a balthasar keeping a ledger says which injection these came from");
+    assert!(
+        !found.memories.is_empty(),
+        "and hands the memories over too"
+    );
+
+    // What the turn then did. balthasar decides for itself whether the action followed from any
+    // of the memories; magi reports the event and nothing more.
+    let outcome = scribe
+        .acted(&injection, "shell", "oslo make install", true)
+        .await
+        .expect("balthasar takes the report");
+
+    // **Recorded, not merely accepted.** balthasar answers the row it wrote, and the two replies
+    // are otherwise identical — a `used` against an injection it never served, or a ledger that
+    // is off, comes back just as `ok`. The id is the difference between a closed loop and a call
+    // that went nowhere.
+    assert!(
+        outcome.is_some_and(|id| id.contains("outcome")),
+        "the outcome was written down, not just acknowledged"
+    );
+
+    let _ = balthasar.kill();
 }

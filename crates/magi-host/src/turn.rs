@@ -138,11 +138,16 @@ async fn remembered(
     session: &tokio::sync::Mutex<Session>,
     backend: &Backend,
     scribe: &crate::scribe::Held,
-) -> Option<magi_model::Message> {
-    let window = backend.context_window?;
+) -> (Option<magi_model::Message>, Option<String>) {
+    let Some(window) = backend.context_window else {
+        return (None, None);
+    };
     let query = {
         let held = session.lock().await;
-        crate::context::last_asked(&held)?
+        match crate::context::last_asked(&held) {
+            Some(query) => query,
+            None => return (None, None),
+        }
     };
 
     // **On a clock, because this is in front of the person's turn.** A memory layer that is
@@ -160,8 +165,65 @@ async fn remembered(
     })
     .await
     .inspect_err(|_| magi_model::noted!("turn: recall did not answer within {PATIENCE:?}"))
-    .ok()??;
-    crate::injecting::preface(&found, usize::try_from(window).unwrap_or(usize::MAX))
+    .ok()
+    .flatten();
+    let Some(found) = found else {
+        return (None, None);
+    };
+    let window = usize::try_from(window).unwrap_or(usize::MAX);
+    // The id travels with the message. It is what makes an outcome attributable later: balthasar
+    // decides for itself whether an action followed any of the memories it gave, and it can only
+    // do that against the injection it served them under.
+    (
+        crate::injecting::preface(&found.memories, window),
+        found.injection,
+    )
+}
+
+/// Report one finished tool against the injection that preceded it.
+///
+/// The action is one string — a command, a path, a query — because that is what balthasar hashes
+/// and keeps a digest of. The arguments themselves do not leave this process.
+///
+/// `recall` and `remember` are skipped: a call *to* the memory layer is not an action taken on
+/// what it said, and counting it would have every injection look used.
+async fn acted_on(
+    scribe: &crate::scribe::Held,
+    injection: &str,
+    call: &magi_core::PendingCall,
+    failed: bool,
+) {
+    if matches!(call.name.as_str(), "recall" | "remember" | "forget" | "why") {
+        return;
+    }
+    let action = serde_json::from_str::<serde_json::Value>(&call.arguments)
+        .ok()
+        .and_then(|args| {
+            ["command", "path", "query", "pattern"]
+                .iter()
+                .find_map(|name| {
+                    args.get(*name)
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned)
+                })
+        })
+        .unwrap_or_default();
+
+    // On the same clock as the recall, and for the same reason: this is instrumentation, and a
+    // memory layer having a bad minute must not be something the conversation waits for.
+    let reported = tokio::time::timeout(PATIENCE, async {
+        let mut open = scribe.lock().await;
+        if let Some(open) = open.as_mut() {
+            let _ = open
+                .acted(injection, &call.name, &action, !failed)
+                .await
+                .inspect_err(|why| magi_model::noted!("turn: an outcome was refused: {why}"));
+        }
+    })
+    .await;
+    if reported.is_err() {
+        magi_model::noted!("turn: an outcome did not land within {PATIENCE:?}");
+    }
 }
 
 /// Run one turn and journal what it produced.
@@ -452,7 +514,7 @@ pub async fn run(
     // recalling before a compaction would spend the budget on a window that is about to change
     // shape. Nothing when there is no balthasar, which is the session magi had before there was
     // one.
-    let remembered = remembered(session, backend, scribe).await;
+    let (remembered, injection) = remembered(session, backend, scribe).await;
 
     // One reactive compaction per prompt. A second overflow after summarising is not a
     // conversation that is too long -- it is one whose kept tail alone will not fit, and
@@ -576,6 +638,16 @@ pub async fn run(
                 }
                 _ => magi_tools::Output::error("cancelled before this tool ran"),
             };
+            // **The other half of the loop.** Memories were put in front of this turn; this says
+            // what the turn then did, which is the only signal balthasar has for whether any of
+            // them were worth offering. Without it a memory layer ranks by recency and
+            // similarity forever and never by whether anything it gave was used.
+            //
+            // After the tool, before the entry is amended: the answer is known and the lock is
+            // not held. Best effort, and off entirely when balthasar keeps no ledger.
+            if let Some(injection) = &injection {
+                acted_on(scribe, injection, call, output.is_error).await;
+            }
             let mut held = session.lock().await;
             held.amend_at(
                 at,

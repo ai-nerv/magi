@@ -159,17 +159,94 @@ impl Scribe {
     /// to "what does this session remember" — so it is passed through rather than refused here.
     /// This session's own id travels with it, or a run could not find what it was told a minute
     /// ago: freshly written memories live in the run's own scratch until they are distilled.
-    pub async fn nearest(
-        &mut self,
-        query: &str,
-        limit: u64,
-    ) -> Result<Vec<serde_json::Value>, Fault> {
+    pub async fn nearest(&mut self, query: &str, limit: u64) -> Result<Recalled, Fault> {
         let args = vec![
             serde_json::Value::String(query.to_owned()),
             serde_json::json!({ "limit": limit, "session": self.session }),
         ];
         let values = self.family.call("recall", args).await?;
-        Ok(values.iter().flat_map(rows).cloned().collect())
+        Ok(Recalled::of(&values))
+    }
+
+    /// Say that something was done after memories were handed over, and how it went.
+    ///
+    /// **The loop that decides whether a memory was any good.** Everything else here is one
+    /// direction: the transcript goes over, memories come back. This is the only call that says
+    /// what happened *next*, and without it balthasar can rank by recency and similarity and
+    /// never by whether anything it offered was worth offering.
+    ///
+    /// magi reports the action and nothing more. Whether it followed from any particular memory
+    /// is balthasar's to decide against the injection it served them under — a harness claiming
+    /// a match it did not verify would be asserting an analysis rather than reporting an event.
+    ///
+    /// Two calls because they are two facts, and the second is not known when the first is: a
+    /// tool that has been started has been used, and how it went is decided later.
+    ///
+    /// Answers the outcome row balthasar wrote, or `None` when it keeps no ledger.
+    ///
+    /// # Errors
+    /// Whatever balthasar answered. A ledger that is off refuses this, which is not a failure of
+    /// the turn.
+    pub async fn acted(
+        &mut self,
+        injection: &str,
+        tool: &str,
+        action: &str,
+        worked: bool,
+    ) -> Result<Option<String>, Fault> {
+        let used = self
+            .family
+            .call(
+                "used",
+                vec![
+                    serde_json::Value::String(injection.to_owned()),
+                    serde_json::json!({ "tool": tool, "action": action }),
+                ],
+            )
+            .await?;
+        let Some(action) = used
+            .first()
+            .and_then(|v| v.get("action"))
+            .and_then(serde_json::Value::as_str)
+        else {
+            return Ok(None);
+        };
+        let settled = self
+            .family
+            .call(
+                "outcome",
+                vec![
+                    serde_json::Value::String(action.to_owned()),
+                    serde_json::json!({ "kind": if worked { "succeeded" } else { "failed" } }),
+                ],
+            )
+            .await?;
+        // The row balthasar minted, answered back so a caller can tell "it recorded this" from
+        // "it accepted the call". They are the same reply otherwise, and the difference is the
+        // whole of whether this loop is closed.
+        Ok(settled
+            .first()
+            .and_then(|v| v.get("outcome"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned))
+    }
+
+    /// What balthasar has attributed to one memory: outcomes, and how often it was returned.
+    ///
+    /// Read-only, and the only way to see from out here that [`Self::acted`] landed rather than
+    /// merely returned. Answers nothing useful when the ledger is off, which is the default.
+    ///
+    /// # Errors
+    /// Whatever balthasar answered.
+    pub async fn utility(&mut self, memory: &str) -> Result<serde_json::Value, Fault> {
+        let values = self
+            .family
+            .call(
+                "utility",
+                vec![serde_json::Value::String(memory.to_owned())],
+            )
+            .await?;
+        Ok(values.first().cloned().unwrap_or(serde_json::Value::Null))
     }
 
     /// Keep something durably, and answer by the id it landed under.
@@ -243,6 +320,48 @@ pub async fn flush(
         scribe.settle(cursor, &entry).await?;
     }
     Ok(())
+}
+
+/// What a recall answered, and the ledger entry it belongs to.
+///
+/// **balthasar answers `recall` in two shapes**, and which one depends on a setting magi does not
+/// hold. With its ledger off it hands back a bare list of memories; with the ledger on it hands
+/// back `{ injection, memories }`, because handing memories to something that is about to put
+/// them in a model's context *is* an injection and the id is what makes an outcome attributable
+/// to it later.
+///
+/// Read here rather than at the call site so there is one place that knows both shapes. Reading
+/// only the first is how the automatic path came to carry no injection id at all, which left
+/// `used` and `outcome` — the loop that decides whether a memory was any good — with nothing to
+/// report against.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Recalled {
+    /// The memories, in the order balthasar ranked them.
+    pub memories: Vec<serde_json::Value>,
+    /// The ledger entry these were served under, when balthasar is keeping one.
+    pub injection: Option<String>,
+}
+
+impl Recalled {
+    /// Read whichever shape came back.
+    fn of(values: &[serde_json::Value]) -> Self {
+        let Some(first) = values.first() else {
+            return Self::default();
+        };
+        if let Some(id) = first.get("injection").and_then(serde_json::Value::as_str) {
+            return Self {
+                memories: first
+                    .get("memories")
+                    .map(|m| rows(m).into_iter().cloned().collect())
+                    .unwrap_or_default(),
+                injection: Some(id.to_owned()),
+            };
+        }
+        Self {
+            memories: values.iter().flat_map(rows).cloned().collect(),
+            injection: None,
+        }
+    }
 }
 
 /// A reply value that is a list of rows, or the single row it is.
@@ -350,6 +469,40 @@ fn text(entry: &Entry) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::Recalled;
+
+    /// Both shapes balthasar answers `recall` in, and which is which.
+    ///
+    /// The setting that decides is balthasar's, not magi's, so this cannot be settled by
+    /// convention: a magi that read only the bare-list shape saw the ledger form as one
+    /// unparseable memory, and one that read only the wrapper saw nothing at all when the ledger
+    /// was off. Both are the ordinary case on somebody's machine.
+    #[test]
+    fn a_recall_with_no_ledger_is_a_list_of_memories() {
+        let answered = Recalled::of(&[serde_json::json!([
+            { "id": "m1", "text": "one" },
+            { "id": "m2", "text": "two" },
+        ])]);
+        assert_eq!(answered.memories.len(), 2);
+        assert_eq!(answered.injection, None, "there is no ledger to belong to");
+    }
+
+    #[test]
+    fn a_recall_with_a_ledger_carries_the_id_that_makes_an_outcome_attributable() {
+        let answered = Recalled::of(&[serde_json::json!({
+            "injection": "inject-1700-abc",
+            "memories": [{ "id": "m1", "text": "one" }],
+        })]);
+        assert_eq!(answered.memories.len(), 1);
+        assert_eq!(answered.injection.as_deref(), Some("inject-1700-abc"));
+    }
+
+    #[test]
+    fn a_recall_that_found_nothing_is_neither() {
+        assert_eq!(Recalled::of(&[]), Recalled::default());
+        assert!(Recalled::of(&[serde_json::json!([])]).memories.is_empty());
+    }
+
     use super::*;
     use magi_proto::{MessageId, ToolCallId, ToolResult};
 
