@@ -234,32 +234,6 @@ pub fn render(
     }
 }
 
-/// Line `row` with anything typed a moment ago still on its way to being itself.
-///
-/// A character arrives as the first of [`crate::glyph::type_stages`], passes through the rest, and
-/// lands as what was typed. Off unless `magi.ui.type_reveal_ms` says otherwise, and the same
-/// width throughout: the box is around this, and text that changes width under a border is worse
-/// than no effect at all.
-pub(crate) fn resolving(editor: &Editor, row: usize) -> String {
-    let text = &editor.lines()[row];
-    let over = crate::metric::type_reveal_ms();
-    let stages: Vec<char> = crate::glyph::type_stages().chars().collect();
-    if over == 0 || stages.is_empty() {
-        return text.clone();
-    }
-    let each = (over / stages.len() as u64).max(1);
-    text.char_indices()
-        .enumerate()
-        .map(|(col, (_, ch))| {
-            let Some(age) = editor.typed_age(row, col, ch) else {
-                return ch;
-            };
-            let stage = usize::try_from(age.as_millis() / u128::from(each)).unwrap_or(usize::MAX);
-            stages.get(stage).copied().unwrap_or(ch)
-        })
-        .collect()
-}
-
 /// One content row between its two side bars.
 fn framed(
     body: Vec<Span<'static>>,
@@ -701,74 +675,5 @@ mod narrow_tests {
         let line = row(80, "let's scan the project");
         let shown = line.trim().trim_matches('│').trim();
         assert_eq!(shown, "let's scan the project");
-    }
-}
-
-/// A character you type arrives as a symbol and resolves into itself.
-#[cfg(test)]
-mod resolving_tests {
-    use super::*;
-
-    /// The prompt's first line, with `text` typed into it.
-    fn line_of(text: &str) -> String {
-        let mut editor = Editor::new();
-        editor.insert_str(text);
-        resolving(&editor, 0)
-    }
-
-    #[test]
-    fn off_is_off() {
-        // Zero is the built-in, and a config that says nothing about this gets what it typed.
-        assert_eq!(crate::metric::BUILT_IN.type_reveal_ms, 0);
-        assert_eq!(line_of("hello"), "hello");
-    }
-
-    #[test]
-    fn the_stages_are_symbols_and_end_in_the_letter() {
-        // What a character passes through on the way to being itself. A letter passing through
-        // another letter reads as a typo correcting itself.
-        let stages = crate::glyph::type_stages();
-        assert!(!stages.is_empty());
-        assert!(
-            !stages.chars().any(char::is_alphanumeric),
-            "a stage that is a letter reads as a typo: {stages:?}"
-        );
-    }
-
-    #[test]
-    fn a_character_that_was_not_just_typed_is_left_alone() {
-        // The reveal is about arrival. Text recalled from history, or pasted and settled, is
-        // already there and must not flicker every time the screen redraws.
-        let mut editor = Editor::new();
-        editor.insert_str("settled");
-        // Nothing matches at a position holding a different character.
-        assert!(editor.typed_age(0, 0, 'x').is_none());
-        assert!(editor.typed_age(9, 0, 's').is_none());
-    }
-
-    #[test]
-    fn the_width_never_changes() {
-        // The box is around this. Text that changes width under a border is worse than no
-        // effect at all.
-        for text in ["a", "hello world", "unicode: ✓ ✗"] {
-            assert_eq!(
-                line_of(text).chars().count(),
-                text.chars().count(),
-                "{text:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn what_was_typed_is_remembered_where_it_was_typed() {
-        let mut editor = Editor::new();
-        editor.insert('h');
-        editor.insert('i');
-        assert!(editor.typed_age(0, 0, 'h').is_some());
-        assert!(editor.typed_age(0, 1, 'i').is_some());
-        assert!(
-            editor.typed_age(0, 1, 'h').is_none(),
-            "not by position alone"
-        );
     }
 }
