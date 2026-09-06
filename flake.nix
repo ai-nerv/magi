@@ -98,6 +98,17 @@
             pkgs.mold
             pkgs.pkg-config
 
+          # Graphics wrappers and the libraries a windowed program needs, on x86_64 only.
+          #
+          # nixGL pulls `pkgsi686Linux` for its 32-bit loaders, which does not exist on aarch64 —
+          # so a shell that asked for it unconditionally could not be *evaluated* there at all,
+          # let alone entered. That made `nix develop` fail on the arm64 release runner with
+          # "i686 Linux package set can only be used with the x86 family", which took the amd64
+          # leg down with it and produced no binary for either.
+          #
+          # None of it is needed to build: this is for running something that draws, on a
+          # machine whose driver needs wrapping.
+          ] ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isx86_64 ([
             nixGLAlias
             nixVulkanAlias
             nixglPkgs.nixGLIntel
@@ -105,7 +116,7 @@
           ] ++ pkgs.lib.optionals hasNvidia [
             nixglPkgs.nixGLNvidia
             nixglPkgs.nixVulkanNvidia
-          ] ++ guiLibs;
+          ] ++ guiLibs);
 
           # A musl toolchain for the static build, handed over as a path rather than a package.
           # As a package its headers land on the default search path, and an ordinary build then
