@@ -32,6 +32,14 @@
 
 local transport = ...
 
+-- The newest revision of the family wire this client understands.
+--
+-- Duplicated in each sibling rather than shared, exactly as this whole file is: a library held
+-- in common would be a dependency between repositories, and this family has none. Bumped when a
+-- consumer that does not know about a change would misread a reply -- not when a field is added
+-- that an older reader ignores, which is what this field itself was.
+local FAMILY = 1
+
 -- Where the socket primitive comes from when the caller did not say. Inside balthasar the whole library
 -- is already there; elsewhere a host that named its own `__stream` is honoured too.
 if not transport then
@@ -272,6 +280,19 @@ function Session:call(name, ...)
   -- handed over was not recorded, and the next turn would be written on top of a hole.
   -- A transport error above answers `nil, why` with no third value, which is neither: nothing
   -- was listening, and that is the caller's to notice.
+  -- **A newer peer is refused by name, an older one is not.** There were four implementations
+  -- of this wire and no version in any of them, already disagreeing about whether `n` is
+  -- optional and whether `fault` exists -- so a skew presented as a missing field at the point
+  -- of use, which reads as the far end being broken. A reply with no `family` predates the
+  -- field and is read as it always was; one from the future is refused here, where the reason
+  -- is still known.
+  if reply.family and reply.family > FAMILY then
+    return nil,
+      "this balthasar speaks version " .. tostring(reply.family) .. " of the family wire and "
+        .. "this client understands " .. tostring(FAMILY) .. "; update the client library",
+      "refused"
+  end
+
   if not reply.ok then
     return nil, reply.error or "balthasar refused the call", reply.fault or "refused"
   end

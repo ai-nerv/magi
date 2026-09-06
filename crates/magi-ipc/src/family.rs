@@ -140,6 +140,12 @@ impl Family {
     }
 }
 
+/// The newest revision of the family wire this understands.
+///
+/// Duplicated in each sibling rather than shared, like the types themselves: a crate held in
+/// common would be a dependency between repositories, and this family has none.
+pub const FAMILY: u16 = 1;
+
 /// Split a reply into its return values, or into the fault it names.
 ///
 /// `fault` distinguishes the two refusals; its absence means `refused`, which is the answer that
@@ -148,6 +154,23 @@ fn unwrap(reply: &serde_json::Value, verb: &str) -> Result<Vec<serde_json::Value
     let Some(object) = reply.as_object() else {
         return Err(Fault::Malformed(format!("{verb}: reply is not an object")));
     };
+
+    // **A newer peer is refused by name, an older one is not.** There were four implementations
+    // of this wire and no version in any of them, already disagreeing about whether `n` is
+    // optional and whether `fault` exists — so a skew presented as a missing field at the point
+    // of use, which reads as the peer being broken. A reply with no `family` is from before this
+    // existed and is read as it always was; one from the future is refused here, where the
+    // reason is still known, rather than three layers up where it is not.
+    let spoken = object
+        .get("family")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    if spoken > u64::from(FAMILY) {
+        return Err(Fault::Malformed(format!(
+            "{verb}: this peer speaks version {spoken} of the family wire and this build \
+             understands {FAMILY}; upgrade magi"
+        )));
+    }
 
     if object.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
         let why = object
@@ -247,6 +270,42 @@ fn listing(dir: &Path) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    /// A peer from the future is refused by name; one from before versions is not.
+    ///
+    /// The whole value of the field. Without it a skew arrives as a missing key at the point of
+    /// use — "result is not a list" from three layers up — and the four implementations of this
+    /// wire already disagree about two fields with nothing to say so.
+    #[test]
+    fn a_reply_from_a_newer_wire_is_refused_and_says_why() {
+        let ahead = serde_json::json!({
+            "ok": true, "family": super::FAMILY as u64 + 1, "n": 0, "result": []
+        });
+        let why = super::unwrap(&ahead, "verbs").expect_err("a newer peer is refused");
+        let said = why.to_string();
+        assert!(said.contains("family wire"), "{said}");
+        assert!(said.contains("upgrade"), "it says what to do: {said}");
+    }
+
+    #[test]
+    fn a_reply_from_before_versions_is_read_as_it_always_was() {
+        // Every peer built before this field existed. Refusing them would be a flag day across
+        // four repositories that are deployed one at a time.
+        let old = serde_json::json!({ "ok": true, "n": 1, "result": ["hello"] });
+        let values = super::unwrap(&old, "verbs").expect("an older peer still answers");
+        assert_eq!(values, vec![serde_json::json!("hello")]);
+    }
+
+    #[test]
+    fn a_reply_from_this_wire_is_read() {
+        let now = serde_json::json!({
+            "ok": true, "family": super::FAMILY, "n": 1, "result": ["hello"]
+        });
+        assert_eq!(
+            super::unwrap(&now, "verbs").expect("read"),
+            vec![serde_json::json!("hello")]
+        );
+    }
+
     use super::*;
     use serde_json::json;
 
