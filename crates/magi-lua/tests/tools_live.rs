@@ -271,14 +271,55 @@ fn the_memory_tools_register_and_answer_when_balthasar_is_running() {
 /// Whether a sibling is actually serving, rather than merely having left a socket behind.
 ///
 /// A socket file outlives the process that bound it, so listing the directory answers "did one
-/// run here" and not "is one running". Connecting is the only test that cannot be raced.
+/// run here" and not "is one running". Connecting was the whole of the test and is not enough
+/// either: the kernel's backlog accepts for a listener whose owner has stopped reading, so a
+/// wedged or half-dead sibling passes it. That is not hypothetical — a `serve` left over from an
+/// earlier build sat in this directory accepting connections and answering none, and this test
+/// failed with "recall did not register" on a machine where balthasar was, by this function's
+/// reckoning, running.
+///
+/// So it asks. One `verbs` call, framed the way the family frames everything — four bytes of
+/// big-endian length, then JSON — and a reply within a moment. Nothing else distinguishes a
+/// listener from a corpse.
 fn answers(name: &str) -> bool {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    std::fs::read_dir(runtime.join(name)).is_ok_and(|dir| {
-        dir.flatten()
-            .filter(|e| e.file_name().to_string_lossy().starts_with("api@"))
-            .any(|e| std::os::unix::net::UnixStream::connect(e.path()).is_ok())
-    })
+    let Ok(dir) = std::fs::read_dir(runtime.join(name)) else {
+        return false;
+    };
+    dir.flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with("api@"))
+        .any(|e| replies(&e.path()))
 }
+
+/// One `verbs` call over `socket`, answered inside [`PATIENCE`].
+fn replies(socket: &std::path::Path) -> bool {
+    use std::io::{Read, Write};
+
+    let Ok(mut stream) = std::os::unix::net::UnixStream::connect(socket) else {
+        return false;
+    };
+    if stream.set_read_timeout(Some(PATIENCE)).is_err()
+        || stream.set_write_timeout(Some(PATIENCE)).is_err()
+    {
+        return false;
+    }
+    let body = br#"{"call":"verbs"}"#;
+    let mut framed = (body.len() as u32).to_be_bytes().to_vec();
+    framed.extend_from_slice(body);
+    if stream.write_all(&framed).is_err() {
+        return false;
+    }
+    // The length alone. Whether the body is what was asked for is the rest of this file's
+    // business; that four bytes came back at all is what says somebody is reading.
+    let mut head = [0_u8; 4];
+    stream.read_exact(&mut head).is_ok() && u32::from_be_bytes(head) > 0
+}
+
+/// How long a live sibling gets to answer one question.
+///
+/// Generous: this is a local socket and a running balthasar answers `verbs` from memory, so a
+/// second is two orders of magnitude more than it needs and still short enough that a wedged
+/// one does not hold the suite.
+const PATIENCE: std::time::Duration = std::time::Duration::from_secs(1);

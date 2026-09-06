@@ -334,7 +334,9 @@ end
 ---
 --- Answers a *list* of candidates, newest first, because a socket file is not a running session:
 --- one left behind by a frontend that was killed looks exactly like a live one until something
---- connects. Trying them in turn is the only staleness check that cannot be raced.
+--- asks it a question. Trying them in turn, and requiring an answer from each, is the only
+--- staleness check that cannot be raced -- connecting alone is not one, because the kernel
+--- accepts for a listener that has stopped reading.
 --- Every `api@*.sock` under `dir`, newest first. Empty when nothing can list it.
 ---
 --- Plain Lua cannot list a directory, so this asks the host two ways and gives up rather than
@@ -459,9 +461,25 @@ function M.connect(where)
     local handle, why = transport.connect(candidate.path, timeout)
     if handle then
       local session = attach(setmetatable({ handle = handle, path = candidate.path }, Session))
-      return session
+      -- **Connecting is not an answer.** A socket outlives the process that bound it, and the
+      -- kernel accepts on behalf of a listener whose owner has stopped reading -- so a balthasar
+      -- that was killed, or one left over from an older build, takes the connection and answers
+      -- nothing. Every candidate after it is then never tried, and the caller waits out a
+      -- timeout on a socket that was never going to reply. That is not hypothetical: it is why
+      -- a session on a machine with a stale socket had no memory tools at all, and said nothing
+      -- about why.
+      --
+      -- So ask. `verbs` is read-only, it is the first thing every consumer asks anyway, and one
+      -- round trip on a unix socket costs less than the timeout it replaces.
+      local alive = session:call("verbs")
+      if alive then
+        return session
+      end
+      session:close()
+      last = "nothing answered on " .. candidate.path
+    else
+      last = why
     end
-    last = why
   end
   return nil, last or "nothing was listening"
 end
