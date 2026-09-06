@@ -160,6 +160,30 @@ pub async fn serve_on(
     //
     // Best effort and silent when it fails: an older balthasar does not know the verb, and the
     // bundled copy then runs exactly as before.
+    //
+    // Beside it, a cross-check nobody could make until now. magi's journal is the copy of record
+    // and resuming from balthasar would mean rebuilding the transcript from a projection of
+    // itself — but if balthasar holds fewer turns than magi has entries, its scrollback is
+    // incomplete, and everything computed from it is answering about a different conversation.
+    {
+        let held = session.lock().await.entries().len();
+        let theirs = {
+            let mut open = scribe.lock().await;
+            match open.as_mut() {
+                Some(open) => open.resumes().await.ok(),
+                None => None,
+            }
+        };
+        if let Some(theirs) = theirs
+            && held > 0
+            && theirs == 0
+        {
+            magi_model::noted!(
+                "scribe: this session has {held} entries and balthasar holds none of them; \
+                 anything computed from its scrollback is about a different conversation"
+            );
+        }
+    }
     let mut catalog = catalog;
     if let Some(served) = {
         let mut open = scribe.lock().await;

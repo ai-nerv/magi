@@ -127,6 +127,56 @@ async fn compact(session: &tokio::sync::Mutex<Session>, backend: &Backend) -> bo
 /// balthasar — it bounds itself — but to make the turn independent of whether it does.
 const PATIENCE: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// Ask balthasar what it would have sent, and say how it differs from what magi will.
+///
+/// Nothing acts on the answer. It exists so the difference is measurable at all: magi compacts
+/// with `KEEP` and a character estimate, balthasar decides per memory with everything it knows
+/// about the run, and until now there was no way to see that they disagree — let alone by how
+/// much.
+///
+/// Best effort, on the same clock as everything else here. A balthasar that has observed nothing
+/// refuses this, which is the ordinary answer for a harness that has not streamed its turns.
+async fn second_opinion(
+    session: &tokio::sync::Mutex<Session>,
+    backend: &Backend,
+    scribe: &crate::scribe::Held,
+) {
+    let Some(window) = backend.context_window else {
+        return;
+    };
+    let ours = {
+        let held = session.lock().await;
+        crate::compact::covers(held.entries()).unwrap_or(0)
+    };
+    let theirs = tokio::time::timeout(PATIENCE, async {
+        let mut open = scribe.lock().await;
+        open.as_mut()?.would_send(window).await.ok()
+    })
+    .await
+    .ok()
+    .flatten();
+    if let Some(theirs) = theirs {
+        let counted = |what: &str| {
+            theirs
+                .get(what)
+                .and_then(|v| v.as_array())
+                .map_or(0, Vec::len)
+        };
+        magi_model::noted!(
+            "compact: magi replaces {ours} entries; balthasar would keep {}, mask {}, \
+             drop {} and summarise {} — {}",
+            counted("keep"),
+            counted("mask"),
+            counted("drop"),
+            counted("summarise"),
+            theirs
+                .get("why")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("no reason given")
+        );
+    }
+}
+
 /// What this project remembers about the prompt in front of it, as a message.
 ///
 /// The half of the memory layer that was never connected. The transcript has always flowed *to*
@@ -521,6 +571,12 @@ pub async fn run(
         crate::compact::needed(&crate::context::of(&held), backend.context_window)
     };
     if over {
+        // **What balthasar would have sent, beside what magi did.** Structured eviction over
+        // blind truncation is the thing a memory layer is for, and balthasar has the apparatus;
+        // what a model is shown is still the harness's to decide, and a compaction that depended
+        // on another process would change shape when that process was upgraded. Recorded so the
+        // two can be compared — obeying it is a decision to take once there is a number.
+        second_opinion(session, backend, scribe).await;
         compact(session, backend).await;
     }
 

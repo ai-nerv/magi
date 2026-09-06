@@ -269,6 +269,57 @@ impl Scribe {
             .ok_or_else(|| Fault::Malformed("client answered no source".to_owned()))
     }
 
+    /// Where balthasar thinks this session left off, and how much of it it holds.
+    ///
+    /// **A cross-check, not a source.** magi's journal is the copy of record — this whole module
+    /// exists to hand it *over* — so resuming from balthasar would mean rebuilding the
+    /// transcript from a projection of itself. What this is for is the disagreement: if
+    /// balthasar holds fewer turns than magi has, its scrollback is incomplete, and everything
+    /// computed from it (`plan`, `replay`, `scroll`) is answering about a different
+    /// conversation.
+    ///
+    /// # Errors
+    /// Whatever balthasar answered.
+    pub async fn resumes(&mut self) -> Result<u64, Fault> {
+        let values = self
+            .family
+            .call(
+                "resume",
+                vec![serde_json::Value::String(self.session.clone())],
+            )
+            .await?;
+        Ok(values
+            .first()
+            .and_then(|v| v.get("turns"))
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0))
+    }
+
+    /// What balthasar would send, given a window.
+    ///
+    /// **Consulted, not obeyed.** Structured eviction over blind truncation is the thing a memory
+    /// layer is for, and balthasar has the whole apparatus — but what a model is shown is the
+    /// harness's to decide, and a compaction that depended on another process would be one that
+    /// changed shape when that process was upgraded. So both are computed and the difference is
+    /// recorded; obeying it is a decision to take once there is a number saying it is better.
+    ///
+    /// # Errors
+    /// Whatever balthasar answered. "nothing has been observed for this session" is the ordinary
+    /// one on a harness that has not streamed its turns.
+    pub async fn would_send(&mut self, window: u64) -> Result<serde_json::Value, Fault> {
+        let values = self
+            .family
+            .call(
+                "plan",
+                vec![
+                    serde_json::Value::String(self.session.clone()),
+                    serde_json::json!({ "window": window }),
+                ],
+            )
+            .await?;
+        Ok(values.first().cloned().unwrap_or(serde_json::Value::Null))
+    }
+
     /// Keep something durably, and answer by the id it landed under.
     ///
     /// Deliberately separate from [`Self::observe`], which writes a run's *scratch* — that is

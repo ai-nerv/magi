@@ -224,3 +224,43 @@ async fn balthasar_serves_the_library_that_speaks_it() {
         "and it is current — the wire version is in it"
     );
 }
+
+#[tokio::test]
+async fn balthasar_says_where_it_thinks_the_session_left_off() {
+    // **A cross-check, not a source.** magi's journal is the copy of record, so resuming from
+    // balthasar would mean rebuilding the transcript from a projection of itself. What this is
+    // for is the disagreement: a balthasar that holds none of a session's turns is one whose
+    // `plan`, `replay` and `scroll` are all answering about a different conversation, and until
+    // now there was no way to notice.
+    let Some((mut scribe, _dir, _balthasar)) = own_balthasar("resume", false).await else {
+        eprintln!("no balthasar is installed; skipped");
+        return;
+    };
+
+    let held = tokio::time::timeout(ANSWERS_WITHIN, scribe.resumes())
+        .await
+        .expect("balthasar answers")
+        .expect("resume");
+    assert_eq!(
+        held, 0,
+        "a session it has never been told about holds nothing"
+    );
+
+    scribe
+        .observe(
+            magi_proto::Cursor(1),
+            &magi_proto::Entry::User {
+                id: magi_proto::MessageId::new("u1"),
+                text: "the first thing anybody said".to_owned(),
+                aside: String::new(),
+            },
+        )
+        .await
+        .expect("balthasar takes the turn");
+
+    let after = tokio::time::timeout(ANSWERS_WITHIN, scribe.resumes())
+        .await
+        .expect("balthasar answers")
+        .expect("resume");
+    assert!(after > held, "a turn it was told about is a turn it holds");
+}
