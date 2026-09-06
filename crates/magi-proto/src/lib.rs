@@ -6,6 +6,52 @@
 //! Hard cap: 4,000 lines. Tau's equivalent is 22,750 lines carrying 165 event variants, and
 //! that is the direct cause of its 34,875-line daemon. Growth past the cap means capabilities
 //! are being added where they should be composed.
+//!
+//! # How this family talks
+//!
+//! Three transports, two shapes, one encoding. Written out here because it was written out
+//! nowhere: four wires had grown four different ways to say the same thing — `say`/`heard`,
+//! `to`/`from`, `message`, and a call envelope — and nothing anywhere said which was meant.
+//!
+//! **Three transports, and the choice between them is about what is being asked.**
+//!
+//! | | |
+//! |---|---|
+//! | **argv** | a question with an answer and nothing to hold open. One JSON object on stdout. |
+//! | **pipe** | a parent and the child it started. Newline-delimited JSON, both directions. |
+//! | **socket** | anything may knock. Four bytes of big-endian length, then JSON. |
+//!
+//! JSON is on all three. It is the *encoding*, not a transport, and naming it as one is how the
+//! diagram of this family came to have "argv + json" on an edge.
+//!
+//! **Two shapes, and the difference is whether anybody is waiting.**
+//!
+//! A **call** is answered:
+//!
+//! ```text
+//! -> {"call":"status","args":[]}
+//! <- {"ok":true,"family":1,"n":1,"result":[{"busy":false}]}
+//! ```
+//!
+//! An **event** is not:
+//!
+//! ```text
+//! {"event":"listening","at":"…"}
+//! ```
+//!
+//! `result` is a **list** and `n` says how long it is: a sibling that unpacks a list would read
+//! a bare value as *nothing at all*, so an answer would come back empty rather than wrong — and
+//! an empty answer looks like an empty session. `family` says which revision of this the reply
+//! is written in; a reader refuses a number it does not know and tolerates one it predates.
+//!
+//! A refused call is a **reply**, not a dropped connection. The caller then sees the far end's
+//! error rather than a transport error, and "no such call: nope" says what to fix where
+//! "connection reset" does not.
+//!
+//! **The tag key is `event`, everywhere, in both directions.** `scripts/gate-wire.sh` refuses
+//! any other, because the failure mode is silent: casper is another checkout with its own copy
+//! of these frames, so when two spellings drift nothing fails — the surface simply stops being
+//! answered.
 
 pub mod ask;
 mod ids;

@@ -111,6 +111,38 @@ rather than a setting you have to find.
 What the turn then *does* goes back — the only signal balthasar has for whether anything it
 offered was worth offering, and the axis MemoryArena separates from LoCoMo.
 
+## How this family talks
+
+Three transports, two shapes, one encoding — written out because it was written out nowhere, and
+five wires had grown five ways to say the same thing.
+
+| Transport | When | Framing |
+|---|---|---|
+| **argv** | a question with an answer and nothing to hold open | one JSON object on stdout |
+| **pipe** | a parent and the child it started | newline-delimited JSON, both directions |
+| **socket** | anything may knock | four bytes of big-endian length, then JSON |
+
+JSON is on all three. It is the *encoding*, not a transport.
+
+A **call** is answered; an **event** is not:
+
+```
+->  {"call":"status","args":[]}
+<-  {"ok":true,"family":1,"n":1,"result":[{"busy":false}]}
+
+    {"event":"listening","at":"…"}
+```
+
+`result` is a **list** and `n` says how long it is: a sibling that unpacked a bare value would
+read an answer as nothing at all. `family` says which revision the reply is written in — a reader
+refuses a number it does not know and tolerates one it predates. A refused call is a *reply*, not
+a dropped connection.
+
+**The tag key is `event`, everywhere, in both directions**, and `gate-wire` refuses any other.
+The failure it prevents is silent: two of these wires exist as byte-identical copies in two
+repositories, so when two spellings drift nothing fails and no test goes red — the surface simply
+stops being answered.
+
 ## Talking to other sessions
 
 With `melchior` installed, a session can reach the other sessions in the same project. The
@@ -173,6 +205,7 @@ make verify       # all of it
 | `gate-reachable` | no crate unreachable from the binary |
 | `gate-cycles` | no two top-level modules depend on each other |
 | `gate-hermetic` | the suite leaves nothing behind in `$TMPDIR` |
+| `gate-wire` | one way of saying a thing crosses a boundary |
 
 `gate-cycles` is the one pi never built. It built *reachability* — and a cycle is maximally
 reachable, so a reachability gate passes at 240,000 lines with the knot still in it. Ours had the

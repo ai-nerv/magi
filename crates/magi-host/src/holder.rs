@@ -391,7 +391,7 @@ mod tests {
             Box::new(|| true),
             "casper",
         );
-        let mut odd = std::io::BufReader::new(&b"{\"from\":\"something_new\"}\n"[..]);
+        let mut odd = std::io::BufReader::new(&b"{\"event\":\"something_new\"}\n"[..]);
         assert_eq!(
             holder.take(&ToolCallId::new("s0"), &mut odd, &mut Vec::new()),
             None
@@ -417,9 +417,9 @@ mod tests {
         )));
 
         let said = concat!(
-            r#"{"from":"ask","wondered":3,"wonder":"session"}"#,
+            r#"{"event":"ask","wondered":3,"wonder":"session"}"#,
             "\n",
-            r#"{"from":"draw","lines":[[{"role":"text","text":"hi"}]]}"#,
+            r#"{"event":"draw","lines":[[{"role":"text","text":"hi"}]]}"#,
             "\n"
         );
         let mut both = std::io::BufReader::new(said.as_bytes());
@@ -458,9 +458,9 @@ mod tests {
             "casper",
         );
         let asked = concat!(
-            r#"{"from":"ask","wondered":1,"wonder":"siblings"}"#,
+            r#"{"event":"ask","wondered":1,"wonder":"siblings"}"#,
             "\n",
-            r#"{"from":"done","answered":"once"}"#,
+            r#"{"event":"done","answered":"once"}"#,
             "\n"
         );
         let mut both = std::io::BufReader::new(asked.as_bytes());
@@ -493,7 +493,7 @@ mod tests {
             Box::new(|| true),
             "casper",
         );
-        let drew = br#"{"from":"draw","lines":[[{"role":"text","text":"hi"}]]}"#;
+        let drew = br#"{"event":"draw","lines":[[{"role":"text","text":"hi"}]]}"#;
         let mut one = std::io::BufReader::new(&drew[..]);
         assert_eq!(
             holder.take(&ToolCallId::new("s0"), &mut one, &mut Vec::new()),

@@ -59,8 +59,8 @@ async fn a_turn_streams_into_the_journal() {
     let mind = Mind::saying(
         "turn-ok",
         &[
-            &serde_json::json!({ "said": "thinking", "text": "weighing it" }).to_string(),
-            &serde_json::json!({ "said": "signature", "signature": "sig-abc" }).to_string(),
+            &serde_json::json!({ "event": "thinking", "text": "weighing it" }).to_string(),
+            &serde_json::json!({ "event": "signature", "signature": "sig-abc" }).to_string(),
             &text_line("The journal "),
             &text_line("is append-only."),
             &stop_line(),

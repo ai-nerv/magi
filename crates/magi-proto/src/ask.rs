@@ -145,7 +145,7 @@ impl Refusal {
 /// arrived, not that a content block of index three opened. What an adapter remembers between
 /// events stays on melchior's side, where the adapter is.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "said")]
+#[serde(rename_all = "snake_case", tag = "event")]
 pub enum Said {
     /// Answer text.
     Text {
@@ -297,7 +297,7 @@ mod tests {
         ];
         for said in stream {
             let text = serde_json::to_string(&said).expect("encode");
-            assert!(text.contains("\"said\""), "untagged: {text}");
+            assert!(text.contains("\"event\""), "untagged: {text}");
             assert_eq!(serde_json::from_str::<Said>(&text).expect("decode"), said);
         }
     }

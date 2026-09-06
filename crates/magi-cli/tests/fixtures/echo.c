@@ -13,16 +13,16 @@
  *
  *   A frame is a 4-byte big-endian length, then that many bytes of CBOR.
  *   The CBOR is an envelope: a map of {"version": 0, "body": <message>}.
- *   A message is a map with a "message" key naming its variant, plus that variant's fields.
+ *   An event is a map with an "event" key naming its variant, plus that variant's fields.
  *
  *   Peer to host, on connect, once per tool it offers:
- *     {"message":"declare","name":...,"description":...,"parameters":<JSON Schema>}
+ *     {"event":"declare","name":...,"description":...,"parameters":<JSON Schema>}
  *   Host to peer:
- *     {"message":"call","id":...,"name":...,"arguments":<object>}
- *     {"message":"cancel","id":...}
+ *     {"event":"call","id":...,"name":...,"arguments":<object>}
+ *     {"event":"cancel","id":...}
  *   Peer to host, in answer:
- *     {"message":"result","id":...,"output":...,"is_error":<bool>}
- *     {"message":"progress","id":...,"chunk":...}   (optional, any number, before the result)
+ *     {"event":"result","id":...,"output":...,"is_error":<bool>}
+ *     {"event":"progress","id":...,"chunk":...}   (optional, any number, before the result)
  *
  *   Every call must be answered, including a call for a tool this peer does not offer.
  *   Closing the peer's stdin ends it.
@@ -97,7 +97,7 @@ static void send_framed(void) {
 
 static void declare(void) {
     map(4);
-    text("message");
+    text("event");
     text("declare");
     text("name");
     text("echo");
@@ -121,7 +121,7 @@ static void declare(void) {
 
 static void result(const char *id, const char *output, int is_error) {
     map(4);
-    text("message");
+    text("event");
     text("result");
     text("id");
     text(id);
@@ -170,7 +170,7 @@ int main(void) {
         char kind[32] = {0};
         char id[64] = {0};
         char text_arg[256] = {0};
-        find_text_after(buf, n, "message", kind, sizeof kind);
+        find_text_after(buf, n, "event", kind, sizeof kind);
         find_text_after(buf, n, "id", id, sizeof id);
         find_text_after(buf, n, "text", text_arg, sizeof text_arg);
         char name[64] = {0};

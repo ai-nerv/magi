@@ -495,7 +495,7 @@ make.recipe{
   name = "gates",
   desc = "the architectural gates",
   run = function()
-    local names = { "gate-cycles", "gate-file-size", "gate-modules", "gate-proto-size", "gate-reachable" }
+    local names = { "gate-cycles", "gate-file-size", "gate-modules", "gate-proto-size", "gate-reachable", "gate-wire" }
     local failed = {}
     for _, name in ipairs(names) do
       -- Executed, not handed to `sh`. The shebang is the portability contract: these run on a

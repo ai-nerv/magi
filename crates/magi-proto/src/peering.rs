@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 /// auditable, and a finished call cannot be resurrected by a repeated id.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "message")]
+#[serde(rename_all = "snake_case", tag = "event")]
 pub enum ToolRequest {
     /// Run this.
     Call {
@@ -34,7 +34,7 @@ pub enum ToolRequest {
 
 /// Tool peer → host.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "message")]
+#[serde(rename_all = "snake_case", tag = "event")]
 pub enum ToolReport {
     /// What this peer offers, sent once on connect.
     ///

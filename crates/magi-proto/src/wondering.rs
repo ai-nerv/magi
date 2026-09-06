@@ -121,7 +121,7 @@ mod verbs {
         assert_eq!(
             serde_json::to_value(&told).expect("encodes"),
             serde_json::json!({
-                "to": "answer",
+                "event": "answer",
                 "wondered": 3,
                 "answer": "told",
                 "said": { "id": "s-7" },
@@ -137,7 +137,7 @@ mod verbs {
         assert_eq!(
             serde_json::to_value(&refused).expect("encodes"),
             serde_json::json!({
-                "to": "answer",
+                "event": "answer",
                 "wondered": 4,
                 "answer": "refused",
                 "because": "memories: there is no balthasar in this session",
@@ -149,7 +149,7 @@ mod verbs {
     fn a_question_is_read_the_way_casper_writes_one() {
         // The other direction, and the same reason. This literal is what casper puts on the pipe.
         let asked: crate::surfacing::FromSurface =
-            serde_json::from_str(r#"{"from":"ask","wondered":3,"wonder":"memories","args":{"query":"deploy","limit":3}}"#)
+            serde_json::from_str(r#"{"event":"ask","wondered":3,"wonder":"memories","args":{"query":"deploy","limit":3}}"#)
                 .expect("decodes");
         let crate::surfacing::FromSurface::Ask {
             wondered,
