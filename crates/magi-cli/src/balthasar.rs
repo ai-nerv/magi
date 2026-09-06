@@ -10,9 +10,15 @@
 //! project's store file rather than in a process.
 //!
 //! **It dies with its magi.** Nothing outlives the window here, and a memory layer left running
-//! is the daemon pile in another costume. `PR_SET_PDEATHSIG` would be the airtight version and
-//! needs `unsafe`, which this workspace denies; the child is killed on the way out instead, and
-//! an orphan left by a kill -9 is swept by the next magi that looks.
+//! is the daemon pile in another costume. Twice over, because one way is not enough: [`stop`]
+//! ends it on the way out, and `--tied` asks the kernel for `PR_SET_PDEATHSIG` so the exits
+//! that have no way out — a panic, a `kill -9`, an OOM — end it too.
+//!
+//! The second is not belt and braces. Sweeping a leftover socket was the whole answer here and
+//! it was never one: it clears a *name*, and the orphan holding that name is a live process
+//! that answers `verbs` — so [`sweep`] keeps its socket, correctly, and the process runs until
+//! the machine is rebooted. `unsafe` is not needed for the fix; `rustix` wraps the call, and
+//! balthasar makes it on itself rather than through a `pre_exec`.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -61,6 +67,11 @@ pub async fn start(instance: &str, project: &Path) -> Option<PathBuf> {
         .arg(instance)
         .arg("--scope")
         .arg("project")
+        // The kernel's copy of "it dies with its magi", for the exits that never reach `stop`.
+        // This process names itself: an orphan has already been reparented by the time it could
+        // look, so "am I still yours" is only answerable against a pid it was told.
+        .arg("--tied")
+        .arg(std::process::id().to_string())
         .current_dir(project)
         // Silenced: this shares a terminal with the UI, and a line on stderr lands in the middle
         // of a frame.
