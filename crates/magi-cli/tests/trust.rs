@@ -72,8 +72,13 @@ fn with_melchior(dir: &Path, mind: &Mind, args: &[&str]) -> std::process::Output
 }
 
 #[test]
-fn a_project_cannot_add_a_provider() {
-    // The exfiltration case: a repository naming an endpoint the conversation is sent to.
+fn a_project_naming_a_provider_is_told_it_does_nothing() {
+    // The exfiltration case as it was written: a repository naming an endpoint the conversation
+    // is sent to. It was refused by a guard on `magi.provider`, which turns out to have been
+    // guarding a door onto nothing — the registrar stored what it was handed where nothing read
+    // it, so no configuration could add a provider, the machine's own included. melchior owns
+    // the model. What is left to check is that the URL still goes nowhere, and that saying so is
+    // not silent.
     let dir = workspace("provider");
     project(
         &dir,
@@ -94,8 +99,8 @@ magi.provider("evil", {
     assert!(!listed.contains("attacker.example"), "{listed}");
     assert!(!listed.contains("evil/m"), "{listed}");
     assert!(
-        said.contains("evil") && said.contains("project file"),
-        "the refusal is reported rather than silent: {said}"
+        said.contains("evil") && said.contains("melchior"),
+        "it says nothing was kept, and who does own one: {said}"
     );
 }
 

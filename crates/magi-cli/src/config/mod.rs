@@ -113,6 +113,15 @@ pub fn load() -> Result<Loaded, LuaError> {
         }
     }
     engine.harvest();
+
+    // Everything a config said that magi did not keep, whoever said it. A declaration for
+    // something a sibling owns and a setting nested past what can be described both end up here,
+    // and both were silent before: the config author wrote a line that did nothing and there was
+    // no way to find that out except by noticing the absence of an effect.
+    for said in &engine.config().unkept {
+        eprintln!("magi: {said}");
+    }
+
     if let Some(machine) = &machine {
         // A changed privileged setting is fatal, not a warning. The others describe something a
         // project file offered that will not be used, and carrying on without it is right. This
@@ -330,15 +339,16 @@ pub fn config_dir() -> Option<std::path::PathBuf> {
 
 /// What the machine's own configuration had declared, before any project file ran.
 ///
-/// A `.magi.lua` arrives with a checkout: cloning a repository and running `magi` in it must
-/// not be enough to add a tool or a provider. A tool because a process tool names a command to
-/// run, and a provider because one names a URL the whole conversation is sent to — which is the
-/// worse of the two, and the one that looks harmless.
+/// A `.magi.lua` arrives with a checkout: cloning a repository and running `magi` in it must not
+/// be enough to add a tool, because a process tool names a command to run.
 ///
-/// A project file can still *choose*: `magi.model` picks among providers the machine already
-/// has. That is the useful half, and it carries no authority.
+/// It guarded providers too, and no longer needs to: `magi.provider` was a registrar that kept
+/// what it was handed where nothing read it, so a provider could not be added by anybody, and
+/// the guard was watching a door that opened onto nothing. melchior owns the model.
+///
+/// A project file can still *choose*: `magi.model` picks among the models melchior already
+/// offers. That is the useful half, and it carries no authority.
 pub struct Trusted {
-    providers: BTreeSet<String>,
     tools: BTreeSet<String>,
     /// What [`PRIVILEGED_SETTINGS`] were before a project file ran.
     ///
@@ -362,12 +372,6 @@ impl Trusted {
     /// Record what has been declared so far.
     fn snapshot(engine: &mut Engine) -> Self {
         Self {
-            providers: engine
-                .config()
-                .all("provider")
-                .into_iter()
-                .map(|(id, _)| id.to_owned())
-                .collect(),
             tools: engine.tools().into_iter().map(|(name, _)| name).collect(),
             settings: Self::privileged(engine),
         }
@@ -396,26 +400,17 @@ impl Trusted {
             .map(|(_, name)| *name)
     }
 
-    /// Whether a provider was declared by the machine rather than by a project file.
-    fn allows(&self, id: &str) -> bool {
-        self.providers.contains(id)
-    }
-
     /// One message per declaration a project file made that will not be honoured.
     ///
     /// Reported rather than silently dropped: a config author who wrote something that does
     /// nothing needs to know, and a repository trying it is worth seeing.
     fn refusals(&self, engine: &mut Engine) -> Vec<String> {
+        // Providers are not here any more, and it is worth saying why: `magi.provider` kept
+        // nothing for anybody, so the machine's own configuration could not declare one either
+        // and this loop only ever fired on the case where both sides were equally ignored.
+        // melchior owns the model; a project file naming a provider is now told so by
+        // `Config::unkept`, in the same words a machine configuration gets.
         let mut out = Vec::new();
-        for (id, _) in engine.config().all("provider") {
-            if !self.allows(id) {
-                out.push(format!(
-                    "the provider {id:?} was declared by a project file and will not be used; \
-                     a provider names a URL your conversation is sent to, so only your own \
-                     configuration can add one"
-                ));
-            }
-        }
         for (name, _) in engine.tools() {
             if !self.tools.contains(&name) {
                 out.push(format!(
