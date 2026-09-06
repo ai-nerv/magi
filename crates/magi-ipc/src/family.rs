@@ -363,11 +363,25 @@ pub mod blocking {
         }
 
         /// Connect to whichever socket answers first, newest tried first.
+        ///
+        /// **Answers, not accepts.** A socket file outlives the process that bound it, and the
+        /// kernel accepts on behalf of a listener whose owner has stopped reading — so a
+        /// balthasar that was killed, or one left over from an older build, takes the connection
+        /// and replies to nothing. This used to return that one and never try the rest, and the
+        /// caller waited out a timeout on a socket that was never going to answer. The copied
+        /// Lua stub had the same hole, for the same reason: connecting looks like a test and is
+        /// not one.
+        ///
+        /// The proof is one `verbs` call, which is read-only and is what a caller asks first
+        /// anyway.
         pub fn find() -> Result<Self, Fault> {
             let mut last = None;
             for path in candidates(None) {
                 match Self::dial(&path) {
-                    Ok(open) => return Ok(open),
+                    Ok(mut open) => match open.call("verbs", Vec::new()) {
+                        Ok(_) => return Ok(open),
+                        Err(e) => last = Some(e),
+                    },
                     Err(e) => last = Some(e),
                 }
             }
