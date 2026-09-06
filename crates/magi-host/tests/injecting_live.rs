@@ -264,3 +264,36 @@ async fn balthasar_says_where_it_thinks_the_session_left_off() {
         .expect("resume");
     assert!(after > held, "a turn it was told about is a turn it holds");
 }
+
+#[tokio::test]
+async fn a_balthasar_that_never_answers_does_not_hold_up_a_session() {
+    // **The bug this exists to keep out.** Two cross-checks are asked while a session is
+    // starting — where balthasar thinks the session left off, and the library it serves — and
+    // both were written without a clock. A balthasar that accepts the connection and then thinks
+    // about it held up every session in the suite: sixty seconds a test, and nothing said why.
+    //
+    // Neither answer is needed for a session to run. A socket that accepts and never replies is
+    // the ordinary shape of a wedged process, and it is bound here on purpose.
+    let dir = Scratch::new("magi-inject", "wedged");
+    let path = dir.join("api@wedged.sock");
+    let _listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+
+    let mut scribe = magi_host::scribe::Scribe::over(
+        magi_ipc::family::Family::dial(&path)
+            .await
+            .expect("it accepts, as a wedged one does"),
+        Some(path.clone()),
+        &SessionId::new("wedged"),
+    );
+
+    // Each call must give up rather than wait. The session's own budget is half a second; this
+    // allows several times that before calling it a hang, so a slow machine is not a failure.
+    let started = std::time::Instant::now();
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), scribe.resumes()).await;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), scribe.library()).await;
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "a wedged balthasar held the session for {:?}",
+        started.elapsed()
+    );
+}
