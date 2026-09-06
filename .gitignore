@@ -27,3 +27,7 @@ compile_commands.json
 # Planning documents stay local, as PLAN.md does.
 PLAN_DIFFERENCE.md
 config/clients/agent.lua
+
+# balthasar's stores, written here when it serves from this directory. Session data:
+# churn, personal to whoever ran it, and 56MB of it reached a public tag once already.
+/balthasar/
