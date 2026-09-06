@@ -8,6 +8,11 @@
 
 <p align="center"><em>A coding agent for Linux.</em></p>
 
+<p align="center">
+  <a href="https://claude.ai/code/artifact/cf3ff7f0-1c1d-472a-b01e-d08a854178b1"><strong>How the four fit together</strong></a> —
+  a turn end to end, writing a tool, memory both directions, what may run
+</p>
+
 Three computers had to agree before NERV moved. This is the one you talk to: the harness — a
 constellation of POSIX processes over Unix sockets, and a terminal that earns the name, with
 differential rendering into native scrollback, live streaming and an editor-grade prompt. Close
