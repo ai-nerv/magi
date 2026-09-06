@@ -8,6 +8,7 @@ mod app;
 mod balthasar;
 mod clipboard;
 mod config;
+mod doctor;
 mod driver;
 mod driving;
 mod ext_lua;
@@ -80,6 +81,13 @@ enum Command {
     LuaApi,
     /// List the tools the model can call, and how each is reached.
     Tools,
+    /// Say what a session here would be made of, without starting one.
+    ///
+    /// Which configuration was read, which of its lines were kept, what the tool registry ends
+    /// up holding and where each entry came from, and whether the siblings are actually
+    /// answering. Everything a session decides at start-up, decided and printed rather than
+    /// discovered by noticing that something is missing.
+    Doctor,
     /// List the providers and models magi knows about.
     Models {
         /// Include providers with no credential set.
@@ -118,6 +126,10 @@ async fn main() -> Result<()> {
         }
         Some(Command::Tools) => {
             tools::print()?;
+            Ok(())
+        }
+        Some(Command::Doctor) => {
+            doctor::print()?;
             Ok(())
         }
         Some(Command::Models { all }) => {
