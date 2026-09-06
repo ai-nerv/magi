@@ -129,7 +129,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         Some(Command::Doctor) => {
-            doctor::print()?;
+            doctor::print();
             Ok(())
         }
         Some(Command::Models { all }) => {

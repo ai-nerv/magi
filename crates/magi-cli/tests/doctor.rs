@@ -11,11 +11,18 @@ use magi_model::scratch::Scratch;
 use std::process::Command;
 
 /// `magi doctor` in a directory of its own, with `PATH` holding only what is passed.
+///
+/// `$XDG_CONFIG_HOME` points at an empty directory, so this is the machine where nothing is
+/// installed — the one somebody actually runs this on, and the one CI is. That case used to make
+/// the command exit non-zero having printed nothing, which is the least useful possible answer
+/// to "why will my session not start".
 fn doctor(path: &std::path::Path) -> String {
     let dir = Scratch::new("magi-doctor", "run");
+    let config = Scratch::new("magi-doctor", "config");
     let out = Command::new(env!("CARGO_BIN_EXE_magi"))
         .arg("doctor")
         .env("PATH", path)
+        .env("XDG_CONFIG_HOME", &*config)
         .current_dir(&*dir)
         .output()
         .expect("magi doctor runs");
@@ -60,6 +67,22 @@ fn the_builtins_are_listed_with_where_they_came_from() {
             .unwrap_or_else(|| panic!("{name} is missing:\n{said}"));
         assert!(line.contains("builtin"), "{line}");
     }
+}
+
+#[test]
+fn a_machine_with_no_configuration_still_gets_an_answer() {
+    // The case this command is most for, and the one it used to refuse: `config::load` reports
+    // "no configuration; run `make configs`" and the whole report went with it. What is compiled
+    // in and what is on `$PATH` do not depend on a configuration existing.
+    let empty = Scratch::new("magi-doctor", "no-config");
+    let said = doctor(&empty);
+    assert!(said.contains("will not load"), "it says so: {said}");
+    assert!(said.contains("siblings"), "and carries on: {said}");
+    assert!(
+        said.lines()
+            .any(|line| line.trim_start().starts_with("read")),
+        "the builtins are still listed: {said}"
+    );
 }
 
 #[test]

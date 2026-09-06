@@ -17,11 +17,18 @@
 
 /// Print the composition of a session in this directory.
 ///
-/// # Errors
-/// When the configuration will not load, which is the one thing here that is fatal rather than
-/// worth reporting: there is no composition to describe.
-pub fn print() -> Result<(), magi_lua::LuaError> {
-    let loaded = crate::config::load()?;
+/// Never fails. A configuration that will not load is the loudest thing this can report, not a
+/// reason to stop: a machine where nothing is installed and a machine where `init.lua` has a
+/// syntax error are the two this command exists for, and both used to answer by refusing to say
+/// anything at all.
+pub fn print() {
+    // Everything below still holds when this fails. The builtins are compiled in and the
+    // siblings are on `$PATH` or are not, and neither depends on a configuration existing —
+    // which is exactly what somebody staring at a session that will not start needs told.
+    let (loaded, refused) = match crate::config::load() {
+        Ok(loaded) => (loaded, None),
+        Err(why) => (nothing_loaded(), Some(why.to_string())),
+    };
 
     heading("configuration");
     match crate::config::config_dir() {
@@ -30,6 +37,9 @@ pub fn print() -> Result<(), magi_lua::LuaError> {
             "directory",
             "none: neither $XDG_CONFIG_HOME nor $HOME is set",
         ),
+    }
+    if let Some(why) = &refused {
+        row("state", &format!("will not load: {why}"));
     }
     row("tool files", &named(&loaded.tools));
     row("client libraries", &named(&loaded.clients));
@@ -77,7 +87,9 @@ pub fn print() -> Result<(), magi_lua::LuaError> {
     let mut engine = magi_lua::Engine::new();
     engine.install_clients(&loaded.clients);
     for (name, source) in &loaded.tools {
-        engine.run(source, name)?;
+        if let Err(why) = engine.run(source, name) {
+            row(name, &format!("will not run: {why}"));
+        }
     }
     let declared = engine.tools();
     let engine = std::rc::Rc::new(std::cell::RefCell::new(engine));
@@ -113,7 +125,15 @@ pub fn print() -> Result<(), magi_lua::LuaError> {
     for (name, what) in SIBLINGS {
         row(name, &sibling(name, what));
     }
-    Ok(())
+}
+
+/// A configuration that is not there, so the rest of the report can still be made.
+fn nothing_loaded() -> crate::config::Loaded {
+    crate::config::Loaded {
+        config: magi_lua::Config::default(),
+        tools: Vec::new(),
+        clients: Vec::new(),
+    }
 }
 
 /// The programs a session reaches for, and what each is for.
