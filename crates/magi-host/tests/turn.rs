@@ -44,7 +44,10 @@ fn session(name: &str) -> (tokio::sync::Mutex<Session>, Scratch) {
 async fn turn(session: &tokio::sync::Mutex<Session>, backend: &Backend) {
     let registry = magi_tools::Registry::new();
     let ops = magi_tools::ops::Real::new(std::env::temp_dir());
-    run(session, backend, &registry, &ops)
+    // No memory layer: these tests are about the turn loop, and a balthasar answering here
+    // would make what the model is shown depend on what this machine happens to remember.
+    let scribe = std::sync::Arc::new(tokio::sync::Mutex::new(None));
+    run(session, backend, &registry, &ops, &scribe)
         .await
         .expect("the turn returns");
 }

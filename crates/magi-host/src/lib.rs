@@ -16,6 +16,7 @@ pub mod context;
 pub mod declaring;
 pub mod driving;
 pub mod holder;
+pub mod injecting;
 pub mod knowing;
 pub mod paths;
 pub mod remember;
@@ -219,6 +220,7 @@ pub async fn serve_on(
                     Some(Arc::clone(&person.approver)),
                     Arc::clone(&person.asks),
                     Arc::clone(&person.holds),
+                    Arc::clone(&scribe),
                 )
             })
             .map(Arc::new),
@@ -369,7 +371,7 @@ async fn connection(
                     }
                     Some(UiCommand::SetModel { name }) => {
                         if let Some(refusal) =
-                            switch_model(&session, worker, catalog, person, &name).await
+                            switch_model(&session, worker, catalog, person, scribe, &name).await
                         {
                             // On the stream rather than in the transcript: the request was
                             // understood and declined, which is a fact about the UI's ask and
@@ -384,7 +386,7 @@ async fn connection(
                     }
                     Some(UiCommand::SetThinking { level }) => {
                         if let Some(refusal) =
-                            switch_thinking(&session, worker, catalog, person, &level).await
+                            switch_thinking(&session, worker, catalog, person, scribe, &level).await
                         {
                             writer
                                 .write(&HarnessEvent::Refused {

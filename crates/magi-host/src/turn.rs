@@ -119,6 +119,51 @@ async fn compact(session: &tokio::sync::Mutex<Session>, backend: &Backend) -> bo
     committed.is_ok()
 }
 
+/// How long a recall may hold up a turn.
+///
+/// Generous for a local socket and short enough that nobody notices it. The point is not to bound
+/// balthasar — it bounds itself — but to make the turn independent of whether it does.
+const PATIENCE: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// What this project remembers about the prompt in front of it, as a message.
+///
+/// The half of the memory layer that was never connected. The transcript has always flowed *to*
+/// balthasar through [`crate::scribe`], and it comes back three ways — a surface may ask, a model
+/// may call `recall` as a tool, and `magi doctor` will say the layer is there. All three need
+/// somebody to ask first, which a model that has forgotten something cannot do.
+///
+/// Keyed on the last thing the person said, because that is what the turn is about. Best effort
+/// throughout: a balthasar that is missing, wedged or refusing costs the turn nothing.
+async fn remembered(
+    session: &tokio::sync::Mutex<Session>,
+    backend: &Backend,
+    scribe: &crate::scribe::Held,
+) -> Option<magi_model::Message> {
+    let window = backend.context_window?;
+    let query = {
+        let held = session.lock().await;
+        crate::context::last_asked(&held)?
+    };
+
+    // **On a clock, because this is in front of the person's turn.** A memory layer that is
+    // slow, wedged, or busy compacting its own store must cost the conversation nothing — that
+    // is what makes recalling unconditional rather than a setting somebody has to find. A local
+    // socket answers this in single-digit milliseconds; anything that does not is not going to
+    // be worth waiting for.
+    let found = tokio::time::timeout(PATIENCE, async {
+        let mut open = scribe.lock().await;
+        open.as_mut()?
+            .nearest(&query, crate::injecting::MOST)
+            .await
+            .inspect_err(|why| magi_model::noted!("turn: recall was refused: {why}"))
+            .ok()
+    })
+    .await
+    .inspect_err(|_| magi_model::noted!("turn: recall did not answer within {PATIENCE:?}"))
+    .ok()??;
+    crate::injecting::preface(&found, usize::try_from(window).unwrap_or(usize::MAX))
+}
+
 /// Run one turn and journal what it produced.
 ///
 /// Deltas are published as they arrive and the entry is amended as it grows, so a UI attaching
@@ -129,10 +174,14 @@ async fn one_turn(
     backend: &Backend,
     tools: Vec<magi_model::Tool>,
     cancel: &crate::cancel::Cancel,
+    remembered: Option<&magi_model::Message>,
 ) -> Result<Round, crate::HostError> {
     let mut context = crate::context::of(&*session.lock().await);
     context.tools = tools;
     context.system.clone_from(&backend.system);
+    if let Some(remembered) = remembered {
+        crate::injecting::put(&mut context, remembered.clone());
+    }
 
     {
         let mut held = session.lock().await;
@@ -381,6 +430,7 @@ pub async fn run(
     backend: &Backend,
     registry: &Registry,
     ops: &dyn Ops,
+    scribe: &crate::scribe::Held,
 ) -> Result<(), crate::HostError> {
     // Taken once: the handle is a clone of shared state, so a stop asked for mid-round is
     // visible through it without going back to the session for a fresh one.
@@ -397,13 +447,27 @@ pub async fn run(
         compact(session, backend).await;
     }
 
+    // **Once per prompt, and after any compaction.** A tool-using turn goes round several times
+    // and the recall is about what the person asked, not about what the model has just read; and
+    // recalling before a compaction would spend the budget on a window that is about to change
+    // shape. Nothing when there is no balthasar, which is the session magi had before there was
+    // one.
+    let remembered = remembered(session, backend, scribe).await;
+
     // One reactive compaction per prompt. A second overflow after summarising is not a
     // conversation that is too long -- it is one whose kept tail alone will not fit, and
     // compacting again would summarise the summary and still fail.
     let mut compacted = false;
 
     for _ in 0..MAX_ROUNDS {
-        let round = one_turn(session, backend, registry.declarations(), &cancel).await?;
+        let round = one_turn(
+            session,
+            backend,
+            registry.declarations(),
+            &cancel,
+            remembered.as_ref(),
+        )
+        .await?;
 
         // The estimate above is deliberately rough; this is the provider's own answer. The
         // failed round stays in the transcript, because a reader who notices the model

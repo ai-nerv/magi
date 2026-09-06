@@ -297,6 +297,24 @@ pub fn rewind_point(entries: &[Entry]) -> Option<usize> {
         .find(|&i| matches!(entries[i], Entry::User { .. }))
 }
 
+/// The last thing the person actually asked, among what is still live.
+///
+/// What a recall is keyed on: the turn is about the prompt in front of it, and a query built
+/// from the whole conversation would return what the session has been about rather than what it
+/// is about now. Live rather than journalled, so a rewound exchange does not steer the memory
+/// of the one that replaced it.
+///
+/// `None` when nothing has been asked, which is a session that has only been listened to.
+#[must_use]
+pub fn last_asked(session: &Session) -> Option<String> {
+    let entries = session.entries();
+    let at = rewind_point(entries)?;
+    match &entries[at] {
+        Entry::User { text, .. } if !text.trim().is_empty() => Some(text.clone()),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod context_tests {
     use super::*;

@@ -57,6 +57,9 @@ impl Worker {
             None,
             std::sync::Arc::new(magi_tools::question::Unanswered),
             std::sync::Arc::new(magi_tools::holding::Screenless),
+            // And no memory layer: this is the worker a test or a one-shot builds, which has
+            // nobody to ask and nothing to remember into.
+            std::sync::Arc::new(tokio::sync::Mutex::new(None)),
         )
     }
 
@@ -69,6 +72,7 @@ impl Worker {
         approver: Option<std::sync::Arc<dyn magi_tools::approve::Approver>>,
         asks: std::sync::Arc<dyn magi_tools::question::Asks>,
         holds: std::sync::Arc<dyn magi_tools::holding::Holds>,
+        scribe: crate::scribe::Held,
     ) -> Self {
         let (jobs, mut queue) = mpsc::channel::<Job>(32);
         std::thread::spawn(move || {
@@ -141,7 +145,8 @@ impl Worker {
                         // A failed turn is already journalled as an error entry by `turn::run`;
                         // there is nothing further to report and nothing to abort the daemon for.
                         Work::Turn => {
-                            let _ = turn::run(&job.session, &backend, &registry, &*ops).await;
+                            let _ =
+                                turn::run(&job.session, &backend, &registry, &*ops, &scribe).await;
                         }
                         Work::TakeOn(grants) => ops.take_on(grants),
                         Work::Declare => {

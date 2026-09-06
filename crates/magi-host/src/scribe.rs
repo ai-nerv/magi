@@ -13,6 +13,14 @@ use magi_ipc::family::{Family, Fault};
 use magi_journal::{JOURNAL_VERSION, Record};
 use magi_proto::{Cursor, Entry, SessionId};
 
+/// The one connection to balthasar, as the session shares it.
+///
+/// Here rather than beside either of its users. It is held by the turn loop, by the surface's
+/// question path and by the flush on the way out, and putting the name in any one of them made
+/// that one a dependency of the others — `worker` and `turn` in a circle, which the cycle gate
+/// said so about within the minute.
+pub type Held = std::sync::Arc<tokio::sync::Mutex<Option<Scribe>>>;
+
 /// A connection to balthasar, bound to one session.
 pub struct Scribe {
     family: Family,
@@ -162,6 +170,48 @@ impl Scribe {
         ];
         let values = self.family.call("recall", args).await?;
         Ok(values.iter().flat_map(rows).cloned().collect())
+    }
+
+    /// Keep something durably, and answer by the id it landed under.
+    ///
+    /// Deliberately separate from [`Self::observe`], which writes a run's *scratch* — that is
+    /// the run's own until something on balthasar's ladder carries it across, and a recall does
+    /// not return it. What a turn is shown unasked should be established rather than the last
+    /// thing anybody said.
+    ///
+    /// # Errors
+    /// Whatever balthasar answered.
+    pub async fn keep(&mut self, text: &str) -> Result<String, Fault> {
+        // Under this session, so it is this session's to take back. A memory kept with no
+        // session belongs to the project, and balthasar rightly refuses to let a peer forget
+        // what it did not write.
+        let values = self
+            .family
+            .call(
+                "remember",
+                vec![
+                    serde_json::Value::String(text.to_owned()),
+                    serde_json::json!({ "session": self.session }),
+                ],
+            )
+            .await?;
+        values
+            .first()
+            .and_then(|v| v.get("id"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned)
+            .ok_or_else(|| Fault::Malformed("remember answered no id".to_owned()))
+    }
+
+    /// Stop asserting one memory.
+    ///
+    /// # Errors
+    /// Whatever balthasar answered.
+    pub async fn drop_memory(&mut self, id: &str) -> Result<(), Fault> {
+        self.family
+            .call("forget", vec![serde_json::Value::String(id.to_owned())])
+            .await?;
+        Ok(())
     }
 }
 
