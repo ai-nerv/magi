@@ -155,6 +155,7 @@ async fn remembered(
     // is what makes recalling unconditional rather than a setting somebody has to find. A local
     // socket answers this in single-digit milliseconds; anything that does not is not going to
     // be worth waiting for.
+    let asked = std::time::Instant::now();
     let found = tokio::time::timeout(PATIENCE, async {
         let mut open = scribe.lock().await;
         open.as_mut()?
@@ -171,13 +172,25 @@ async fn remembered(
         return (None, None);
     };
     let window = usize::try_from(window).unwrap_or(usize::MAX);
+    let waited = asked.elapsed();
     // The id travels with the message. It is what makes an outcome attributable later: balthasar
     // decides for itself whether an action followed any of the memories it gave, and it can only
     // do that against the injection it served them under.
-    (
-        crate::injecting::preface(&found.memories, window),
-        found.injection,
-    )
+    let message = crate::injecting::preface(&found.memories, window);
+    // The price of asking, every turn, in the two units somebody would judge it by. balthasar
+    // measures whether memory earns its place and can only see its own side; this is the half
+    // the harness pays and the half nothing recorded.
+    if let Some(message) = &message {
+        let cost = crate::injecting::Cost::of(message);
+        magi_model::noted!(
+            "memory: {} asserted and {} hedged, {} tokens, recalled in {}ms",
+            cost.asserted,
+            cost.hedged,
+            cost.tokens,
+            waited.as_millis()
+        );
+    }
+    (message, found.injection)
 }
 
 /// Report one finished tool against the injection that preceded it.

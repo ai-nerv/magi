@@ -137,6 +137,48 @@ fn text_of(row: &serde_json::Value) -> &str {
         .trim()
 }
 
+/// What one injection cost, in the units a person would judge it by.
+///
+/// **A memory layer with no number attached is a design document.** balthasar measures whether
+/// memory earns its place — `balthasar eval` answers that in success rate against a synthetic
+/// project — and it can only measure its own side. What that number cannot see is the price the
+/// harness pays every turn to ask: the tokens the block spends out of the window, and the
+/// milliseconds the turn waits. Both are magi's, and neither was recorded anywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cost {
+    /// Roughly what the block will cost the window.
+    pub tokens: usize,
+    /// How many memories were stated as current.
+    pub asserted: usize,
+    /// How many were offered hedged.
+    pub hedged: usize,
+}
+
+impl Cost {
+    /// What a built preface cost, read off the message itself.
+    ///
+    /// From the message rather than from the rows it was built out of, because the budget cuts
+    /// and a count of what was considered would report a price nobody paid.
+    #[must_use]
+    pub fn of(message: &Message) -> Self {
+        let text: String = message
+            .content
+            .iter()
+            .filter_map(|c| match c {
+                Content::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        let hedged_at = text.find(HEDGE);
+        let lines = |part: &str| part.lines().filter(|l| l.starts_with("- ")).count();
+        Self {
+            tokens: text.len().div_ceil(PER_TOKEN),
+            asserted: lines(&text[..hedged_at.unwrap_or(text.len())]),
+            hedged: hedged_at.map_or(0, |at| lines(&text[at..])),
+        }
+    }
+}
+
 /// Put what is remembered where retrieved context belongs: before the last thing said.
 ///
 /// Not at the front, where a long conversation buries it, and not at the end, where it arrives
@@ -190,6 +232,39 @@ mod tests {
                 "what is the deploy command?"
             ],
             "retrieved context belongs immediately before the prompt it answers"
+        );
+    }
+
+    #[test]
+    fn the_cost_is_what_was_written_not_what_was_considered() {
+        // Read off the message, because the budget cuts: a count of what came back from the
+        // recall would report a price nobody paid. `balthasar eval` measures whether memory earns
+        // its place and can only see its own side; this is the half the harness pays.
+        let mut rows = vec![memory("a current fact", true), memory("another one", true)];
+        rows.push(memory("something less certain", false));
+        let message = preface(&rows, ROOMY).expect("three memories");
+
+        let cost = super::Cost::of(&message);
+        assert_eq!(cost.asserted, 2);
+        assert_eq!(cost.hedged, 1);
+        assert_eq!(cost.tokens, said(&message).len().div_ceil(PER_TOKEN));
+    }
+
+    #[test]
+    fn what_the_budget_cut_is_not_charged_for() {
+        // The reason it is read off the message. A hundred memories considered and four written
+        // costs four.
+        let many: Vec<_> = (0..100)
+            .map(|i| memory(&format!("memory number {i}, at some length"), true))
+            .collect();
+        let window = 1_000;
+        let message = preface(&many, window).expect("some fit");
+        let cost = super::Cost::of(&message);
+        assert!(cost.asserted < many.len(), "{} of 100", cost.asserted);
+        assert!(
+            cost.tokens <= window * SHARE / 100,
+            "{} tokens of a {window} window",
+            cost.tokens
         );
     }
 
