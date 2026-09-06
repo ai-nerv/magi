@@ -36,6 +36,13 @@ pub struct Catalog {
     pub confine: bool,
     /// Permissions a configuration granted in advance.
     pub grants: Vec<magi_proto::permit::Grant>,
+    /// Which program owns the model, as `magi.melchior` named it.
+    ///
+    /// One name for the whole session. It was honoured when the layer was started and ignored
+    /// where the catalog of models was read, so a person who pointed it at their own build got
+    /// that build for the turn and whatever `PATH` held for the list of models the turn could
+    /// choose from.
+    pub mind: String,
     /// Environment every process this session starts is given.
     pub environ: std::collections::BTreeMap<String, String>,
     /// What the configuration asked for, whether or not it can be reached.
@@ -51,6 +58,7 @@ impl Catalog {
         Self {
             tools: Vec::new(),
             clients: Vec::new(),
+            mind: crate::broker::MELCHIOR.to_owned(),
             environ: std::collections::BTreeMap::new(),
             cwd: std::env::temp_dir(),
             cards: Vec::new(),
@@ -76,7 +84,7 @@ impl Catalog {
             environ: self.environ.clone(),
             cwd: self.cwd.clone(),
             model: card.id.clone(),
-            mind: crate::broker::MELCHIOR.to_owned(),
+            mind: self.mind.clone(),
             wants: self.wants.clone(),
             context_window: card.context_window,
             system: self.system.clone(),

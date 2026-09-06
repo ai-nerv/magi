@@ -160,9 +160,7 @@ async fn main() -> Result<()> {
                 session::project(loaded.as_ref().and_then(|l| l.config.string("project")));
             let program = loaded
                 .as_ref()
-                .and_then(|l| l.config.string("melchior"))
-                .unwrap_or("melchior")
-                .to_owned();
+                .map_or_else(|| magi_host::broker::MELCHIOR.to_owned(), config::mind);
             // Held for the run, so its socket is up while the turn is: a `-p` that another
             // session wants to ask about is one that has to be answering.
             let _layer = melchior::Melchior::start(&program, &project, talk(loaded.as_ref()));
@@ -218,9 +216,7 @@ async fn main() -> Result<()> {
             // layer being a separate program.
             let program = loaded
                 .as_ref()
-                .and_then(|l| l.config.string("melchior"))
-                .unwrap_or("melchior")
-                .to_owned();
+                .map_or_else(|| magi_host::broker::MELCHIOR.to_owned(), config::mind);
             let started = melchior::Melchior::start(&program, &project, talk(loaded.as_ref()));
             let named = started
                 .as_ref()

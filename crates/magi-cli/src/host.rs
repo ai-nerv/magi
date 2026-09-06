@@ -95,7 +95,10 @@ pub async fn start(
     // Asked once, here, and handed to the session. melchior owns the catalog; a session that
     // re-read it per switch would answer with a model the person did not choose.
     let mut catalog = match loaded {
-        Some(loaded) => crate::config::catalog(loaded, magi_host::broker::cards().await),
+        Some(loaded) => crate::config::catalog(
+            loaded,
+            magi_host::broker::cards(&crate::config::mind(loaded)).await,
+        ),
         None => magi_host::catalog::Catalog::empty(),
     };
     let mut backend = crate::config::backend(&catalog);

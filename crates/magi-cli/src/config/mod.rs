@@ -190,6 +190,22 @@ fn collect(
     })
 }
 
+/// Which program owns the model here.
+///
+/// `magi.melchior` when a configuration named one, and the sibling's own name otherwise. One
+/// function, because this used to be read in one place and assumed in two others: the layer was
+/// started with what the config said and the catalog of models was read from whatever `PATH`
+/// held, so pointing this at your own build gave you that build for the turn and a list of
+/// models from a different one.
+#[must_use]
+pub fn mind(loaded: &Loaded) -> String {
+    loaded
+        .config
+        .string("melchior")
+        .unwrap_or(magi_host::broker::MELCHIOR)
+        .to_owned()
+}
+
 /// Everything the daemon could talk to, so `:model` has something to pick among.
 ///
 /// Built once at start rather than re-read on each switch: a session should keep answering
@@ -199,6 +215,7 @@ fn collect(
 #[must_use]
 pub fn catalog(loaded: &Loaded, cards: Vec<magi_proto::ask::Card>) -> magi_host::catalog::Catalog {
     let mut catalog = magi_host::catalog::Catalog {
+        mind: mind(loaded),
         tools: loaded.tools.clone(),
         clients: loaded.clients.clone(),
         cwd: std::env::current_dir().unwrap_or_default(),
@@ -453,6 +470,44 @@ fn kind(path: &str) -> Option<&'static str> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod mind_tests {
+    use super::*;
+    use magi_lua::Engine;
+
+    fn from(source: &str) -> Loaded {
+        let mut engine = Engine::new();
+        engine.run(source, "test").expect("config");
+        engine.harvest();
+        Loaded {
+            config: engine.config(),
+            tools: Vec::new(),
+            clients: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_named_melchior_is_the_one_the_catalog_is_read_from() {
+        // The divergence this function removes. `magi.melchior` was honoured where the layer is
+        // started and ignored where the models are listed, so pointing it at your own build gave
+        // you that build for the turn and `PATH`'s for the list of models the turn chooses from
+        // — a session running against one melchior while showing another's catalog.
+        let loaded = from(r#"magi.melchior = "/opt/melchior-next""#);
+        assert_eq!(mind(&loaded), "/opt/melchior-next");
+        assert_eq!(
+            catalog(&loaded, Vec::new()).mind,
+            "/opt/melchior-next",
+            "the catalog asks the one the config named"
+        );
+    }
+
+    #[test]
+    fn saying_nothing_means_the_sibling_by_its_own_name() {
+        let loaded = from("");
+        assert_eq!(mind(&loaded), magi_host::broker::MELCHIOR);
+    }
 }
 
 #[cfg(test)]
