@@ -153,6 +153,56 @@ impl Tool for LuaTool {
     }
 }
 
+/// Build the whole registry, in the one order a session uses.
+///
+/// **This sequence existed twice.** `magi tools` ran it to list what the model may call and the
+/// worker ran it to give the model something to call, and the two differed in three ways. Two of
+/// those were principled and are parameters here: a listing must not stop to ask a permission
+/// question, and it has no screen to lend a tool. The third was a defect — the listing passed an
+/// empty environment where a session passes the backend's, so a process tool that reads one was
+/// described by `magi tools` as it would never actually run.
+///
+/// Answers the registry and the names casper supplied, which a listing needs to say where each
+/// tool came from and a session does not.
+///
+/// Probing is the caller's. It is the one step where the difference is real rather than
+/// accidental: a listing probes through plain `Ops` at the working directory, and a session
+/// probes through the gated `Ops` its tools will actually act with.
+pub fn assemble(
+    engine: Rc<RefCell<Engine>>,
+    asker: std::sync::Arc<dyn magi_tools::question::Asks>,
+    holder: std::sync::Arc<dyn magi_tools::holding::Holds>,
+    environ: &std::collections::BTreeMap<String, String>,
+) -> (magi_tools::Registry, std::collections::BTreeSet<String>) {
+    let mut registry = magi_tools::Registry::new();
+
+    // **casper first, so anything nearer wins.** Registration is keyed, so the last declaration
+    // of a name is the one that runs — and the order is a precedence rule: casper is the
+    // furthest away, the compiled-in floor is next, and a person's own `tools.lua` is nearest
+    // and beats both. A config that declares `shell` means it.
+    //
+    // Nothing when casper is not installed: a session then has exactly the tools it had before
+    // casper existed.
+    let mut from_casper = std::collections::BTreeSet::new();
+    for tool in magi_tools::casper::CasperTool::all(magi_tools::casper::CASPER, asker, holder) {
+        from_casper.insert(tool.name().to_owned());
+        registry.register(Box::new(tool));
+    }
+    magi_tools::builtin::install(&mut registry);
+
+    // A name a config declared for itself is that config's, however far it also travelled.
+    let declared: Vec<String> = engine
+        .borrow_mut()
+        .tools()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    from_casper.retain(|name| !declared.contains(name));
+
+    install(engine, &mut registry, environ);
+    (registry, from_casper)
+}
+
 /// Build every declared tool into one registry, on top of the floor.
 ///
 /// Both transports land here and the registry cannot tell them apart — which is the whole
@@ -270,6 +320,47 @@ mod tests {
     use super::*;
     use magi_tools::Registry;
     use magi_tools::ops::Real;
+
+    /// The environment `assemble` hands a process tool is the one it was given.
+    ///
+    /// The defect this function exists to remove: `magi tools` passed `&Default::default()`
+    /// where a session passes the backend's environment, so a process tool that reads a variable
+    /// was *described* by the listing as it would never actually run. Nothing compared the two,
+    /// because they were two call sites in two crates that happened to look alike.
+    #[test]
+    fn a_tool_is_built_with_the_environment_it_was_handed() {
+        let mut environ = std::collections::BTreeMap::new();
+        environ.insert("MAGI_PROBE".to_owned(), "handed-over".to_owned());
+
+        let mut engine = Engine::new();
+        engine
+            .run(
+                r#"
+                magi.tool("probe", {
+                  description = "d",
+                  parameters = { type = "object" },
+                  transport = { kind = "process", command = "printenv", args = { "MAGI_PROBE" } },
+                })
+                "#,
+                "tools.lua",
+            )
+            .expect("the config must run");
+        let engine = Rc::new(RefCell::new(engine));
+
+        let (registry, _) = assemble(
+            engine,
+            std::sync::Arc::new(magi_tools::question::Unanswered),
+            std::sync::Arc::new(magi_tools::holding::Screenless),
+            &environ,
+        );
+        let built = registry.get("probe").expect("the tool registered");
+        let said: std::collections::BTreeMap<_, _> = built.composition().into_iter().collect();
+        assert_eq!(
+            said.get("env").map(String::as_str),
+            Some("MAGI_PROBE=handed-over"),
+            "the peer was built without the environment it was assembled with: {said:?}"
+        );
+    }
 
     /// Run a config chunk and build what it declared.
     fn built(source: &str) -> (Registry, Rc<RefCell<Engine>>) {

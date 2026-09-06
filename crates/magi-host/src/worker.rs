@@ -98,27 +98,15 @@ impl Worker {
             }
 
             let engine = std::rc::Rc::new(std::cell::RefCell::new(engine));
-            let mut registry = magi_tools::Registry::new();
-            // **casper first, so anything nearer wins.** Registration is keyed, so the last
-            // declaration of a name is the one that runs — and the order is a precedence rule:
-            // casper is the furthest away, the compiled-in floor is next, and a person's own
-            // `tools.lua` is nearest and beats both. A config that declares `shell` means it.
-            //
-            // It used to be last, which was right while the shipped config still declared the
-            // same names: a tool could then be lifted out of magi by deleting it. Nothing here
-            // declares them any more, so all that ordering did was override the person.
-            //
-            // Nothing when casper is not installed: a session then has exactly the tools it had
-            // before casper existed.
-            for tool in magi_tools::casper::CasperTool::all(
-                magi_tools::casper::CASPER,
+            // The same sequence `magi tools` lists, from the one place that knows it. This ran
+            // here and there and the two disagreed about the environment a process tool is
+            // built with, so the listing described tools as they would never actually run.
+            let (registry, _from_casper) = magi_lua::tool::assemble(
+                std::rc::Rc::clone(&engine),
                 std::sync::Arc::clone(&asks),
                 std::sync::Arc::clone(&holds),
-            ) {
-                registry.register(Box::new(tool));
-            }
-            magi_tools::builtin::install(&mut registry);
-            magi_lua::tool::install(std::rc::Rc::clone(&engine), &mut registry, &backend.environ);
+                &backend.environ,
+            );
             // Gated when there is somebody to ask. The ledger starts with whatever the
             // configuration already granted, so a rule written down is not a question asked.
             let ops: std::rc::Rc<dyn magi_tools::Ops> = match (&approver, backend.confine) {

@@ -28,6 +28,16 @@ pub trait Tool {
     /// invent a message for.
     fn run(&self, arguments: &serde_json::Value, ops: &dyn Ops, cancel: &dyn Cancel) -> Output;
 
+    /// How this tool is reached, and what it was built with, in one line for a person.
+    ///
+    /// For saying what a session is actually composed of without starting one. A built-in and a
+    /// Lua tool are their own answer — they run here — so the default is the empty list; only a
+    /// peer has a command line and an environment worth naming, and only a peer can have been
+    /// built with the wrong one.
+    fn composition(&self) -> Vec<(&'static str, String)> {
+        Vec::new()
+    }
+
     /// Ask the tool to confirm what it offers, before the model is told about it.
     ///
     /// Nothing by default, because a tool written here is its own description and cannot

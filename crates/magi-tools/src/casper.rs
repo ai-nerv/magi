@@ -145,6 +145,16 @@ impl CasperTool {
 }
 
 impl Tool for CasperTool {
+    fn composition(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("transport", "casper".to_owned()),
+            (
+                "command",
+                format!("{} run {}", self.program, self.card.name),
+            ),
+        ]
+    }
+
     fn name(&self) -> &str {
         &self.card.name
     }

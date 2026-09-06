@@ -103,6 +103,30 @@ impl CommandTool {
 }
 
 impl Tool for CommandTool {
+    fn composition(&self) -> Vec<(&'static str, String)> {
+        let mut out = vec![
+            ("transport", "command".to_owned()),
+            (
+                "command",
+                std::iter::once(self.program.clone())
+                    .chain(self.args.iter().cloned())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ),
+        ];
+        if !self.env.is_empty() {
+            out.push((
+                "env",
+                self.env
+                    .iter()
+                    .map(|(name, value)| format!("{name}={value}"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ));
+        }
+        out
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
