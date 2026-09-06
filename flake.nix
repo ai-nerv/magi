@@ -90,6 +90,10 @@
           packages = [
             rustToolchain
             pkgs.git-cliff
+            # Reads every manifest against its own sources, so a dependency nothing uses is a
+            # failure rather than a line somebody eventually notices. See the note in
+            # `Cargo.toml` for why this and not `unused_crate_dependencies`.
+            pkgs.cargo-machete
             pkgs.clang
             pkgs.mold
             pkgs.pkg-config

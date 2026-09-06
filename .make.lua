@@ -535,9 +535,34 @@ make.recipe{
   end,
 }
 
+-- Every dependency a manifest declares is one the code actually uses.
+--
+-- Nine were not, across this family: an edge in `Cargo.toml`, in the lockfile and in every
+-- diagram drawn from them, and nowhere in the source. See the note in `Cargo.toml` for why this
+-- rather than the `unused_crate_dependencies` lint.
+make.recipe{
+  name = "machete",
+  desc = "no dependency nothing uses",
+  run = function()
+    -- Through the dev shell when it is not already on the path. `make` is run from a plain
+    -- terminal as often as from inside `nix develop`, and a check that quietly did not run
+    -- because a tool was missing is worse than one that is slow: CI would then be the only
+    -- place it happened, which is the arrangement this milestone exists to end.
+    local direct = oslo.run{ "cargo", "machete", capture = true }
+    if direct.ok then return end
+    local said = (direct.out or "") .. (direct.err or "")
+    if not said:find("no such command") then
+      print(said)
+      error("cargo machete failed")
+    end
+    local shelled = oslo.run{ "nix", "develop", "--command", "cargo", "machete" }
+    assert(shelled.ok, "cargo machete failed")
+  end,
+}
+
 make.recipe{
   name = "verify",
   desc = "the whole local gate",
-  deps = { "fmt-check", "check", "test", "clippy", "gates", "gate-hermetic", "rustdoc" },
+  deps = { "fmt-check", "check", "test", "clippy", "gates", "gate-hermetic", "machete", "rustdoc" },
 }
 make.alias("v", "verify")
