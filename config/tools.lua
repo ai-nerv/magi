@@ -226,3 +226,32 @@ do -- agent
     },
   })
 end
+
+-- An MCP server, if you have one you want here.
+--
+-- Uncomment and point it at whatever you run. `kind = "mcp"` is the one declaration that
+-- registers *more than one* tool: an MCP server publishes a list, and the names the model sees
+-- are the server's own -- so `name` here names the *server*, and never becomes a tool.
+--
+-- Nothing else about it is special, which is the whole design. Each tool it publishes registers
+-- beside a builtin, a Lua tool and a casper tool; is checked against the schema the server
+-- published; asks the same person for the same permission; and is capped and masked on the way
+-- back like any other. The turn loop does not know MCP exists.
+--
+-- `sha256` pins the server to the bytes you wrote this against. An MCP server is somebody else's
+-- code, running as you, with your tools -- and `command` is a name that resolves to whatever is
+-- on `$PATH` today. Unpinned is the ordinary case and starts fine; `magi doctor` prints what each
+-- server actually hashed to, which is where the value below comes from.
+--
+-- do
+--   magi.tool("filesystem", {
+--     description = "files, from the reference MCP server",
+--     parameters = { type = "object" },
+--     transport = {
+--       kind = "mcp",
+--       command = "npx",
+--       args = { "-y", "@modelcontextprotocol/server-filesystem", "/home/you/work" },
+--       -- sha256 = "…",  -- from `magi doctor`
+--     },
+--   })
+-- end

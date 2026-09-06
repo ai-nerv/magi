@@ -50,6 +50,38 @@ pub enum Transport {
         #[serde(default)]
         env: std::collections::BTreeMap<String, String>,
     },
+    /// An MCP server: a program that publishes several tools and is spoken to in JSON-RPC.
+    ///
+    /// The one declaration that registers *more than one* tool. MCP servers publish a list —
+    /// a filesystem server offers half a dozen — so the name a config gives this declaration is
+    /// the server's, and the names the model sees are the server's own.
+    ///
+    /// Nothing else about it is special. Each tool it publishes registers beside a builtin, a
+    /// Lua tool and a casper tool; is checked against the schema the server published; asks the
+    /// same person for the same permission; and is capped and masked on the way back like any
+    /// other. A transport is a property of a declaration, not a second registry.
+    Mcp {
+        /// The program to run.
+        command: String,
+        /// Its arguments.
+        #[serde(default, deserialize_with = "lua_list")]
+        args: Vec<String>,
+        /// Environment for the server, beside what every process magi starts already gets.
+        #[serde(default)]
+        env: std::collections::BTreeMap<String, String>,
+        /// The SHA-256 this server's program must hash to, if it is pinned.
+        ///
+        /// **An MCP server is somebody else's code, running as you, with your tools**, and
+        /// `command` is a name that resolves to whatever is on `$PATH` today. Pinning binds the
+        /// declaration to the bytes it was written against; a mismatch refuses to start and says
+        /// both hashes.
+        ///
+        /// Optional, and unset is the ordinary case. `magi doctor` prints what each server
+        /// actually hashed to, which is how a person starts pinning rather than something they
+        /// have to know about first.
+        #[serde(default)]
+        sha256: Option<String>,
+    },
     /// An ordinary program magi runs, with arguments built from the call.
     ///
     /// Not a peer: the child is any unix tool and magi reads what it printed. This is how a config
@@ -288,6 +320,34 @@ pub fn install(
                     ),
                 ));
             }
+            Transport::Mcp {
+                command,
+                args,
+                env,
+                sha256,
+            } => {
+                // The server is asked what it offers, at load, because that is the only thing
+                // that knows — a config listing its tools would be a copy that drifts. The name
+                // this declaration was given is the *server's*, and does not become a tool.
+                let environ: std::collections::BTreeMap<String, String> = environ
+                    .iter()
+                    .chain(env)
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                match magi_tools::mcp::McpTool::all(command, args, &environ, sha256.as_deref()) {
+                    Ok(tools) => {
+                        for tool in tools {
+                            registry.register(Box::new(tool));
+                        }
+                    }
+                    // Reported and skipped, like every other tool that will not register: a
+                    // session with one server missing is a session with fewer tools, not a
+                    // session that will not start.
+                    Err(why) => {
+                        eprintln!("magi: the MCP server {name:?} offered nothing: {why}");
+                    }
+                }
+            }
         }
     }
 }
@@ -315,55 +375,21 @@ where
     }
 }
 
+/// An MCP server, declared in a config and reached through the registry.
+///
+/// Split from this file under THE RULE, which caps a file at 800 lines.
+#[cfg(test)]
+#[path = "tool/mcp.rs"]
+mod mcp_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use magi_tools::Registry;
     use magi_tools::ops::Real;
 
-    /// The environment `assemble` hands a process tool is the one it was given.
-    ///
-    /// The defect this function exists to remove: `magi tools` passed `&Default::default()`
-    /// where a session passes the backend's environment, so a process tool that reads a variable
-    /// was *described* by the listing as it would never actually run. Nothing compared the two,
-    /// because they were two call sites in two crates that happened to look alike.
-    #[test]
-    fn a_tool_is_built_with_the_environment_it_was_handed() {
-        let mut environ = std::collections::BTreeMap::new();
-        environ.insert("MAGI_PROBE".to_owned(), "handed-over".to_owned());
-
-        let mut engine = Engine::new();
-        engine
-            .run(
-                r#"
-                magi.tool("probe", {
-                  description = "d",
-                  parameters = { type = "object" },
-                  transport = { kind = "process", command = "printenv", args = { "MAGI_PROBE" } },
-                })
-                "#,
-                "tools.lua",
-            )
-            .expect("the config must run");
-        let engine = Rc::new(RefCell::new(engine));
-
-        let (registry, _) = assemble(
-            engine,
-            std::sync::Arc::new(magi_tools::question::Unanswered),
-            std::sync::Arc::new(magi_tools::holding::Screenless),
-            &environ,
-        );
-        let built = registry.get("probe").expect("the tool registered");
-        let said: std::collections::BTreeMap<_, _> = built.composition().into_iter().collect();
-        assert_eq!(
-            said.get("env").map(String::as_str),
-            Some("MAGI_PROBE=handed-over"),
-            "the peer was built without the environment it was assembled with: {said:?}"
-        );
-    }
-
     /// Run a config chunk and build what it declared.
-    fn built(source: &str) -> (Registry, Rc<RefCell<Engine>>) {
+    pub(super) fn built(source: &str) -> (Registry, Rc<RefCell<Engine>>) {
         let mut engine = Engine::new();
         engine
             .run(source, "tools.lua")
