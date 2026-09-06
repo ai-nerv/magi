@@ -48,6 +48,7 @@ pub fn cards_from(program: &str) -> Vec<Card> {
         .stderr(std::process::Stdio::null())
         .output()
     else {
+        magi_model::noted!("casper: {program} tools could not be started");
         return Vec::new();
     };
     rows(&out.stdout)
@@ -85,7 +86,10 @@ pub fn run(program: &str, call: &Call) -> Result<Ran, String> {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|why| format!("{program} could not be started: {why}"))?;
+        .map_err(|why| {
+            magi_model::noted!("casper: {program} run could not be started: {why}");
+            format!("{program} could not be started: {why}")
+        })?;
 
     if let Some(mut stdin) = child.stdin.take() {
         // Written and closed. casper reads to end of file, so a handle left open is a call that

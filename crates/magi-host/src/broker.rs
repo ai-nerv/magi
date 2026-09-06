@@ -126,9 +126,12 @@ pub async fn ask_through(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|why| Trouble {
-            message: format!("{program} could not be started: {why}"),
-            why: Refusal::Transport,
+        .map_err(|why| {
+            magi_model::noted!("broker: {program} ask could not be started: {why}");
+            Trouble {
+                message: format!("{program} could not be started: {why}"),
+                why: Refusal::Transport,
+            }
         })?;
 
     if let Some(mut stdin) = child.stdin.take() {
@@ -259,12 +262,18 @@ pub async fn cards() -> Vec<magi_proto::ask::Card> {
         .output()
         .await
     else {
+        magi_model::noted!("broker: melchior models could not be started");
         return Vec::new();
     };
     let Ok(reply) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else {
+        magi_model::noted!(
+            "broker: melchior models answered {} bytes that are not json",
+            out.stdout.len()
+        );
         return Vec::new();
     };
     if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+        magi_model::noted!("broker: melchior models refused: {reply}");
         return Vec::new();
     }
     reply

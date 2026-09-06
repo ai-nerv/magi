@@ -131,6 +131,9 @@ impl Holder {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
             .spawn()
+            .inspect_err(|why| {
+                magi_model::noted!("holder: {} surface {tool}: {why}", self.program);
+            })
             .ok()?;
         let mut writing = child.stdin.take()?;
         let mut reading = std::io::BufReader::new(child.stdout.take()?);

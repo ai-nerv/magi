@@ -68,6 +68,7 @@ pub async fn start(instance: &str, project: &Path) -> Option<PathBuf> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
+        .inspect_err(|why| magi_model::noted!("balthasar: serve could not be started: {why}"))
         .ok()?;
     if let Ok(mut held) = STARTED.lock() {
         *held = Some(Ours {
@@ -85,6 +86,10 @@ pub async fn start(instance: &str, project: &Path) -> Option<PathBuf> {
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
+    magi_model::noted!(
+        "balthasar: nothing bound {} within {PATIENCE:?}",
+        socket.display()
+    );
     stop();
     None
 }
