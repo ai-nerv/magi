@@ -197,6 +197,10 @@ impl Tool for LuaTool {
 /// Answers the registry and the names casper supplied, which a listing needs to say where each
 /// tool came from and a session does not.
 ///
+/// `casper` is the SHA-256 that program must hash to, if a configuration pinned one. It supplies
+/// the whole tool set and is found on `$PATH`, which is the largest unacknowledged trust
+/// assumption here.
+///
 /// Probing is the caller's. It is the one step where the difference is real rather than
 /// accidental: a listing probes through plain `Ops` at the working directory, and a session
 /// probes through the gated `Ops` its tools will actually act with.
@@ -205,6 +209,7 @@ pub fn assemble(
     asker: std::sync::Arc<dyn magi_tools::question::Asks>,
     holder: std::sync::Arc<dyn magi_tools::holding::Holds>,
     environ: &std::collections::BTreeMap<String, String>,
+    casper: Option<&str>,
 ) -> (magi_tools::Registry, std::collections::BTreeSet<String>) {
     let mut registry = magi_tools::Registry::new();
 
@@ -216,7 +221,9 @@ pub fn assemble(
     // Nothing when casper is not installed: a session then has exactly the tools it had before
     // casper existed.
     let mut from_casper = std::collections::BTreeSet::new();
-    for tool in magi_tools::casper::CasperTool::all(magi_tools::casper::CASPER, asker, holder) {
+    for tool in
+        magi_tools::casper::CasperTool::pinned(magi_tools::casper::CASPER, asker, holder, casper)
+    {
         from_casper.insert(tool.name().to_owned());
         registry.register(Box::new(tool));
     }

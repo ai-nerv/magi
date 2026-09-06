@@ -216,6 +216,7 @@ pub fn mind(loaded: &Loaded) -> String {
 pub fn catalog(loaded: &Loaded, cards: Vec<magi_proto::ask::Card>) -> magi_host::catalog::Catalog {
     let mut catalog = magi_host::catalog::Catalog {
         mind: mind(loaded),
+        casper: casper_pin(loaded),
         tools: loaded.tools.clone(),
         clients: loaded.clients.clone(),
         cwd: std::env::current_dir().unwrap_or_default(),
@@ -238,7 +239,7 @@ mod settings;
 
 use settings::{grants, options, system};
 
-pub use settings::{adopt_ui, environ, grants as granted};
+pub use settings::{adopt_ui, casper_pin, environ, grants as granted};
 
 /// What this directory chose last time it was used.
 #[must_use]
@@ -470,6 +471,43 @@ fn kind(path: &str) -> Option<&'static str> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod pinning_tests {
+    use super::*;
+    use magi_lua::Engine;
+
+    fn from(source: &str) -> Loaded {
+        let mut engine = Engine::new();
+        engine.run(source, "test").expect("config");
+        engine.harvest();
+        Loaded {
+            config: engine.config(),
+            tools: Vec::new(),
+            clients: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_configuration_may_pin_the_program_that_supplies_every_tool() {
+        // casper is found on `$PATH` and owns `shell`, `read` and everything else the model
+        // calls — the largest trust assumption magi makes, and the one it made silently.
+        let loaded = from(r#"magi.casper_sha256 = "abc123""#);
+        assert_eq!(casper_pin(&loaded).as_deref(), Some("abc123"));
+        assert_eq!(
+            catalog(&loaded, Vec::new()).casper.as_deref(),
+            Some("abc123")
+        );
+    }
+
+    #[test]
+    fn saying_nothing_pins_nothing() {
+        // The ordinary case. A pin is opt-in: `magi doctor` prints what casper actually hashed
+        // to, which is where the value comes from.
+        assert_eq!(casper_pin(&from("")), None);
+        assert_eq!(casper_pin(&from(r#"magi.casper_sha256 = "  ""#)), None);
+    }
 }
 
 #[cfg(test)]

@@ -23,6 +23,7 @@ pub fn print() -> Result<(), magi_lua::LuaError> {
         std::sync::Arc::new(magi_tools::question::Unanswered),
         std::sync::Arc::new(magi_tools::holding::Screenless),
         &crate::config::environ(&loaded),
+        crate::config::casper_pin(&loaded).as_deref(),
     );
     // Asked rather than assumed. `magi tools` answers "what can the model call", and the only
     // thing that knows what a peer offers is the peer. Through plain `Ops` at the working

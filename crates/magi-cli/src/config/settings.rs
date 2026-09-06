@@ -267,6 +267,28 @@ pub fn environ(loaded: &Loaded) -> std::collections::BTreeMap<String, String> {
         .collect()
 }
 
+/// The SHA-256 casper's program must hash to, if this configuration pinned one.
+///
+/// **casper supplies the whole tool set and is found on `$PATH`.** That is the largest trust
+/// assumption magi makes and the one it made with no acknowledgement at all: a `casper` earlier
+/// on the path than the real one owns `shell`, `read` and everything else the model calls.
+/// Pinning binds the session to the bytes it was set up against, exactly as an MCP server's
+/// `sha256` does.
+///
+/// ```lua
+/// magi.casper_sha256 = "…"   -- from `magi doctor`
+/// ```
+///
+/// `None` is the ordinary case and starts anything.
+#[must_use]
+pub fn casper_pin(loaded: &Loaded) -> Option<String> {
+    loaded
+        .config
+        .string("casper_sha256")
+        .map(str::to_owned)
+        .filter(|pin| !pin.trim().is_empty())
+}
+
 #[cfg(test)]
 mod environ_tests {
     use super::*;

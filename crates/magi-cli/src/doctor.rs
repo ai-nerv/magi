@@ -98,6 +98,7 @@ pub fn print() {
         std::sync::Arc::new(magi_tools::question::Unanswered),
         std::sync::Arc::new(magi_tools::holding::Screenless),
         &environ,
+        crate::config::casper_pin(&loaded).as_deref(),
     );
     registry.probe(&magi_tools::ops::Real::new(
         std::env::current_dir().unwrap_or_default(),

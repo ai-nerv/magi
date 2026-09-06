@@ -36,6 +36,11 @@ pub struct Catalog {
     pub confine: bool,
     /// Permissions a configuration granted in advance.
     pub grants: Vec<magi_proto::permit::Grant>,
+    /// The SHA-256 casper's program must hash to, if this configuration pinned one.
+    ///
+    /// casper supplies the whole tool set and is found on `$PATH` — the largest trust assumption
+    /// here, and the one made with no acknowledgement until now.
+    pub casper: Option<String>,
     /// Which program owns the model, as `magi.melchior` named it.
     ///
     /// One name for the whole session. It was honoured when the layer was started and ignored
@@ -58,6 +63,7 @@ impl Catalog {
         Self {
             tools: Vec::new(),
             clients: Vec::new(),
+            casper: None,
             mind: crate::broker::MELCHIOR.to_owned(),
             environ: std::collections::BTreeMap::new(),
             cwd: std::env::temp_dir(),
@@ -85,6 +91,7 @@ impl Catalog {
             cwd: self.cwd.clone(),
             model: card.id.clone(),
             mind: self.mind.clone(),
+            casper: self.casper.clone(),
             wants: self.wants.clone(),
             context_window: card.context_window,
             system: self.system.clone(),
