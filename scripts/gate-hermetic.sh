@@ -12,13 +12,22 @@
 # equivalent check against the shared directory could not.
 set -eu
 
-root=$(mktemp -d "${TMPDIR:-/tmp}/gate-hermetic-XXXXXX")
+# **Short, and rooted at `/tmp` rather than under whatever `$TMPDIR` already is.** A unix socket
+# path may not exceed `SUN_LEN` — 108 bytes — and several tests here bind one inside a scratch
+# directory inside this root. On a developer's machine `$TMPDIR` is `/tmp` and nesting is free; on
+# the runner it is `/home/runner/work/_temp`, and the same test failed with "path must be shorter
+# than SUN_LEN" in the one place the gate was supposed to be proving something.
+#
+# Isolation comes from the directory being ours, not from where it hangs.
+base=/tmp
+[ -d "$base" ] && [ -w "$base" ] || base="${TMPDIR:-.}"
+root=$(mktemp -d "$base/gh-XXXXXX")
 trap 'rm -rf "$root"' EXIT HUP INT TERM
 
 # Kept rather than discarded. When this fails it is a test failing, not a leak, and the name of
 # the test is the whole answer — a gate that printed only "exit 101" sent the reader back to
 # `cargo test` to find out what it already knew.
-out=$(mktemp "${TMPDIR:-/tmp}/gate-hermetic-log-XXXXXX")
+out=$(mktemp "$base/gh-log-XXXXXX")
 trap 'rm -rf "$root" "$out"' EXIT HUP INT TERM
 
 if ! TMPDIR="$root" cargo test --all-targets --quiet >"$out" 2>&1; then
