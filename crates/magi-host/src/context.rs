@@ -19,7 +19,22 @@ use magi_proto::Entry;
 /// results, and an assistant entry that failed is dropped — replaying an error as if the model
 /// had said it teaches it to produce more of them.
 pub fn of(session: &Session) -> Context {
-    let entries = session.entries();
+    of_entries(session.entries())
+}
+
+/// The same, over entries the caller chose.
+///
+/// Compaction needs it: it has to summarise *exactly* the entries it is about to declare
+/// replaced, and the only way to be sure of that is to build the messages from those entries.
+/// It used to take the whole conversation's messages and cut them at
+/// `messages.len() - KEEP`, while the journal recorded a cut at `entries.len() - KEEP` — two
+/// boundaries computed independently in two different spaces, which agree only when every entry
+/// makes exactly one message. They do not: a `Notice`, a `Branch`, a `Compaction` and an
+/// assistant entry that errored all make none. Every one of those in the head of the transcript
+/// pushed the entry cut further than the message cut, and everything between them was declared
+/// summarised without being shown to the summariser — tool results included, silently.
+#[must_use]
+pub fn of_entries(entries: &[Entry]) -> Context {
     let (live, summary) = live_entries(entries);
     let live = live.into_iter().map(|i| &entries[i]);
 

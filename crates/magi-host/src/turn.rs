@@ -66,9 +66,9 @@ pub struct Backend {
 /// the context it has and either fits or is refused by the provider, which is no worse than
 /// not having tried. Losing the conversation because the summariser had a bad minute would be.
 async fn compact(session: &tokio::sync::Mutex<Session>, backend: &Backend) -> bool {
-    let (context, entries) = {
+    let entries = {
         let held = session.lock().await;
-        (crate::context::of(&held), held.entries().to_vec())
+        held.entries().to_vec()
     };
     let Some(covered) = crate::compact::covers(&entries) else {
         return false;
@@ -81,10 +81,14 @@ async fn compact(session: &tokio::sync::Mutex<Session>, backend: &Backend) -> bo
         });
     }
 
-    // Everything before the kept tail, in messages rather than entries: one entry can be
-    // several messages, so the summariser is given what the provider would have been given.
-    let through = context.messages.len().saturating_sub(crate::compact::KEEP);
-    let asked = crate::compact::request(&context, through);
+    // **The messages of exactly the entries being replaced.** These were two boundaries once:
+    // the journal recorded `entries.len() - KEEP` and the summariser was given
+    // `messages.len() - KEEP`, computed independently in two spaces that agree only when every
+    // entry makes exactly one message. A `Notice`, a `Branch`, a `Compaction` and an assistant
+    // entry that errored each make none, so every one of them in the head of the transcript
+    // pushed the entry cut past the message cut — and what fell between was declared summarised
+    // without ever being shown to the summariser.
+    let asked = crate::compact::request(&crate::context::of_entries(&entries[..covered]));
     let mut turn = magi_core::Turn::new();
     let mut deltas = Vec::new();
     // The same mind that answers a turn writes the summary of one. Collected rather than
