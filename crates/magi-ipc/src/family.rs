@@ -1,9 +1,13 @@
-//! The family socket: four bytes of big-endian length, then a JSON body.
+//! The family socket: four bytes of big-endian length, then the body.
 //!
-//! The same framing as magi's own codec over a different encoding, and a different contract.
-//! magi's own wire is CBOR between a UI and its session; this one is JSON between siblings, and
-//! its reply shape is fixed for the whole family: `{"ok":true,"n":N,"result":[…]}`, where
-//! `result` is a *list* of return values.
+//! The same framing as magi's own codec, a different contract. magi's own wire is CBOR between a
+//! UI and its session; this one is between siblings, and its reply shape is fixed for the whole
+//! family: `{"ok":true,"family":1,"n":N,"result":[…]}`, where `result` is a *list* of return
+//! values.
+//!
+//! **One shape, two encodings.** Calls go out in JSON unless [`Family::speaking`] says otherwise,
+//! and replies are read in whichever encoding they arrive in — a body says which it is in its
+//! first byte, so nothing is negotiated and a peer that only speaks JSON is unaffected.
 //!
 //! A refusal is a reply. Only the transport failing closes anything, which is what lets
 //! [`Fault`] tell "balthasar said no" from "balthasar is not there".
@@ -53,6 +57,11 @@ impl Fault {
 pub struct Family {
     stream: UnixStream,
     scratch: Vec<u8>,
+    /// Which encoding calls go out in. Replies are read in whichever came back.
+    ///
+    /// JSON by default: it is what every sibling has always understood, and what a person
+    /// piping the socket through a text tool can read. CBOR is asked for, never assumed.
+    wire: crate::Wire,
     path: PathBuf,
 }
 
@@ -66,6 +75,7 @@ impl Family {
         Ok(Self {
             stream,
             scratch: Vec::new(),
+            wire: crate::Wire::default(),
             path,
         })
     }
@@ -91,6 +101,17 @@ impl Family {
         &self.path
     }
 
+    /// Send calls in `wire` from here on.
+    ///
+    /// Replies are read in whichever encoding they arrive in either way, so this only decides
+    /// what goes out. JSON is the default and stays the default: it is what every sibling has
+    /// always understood, and a wire a person can read with `cat` is worth keeping.
+    #[must_use]
+    pub fn speaking(mut self, wire: crate::Wire) -> Self {
+        self.wire = wire;
+        self
+    }
+
     /// Send one call and wait for its answer.
     pub async fn call(
         &mut self,
@@ -102,11 +123,14 @@ impl Family {
         if !args.is_empty() {
             body.insert("args".into(), serde_json::Value::Array(args));
         }
-        let body = serde_json::Value::Object(body).to_string();
+        let body = self
+            .wire
+            .write(&serde_json::Value::Object(body))
+            .map_err(|why| Fault::Malformed(format!("encoding {verb}: {why}")))?;
 
         let mut frame = Vec::with_capacity(4 + body.len());
         frame.extend_from_slice(&(body.len() as u32).to_be_bytes());
-        frame.extend_from_slice(body.as_bytes());
+        frame.extend_from_slice(&body);
         self.stream
             .write_all(&frame)
             .await
@@ -142,7 +166,9 @@ impl Family {
             .await
             .map_err(|e| Fault::Unavailable(format!("reading {verb}: {e}")))?;
 
-        let reply: serde_json::Value = serde_json::from_slice(&self.scratch)
+        // Read in whichever encoding came back rather than in the one we asked in. A sibling is
+        // free to answer either way, and a client that insisted would refuse a valid reply.
+        let reply: serde_json::Value = crate::Wire::read(&self.scratch)
             .map_err(|e| Fault::Malformed(format!("{verb}: {e}")))?;
         unwrap(&reply, verb)
     }
@@ -495,8 +521,9 @@ pub mod blocking {
                 .read_exact(&mut rest)
                 .map_err(|e| Fault::Unavailable(format!("reading {verb}: {e}")))?;
 
-            let reply: serde_json::Value = serde_json::from_slice(&rest)
-                .map_err(|e| Fault::Malformed(format!("{verb}: {e}")))?;
+            // In whichever encoding came back, as in the asynchronous half above.
+            let reply: serde_json::Value =
+                crate::Wire::read(&rest).map_err(|e| Fault::Malformed(format!("{verb}: {e}")))?;
             unwrap(&reply, verb)
         }
     }

@@ -32,6 +32,19 @@ const AT_MOST: usize = 4;
 /// Skipping rather than failing: these prove the framing against something real, and there is no
 /// honest verdict to give when there is nothing real to ask.
 async fn dial() -> Option<Family> {
+    let found = looking().await;
+    // **`MAGI_REQUIRE_LIVE=1` turns a skip into a failure.** Skipping is right by default — there
+    // is no honest verdict when there is nothing real to ask — but it means a green run proves
+    // nothing on its own, and these are exactly the tests somebody reaches for to confirm a wire
+    // change reached the far side. Setting it says "there is one running, so hold me to it".
+    if found.is_none() && std::env::var("MAGI_REQUIRE_LIVE").is_ok_and(|v| v == "1") {
+        panic!("MAGI_REQUIRE_LIVE=1 and no balthasar answered; see the skip lines above");
+    }
+    found
+}
+
+/// The first balthasar that answers, if any.
+async fn looking() -> Option<Family> {
     for path in candidates(None).into_iter().take(AT_MOST) {
         let mut family = match Family::dial(&path).await {
             Ok(open) => open,
@@ -119,4 +132,43 @@ async fn a_turn_can_be_observed_and_replayed() {
         format!("{back:?}").contains("does the wire hold"),
         "what went in did not come back: {back:?}"
     );
+}
+
+#[tokio::test]
+async fn a_real_balthasar_answers_cbor_in_cbor() {
+    // The two halves of the family agreeing, over a real socket, in both encodings. Neither
+    // repository can prove this alone: magi's own tests can only show that it *writes* CBOR, and
+    // balthasar's that it answers what it was handed. What is under test here is that the byte
+    // one produces is the byte the other reads.
+    let Some(open) = dial().await else {
+        return;
+    };
+    let mut cbor = open.speaking(magi_ipc::Wire::Cbor);
+    let verbs = cbor.call("verbs", Vec::new()).await;
+    assert!(
+        verbs.is_ok(),
+        "a balthasar asked in cbor must answer: {verbs:?}"
+    );
+    let verbs = verbs.expect("verbs");
+    assert!(!verbs.is_empty(), "and say something: {verbs:?}");
+
+    // The same connection, still in CBOR, so this is not one lucky frame.
+    let again = cbor.call("verbs", Vec::new()).await;
+    assert!(again.is_ok(), "and again on the same connection: {again:?}");
+}
+
+#[tokio::test]
+async fn the_same_question_gets_the_same_answer_in_either_encoding() {
+    // One connection, asked twice. Not two connections: a balthasar accepts them one at a time,
+    // so a test holding one open while it dials again waits for itself.
+    let Some(mut open) = dial().await else {
+        return;
+    };
+    let in_json: Vec<serde_json::Value> = open.call("verbs", Vec::new()).await.expect("json");
+
+    let mut open = open.speaking(magi_ipc::Wire::Cbor);
+    let in_cbor: Vec<serde_json::Value> = open.call("verbs", Vec::new()).await.expect("cbor");
+
+    assert_eq!(in_json, in_cbor, "one shape, two encodings");
+    assert!(!in_json.is_empty(), "and it said something: {in_json:?}");
 }

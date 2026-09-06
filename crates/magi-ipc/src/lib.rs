@@ -9,10 +9,12 @@
 
 pub mod blocking;
 mod codec;
+mod encoding;
 pub mod family;
 mod peer;
 
 pub use codec::{FrameReader, FrameWriter, MAX_FRAME_BYTES};
+pub use encoding::Wire;
 pub use peer::PeerCred;
 
 use std::io;
