@@ -4,6 +4,11 @@ on:
   push:
     branches: [ "develop", "main" ]
   pull_request:
+  # So a run can be started by hand, from the Actions tab or `gh workflow run tests`.
+  # Worth having on its own, and it is also the only way to ask GitHub *why* a repository is
+  # not running its workflows: a push that produces no run produces no error either, and a
+  # dispatch that is refused says what refused it.
+  workflow_dispatch:
 
 permissions:
   contents: read
