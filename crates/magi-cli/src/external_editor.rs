@@ -76,6 +76,7 @@ fn scratch_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use magi_model::scratch::Scratch;
 
     #[test]
     fn an_editor_that_exits_clean_hands_back_the_file() {
@@ -103,12 +104,25 @@ mod tests {
 
     #[test]
     fn the_scratch_file_does_not_survive_the_edit() {
-        let before = scratch_path();
-        edit_with("true", "text").expect("edit runs");
-        assert!(
-            !before.exists(),
-            "the path this call would have used is gone"
-        );
+        // The path the *edit* used, not a path nothing ever created. `scratch_path` takes a new
+        // counter every call, so asking it for one and then asserting *that* one is absent said
+        // nothing: it had never existed. The editor here records the path it was handed.
+        // `cp -t <dir>` keeps the name it was given, so what lands in `dir` names the path the
+        // edit actually used. A shell script written here and run immediately would have been
+        // simpler and races: another test's `fork` inherits the write handle and `execve`
+        // answers ETXTBSY.
+        let dir = Scratch::new("magi-editor", "removed");
+        let editor = format!("cp -t {}", dir.display());
+
+        edit_with(&editor, "text").expect("edit runs");
+        let copied = std::fs::read_dir(&*dir)
+            .expect("read")
+            .next()
+            .expect("the editor was handed a path")
+            .expect("entry")
+            .file_name();
+        let used = std::env::temp_dir().join(copied);
+        assert!(!used.exists(), "{}", used.display());
     }
 
     #[test]
@@ -118,9 +132,14 @@ mod tests {
 
     #[test]
     fn a_trailing_newline_from_the_editor_is_stripped() {
-        let edited = edit_with("sh -c 'printf \"line\\n\" >> \"$0\"' ", "").expect("edit runs");
-        assert!(
-            edited.is_none_or(|t| !t.ends_with('\n')),
+        // The command is split on whitespace, so the `sh -c '…'` this used to pass arrived as
+        // five words, `sh` failed to parse the first of them, the edit was abandoned, and the
+        // assertion held over `None` however this function behaved. `sed -i $a\\` appends to the
+        // last line, which on a file with no terminator is exactly how an editor adds one.
+        let edited = edit_with("sed -i $a\\", "line").expect("edit runs");
+        assert_eq!(
+            edited.as_deref(),
+            Some("line"),
             "the prompt never keeps the editor's terminator"
         );
     }
