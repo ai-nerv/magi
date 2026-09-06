@@ -137,7 +137,6 @@ async fn something_remembered_comes_back_without_being_asked_for() {
         said.contains(&phrase),
         "the thing that was kept is the thing the turn is shown: {said}"
     );
-
 }
 
 #[tokio::test]
@@ -196,7 +195,6 @@ async fn what_the_turn_did_next_goes_back_to_the_memory_layer() {
         outcome.is_some_and(|id| id.contains("outcome")),
         "the outcome was written down, not just acknowledged"
     );
-
 }
 
 #[tokio::test]
@@ -225,5 +223,4 @@ async fn balthasar_serves_the_library_that_speaks_it() {
         served.contains("FAMILY"),
         "and it is current — the wire version is in it"
     );
-
 }
