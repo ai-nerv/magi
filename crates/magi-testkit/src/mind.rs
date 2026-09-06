@@ -152,7 +152,7 @@ impl Drop for Mind {
 /// One `Said::Text`, as melchior writes it.
 #[must_use]
 pub fn text_line(text: &str) -> String {
-    serde_json::json!({ "said": "text", "text": text }).to_string()
+    serde_json::json!({ "event": "text", "text": text }).to_string()
 }
 
 /// One `Said::Stop`, which is what ends a turn.
@@ -164,7 +164,7 @@ pub fn stop_line() -> String {
 /// The same, for a turn that ended some other way.
 #[must_use]
 pub fn stopped_line(reason: &str) -> String {
-    serde_json::json!({ "said": "stop", "reason": reason }).to_string()
+    serde_json::json!({ "event": "stop", "reason": reason }).to_string()
 }
 
 /// The two lines a tool call arrives as, and the stop that ends the round it was in.
@@ -175,8 +175,8 @@ pub fn stopped_line(reason: &str) -> String {
 #[must_use]
 pub fn call_lines(id: &str, name: &str, args: &str) -> Vec<String> {
     vec![
-        serde_json::json!({ "said": "tool_call_start", "id": id, "name": name }).to_string(),
-        serde_json::json!({ "said": "tool_call_args", "args": args }).to_string(),
+        serde_json::json!({ "event": "tool_call_start", "id": id, "name": name }).to_string(),
+        serde_json::json!({ "event": "tool_call_args", "args": args }).to_string(),
         stopped_line("tool_use"),
     ]
 }
@@ -184,14 +184,14 @@ pub fn call_lines(id: &str, name: &str, args: &str) -> Vec<String> {
 /// One `Said::Failed`, which is how a refusal arrives.
 #[must_use]
 pub fn failed_line(message: &str, why: &str) -> String {
-    serde_json::json!({ "said": "failed", "message": message, "why": why }).to_string()
+    serde_json::json!({ "event": "failed", "message": message, "why": why }).to_string()
 }
 
 /// One `Said::Retrying`, which is how a wait announces itself.
 #[must_use]
 pub fn retrying_line(attempt: u32, of: u32, seconds: f64) -> String {
     serde_json::json!({
-        "said": "retrying",
+        "event": "retrying",
         "attempt": attempt,
         "of": of,
         "seconds": seconds,
@@ -345,7 +345,7 @@ mod tests {
         let mind = Mind::answering("runnable", "hello");
         let said = run(&mind, "");
         assert!(said.contains("\"text\":\"hello\""), "{said}");
-        assert!(said.contains("\"said\":\"stop\""), "{said}");
+        assert!(said.contains("\"event\":\"stop\""), "{said}");
     }
 
     #[test]

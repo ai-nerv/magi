@@ -76,12 +76,18 @@ fn melchior() -> Vec<Card> {
         .stderr(std::process::Stdio::null())
         .output()
     else {
+        magi_model::noted!("models: melchior could not be started");
         return Vec::new();
     };
     let Ok(reply) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else {
+        magi_model::noted!(
+            "models: melchior answered {} bytes that are not json",
+            out.stdout.len()
+        );
         return Vec::new();
     };
     if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+        magi_model::noted!("models: melchior refused: {reply}");
         return Vec::new();
     }
     reply

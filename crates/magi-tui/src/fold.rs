@@ -25,13 +25,45 @@ pub fn text_room(width: u16, badge: &str) -> usize {
     usize::from(width).saturating_sub(3 + strip)
 }
 
+/// Line `row` with anything typed a moment ago still on its way to being itself.
+///
+/// Here rather than in [`crate::prompt`], where it was and where nothing but the doc comment
+/// connected it: this is about the editor, the clock and the glyph table, and the prompt box is
+/// not in it. Folding was its only caller, and reaching across for it made these two modules
+/// depend on each other in a circle — the one shape that makes a module impossible to read on
+/// its own.
+///
+/// A character arrives as the first of [`crate::glyph::type_stages`], passes through the rest, and
+/// lands as what was typed. Off unless `magi.ui.type_reveal_ms` says otherwise, and the same
+/// width throughout: the box is around this, and text that changes width under a border is worse
+/// than no effect at all.
+pub(crate) fn resolving(editor: &Editor, row: usize) -> String {
+    let text = &editor.lines()[row];
+    let over = crate::metric::type_reveal_ms();
+    let stages: Vec<char> = crate::glyph::type_stages().chars().collect();
+    if over == 0 || stages.is_empty() {
+        return text.clone();
+    }
+    let each = (over / stages.len() as u64).max(1);
+    text.char_indices()
+        .enumerate()
+        .map(|(col, (_, ch))| {
+            let Some(age) = editor.typed_age(row, col, ch) else {
+                return ch;
+            };
+            let stage = usize::try_from(age.as_millis() / u128::from(each)).unwrap_or(usize::MAX);
+            stages.get(stage).copied().unwrap_or(ch)
+        })
+        .collect()
+}
+
 /// Every visual row of the editor, and where the cursor sits among them.
 pub(crate) fn fold_all(editor: &Editor, room: usize) -> (Vec<String>, usize, usize) {
     let (cursor_row, cursor_col) = editor.cursor();
     let mut visual = Vec::new();
     let (mut caret_row, mut caret_col) = (0, cursor_col);
     for index in 0..editor.lines().len() {
-        let text = crate::prompt::resolving(editor, index);
+        let text = resolving(editor, index);
         if index == cursor_row {
             let (row, col) = folded_cursor(&text, room, cursor_col);
             caret_row = visual.len() + row;
@@ -323,5 +355,74 @@ mod badge_tests {
         let (row, col) = caret(&editor, 50, NAME);
         assert!(row > 0, "the caret stayed on the first row");
         assert!(col <= text_room(50, NAME), "it is off the right edge");
+    }
+}
+
+/// A character you type arrives as a symbol and resolves into itself.
+#[cfg(test)]
+mod resolving_tests {
+    use super::*;
+
+    /// The prompt's first line, with `text` typed into it.
+    fn line_of(text: &str) -> String {
+        let mut editor = Editor::new();
+        editor.insert_str(text);
+        resolving(&editor, 0)
+    }
+
+    #[test]
+    fn off_is_off() {
+        // Zero is the built-in, and a config that says nothing about this gets what it typed.
+        assert_eq!(crate::metric::BUILT_IN.type_reveal_ms, 0);
+        assert_eq!(line_of("hello"), "hello");
+    }
+
+    #[test]
+    fn the_stages_are_symbols_and_end_in_the_letter() {
+        // What a character passes through on the way to being itself. A letter passing through
+        // another letter reads as a typo correcting itself.
+        let stages = crate::glyph::type_stages();
+        assert!(!stages.is_empty());
+        assert!(
+            !stages.chars().any(char::is_alphanumeric),
+            "a stage that is a letter reads as a typo: {stages:?}"
+        );
+    }
+
+    #[test]
+    fn a_character_that_was_not_just_typed_is_left_alone() {
+        // The reveal is about arrival. Text recalled from history, or pasted and settled, is
+        // already there and must not flicker every time the screen redraws.
+        let mut editor = Editor::new();
+        editor.insert_str("settled");
+        // Nothing matches at a position holding a different character.
+        assert!(editor.typed_age(0, 0, 'x').is_none());
+        assert!(editor.typed_age(9, 0, 's').is_none());
+    }
+
+    #[test]
+    fn the_width_never_changes() {
+        // The box is around this. Text that changes width under a border is worse than no
+        // effect at all.
+        for text in ["a", "hello world", "unicode: ✓ ✗"] {
+            assert_eq!(
+                line_of(text).chars().count(),
+                text.chars().count(),
+                "{text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn what_was_typed_is_remembered_where_it_was_typed() {
+        let mut editor = Editor::new();
+        editor.insert('h');
+        editor.insert('i');
+        assert!(editor.typed_age(0, 0, 'h').is_some());
+        assert!(editor.typed_age(0, 1, 'i').is_some());
+        assert!(
+            editor.typed_age(0, 1, 'h').is_none(),
+            "not by position alone"
+        );
     }
 }

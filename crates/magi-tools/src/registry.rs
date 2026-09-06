@@ -28,6 +28,16 @@ pub trait Tool {
     /// invent a message for.
     fn run(&self, arguments: &serde_json::Value, ops: &dyn Ops, cancel: &dyn Cancel) -> Output;
 
+    /// How this tool is reached, and what it was built with, in one line for a person.
+    ///
+    /// For saying what a session is actually composed of without starting one. A built-in and a
+    /// Lua tool are their own answer — they run here — so the default is the empty list; only a
+    /// peer has a command line and an environment worth naming, and only a peer can have been
+    /// built with the wrong one.
+    fn composition(&self) -> Vec<(&'static str, String)> {
+        Vec::new()
+    }
+
     /// Ask the tool to confirm what it offers, before the model is told about it.
     ///
     /// Nothing by default, because a tool written here is its own description and cannot
@@ -204,7 +214,10 @@ impl Registry {
                 let output = tool.run(&arguments, ops, cancel);
                 self.finished(name, &arguments, output.is_error);
                 Output {
-                    content: crate::bound::apply(name, output.content),
+                    // Masked before it is capped, so a credential cannot survive by being in
+                    // the half that got cut — and before anything sees it: this is the one place
+                    // every result of every transport passes through.
+                    content: crate::bound::apply(name, crate::masking::apply(output.content)),
                     is_error: output.is_error,
                     shown: None,
                 }
@@ -308,7 +321,7 @@ impl Registry {
         };
         self.finished(&name, &ran, output.is_error);
         Output {
-            content: crate::bound::apply(&name, output.content),
+            content: crate::bound::apply(&name, crate::masking::apply(output.content)),
             is_error: output.is_error,
             shown: None,
         }
@@ -350,6 +363,59 @@ enum State {
 
 #[cfg(test)]
 mod tests {
+    /// A credential a tool printed does not reach the transcript.
+    ///
+    /// **End to end through the one seam every result crosses.** The journal is durable and the
+    /// model sees it every turn: one `printenv` and a key is on disk, in a context window, and
+    /// back at the provider on every subsequent request — inside the `KEEP` tail that compaction
+    /// preserves verbatim. Nothing masked anything before this.
+    #[test]
+    fn a_credential_a_tool_printed_never_reaches_the_caller() {
+        struct Leaks(String);
+        impl Tool for Leaks {
+            fn name(&self) -> &str {
+                "leaks"
+            }
+            fn description(&self) -> &str {
+                "prints its environment, as a build that failed would"
+            }
+            fn parameters(&self) -> serde_json::Value {
+                serde_json::json!({ "type": "object" })
+            }
+            fn run(&self, _: &serde_json::Value, _: &dyn Ops, _: &dyn Cancel) -> Output {
+                Output::ok(format!("MAGI_TEST_API_KEY={}\nPATH=/usr/bin", self.0))
+            }
+        }
+
+        // Whatever this machine actually holds, so the test is about the seam and not about a
+        // value invented here. Skipped when there is nothing secret in the environment, which is
+        // the ordinary case for a runner.
+        let Some((name, value)) = crate::masking::secrets().into_iter().next() else {
+            return;
+        };
+
+        let mut registry = Registry::new();
+        registry.register(Box::new(Leaks(value.clone())));
+        let out = registry.call(
+            "leaks",
+            &serde_json::json!({}),
+            &Real::new(std::env::temp_dir()),
+            &crate::Uncancelled,
+        );
+
+        assert!(
+            !out.content.contains(&value),
+            "a credential reached the transcript: {}",
+            out.content
+        );
+        assert!(
+            out.content.contains(&name),
+            "and it says which: {}",
+            out.content
+        );
+        assert!(out.content.contains("PATH=/usr/bin"), "the rest survives");
+    }
+
     use super::*;
     use crate::ops::Real;
 

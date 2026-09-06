@@ -9,6 +9,8 @@
 //! reasoning back. Pi keeps three such slots and calls them signature carriers; without them,
 //! changing model mid-session corrupts reasoning continuity.
 
+pub mod noted;
+pub mod scratch;
 mod usage;
 
 pub use usage::{Cost, Usage};

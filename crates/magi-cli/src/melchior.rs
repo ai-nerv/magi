@@ -9,9 +9,9 @@
 //! this session is doing. Two things cross, one JSON object per line:
 //!
 //! ```text
-//! ->  {"say":"doing","busy":true,"working_for":7,"waiting":0}
-//! <-  {"heard":"listening","at":"…/melchior/magi/psi-omicron","as":"magi/main/psi-omicron"}
-//! <-  {"heard":"message","who":"magi/main/beta-nu","sort":"attention","text":"…"}
+//! ->  {"event":"doing","busy":true,"working_for":7,"waiting":0}
+//! <-  {"event":"listening","at":"…/melchior/magi/psi-omicron","as":"magi/main/psi-omicron"}
+//! <-  {"event":"message","who":"magi/main/beta-nu","sort":"attention","text":"…"}
 //! ```
 //!
 //! # melchior being absent is the ordinary case
@@ -37,7 +37,7 @@ pub const TALK: &str = "MAGI_MELCHIOR_TALK";
 
 /// What melchior says, one JSON object per line on its stdout.
 #[derive(Debug, Clone, serde::Deserialize)]
-#[serde(tag = "heard", rename_all = "lowercase")]
+#[serde(tag = "event", rename_all = "snake_case")]
 pub enum Heard {
     /// The socket is bound, and this is the name it was bound under.
     Listening {
@@ -201,7 +201,7 @@ impl Melchior {
             return;
         };
         let line = serde_json::json!({
-            "say": "doing",
+            "event": "doing",
             "busy": busy,
             "working_for": working_for,
             "waiting": waiting,
@@ -230,7 +230,7 @@ impl Melchior {
             return;
         };
         let line = serde_json::json!({
-            "say": "answered",
+            "event": "answered",
             "id": id,
             "accept": accept,
             "handover": lending.and_then(|grants| serde_json::to_string(grants).ok()),
@@ -307,7 +307,7 @@ mod tests {
     fn what_melchior_says_is_read_as_what_it_means() {
         // The wire between two repositories, and the only place magi knows its shape.
         let listening: Heard = serde_json::from_str(
-            r#"{"heard":"listening","at":"/run/melchior/magi/psi-omicron","as":"magi/main/psi-omicron"}"#,
+            r#"{"event":"listening","at":"/run/melchior/magi/psi-omicron","as":"magi/main/psi-omicron"}"#,
         )
         .expect("reads");
         let Heard::Listening { at, named } = listening else {
@@ -317,7 +317,7 @@ mod tests {
         assert!(at.ends_with("psi-omicron"));
 
         let arrived: Heard = serde_json::from_str(
-            r#"{"heard":"message","who":"magi/main/beta-nu","sort":"attention","text":"look"}"#,
+            r#"{"event":"message","who":"magi/main/beta-nu","sort":"attention","text":"look"}"#,
         )
         .expect("reads");
         let Heard::Message { who, sort, .. } = arrived else {
@@ -332,7 +332,7 @@ mod tests {
         // Two repositories move apart. A `heard` this build has never seen should fail to parse
         // rather than land in the nearest arm — an unknown line read as a `message` would put
         // something in the transcript that nobody said.
-        assert!(serde_json::from_str::<Heard>(r#"{"heard":"whistling","tune":"…"}"#).is_err());
+        assert!(serde_json::from_str::<Heard>(r#"{"event":"whistling","tune":"…"}"#).is_err());
     }
 
     /// A second session in the same project, so there is somebody to be talked to.

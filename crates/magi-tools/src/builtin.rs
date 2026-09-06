@@ -84,7 +84,7 @@ impl Tool for Read {
         if let Err(why) = ops.allow(
             "read",
             &magi_proto::permit::Action::Read {
-                path: ops.cwd().join(path).display().to_string(),
+                path: ops.resolved(Path::new(path)).display().to_string(),
             },
         ) {
             return Output::error(why);
@@ -163,7 +163,7 @@ impl Tool for Write {
         if let Err(why) = ops.allow(
             "write",
             &magi_proto::permit::Action::Write {
-                path: ops.cwd().join(path).display().to_string(),
+                path: ops.resolved(Path::new(path)).display().to_string(),
             },
         ) {
             return Output::error(why);
@@ -228,7 +228,7 @@ impl Tool for Edit {
                 if let Err(why) = ops.allow(
                     "edit",
                     &magi_proto::permit::Action::Write {
-                        path: ops.cwd().join(path).display().to_string(),
+                        path: ops.resolved(Path::new(path)).display().to_string(),
                     },
                 ) {
                     return Output::error(why);
@@ -270,15 +270,13 @@ mod tests {
     use super::*;
     use crate::Registry;
     use crate::ops::Real;
-    use std::path::PathBuf;
+    use magi_model::scratch::Scratch;
 
-    fn session(name: &str) -> (Registry, Real, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("magi-builtin-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+    fn session(name: &str) -> (Registry, Real, Scratch) {
+        let dir = Scratch::new("magi-builtin", name);
         let mut registry = Registry::new();
         install(&mut registry);
-        (registry, Real::new(dir.clone()), dir)
+        (registry, Real::new(dir.to_path_buf()), dir)
     }
 
     fn call(registry: &Registry, ops: &Real, name: &str, args: Value) -> Output {
@@ -287,7 +285,7 @@ mod tests {
 
     #[test]
     fn the_floor_is_three_tools() {
-        let (registry, _, dir) = session("floor");
+        let (registry, _, _dir) = session("floor");
         assert_eq!(registry.len(), 3);
         for name in ["read", "write", "edit"] {
             assert!(registry.get(name).is_some(), "{name} is missing");
@@ -296,12 +294,11 @@ mod tests {
             registry.get("bash").is_none(),
             "bash is a declared tool, not part of the floor"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn write_then_read_round_trips_with_line_numbers() {
-        let (registry, ops, dir) = session("roundtrip");
+        let (registry, ops, _dir) = session("roundtrip");
         let written = call(
             &registry,
             &ops,
@@ -313,21 +310,19 @@ mod tests {
         let read = call(&registry, &ops, "read", json!({ "path": "a.txt" }));
         assert!(read.content.contains("     1\tone"), "{}", read.content);
         assert!(read.content.contains("     2\ttwo"), "{}", read.content);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_missing_argument_says_which_one() {
-        let (registry, ops, dir) = session("args");
+        let (registry, ops, _dir) = session("args");
         let output = call(&registry, &ops, "read", json!({}));
         assert!(output.is_error);
         assert!(output.content.contains("path"), "{}", output.content);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn edit_replaces_one_exact_span() {
-        let (registry, ops, dir) = session("edit");
+        let (registry, ops, _dir) = session("edit");
         call(
             &registry,
             &ops,
@@ -343,13 +338,12 @@ mod tests {
         assert!(!output.is_error, "{}", output.content);
         let read = call(&registry, &ops, "read", json!({ "path": "a.rs" }));
         assert!(read.content.contains("let x = 2;"), "{}", read.content);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn edit_refuses_an_ambiguous_match_rather_than_guessing() {
         // Silently patching the wrong occurrence is the failure that costs an hour to find.
-        let (registry, ops, dir) = session("ambiguous");
+        let (registry, ops, _dir) = session("ambiguous");
         call(
             &registry,
             &ops,
@@ -367,12 +361,11 @@ mod tests {
 
         let read = call(&registry, &ops, "read", json!({ "path": "a.rs" }));
         assert!(!read.content.contains('y'), "nothing was changed");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn edit_says_so_when_the_text_is_not_there() {
-        let (registry, ops, dir) = session("absent");
+        let (registry, ops, _dir) = session("absent");
         call(
             &registry,
             &ops,
@@ -387,12 +380,11 @@ mod tests {
         );
         assert!(output.is_error);
         assert!(output.content.contains("not in"), "{}", output.content);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn edit_shows_a_diff_of_what_changed() {
-        let (registry, ops, dir) = session("diff");
+        let (registry, ops, _dir) = session("diff");
         call(
             &registry,
             &ops,
@@ -407,18 +399,15 @@ mod tests {
         );
         assert!(output.content.contains("-old"), "{}", output.content);
         assert!(output.content.contains("+new"), "{}", output.content);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_confined_session_refuses_an_escape_from_every_tool() {
         // The rule lives on `magi.confine` now, and this is what it buys when it is on.
-        let dir = std::env::temp_dir().join(format!("magi-bwall-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let dir = Scratch::new("magi-bwall", "one");
         let mut registry = crate::Registry::new();
         install(&mut registry);
-        let ops = crate::ops::Real::confined(dir.clone());
+        let ops = crate::ops::Real::confined(dir.to_path_buf());
         for (name, args) in [
             ("read", json!({ "path": "../../etc/passwd" })),
             ("write", json!({ "path": "../../tmp/x", "contents": "x" })),
@@ -430,12 +419,11 @@ mod tests {
             let output = call(&registry, &ops, name, args);
             assert!(output.is_error, "{name} allowed an escape");
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_long_file_is_truncated_with_a_count() {
-        let (registry, ops, dir) = session("long");
+        let (registry, ops, _dir) = session("long");
         let body: String = (0..PREVIEW_LINES + 50).map(|i| format!("{i}\n")).collect();
         call(
             &registry,
@@ -448,7 +436,6 @@ mod tests {
             read.content.contains("50 more lines"),
             "truncation is stated"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -456,12 +443,10 @@ mod tests {
 mod paging_tests {
     use super::*;
     use crate::cancel::Uncancelled;
+    use magi_model::scratch::Scratch;
 
-    fn scratch(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("magi-read-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
-        dir
+    fn scratch(name: &str) -> Scratch {
+        Scratch::new("magi-read", name)
     }
 
     fn read_with(dir: &std::path::Path, args: Value) -> Output {
@@ -489,7 +474,6 @@ mod paging_tests {
             !out.content.contains("shell command"),
             "no longer sends you to bash"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -504,7 +488,6 @@ mod paging_tests {
             out.content
         );
         assert!(!out.content.contains("\t line 2000"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -515,7 +498,6 @@ mod paging_tests {
         std::fs::write(dir.join("a.txt"), "a\nb\nc\nd\n").expect("write");
         let out = read_with(&dir, json!({ "path": "a.txt", "offset": 3 }));
         assert!(out.content.starts_with("     3\tc"), "{:?}", out.content);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -526,7 +508,6 @@ mod paging_tests {
         let out = read_with(&dir, json!({ "path": "a.txt", "limit": 5 }));
         assert_eq!(out.content.lines().count(), 6, "five lines and the note");
         assert!(out.content.contains("Continue with offset=6"));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -540,7 +521,6 @@ mod paging_tests {
             "{} bytes",
             out.content.len()
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -550,7 +530,6 @@ mod paging_tests {
         let out = read_with(&dir, json!({ "path": "a.txt", "offset": 99 }));
         assert!(out.is_error, "{:?}", out.content);
         assert!(out.content.contains("has 2 lines"), "{}", out.content);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -559,6 +538,5 @@ mod paging_tests {
         std::fs::write(dir.join("a.txt"), "a\nb\n").expect("write");
         let out = read_with(&dir, json!({ "path": "a.txt" }));
         assert!(!out.content.contains("Continue"), "{}", out.content);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

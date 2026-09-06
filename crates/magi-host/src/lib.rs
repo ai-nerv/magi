@@ -16,6 +16,7 @@ pub mod context;
 pub mod declaring;
 pub mod driving;
 pub mod holder;
+pub mod injecting;
 pub mod knowing;
 pub mod paths;
 pub mod remember;
@@ -150,6 +151,54 @@ pub async fn serve_on(
         }
     }));
     let _ = DRAINING.set((Arc::clone(&session), Arc::clone(&scribe)));
+
+    // **The library balthasar ships, in place of the copy this build carries.** A consumer
+    // keeping its own copy is a consumer whose copy goes stale, and this one did: magi's copy
+    // predated a fix to the connect path, and every session on that machine silently had no
+    // memory tools. Connect with the copy you have, then take the one the server serves — which
+    // is what melchior has always done and what makes a stale copy unable to persist.
+    //
+    // Best effort and silent when it fails: an older balthasar does not know the verb, and the
+    // bundled copy then runs exactly as before.
+    //
+    // Beside it, a cross-check nobody could make until now. magi's journal is the copy of record
+    // and resuming from balthasar would mean rebuilding the transcript from a projection of
+    // itself — but if balthasar holds fewer turns than magi has entries, its scrollback is
+    // incomplete, and everything computed from it is answering about a different conversation.
+    {
+        let held = session.lock().await.entries().len();
+        let theirs = {
+            let mut open = scribe.lock().await;
+            match open.as_mut() {
+                Some(open) => open.resumes().await.ok(),
+                None => None,
+            }
+        };
+        if let Some(theirs) = theirs
+            && held > 0
+            && theirs == 0
+        {
+            magi_model::noted!(
+                "scribe: this session has {held} entries and balthasar holds none of them; \
+                 anything computed from its scrollback is about a different conversation"
+            );
+        }
+    }
+    let mut catalog = catalog;
+    if let Some(served) = {
+        let mut open = scribe.lock().await;
+        match open.as_mut() {
+            Some(open) => open.library().await.ok(),
+            None => None,
+        }
+    } {
+        for (name, source) in &mut catalog.clients {
+            if name == "balthasar" && *source != served {
+                magi_model::noted!("clients: balthasar's own library replaced this build's copy");
+                source.clone_from(&served);
+            }
+        }
+    }
     // The asker publishes through the session's own broadcast handle rather than through the
     // lock: the thread that asks is the thread running the turn, which is usually the one
     // holding it.
@@ -219,6 +268,7 @@ pub async fn serve_on(
                     Some(Arc::clone(&person.approver)),
                     Arc::clone(&person.asks),
                     Arc::clone(&person.holds),
+                    Arc::clone(&scribe),
                 )
             })
             .map(Arc::new),
@@ -369,7 +419,7 @@ async fn connection(
                     }
                     Some(UiCommand::SetModel { name }) => {
                         if let Some(refusal) =
-                            switch_model(&session, worker, catalog, person, &name).await
+                            switch_model(&session, worker, catalog, person, scribe, &name).await
                         {
                             // On the stream rather than in the transcript: the request was
                             // understood and declined, which is a fact about the UI's ask and
@@ -384,7 +434,7 @@ async fn connection(
                     }
                     Some(UiCommand::SetThinking { level }) => {
                         if let Some(refusal) =
-                            switch_thinking(&session, worker, catalog, person, &level).await
+                            switch_thinking(&session, worker, catalog, person, scribe, &level).await
                         {
                             writer
                                 .write(&HarnessEvent::Refused {

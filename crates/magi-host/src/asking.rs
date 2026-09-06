@@ -571,6 +571,7 @@ mod permitting {
 #[cfg(test)]
 mod every_verb {
     use super::permitting::{Fixed, asking};
+    use magi_model::scratch::Scratch;
     use magi_proto::permit::Decision;
     use magi_tools::registry::Tool;
 
@@ -595,8 +596,7 @@ mod every_verb {
 
     #[test]
     fn reading_a_file_puts_the_question_on_a_surface() {
-        let dir = std::env::temp_dir().join(format!("magi-asking-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("a directory");
+        let dir = Scratch::new("magi-asking", "one");
         std::fs::write(dir.join("note.txt"), "hello").expect("a file");
         // "no", so nothing is granted and the test leaves no standing permission behind.
         let (ops, holder) = gated(&dir, Some("no".to_owned()));
@@ -616,13 +616,11 @@ mod every_verb {
             "{args}"
         );
         assert!(out.is_error, "denied, so the read must not have happened");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn writing_a_file_puts_the_question_on_a_surface_too() {
-        let dir = std::env::temp_dir().join(format!("magi-asking-w-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("a directory");
+        let dir = Scratch::new("magi-asking-w", "one");
         let (ops, holder) = gated(&dir, Some("no".to_owned()));
         let out = magi_tools::builtin::Write.run(
             &serde_json::json!({"path": "new.txt", "contents": "x"}),
@@ -636,15 +634,13 @@ mod every_verb {
             !dir.join("new.txt").exists(),
             "a refused write happened anyway"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_yes_on_the_surface_lets_the_read_through() {
         // The other half. A prompt that could only refuse would pass the test above and be
         // useless, and "the surface said allow" has to reach the file.
-        let dir = std::env::temp_dir().join(format!("magi-asking-y-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("a directory");
+        let dir = Scratch::new("magi-asking-y", "one");
         std::fs::write(dir.join("note.txt"), "hello").expect("a file");
         // Row zero, which is `Once` for every action: allowed, and nothing left standing.
         let (ops, _) = gated(&dir, Some("0".to_owned()));
@@ -655,7 +651,6 @@ mod every_verb {
         );
         assert!(!out.is_error, "{}", out.content);
         assert!(out.content.contains("hello"), "{}", out.content);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -663,8 +658,7 @@ mod every_verb {
         // The surface is asked once. A prompt per file in a directory somebody already allowed
         // is the difference between a permission and a nuisance, and moving the prompt out of
         // magi must not have moved the remembering with it.
-        let dir = std::env::temp_dir().join(format!("magi-asking-l-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("a directory");
+        let dir = Scratch::new("magi-asking-l", "one");
         std::fs::write(dir.join("a.txt"), "one").expect("a file");
         std::fs::write(dir.join("b.txt"), "two").expect("a file");
         let action = magi_proto::permit::Action::Read {
@@ -691,7 +685,6 @@ mod every_verb {
             1,
             "asked twice about one directory"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

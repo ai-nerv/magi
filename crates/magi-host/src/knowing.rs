@@ -168,8 +168,10 @@ async fn memories(
         return refused(Wonder::Memories, "there is no balthasar in this session");
     };
     match scribe.nearest(query, limit).await {
+        // The memories alone. A surface draws a list; the injection id is bookkeeping between
+        // magi and balthasar, and putting it on screen would spend a row on a handle.
         Ok(found) => Answered::Told {
-            said: serde_json::Value::Array(found),
+            said: serde_json::Value::Array(found.memories),
         },
         Err(why) => refused(Wonder::Memories, &why.to_string()),
     }

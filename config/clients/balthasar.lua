@@ -32,6 +32,14 @@
 
 local transport = ...
 
+-- The newest revision of the family wire this client understands.
+--
+-- Duplicated in each sibling rather than shared, exactly as this whole file is: a library held
+-- in common would be a dependency between repositories, and this family has none. Bumped when a
+-- consumer that does not know about a change would misread a reply -- not when a field is added
+-- that an older reader ignores, which is what this field itself was.
+local FAMILY = 1
+
 -- Where the socket primitive comes from when the caller did not say. Inside balthasar the whole library
 -- is already there; elsewhere a host that named its own `__stream` is honoured too.
 if not transport then
@@ -272,6 +280,19 @@ function Session:call(name, ...)
   -- handed over was not recorded, and the next turn would be written on top of a hole.
   -- A transport error above answers `nil, why` with no third value, which is neither: nothing
   -- was listening, and that is the caller's to notice.
+  -- **A newer peer is refused by name, an older one is not.** There were four implementations
+  -- of this wire and no version in any of them, already disagreeing about whether `n` is
+  -- optional and whether `fault` exists -- so a skew presented as a missing field at the point
+  -- of use, which reads as the far end being broken. A reply with no `family` predates the
+  -- field and is read as it always was; one from the future is refused here, where the reason
+  -- is still known.
+  if reply.family and reply.family > FAMILY then
+    return nil,
+      "this balthasar speaks version " .. tostring(reply.family) .. " of the family wire and "
+        .. "this client understands " .. tostring(FAMILY) .. "; update the client library",
+      "refused"
+  end
+
   if not reply.ok then
     return nil, reply.error or "balthasar refused the call", reply.fault or "refused"
   end
@@ -334,7 +355,9 @@ end
 ---
 --- Answers a *list* of candidates, newest first, because a socket file is not a running session:
 --- one left behind by a frontend that was killed looks exactly like a live one until something
---- connects. Trying them in turn is the only staleness check that cannot be raced.
+--- asks it a question. Trying them in turn, and requiring an answer from each, is the only
+--- staleness check that cannot be raced -- connecting alone is not one, because the kernel
+--- accepts for a listener that has stopped reading.
 --- Every `api@*.sock` under `dir`, newest first. Empty when nothing can list it.
 ---
 --- Plain Lua cannot list a directory, so this asks the host two ways and gives up rather than
@@ -459,9 +482,25 @@ function M.connect(where)
     local handle, why = transport.connect(candidate.path, timeout)
     if handle then
       local session = attach(setmetatable({ handle = handle, path = candidate.path }, Session))
-      return session
+      -- **Connecting is not an answer.** A socket outlives the process that bound it, and the
+      -- kernel accepts on behalf of a listener whose owner has stopped reading -- so a balthasar
+      -- that was killed, or one left over from an older build, takes the connection and answers
+      -- nothing. Every candidate after it is then never tried, and the caller waits out a
+      -- timeout on a socket that was never going to reply. That is not hypothetical: it is why
+      -- a session on a machine with a stale socket had no memory tools at all, and said nothing
+      -- about why.
+      --
+      -- So ask. `verbs` is read-only, it is the first thing every consumer asks anyway, and one
+      -- round trip on a unix socket costs less than the timeout it replaces.
+      local alive = session:call("verbs")
+      if alive then
+        return session
+      end
+      session:close()
+      last = "nothing answered on " .. candidate.path
+    else
+      last = why
     end
-    last = why
   end
   return nil, last or "nothing was listening"
 end

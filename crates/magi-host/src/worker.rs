@@ -57,6 +57,9 @@ impl Worker {
             None,
             std::sync::Arc::new(magi_tools::question::Unanswered),
             std::sync::Arc::new(magi_tools::holding::Screenless),
+            // And no memory layer: this is the worker a test or a one-shot builds, which has
+            // nobody to ask and nothing to remember into.
+            std::sync::Arc::new(tokio::sync::Mutex::new(None)),
         )
     }
 
@@ -69,6 +72,7 @@ impl Worker {
         approver: Option<std::sync::Arc<dyn magi_tools::approve::Approver>>,
         asks: std::sync::Arc<dyn magi_tools::question::Asks>,
         holds: std::sync::Arc<dyn magi_tools::holding::Holds>,
+        scribe: crate::scribe::Held,
     ) -> Self {
         let (jobs, mut queue) = mpsc::channel::<Job>(32);
         std::thread::spawn(move || {
@@ -98,35 +102,31 @@ impl Worker {
             }
 
             let engine = std::rc::Rc::new(std::cell::RefCell::new(engine));
-            let mut registry = magi_tools::Registry::new();
-            // **casper first, so anything nearer wins.** Registration is keyed, so the last
-            // declaration of a name is the one that runs — and the order is a precedence rule:
-            // casper is the furthest away, the compiled-in floor is next, and a person's own
-            // `tools.lua` is nearest and beats both. A config that declares `shell` means it.
-            //
-            // It used to be last, which was right while the shipped config still declared the
-            // same names: a tool could then be lifted out of magi by deleting it. Nothing here
-            // declares them any more, so all that ordering did was override the person.
-            //
-            // Nothing when casper is not installed: a session then has exactly the tools it had
-            // before casper existed.
-            for tool in magi_tools::casper::CasperTool::all(
-                magi_tools::casper::CASPER,
+            // The same sequence `magi tools` lists, from the one place that knows it. This ran
+            // here and there and the two disagreed about the environment a process tool is
+            // built with, so the listing described tools as they would never actually run.
+            let (registry, _from_casper) = magi_lua::tool::assemble(
+                std::rc::Rc::clone(&engine),
                 std::sync::Arc::clone(&asks),
                 std::sync::Arc::clone(&holds),
-            ) {
-                registry.register(Box::new(tool));
-            }
-            magi_tools::builtin::install(&mut registry);
-            magi_lua::tool::install(std::rc::Rc::clone(&engine), &mut registry, &backend.environ);
+                &backend.environ,
+                backend.casper.as_deref(),
+            );
             // Gated when there is somebody to ask. The ledger starts with whatever the
             // configuration already granted, so a rule written down is not a question asked.
             let ops: std::rc::Rc<dyn magi_tools::Ops> = match (&approver, backend.confine) {
-                (Some(approver), _) => std::rc::Rc::new(magi_tools::ops::Real::gated(
-                    backend.cwd.clone(),
-                    magi_tools::permit::Ledger::with(backend.grants.clone()),
-                    std::sync::Arc::clone(approver),
-                )),
+                // `confine` is honoured here too. The arm used to be `(Some(approver), _)`,
+                // discarding it, so the setting applied only to sessions with nobody attached --
+                // exactly the runs where a wall matters least, and never the ones where somebody
+                // turned it on and watched it do nothing.
+                (Some(approver), confine) => std::rc::Rc::new(
+                    magi_tools::ops::Real::gated(
+                        backend.cwd.clone(),
+                        magi_tools::permit::Ledger::with(backend.grants.clone()),
+                        std::sync::Arc::clone(approver),
+                    )
+                    .confining(confine),
+                ),
                 (None, true) => {
                     std::rc::Rc::new(magi_tools::ops::Real::confined(backend.cwd.clone()))
                 }
@@ -146,7 +146,8 @@ impl Worker {
                         // A failed turn is already journalled as an error entry by `turn::run`;
                         // there is nothing further to report and nothing to abort the daemon for.
                         Work::Turn => {
-                            let _ = turn::run(&job.session, &backend, &registry, &*ops).await;
+                            let _ =
+                                turn::run(&job.session, &backend, &registry, &*ops, &scribe).await;
                         }
                         Work::TakeOn(grants) => ops.take_on(grants),
                         Work::Declare => {
@@ -309,6 +310,7 @@ async fn declare(session: &Arc<Mutex<Session>>, backend: &Backend, ops: &dyn mag
 #[cfg(test)]
 mod tests {
     use super::*;
+    use magi_model::scratch::Scratch;
     use magi_proto::{Entry, SessionId};
 
     /// A worker with no backend cannot be built, so this checks the queue rather than a turn:
@@ -319,8 +321,7 @@ mod tests {
         drop(queue);
         let worker = Worker { jobs };
 
-        let dir = std::env::temp_dir().join(format!("magi-worker-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = Scratch::new("magi-worker", "one");
         let session =
             Session::open(&dir.join("s.jsonl"), SessionId::new("s"), "/tmp", 0).expect("session");
         let session = Arc::new(Mutex::new(session));
@@ -328,7 +329,6 @@ mod tests {
         // Returns rather than hanging: the send fails and there is nothing to wait for.
         worker.run(Arc::clone(&session)).await;
         assert!(session.lock().await.entries().is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -337,8 +337,7 @@ mod tests {
         drop(queue);
         let worker = Worker { jobs };
 
-        let dir = std::env::temp_dir().join(format!("magi-worker2-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let dir = Scratch::new("magi-worker2", "one");
         let session =
             Session::open(&dir.join("s.jsonl"), SessionId::new("s"), "/tmp", 0).expect("session");
         let session = Arc::new(Mutex::new(session));
@@ -354,6 +353,5 @@ mod tests {
             })
             .expect("commit");
         assert_eq!(session.lock().await.entries().len(), 1);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

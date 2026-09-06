@@ -75,6 +75,7 @@ fn recorded_cwd(path: &std::path::Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use magi_model::scratch::Scratch;
 
     #[test]
     fn sessions_live_under_a_data_directory() {
@@ -95,9 +96,7 @@ mod tests {
 
     #[test]
     fn the_latest_journal_is_the_highest_id() {
-        let dir = std::env::temp_dir().join(format!("magi-latest-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let dir = Scratch::new("magi-latest", "one");
         for id in [session_id(1, ""), session_id(500, "")] {
             std::fs::write(dir.join(format!("{id}.jsonl")), "").expect("write");
         }
@@ -105,30 +104,25 @@ mod tests {
 
         let newest = latest(&dir).expect("a journal");
         assert!(newest.to_string_lossy().contains(&session_id(500, "")));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn an_empty_directory_has_no_latest() {
-        let dir = std::env::temp_dir().join(format!("magi-empty-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let dir = Scratch::new("magi-empty", "one");
         assert!(latest(&dir).is_none());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
 #[cfg(test)]
 mod resume_tests {
     use super::*;
+    use magi_model::scratch::Scratch;
     use magi_proto::SessionId;
 
     /// Two sessions in one directory and one in another, so "the latest" and "the latest here"
     /// are different journals.
-    fn fixture(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("magi-resume-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+    fn fixture(name: &str) -> Scratch {
+        let dir = Scratch::new("magi-resume", name);
         for (id, cwd) in [(1_u64, "/work/a"), (2, "/work/a"), (3, "/work/b")] {
             let path = dir.join(format!("{}.jsonl", session_id(id, "")));
             magi_journal::Journal::open(&path, SessionId::new(session_id(id, "")), cwd, id)
@@ -145,7 +139,6 @@ mod resume_tests {
             found.to_string_lossy().contains(&session_id(2, "")),
             "{found:?}"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -156,14 +149,12 @@ mod resume_tests {
         assert!(newest.to_string_lossy().contains(&session_id(3, "")));
         let found = latest_for(&dir, "/work/a").expect("a journal");
         assert_ne!(found, newest);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_directory_with_no_history_has_nothing_to_resume() {
         let dir = fixture("fresh");
         assert!(latest_for(&dir, "/work/never-seen").is_none());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

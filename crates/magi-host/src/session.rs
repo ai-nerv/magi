@@ -360,6 +360,20 @@ impl Session {
         let cursor = self.cursor();
         self.journal.revise(entry.clone());
         for event in amendment_events(cursor, previous.as_ref(), &entry) {
+            // **The ending is not published from the path that writes nothing.** A revision is
+            // an in-flight message: it updates memory and deliberately does not touch the disk.
+            // `AssistantEnded` says the opposite — that this message is final — and anything
+            // waiting for a turn to end acts on it. `magi -p` does exactly that: it prints and
+            // exits. So the last revision of a finished turn ended the process before the
+            // `amend` a few lines later could write the answer, and the journal kept the prompt
+            // and lost the answer. It was found by CI, where a loaded machine loses that race
+            // about one run in three; a laptop wins it and looks correct.
+            //
+            // `amend` publishes the ending, after the write and the flush. That is the only
+            // place that may.
+            if matches!(event, HarnessEvent::AssistantEnded { .. }) {
+                continue;
+            }
             let _ = self.events.send(event);
         }
         // Queued like a commit, though nothing is written yet. The queue coalesces by cursor, so
@@ -570,16 +584,72 @@ fn events_for(cursor: Cursor, entry: &Entry) -> Vec<HarnessEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use magi_model::scratch::{Scratch, ScratchFile};
     use magi_proto::{MessageId, StopReason};
 
-    fn temp(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("magi-session-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        dir.join("s.jsonl")
+    fn temp(name: &str) -> ScratchFile {
+        Scratch::file("magi-session", name, "s.jsonl")
     }
 
-    fn session(name: &str) -> Session {
-        Session::open(&temp(name), SessionId::new("s1"), "/tmp", 0).expect("open")
+    fn session(name: &str) -> (Session, ScratchFile) {
+        let path = temp(name);
+        let session = Session::open(&path, SessionId::new("s1"), "/tmp", 0).expect("open");
+        (session, path)
+    }
+
+    #[test]
+    fn a_revision_never_announces_an_ending_it_has_not_written() {
+        // The invariant behind a durability bug CI found and a laptop hides. `revise` updates
+        // memory and writes nothing; `AssistantEnded` tells a listener the message is final, and
+        // `magi -p` acts on it by printing and exiting. While `revise` published it, the process
+        // could die before the `amend` that flushes, and the journal kept the prompt and lost
+        // the answer.
+        //
+        // Asserted here rather than through a turn, because in one process the `amend` always
+        // wins the race and any end-to-end test passes whether or not this holds.
+        let (mut session, _dir) = session("revise-ending");
+        let mut live = session.subscribe();
+        let id = MessageId::new("a1");
+        let started = Entry::Assistant {
+            id: id.clone(),
+            text: "half".to_owned(),
+            thinking: String::new(),
+            stop_reason: None,
+            error: None,
+            signatures: magi_proto::Signatures::default(),
+            usage: magi_proto::Usage::default(),
+        };
+        session.commit(started).expect("commit");
+        let Entry::Assistant { text, .. } = session.entries()[0].clone() else {
+            panic!("an assistant entry");
+        };
+        assert_eq!(text, "half");
+        while live.try_recv().is_ok() {}
+
+        // A finished message, revised rather than amended.
+        session.revise(Entry::Assistant {
+            id,
+            text: "half an answer".to_owned(),
+            thinking: String::new(),
+            stop_reason: Some(StopReason::EndTurn),
+            error: None,
+            signatures: magi_proto::Signatures::default(),
+            usage: magi_proto::Usage::default(),
+        });
+
+        let mut sawticks = (false, false);
+        while let Ok(event) = live.try_recv() {
+            match event {
+                HarnessEvent::AssistantDelta { .. } => sawticks.0 = true,
+                HarnessEvent::AssistantEnded { .. } => sawticks.1 = true,
+                _ => {}
+            }
+        }
+        assert!(sawticks.0, "the growth is still published");
+        assert!(
+            !sawticks.1,
+            "a revision must not announce an ending: nothing has been written"
+        );
     }
 
     fn user(text: &str) -> Entry {
@@ -592,7 +662,7 @@ mod tests {
 
     #[test]
     fn committing_publishes_to_subscribers() {
-        let mut s = session("publish");
+        let (mut s, _dir) = session("publish");
         let mut rx = s.subscribe();
         s.commit(user("hi")).expect("commit");
         let event = rx.try_recv().expect("an event");
@@ -601,7 +671,7 @@ mod tests {
 
     #[test]
     fn a_cold_snapshot_carries_nothing() {
-        let mut s = session("cold");
+        let (mut s, _dir) = session("cold");
         s.commit(user("hi")).expect("commit");
         match s.snapshot(Cursor::ZERO) {
             HarnessEvent::SessionSnapshot { entries, .. } => assert!(entries.is_empty()),
@@ -611,7 +681,7 @@ mod tests {
 
     #[test]
     fn a_resume_snapshot_carries_what_the_ui_already_saw() {
-        let mut s = session("resume");
+        let (mut s, _dir) = session("resume");
         s.commit(user("one")).expect("commit");
         s.commit(user("two")).expect("commit");
         match s.snapshot(Cursor(1)) {
@@ -622,7 +692,7 @@ mod tests {
 
     #[test]
     fn replay_covers_only_what_follows_the_cursor() {
-        let mut s = session("replay");
+        let (mut s, _dir) = session("replay");
         s.commit(user("one")).expect("commit");
         s.commit(user("two")).expect("commit");
         let events = s.replay(Cursor(1));
@@ -632,7 +702,7 @@ mod tests {
 
     #[test]
     fn an_unfinished_assistant_entry_replays_without_an_end_event() {
-        let mut s = session("unfinished");
+        let (mut s, _dir) = session("unfinished");
         s.commit(Entry::Assistant {
             id: MessageId::new("a1"),
             text: "partial".into(),
@@ -654,7 +724,7 @@ mod tests {
 
     #[test]
     fn a_finished_assistant_entry_replays_start_delta_and_end() {
-        let mut s = session("finished");
+        let (mut s, _dir) = session("finished");
         s.commit(Entry::Assistant {
             id: MessageId::new("a1"),
             text: "done".into(),
@@ -670,7 +740,7 @@ mod tests {
 
     #[test]
     fn status_is_published_but_not_journalled() {
-        let mut s = session("status");
+        let (mut s, _dir) = session("status");
         let mut rx = s.subscribe();
         s.set_status(AgentStatus::Working {
             label: "Thinking".into(),

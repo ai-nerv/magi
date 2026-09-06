@@ -42,15 +42,22 @@ pub struct Retry {
     pub delay_ms: u64,
 }
 
-/// Whether a melchior is reachable to ask.
+/// Whether `program` is reachable to ask.
 ///
 /// Looked for once and not cached: a person installing it mid-session should not have to
 /// restart, and the cost is a `stat` per turn.
+///
+/// Takes the name rather than assuming [`MELCHIOR`]. `magi.melchior` may point at another
+/// binary, and it was honoured when the session layer was started and ignored here and by
+/// [`cards`] — so a person who set it got their own melchior for the turn and whatever was on
+/// `PATH` for the catalog of models that turn had to choose from.
 #[must_use]
-pub fn available() -> bool {
-    std::env::var_os("PATH").is_some_and(|paths| {
-        std::env::split_paths(&paths).any(|dir| dir.join("melchior").is_file())
-    })
+pub fn available(program: &str) -> bool {
+    if program.contains(std::path::MAIN_SEPARATOR) {
+        return std::path::Path::new(program).is_file();
+    }
+    std::env::var_os("PATH")
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
 }
 
 /// Run one turn through melchior, reporting each delta as it arrives.
@@ -126,9 +133,12 @@ pub async fn ask_through(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|why| Trouble {
-            message: format!("{program} could not be started: {why}"),
-            why: Refusal::Transport,
+        .map_err(|why| {
+            magi_model::noted!("broker: {program} ask could not be started: {why}");
+            Trouble {
+                message: format!("{program} could not be started: {why}"),
+                why: Refusal::Transport,
+            }
         })?;
 
     if let Some(mut stdin) = child.stdin.take() {
@@ -251,20 +261,26 @@ pub async fn value(
 ///
 /// Empty when melchior is not installed or would not answer. Not an error: a session with no
 /// models says so when a prompt arrives, which is where a person can act on it.
-pub async fn cards() -> Vec<magi_proto::ask::Card> {
-    let Ok(out) = tokio::process::Command::new("melchior")
+pub async fn cards(program: &str) -> Vec<magi_proto::ask::Card> {
+    let Ok(out) = tokio::process::Command::new(program)
         .arg("models")
         .arg("--json")
         .stderr(std::process::Stdio::null())
         .output()
         .await
     else {
+        magi_model::noted!("broker: {program} models could not be started");
         return Vec::new();
     };
     let Ok(reply) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else {
+        magi_model::noted!(
+            "broker: {program} models answered {} bytes that are not json",
+            out.stdout.len()
+        );
         return Vec::new();
     };
     if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+        magi_model::noted!("broker: {program} models refused: {reply}");
         return Vec::new();
     }
     reply
@@ -342,7 +358,7 @@ mod tests {
         // Nothing to ask, so this must come back rather than wait. The message names the thing
         // that is missing, because "the model did not answer" would send somebody to the wrong
         // half of the family.
-        if available() {
+        if available(MELCHIOR) {
             return;
         }
         let trouble = ask(

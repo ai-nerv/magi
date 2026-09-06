@@ -103,6 +103,30 @@ impl CommandTool {
 }
 
 impl Tool for CommandTool {
+    fn composition(&self) -> Vec<(&'static str, String)> {
+        let mut out = vec![
+            ("transport", "command".to_owned()),
+            (
+                "command",
+                std::iter::once(self.program.clone())
+                    .chain(self.args.iter().cloned())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ),
+        ];
+        if !self.env.is_empty() {
+            out.push((
+                "env",
+                self.env
+                    .iter()
+                    .map(|(name, value)| format!("{name}={value}"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ));
+        }
+        out
+    }
+
     fn name(&self) -> &str {
         &self.name
     }
@@ -453,6 +477,7 @@ mod running_tests {
     use super::*;
     use crate::cancel::Uncancelled;
     use crate::ops::Real;
+    use magi_model::scratch::Scratch;
     use serde_json::json;
 
     /// An `Ops` that refuses every call, to prove the gate is asked before anything runs.
@@ -506,8 +531,7 @@ mod running_tests {
 
     #[test]
     fn a_refused_call_never_runs_the_program() {
-        let dir = std::env::temp_dir().join(format!("magi-refused-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("scratch");
+        let dir = Scratch::new("magi-refused", "one");
         let marker = dir.join("ran");
         let tool = CommandTool::new(
             "touching",
@@ -516,13 +540,12 @@ mod running_tests {
             "touch",
             vec![marker.display().to_string()],
         );
-        let out = tool.run(&json!({}), &Refusing(dir.clone()), &Uncancelled);
+        let out = tool.run(&json!({}), &Refusing(dir.to_path_buf()), &Uncancelled);
         assert!(out.is_error, "{out:?}");
         assert!(
             !marker.exists(),
             "the gate refused and the program ran anyway"
         );
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

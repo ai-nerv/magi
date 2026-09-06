@@ -8,7 +8,9 @@ version.workspace = true
 [dependencies]
 magi-ipc.workspace = true
 magi-model.workspace = true
+sha2.workspace = true
 magi-proto.workspace = true
+rustix = { workspace = true }
 serde.workspace = true
 similar.workspace = true
 serde_json.workspace = true

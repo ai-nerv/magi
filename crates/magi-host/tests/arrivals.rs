@@ -7,6 +7,8 @@
 //! That is how `ask` came to be a one-way trip. It sends a `question`, which woke the receiver;
 //! `reply` sends an `answer`, which woke nobody — so two agents got one exchange and stopped.
 
+use magi_model::scratch::Scratch;
+
 use magi_host::session::Session;
 use magi_host::turn::Backend;
 use magi_ipc::{FrameReader, FrameWriter};
@@ -17,6 +19,7 @@ fn backend(mind: &Mind) -> Backend {
     Backend {
         tools: Vec::new(),
         clients: Vec::new(),
+        casper: None,
         cwd: std::env::temp_dir(),
         model: "fake/one".to_owned(),
         // A real path to a real program, because the worker spawns it: a backend that cannot be
@@ -33,13 +36,11 @@ fn backend(mind: &Mind) -> Backend {
 }
 
 /// A session serving on its own socket, and the path to reach it at.
-async fn serving(name: &str, mind: &Mind) -> std::path::PathBuf {
-    // Short: a scratch directory path does not fit in `SUN_LEN`.
-    let path = std::env::temp_dir().join(format!("magi-arr-{}-{name}.sock", std::process::id()));
-    let _ = std::fs::remove_file(&path);
-    let dir = std::env::temp_dir().join(format!("magi-arr-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
+async fn serving(name: &str, mind: &Mind) -> (Scratch, std::path::PathBuf) {
+    let dir = Scratch::new("magi-arr", name);
+    // Inside the scratch, so the guard takes the socket with the journal. Still well under
+    // `SUN_LEN`: the whole path is the temporary directory, one short name and `s.sock`.
+    let path = dir.join("s.sock");
     let session = Session::open(&dir.join("s.jsonl"), SessionId::new("s"), "/tmp", 0).expect("s");
     let listener = magi_ipc::bind(&path).await.expect("bind");
     let backend = backend(mind);
@@ -52,7 +53,7 @@ async fn serving(name: &str, mind: &Mind) -> std::path::PathBuf {
         )
         .await;
     });
-    path
+    (dir, path)
 }
 
 /// Attach, hand over one arrival, and report every event that follows within `patience`.
@@ -61,7 +62,7 @@ async fn serving(name: &str, mind: &Mind) -> std::path::PathBuf {
 /// mean nothing was spawned, not merely that no event happened to arrive before a timeout.
 async fn arrival_of(sort: &str, name: &str) -> (Vec<HarnessEvent>, bool) {
     let mind = Mind::answering(&format!("arr-{name}"), "thanks");
-    let path = serving(name, &mind).await;
+    let (_dir, path) = serving(name, &mind).await;
     let stream = magi_ipc::connect(&path).await.expect("connect");
     let (read_half, write_half) = stream.into_split();
     let mut reader = FrameReader::new(read_half);

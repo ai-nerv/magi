@@ -68,7 +68,10 @@ pub async fn run(
         // with, so meeting the problem at attach and meeting it at the first prompt say one thing.
         // The cards come from melchior, so this asks it. One process at attach, against the
         // alternative of a picker that lists what magi believed rather than what can be reached.
-        let catalog = crate::config::catalog(loaded, magi_host::broker::cards().await);
+        let catalog = crate::config::catalog(
+            loaded,
+            magi_host::broker::cards(&crate::config::mind(loaded)).await,
+        );
         if crate::config::backend(&catalog).is_none() {
             app.no_model = Some(magi_host::no_model(&catalog));
         }

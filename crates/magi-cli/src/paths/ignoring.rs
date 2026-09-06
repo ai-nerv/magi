@@ -156,6 +156,7 @@ pub fn matches(pattern: &str, text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use magi_model::scratch::Scratch;
 
     #[test]
     fn a_literal_matches_itself_and_nothing_else() {
@@ -250,15 +251,12 @@ mod tests {
     fn the_same_directory_is_not_read_twice() {
         // The walk revisits directories as it descends, and rules stacked twice make a `!` line
         // lose to the copy of the rule it was written to undo.
-        let dir = std::env::temp_dir().join(format!("magi-ignoring-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        let dir = Scratch::new("magi-ignoring", "one");
         std::fs::write(dir.join(".gitignore"), "*.log\n!keep.log\n").expect("write");
         let mut ignores = Ignores::from(&dir);
         ignores.read(&dir);
         ignores.read(&dir);
         assert_eq!(ignores.rules.len(), 2, "the file was read more than once");
         assert!(!ignores.hides("keep.log", false));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

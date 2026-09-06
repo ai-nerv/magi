@@ -8,18 +8,20 @@
 //! both, and they have their own tests over there. What is left is the half magi still decides:
 //! what it does with an answer, a refusal, an overflow and an interrupt.
 
+use magi_model::scratch::Scratch;
+
 use magi_host::session::Session;
 use magi_host::turn::{Backend, run};
 use magi_proto::{Entry, SessionId, StopReason};
 use magi_testkit::Mind;
 use magi_testkit::mind::{failed_line, retrying_line, stop_line, text_line};
-use std::path::PathBuf;
 
 /// A backend that asks `mind` and nothing else.
 fn backend(mind: &Mind) -> Backend {
     Backend {
         tools: Vec::new(),
         clients: Vec::new(),
+        casper: None,
         cwd: std::env::temp_dir(),
         model: "fake/one".to_owned(),
         mind: mind.program().display().to_string(),
@@ -32,9 +34,8 @@ fn backend(mind: &Mind) -> Backend {
     }
 }
 
-fn session(name: &str) -> (tokio::sync::Mutex<Session>, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("magi-turn-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn session(name: &str) -> (tokio::sync::Mutex<Session>, Scratch) {
+    let dir = Scratch::new("magi-turn", name);
     let path = dir.join("s.jsonl");
     let session = Session::open(&path, SessionId::new("s"), "/tmp", 0).expect("session");
     (tokio::sync::Mutex::new(session), dir)
@@ -44,7 +45,10 @@ fn session(name: &str) -> (tokio::sync::Mutex<Session>, PathBuf) {
 async fn turn(session: &tokio::sync::Mutex<Session>, backend: &Backend) {
     let registry = magi_tools::Registry::new();
     let ops = magi_tools::ops::Real::new(std::env::temp_dir());
-    run(session, backend, &registry, &ops)
+    // No memory layer: these tests are about the turn loop, and a balthasar answering here
+    // would make what the model is shown depend on what this machine happens to remember.
+    let scribe = std::sync::Arc::new(tokio::sync::Mutex::new(None));
+    run(session, backend, &registry, &ops, &scribe)
         .await
         .expect("the turn returns");
 }
@@ -55,8 +59,8 @@ async fn a_turn_streams_into_the_journal() {
     let mind = Mind::saying(
         "turn-ok",
         &[
-            &serde_json::json!({ "said": "thinking", "text": "weighing it" }).to_string(),
-            &serde_json::json!({ "said": "signature", "signature": "sig-abc" }).to_string(),
+            &serde_json::json!({ "event": "thinking", "text": "weighing it" }).to_string(),
+            &serde_json::json!({ "event": "signature", "signature": "sig-abc" }).to_string(),
             &text_line("The journal "),
             &text_line("is append-only."),
             &stop_line(),
@@ -91,14 +95,13 @@ async fn a_turn_streams_into_the_journal() {
     assert!(source.contains("append-only"), "the turn reached the disk");
 
     drop(held);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
 async fn what_the_model_was_asked_is_the_conversation_so_far() {
     // The ask is built here and read there, and a context that never left the struct looks
     // identical from the outside: the turn runs, the answer arrives, nothing complains.
-    let (session, dir) = session("asked");
+    let (session, _dir) = session("asked");
     session
         .lock()
         .await
@@ -117,13 +120,12 @@ async fn what_the_model_was_asked_is_the_conversation_so_far() {
     assert!(heard.contains("what holds the transcript?"), "{heard}");
     assert!(heard.contains("You are magi."), "{heard}");
     assert!(heard.contains("fake/one"), "the model is named: {heard}");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
 async fn a_refusal_becomes_a_well_formed_entry() {
     // Errors are values: the transcript stays uniform and the UI needs no error branch.
-    let (session, dir) = session("err");
+    let (session, _dir) = session("err");
     let mind = Mind::saying("turn-err", &[&failed_line("529 Overloaded", "overload")]);
     turn(&session, &backend(&mind)).await;
 
@@ -141,7 +143,6 @@ async fn a_refusal_becomes_a_well_formed_entry() {
     );
 
     drop(held);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
@@ -149,7 +150,7 @@ async fn a_mind_that_stops_mid_sentence_is_named_rather_than_waited_on() {
     // Silence is the one answer nobody can read. A melchior that exits without a terminal is a
     // broken sibling, and a turn that reported success would leave an empty message on screen
     // with nothing anywhere to say why.
-    let (session, dir) = session("silence");
+    let (session, _dir) = session("silence");
     let mind = Mind::saying("turn-silence", &[&text_line("half a th")]);
     turn(&session, &backend(&mind)).await;
 
@@ -169,13 +170,12 @@ async fn a_mind_that_stops_mid_sentence_is_named_rather_than_waited_on() {
         "{error:?}"
     );
     drop(held);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
 async fn the_turn_ends_idle_whatever_happened() {
     // A status that never changes is indistinguishable from a hang.
-    let (session, dir) = session("idle");
+    let (session, _dir) = session("idle");
     let mind = Mind::saying("turn-idle", &[&failed_line("nothing works", "unknown")]);
     turn(&session, &backend(&mind)).await;
 
@@ -183,12 +183,11 @@ async fn the_turn_ends_idle_whatever_happened() {
         *session.lock().await.status(),
         magi_proto::AgentStatus::Idle
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
 async fn an_interrupt_stops_a_turn_the_model_has_not_finished() {
-    let (session, dir) = session("cancel");
+    let (session, _dir) = session("cancel");
     let mind = Mind::silent("turn-cancel");
 
     let cancel = session.lock().await.cancel();
@@ -217,7 +216,6 @@ async fn an_interrupt_stops_a_turn_the_model_has_not_finished() {
     assert_eq!(*held.status(), magi_proto::AgentStatus::Idle);
 
     drop(held);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
@@ -225,7 +223,7 @@ async fn an_overflow_is_compacted_and_the_turn_carries_on() {
     // The failure that ends a long session, and the one refusal magi acts on rather than only
     // reports. `Overflow` exists as a class of its own for exactly this: told "it failed, try
     // later", a broker would give up on a turn a summary would have fixed.
-    let (session, dir) = session("overflow");
+    let (session, _dir) = session("overflow");
     // The refusal, then the summary the compaction asks for, then the answer. Two arms: the
     // last stands for every ask after the first.
     let mind = Mind::turns(
@@ -277,7 +275,6 @@ async fn an_overflow_is_compacted_and_the_turn_carries_on() {
         "{entries:?}"
     );
     drop(held);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
@@ -285,7 +282,7 @@ async fn a_second_overflow_is_not_compacted_again() {
     // A conversation that still will not fit after summarising is not one that is too long: it
     // is one whose kept tail alone overflows, and compacting the summary would spend another
     // request to fail the same way.
-    let (session, dir) = session("twice");
+    let (session, _dir) = session("twice");
     // Refused, summarised successfully, and refused again. The last arm repeats, so a turn
     // that went round a second time would keep asking rather than stop.
     let overflow = failed_line("prompt is too long", "overflow");
@@ -321,14 +318,13 @@ async fn a_second_overflow_is_not_compacted_again() {
         "summarised once"
     );
     drop(held);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
 async fn a_compacted_session_sends_the_summary_and_not_the_history() {
     // What compaction is for. The point is not that a record exists; it is that the next
     // request is smaller and still says what the task was.
-    let (session, dir) = session("compacted-context");
+    let (session, _dir) = session("compacted-context");
     {
         let mut held = session.lock().await;
         for i in 0..12 {
@@ -369,7 +365,6 @@ async fn a_compacted_session_sends_the_summary_and_not_the_history() {
         "the kept tail survives: {sent}"
     );
     drop(held);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]
@@ -377,7 +372,7 @@ async fn the_wait_is_announced_while_it_is_happening() {
     // melchior does the waiting now, so a backoff is invisible from here and forty seconds of
     // nothing reads as a hang. The UI has had a `Retrying` display since M0; this is what fills
     // it in, and saying so after the fact would be no use to anybody watching a spinner.
-    let (session, dir) = session("announced");
+    let (session, _dir) = session("announced");
     let mind = Mind::saying(
         "turn-announced",
         &[
@@ -389,17 +384,26 @@ async fn the_wait_is_announced_while_it_is_happening() {
     let mut live = session.lock().await.subscribe();
     turn(&session, &backend(&mind)).await;
 
+    // Waited for rather than drained. `try_recv` in a loop asks what is in the channel at this
+    // instant, and the publisher is another task: this test failed about one run in three
+    // because the drain won the race and found nothing. A bounded wait is not a weaker
+    // assertion — an event that never arrives still fails, it just no longer fails when the
+    // event is merely late.
     let mut announced = None;
-    while let Ok(event) = live.try_recv() {
-        if let magi_proto::HarnessEvent::StatusChanged {
-            status:
-                magi_proto::AgentStatus::Retrying {
-                    attempt, delay_ms, ..
-                },
-            ..
-        } = event
-        {
-            announced = Some((attempt, delay_ms));
+    let deadline = std::time::Duration::from_secs(5);
+    while announced.is_none() {
+        match tokio::time::timeout(deadline, live.recv()).await {
+            Ok(Ok(magi_proto::HarnessEvent::StatusChanged {
+                status:
+                    magi_proto::AgentStatus::Retrying {
+                        attempt, delay_ms, ..
+                    },
+                ..
+            })) => announced = Some((attempt, delay_ms)),
+            Ok(Ok(_)) => {}
+            // Lagged means the buffer wrapped; the next read still returns the newer events.
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
+            Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) | Err(_) => break,
         }
     }
     let (attempt, delay_ms) = announced.expect("the wait was published");
@@ -414,5 +418,4 @@ async fn the_wait_is_announced_while_it_is_happening() {
     assert_eq!(text, "through in the end");
     drop(held);
     drop(live);
-    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -113,7 +113,30 @@ pub fn load() -> Result<Loaded, LuaError> {
         }
     }
     engine.harvest();
+
+    // Everything a config said that magi did not keep, whoever said it. A declaration for
+    // something a sibling owns and a setting nested past what can be described both end up here,
+    // and both were silent before: the config author wrote a line that did nothing and there was
+    // no way to find that out except by noticing the absence of an effect.
+    for said in &engine.config().unkept {
+        eprintln!("magi: {said}");
+    }
+
     if let Some(machine) = &machine {
+        // A changed privileged setting is fatal, not a warning. The others describe something a
+        // project file offered that will not be used, and carrying on without it is right. This
+        // one is a project file having *already* changed how the rest of the session is
+        // governed — `confine` off, a grant added, itself vouched for — and there is nothing
+        // sensible to carry on with: the value it wanted is the value the config now holds.
+        if let Some(name) = machine.altered(&mut engine) {
+            return Err(LuaError::Runtime {
+                file: ".magi.lua".to_owned(),
+                message: format!(
+                    "a project file set `magi.{name}`, which decides what this session may do \
+                     without asking; only your own configuration can set it"
+                ),
+            });
+        }
         for refused in machine.refusals(&mut engine) {
             eprintln!("magi: {refused}");
         }
@@ -167,6 +190,22 @@ fn collect(
     })
 }
 
+/// Which program owns the model here.
+///
+/// `magi.melchior` when a configuration named one, and the sibling's own name otherwise. One
+/// function, because this used to be read in one place and assumed in two others: the layer was
+/// started with what the config said and the catalog of models was read from whatever `PATH`
+/// held, so pointing this at your own build gave you that build for the turn and a list of
+/// models from a different one.
+#[must_use]
+pub fn mind(loaded: &Loaded) -> String {
+    loaded
+        .config
+        .string("melchior")
+        .unwrap_or(magi_host::broker::MELCHIOR)
+        .to_owned()
+}
+
 /// Everything the daemon could talk to, so `:model` has something to pick among.
 ///
 /// Built once at start rather than re-read on each switch: a session should keep answering
@@ -176,6 +215,8 @@ fn collect(
 #[must_use]
 pub fn catalog(loaded: &Loaded, cards: Vec<magi_proto::ask::Card>) -> magi_host::catalog::Catalog {
     let mut catalog = magi_host::catalog::Catalog {
+        mind: mind(loaded),
+        casper: casper_pin(loaded),
         tools: loaded.tools.clone(),
         clients: loaded.clients.clone(),
         cwd: std::env::current_dir().unwrap_or_default(),
@@ -198,7 +239,7 @@ mod settings;
 
 use settings::{grants, options, system};
 
-pub use settings::{adopt_ui, environ, grants as granted};
+pub use settings::{adopt_ui, casper_pin, environ, grants as granted};
 
 /// What this directory chose last time it was used.
 #[must_use]
@@ -316,35 +357,65 @@ pub fn config_dir() -> Option<std::path::PathBuf> {
 
 /// What the machine's own configuration had declared, before any project file ran.
 ///
-/// A `.magi.lua` arrives with a checkout: cloning a repository and running `magi` in it must
-/// not be enough to add a tool or a provider. A tool because a process tool names a command to
-/// run, and a provider because one names a URL the whole conversation is sent to — which is the
-/// worse of the two, and the one that looks harmless.
+/// A `.magi.lua` arrives with a checkout: cloning a repository and running `magi` in it must not
+/// be enough to add a tool, because a process tool names a command to run.
 ///
-/// A project file can still *choose*: `magi.model` picks among providers the machine already
-/// has. That is the useful half, and it carries no authority.
+/// It guarded providers too, and no longer needs to: `magi.provider` was a registrar that kept
+/// what it was handed where nothing read it, so a provider could not be added by anybody, and
+/// the guard was watching a door that opened onto nothing. melchior owns the model.
+///
+/// A project file can still *choose*: `magi.model` picks among the models melchior already
+/// offers. That is the useful half, and it carries no authority.
 pub struct Trusted {
-    providers: BTreeSet<String>,
     tools: BTreeSet<String>,
+    /// What [`PRIVILEGED_SETTINGS`] were before a project file ran.
+    ///
+    /// magi had no equivalent of this at all, and it is the half that matters most: a checked-in
+    /// `.magi.lua` could set `magi.confine = false`, add to `magi.grants`, or name its own
+    /// directory in `magi.trusted` — turning off the wall, granting itself permissions, or
+    /// vouching for itself — and none of it was refused or even reported. Declarations were
+    /// guarded and the switches that govern them were not.
+    settings: Vec<Option<serde_json::Value>>,
 }
+
+/// Settings a project's own file may not assign.
+///
+/// `confine` is the wall; `grants` is what may happen without asking; `trusted` decides which
+/// files this rule applies to at all — a file that could set the last one could exempt itself.
+/// Named here rather than inferred, the way balthasar names its own: the list is short, and a
+/// rule about which settings are dangerous should be readable in one place.
+const PRIVILEGED_SETTINGS: &[&str] = &["confine", "grants", "trusted"];
 
 impl Trusted {
     /// Record what has been declared so far.
     fn snapshot(engine: &mut Engine) -> Self {
         Self {
-            providers: engine
-                .config()
-                .all("provider")
-                .into_iter()
-                .map(|(id, _)| id.to_owned())
-                .collect(),
             tools: engine.tools().into_iter().map(|(name, _)| name).collect(),
+            settings: Self::privileged(engine),
         }
     }
 
-    /// Whether a provider was declared by the machine rather than by a project file.
-    fn allows(&self, id: &str) -> bool {
-        self.providers.contains(id)
+    /// The privileged settings as they stand, in `PRIVILEGED_SETTINGS` order.
+    fn privileged(engine: &mut Engine) -> Vec<Option<serde_json::Value>> {
+        let config = engine.config();
+        PRIVILEGED_SETTINGS
+            .iter()
+            .map(|name| config.get(name).cloned())
+            .collect()
+    }
+
+    /// Which privileged setting a project file changed, if it changed one.
+    ///
+    /// Compared by value against the snapshot taken before it ran. Byte-equal is no change: a
+    /// project file may read `magi.confine` and assign it back — configs do that, and refusing
+    /// it would make the rule fire on a file that changed nothing.
+    fn altered(&self, engine: &mut Engine) -> Option<&'static str> {
+        let now = Self::privileged(engine);
+        PRIVILEGED_SETTINGS
+            .iter()
+            .enumerate()
+            .find(|(index, _)| now.get(*index) != self.settings.get(*index))
+            .map(|(_, name)| *name)
     }
 
     /// One message per declaration a project file made that will not be honoured.
@@ -352,16 +423,12 @@ impl Trusted {
     /// Reported rather than silently dropped: a config author who wrote something that does
     /// nothing needs to know, and a repository trying it is worth seeing.
     fn refusals(&self, engine: &mut Engine) -> Vec<String> {
+        // Providers are not here any more, and it is worth saying why: `magi.provider` kept
+        // nothing for anybody, so the machine's own configuration could not declare one either
+        // and this loop only ever fired on the case where both sides were equally ignored.
+        // melchior owns the model; a project file naming a provider is now told so by
+        // `Config::unkept`, in the same words a machine configuration gets.
         let mut out = Vec::new();
-        for (id, _) in engine.config().all("provider") {
-            if !self.allows(id) {
-                out.push(format!(
-                    "the provider {id:?} was declared by a project file and will not be used; \
-                     a provider names a URL your conversation is sent to, so only your own \
-                     configuration can add one"
-                ));
-            }
-        }
         for (name, _) in engine.tools() {
             if !self.tools.contains(&name) {
                 out.push(format!(
@@ -407,15 +474,88 @@ fn kind(path: &str) -> Option<&'static str> {
 }
 
 #[cfg(test)]
+mod pinning_tests {
+    use super::*;
+    use magi_lua::Engine;
+
+    fn from(source: &str) -> Loaded {
+        let mut engine = Engine::new();
+        engine.run(source, "test").expect("config");
+        engine.harvest();
+        Loaded {
+            config: engine.config(),
+            tools: Vec::new(),
+            clients: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_configuration_may_pin_the_program_that_supplies_every_tool() {
+        // casper is found on `$PATH` and owns `shell`, `read` and everything else the model
+        // calls — the largest trust assumption magi makes, and the one it made silently.
+        let loaded = from(r#"magi.casper_sha256 = "abc123""#);
+        assert_eq!(casper_pin(&loaded).as_deref(), Some("abc123"));
+        assert_eq!(
+            catalog(&loaded, Vec::new()).casper.as_deref(),
+            Some("abc123")
+        );
+    }
+
+    #[test]
+    fn saying_nothing_pins_nothing() {
+        // The ordinary case. A pin is opt-in: `magi doctor` prints what casper actually hashed
+        // to, which is where the value comes from.
+        assert_eq!(casper_pin(&from("")), None);
+        assert_eq!(casper_pin(&from(r#"magi.casper_sha256 = "  ""#)), None);
+    }
+}
+
+#[cfg(test)]
+mod mind_tests {
+    use super::*;
+    use magi_lua::Engine;
+
+    fn from(source: &str) -> Loaded {
+        let mut engine = Engine::new();
+        engine.run(source, "test").expect("config");
+        engine.harvest();
+        Loaded {
+            config: engine.config(),
+            tools: Vec::new(),
+            clients: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_named_melchior_is_the_one_the_catalog_is_read_from() {
+        // The divergence this function removes. `magi.melchior` was honoured where the layer is
+        // started and ignored where the models are listed, so pointing it at your own build gave
+        // you that build for the turn and `PATH`'s for the list of models the turn chooses from
+        // — a session running against one melchior while showing another's catalog.
+        let loaded = from(r#"magi.melchior = "/opt/melchior-next""#);
+        assert_eq!(mind(&loaded), "/opt/melchior-next");
+        assert_eq!(
+            catalog(&loaded, Vec::new()).mind,
+            "/opt/melchior-next",
+            "the catalog asks the one the config named"
+        );
+    }
+
+    #[test]
+    fn saying_nothing_means_the_sibling_by_its_own_name() {
+        let loaded = from("");
+        assert_eq!(mind(&loaded), magi_host::broker::MELCHIOR);
+    }
+}
+
+#[cfg(test)]
 mod staleness_tests {
     use super::*;
+    use magi_model::scratch::Scratch;
     use std::time::{Duration, SystemTime};
 
-    fn scratch(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("magi-stale-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
-        dir
+    fn scratch(name: &str) -> Scratch {
+        Scratch::new("magi-stale", name)
     }
 
     #[test]
@@ -427,7 +567,6 @@ mod staleness_tests {
         std::fs::write(&file, "x").expect("write");
         let started = SystemTime::now() - Duration::from_secs(3600);
         assert_eq!(newer_than(std::slice::from_ref(&file), started), vec![file]);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -437,7 +576,6 @@ mod staleness_tests {
         std::fs::write(&file, "x").expect("write");
         let started = SystemTime::now() + Duration::from_secs(3600);
         assert!(newer_than(&[file], started).is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -446,7 +584,6 @@ mod staleness_tests {
         let dir = scratch("absent");
         let started = SystemTime::now() - Duration::from_secs(3600);
         assert!(newer_than(&[dir.join("nothing.lua")], started).is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -455,7 +592,6 @@ mod staleness_tests {
         // first start in a directory.
         let dir = scratch("nopid");
         assert!(edited_since_start(&dir.join("a.sock")).is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -470,6 +606,5 @@ mod staleness_tests {
         std::thread::sleep(Duration::from_millis(20));
         std::fs::write(&new, "y").expect("rewrite");
         assert_eq!(newer_than(&[old, new.clone()], started), vec![new]);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

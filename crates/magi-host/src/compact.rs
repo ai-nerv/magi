@@ -111,9 +111,13 @@ fn is_answer(entry: &Entry) -> bool {
 ///
 /// A context of its own rather than an extra message on the real one: the summariser is not
 /// continuing the conversation, and tools it might call have no meaning here.
+///
+/// Takes the whole of what it is given rather than a count to cut at. The count was the bug: it
+/// was `messages.len() - KEEP` while the journal recorded `entries.len() - KEEP`, and the two
+/// only agree when every entry makes exactly one message. See [`crate::context::of_entries`].
 #[must_use]
-pub fn request(context: &Context, through: usize) -> Context {
-    let mut messages: Vec<Message> = context.messages.iter().take(through).cloned().collect();
+pub fn request(context: &Context) -> Context {
+    let mut messages: Vec<Message> = context.messages.clone();
     messages.push(Message {
         role: Role::User,
         content: vec![Content::Text {
@@ -275,13 +279,61 @@ mod tests {
         assert_eq!(covers(&entries), None);
     }
 
+    /// Everything the cut declares replaced is everything the summariser was shown.
+    ///
+    /// **The two used to be computed apart.** The journal recorded a cut at
+    /// `entries.len() - KEEP` and the summariser was given `messages.len() - KEEP`, in two
+    /// spaces that agree only when every entry makes exactly one message — and a `Notice` makes
+    /// none. So a transcript with notices in its head declared more replaced than it summarised,
+    /// and the difference was tool results dropped in silence.
+    ///
+    /// The existing tests could not catch it: they exercise `covers` over entries and `request`
+    /// over messages, and neither ever puts the two together.
+    #[test]
+    fn what_is_declared_replaced_is_what_was_summarised() {
+        use magi_proto::Entry;
+
+        // Notices among the conversation, which is the ordinary case — every permission
+        // question and every model switch writes one — and each makes no message at all.
+        let mut entries: Vec<Entry> = Vec::new();
+        for i in 0..KEEP + 6 {
+            entries.push(Entry::User {
+                id: magi_proto::MessageId::new(format!("u{i}")),
+                text: format!("turn {i}"),
+                aside: String::new(),
+            });
+            if i % 2 == 0 {
+                entries.push(Entry::Notice {
+                    text: "a permission was asked".into(),
+                });
+            }
+        }
+
+        let covered = covers(&entries).expect("there is enough to compact");
+        let shown = crate::context::of_entries(&entries[..covered]);
+        let whole = crate::context::of_entries(&entries);
+
+        // Nothing between the two cuts goes missing: every message the conversation makes is
+        // either summarised or kept, and none is both.
+        let kept = crate::context::of_entries(&entries[covered..]);
+        assert_eq!(
+            shown.messages.len() + kept.messages.len(),
+            whole.messages.len(),
+            "a message was neither summarised nor kept"
+        );
+        assert!(
+            !shown.messages.is_empty(),
+            "the summariser was given nothing to summarise"
+        );
+    }
+
     #[test]
     fn the_summariser_is_given_no_tools() {
         // It is not continuing the conversation, and a tool call from it would be journalled
         // as part of a turn that is not happening.
-        let asked = request(&context(10, 10), 5);
+        let asked = request(&context(5, 5));
         assert!(asked.tools.is_empty());
-        assert_eq!(asked.messages.len(), 6, "five kept, one instruction");
+        assert_eq!(asked.messages.len(), 6, "five given, one instruction");
     }
 
     #[test]

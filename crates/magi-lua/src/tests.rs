@@ -51,53 +51,37 @@ fn a_config_can_read_back_what_it_assigned() {
 
 #[test]
 fn the_config_returns_nothing_and_may_branch_and_loop() {
-    // Rule 3: a config is statements, so it can probe the machine it runs on.
-    let config = run(r#"
+    // Rule 3: a config is statements, so it can probe the machine it runs on. Written against
+    // tools, which are the declarations magi actually keeps — this said `magi.provider` when
+    // that registrar still existed, and passed just as well when nothing read what it stored.
+    let mut engine = Engine::new();
+    engine
+        .run(
+            r#"
         for _, id in ipairs({ "a", "b", "c" }) do
-          magi.provider(id, { name = id, api = "openai-completions" })
+          magi.tool(id, { description = id, parameters = {}, run = function() end })
         end
-        "#);
-    assert_eq!(config.all("provider").len(), 3);
-}
-
-#[test]
-fn registration_is_keyed_so_re_running_replaces_rather_than_appends() {
-    // Rule 2, map form. A config that loops over a directory of machines is idempotent.
-    let config = run(r#"
-        magi.provider("box", { name = "first" })
-        magi.provider("box", { name = "second" })
-        "#);
-    let registered = config.all("provider");
-    assert_eq!(registered.len(), 1, "one identity, one entry");
-    assert_eq!(registered[0].1["name"], "second", "the last wins");
-}
-
-#[test]
-fn declaration_order_is_kept() {
-    let config = run(r#"
-        magi.provider("z", {})
-        magi.provider("a", {})
-        magi.provider("m", {})
-        "#);
-    let ids: Vec<&str> = config.all("provider").iter().map(|(id, _)| *id).collect();
-    assert_eq!(ids, ["z", "a", "m"], "a picker's list must not reshuffle");
+        "#,
+            "loop.lua",
+        )
+        .expect("run");
+    assert_eq!(engine.tools().len(), 3);
 }
 
 #[test]
 fn a_table_is_an_argument_not_a_fragment_to_merge() {
-    // Rule 4: a provider arrives whole, with its nested model list intact.
+    // Rule 4: a setting arrives whole, with its nesting intact, rather than being merged key by
+    // key into whatever was there before.
     let config = run(r#"
-        magi.provider("my-vllm", {
+        magi.box = {
           name = "My vLLM box",
-          api = "openai-completions",
           base_url = "http://10.0.0.7:8000/v1",
           models = {
             { id = "Qwen/Qwen3-Coder-30B", context_window = 262144 },
           },
-        })
+        }
         "#);
-    let (id, spec) = config.all("provider")[0];
-    assert_eq!(id, "my-vllm");
+    let spec = config.get("box").expect("the setting");
     assert_eq!(spec["base_url"], "http://10.0.0.7:8000/v1");
     assert_eq!(spec["models"][0]["context_window"], 262144);
 }
@@ -113,13 +97,38 @@ fn a_list_table_becomes_an_array_and_a_keyed_one_an_object() {
 }
 
 #[test]
-fn each_registrar_keeps_its_own_namespace() {
+fn a_registrar_for_something_magi_does_not_own_says_who_does() {
+    // All four of these stored what they were handed and nothing ever read it. A config that
+    // declared a provider here worked exactly as well as one that declared nothing, and neither
+    // magi nor the config author was told.
     let config = run(r#"
-        magi.provider("same", { which = "provider" })
-        magi.agent("same", { which = "agent" })
+        magi.provider("evil", { base_url = "http://attacker.example" })
+        magi.agent("worker", {})
+        magi.mux("tmux", {})
         "#);
-    assert_eq!(config.all("provider")[0].1["which"], "provider");
-    assert_eq!(config.all("agent")[0].1["which"], "agent");
+    let said = config.unkept.join("\n");
+    assert!(said.contains("magi.provider(\"evil\")"), "{said}");
+    assert!(
+        said.contains("melchior"),
+        "it names who does own it: {said}"
+    );
+    assert!(said.contains("hexe"), "and each names its own: {said}");
+    assert_eq!(config.unkept.len(), 3, "one line per call: {said}");
+}
+
+#[test]
+fn a_moved_registrar_keeps_nothing_it_was_handed() {
+    // The point of the change. Silence would have been a lie either way; storing it was the
+    // lie that looked like it worked.
+    let config = run(r#"magi.provider("evil", { base_url = "http://attacker.example" })"#);
+    assert!(
+        !config.unkept.join("").contains("attacker.example"),
+        "the message names the declaration, never repeats its contents"
+    );
+    assert!(
+        config.get("evil").is_none(),
+        "and it is not a setting either"
+    );
 }
 
 #[test]
@@ -153,9 +162,14 @@ fn a_config_may_probe_and_pcall_its_own_mistakes() {
         local ok = pcall(function() magi.provider({}) end)
         magi.probed = ok
         magi.provider("good", {})
+        magi.after = true
         "#);
     assert_eq!(config.get("probed"), Some(&serde_json::Value::Bool(false)));
-    assert_eq!(config.all("provider").len(), 1, "the config carried on");
+    assert_eq!(
+        config.get("after"),
+        Some(&serde_json::Value::Bool(true)),
+        "the config carried on"
+    );
 }
 
 #[test]
@@ -174,14 +188,24 @@ fn later_files_win_over_earlier_ones() {
 #[test]
 fn a_deeply_nested_table_is_refused_rather_than_overflowing() {
     let mut engine = Engine::new();
+    // A setting, because that is the conversion that is still there: the registrars that used to
+    // describe their argument as JSON no longer keep one, so the bound has to be tested where it
+    // is actually applied.
     let deep = format!(
-        "magi.provider('deep', {}{})",
+        "magi.deep = {}{}",
         "{ a = ".repeat(40),
         "1 ".to_owned() + &"}".repeat(40)
     );
+    engine
+        .run(&deep, "deep.lua")
+        .expect("the assignment itself is fine");
+    engine.harvest();
+    let config = engine.config();
+    assert!(config.get("deep").is_none(), "a bound, not a crash");
     assert!(
-        engine.run(&deep, "deep.lua").is_err(),
-        "a bound, not a crash"
+        config.unkept.iter().any(|said| said.contains("magi.deep")),
+        "and the config author is told: {:?}",
+        config.unkept
     );
 }
 

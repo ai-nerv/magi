@@ -12,8 +12,13 @@ use std::rc::Rc;
 pub struct Config {
     /// Settings assigned onto the module, as JSON.
     pub settings: serde_json::Map<String, serde_json::Value>,
-    /// Everything handed to a registrar, keyed by registrar then by identity.
-    pub registered: Registered,
+    /// What a config said that magi did not keep, and why, in the order it said it.
+    ///
+    /// Two kinds end up here and both used to be silent. A declaration for something magi does
+    /// not own — `magi.provider`, which is melchior's — and a setting too deeply nested to
+    /// describe as JSON, which [`Engine::harvest`] cannot convert and used to simply skip. In
+    /// both cases the config author wrote something that did nothing and nothing said so.
+    pub unkept: Vec<String>,
     /// Files `magi.load` asked for, in the order it asked.
     ///
     /// Collected rather than run on the spot: running a chunk from inside a chunk is
@@ -51,50 +56,20 @@ impl Config {
     pub fn number(&self, name: &str) -> Option<f64> {
         self.get(name).and_then(serde_json::Value::as_f64)
     }
-
-    /// Everything handed to one registrar, in declaration order.
-    #[must_use]
-    pub fn all(&self, registrar: &str) -> Vec<(&str, &serde_json::Value)> {
-        self.registered
-            .order
-            .iter()
-            .filter(|(kind, _)| kind == registrar)
-            .filter_map(|(kind, id)| {
-                self.registered
-                    .entries
-                    .get(&(kind.clone(), id.clone()))
-                    .map(|value| (id.as_str(), value))
-            })
-            .collect()
-    }
-}
-
-/// Declarations handed to registrars.
-///
-/// Keyed by `(registrar, identity)` so re-registering replaces rather than appends — the map
-/// form of rule 2. A config that loops over a directory of machines and declares one provider
-/// per file is then idempotent, which matters because configs get re-read.
-#[derive(Debug, Default, Clone)]
-pub struct Registered {
-    entries: std::collections::HashMap<(String, String), serde_json::Value>,
-    /// Declaration order, so a model picker's list does not reshuffle between runs.
-    order: Vec<(String, String)>,
-}
-
-impl Registered {
-    fn insert(&mut self, registrar: &str, id: &str, value: serde_json::Value) {
-        let key = (registrar.to_owned(), id.to_owned());
-        if !self.entries.contains_key(&key) {
-            self.order.push(key.clone());
-        }
-        self.entries.insert(key, value);
-    }
 }
 
 /// The Lua VM, holding whatever the config has declared so far.
 pub struct Engine {
     lua: Lua,
     config: Rc<RefCell<Config>>,
+    /// What [`Engine::install`] itself put on the `magi` table.
+    ///
+    /// Captured rather than listed, so it cannot drift from what is actually installed. It is
+    /// what lets [`Engine::harvest`] tell "a setting this config assigned and I could not keep"
+    /// from "a primitive I put there myself" — `magi.stream` and `magi.json` are tables of
+    /// functions, so they do not describe as JSON either, and complaining about them would mean
+    /// complaining on every run of every config.
+    installed: std::collections::HashSet<String>,
     /// The session's `Ops`, for [`crate::shell`]. Empty in every path but a real session.
     lent: crate::shell::Lent,
     /// Whether a tool's `run` is on the stack, which is the only time `magi.shell` answers.
@@ -116,6 +91,7 @@ impl Engine {
             config: Rc::new(RefCell::new(Config::default())),
             lent: Rc::new(RefCell::new(None)),
             inside: Rc::new(std::cell::Cell::new(false)),
+            installed: std::collections::HashSet::new(),
         };
         engine.install();
         // After install, so a removal cannot be undone by something the installer adds.
@@ -169,35 +145,33 @@ impl Engine {
     /// settings, and only the value it finished with is the one it meant.
     fn install(&mut self) {
         let config = Rc::clone(&self.config);
+        let mut mine = std::collections::HashSet::new();
         let lent = Rc::clone(&self.lent);
         let inside = Rc::clone(&self.inside);
         self.lua.enter(|ctx| {
             let magi = Table::new(&ctx);
 
-            for registrar in REGISTRARS {
+            for (name, owner, what) in MOVED {
                 let held = Rc::clone(&config);
-                let name = *registrar;
                 let callback = Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
-                    let (id, spec): (Value, Value) = stack.consume(ctx)?;
-                    let Value::String(id) = id else {
-                        return Err(raise(
-                            ctx,
-                            &format!("magi.{name}: the first argument must be a name"),
-                        ));
+                    let (id, _spec): (Value, Value) = stack.consume(ctx)?;
+                    let id = match id {
+                        Value::String(id) => String::from_utf8_lossy(id.as_bytes()).into_owned(),
+                        _ => {
+                            return Err(raise(
+                                ctx,
+                                &format!("magi.{name}: the first argument must be a name"),
+                            ));
+                        }
                     };
-                    let id = String::from_utf8_lossy(id.as_bytes()).into_owned();
-
-                    let Some(value) = json_from_lua(ctx, spec, 0) else {
-                        return Err(raise(
-                            ctx,
-                            &format!("magi.{name}({id}): this table cannot be described"),
-                        ));
-                    };
-                    held.borrow_mut().registered.insert(name, &id, value);
+                    held.borrow_mut().unkept.push(format!(
+                        "magi.{name}({id:?}) does nothing: {what} {owner}'s, and magi keeps no \
+                         copy. Declare it in {owner}'s own configuration"
+                    ));
                     stack.replace(ctx, ());
                     Ok(CallbackReturn::Return)
                 });
-                magi.set(ctx, *registrar, callback).ok();
+                magi.set(ctx, *name, callback).ok();
             }
 
             // The one way a config reaches another file. There is no auto-discovery behind it:
@@ -245,25 +219,8 @@ impl Engine {
             magi.set(ctx, "json", json).ok();
             ctx.set_global("__stream", stream);
 
-            // Protocols are registered differently from everything else: what they carry is
-            // functions, and a function cannot be described as data. The VM keeps them under
-            // `__magi_apis` and Rust keeps only their names.
-            let apis = Table::new(&ctx);
-            ctx.set_global(APIS, apis);
             let tools = Table::new(&ctx);
             ctx.set_global(TOOLS, tools);
-            let api = Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
-                let (name, spec): (Value, Value) = stack.consume(ctx)?;
-                let (Value::String(name), Value::Table(_)) = (name, spec) else {
-                    return Err(raise(ctx, "magi.api(name, spec): a name and a table"));
-                };
-                if let Value::Table(apis) = ctx.get_global_value(APIS) {
-                    apis.set(ctx, name, spec).ok();
-                }
-                stack.replace(ctx, ());
-                Ok(CallbackReturn::Return)
-            });
-            magi.set(ctx, "api", api).ok();
 
             // Tools register the same way protocols do, and for the same reason: a `run`
             // function cannot be described as data, so the VM keeps the whole declaration.
@@ -309,8 +266,14 @@ impl Engine {
                 magi.set(ctx, "self", path).ok();
             }
 
+            for (key, _) in magi.iter(ctx) {
+                if let Value::String(name) = key {
+                    mine.insert(String::from_utf8_lossy(name.as_bytes()).into_owned());
+                }
+            }
             ctx.set_global("magi", magi);
         });
+        self.installed = mine;
     }
 
     /// Read the settings the config assigned, and forget the module.
@@ -331,17 +294,41 @@ impl Engine {
                 // "every other field is a setting" work without a list to keep in step.
                 if let Some(json) = json_from_lua(ctx, value, 0) {
                     held.settings.insert(name, json);
+                } else if !self.installed.contains(&name) {
+                    // Everything else that will not convert is a table nested past the bound, and
+                    // dropping it in silence is how a setting a config plainly assigned came back
+                    // as "not set". The bound stays — it is what stops a cycle becoming a stack
+                    // overflow — and now it says so.
+                    held.unkept.push(format!(
+                        "magi.{name} was not kept: it nests deeper than magi will describe"
+                    ));
                 }
             }
         });
     }
 }
 
-/// The registrars the `magi` module offers.
+/// Registrars that describe something magi does not own, and who does.
 ///
-/// Named for the thing being described, never for when it happens. Adding one here is the only
-/// way a config gains a new kind of declaration, which keeps the surface enumerable.
-const REGISTRARS: &[&str] = &["provider", "agent", "shell", "mux"];
+/// **All four stored what they were handed and nothing ever read it.** `magi.provider` was the
+/// worst: melchior owns the model, so a provider declared in your own configuration went into a
+/// map with no reader, and the only code that ever looked at that map was the check that refuses
+/// a *project* file's providers. Declaring one worked exactly as well as not declaring one, and
+/// nothing said so either way.
+///
+/// `magi.shell` was stranger still — the registrar was installed and then overwritten a few
+/// lines below by the shell primitive of the same name, so calling it never reached this code at
+/// all.
+///
+/// Kept as signposts rather than deleted outright. A configuration that says `magi.provider(…)`
+/// today is wrong, and the two ways of being told so are a message naming melchior or
+/// `attempt to call a nil value (field 'provider')`. The first is the one that helps.
+const MOVED: &[(&str, &str, &str)] = &[
+    ("provider", "melchior", "a provider is"),
+    ("agent", "melchior", "sessions are"),
+    ("shell", "casper", "running a command is"),
+    ("mux", "hexe", "the multiplexer is"),
+];
 
 /// Raise a message into Lua, so `pcall` in a config sees a string.
 fn raise<'gc>(ctx: luna::Context<'gc>, message: &str) -> luna::Error<'gc> {
@@ -349,64 +336,6 @@ fn raise<'gc>(ctx: luna::Context<'gc>, message: &str) -> luna::Error<'gc> {
         &ctx,
         message.as_bytes(),
     )))
-}
-
-/// Where registered protocol descriptions live inside the VM.
-///
-/// A Lua table rather than a Rust map, because what is registered is *functions*, and a
-/// function cannot cross the boundary. The VM keeps them; Rust keeps only their names.
-const APIS: &str = "__magi_apis";
-
-impl Engine {
-    /// The protocols a config registered.
-    #[must_use]
-    pub fn apis(&mut self) -> Vec<String> {
-        let mut out = Vec::new();
-        self.lua.enter(|ctx| {
-            if let Value::Table(apis) = ctx.get_global_value(APIS) {
-                for (key, _) in apis.iter(ctx) {
-                    if let Value::String(name) = key {
-                        out.push(String::from_utf8_lossy(name.as_bytes()).into_owned());
-                    }
-                }
-            }
-        });
-        out.sort();
-        out
-    }
-
-    /// Call one function of a registered protocol.
-    ///
-    /// Arguments go in as JSON and the answer comes back as JSON, so the collector lifetime
-    /// never leaves this crate. `None` means the protocol, the function, or the call itself did
-    /// not produce a value — all of which the caller treats the same way: the protocol cannot
-    /// answer, so the turn fails rather than proceeding on a guess.
-    pub fn call_api(
-        &mut self,
-        api: &str,
-        method: &str,
-        args: &[serde_json::Value],
-    ) -> Option<serde_json::Value> {
-        let args = serde_json::Value::Array(args.to_vec());
-        self.lua.enter(|ctx| {
-            let value = crate::convert::lua_from_json(ctx, &args);
-            ctx.set_global("__magi_args", value);
-        });
-
-        let source = format!(
-            "local api = {APIS} and {APIS}[{api:?}]\n\
-             local fn = api and api[{method:?}]\n\
-             if fn then __magi_result = fn(table.unpack(__magi_args)) \
-             else __magi_result = nil end"
-        );
-        self.run(&source, "api.lua").ok()?;
-
-        let mut out = None;
-        self.lua.enter(|ctx| {
-            out = crate::convert::json_from_lua(ctx, ctx.get_global_value("__magi_result"), 0);
-        });
-        out.filter(|value| !value.is_null())
-    }
 }
 
 /// Where registered tool declarations live inside the VM.

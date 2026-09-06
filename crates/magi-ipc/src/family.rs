@@ -140,6 +140,12 @@ impl Family {
     }
 }
 
+/// The newest revision of the family wire this understands.
+///
+/// Duplicated in each sibling rather than shared, like the types themselves: a crate held in
+/// common would be a dependency between repositories, and this family has none.
+pub const FAMILY: u16 = 1;
+
 /// Split a reply into its return values, or into the fault it names.
 ///
 /// `fault` distinguishes the two refusals; its absence means `refused`, which is the answer that
@@ -148,6 +154,23 @@ fn unwrap(reply: &serde_json::Value, verb: &str) -> Result<Vec<serde_json::Value
     let Some(object) = reply.as_object() else {
         return Err(Fault::Malformed(format!("{verb}: reply is not an object")));
     };
+
+    // **A newer peer is refused by name, an older one is not.** There were four implementations
+    // of this wire and no version in any of them, already disagreeing about whether `n` is
+    // optional and whether `fault` exists — so a skew presented as a missing field at the point
+    // of use, which reads as the peer being broken. A reply with no `family` is from before this
+    // existed and is read as it always was; one from the future is refused here, where the
+    // reason is still known, rather than three layers up where it is not.
+    let spoken = object
+        .get("family")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    if spoken > u64::from(FAMILY) {
+        return Err(Fault::Malformed(format!(
+            "{verb}: this peer speaks version {spoken} of the family wire and this build \
+             understands {FAMILY}; upgrade magi"
+        )));
+    }
 
     if object.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
         let why = object
@@ -239,12 +262,50 @@ fn listing(dir: &Path) -> Vec<PathBuf> {
         })
         .collect();
 
-    found.sort_by(|a, b| b.0.cmp(&a.0));
+    // Newest first, so `by_key` on the key alone would put it the wrong way round; reversing the
+    // key is what clippy asks for here and it says the same thing.
+    found.sort_by_key(|(when, _)| std::cmp::Reverse(*when));
     found.into_iter().map(|(_, path)| path).collect()
 }
 
 #[cfg(test)]
 mod tests {
+    /// A peer from the future is refused by name; one from before versions is not.
+    ///
+    /// The whole value of the field. Without it a skew arrives as a missing key at the point of
+    /// use — "result is not a list" from three layers up — and the four implementations of this
+    /// wire already disagree about two fields with nothing to say so.
+    #[test]
+    fn a_reply_from_a_newer_wire_is_refused_and_says_why() {
+        let ahead = serde_json::json!({
+            "ok": true, "family": super::FAMILY as u64 + 1, "n": 0, "result": []
+        });
+        let why = super::unwrap(&ahead, "verbs").expect_err("a newer peer is refused");
+        let said = why.to_string();
+        assert!(said.contains("family wire"), "{said}");
+        assert!(said.contains("upgrade"), "it says what to do: {said}");
+    }
+
+    #[test]
+    fn a_reply_from_before_versions_is_read_as_it_always_was() {
+        // Every peer built before this field existed. Refusing them would be a flag day across
+        // four repositories that are deployed one at a time.
+        let old = serde_json::json!({ "ok": true, "n": 1, "result": ["hello"] });
+        let values = super::unwrap(&old, "verbs").expect("an older peer still answers");
+        assert_eq!(values, vec![serde_json::json!("hello")]);
+    }
+
+    #[test]
+    fn a_reply_from_this_wire_is_read() {
+        let now = serde_json::json!({
+            "ok": true, "family": super::FAMILY, "n": 1, "result": ["hello"]
+        });
+        assert_eq!(
+            super::unwrap(&now, "verbs").expect("read"),
+            vec![serde_json::json!("hello")]
+        );
+    }
+
     use super::*;
     use serde_json::json;
 
@@ -303,14 +364,23 @@ mod tests {
 
     #[test]
     fn only_api_sockets_are_offered_and_the_newest_comes_first() {
-        let dir = std::env::temp_dir().join("magi-family-listing");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
+        // Named after this process. A fixed path under a shared directory is one collision away
+        // from two test binaries deleting each other's fixture.
+        let dir = magi_model::scratch::Scratch::new("magi-family-listing", "one");
         for name in ["api@old.sock", "api@new.sock", "notes.txt", "api@x.other"] {
             std::fs::write(dir.join(name), b"").expect("write");
         }
-        // Ordering is by mtime, so the one that must come first is touched last.
-        std::fs::write(dir.join("api@new.sock"), b"").expect("touch");
+        // The gap is *set*, not hoped for. Writing one file after another and trusting the two
+        // mtimes to differ works on a laptop and fails on a fast machine, where both land in the
+        // same filesystem tick: the sort is stable, so equal times leave `read_dir` order, which
+        // is arbitrary. CI failed on exactly that.
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(dir.join("api@old.sock"))
+            .expect("open")
+            .set_modified(old)
+            .expect("set mtime");
 
         let found = listing(&dir);
         assert_eq!(found.len(), 2, "only api@*.sock: {found:?}");
@@ -318,7 +388,6 @@ mod tests {
             found[0].ends_with("api@new.sock"),
             "newest first: {found:?}"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -353,11 +422,25 @@ pub mod blocking {
         }
 
         /// Connect to whichever socket answers first, newest tried first.
+        ///
+        /// **Answers, not accepts.** A socket file outlives the process that bound it, and the
+        /// kernel accepts on behalf of a listener whose owner has stopped reading — so a
+        /// balthasar that was killed, or one left over from an older build, takes the connection
+        /// and replies to nothing. This used to return that one and never try the rest, and the
+        /// caller waited out a timeout on a socket that was never going to answer. The copied
+        /// Lua stub had the same hole, for the same reason: connecting looks like a test and is
+        /// not one.
+        ///
+        /// The proof is one `verbs` call, which is read-only and is what a caller asks first
+        /// anyway.
         pub fn find() -> Result<Self, Fault> {
             let mut last = None;
             for path in candidates(None) {
                 match Self::dial(&path) {
-                    Ok(open) => return Ok(open),
+                    Ok(mut open) => match open.call("verbs", Vec::new()) {
+                        Ok(_) => return Ok(open),
+                        Err(e) => last = Some(e),
+                    },
                     Err(e) => last = Some(e),
                 }
             }

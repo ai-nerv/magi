@@ -1,7 +1,7 @@
-#!/usr/bin/env bash
+#!/bin/sh
 # Gate 1 from PLAN.md: nothing merges unless the shipping path reaches it.
 # Pi fails this on ~20,000 LOC; Tau on 1,202. Both shipped the dead code anyway.
-set -euo pipefail
+set -eu
 reachable=$(cargo tree -p magi-cli --prefix none --no-dedupe 2>/dev/null \
   | awk '{print $1}' | grep '^magi-' | sort -u)
 members=$(cargo metadata --no-deps --format-version 1 2>/dev/null \

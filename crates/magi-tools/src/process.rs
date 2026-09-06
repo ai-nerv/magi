@@ -434,6 +434,30 @@ impl Tool for ProcessTool {
         self.believed().parameters.clone()
     }
 
+    fn composition(&self) -> Vec<(&'static str, String)> {
+        let mut out = vec![
+            ("transport", "process".to_owned()),
+            (
+                "command",
+                std::iter::once(self.command.clone())
+                    .chain(self.args.iter().cloned())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ),
+        ];
+        if !self.env.is_empty() {
+            out.push((
+                "env",
+                self.env
+                    .iter()
+                    .map(|(name, value)| format!("{name}={value}"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ));
+        }
+        out
+    }
+
     fn probe(&self, ops: &dyn Ops) {
         if self.ensure(ops).is_err() {
             return;

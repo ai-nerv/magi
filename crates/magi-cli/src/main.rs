@@ -8,6 +8,7 @@ mod app;
 mod balthasar;
 mod clipboard;
 mod config;
+mod doctor;
 mod driver;
 mod driving;
 mod ext_lua;
@@ -80,6 +81,13 @@ enum Command {
     LuaApi,
     /// List the tools the model can call, and how each is reached.
     Tools,
+    /// Say what a session here would be made of, without starting one.
+    ///
+    /// Which configuration was read, which of its lines were kept, what the tool registry ends
+    /// up holding and where each entry came from, and whether the siblings are actually
+    /// answering. Everything a session decides at start-up, decided and printed rather than
+    /// discovered by noticing that something is missing.
+    Doctor,
     /// List the providers and models magi knows about.
     Models {
         /// Include providers with no credential set.
@@ -120,6 +128,10 @@ async fn main() -> Result<()> {
             tools::print()?;
             Ok(())
         }
+        Some(Command::Doctor) => {
+            doctor::print();
+            Ok(())
+        }
         Some(Command::Models { all }) => {
             models::print(all);
             Ok(())
@@ -148,9 +160,7 @@ async fn main() -> Result<()> {
                 session::project(loaded.as_ref().and_then(|l| l.config.string("project")));
             let program = loaded
                 .as_ref()
-                .and_then(|l| l.config.string("melchior"))
-                .unwrap_or("melchior")
-                .to_owned();
+                .map_or_else(|| magi_host::broker::MELCHIOR.to_owned(), config::mind);
             // Held for the run, so its socket is up while the turn is: a `-p` that another
             // session wants to ask about is one that has to be answering.
             let _layer = melchior::Melchior::start(&program, &project, talk(loaded.as_ref()));
@@ -206,9 +216,7 @@ async fn main() -> Result<()> {
             // layer being a separate program.
             let program = loaded
                 .as_ref()
-                .and_then(|l| l.config.string("melchior"))
-                .unwrap_or("melchior")
-                .to_owned();
+                .map_or_else(|| magi_host::broker::MELCHIOR.to_owned(), config::mind);
             let started = melchior::Melchior::start(&program, &project, talk(loaded.as_ref()));
             let named = started
                 .as_ref()

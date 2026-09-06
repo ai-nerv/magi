@@ -50,6 +50,38 @@ pub enum Transport {
         #[serde(default)]
         env: std::collections::BTreeMap<String, String>,
     },
+    /// An MCP server: a program that publishes several tools and is spoken to in JSON-RPC.
+    ///
+    /// The one declaration that registers *more than one* tool. MCP servers publish a list —
+    /// a filesystem server offers half a dozen — so the name a config gives this declaration is
+    /// the server's, and the names the model sees are the server's own.
+    ///
+    /// Nothing else about it is special. Each tool it publishes registers beside a builtin, a
+    /// Lua tool and a casper tool; is checked against the schema the server published; asks the
+    /// same person for the same permission; and is capped and masked on the way back like any
+    /// other. A transport is a property of a declaration, not a second registry.
+    Mcp {
+        /// The program to run.
+        command: String,
+        /// Its arguments.
+        #[serde(default, deserialize_with = "lua_list")]
+        args: Vec<String>,
+        /// Environment for the server, beside what every process magi starts already gets.
+        #[serde(default)]
+        env: std::collections::BTreeMap<String, String>,
+        /// The SHA-256 this server's program must hash to, if it is pinned.
+        ///
+        /// **An MCP server is somebody else's code, running as you, with your tools**, and
+        /// `command` is a name that resolves to whatever is on `$PATH` today. Pinning binds the
+        /// declaration to the bytes it was written against; a mismatch refuses to start and says
+        /// both hashes.
+        ///
+        /// Optional, and unset is the ordinary case. `magi doctor` prints what each server
+        /// actually hashed to, which is how a person starts pinning rather than something they
+        /// have to know about first.
+        #[serde(default)]
+        sha256: Option<String>,
+    },
     /// An ordinary program magi runs, with arguments built from the call.
     ///
     /// Not a peer: the child is any unix tool and magi reads what it printed. This is how a config
@@ -153,6 +185,63 @@ impl Tool for LuaTool {
     }
 }
 
+/// Build the whole registry, in the one order a session uses.
+///
+/// **This sequence existed twice.** `magi tools` ran it to list what the model may call and the
+/// worker ran it to give the model something to call, and the two differed in three ways. Two of
+/// those were principled and are parameters here: a listing must not stop to ask a permission
+/// question, and it has no screen to lend a tool. The third was a defect — the listing passed an
+/// empty environment where a session passes the backend's, so a process tool that reads one was
+/// described by `magi tools` as it would never actually run.
+///
+/// Answers the registry and the names casper supplied, which a listing needs to say where each
+/// tool came from and a session does not.
+///
+/// `casper` is the SHA-256 that program must hash to, if a configuration pinned one. It supplies
+/// the whole tool set and is found on `$PATH`, which is the largest unacknowledged trust
+/// assumption here.
+///
+/// Probing is the caller's. It is the one step where the difference is real rather than
+/// accidental: a listing probes through plain `Ops` at the working directory, and a session
+/// probes through the gated `Ops` its tools will actually act with.
+pub fn assemble(
+    engine: Rc<RefCell<Engine>>,
+    asker: std::sync::Arc<dyn magi_tools::question::Asks>,
+    holder: std::sync::Arc<dyn magi_tools::holding::Holds>,
+    environ: &std::collections::BTreeMap<String, String>,
+    casper: Option<&str>,
+) -> (magi_tools::Registry, std::collections::BTreeSet<String>) {
+    let mut registry = magi_tools::Registry::new();
+
+    // **casper first, so anything nearer wins.** Registration is keyed, so the last declaration
+    // of a name is the one that runs — and the order is a precedence rule: casper is the
+    // furthest away, the compiled-in floor is next, and a person's own `tools.lua` is nearest
+    // and beats both. A config that declares `shell` means it.
+    //
+    // Nothing when casper is not installed: a session then has exactly the tools it had before
+    // casper existed.
+    let mut from_casper = std::collections::BTreeSet::new();
+    for tool in
+        magi_tools::casper::CasperTool::pinned(magi_tools::casper::CASPER, asker, holder, casper)
+    {
+        from_casper.insert(tool.name().to_owned());
+        registry.register(Box::new(tool));
+    }
+    magi_tools::builtin::install(&mut registry);
+
+    // A name a config declared for itself is that config's, however far it also travelled.
+    let declared: Vec<String> = engine
+        .borrow_mut()
+        .tools()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    from_casper.retain(|name| !declared.contains(name));
+
+    install(engine, &mut registry, environ);
+    (registry, from_casper)
+}
+
 /// Build every declared tool into one registry, on top of the floor.
 ///
 /// Both transports land here and the registry cannot tell them apart — which is the whole
@@ -238,6 +327,34 @@ pub fn install(
                     ),
                 ));
             }
+            Transport::Mcp {
+                command,
+                args,
+                env,
+                sha256,
+            } => {
+                // The server is asked what it offers, at load, because that is the only thing
+                // that knows — a config listing its tools would be a copy that drifts. The name
+                // this declaration was given is the *server's*, and does not become a tool.
+                let environ: std::collections::BTreeMap<String, String> = environ
+                    .iter()
+                    .chain(env)
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                match magi_tools::mcp::McpTool::all(command, args, &environ, sha256.as_deref()) {
+                    Ok(tools) => {
+                        for tool in tools {
+                            registry.register(Box::new(tool));
+                        }
+                    }
+                    // Reported and skipped, like every other tool that will not register: a
+                    // session with one server missing is a session with fewer tools, not a
+                    // session that will not start.
+                    Err(why) => {
+                        eprintln!("magi: the MCP server {name:?} offered nothing: {why}");
+                    }
+                }
+            }
         }
     }
 }
@@ -265,6 +382,13 @@ where
     }
 }
 
+/// An MCP server, declared in a config and reached through the registry.
+///
+/// Split from this file under THE RULE, which caps a file at 800 lines.
+#[cfg(test)]
+#[path = "tool/mcp.rs"]
+mod mcp_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,7 +396,7 @@ mod tests {
     use magi_tools::ops::Real;
 
     /// Run a config chunk and build what it declared.
-    fn built(source: &str) -> (Registry, Rc<RefCell<Engine>>) {
+    pub(super) fn built(source: &str) -> (Registry, Rc<RefCell<Engine>>) {
         let mut engine = Engine::new();
         engine
             .run(source, "tools.lua")

@@ -99,12 +99,10 @@ fn project_notes(cwd: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use magi_model::scratch::Scratch;
 
-    fn scratch(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("magi-system-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("mkdir");
-        dir
+    fn scratch(name: &str) -> Scratch {
+        Scratch::new("magi-system", name)
     }
 
     #[test]
@@ -112,7 +110,6 @@ mod tests {
         let dir = scratch("order");
         let built = assemble(Some("Be terse."), &dir, "2026-08-27").expect("a prompt");
         assert!(built.starts_with("Be terse."), "{built}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -123,7 +120,6 @@ mod tests {
         assert!(built.contains(&dir.display().to_string()), "{built}");
         assert!(built.contains("Platform: linux"), "{built}");
         assert!(built.contains("Today: 2026-08-27"), "{built}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -136,7 +132,6 @@ mod tests {
             built.contains(PROJECT_FILE),
             "it says where that came from: {built}"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -144,7 +139,6 @@ mod tests {
         let dir = scratch("bare");
         let built = assemble(Some("x"), &dir, "2026-08-27").expect("a prompt");
         assert!(!built.contains(PROJECT_FILE), "{built}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -154,7 +148,6 @@ mod tests {
         std::fs::write(dir.join(PROJECT_FILE), "   \n\n").expect("write");
         let built = assemble(Some("x"), &dir, "2026-08-27").expect("a prompt");
         assert!(!built.contains(PROJECT_FILE), "{built}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -165,7 +158,6 @@ mod tests {
         let built = assemble(Some("i"), &dir, "2026-08-27").expect("a prompt");
         assert!(built.contains("(truncated)"), "it admits the cut");
         assert!(built.len() < PROJECT_LIMIT * 2, "and actually cut it");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -175,7 +167,6 @@ mod tests {
         let dir = scratch("noconfig");
         let built = assemble(None, &dir, "2026-08-27").expect("a prompt");
         assert!(built.contains("Working directory"), "{built}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -193,7 +184,6 @@ mod tests {
         git(&["init", "--initial-branch=trunk"]);
         let built = assemble(Some("x"), &dir, "2026-08-27").expect("a prompt");
         assert!(built.contains("Git branch: trunk"), "{built}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -201,6 +191,5 @@ mod tests {
         let dir = scratch("nogit");
         let built = assemble(Some("x"), &dir, "2026-08-27").expect("a prompt");
         assert!(!built.contains("Git branch"), "{built}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -18,4 +18,5 @@ tokio.workspace = true
 workspace = true
 
 [dev-dependencies]
+magi-model.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

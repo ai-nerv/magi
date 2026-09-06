@@ -85,7 +85,7 @@ pub struct At {
 /// Frames rather than calls: a surface redraws per keystroke, so the spawn lives for the length of
 /// the reservation instead of one exec per event.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "to")]
+#[serde(rename_all = "snake_case", tag = "event")]
 pub enum ToSurface {
     /// The room it actually got, and what the call was given.
     ///
@@ -177,7 +177,7 @@ pub enum ToSurface {
 
 /// What a surface sends back.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "from")]
+#[serde(rename_all = "snake_case", tag = "event")]
 pub enum FromSurface {
     /// What to put in the rows, in the same roles everything else is painted in.
     ///
@@ -299,7 +299,7 @@ mod frames {
         // Most of them, and every one before the Kitty protocol. A tenant that reads only `down`
         // behaves identically whether or not the terminal can say more.
         let plain: ToSurface =
-            serde_json::from_str(r#"{"to":"key","key":"space"}"#).expect("decodes");
+            serde_json::from_str(r#"{"event":"key","key":"space"}"#).expect("decodes");
         assert_eq!(
             plain,
             ToSurface::Key {
@@ -315,10 +315,10 @@ mod frames {
         // press per repeat and no word at all when a key comes back up.
         for (wire, state) in [
             (
-                r#"{"to":"key","key":"space","state":"repeat"}"#,
+                r#"{"event":"key","key":"space","state":"repeat"}"#,
                 Held::Repeat,
             ),
-            (r#"{"to":"key","key":"space","state":"up"}"#, Held::Up),
+            (r#"{"event":"key","key":"space","state":"up"}"#, Held::Up),
         ] {
             let read: ToSurface = serde_json::from_str(wire).expect("decodes");
             assert_eq!(

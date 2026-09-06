@@ -89,12 +89,12 @@ fn walk(root: &Path, here: &Path, depth: usize, ignores: &mut Ignores, out: &mut
 #[cfg(test)]
 mod tests {
     use super::*;
+    use magi_model::scratch::Scratch;
 
     /// A fixture tree of its own, because these tests run on parallel threads and a shared
     /// directory means one test deleting another's files mid-walk.
-    fn fixture(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("magi-paths-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+    fn fixture(name: &str) -> Scratch {
+        let dir = Scratch::new("magi-paths", name);
         std::fs::create_dir_all(dir.join("src")).expect("mkdir src");
         std::fs::create_dir_all(dir.join("target")).expect("mkdir target");
         std::fs::write(dir.join(".gitignore"), "target/\nvendored/\n").expect("write ignore");
@@ -114,7 +114,6 @@ mod tests {
         assert!(found.contains(&"Cargo.toml".to_owned()), "{found:?}");
         assert!(found.contains(&"src/".to_owned()), "{found:?}");
         assert!(found.contains(&"src/main.rs".to_owned()), "{found:?}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -126,7 +125,6 @@ mod tests {
             !found.iter().any(|p| p.starts_with("vendored")),
             "{found:?}"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -139,7 +137,6 @@ mod tests {
             !found.iter().any(|p| p.contains("debris")),
             "it walked in anyway: {found:?}"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -147,7 +144,6 @@ mod tests {
         let dir = fixture("dotfiles");
         let found = list(&dir, "");
         assert!(!found.iter().any(|p| p.starts_with('.')), "{found:?}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -156,23 +152,20 @@ mod tests {
         let found = list(&dir, "src/ma");
         assert!(!found.is_empty(), "the prefix directory is scanned");
         assert!(found.iter().all(|p| p.starts_with("src/")), "{found:?}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn a_missing_directory_yields_nothing_rather_than_failing() {
         let dir = fixture("missing");
         assert!(list(&dir, "nope/").is_empty());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn the_walk_is_bounded_however_deep_the_tree_goes() {
         // A recursive walk with no floor is a stack overflow waiting for a symlinked loop or a
         // node_modules nobody ignored.
-        let dir = std::env::temp_dir().join(format!("magi-paths-{}-deep", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let mut at = dir.clone();
+        let dir = Scratch::new("magi-paths", "deep");
+        let mut at = dir.to_path_buf();
         for level in 0..20 {
             at = at.join(format!("level{level}"));
         }
@@ -182,6 +175,5 @@ mod tests {
             found.iter().all(|p| p.matches('/').count() <= MAX_DEPTH),
             "it went deeper than {MAX_DEPTH}"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

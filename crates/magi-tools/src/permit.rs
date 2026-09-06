@@ -137,12 +137,12 @@ pub fn standing(action: &Action, scope: &Scope) -> Option<Grant> {
                 verb,
                 scope: Scope::Directory { path: path.clone() },
             }),
-            Action::Run { command, .. } => Some(Grant {
-                verb,
-                scope: Scope::Program {
-                    program: command.clone(),
-                },
-            }),
+            // Nothing is stored. "Exactly this" about a command line has no width in this
+            // vocabulary: the only thing a `Run` grant can hold is a program, and storing the
+            // whole line as one made a grant that `covers` then compared against a first word
+            // and never matched. An answer that quietly does nothing is worse than a narrower
+            // one, so it is spent on the call that asked, the way `Once` is.
+            Action::Run { .. } => None,
             Action::Network { host } => Some(Grant {
                 verb,
                 scope: Scope::Directory { path: host.clone() },

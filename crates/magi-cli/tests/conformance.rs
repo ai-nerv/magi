@@ -6,14 +6,13 @@
 //! two peers built on the same Rust codec cannot disagree with the host, so they cannot show
 //! it. If the C peer stops passing, the documentation was not enough.
 
+use magi_model::scratch::Scratch;
+
 use magi_testkit::conformance::{Subject, check};
 use std::path::{Path, PathBuf};
 
-fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("magi-conf-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
-    dir
+fn scratch(name: &str) -> Scratch {
+    Scratch::new("magi-conf", name)
 }
 
 fn assert_conforms(subject: &Subject<'_>) {
@@ -39,7 +38,6 @@ fn the_shell_peer_conforms() {
         dir: &dir,
         call: ("shell", serde_json::json!({ "command": "echo hi" })),
     });
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -63,7 +61,6 @@ magi.tool("greet", {
         dir: &dir,
         call: ("greet", serde_json::json!({ "who": "world" })),
     });
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -85,7 +82,6 @@ fn a_peer_that_shares_no_code_with_magi_conforms() {
             serde_json::json!({ "text": "from another language" }),
         ),
     });
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -105,7 +101,6 @@ fn a_peer_that_declares_nothing_is_reported() {
             .any(|f| f.rule.contains("declare at least one tool")),
         "{findings:?}"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -119,7 +114,6 @@ fn a_peer_that_never_answers_is_reported() {
         call: ("anything", serde_json::json!({})),
     });
     assert!(!findings.is_empty(), "a peer that says nothing must fail");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Compile the C peer, or `None` if this machine has no compiler.

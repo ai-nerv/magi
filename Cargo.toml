@@ -22,6 +22,15 @@ version = "0.1.0"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
+# A dependency nothing uses is a lie about the graph — an edge that exists in `Cargo.toml`, in
+# the lockfile and in every diagram somebody draws from them, and nowhere in the code. Nine of
+# them were declared across this family.
+#
+# Enforced by `cargo machete` in `verify`, not by `unused_crate_dependencies`. That lint finds
+# the same thing and then finds a great deal more: it runs per *target*, so every integration
+# test is reported for every dev-dependency that one file happens not to name — twenty-odd
+# warnings here, none of them a lie, and `clippy -Dwarnings` fails on all of them. machete reads
+# the manifest against the whole package and has no such blind spot.
 unused = { level = "deny", priority = -1 }
 
 [workspace.lints.clippy]

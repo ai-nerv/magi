@@ -48,6 +48,7 @@ pub fn cards_from(program: &str) -> Vec<Card> {
         .stderr(std::process::Stdio::null())
         .output()
     else {
+        magi_model::noted!("casper: {program} tools could not be started");
         return Vec::new();
     };
     rows(&out.stdout)
@@ -85,7 +86,10 @@ pub fn run(program: &str, call: &Call) -> Result<Ran, String> {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|why| format!("{program} could not be started: {why}"))?;
+        .map_err(|why| {
+            magi_model::noted!("casper: {program} run could not be started: {why}");
+            format!("{program} could not be started: {why}")
+        })?;
 
     if let Some(mut stdin) = child.stdin.take() {
         // Written and closed. casper reads to end of file, so a handle left open is a call that
@@ -117,6 +121,41 @@ pub struct CasperTool {
 }
 
 impl CasperTool {
+    /// Every tool `program` offers, if it is the program that was pinned.
+    ///
+    /// **casper supplies magi's entire tool set and is resolved off `$PATH` with no
+    /// acknowledgement.** That is a larger trust assumption than the one MCP servers get pinned
+    /// for: a `casper` earlier on the path than the real one owns `shell`, `read` and everything
+    /// else the model calls. Same mechanism as [`crate::mcp`], same reason.
+    ///
+    /// `None` for `pinned` is the ordinary case and starts anything. `magi doctor` prints what
+    /// the program actually hashed to, which is where a pin comes from.
+    #[must_use]
+    pub fn pinned(
+        program: &str,
+        asks: Arc<dyn Asks>,
+        holds: Arc<dyn crate::holding::Holds>,
+        pinned: Option<&str>,
+    ) -> Vec<Self> {
+        if let Some(pinned) = pinned {
+            match crate::mcp::fingerprint(program) {
+                Some(actual) if actual == pinned => {}
+                Some(actual) => {
+                    eprintln!(
+                        "magi: {program} is not the program this configuration pinned: it is \
+                         {actual} and the pin says {pinned}. No tools were taken from it"
+                    );
+                    return Vec::new();
+                }
+                None => {
+                    eprintln!("magi: {program} is pinned to {pinned} and cannot be read to check");
+                    return Vec::new();
+                }
+            }
+        }
+        Self::all(program, asks, holds)
+    }
+
     /// Every tool casper offers, ready to register.
     ///
     /// `asks` is how a question reaches the person. A tool that never asks never uses it; one
@@ -141,6 +180,22 @@ impl CasperTool {
 }
 
 impl Tool for CasperTool {
+    fn composition(&self) -> Vec<(&'static str, String)> {
+        let mut out = vec![
+            ("transport", "casper".to_owned()),
+            (
+                "command",
+                format!("{} run {}", self.program, self.card.name),
+            ),
+        ];
+        // Printed so it can be pinned. This program supplies the whole tool set and is found on
+        // `$PATH`, which is the largest unacknowledged trust assumption magi makes.
+        if let Some(fingerprint) = crate::mcp::fingerprint(&self.program) {
+            out.push(("sha256", fingerprint));
+        }
+        out
+    }
+
     fn name(&self) -> &str {
         &self.card.name
     }
@@ -217,6 +272,42 @@ impl Tool for CasperTool {
 
 #[cfg(test)]
 mod tests {
+    /// A pinned casper that is not the pinned program supplies nothing.
+    ///
+    /// **This program supplies magi's entire tool set and is resolved off `$PATH`.** A `casper`
+    /// earlier on the path than the real one owns `shell`, `read` and everything else the model
+    /// calls — a larger trust assumption than the one an MCP server gets pinned for, and one
+    /// made with no acknowledgement at all until now.
+    #[test]
+    fn a_pinned_casper_that_is_not_the_pinned_program_supplies_no_tools() {
+        let asks: Arc<dyn Asks> = Arc::new(crate::question::Unanswered);
+        let holds: Arc<dyn crate::holding::Holds> = Arc::new(crate::holding::Screenless);
+
+        let wrong = CasperTool::pinned(
+            CASPER,
+            Arc::clone(&asks),
+            Arc::clone(&holds),
+            Some("0000000000000000000000000000000000000000000000000000000000000000"),
+        );
+        assert!(wrong.is_empty(), "a substituted casper supplied tools");
+
+        // And the real one, pinned to what it actually is, supplies what it always did. Skipped
+        // when casper is not installed, which is a session with no tools from it either way.
+        if let Some(actual) = crate::mcp::fingerprint(CASPER) {
+            let right = CasperTool::pinned(CASPER, asks, holds, Some(&actual));
+            assert_eq!(
+                right.len(),
+                CasperTool::all(
+                    CASPER,
+                    Arc::new(crate::question::Unanswered),
+                    Arc::new(crate::holding::Screenless)
+                )
+                .len(),
+                "pinning the right program changed what it offers"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -304,11 +395,17 @@ fn wants(card: &Card, arguments: &serde_json::Value) -> Option<magi_proto::permi
                     command
                 }
             };
-            let program = command
-                .split_whitespace()
-                .next()
-                .unwrap_or(&card.name)
-                .to_owned();
+            // The same reading the process transport uses. Two of them disagreed: this one took
+            // the first word outright, so `FOO=1 git status` offered "any `FOO=1` command" — a
+            // question nobody could answer sensibly, and one whose grant then covered every
+            // command line starting `FOO=1`, including one that goes on to say something else
+            // entirely. A permission subject that differs by transport is its own bug.
+            let program = crate::process::first_word(&command);
+            let program = if program.is_empty() {
+                card.name.clone()
+            } else {
+                program
+            };
             Action::Run { command, program }
         }
     })

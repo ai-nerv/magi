@@ -176,8 +176,8 @@ mod tests {
         use std::io::{Read, Write};
         use std::os::unix::net::UnixListener;
 
-        let path = std::env::temp_dir().join(format!("magi-stream-{}.sock", std::process::id()));
-        let _ = std::fs::remove_file(&path);
+        let dir = magi_model::scratch::Scratch::new("magi-stream", "one");
+        let path = dir.join("s.sock");
         let listener = UnixListener::bind(&path).expect("bind");
         let server = std::thread::spawn(move || {
             let (mut socket, _) = listener.accept().expect("accept");
@@ -205,7 +205,6 @@ mod tests {
         assert_eq!(engine.config().string("answer"), Some("pong!"));
 
         server.join().expect("server");
-        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

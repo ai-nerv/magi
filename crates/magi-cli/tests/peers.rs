@@ -7,11 +7,12 @@
 //! apart, that they do not share state, and that a peer which cannot answer an interrupt is
 //! still one the host can handle.
 
+use magi_model::scratch::Scratch;
+
 use magi_tools::{Registry, Uncancelled};
-use std::path::PathBuf;
 
 /// A Lua peer file, and a session with both peers registered.
-fn session(name: &str, lua: &str) -> (Registry, magi_tools::ops::Real, PathBuf) {
+fn session(name: &str, lua: &str) -> (Registry, magi_tools::ops::Real, Scratch) {
     let (mut registry, ops, dir) = session_raw(name);
     std::fs::write(dir.join("peer.lua"), lua).expect("write");
 
@@ -49,13 +50,11 @@ fn session(name: &str, lua: &str) -> (Registry, magi_tools::ops::Real, PathBuf) 
 }
 
 /// The directory and the builtins, with no peers registered yet.
-fn session_raw(name: &str) -> (Registry, magi_tools::ops::Real, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("magi-peers-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
+fn session_raw(name: &str) -> (Registry, magi_tools::ops::Real, Scratch) {
+    let dir = Scratch::new("magi-peers", name);
     let mut registry = Registry::new();
     magi_tools::builtin::install(&mut registry);
-    (registry, magi_tools::ops::Real::new(dir.clone()), dir)
+    (registry, magi_tools::ops::Real::new(dir.to_path_buf()), dir)
 }
 
 /// A peer file offering one tool.
@@ -73,7 +72,7 @@ magi.tool("greet", {
 fn two_peers_answer_the_same_way_a_builtin_does() {
     // The registry holds a Rust function, a shell in another process, and a Lua VM in a third.
     // Nothing at this level can tell which is which, and that is the whole design.
-    let (registry, ops, dir) = session("uniform", GREETER);
+    let (registry, ops, _dir) = session("uniform", GREETER);
     let _ = registry.call(
         "write",
         &serde_json::json!({ "path": "a", "contents": "x" }),
@@ -95,13 +94,12 @@ fn two_peers_answer_the_same_way_a_builtin_does() {
             output.content
         );
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn a_peer_that_raises_reports_it_rather_than_dying() {
     // A Lua tool that errors is a failed call, not a failed peer: the next call must work.
-    let (registry, ops, dir) = session(
+    let (registry, ops, _dir) = session(
         "raising",
         r#"
 magi.tool("greet", {
@@ -131,14 +129,13 @@ magi.tool("greet", {
     );
     assert!(!output.is_error, "{}", output.content);
     assert!(output.content.contains("again"), "{}", output.content);
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn the_peers_do_not_share_state() {
     // Separate processes, so the shell's working directory is invisible to the Lua peer and
     // neither can reach into the other. A single peer could not show this.
-    let (registry, ops, dir) = session(
+    let (registry, ops, _dir) = session(
         "isolated",
         r#"
 magi.tool("greet", {
@@ -165,7 +162,6 @@ magi.tool("greet", {
 
     let lua = registry.call("greet", &serde_json::json!({}), &ops, &Uncancelled);
     assert_eq!(lua.content.trim(), "lua peer");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// An interrupt raised partway through, as `esc` is.
@@ -182,7 +178,7 @@ fn a_peer_that_cannot_answer_an_interrupt_is_still_stopped() {
     // `Cancel`. The host does not depend on it noticing: it asks, waits a bounded time, and
     // then stops waiting. Without a second peer there would be nothing that exercises this,
     // because the shell peer always answers.
-    let (registry, ops, dir) = session(
+    let (registry, ops, _dir) = session(
         "deaf",
         r#"
 magi.tool("greet", {
@@ -215,13 +211,12 @@ magi.tool("greet", {
         "the result says what happened: {}",
         output.content
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn a_peer_killed_for_ignoring_an_interrupt_is_replaced() {
     // The host kills a peer that will not stop, so the next call has to get a fresh one.
-    let (registry, ops, dir) = session(
+    let (registry, ops, _dir) = session(
         "replaced",
         r#"
 magi.tool("greet", {
@@ -253,7 +248,6 @@ magi.tool("greet", {
     );
     assert!(!output.is_error, "{}", output.content);
     assert_eq!(output.content.trim(), "recovered");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -261,7 +255,7 @@ fn the_lua_peer_is_sandboxed_like_every_other_vm() {
     // Being in its own process is isolation, not permission. If a Lua peer could spawn, the
     // process transport would be a stylistic preference rather than the only way to run a
     // command -- which is the opposite of the design.
-    let (registry, ops, dir) = session(
+    let (registry, ops, _dir) = session(
         "sandbox",
         r#"
 magi.tool("greet", {
@@ -278,7 +272,6 @@ magi.tool("greet", {
     let output = registry.call("greet", &serde_json::json!({}), &ops, &Uncancelled);
     assert!(!output.is_error, "{}", output.content);
     assert_eq!(output.content.trim(), "sealed");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -324,16 +317,13 @@ fn the_peer_declares_and_the_config_is_only_a_claim() {
         "the config's claim is gone: {}",
         declared.parameters
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn a_peer_that_declares_nothing_leaves_the_config_claim_standing() {
     // The peer never starts, so nothing corrects the claim. Better than refusing to offer the
     // tool at all, and no worse than where things stood before it was asked.
-    let dir = std::env::temp_dir().join(format!("magi-peers-{}-silent", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    let dir = Scratch::new("magi-peers", "silent");
     let mut registry = Registry::new();
     registry.register(Box::new(magi_tools::process::ProcessTool::new(
         "absent",
@@ -342,7 +332,7 @@ fn a_peer_that_declares_nothing_leaves_the_config_claim_standing() {
         "/nonexistent/peer",
         Vec::new(),
     )));
-    registry.probe(&magi_tools::ops::Real::new(dir.clone()));
+    registry.probe(&magi_tools::ops::Real::new(dir.to_path_buf()));
 
     let declared = registry
         .declarations()
@@ -350,7 +340,6 @@ fn a_peer_that_declares_nothing_leaves_the_config_claim_standing() {
         .find(|d| d.name == "absent")
         .expect("still registered");
     assert_eq!(declared.description, "What the config claimed.");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -359,7 +348,7 @@ fn a_peer_that_cannot_start_says_why() {
     // find it; PATH found an older install that did not know `ext`, which exited at once. All
     // the model was told was "io: Broken pipe (os error 32)", so it retried, failed the same
     // way, and went looking for the problem somewhere else entirely.
-    let (mut registry, ops, dir) = session_raw("complaining");
+    let (mut registry, ops, _dir) = session_raw("complaining");
     registry.register(Box::new(magi_tools::process::ProcessTool::new(
         "broken",
         "A peer that refuses its arguments.",
@@ -375,7 +364,6 @@ fn a_peer_that_cannot_start_says_why() {
         "the peer's own complaint reaches the result: {}",
         output.content
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -456,7 +444,6 @@ fn a_peer_can_be_confined_by_configuration_alone() {
     );
     assert!(!inside.is_error, "{}", inside.content);
     assert_eq!(inside.content.trim(), "ok", "the session directory works");
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Find a program on `PATH`, or say there is none.
@@ -477,7 +464,7 @@ fn a_round_of_calls_to_different_peers_overlaps() {
     // `Tool` is deliberately not `Send` — a Lua tool runs in a VM that is not — so this cannot
     // be threads. It does not need to be: a peer is another *process*, and writing its request
     // and coming back for the answer is all the concurrency there is to have.
-    let (mut registry, ops, dir) = session_raw("overlap");
+    let (mut registry, ops, _dir) = session_raw("overlap");
     for name in ["one", "two"] {
         registry.register(Box::new(magi_tools::process::ProcessTool::new(
             name,
@@ -517,14 +504,13 @@ fn a_round_of_calls_to_different_peers_overlaps() {
         took < std::time::Duration::from_millis(1800),
         "two one-second calls took {took:?}, which is the sum rather than the slowest"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn two_calls_to_one_peer_still_take_their_turn() {
     // A peer answers one call at a time, so a second call to the *same* tool has nothing to
     // overlap with the first. It says so rather than pretending, and runs where it stands.
-    let (mut registry, ops, dir) = session_raw("queued");
+    let (mut registry, ops, _dir) = session_raw("queued");
     registry.register(Box::new(magi_tools::process::ProcessTool::new(
         "bash",
         "A shell.",
@@ -552,7 +538,6 @@ fn two_calls_to_one_peer_still_take_their_turn() {
         "two",
         "and still answers, in the order it was asked"
     );
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// A peer is given the chance to clean up after itself, rather than shot where it stands.

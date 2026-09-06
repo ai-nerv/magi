@@ -4,6 +4,8 @@
 //! `Entry` handed to balthasar comes back the same `Entry`, including the fields no projection
 //! carries.
 
+use magi_model::scratch::Scratch;
+
 use magi_host::scribe::Scribe;
 use magi_ipc::family::Family;
 use magi_proto::{Cursor, Entry, MessageId, SessionId, StopReason, ToolCallId, ToolResult, Usage};
@@ -173,8 +175,7 @@ async fn what_a_session_commits_reaches_balthasar_when_it_is_flushed() {
     let Some(scribe) = scribe("flush").await else {
         return;
     };
-    let dir = std::env::temp_dir().join(format!("magi-flush-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("mkdir");
+    let dir = Scratch::new("magi-flush", "one");
     let journal = dir.join("session.jsonl");
     let id = SessionId::new(format!("magi-scribe-{}-flush", std::process::id()));
 
@@ -239,6 +240,4 @@ async fn what_a_session_commits_reaches_balthasar_when_it_is_flushed() {
         },
         "the amendment must win"
     );
-
-    let _ = std::fs::remove_dir_all(&dir);
 }

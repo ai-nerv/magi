@@ -24,7 +24,7 @@ that talk over sockets and pipes:
 | **magi** | this one: the harness — UI, host, providers, tools |
 | **melchior** | the agent layer — sessions talking to sessions, adoption, permissions |
 | **balthasar** | the memory layer — what was said, distilled and recalled |
-| **casper** | tooling and tool APIs. Not yet divided out |
+| **casper** | the tools, and the screen they draw on |
 
 **They are separate programs, not components.** melchior does not know what a harness is, and
 balthasar's Rust never parses magi's types — each one is useful, and testable, with the others
@@ -68,6 +68,81 @@ make host         # a replay host alone
 make ui           # the UI alone, attaching to it
 ```
 
+## Tools
+
+Four kinds, and the registry does not care which is which: a transport is a property of a
+declaration rather than a second registry, so each is checked against the same schema, asks the
+same person for the same permission, and is capped and masked on the way back.
+
+| Kind | What it is |
+|---|---|
+| `builtin` | compiled in: `read`, `write`, `edit` |
+| `lua` | a function in the config's own VM |
+| `command` | one exec per call, arguments built from the call |
+| `process` | a peer with its own life, spoken to over a pipe |
+| `mcp` | an MCP server — the one declaration that registers *several* tools |
+
+Most of them arrive from **casper**, which is another program and supplies the whole set. That
+makes it the largest trust assumption magi makes, and `magi.casper_sha256` pins it to the bytes
+you set it up against. An MCP server pins the same way, on its declaration.
+
+```sh
+magi tools        # what the model can call, and how each is reached
+magi doctor       # what a session here would be made of, without starting one
+```
+
+`magi doctor` answers everything a session decides at start-up: which configuration was read,
+which of its lines were kept, what the registry ends up holding and where each entry came from,
+and whether the siblings are actually *answering* — asked, not looked for, because a program on
+`$PATH` is not a running one and a socket that accepts is not one that answers. It works on a
+machine where nothing is installed, which is the machine you run it on.
+
+## Memory
+
+With balthasar running, a turn is shown what the project already remembers before it starts —
+without the model having to think to ask, which a model that has forgotten something cannot do.
+What is *current* is stated; what is merely on record is hedged, because balthasar decides which
+a memory is and flattening the two would present something you said once in March as true now.
+
+It is bounded and on a clock: a tenth of the window, and 250ms to answer. A memory layer that is
+slow, wedged or absent costs the conversation nothing, which is what lets this be unconditional
+rather than a setting you have to find.
+
+What the turn then *does* goes back — the only signal balthasar has for whether anything it
+offered was worth offering, and the axis MemoryArena separates from LoCoMo.
+
+## How this family talks
+
+Three transports, two shapes, one encoding — written out because it was written out nowhere, and
+five wires had grown five ways to say the same thing.
+
+| Transport | When | Framing |
+|---|---|---|
+| **argv** | a question with an answer and nothing to hold open | one JSON object on stdout |
+| **pipe** | a parent and the child it started | newline-delimited JSON, both directions |
+| **socket** | anything may knock | four bytes of big-endian length, then JSON |
+
+JSON is on all three. It is the *encoding*, not a transport.
+
+A **call** is answered; an **event** is not:
+
+```
+->  {"call":"status","args":[]}
+<-  {"ok":true,"family":1,"n":1,"result":[{"busy":false}]}
+
+    {"event":"listening","at":"…"}
+```
+
+`result` is a **list** and `n` says how long it is: a sibling that unpacked a bare value would
+read an answer as nothing at all. `family` says which revision the reply is written in — a reader
+refuses a number it does not know and tolerates one it predates. A refused call is a *reply*, not
+a dropped connection.
+
+**The tag key is `event`, everywhere, in both directions**, and `gate-wire` refuses any other.
+The failure it prevents is silent: two of these wires exist as byte-identical copies in two
+repositories, so when two spellings drift nothing fails and no test goes red — the surface simply
+stops being answered.
+
 ## Talking to other sessions
 
 With `melchior` installed, a session can reach the other sessions in the same project. The
@@ -87,6 +162,12 @@ answered together by one turn at idle — so ten notes cost one reply, not ten.
 One main may ask another to **adopt** it. Consent is a person's: the request surfaces as a
 prompt on the other side, and accepting hands down exactly the grants the parent already holds
 — never more. A child that wants something outside them is refused and told to ask its parent.
+
+A session can also be *started* under another. `melchior fork` mints a name and a secret; the
+harness spawns with what it was handed, and the session that comes up is a **child** — it writes
+the note that makes the tree readable off the directory, it is inside the walls the policy draws,
+and the session that minted its secret is the only one that can end it. melchior names; the
+harness spawns, because a layer that started harnesses would have to know what one is.
 
 ## Layout
 
@@ -122,6 +203,19 @@ make verify       # all of it
 | `gate-modules` | every `.rs` is reachable from its crate root |
 | `gate-proto-size` | `magi-proto` under 4,000 lines |
 | `gate-reachable` | no crate unreachable from the binary |
+| `gate-cycles` | no two top-level modules depend on each other |
+| `gate-hermetic` | the suite leaves nothing behind in `$TMPDIR` |
+| `gate-wire` | one way of saying a thing crosses a boundary |
+
+`gate-cycles` is the one pi never built. It built *reachability* — and a cycle is maximally
+reachable, so a reachability gate passes at 240,000 lines with the knot still in it. Ours had the
+same blind spot, and this landed with an empty allowlist in all four repositories after finding
+three cycles nobody had named.
+
+`gate-hermetic` runs the suite under a `TMPDIR` of its own and asserts it is empty afterwards.
+Every test used to tidy up on its last line — and `assert!` unwinds straight past a trailing
+`remove_dir_all`, so a *failing* test always leaked. Three thousand six hundred directories had
+collected before anything looked.
 
 `gate-modules` earns its place on its own: a file nobody declares is not a compile error, not a
 warning and not run — it simply is not part of the crate. Two were found at once, each holding
@@ -151,6 +245,9 @@ statically linked anyway.
 The release profile is pinned rather than left to defaults — `lto = "thin"`,
 `codegen-units = 16` — because a build that silently switches to fat LTO and one codegen unit
 turns a ten-second link into minutes.
+
+Tagging a release builds the same binary on the runner, for `amd64` and `arm64`, and attaches
+it. The toolchain is the flake's, so a release is built with the compiler the gates ran under.
 
 ## Configuration
 

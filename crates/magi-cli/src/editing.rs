@@ -38,18 +38,12 @@ pub(super) fn external_edit(session: &mut Session, app: &mut App) -> Result<()> 
 ///
 /// A UI owns the terminal, so `eprintln!` is not available for diagnosis — it would land in
 /// the middle of the frame. This is the only way to see what the loop actually did.
+///
+/// Forwards to [`mod@magi_model::noted`], which is the same mechanism reading the same variable.
+/// It started here and moved down to the leaf crate when the six process crossings needed it
+/// too; keeping the name means the call sites in `driver.rs` read as they always did.
 pub(super) fn debug_log(args: std::fmt::Arguments<'_>) {
-    let Some(path) = std::env::var_os("MAGI_DEBUG_LOG") else {
-        return;
-    };
-    use std::io::Write;
-    if let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        let _ = writeln!(file, "{args}");
-    }
+    magi_model::noted::note(args);
 }
 
 /// How wide a tool's rows actually are, in columns.

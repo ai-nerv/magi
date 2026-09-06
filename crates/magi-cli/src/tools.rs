@@ -1,7 +1,5 @@
 //! `magi tools` — what the model can call, and how each one is reached.
 
-use magi_tools::{Registry, Tool};
-
 /// Print the registry, transport and all.
 ///
 /// The transport is shown because it is the thing a person needs to know: a Lua tool runs in
@@ -17,35 +15,19 @@ pub fn print() -> Result<(), magi_lua::LuaError> {
     let declared = engine.tools();
 
     let engine = std::rc::Rc::new(std::cell::RefCell::new(engine));
-    let mut registry = Registry::new();
-    // casper first, so anything nearer wins — the same order the worker uses, because a listing
-    // that disagreed with what a session runs would be answering a different question.
-    //
-    // Nobody to ask: `magi tools` lists what exists and runs nothing, so a tool that would have
-    // stopped to ask never gets the chance to.
-    let mut from_casper = std::collections::BTreeSet::new();
-    for tool in magi_tools::casper::CasperTool::all(
-        magi_tools::casper::CASPER,
+    // The same sequence a session builds, from the one place that knows it. Nobody to ask and
+    // no screen to lend: `magi tools` lists what exists and runs nothing, so a tool that would
+    // have stopped to ask never gets the chance to.
+    let (registry, from_casper) = magi_lua::tool::assemble(
+        std::rc::Rc::clone(&engine),
         std::sync::Arc::new(magi_tools::question::Unanswered),
         std::sync::Arc::new(magi_tools::holding::Screenless),
-    ) {
-        from_casper.insert(tool.name().to_owned());
-        registry.register(Box::new(tool));
-    }
-    magi_tools::builtin::install(&mut registry);
-    magi_lua::tool::install(
-        std::rc::Rc::clone(&engine),
-        &mut registry,
-        &Default::default(),
+        &crate::config::environ(&loaded),
+        crate::config::casper_pin(&loaded).as_deref(),
     );
-    // A name a config declared for itself is that config's, however far it also travelled.
-    for tool in registry.declarations() {
-        if from_casper.contains(&tool.name) && declared.iter().any(|(name, _)| *name == tool.name) {
-            from_casper.remove(&tool.name);
-        }
-    }
     // Asked rather than assumed. `magi tools` answers "what can the model call", and the only
-    // thing that knows what a peer offers is the peer.
+    // thing that knows what a peer offers is the peer. Through plain `Ops` at the working
+    // directory: a listing acts on nothing, so there is nothing to gate.
     registry.probe(&magi_tools::ops::Real::new(
         std::env::current_dir().unwrap_or_default(),
     ));

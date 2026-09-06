@@ -15,6 +15,7 @@ pub(super) async fn switch_model(
     worker: &tokio::sync::RwLock<Option<Arc<worker::Worker>>>,
     catalog: &crate::catalog::Catalog,
     person: &crate::asking::Person,
+    scribe: &crate::scribe::Held,
     name: &str,
 ) -> Option<String> {
     let Some(backend) = catalog.backend(name) else {
@@ -43,6 +44,7 @@ pub(super) async fn switch_model(
         Some(Arc::clone(&person.approver)),
         Arc::clone(&person.asks),
         Arc::clone(&person.holds),
+        Arc::clone(scribe),
     ));
     *worker.write().await = Some(fresh);
     {
@@ -74,6 +76,7 @@ pub(super) async fn switch_thinking(
     worker: &tokio::sync::RwLock<Option<Arc<worker::Worker>>>,
     catalog: &crate::catalog::Catalog,
     person: &crate::asking::Person,
+    scribe: &crate::scribe::Held,
     level: &str,
 ) -> Option<String> {
     let Ok(parsed) = serde_json::from_value::<magi_model::ThinkingLevel>(
@@ -98,6 +101,7 @@ pub(super) async fn switch_thinking(
         Some(Arc::clone(&person.approver)),
         Arc::clone(&person.asks),
         Arc::clone(&person.holds),
+        Arc::clone(scribe),
     ));
     *worker.write().await = Some(fresh);
     let mut held = session.lock().await;

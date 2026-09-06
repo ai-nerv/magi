@@ -13,9 +13,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+
+      # The toolchain comes from `flake.nix`, which already pins it and says why: *"a newer rustc
+      # brings newer clippy lints, and `make verify` denies warnings. Raise it deliberately, not
+      # as a side effect."* CI used to take `dtolnay/rust-toolchain@stable` instead — whatever
+      # `stable` meant that morning — so it checked a different compiler from the one anybody
+      # develops against. Every run on `develop` failed for days on lints no local shell could
+      # see, and because nothing depended on CI, nobody noticed.
+      #
+      # Using the flake makes the two the same toolchain by construction rather than by two
+      # version strings that happen to agree.
+      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/magic-nix-cache-action@main
+
       - uses: actions/cache@v4
         with:
           path: |
@@ -25,10 +35,59 @@ jobs:
           key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             cargo-${{ runner.os }}-
+
       - name: Verify
         run: |
-          cargo fmt --all -- --check
-          cargo check --all-targets --all-features
-          cargo clippy --all-targets --all-features -- -Dwarnings
-          cargo test --all-targets --all-features
+          nix develop --command cargo fmt --all -- --check
+          nix develop --command cargo check --all-targets --all-features
+          nix develop --command cargo clippy --all-targets --all-features -- -Dwarnings
+          nix develop --command cargo test --all-targets --all-features
+          # A dependency nothing uses is a lie about the graph, and the graph is what the
+          # modularity claim rests on. See the note in `Cargo.toml`.
+          nix develop --command cargo machete
 
+      # The architectural gates, which until now ran only on whoever remembered. `README.md` says
+      # they are not advisory and `PLAN.md` says they go into CI at the first commit; both were
+      # untrue for as long as this file ran four cargo commands and nothing else.
+      #
+      # Globbed rather than listed. The recipe in `.make.lua` names its gates one by one, so a
+      # gate added to `scripts/` and forgotten there would be invisible; a glob cannot forget.
+      # `scripts/` deciding what runs is also what lets this step be identical in all four
+      # repositories while each enforces its own rules.
+      #
+      # Executed, never `sh "$g"`. Two of these used process substitution and two used
+      # `set -o pipefail`, so under this runner's /bin/sh — dash — the first pair died at parse
+      # and the second at the first line. The shebang is the contract.
+      - name: Gates
+        run: |
+          for g in scripts/gate-*.sh; do
+            [ -e "$g" ] || continue
+            case "$g" in
+              # Both re-run the whole suite; they get their own steps, below, so a failure is
+              # attributable to one of them rather than to "the gates".
+              */gate-no-llm.sh|*/gate-hermetic.sh) continue ;;
+            esac
+            printf '\n== %s\n' "$g"
+            nix develop --command "$g"
+          done
+
+      # Separate because it compiles nothing new but runs every test a second time, and because a
+      # repo without one should skip it rather than fail.
+      - name: The suite with no model reachable
+        run: |
+          if [ -x scripts/gate-no-llm.sh ]; then
+            nix develop --command ./scripts/gate-no-llm.sh
+          else
+            echo "no gate-no-llm in this repository"
+          fi
+
+      # The property the trailing `remove_dir_all` in every test claimed and did not have: an
+      # `assert!` unwinds straight past a cleanup line, so a failing test always leaked. Under a
+      # `TMPDIR` of its own the answer is about this run and nothing else on the machine.
+      - name: The suite leaves nothing behind
+        run: |
+          if [ -x scripts/gate-hermetic.sh ]; then
+            nix develop --command ./scripts/gate-hermetic.sh
+          else
+            echo "no gate-hermetic in this repository"
+          fi

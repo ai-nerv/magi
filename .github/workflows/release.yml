@@ -12,26 +12,36 @@ jobs:
     name: release ${{ matrix.artifact }}
     runs-on: ${{ matrix.os }}
     strategy:
-      fail-fast: false
+      # No `fail-fast: false`. A release that half-succeeded — some architectures uploaded,
+      # some not — is worse than one that failed outright, because the tag then exists and
+      # is wrong.
       matrix:
         include:
           - os: ubuntu-latest
             artifact: "magi-linux-amd64"
           - os: ubuntu-24.04-arm
             artifact: "magi-linux-arm64"
-          - os: macos-15-intel
-            artifact: "magi-macos-amd64"
-          - os: macos-14
-            artifact: "magi-macos-arm64"
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      # The flake's toolchain, as in tests.yml: a release built with a different compiler from
+      # the one the gates ran under is not the thing that was tested.
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      # `--bin`, not `--example main`. This built an example no repository has ever defined,
+      # then packaged `target/release/examples/main`, so all sixteen matrix legs failed and no
+      # tag has ever produced an artifact. `--locked` because a tagged build should be
+      # reproducible from the lockfile rather than from whatever resolved that morning.
       - name: Build
-        run: cargo build --release --example main
+        run: nix develop --command cargo build --release --locked -p magi-cli --bin magi
+
+      # The step that was missing. The bug being fixed here is precisely "the packaging step
+      # archived a path nobody checked", so the fix asserts the path before archiving it.
+      - name: Check the binary exists
+        run: test -x target/release/magi
+
       - name: Package
-        run: tar -czf "${{ matrix.artifact }}.tar.gz" "target/release/examples/main"
+        run: tar -czf "${{ matrix.artifact }}.tar.gz" -C target/release "magi"
       - name: Upload artifact
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.artifact }}.tar.gz
-

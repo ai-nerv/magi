@@ -298,3 +298,15 @@ further help. If something failed, say so plainly with the output rather than he
 Ask only when the answer would change what you do and you cannot find it yourself. Otherwise
 make the ordinary judgement call, say which one you made, and carry on.
 ]]
+
+-- Pin casper to the bytes this configuration was set up against.
+--
+-- casper supplies magi's entire tool set -- `shell`, `read`, `grep`, everything the model calls
+-- -- and it is found on `$PATH`. That is the largest trust assumption magi makes, and it made it
+-- silently: a `casper` earlier on the path than the real one owns all of it.
+--
+-- Unpinned is the ordinary case and starts anything. `magi doctor` prints what casper actually
+-- hashed to, which is where the value below comes from; a mismatch takes no tools from it and
+-- says so.
+--
+-- magi.casper_sha256 = "…"

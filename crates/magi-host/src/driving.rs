@@ -27,6 +27,7 @@ pub async fn needs(program: &str) -> Vec<Need> {
         .output()
         .await
     else {
+        magi_model::noted!("driving: {program} needs could not be started");
         return Vec::new();
     };
     rows(&out.stdout)
@@ -49,7 +50,10 @@ pub async fn configure(program: &str, source: &str) -> Result<Applied, String> {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|why| format!("{program} could not be started: {why}"))?;
+        .map_err(|why| {
+            magi_model::noted!("driving: {program} configure could not be started: {why}");
+            format!("{program} could not be started: {why}")
+        })?;
 
     if let Some(mut stdin) = child.stdin.take() {
         use tokio::io::AsyncWriteExt;

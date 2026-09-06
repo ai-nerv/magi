@@ -49,7 +49,7 @@ mod stream;
 pub mod tool;
 
 pub use convert::{FromLua, json_from_lua};
-pub use engine::{Config, Engine, Registered};
+pub use engine::{Config, Engine};
 
 /// Anything that can go wrong loading a config.
 #[derive(Debug, thiserror::Error)]
