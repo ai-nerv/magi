@@ -45,8 +45,10 @@ impl Tool for Fake {
 struct Noted(Rc<RefCell<Vec<(String, bool)>>>);
 
 impl Watch for Noted {
-    fn finished(&self, name: &str, _: &serde_json::Value, is_error: bool) {
-        self.0.borrow_mut().push((name.to_owned(), is_error));
+    fn saw(&self, event: &magi_tools::Event<'_>) {
+        if let magi_tools::Event::Tool { name, is_error, .. } = event {
+            self.0.borrow_mut().push(((*name).to_owned(), *is_error));
+        }
     }
 }
 
@@ -105,7 +107,7 @@ fn a_watcher_cannot_change_the_result() {
     // of breaking one.
     struct Meddler;
     impl Watch for Meddler {
-        fn finished(&self, _: &str, _: &serde_json::Value, _: bool) {}
+        fn saw(&self, _: &magi_tools::Event<'_>) {}
     }
 
     let mut registry = Registry::new();
@@ -149,4 +151,92 @@ fn a_registry_with_nothing_watching_still_works() {
     }));
     let out = registry.call("build", &serde_json::json!({}), &ops(), &Uncancelled);
     assert_eq!(out.content, "ok");
+}
+
+/// A watcher that writes down the name of everything it is told.
+#[derive(Clone, Default)]
+struct Everything(Rc<RefCell<Vec<String>>>);
+
+impl Watch for Everything {
+    fn saw(&self, event: &magi_tools::Event<'_>) {
+        self.0.borrow_mut().push(event.kind().to_owned());
+    }
+}
+
+#[test]
+fn one_registration_hears_about_more_than_tools() {
+    // The seam was a callback with one caller: a tool finished, and nothing else in a session
+    // was observable from outside at all. A watcher registered once now hears everything,
+    // rather than needing a second registration under a second name per kind of event.
+    let seen = Everything::default();
+    let mut registry = Registry::new();
+    registry.watch(Box::new(seen.clone()));
+    registry.saw(&magi_tools::Event::TurnBegan { model: "m" });
+    registry.saw(&magi_tools::Event::Compacted {
+        dropped: 2,
+        kept: 8,
+    });
+    assert_eq!(
+        seen.0.borrow().as_slice(),
+        ["turn.began", "context.compacted"]
+    );
+}
+
+#[test]
+fn a_permission_is_written_down_where_it_is_decided_and_read_where_the_watchers_are() {
+    // The one event that cannot be delivered where it happens: `Ops` is `Send + Sync` and a
+    // watcher is neither. What the gate can do is write it down; what the turn loop does is
+    // read it out. Draining is destructive, so the same question is not reported twice.
+    let waiting = magi_tools::watching::Pending::new();
+    waiting.note(magi_tools::watching::Noted {
+        verb: "run".to_owned(),
+        about: "git status".to_owned(),
+        allowed: true,
+    });
+    let taken = waiting.drain();
+    assert_eq!(taken.len(), 1);
+    assert_eq!(taken[0].verb, "run");
+    assert!(taken[0].allowed);
+    assert!(waiting.drain().is_empty(), "taken once, not every round");
+}
+
+#[test]
+fn ops_with_no_gate_notices_nothing() {
+    // Every `Ops` answers this; only a gated one has anything to say. A double in a tool test
+    // should not have to know that permissions exist.
+    assert!(ops().noticed().is_empty());
+}
+
+#[test]
+fn a_gated_ops_writes_down_the_question_and_the_answer() {
+    // The audit trail that did not exist: a permission was put to somebody, answered, written
+    // into the ledger, and then the fact that it had been asked at all was gone.
+    struct Denies;
+    impl magi_tools::approve::Approver for Denies {
+        fn ask(
+            &self,
+            _tool: &str,
+            _action: &magi_proto::permit::Action,
+        ) -> magi_proto::permit::Decision {
+            magi_proto::permit::Decision::Deny
+        }
+    }
+    let ops = magi_tools::ops::Real::gated(
+        std::env::temp_dir(),
+        magi_tools::permit::Ledger::default(),
+        std::sync::Arc::new(Denies),
+    );
+    let refused = ops.allow(
+        "bash",
+        &magi_proto::permit::Action::Run {
+            command: "git status".to_owned(),
+            program: "git".to_owned(),
+        },
+    );
+    assert!(refused.is_err(), "the approver said no");
+
+    let noticed = ops.noticed();
+    assert_eq!(noticed.len(), 1, "{noticed:?}");
+    assert_eq!(noticed[0].verb, "run");
+    assert!(!noticed[0].allowed, "and it says which way it went");
 }

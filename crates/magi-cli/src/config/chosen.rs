@@ -152,8 +152,9 @@ mod entry_point {
 
     #[test]
     fn the_entry_point_names_every_file_beside_it() {
-        // Nothing is discovered by scanning, so a file in the tree that `init.lua` never loads
-        // is a file that ships and does nothing.
+        // The shipped tree is not a plugin directory: `config/` is read through `magi.load`
+        // alone, so a file in it that `init.lua` never names is a file that ships and does
+        // nothing. What is discovered lives under `plugin/` and `pack/`, which this is not.
         let init = checkout("init.lua");
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config");
         let mut checked = 0;

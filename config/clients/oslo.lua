@@ -17,8 +17,10 @@ end
 local M = { _NAME = "oslo", _VERSION = 1 }
 
 -- Every global this family answers to. The file is copied between siblings, so a lookup that knew
--- only its own name would fail on exactly the hosts it is meant to run in.
-local FAMILY = { "oslo", "hexe", "magi" }
+-- only its own name would fail on exactly the hosts it is meant to run in -- and a list that named
+-- only *some* of them made the copies differ by one line, which is how two copies start diverging.
+-- Every name is here in every copy, so the file is byte-identical wherever it lands.
+local FAMILY = { "oslo", "hexe", "magi", "casper", "melchior", "balthasar" }
 
 -- ---------------------------------------------------------------- JSON, in Lua
 

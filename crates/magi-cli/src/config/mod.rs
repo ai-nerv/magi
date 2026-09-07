@@ -23,9 +23,11 @@ pub struct Loaded {
 
 /// Run `init.lua`, then everything it asked for, and collect what they declared.
 ///
-/// **One entry point.** The host runs `init.lua` and nothing else by name; every other file is
-/// reached through `magi.load`. Nothing is discovered by scanning, so a file that is not named
-/// does not run — the property a plugin mechanism will need, and one a scanner cannot offer.
+/// **One entry point, and then the directories.** The host runs `init.lua` and nothing else by
+/// name; every other file it uses is reached through `magi.load`, so a config that names all of
+/// its own files can still be read top to bottom. What is *installed* is discovered — see
+/// [`discovered`] — because requiring an edit to `init.lua` to enable a package makes every
+/// package a merge conflict with the person's own configuration.
 ///
 /// **Nothing is compiled in.** A protocol description, a catalog and a tool are configuration:
 /// they change without the binary changing, and a binary carrying a copy is a binary you rebuild
@@ -34,7 +36,11 @@ pub struct Loaded {
 pub fn load() -> Result<Loaded, LuaError> {
     let mut engine = Engine::new();
     let mut tools: Vec<(String, String)> = Vec::new();
-    let mut clients: Vec<(String, String)> = Vec::new();
+    // **Borrowed, not vendored.** Every sibling serves its own client library, so magi asks for
+    // them before anything runs -- a tool description opens its sibling's client as it loads, and
+    // a copy of one that had fallen behind silently removed every memory tool from every session
+    // on a machine. See `lent`.
+    let mut clients: Vec<(String, String)> = lent::borrowed();
 
     let entry = config_dir()
         .map(|dir| dir.join("init.lua"))
@@ -48,45 +54,61 @@ pub fn load() -> Result<Loaded, LuaError> {
                 "no configuration; run `make configs` to install it",
             ),
         })?;
+    engine.install_clients(&clients);
     engine.run_file(&entry)?;
 
     // Drained in rounds so a loaded file may load more, and the clients of a round are installed
     // before its tools run: a tool description opens its sibling's client as it loads.
     let mut seen: BTreeSet<String> = BTreeSet::new();
-    loop {
-        let asked = engine.take_loads();
-        if asked.is_empty() {
-            break;
-        }
-        let mut round: Vec<(String, String)> = Vec::new();
-        for path in asked {
-            if !seen.insert(path.clone()) {
-                continue;
+    let mut drain = |engine: &mut Engine| -> Result<(), LuaError> {
+        loop {
+            let asked = engine.take_loads();
+            if asked.is_empty() {
+                break;
             }
-            let Some(source) = source_of(&path) else {
-                continue;
-            };
-            round.push((path, source));
-        }
-        for (path, source) in round.iter().filter(|(p, _)| kind(p) == Some("clients")) {
-            layer(&mut clients, stem(path), source.clone());
-        }
-        engine.install_clients(&clients);
-        for (path, source) in &round {
-            match kind(path) {
-                Some("clients") => continue,
-                // Read and run like any other file, but nothing is kept: a protocol description
-                // is melchior's now, and a copy held here would be a copy that drifts. A config
-                // that still names one is not an error — it simply declares to nobody.
-                Some("apis") => engine.run(source, path)?,
-                Some("tools") => {
-                    engine.run(source, path)?;
-                    layer(&mut tools, stem(path), source.clone());
+            let mut round: Vec<(String, String)> = Vec::new();
+            for path in asked {
+                if !seen.insert(path.clone()) {
+                    continue;
                 }
-                _ => engine.run(source, path)?,
+                let Some(source) = source_of(&path) else {
+                    continue;
+                };
+                round.push((path, source));
+            }
+            for (path, source) in round.iter().filter(|(p, _)| kind(p) == Some("clients")) {
+                layer(&mut clients, stem(path), source.clone());
+            }
+            engine.install_clients(&clients);
+            for (path, source) in &round {
+                match kind(path) {
+                    Some("clients") => continue,
+                    // Read and run like any other file, but nothing is kept: a protocol
+                    // description is melchior's now, and a copy held here would be a copy that
+                    // drifts. A config that still names one is not an error — it simply declares
+                    // to nobody.
+                    Some("apis") => engine.run(source, path)?,
+                    Some("tools") => {
+                        engine.run(source, path)?;
+                        layer(&mut tools, stem(path), source.clone());
+                    }
+                    _ => engine.run(source, path)?,
+                }
             }
         }
-    }
+        Ok(())
+    };
+    drain(&mut engine)?;
+
+    // **Then whatever is installed, discovered rather than named.** After `init.lua` and
+    // everything it asked for, so a configuration that names all of its own files behaves exactly
+    // as it did; before the project file, which is still read last and still may not declare.
+    let cwd = std::env::current_dir().unwrap_or_default();
+    discovered::run(
+        &mut engine,
+        &magi_lua::plugins::Roots::discovered(&cwd),
+        &mut drain,
+    )?;
 
     // The line between the two kinds of configuration. Above it is the machine's own, which
     // the user wrote. Below it is a file that arrived with a checkout.
@@ -144,6 +166,32 @@ pub fn load() -> Result<Loaded, LuaError> {
     collect(engine.config(), tools, clients)
 }
 
+/// Acknowledge every installed package, so it may run.
+///
+/// Prints what it took. Nothing installed prints so and is not an error — it is what a machine
+/// that has installed nothing should say.
+pub fn acknowledge() {
+    let Some(dir) = config_dir() else {
+        eprintln!("magi: no configuration directory to write a manifest in");
+        return;
+    };
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let files = discovered::installed(&magi_lua::plugins::Roots::discovered(&cwd));
+    if files.is_empty() {
+        println!("nothing installed under site/pack — nothing to acknowledge");
+        return;
+    }
+    let manifest = magi_lua::acknowledged::manifest_in(&dir);
+    match magi_lua::acknowledged::acknowledge(&manifest, &files) {
+        Ok(taken) => {
+            for (path, _) in &files {
+                println!("  {}", path.display());
+            }
+            println!("acknowledged {taken} file(s) in {}", manifest.display());
+        }
+        Err(why) => eprintln!("magi: {why}"),
+    }
+}
 /// Whether the working directory is one the machine's config vouched for.
 ///
 /// Inverted on purpose: `Some(Trusted)` means a boundary is being enforced, and a trusted
@@ -234,6 +282,8 @@ pub fn catalog(loaded: &Loaded, cards: Vec<magi_proto::ask::Card>) -> magi_host:
 }
 
 pub(crate) mod chosen;
+mod discovered;
+mod lent;
 use chosen::asked;
 mod settings;
 
@@ -320,6 +370,12 @@ fn watched_files() -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
 
     for group in ["apis", "tools", "clients"] {
+        out.extend(lua_files(&dir.join(group)));
+    }
+
+    // The discovered roots too. A plugin is configuration like any other; editing one and having
+    // nothing happen until a restart would make the directories feel like a lesser kind of file.
+    for group in ["plugin", "after/plugin"] {
         out.extend(lua_files(&dir.join(group)));
     }
 

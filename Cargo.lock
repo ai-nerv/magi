@@ -475,6 +475,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64",
+ "ciborium",
  "clap",
  "crossterm",
  "magi-host",
@@ -554,6 +555,7 @@ dependencies = [
  "magi-tools",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.20",
 ]
 

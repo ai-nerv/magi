@@ -71,10 +71,23 @@ jobs:
               # Both re-run the whole suite; they get their own steps, below, so a failure is
               # attributable to one of them rather than to "the gates".
               */gate-no-llm.sh|*/gate-hermetic.sh) continue ;;
+              # Needs a built binary rather than a grep over the source; its own step, below.
+              */gate-family.sh) continue ;;
             esac
             printf '\n== %s\n' "$g"
             nix develop --command "$g"
           done
+
+      # **The family contract.** Every program in this family answers the same floor — `verbs` in
+      # the reply shape, `client`, both encodings — and everything it advertises, it dispatches.
+      # See FAMILY.md. This step is identical in all four repositories because the binary is named
+      # after the repository, and because the gate reads what to hold a program to off what that
+      # program advertises rather than off a flag somebody has to pass correctly.
+      - name: The family contract
+        run: |
+          bin="${{ github.event.repository.name }}"
+          nix develop --command cargo build --release --bin "$bin"
+          nix develop --command ./scripts/gate-family.sh "target/release/$bin"
 
       # Separate because it compiles nothing new but runs every test a second time, and because a
       # repo without one should skip it rather than fail.

@@ -220,8 +220,15 @@ fn what_the_model_sends_arrives_as_what_it_meant() {
 
 #[test]
 fn the_memory_tools_register_and_answer_when_balthasar_is_running() {
+    // **From balthasar, not from a copy here.** The library and the surface it talks to ship
+    // together; a vendored copy that had fallen behind silently removed every memory tool from
+    // every session on a machine, which is why magi stopped keeping one.
+    let Some(client) = borrowed("balthasar") else {
+        eprintln!("skipping: balthasar is not installed");
+        return;
+    };
     let mut engine = Engine::new();
-    engine.install_clients(&[("balthasar".to_owned(), config("clients/balthasar.lua"))]);
+    engine.install_clients(&[("balthasar".to_owned(), client)]);
     engine
         .run(&config("tools.lua"), "tools.lua")
         .expect("the tool declaration must run");
@@ -323,3 +330,19 @@ fn replies(socket: &std::path::Path) -> bool {
 /// second is two orders of magnitude more than it needs and still short enough that a wedged
 /// one does not hold the suite.
 const PATIENCE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// A sibling's client library, from the sibling.
+///
+/// `None` when it is not installed or has none to lend, which is a skip rather than a failure —
+/// the same rule as everything else in this file.
+fn borrowed(program: &str) -> Option<String> {
+    let out = std::process::Command::new(program)
+        .arg("client")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let source = String::from_utf8(out.stdout).ok()?;
+    // A library is Lua; a refusal is the family's reply shape, and no Lua chunk starts with `{`.
+    (!source.trim_start().is_empty() && !source.trim_start().starts_with('{')).then_some(source)
+}

@@ -231,10 +231,10 @@ mod tests {
     #[test]
     fn a_file_is_named_by_its_basename() {
         let files = vec![
-            ("clients/balthasar.lua".to_owned(), String::new()),
+            ("clients/oslo.lua".to_owned(), String::new()),
             ("tools.lua".to_owned(), String::new()),
         ];
-        assert_eq!(named(&files), "balthasar.lua tools.lua");
+        assert_eq!(named(&files), "oslo.lua tools.lua");
         assert_eq!(named(&[]), "(none)");
     }
 }

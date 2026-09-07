@@ -679,14 +679,14 @@ mod command_transport {
     }
 }
 
-/// A Lua function told when a tool finishes.
+/// A Lua function told what happened.
 ///
-/// The seam a memory layer needs and magi's Rust should not know about. magi reports *that a
-/// tool ran and whether it worked*; what to do with that — report it to balthasar, count it, ignore
-/// it — is a configuration's business, and lives in Lua beside the client it would use.
+/// The seam a memory layer needs and magi's Rust should not know about. magi reports *what
+/// happened*; what to do with that — report it to balthasar, time it, count it, ignore it — is
+/// a configuration's business, and lives in Lua beside the client it would use.
 ///
-/// Failures are swallowed on purpose. A watcher that raised would turn observing a tool call
-/// into a way of breaking one, and the whole point of watching after the fact is that it cannot.
+/// Failures are swallowed on purpose. A watcher that raised would turn observing a session into
+/// a way of breaking one, and the whole point of watching after the fact is that it cannot.
 pub struct LuaWatch {
     engine: Rc<RefCell<Engine>>,
 }
@@ -700,16 +700,11 @@ impl LuaWatch {
 }
 
 impl magi_tools::Watch for LuaWatch {
-    fn finished(&self, name: &str, arguments: &serde_json::Value, is_error: bool) {
-        let event = serde_json::json!({
-            "tool": name,
-            "arguments": arguments,
-            "is_error": is_error,
-        });
+    fn saw(&self, event: &magi_tools::Event<'_>) {
         // Borrowed rather than held: a tool's own body may still be on the stack above this,
         // and a watcher that panicked on a double borrow would take the turn with it.
         if let Ok(mut engine) = self.engine.try_borrow_mut() {
-            engine.call_watchers(&event);
+            engine.call_watchers(&event.value());
         }
     }
 }

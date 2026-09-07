@@ -27,10 +27,12 @@ pub mod question;
 pub mod registry;
 pub mod repair;
 pub mod schema;
+pub mod watching;
 
 pub use cancel::{Cancel, Uncancelled};
 pub use ops::{Ops, Shell};
-pub use registry::{Prepared, Registry, Sending, Tool, Watch};
+pub use registry::{Prepared, Registry, Sending, Tool};
+pub use watching::{Event, Watch, Watchers};
 
 use serde::{Deserialize, Serialize};
 

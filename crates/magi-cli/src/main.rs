@@ -27,6 +27,7 @@ mod shell;
 mod terminal;
 mod tools;
 mod ui;
+mod verbs;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -78,9 +79,34 @@ enum Command {
     /// and a flag that picked the path would be magi inventing a convention nobody asked for.
     ///
     /// The agent surface has its own, printed by `melchior lua-api`. It left with the layer.
+    ///
+    /// `client` is the family's name for it; `lua-api` is what this program called it first.
+    #[command(alias = "client")]
     LuaApi,
+    /// Every verb this program answers, on each of its doors.
+    ///
+    /// magi coordinates rather than being coordinated, so it answers the floor of the family
+    /// contract and not `needs` or `configure` — see FAMILY.md. It answers `verbs` for the same
+    /// reason every sibling does: a family where one program can be asked what it speaks and
+    /// another cannot has stopped being one.
+    Verbs {
+        /// Answer in JSON. The default, and accepted so every sibling takes the same flags.
+        #[arg(long)]
+        json: bool,
+        /// Answer in CBOR rather than JSON.
+        #[arg(long)]
+        cbor: bool,
+    },
     /// List the tools the model can call, and how each is reached.
     Tools,
+    /// Acknowledge the installed packages, so they may run.
+    ///
+    /// A file in your own `plugin/` directory runs on sight -- you put it there. A package under
+    /// `site/pack/` is somebody else's code that arrived by being fetched, so it runs once you
+    /// have said it may, and stops running again the moment it changes. This is where you say so.
+    ///
+    /// Prints what it acknowledged. Run it after installing or updating anything.
+    Acknowledge,
     /// Say what a session here would be made of, without starting one.
     ///
     /// Which configuration was read, which of its lines were kept, what the tool registry ends
@@ -122,6 +148,14 @@ async fn main() -> Result<()> {
         Some(Command::Ext(Ext::Lua { file })) => ext_lua::run(&file),
         Some(Command::LuaApi) => {
             print!("{}", magi_lua::client::CLIENT);
+            Ok(())
+        }
+        Some(Command::Verbs { cbor, .. }) => {
+            verbs::print(cbor);
+            Ok(())
+        }
+        Some(Command::Acknowledge) => {
+            config::acknowledge();
             Ok(())
         }
         Some(Command::Tools) => {

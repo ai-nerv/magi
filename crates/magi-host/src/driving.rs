@@ -30,7 +30,7 @@ pub async fn needs(program: &str) -> Vec<Need> {
         magi_model::noted!("driving: {program} needs could not be started");
         return Vec::new();
     };
-    rows(&out.stdout)
+    flat(rows(&out.stdout))
         .into_iter()
         .filter_map(|row| serde_json::from_value(row).ok())
         .collect()
@@ -76,12 +76,16 @@ pub async fn configure(program: &str, source: &str) -> Result<Applied, String> {
             .unwrap_or("it refused and gave no reason")
             .to_owned());
     }
-    reply
-        .get("result")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|rows| rows.first().cloned())
-        .and_then(|row| serde_json::from_value(row).ok())
-        .ok_or_else(|| format!("{program} answered something unreadable"))
+    flat(
+        reply
+            .get("result")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
+    )
+    .into_iter()
+    .find_map(|row| serde_json::from_value(row).ok())
+    .ok_or_else(|| format!("{program} answered something unreadable"))
 }
 
 /// Write the Lua that says what magi has decided, for the settings this sibling takes.
@@ -102,16 +106,51 @@ pub fn saying(module: &str, needs: &[Need], answers: &[(&str, serde_json::Value)
 
 /// One JSON value as the Lua literal for it.
 ///
-/// Enough for what a coordinator sends: a string, a number, a flag. A table is declared by a
-/// registrar rather than assigned, so it does not come through here.
+/// **Tables included, because the siblings declare them.** melchior declares `provider` as a
+/// table, balthasar declares `decay` and `witness`, and casper declares `tools` — and this wrote
+/// `nil` for every one of them. So the contract advertised a shape the coordinator could not
+/// deliver: a person writing `magi.casper = { tools = { dino = { off = true } } }` was answered
+/// with silence, and the sibling reported nothing set because nothing was.
+///
+/// A map becomes `{ ["key"] = value }` and a list becomes `{ value, value }`. Keys are written as
+/// bracketed strings rather than bare identifiers, so a key that is a Lua keyword — or has a dash
+/// in it, which several settings do — is not a syntax error in the chunk somebody else has to
+/// run.
 fn lua(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::String(text) => format!("{text:?}"),
         serde_json::Value::Bool(flag) => flag.to_string(),
         serde_json::Value::Number(number) => number.to_string(),
-        // Anything else is not a setting a coordinator should be assigning, and `nil` is the
-        // honest rendering: it sets nothing and the sibling reports nothing set.
-        _ => "nil".to_owned(),
+        serde_json::Value::Array(items) => {
+            let inner: Vec<String> = items.iter().map(lua).collect();
+            format!("{{ {} }}", inner.join(", "))
+        }
+        serde_json::Value::Object(fields) => {
+            let inner: Vec<String> = fields
+                .iter()
+                .map(|(key, value)| format!("[{key:?}] = {}", lua(value)))
+                .collect();
+            format!("{{ {} }}", inner.join(", "))
+        }
+        // `null` is the one thing left, and `nil` is its honest rendering: it sets nothing, and
+        // the sibling reports nothing set.
+        serde_json::Value::Null => "nil".to_owned(),
+    }
+}
+
+/// The rows a reply meant, when one of them turns out to be the rows.
+///
+/// The contract says `result` is a list of rows and a row is a value. casper sent its listings
+/// as one row that was itself a list, so a coordinator deserialising row by row found an array
+/// where a declaration belonged, took nothing from it, and concluded casper declared nothing.
+///
+/// casper sends them flat now. This stays because the four programs ship from four repositories
+/// and are installed one at a time: a coordinator that understands only the newer shape stops
+/// coordinating the older sibling entirely, and does it silently.
+fn flat(rows: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+    match rows.first() {
+        Some(serde_json::Value::Array(inner)) if rows.len() == 1 => inner.clone(),
+        _ => rows,
     }
 }
 
@@ -220,5 +259,85 @@ mod tests {
             .await
             .expect_err("nothing to configure");
         assert!(why.contains("magi-no-such-sibling-anywhere"), "{why}");
+    }
+}
+
+#[cfg(test)]
+mod table_tests {
+    use super::*;
+
+    fn need(name: &str) -> Need {
+        Need {
+            name: name.to_owned(),
+            kind: magi_proto::setup::Kind::Table,
+            about: String::new(),
+            required: false,
+            default: None,
+        }
+    }
+
+    #[test]
+    fn a_table_setting_is_rendered_rather_than_nilled() {
+        // **The contract advertised a shape the coordinator could not deliver.** Three siblings
+        // declare table settings and this wrote `nil` for all of them, so a person configuring
+        // one got silence and the sibling correctly reported that nothing had been set.
+        let said = saying(
+            "casper",
+            &[need("tools")],
+            &[(
+                "tools",
+                serde_json::json!({ "dino": { "off": true }, "shell": { "hidden": true } }),
+            )],
+        );
+        assert!(
+            said.contains("casper.tools = {"),
+            "a table, not nil: {said}"
+        );
+        assert!(said.contains(r#"["dino"]"#), "{said}");
+        assert!(said.contains("[\"off\"] = true"), "{said}");
+        assert!(!said.contains("nil"), "nothing was dropped: {said}");
+    }
+
+    #[test]
+    fn a_list_is_a_list_and_not_a_map() {
+        let said = saying(
+            "balthasar",
+            &[need("sources")],
+            &[("sources", serde_json::json!(["magi", "shell"]))],
+        );
+        assert!(said.contains(r#"{ "magi", "shell" }"#), "{said}");
+    }
+
+    #[test]
+    fn a_key_that_is_not_an_identifier_is_still_written() {
+        // Bracketed strings rather than bare names: a key with a dash in it, or one that is a Lua
+        // keyword, would otherwise be a syntax error in a chunk somebody else has to run.
+        let said = saying(
+            "melchior",
+            &[need("compat")],
+            &[(
+                "compat",
+                serde_json::json!({ "thinking-format": "deepseek", "end": 1 }),
+            )],
+        );
+        assert!(said.contains(r#"["thinking-format"]"#), "{said}");
+        assert!(said.contains(r#"["end"]"#), "a keyword as a key: {said}");
+    }
+    #[test]
+    fn a_listing_that_arrived_as_one_row_of_rows_is_still_read() {
+        // What casper used to send. A coordinator that only understood the flat shape would take
+        // no settings from it and say nothing about why.
+        let nested = vec![serde_json::json!([{ "name": "tools" }, { "name": "load" }])];
+        assert_eq!(flat(nested).len(), 2);
+    }
+
+    #[test]
+    fn flat_rows_are_left_alone() {
+        let rows = vec![serde_json::json!({ "name": "tools" })];
+        assert_eq!(flat(rows.clone()), rows);
+        // Two rows, the first of which is genuinely a list, is not the wrapping — it is a reply
+        // whose first value happens to be an array, and unwrapping it would lose the second.
+        let mixed = vec![serde_json::json!([1, 2]), serde_json::json!(3)];
+        assert_eq!(flat(mixed.clone()), mixed);
     }
 }

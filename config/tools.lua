@@ -124,6 +124,9 @@ do -- balthasar
   magi.watch("balthasar-outcome", {
     run = function(event)
       if not balthasar or not injection then return end
+      -- Only tool events. magi tells watchers about turns, permissions, compaction and the
+      -- session too, and every one of those arrives here with no `tool` field at all.
+      if event.kind ~= "tool.finished" then return end
       if event.tool == "recall" or event.tool == "remember" then return end
 
       -- What the tool was actually asked to do, as one string. balthasar hashes it and keeps the

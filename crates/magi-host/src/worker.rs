@@ -141,7 +141,26 @@ impl Worker {
             registry.probe(&*ops);
 
             runtime.block_on(async {
+                // Said once, when the worker first has a session in hand. This is the earliest
+                // point where both halves exist: the session is created before the registry and
+                // the registry is where the watchers live, so anything wanting to attach state
+                // to a session had nowhere to hear about it.
+                //
+                // **Resumed is read from the session rather than passed down.** A session that
+                // already has entries the first time the worker sees it was carried in from a
+                // journal or from balthasar; one that does not is new. The flag that says so
+                // lives four layers up in the command line and would be four signatures of
+                // plumbing to carry a boolean somebody can read off the thing itself.
+                let mut announced = false;
                 while let Some(job) = queue.recv().await {
+                    if !announced {
+                        announced = true;
+                        let held = job.session.lock().await;
+                        registry.saw(&magi_tools::Event::Session {
+                            id: held.id().as_str(),
+                            resumed: !held.entries().is_empty(),
+                        });
+                    }
                     match job.kind {
                         // A failed turn is already journalled as an error entry by `turn::run`;
                         // there is nothing further to report and nothing to abort the daemon for.

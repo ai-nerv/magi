@@ -51,10 +51,23 @@ pub fn cards_from(program: &str) -> Vec<Card> {
         magi_model::noted!("casper: {program} tools could not be started");
         return Vec::new();
     };
-    rows(&out.stdout)
-        .and_then(|rows| rows.first().cloned())
-        .and_then(|first| serde_json::from_value(first).ok())
-        .unwrap_or_default()
+    listed(rows(&out.stdout).unwrap_or_default())
+}
+
+/// The cards in a reply's rows, whichever of the two shapes they arrived in.
+///
+/// Flat is the contract: `result` is the rows and a row is a card. casper sent its listings as a
+/// single row that was itself a list, and this read that shape alone — so the two agreed with
+/// each other and with nothing else in the family. Both are read here, because the two programs
+/// ship from separate repositories and a magi that only understands the new casper is a magi
+/// that loses every tool the moment the versions differ.
+fn listed(rows: Vec<serde_json::Value>) -> Vec<Card> {
+    if let Some(nested) = rows.first().filter(|first| first.is_array()) {
+        return serde_json::from_value(nested.clone()).unwrap_or_default();
+    }
+    rows.into_iter()
+        .filter_map(|row| serde_json::from_value(row).ok())
+        .collect()
 }
 
 /// The rows of a family reply, or nothing when it was not one.
@@ -340,6 +353,20 @@ mod tests {
             rows(br#"{"ok":true,"n":1,"result":[1]}"#).map(|r| r.len()),
             Some(1)
         );
+    }
+
+    #[test]
+    fn cards_are_read_in_either_shape_casper_has_sent_them() {
+        // Flat is the contract; nested is what casper sent for as long as it has existed. The two
+        // programs are installed separately, so a magi that understood only one of them would
+        // lose every tool it has the moment the other side was upgraded first.
+        let card =
+            serde_json::json!({ "name": "cat", "description": "read a file", "parameters": {} });
+        let flat = listed(vec![card.clone()]);
+        let nested = listed(vec![serde_json::json!([card])]);
+        assert_eq!(flat.len(), 1, "flat");
+        assert_eq!(nested.len(), 1, "nested");
+        assert_eq!(flat[0].name, nested[0].name);
     }
 }
 

@@ -1,5 +1,6 @@
 //! The one registry every tool lands in.
 
+use crate::watching::{Event, Watch};
 use crate::{Cancel, Ops, Output};
 use std::collections::BTreeMap;
 
@@ -91,22 +92,7 @@ pub enum Sending {
 #[derive(Default)]
 pub struct Registry {
     tools: BTreeMap<String, Box<dyn Tool>>,
-    watching: Vec<Box<dyn Watch>>,
-}
-
-/// Something told about every tool that finishes.
-///
-/// Both completion paths report here, so a watcher sees the same events whether a call ran
-/// inline or was started early and waited for. It is told *after* the fact and its answer is
-/// ignored: a watcher that could change a result would be a tool wearing a different name, and
-/// one that could fail would be a way for observation to break the thing observed.
-///
-/// Not `Send + Sync`, for the same reason [`Tool`] is not: the interesting watchers live in the
-/// same VM the Lua tools do, and demanding the bounds would force an `unsafe impl` asserting
-/// what the single-threaded design already guarantees.
-pub trait Watch {
-    /// A tool finished.
-    fn finished(&self, name: &str, arguments: &serde_json::Value, is_error: bool);
+    watching: crate::watching::Watchers,
 }
 
 impl Registry {
@@ -116,20 +102,41 @@ impl Registry {
         Self::default()
     }
 
-    /// Be told when a tool finishes.
+    /// Be told what happens.
     ///
     /// For anything that needs to know what actually happened rather than what was asked for —
     /// a memory layer recording whether acting on what it suggested worked, say. Several
-    /// watchers may be added; each is told in turn, and none can affect the result.
+    /// watchers may be added; each is told in turn, and none can affect the result. What they
+    /// can be told is [`Event`].
     pub fn watch(&mut self, watcher: Box<dyn Watch>) {
-        self.watching.push(watcher);
+        self.watching.add(watcher);
+    }
+
+    /// The handle the watchers hang off, for whoever else has something to report.
+    ///
+    /// The permission gate is the other one: it is built beside the registry and neither owns
+    /// the other, so the audience is what they share. See [`crate::watching::Watchers`].
+    #[must_use]
+    pub fn watchers(&self) -> crate::watching::Watchers {
+        self.watching.clone()
     }
 
     /// Tell every watcher, and let none of them matter.
+    ///
+    /// The registry holds the watchers because it is the one thing every part of a session
+    /// already has a reference to — the turn loop, the approver and the compactor all reach it,
+    /// and none of them would otherwise have anywhere to report to.
+    pub fn saw(&self, event: &Event<'_>) {
+        self.watching.saw(event);
+    }
+
+    /// A tool finished, which is the event the registry itself raises.
     fn finished(&self, name: &str, arguments: &serde_json::Value, is_error: bool) {
-        for watcher in &self.watching {
-            watcher.finished(name, arguments, is_error);
-        }
+        self.saw(&Event::Tool {
+            name,
+            arguments,
+            is_error,
+        });
     }
 
     /// Add a tool, replacing any of the same name.
@@ -285,7 +292,7 @@ impl Registry {
             }
         };
         let state = match tool.send(&checked, ops) {
-            Sending::Sent => State::Sent,
+            Sending::Sent => State::Sent(checked),
             Sending::Inline => State::Inline(checked),
             Sending::Refused(output) => State::Answered(output),
         };
@@ -306,8 +313,12 @@ impl Registry {
         let mut ran = serde_json::Value::Null;
         let output = match state {
             State::Answered(output) => return output,
-            State::Sent => match self.get(&name) {
-                Some(tool) => tool.wait(cancel),
+            State::Sent(arguments) => match self.get(&name) {
+                Some(tool) => {
+                    let output = tool.wait(cancel);
+                    ran = arguments;
+                    output
+                }
                 None => Output::error(format!("{name} is gone")),
             },
             State::Inline(arguments) => match self.get(&name) {
@@ -347,14 +358,21 @@ impl Prepared {
     /// What makes a round worth splitting: nothing is overlapping unless something is in flight.
     #[must_use]
     pub fn in_flight(&self) -> bool {
-        matches!(self.state, State::Sent)
+        matches!(self.state, State::Sent(_))
     }
 }
 
 /// How far a prepared call got.
 enum State {
-    /// Sent to a peer, waiting to be collected.
-    Sent,
+    /// Sent to a peer, waiting to be collected — with the arguments it was sent.
+    ///
+    /// **The arguments are carried here for the watchers**, who are told what a call ran with
+    /// after it finishes. This variant held nothing, and `finish` started `ran` at `Null` and
+    /// assigned it only on the inline path, so every peer tool — `shell` among them — reported to
+    /// every watcher that it had run with no arguments at all. The one shipped watcher reports
+    /// outcomes to the memory layer, so what it recorded about most of a session's work was that
+    /// something happened and nothing about what.
+    Sent(serde_json::Value),
     /// Not sent; run it where it stands, with these arguments.
     Inline(serde_json::Value),
     /// It never started, and this is why.
@@ -695,3 +713,8 @@ mod checked_tests {
         assert!(out.content.contains("no tool called"), "{}", out.content);
     }
 }
+
+/// What a watcher is told, on both completion paths.
+#[path = "registry/reporting.rs"]
+#[cfg(test)]
+mod reporting;

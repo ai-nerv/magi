@@ -62,235 +62,6 @@ pub struct Backend {
     pub system: Option<String>,
 }
 
-/// Summarise the earlier part of the conversation and journal the result.
-///
-/// Returns whether anything was compacted. A failure is not fatal: the turn goes ahead with
-/// the context it has and either fits or is refused by the provider, which is no worse than
-/// not having tried. Losing the conversation because the summariser had a bad minute would be.
-async fn compact(session: &tokio::sync::Mutex<Session>, backend: &Backend) -> bool {
-    let entries = {
-        let held = session.lock().await;
-        held.entries().to_vec()
-    };
-    let Some(covered) = crate::compact::covers(&entries) else {
-        return false;
-    };
-
-    {
-        let mut held = session.lock().await;
-        held.set_status(AgentStatus::Working {
-            label: "Compacting".into(),
-        });
-    }
-
-    // **The messages of exactly the entries being replaced.** These were two boundaries once:
-    // the journal recorded `entries.len() - KEEP` and the summariser was given
-    // `messages.len() - KEEP`, computed independently in two spaces that agree only when every
-    // entry makes exactly one message. A `Notice`, a `Branch`, a `Compaction` and an assistant
-    // entry that errored each make none, so every one of them in the head of the transcript
-    // pushed the entry cut past the message cut — and what fell between was declared summarised
-    // without ever being shown to the summariser.
-    let asked = crate::compact::request(&crate::context::of_entries(&entries[..covered]));
-    let mut turn = magi_core::Turn::new();
-    let mut deltas = Vec::new();
-    // The same mind that answers a turn writes the summary of one. Collected rather than
-    // streamed: nobody watches a compaction, and the entry is written once at the end.
-    let outcome = crate::broker::ask_through(
-        &backend.mind,
-        &backend.model,
-        &asked,
-        &backend.wants,
-        |delta| deltas.push(delta),
-        |_| {},
-    )
-    .await;
-    for delta in deltas {
-        turn.apply(delta);
-    }
-    if outcome.is_err() || turn.text().trim().is_empty() {
-        return false;
-    }
-
-    let mut held = session.lock().await;
-    let id = MessageId::new(format!("k{}", held.cursor().next().0));
-    let committed = held.commit(Entry::Compaction {
-        id,
-        summary: turn.text().trim().to_owned(),
-        replaces: covered,
-    });
-    committed.is_ok()
-}
-
-/// How long a recall may hold up a turn.
-///
-/// Generous for a local socket and short enough that nobody notices it. The point is not to bound
-/// balthasar — it bounds itself — but to make the turn independent of whether it does.
-const PATIENCE: std::time::Duration = std::time::Duration::from_millis(250);
-
-/// Ask balthasar what it would have sent, and say how it differs from what magi will.
-///
-/// Nothing acts on the answer. It exists so the difference is measurable at all: magi compacts
-/// with `KEEP` and a character estimate, balthasar decides per memory with everything it knows
-/// about the run, and until now there was no way to see that they disagree — let alone by how
-/// much.
-///
-/// Best effort, on the same clock as everything else here. A balthasar that has observed nothing
-/// refuses this, which is the ordinary answer for a harness that has not streamed its turns.
-async fn second_opinion(
-    session: &tokio::sync::Mutex<Session>,
-    backend: &Backend,
-    scribe: &crate::scribe::Held,
-) {
-    let Some(window) = backend.context_window else {
-        return;
-    };
-    let ours = {
-        let held = session.lock().await;
-        crate::compact::covers(held.entries()).unwrap_or(0)
-    };
-    let theirs = tokio::time::timeout(PATIENCE, async {
-        let mut open = scribe.lock().await;
-        open.as_mut()?.would_send(window).await.ok()
-    })
-    .await
-    .ok()
-    .flatten();
-    if let Some(theirs) = theirs {
-        let counted = |what: &str| {
-            theirs
-                .get(what)
-                .and_then(|v| v.as_array())
-                .map_or(0, Vec::len)
-        };
-        magi_model::noted!(
-            "compact: magi replaces {ours} entries; balthasar would keep {}, mask {}, \
-             drop {} and summarise {} — {}",
-            counted("keep"),
-            counted("mask"),
-            counted("drop"),
-            counted("summarise"),
-            theirs
-                .get("why")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("no reason given")
-        );
-    }
-}
-
-/// What this project remembers about the prompt in front of it, as a message.
-///
-/// The half of the memory layer that was never connected. The transcript has always flowed *to*
-/// balthasar through [`crate::scribe`], and it comes back three ways — a surface may ask, a model
-/// may call `recall` as a tool, and `magi doctor` will say the layer is there. All three need
-/// somebody to ask first, which a model that has forgotten something cannot do.
-///
-/// Keyed on the last thing the person said, because that is what the turn is about. Best effort
-/// throughout: a balthasar that is missing, wedged or refusing costs the turn nothing.
-async fn remembered(
-    session: &tokio::sync::Mutex<Session>,
-    backend: &Backend,
-    scribe: &crate::scribe::Held,
-) -> (Option<magi_model::Message>, Option<String>) {
-    let Some(window) = backend.context_window else {
-        return (None, None);
-    };
-    let query = {
-        let held = session.lock().await;
-        match crate::context::last_asked(&held) {
-            Some(query) => query,
-            None => return (None, None),
-        }
-    };
-
-    // **On a clock, because this is in front of the person's turn.** A memory layer that is
-    // slow, wedged, or busy compacting its own store must cost the conversation nothing — that
-    // is what makes recalling unconditional rather than a setting somebody has to find. A local
-    // socket answers this in single-digit milliseconds; anything that does not is not going to
-    // be worth waiting for.
-    let asked = std::time::Instant::now();
-    let found = tokio::time::timeout(PATIENCE, async {
-        let mut open = scribe.lock().await;
-        open.as_mut()?
-            .nearest(&query, crate::injecting::MOST)
-            .await
-            .inspect_err(|why| magi_model::noted!("turn: recall was refused: {why}"))
-            .ok()
-    })
-    .await
-    .inspect_err(|_| magi_model::noted!("turn: recall did not answer within {PATIENCE:?}"))
-    .ok()
-    .flatten();
-    let Some(found) = found else {
-        return (None, None);
-    };
-    let window = usize::try_from(window).unwrap_or(usize::MAX);
-    let waited = asked.elapsed();
-    // The id travels with the message. It is what makes an outcome attributable later: balthasar
-    // decides for itself whether an action followed any of the memories it gave, and it can only
-    // do that against the injection it served them under.
-    let message = crate::injecting::preface(&found.memories, window);
-    // The price of asking, every turn, in the two units somebody would judge it by. balthasar
-    // measures whether memory earns its place and can only see its own side; this is the half
-    // the harness pays and the half nothing recorded.
-    if let Some(message) = &message {
-        let cost = crate::injecting::Cost::of(message);
-        magi_model::noted!(
-            "memory: {} asserted and {} hedged, {} tokens, recalled in {}ms",
-            cost.asserted,
-            cost.hedged,
-            cost.tokens,
-            waited.as_millis()
-        );
-    }
-    (message, found.injection)
-}
-
-/// Report one finished tool against the injection that preceded it.
-///
-/// The action is one string — a command, a path, a query — because that is what balthasar hashes
-/// and keeps a digest of. The arguments themselves do not leave this process.
-///
-/// `recall` and `remember` are skipped: a call *to* the memory layer is not an action taken on
-/// what it said, and counting it would have every injection look used.
-async fn acted_on(
-    scribe: &crate::scribe::Held,
-    injection: &str,
-    call: &magi_core::PendingCall,
-    failed: bool,
-) {
-    if matches!(call.name.as_str(), "recall" | "remember" | "forget" | "why") {
-        return;
-    }
-    let action = serde_json::from_str::<serde_json::Value>(&call.arguments)
-        .ok()
-        .and_then(|args| {
-            ["command", "path", "query", "pattern"]
-                .iter()
-                .find_map(|name| {
-                    args.get(*name)
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_owned)
-                })
-        })
-        .unwrap_or_default();
-
-    // On the same clock as the recall, and for the same reason: this is instrumentation, and a
-    // memory layer having a bad minute must not be something the conversation waits for.
-    let reported = tokio::time::timeout(PATIENCE, async {
-        let mut open = scribe.lock().await;
-        if let Some(open) = open.as_mut() {
-            let _ = open
-                .acted(injection, &call.name, &action, !failed)
-                .await
-                .inspect_err(|why| magi_model::noted!("turn: an outcome was refused: {why}"));
-        }
-    })
-    .await;
-    if reported.is_err() {
-        magi_model::noted!("turn: an outcome did not land within {PATIENCE:?}");
-    }
-}
-
 /// Run one turn and journal what it produced.
 ///
 /// Deltas are published as they arrive and the entry is amended as it grows, so a UI attaching
@@ -319,6 +90,7 @@ async fn one_turn(
 
     let id = MessageId::new(format!("a{}", session.lock().await.cursor().next().0));
     let mut turn = Turn::new();
+    let mut retries_seen: Vec<(u32, u32, u64)> = Vec::new();
 
     // The entry exists before the first delta, so a UI attaching mid-turn has something to
     // extend rather than a message that appears fully formed at the end.
@@ -373,6 +145,7 @@ async fn one_turn(
                             session.lock().await.revise(assistant(&id, &turn));
                         }
                         Arrival::Retrying { attempt, max_attempts, delay_ms } => {
+                            retries_seen.push((attempt, max_attempts, delay_ms));
                             // What the attempt published has to be taken back. The transcript
                             // can say so — a message that is not an extension of itself is
                             // described in full rather than as an append — so this is one
@@ -416,6 +189,7 @@ async fn one_turn(
                 max_attempts,
                 delay_ms,
             } => {
+                retries_seen.push((attempt, max_attempts, delay_ms));
                 turn = Turn::new();
                 let mut held = session.lock().await;
                 held.revise(assistant(&id, &turn));
@@ -447,7 +221,11 @@ async fn one_turn(
             usage: magi_proto::Usage::default(),
         })?;
         held.set_status(AgentStatus::Idle);
-        return Ok(Round { turn, failed: None });
+        return Ok(Round {
+            turn,
+            failed: None,
+            retries: retries_seen,
+        });
     }
 
     if let Err(error) = outcome {
@@ -469,6 +247,7 @@ async fn one_turn(
         return Ok(Round {
             turn,
             failed: Some(refused),
+            retries: retries_seen,
         });
     }
 
@@ -481,7 +260,11 @@ async fn one_turn(
     if !matches!(turn.state(), magi_core::TurnState::ToolsPending) {
         held.set_status(AgentStatus::Idle);
     }
-    Ok(Round { turn, failed: None })
+    Ok(Round {
+        turn,
+        failed: None,
+        retries: retries_seen,
+    })
 }
 
 /// What one round produced.
@@ -493,6 +276,12 @@ struct Round {
     turn: Turn,
     /// Set when the provider refused, and the class it refused with.
     failed: Option<magi_proto::ask::Refusal>,
+    /// Every retry this round took, as `(attempt, of, delay_ms)`.
+    ///
+    /// Carried out rather than reported from here: the watchers hang off the registry, which a
+    /// single round does not have and should not be given — one round is the exchange with the
+    /// provider and nothing else. The loop that owns both says it.
+    retries: Vec<(u32, u32, u64)>,
 }
 
 /// Something the provider call said, in the order it said it.
@@ -541,6 +330,26 @@ fn assistant(id: &MessageId, turn: &Turn) -> Entry {
     }
 }
 
+/// Tell the watchers about permissions decided since the last time.
+///
+/// Two events per question, adjacent and in order: what was asked, and what came back. They are
+/// separate because the gap between them is a person deciding, and a watcher keeping an audit
+/// trail wants both ends of it — even though, buffered like this, the gap it can measure is not
+/// the one that happened. See [`magi_tools::watching::Pending`] for why they are not delivered
+/// where they are decided.
+fn permissions(registry: &Registry, ops: &dyn Ops) {
+    for noted in ops.noticed() {
+        registry.saw(&magi_tools::Event::Asked {
+            verb: &noted.verb,
+            about: &noted.about,
+        });
+        registry.saw(&magi_tools::Event::Answered {
+            verb: &noted.verb,
+            about: &noted.about,
+            allowed: noted.allowed,
+        });
+    }
+}
 /// Rounds of tool use one prompt may take before the loop gives up.
 ///
 /// A model that keeps asking for tools without finishing is not making progress, and an
@@ -577,7 +386,7 @@ pub async fn run(
         // on another process would change shape when that process was upgraded. Recorded so the
         // two can be compared — obeying it is a decision to take once there is a number.
         second_opinion(session, backend, scribe).await;
-        compact(session, backend).await;
+        compact(session, backend, registry).await;
     }
 
     // **Once per prompt, and after any compaction.** A tool-using turn goes round several times
@@ -593,6 +402,15 @@ pub async fn run(
     let mut compacted = false;
 
     for _ in 0..MAX_ROUNDS {
+        // **A turn is one exchange with the model, and this is where a watcher learns of it.**
+        // Timing, cost accounting and an external status line all want the two ends of this and
+        // could get neither: the only event magi raised was a tool finishing, so a turn with no
+        // tool calls in it was invisible from outside.
+        registry.saw(&magi_tools::Event::TurnBegan {
+            model: &backend.model,
+        });
+        let began = std::time::Instant::now();
+
         let round = one_turn(
             session,
             backend,
@@ -602,12 +420,26 @@ pub async fn run(
         )
         .await?;
 
+        for (attempt, of, delay_ms) in &round.retries {
+            registry.saw(&magi_tools::Event::Retried {
+                mind: &backend.mind,
+                attempt: *attempt,
+                of: *of,
+                delay_ms: *delay_ms,
+            });
+        }
+        registry.saw(&magi_tools::Event::TurnEnded {
+            model: &backend.model,
+            took_ms: u64::try_from(began.elapsed().as_millis()).unwrap_or(u64::MAX),
+            ok: round.failed.is_none(),
+        });
+
         // The estimate above is deliberately rough; this is the provider's own answer. The
         // failed round stays in the transcript, because a reader who notices the model
         // forgetting something deserves to see that this is why.
         if round.failed == Some(magi_proto::ask::Refusal::Overflow) && !compacted {
             compacted = true;
-            if compact(session, backend).await {
+            if compact(session, backend, registry).await {
                 continue;
             }
         }
@@ -696,6 +528,10 @@ pub async fn run(
             }
             prepared.push(Some(registry.prepare(&call.name, &call.arguments, ops)));
         }
+        // Preparation is where permission is asked, so this is the first moment the answers
+        // exist. Told here rather than at the gate because the gate runs wherever a tool runs
+        // and the watchers live on this thread -- see `magi_tools::watching::Pending`.
+        permissions(registry, ops);
 
         for ((call, prepared), at) in calls.iter().zip(prepared).zip(at) {
             // Checked per call, not per round: the entry is already committed, so a stop between
@@ -739,6 +575,9 @@ pub async fn run(
                 },
             )?;
         }
+        // Again after the tools have run: a Lua tool that shells out asks its own questions
+        // while it runs, and those are decided after every `prepare` in this round.
+        permissions(registry, ops);
 
         if cancel.is_requested() {
             session.lock().await.set_status(AgentStatus::Idle);
@@ -769,3 +608,8 @@ fn turn_calls(turn: &Turn) -> Vec<magi_core::PendingCall> {
         _ => Vec::new(),
     }
 }
+
+/// Compaction, and what balthasar is asked and told.
+#[path = "turn/memory.rs"]
+mod memory;
+use memory::{acted_on, compact, remembered, second_opinion};

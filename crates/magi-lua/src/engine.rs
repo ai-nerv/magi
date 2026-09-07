@@ -207,7 +207,7 @@ impl Engine {
             magi.set(ctx, "stream", stream).ok();
             // The lister a sibling's client prefers over shelling out. See `fs` for why `fs.dir`
             // is not offered alongside it.
-            let fs = crate::fs::table(ctx);
+            let fs = crate::fs::table(ctx, Rc::clone(&lent));
             magi.set(ctx, "fs", fs).ok();
             // Running a command, through the same gate the shell peer goes through. Answers
             // only while a tool's `run` is on the stack -- see [`crate::shell`].

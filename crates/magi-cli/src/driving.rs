@@ -1,7 +1,7 @@
 //! What magi tells its siblings, from its own configuration.
 //!
-//! One configuration, in one place. A person edits `~/.config/magi/init.lua`; melchior and
-//! balthasar are told what follows from it, and neither is left reading a file of its own that
+//! One configuration, in one place. A person edits `~/.config/magi/init.lua`; casper, melchior
+//! and balthasar are told what follows from it, and none is left reading a file of its own that
 //! might disagree.
 //!
 //! **Asked before told.** Each sibling declares what it takes and magi answers only that, so a
@@ -11,7 +11,12 @@
 use magi_host::driving;
 
 /// Every sibling magi drives, and what it is called on `PATH`.
-const SIBLINGS: &[&str] = &["melchior", "balthasar"];
+///
+/// casper is here because it takes settings like the other two do: which tools are off, what
+/// each may load, how much output one may return. It was left out while it had nothing to
+/// answer, and a coordinator that skips a sibling which now declares `needs` is a person
+/// editing `magi.casper` and watching nothing happen.
+const SIBLINGS: &[&str] = &["casper", "melchior", "balthasar"];
 
 /// Tell each sibling what this configuration implies for it.
 ///
@@ -145,6 +150,17 @@ mod blocks {
         let to_melchior = answers(&held, "melchior");
         assert!(to_melchior.iter().any(|(n, _)| n == "max_tokens"));
         assert!(!to_melchior.iter().any(|(n, _)| n == "promote_floor"));
+    }
+
+    #[test]
+    fn caspers_table_of_tools_is_aimed_at_casper() {
+        // The one sibling whose settings are tables rather than scalars, and the reason the
+        // coordinator had to learn to write them: this used to arrive as `casper.tools = nil`.
+        let held = loaded(r#"magi.casper = { tools = { dino = { off = true } } }"#);
+        let said = answers(&held, "casper");
+        assert!(said.iter().any(|(n, _)| n == "tools"), "{said:?}");
+        assert!(!answers(&held, "melchior").iter().any(|(n, _)| n == "tools"));
+        assert!(SIBLINGS.contains(&"casper"), "and it is actually driven");
     }
 
     #[test]
