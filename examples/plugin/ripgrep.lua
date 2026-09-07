@@ -9,6 +9,7 @@
 --                 `after/plugin/` can override anything a package declared.
 --   description   what it does, in the model's terms. This is the whole of what the model knows.
 --   parameters    JSON Schema for the arguments. The model is held to it before you see them.
+--   transport     how the body is reached. `{ kind = "lua" }` for a `run` function like this one.
 --   needs         which permission verb this acts under -- `read`, `write`, `run` or `reach`.
 --                 Omit it for a tool that touches nothing a person would want a say over.
 --   run           the body. Return `{ content = "..." }`, or `{ content = ..., is_error = true }`.
@@ -20,6 +21,14 @@
 magi.tool("ripgrep", {
   description = "Search the working tree for a regular expression. Faster than grep and "
     .. "respects .gitignore. Returns matching lines with their file and line number.",
+
+  -- **How the body is reached.** `{ kind = "lua" }` means the `run` below, in this VM. The other
+  -- kinds are declarations rather than code: `command` spawns one program per call with the
+  -- arguments in argv, and `casper` hands the call to casper. A tool with a `run` and no
+  -- transport is refused at load with "missing field `transport`" -- the registry has no way to
+  -- guess that the function is the point.
+  transport = { kind = "lua" },
+
   needs = "run",
   parameters = {
     type = "object",

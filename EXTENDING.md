@@ -74,12 +74,18 @@ has not expressed an intention.
 magi.tool("name", {
   description = "what it does, in the model's terms",
   parameters = { type = "object", properties = { … }, required = { … } },
+  transport = { kind = "lua" },       -- the body is the `run` below, in this VM
   needs = "run",                      -- read | write | run | reach; omit if it touches nothing
   run = function(args)                -- return { content = … } or { content = …, is_error = true }
     …
   end,
 })
 ```
+
+`transport` is not optional and there is no default: a tool with a `run` and no transport is
+refused at load with "missing field `transport`", because the registry has no way to guess that
+the function is the point. The other kinds are declarations rather than code — `command` spawns
+one program per call with the arguments in argv, `casper` hands the call to casper.
 
 ### magi — a watcher
 

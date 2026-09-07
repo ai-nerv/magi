@@ -49,6 +49,17 @@ fn the_tool_example_declares_a_tool_with_everything_a_tool_owes() {
         "the model is told what it does"
     );
     assert!(spec.get("parameters").is_some(), "and held to a schema");
+    // **The field whose absence only showed up by running it.** A tool with a `run` and no
+    // transport is refused at load — "missing field `transport`" — because the registry has no
+    // way to guess that the function is the point. An example that gets this wrong is worse than
+    // no example: somebody copies it and gets a tool the session will not register.
+    assert_eq!(
+        spec.get("transport")
+            .and_then(|t| t.get("kind"))
+            .and_then(serde_json::Value::as_str),
+        Some("lua"),
+        "the body is in this VM, and the declaration has to say so"
+    );
     assert_eq!(
         spec.get("needs").and_then(serde_json::Value::as_str),
         Some("run"),

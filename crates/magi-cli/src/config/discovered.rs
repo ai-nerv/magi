@@ -28,6 +28,14 @@ use magi_lua::plugins::{Roots, Trust, runtimepath};
 /// machine it ran on — and setting an environment variable to arrange one is `unsafe`, which is
 /// denied across this workspace.
 ///
+/// Returns what it ran, as `(name, source)`, in the order it ran them.
+///
+/// **The session rebuilds its VM from these.** The worker cannot be handed the VM this ran in — a
+/// Lua state does not cross a thread — so it re-runs the declarations on its own thread, from the
+/// sources the loader collected. A discovered file that was not collected therefore ran here,
+/// declared into a VM that is thrown away, and reached no session at all: `magi tools` listed it
+/// and a turn could not call it.
+///
 /// # Errors
 /// Never for a plugin's own failure — those are reported and skipped. Only if draining what one
 /// of them asked for fails, which is the same fatality `init.lua` already has.
@@ -35,7 +43,8 @@ pub fn run(
     engine: &mut Engine,
     roots: &Roots,
     drain: &mut dyn FnMut(&mut Engine) -> Result<(), magi_lua::LuaError>,
-) -> Result<(), magi_lua::LuaError> {
+) -> Result<Vec<(String, String)>, magi_lua::LuaError> {
+    let mut ran = Vec::new();
     let known = roots
         .config
         .as_ref()
@@ -71,8 +80,9 @@ pub fn run(
         // next one runs — otherwise the second plugin's declarations would land before the
         // first's, and `after/` would stop meaning last.
         drain(engine)?;
+        ran.push((named, source));
     }
-    Ok(())
+    Ok(ran)
 }
 
 /// Every installed file, with what it holds right now.
@@ -269,5 +279,57 @@ mod acknowledging {
         run(&mut engine, &roots, &mut |_| Ok(())).expect("discovery");
         engine.harvest();
         assert_eq!(engine.config().string("model"), Some("mine"));
+    }
+}
+
+#[cfg(test)]
+mod collecting {
+    use super::*;
+    use magi_model::scratch::Scratch;
+
+    #[test]
+    fn what_ran_is_handed_back_so_the_session_can_run_it_too() {
+        // **Found by running it.** A Lua state does not cross a thread, so the worker rebuilds
+        // its VM on its own thread from the sources the loader collected. A discovered file that
+        // was not collected ran here, declared into a VM that is thrown away, and reached no
+        // session: it appeared in `magi tools` and a turn could not call it.
+        let dir = Scratch::new("magi-disc", "collected");
+        std::fs::create_dir_all(dir.join("plugin")).expect("mkdir");
+        std::fs::write(
+            dir.join("plugin/mine.lua"),
+            "magi.tool(\"mine\", { description = \"x\", parameters = {}, run = function() end })\n",
+        )
+        .expect("write");
+
+        let roots = Roots {
+            config: Some(dir.to_path_buf()),
+            site: None,
+            project: None,
+        };
+        let mut engine = Engine::new();
+        let ran = run(&mut engine, &roots, &mut |_| Ok(())).expect("discovery");
+
+        assert_eq!(ran.len(), 1, "{ran:?}");
+        assert!(ran[0].0.ends_with("plugin/mine.lua"), "named by its path");
+        assert!(ran[0].1.contains("magi.tool"), "and carries its source");
+    }
+
+    #[test]
+    fn a_file_that_did_not_run_is_not_handed_back() {
+        // A broken plugin and an unacknowledged package are both skipped, and neither must end
+        // up in what the session re-runs — the second time would raise on the worker's thread,
+        // where the whole VM is abandoned over one bad description.
+        let dir = Scratch::new("magi-disc", "not-collected");
+        std::fs::create_dir_all(dir.join("plugin")).expect("mkdir");
+        std::fs::write(dir.join("plugin/broken.lua"), "error(\"no\")\n").expect("write");
+
+        let roots = Roots {
+            config: Some(dir.to_path_buf()),
+            site: None,
+            project: None,
+        };
+        let mut engine = Engine::new();
+        let ran = run(&mut engine, &roots, &mut |_| Ok(())).expect("discovery");
+        assert!(ran.is_empty(), "{ran:?}");
     }
 }

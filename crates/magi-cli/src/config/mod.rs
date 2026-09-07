@@ -104,11 +104,20 @@ pub fn load() -> Result<Loaded, LuaError> {
     // everything it asked for, so a configuration that names all of its own files behaves exactly
     // as it did; before the project file, which is still read last and still may not declare.
     let cwd = std::env::current_dir().unwrap_or_default();
-    discovered::run(
+    let found = discovered::run(
         &mut engine,
         &magi_lua::plugins::Roots::discovered(&cwd),
         &mut drain,
     )?;
+    // **Kept, because the session rebuilds its VM from these.** A Lua state does not cross a
+    // thread, so the worker re-runs the declarations on its own thread from what was collected
+    // here. A discovered file that was not collected ran into a VM that is thrown away: it showed
+    // up in `magi tools` and a turn could not call it.
+    //
+    // Appended after the named files, in runtimepath order, so `after/plugin/` still means last.
+    for (name, source) in found {
+        layer(&mut tools, name, source);
+    }
 
     // The line between the two kinds of configuration. Above it is the machine's own, which
     // the user wrote. Below it is a file that arrived with a checkout.
