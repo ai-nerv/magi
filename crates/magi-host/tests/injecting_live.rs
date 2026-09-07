@@ -118,7 +118,11 @@ async fn something_remembered_comes_back_without_being_asked_for() {
         .expect("balthasar answers")
         .expect("a recall");
 
-    let message = magi_host::injecting::preface(&found.memories, WINDOW)
+    // Through the packer, which is what a turn actually goes through: balthasar is one supplier
+    // among however many have something to say, and this is the path its answer takes.
+    let offers = vec![magi_host::injecting::offered("balthasar", &found.memories)];
+    let message = magi_host::supplying::pack(&offers, WINDOW)
+        .message
         .expect("what was kept a moment ago is what a turn is shown");
 
     let said: String = message
@@ -130,8 +134,14 @@ async fn something_remembered_comes_back_without_being_asked_for() {
         })
         .collect();
     assert!(
-        said.contains("remembers"),
+        said.contains("not part of the conversation"),
         "the block says what it is: {said}"
+    );
+    // Cited, in whichever form the packer used: asserted blocks go under a supplier heading,
+    // hedged ones under a shared heading with the supplier named on the line. Both say who.
+    assert!(
+        said.contains("balthasar"),
+        "and which supplier said it: {said}"
     );
     assert!(
         said.contains(&phrase),
@@ -143,7 +153,7 @@ async fn something_remembered_comes_back_without_being_asked_for() {
 async fn a_session_with_no_balthasar_is_told_nothing_and_still_runs() {
     // The property that lets this be unconditional. A machine without a memory layer gets the
     // session magi had before there was one, rather than an error or a wait.
-    assert!(magi_host::injecting::preface(&[], WINDOW).is_none());
+    assert!(magi_host::supplying::pack(&[], WINDOW).message.is_none());
 }
 
 #[tokio::test]

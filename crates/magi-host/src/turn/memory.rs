@@ -186,10 +186,26 @@ pub(super) async fn remembered(
     };
     let window = usize::try_from(window).unwrap_or(usize::MAX);
     let waited = asked.elapsed();
+
+    // **Every supplier that has something to say, packed together.** One entry today; the shape
+    // is what makes the second one an entry rather than a rewrite — see `crate::supplying`.
+    let offers = vec![crate::injecting::offered("balthasar", &found.memories)];
+    let packed = crate::supplying::pack(&offers, window);
+
+    // **What did not fit is said out loud.** The renderer this replaces stopped writing when the
+    // budget ran out and told nobody, so a supplier whose answers were all slightly too long was
+    // indistinguishable from one that found nothing.
+    for dropped in &packed.dropped {
+        magi_model::noted!(
+            "memory: {} offered something the budget would not take: {}",
+            dropped.from,
+            dropped.text.chars().take(60).collect::<String>()
+        );
+    }
+    let message = packed.message;
     // The id travels with the message. It is what makes an outcome attributable later: balthasar
     // decides for itself whether an action followed any of the memories it gave, and it can only
     // do that against the injection it served them under.
-    let message = crate::injecting::preface(&found.memories, window);
     // The price of asking, every turn, in the two units somebody would judge it by. balthasar
     // measures whether memory earns its place and can only see its own side; this is the half
     // the harness pays and the half nothing recorded.

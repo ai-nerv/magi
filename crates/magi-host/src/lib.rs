@@ -22,6 +22,7 @@ pub mod paths;
 pub mod remember;
 pub mod scribe;
 pub mod session;
+pub mod supplying;
 pub mod system;
 pub mod turn;
 pub mod worker;
