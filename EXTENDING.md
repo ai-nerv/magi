@@ -38,11 +38,10 @@ Working examples live in each repository under `examples/plugin/`. They are run 
 repository's test suite, so an example that does not load fails the build rather than wasting
 your afternoon.
 
-**casper's thirteen are compiled into the binary**, and its config directory layers over them
-rather than replacing them. `~/.config/casper/tools.lua` runs after the shipped ones, so a file
-declaring `cat` means it and a file declaring something new adds one. That is why `make install`
-copies nothing there: a copy of the shipped declarations beside the binary would win over the
-binary's own, and you would be pinned to whatever `tools.lua` shipped the day you installed.
+**casper's thirteen live in `~/.config/casper/tools.lua`**, like every other sibling's
+declarations. `oslo make install` puts them there and overwrites them on every install, so keep
+your own in `plugin/` or `after/plugin/`, which it never touches. Editing `tools.lua` changes the
+tools on the next call — no rebuild.
 
 To switch one off without writing any Lua, tell casper from magi's config:
 
