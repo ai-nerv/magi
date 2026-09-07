@@ -210,6 +210,7 @@ pub fn assemble(
     holder: std::sync::Arc<dyn magi_tools::holding::Holds>,
     environ: &std::collections::BTreeMap<String, String>,
     casper: Option<&str>,
+    configured: &str,
 ) -> (magi_tools::Registry, std::collections::BTreeSet<String>) {
     let mut registry = magi_tools::Registry::new();
 
@@ -221,9 +222,13 @@ pub fn assemble(
     // Nothing when casper is not installed: a session then has exactly the tools it had before
     // casper existed.
     let mut from_casper = std::collections::BTreeSet::new();
-    for tool in
-        magi_tools::casper::CasperTool::pinned(magi_tools::casper::CASPER, asker, holder, casper)
-    {
+    for tool in magi_tools::casper::CasperTool::pinned(
+        magi_tools::casper::CASPER,
+        asker,
+        holder,
+        casper,
+        configured,
+    ) {
         from_casper.insert(tool.name().to_owned());
         registry.register(Box::new(tool));
     }

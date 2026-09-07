@@ -199,6 +199,7 @@ async fn start_with_mind(name: &str, mind: &Mind) -> (Scratch, PathBuf) {
         tools: Vec::new(),
         clients: Vec::new(),
         casper: None,
+        casper_configure: String::new(),
         cwd: std::env::temp_dir(),
         model: "fake/one".to_owned(),
         mind: mind.program().display().to_string(),

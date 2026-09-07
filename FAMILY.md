@@ -97,6 +97,28 @@ three are.
 
 ---
 
+**A program that is one process per call is told on every spawn.** `configure` sets something in
+the process that answers it, which is the whole of what a program needs when it is asked once and
+then runs for the session — melchior and balthasar. casper is spawned per call, so a `configure`
+sent to it would report the setting taken and every later call would be a fresh process knowing
+nothing about it: a program answering the contract and doing nothing.
+
+So casper reads `CASPER_CONFIGURE` — the same JSON object `configure` would have applied — from
+the environment it was spawned with, and whoever spawns it sets it every time. One process, one
+configuration: no state on disk for two sessions to fight over, and none to outlive the session
+that set it.
+
+`configure` still exists and still answers, because a coordinator wants to know *which* of its
+settings would be refused before it commits to sending them. That is what the verb is for on a
+spawn-per-call program: a dry run that names what it did not understand.
+
+**A setting a program declares must change something.** A `needs` entry that nothing reads is the
+same sin as a verb that is advertised and refused, one level down: a coordinator sets it, is told
+it was taken, and the behaviour never moves. casper declared three and honoured one for a while —
+`off` was dead code nothing called, and `output_bytes` was named in its own description and in a
+test and nowhere else.
+
+
 ## Encodings
 
 `--json` and `--cbor`, on every verb above. JSON is the default and is what a person reading a

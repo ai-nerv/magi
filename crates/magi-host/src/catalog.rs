@@ -41,6 +41,8 @@ pub struct Catalog {
     /// casper supplies the whole tool set and is found on `$PATH` — the largest trust assumption
     /// here, and the one made with no acknowledgement until now.
     pub casper: Option<String>,
+    /// What this session tells casper to be, on every spawn. See [`crate::turn::Backend`].
+    pub casper_configure: String,
     /// Which program owns the model, as `magi.melchior` named it.
     ///
     /// One name for the whole session. It was honoured when the layer was started and ignored
@@ -64,6 +66,7 @@ impl Catalog {
             tools: Vec::new(),
             clients: Vec::new(),
             casper: None,
+            casper_configure: String::new(),
             mind: crate::broker::MELCHIOR.to_owned(),
             environ: std::collections::BTreeMap::new(),
             cwd: std::env::temp_dir(),
@@ -92,6 +95,7 @@ impl Catalog {
             model: card.id.clone(),
             mind: self.mind.clone(),
             casper: self.casper.clone(),
+            casper_configure: self.casper_configure.clone(),
             wants: self.wants.clone(),
             context_window: card.context_window,
             system: self.system.clone(),

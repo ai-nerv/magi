@@ -289,6 +289,24 @@ pub fn casper_pin(loaded: &Loaded) -> Option<String> {
         .filter(|pin| !pin.trim().is_empty())
 }
 
+/// What this configuration tells casper to be, as the JSON it goes over.
+///
+/// **casper is one process per call, and this is the difference that follows.** melchior and
+/// balthasar are asked once and run for the session, so `configure` setting something in-process
+/// is the whole of what they need. A `configure` sent to casper would reach the process that
+/// answered it and no other — it would report the setting taken and every later `casper run`
+/// would be a fresh process knowing nothing about it. So the settings ride on every spawn.
+///
+/// Empty when `magi.casper` says nothing, which is the ordinary case and means "whatever casper
+/// is by default".
+#[must_use]
+pub fn casper_configure(loaded: &Loaded) -> String {
+    let Some(table) = loaded.config.get("casper").and_then(|v| v.as_object()) else {
+        return String::new();
+    };
+    serde_json::to_string(table).unwrap_or_default()
+}
+
 #[cfg(test)]
 mod environ_tests {
     use super::*;

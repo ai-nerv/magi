@@ -99,6 +99,7 @@ pub fn print() {
         std::sync::Arc::new(magi_tools::holding::Screenless),
         &environ,
         crate::config::casper_pin(&loaded).as_deref(),
+        &crate::config::casper_configure(&loaded),
     );
     registry.probe(&magi_tools::ops::Real::new(
         std::env::current_dir().unwrap_or_default(),

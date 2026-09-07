@@ -111,6 +111,7 @@ impl Worker {
                 std::sync::Arc::clone(&holds),
                 &backend.environ,
                 backend.casper.as_deref(),
+                &backend.casper_configure,
             );
             // Gated when there is somebody to ask. The ledger starts with whatever the
             // configuration already granted, so a rule written down is not a question asked.

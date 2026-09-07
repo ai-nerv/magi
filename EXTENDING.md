@@ -38,6 +38,21 @@ Working examples live in each repository under `examples/plugin/`. They are run 
 repository's test suite, so an example that does not load fails the build rather than wasting
 your afternoon.
 
+**casper's thirteen are compiled into the binary**, and its config directory layers over them
+rather than replacing them. `~/.config/casper/tools.lua` runs after the shipped ones, so a file
+declaring `cat` means it and a file declaring something new adds one. That is why `make install`
+copies nothing there: a copy of the shipped declarations beside the binary would win over the
+binary's own, and you would be pinned to whatever `tools.lua` shipped the day you installed.
+
+To switch one off without writing any Lua, tell casper from magi's config:
+
+```lua
+magi.casper = { tools = { dino = { off = true }, birdy = { hidden = true } } }
+```
+
+`off` removes it entirely; `hidden` keeps it runnable and takes it out of what the model is shown.
+magi passes this on every casper spawn, because casper is one process per call — see `FAMILY.md`.
+
 ---
 
 ## 2. What you may do in one

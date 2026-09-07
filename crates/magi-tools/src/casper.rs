@@ -30,6 +30,13 @@ use std::sync::Arc;
 /// tests that fought over it would be tests that pass alone and fail together.
 pub const CASPER: &str = "casper";
 
+/// The variable casper reads its configuration out of.
+///
+/// Named here as well as there because it is a wire between two repositories, like everything
+/// else in this module: casper cannot depend on magi and magi cannot depend on casper, so the
+/// spelling is written down on both sides and the family contract says what it means.
+pub const CONFIGURE: &str = "CASPER_CONFIGURE";
+
 /// What casper says it offers.
 ///
 /// Empty when casper is not installed or would not answer. Not an error: a session without it
@@ -42,8 +49,20 @@ pub fn cards() -> Vec<Card> {
 /// The same, against a named program.
 #[must_use]
 pub fn cards_from(program: &str) -> Vec<Card> {
+    cards_configured(program, "")
+}
+
+/// The same, saying what this session has configured casper to be.
+///
+/// **casper is one process per call, so the configuration goes on every spawn.** melchior and
+/// balthasar are asked once and then run for the session; a `configure` that reached only the
+/// process running it would have casper report a setting as taken and every later call know
+/// nothing about it. Empty is the ordinary case and means "whatever casper is by default".
+#[must_use]
+pub fn cards_configured(program: &str, configured: &str) -> Vec<Card> {
     let Ok(out) = std::process::Command::new(program)
         .arg("tools")
+        .env(CONFIGURE, configured)
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .output()
@@ -89,12 +108,21 @@ fn rows(body: &[u8]) -> Option<Vec<serde_json::Value>> {
 /// *ran* and reported a problem, which comes back as [`Ran::failed`] and is something the model
 /// should read.
 pub fn run(program: &str, call: &Call) -> Result<Ran, String> {
+    run_configured(program, call, "")
+}
+
+/// The same, saying what this session has configured casper to be. See [`cards_configured`].
+///
+/// # Errors
+/// A refusal — casper could not be started, or would not take the call.
+pub fn run_configured(program: &str, call: &Call, configured: &str) -> Result<Ran, String> {
     use std::io::Write;
     let body =
         serde_json::to_vec(call).map_err(|why| format!("this call will not encode: {why}"))?;
 
     let mut child = std::process::Command::new(program)
         .arg("run")
+        .env(CONFIGURE, configured)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -131,6 +159,8 @@ pub struct CasperTool {
     program: String,
     asks: Arc<dyn Asks>,
     holds: Arc<dyn crate::holding::Holds>,
+    /// What this session told casper to be, carried on every spawn. See [`cards_configured`].
+    configured: String,
 }
 
 impl CasperTool {
@@ -149,6 +179,7 @@ impl CasperTool {
         asks: Arc<dyn Asks>,
         holds: Arc<dyn crate::holding::Holds>,
         pinned: Option<&str>,
+        configured: &str,
     ) -> Vec<Self> {
         if let Some(pinned) = pinned {
             match crate::mcp::fingerprint(program) {
@@ -166,7 +197,7 @@ impl CasperTool {
                 }
             }
         }
-        Self::all(program, asks, holds)
+        Self::all(program, asks, holds, configured)
     }
 
     /// Every tool casper offers, ready to register.
@@ -179,14 +210,16 @@ impl CasperTool {
         program: &str,
         asks: Arc<dyn Asks>,
         holds: Arc<dyn crate::holding::Holds>,
+        configured: &str,
     ) -> Vec<Self> {
-        cards_from(program)
+        cards_configured(program, configured)
             .into_iter()
             .map(|card| Self {
                 card,
                 program: program.to_owned(),
                 asks: Arc::clone(&asks),
                 holds: Arc::clone(&holds),
+                configured: configured.to_owned(),
             })
             .collect()
     }
@@ -243,7 +276,7 @@ impl Tool for CasperTool {
         // confirmation, which is as far as anything has needed to go, and a third is a
         // declaration in a loop rather than one talking to a person.
         for _ in 0..3 {
-            let ran = match run(&self.program, &call) {
+            let ran = match run_configured(&self.program, &call, &self.configured) {
                 // A refusal is still something the model reads: it asked for a tool that could
                 // not be reached, and the answer is to try another way rather than end the turn.
                 Err(why) => return Output::error(why),
@@ -301,19 +334,21 @@ mod tests {
             Arc::clone(&asks),
             Arc::clone(&holds),
             Some("0000000000000000000000000000000000000000000000000000000000000000"),
+            "",
         );
         assert!(wrong.is_empty(), "a substituted casper supplied tools");
 
         // And the real one, pinned to what it actually is, supplies what it always did. Skipped
         // when casper is not installed, which is a session with no tools from it either way.
         if let Some(actual) = crate::mcp::fingerprint(CASPER) {
-            let right = CasperTool::pinned(CASPER, asks, holds, Some(&actual));
+            let right = CasperTool::pinned(CASPER, asks, holds, Some(&actual), "");
             assert_eq!(
                 right.len(),
                 CasperTool::all(
                     CASPER,
                     Arc::new(crate::question::Unanswered),
-                    Arc::new(crate::holding::Screenless)
+                    Arc::new(crate::holding::Screenless),
+                    "",
                 )
                 .len(),
                 "pinning the right program changed what it offers"

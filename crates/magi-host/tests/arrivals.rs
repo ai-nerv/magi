@@ -20,6 +20,7 @@ fn backend(mind: &Mind) -> Backend {
         tools: Vec::new(),
         clients: Vec::new(),
         casper: None,
+        casper_configure: String::new(),
         cwd: std::env::temp_dir(),
         model: "fake/one".to_owned(),
         // A real path to a real program, because the worker spawns it: a backend that cannot be

@@ -21,6 +21,12 @@ pub struct Backend {
     pub clients: Vec<(String, String)>,
     /// The SHA-256 casper's program must hash to, if this configuration pinned one.
     pub casper: Option<String>,
+    /// What this session tells casper to be, on every spawn.
+    ///
+    /// casper is one process per call, so a `configure` that reached only the process answering
+    /// it would report a setting as taken and change nothing. Empty means "whatever casper is by
+    /// default", which is the ordinary case.
+    pub casper_configure: String,
     /// Where the session is rooted, which is what tools resolve paths against.
     pub cwd: std::path::PathBuf,
     /// Permissions a configuration granted before anybody was asked anything.

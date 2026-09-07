@@ -278,6 +278,7 @@ pub fn catalog(loaded: &Loaded, cards: Vec<magi_proto::ask::Card>) -> magi_host:
     let mut catalog = magi_host::catalog::Catalog {
         mind: mind(loaded),
         casper: casper_pin(loaded),
+        casper_configure: settings::casper_configure(loaded),
         tools: loaded.tools.clone(),
         clients: loaded.clients.clone(),
         cwd: std::env::current_dir().unwrap_or_default(),
@@ -302,7 +303,7 @@ mod settings;
 
 use settings::{grants, options, system};
 
-pub use settings::{adopt_ui, casper_pin, environ, grants as granted};
+pub use settings::{adopt_ui, casper_configure, casper_pin, environ, grants as granted};
 
 /// What this directory chose last time it was used.
 #[must_use]
