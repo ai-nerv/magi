@@ -186,17 +186,21 @@ pub fn acknowledge() {
     };
     let cwd = std::env::current_dir().unwrap_or_default();
     let files = discovered::installed(&magi_lua::plugins::Roots::discovered(&cwd));
-    if files.is_empty() {
-        println!("nothing installed under site/pack — nothing to acknowledge");
-        return;
-    }
     let manifest = magi_lua::acknowledged::manifest_in(&dir);
+
+    // **Written even when there is nothing, because the manifest replaces rather than merges.**
+    // Returning early on an empty list looked tidy and was wrong: acknowledge, remove the
+    // package, acknowledge again, and the digest of a file nobody has any more stayed in the
+    // manifest. The siblings all write it; this was the one that did not.
     match magi_lua::acknowledged::acknowledge(&manifest, &files) {
         Ok(taken) => {
             for (path, _) in &files {
                 println!("  {}", path.display());
             }
-            println!("acknowledged {taken} file(s) in {}", manifest.display());
+            match taken {
+                0 => println!("nothing installed under site/pack — the manifest is now empty"),
+                n => println!("acknowledged {n} file(s) in {}", manifest.display()),
+            }
         }
         Err(why) => eprintln!("magi: {why}"),
     }

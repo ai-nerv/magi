@@ -333,3 +333,37 @@ mod collecting {
         assert!(ran.is_empty(), "{ran:?}");
     }
 }
+
+#[cfg(test)]
+mod forgetting {
+    use super::*;
+    use magi_model::scratch::Scratch;
+
+    #[test]
+    fn acknowledging_after_a_package_is_gone_forgets_it() {
+        // **The manifest replaces rather than merges**, so this is what clears a removed package.
+        // Short-circuiting on an empty list looked tidy and left the digest of a file nobody has
+        // any more sitting in the manifest — where, if the package ever came back with different
+        // contents at the same path, it would read as still acknowledged.
+        let dir = Scratch::new("magi-ack-disc", "forgets");
+        let at = dir.join("site/pack/vendor/start/thing/plugin");
+        std::fs::create_dir_all(&at).expect("mkdir");
+        std::fs::write(at.join("it.lua"), "magi.model = \"theirs\"\n").expect("write");
+
+        let roots = Roots {
+            config: Some(dir.join("config")),
+            site: Some(dir.join("site")),
+            project: None,
+        };
+        let manifest = acknowledged::manifest_in(&roots.config.clone().expect("config"));
+        acknowledged::acknowledge(&manifest, &installed(&roots)).expect("acknowledge");
+        assert_eq!(acknowledged::recorded(&manifest).len(), 1);
+
+        std::fs::remove_dir_all(dir.join("site")).expect("uninstall");
+        acknowledged::acknowledge(&manifest, &installed(&roots)).expect("acknowledge nothing");
+        assert!(
+            acknowledged::recorded(&manifest).is_empty(),
+            "the removed package is forgotten"
+        );
+    }
+}
