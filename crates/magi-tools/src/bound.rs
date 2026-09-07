@@ -179,12 +179,15 @@ mod tests {
         if let Some(path) = spilled_path(&out) {
             let path = std::path::PathBuf::from(path);
             let _ = std::fs::remove_file(&path);
-            // And the directory `spill` made on the way, when nothing else is using it.
-            // `remove_dir` refuses a directory with anything in it, so a spill belonging to
-            // another test or another process is left where it is.
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::remove_dir(parent);
-            }
+            // **The directory is left alone, and that is the fix for a flake.** Removing it
+            // raced: `spill` creates the directory and then the file, and a sibling test that
+            // emptied and removed it in between turned the next `File::create` into a `None`,
+            // a note with no path in it, and a panic on `expect("a path")` — in a test that had
+            // done nothing wrong, on CI, about one run in twenty.
+            //
+            // Nothing is owed here anyway. `gate-hermetic` exempts `magi-output-<uid>` by name
+            // because the product legitimately creates it, and `spill` expires its contents
+            // after a day.
         }
         out
     }
@@ -242,11 +245,8 @@ mod tests {
             .expect("a path");
         let spilled = std::fs::read_to_string(&path).expect("the spill file");
         assert_eq!(spilled, full);
-        let path = std::path::PathBuf::from(&path);
-        let _ = std::fs::remove_file(&path);
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::remove_dir(parent);
-        }
+        // The file, not the directory it is in — see `applied` for the race that caused.
+        let _ = std::fs::remove_file(std::path::PathBuf::from(&path));
     }
 
     #[test]
