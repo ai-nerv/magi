@@ -220,7 +220,7 @@ mod cursor_tests {
 /// The badge sits on the middle row, rounding down for an even count, so a one-line prompt has it
 /// beside the text and a tall one has it level with the middle rather than stuck to a corner.
 /// `rows` is the *text* rows: a menu opened under the divider is not part of the box you type in.
-pub(crate) fn strip(badge: &str, rows: usize, row: usize) -> Vec<Span<'static>> {
+pub(crate) fn strip(badge: &str, rows: usize, row: usize, open: bool) -> Vec<Span<'static>> {
     if badge.is_empty() {
         return Vec::new();
     }
@@ -230,15 +230,16 @@ pub(crate) fn strip(badge: &str, rows: usize, row: usize) -> Vec<Span<'static>> 
     if row != rows / 2 {
         return vec![Span::raw(" ".repeat(worn))];
     }
-    vec![
-        Span::styled(
-            format!(" {badge} "),
-            Style::default()
-                .fg(colour::hint())
-                .add_modifier(Modifier::REVERSED),
-        ),
-        Span::raw(" "),
-    ]
+    // **Harder while what it opens is on screen.** Reversed either way, so it is always a block
+    // rather than a run of text; the difference is the text colour inside it, which goes from a
+    // hint to the full foreground. A control that looks the same pressed and unpressed is one
+    // you have to remember the state of.
+    let ink = if open { colour::text() } else { colour::hint() };
+    let mut style = Style::default().fg(ink).add_modifier(Modifier::REVERSED);
+    if open {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    vec![Span::styled(format!(" {badge} "), style), Span::raw(" ")]
 }
 
 /// The box says which session you are typing into, and the text never runs under it.

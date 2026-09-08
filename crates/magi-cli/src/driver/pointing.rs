@@ -87,10 +87,10 @@ pub(crate) fn on_the_screen(
             // -- the shortest path from noticing to knowing. First, because it sits in the
             // prompt box's edge and a press that fell through would start a selection instead.
             if app
-                .usage_rect
+                .corner_rect
                 .is_some_and(|at| within(at, mouse.row, mouse.column))
             {
-                app.show_cost();
+                app.press_corner();
                 return Pointing::Redraw;
             }
             // Copy first: both chips sit in the same edge, and a press that fell through to the

@@ -15,6 +15,19 @@ const ANSWERS_WITHIN: std::time::Duration = std::time::Duration::from_secs(3);
 /// A window big enough that the budget is not what is under test.
 const WINDOW: usize = 200_000;
 
+/// One live balthasar at a time.
+///
+/// **Each test here starts a server, and `cargo test` runs them at once.** Seven `balthasar serve`
+/// processes opening seven stores and answering their first call inside the scribe's two-second
+/// deadline is a race that the machine wins or loses depending on what else it is doing — which
+/// is a suite that passes alone and fails in the workspace run, for a reason that has nothing to
+/// do with what any of it asserts.
+///
+/// Serialising costs a few seconds of wall clock and removes the whole class. The lock is held
+/// for the body of the test, so the server is also gone before the next one starts and the
+/// runtime directory holds one socket rather than seven.
+static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// A balthasar of this test's own, and a scribe onto it.
 ///
 /// **Not the one the developer is using.** This writes a durable memory and reads it back, and a
@@ -24,7 +37,17 @@ const WINDOW: usize = 200_000;
 ///
 /// `None` when balthasar is not installed, which is the ordinary case on a machine that has not
 /// got one and not a failure: this file is about the seam, not about the layer.
-async fn own_balthasar(name: &str, ledger: bool) -> Option<(Scribe, Scratch, Serving)> {
+async fn own_balthasar(
+    name: &str,
+    ledger: bool,
+) -> Option<(
+    Scribe,
+    Scratch,
+    Serving,
+    tokio::sync::MutexGuard<'static, ()>,
+)> {
+    // Taken before anything is started, and handed back so it is held for the test's own body.
+    let held = ONE_AT_A_TIME.lock().await;
     let dir = Scratch::new("magi-inject", name);
     // The ledger is off by default, and rightly: it costs writes on the recall path, and a
     // memory layer that silently started recording what a person searches for because a new
@@ -67,7 +90,7 @@ async fn own_balthasar(name: &str, ledger: bool) -> Option<(Scribe, Scratch, Ser
             let mut scribe = Scribe::over(family, Some(socket.clone()), &id);
             // Answering, not merely bound: a socket file outlives the process that made it.
             if let Ok(Ok(_)) = tokio::time::timeout(ANSWERS_WITHIN, scribe.replay()).await {
-                return Some((scribe, dir, Serving(child)));
+                return Some((scribe, dir, Serving(child), held));
             }
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
@@ -94,7 +117,7 @@ impl Drop for Serving {
 
 #[tokio::test]
 async fn something_remembered_comes_back_without_being_asked_for() {
-    let Some((mut scribe, _dir, _balthasar)) = own_balthasar("recalled", false).await else {
+    let Some((mut scribe, _dir, _balthasar, _held)) = own_balthasar("recalled", false).await else {
         // The ordinary case on a machine with no balthasar, and the session magi had before
         // there was one. Not a failure: this file is about the seam, not about the layer.
         eprintln!("no balthasar is answering; skipped");
@@ -165,7 +188,7 @@ async fn what_the_turn_did_next_goes_back_to_the_memory_layer() {
     //
     // It is also the axis MemoryArena separates from LoCoMo, and the one neither pi nor deepseek
     // has anything for.
-    let Some((mut scribe, _dir, _balthasar)) = own_balthasar("outcome", true).await else {
+    let Some((mut scribe, _dir, _balthasar, _held)) = own_balthasar("outcome", true).await else {
         eprintln!("no balthasar is installed; skipped");
         return;
     };
@@ -213,7 +236,7 @@ async fn balthasar_serves_the_library_that_speaks_it() {
     // magi's copy of the client library predated a fix to the connect path, so every session on
     // that machine silently had no memory tools and nothing anywhere said why. Connect with the
     // copy you have, take the one the server serves.
-    let Some((mut scribe, _dir, _balthasar)) = own_balthasar("library", false).await else {
+    let Some((mut scribe, _dir, _balthasar, _held)) = own_balthasar("library", false).await else {
         eprintln!("no balthasar is installed; skipped");
         return;
     };
@@ -242,7 +265,7 @@ async fn balthasar_says_where_it_thinks_the_session_left_off() {
     // for is the disagreement: a balthasar that holds none of a session's turns is one whose
     // `plan`, `replay` and `scroll` are all answering about a different conversation, and until
     // now there was no way to notice.
-    let Some((mut scribe, _dir, _balthasar)) = own_balthasar("resume", false).await else {
+    let Some((mut scribe, _dir, _balthasar, _held)) = own_balthasar("resume", false).await else {
         eprintln!("no balthasar is installed; skipped");
         return;
     };
@@ -316,7 +339,7 @@ async fn a_permission_reaches_the_memory_layer_as_a_trace_row() {
     // happens *around* the transcript rather than in it, and before this it reached the watchers
     // in the session's own VM and nothing that outlives the process. A session that wanted to
     // know what it had been allowed to do yesterday had nowhere to look.
-    let Some((mut scribe, _dir, _serving)) = own_balthasar("trace", false).await else {
+    let Some((mut scribe, _dir, _serving, _held)) = own_balthasar("trace", false).await else {
         eprintln!("skipping: no balthasar");
         return;
     };

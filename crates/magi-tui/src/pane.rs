@@ -134,10 +134,22 @@ impl Pane {
 
     /// How many rows of content fit, given the whole screen.
     ///
-    /// The border costs two, and the caller needs this to scroll by a page.
+    /// Four go elsewhere: two to the border, and two to the heading and the blank line under it.
+    /// The heading is inside rather than in the border because a border title is drawn *in* the
+    /// line, which forces the frame to break for it — and a double rule that breaks for a word
+    /// reads as a damaged box rather than a labelled one.
     #[must_use]
     pub fn page(screen: Rect) -> usize {
-        Self::area(screen).height.saturating_sub(2) as usize
+        Self::area(screen).height.saturating_sub(4) as usize
+    }
+
+    /// The heading drawn inside the panel: what this is, and where in it you are.
+    #[must_use]
+    pub fn heading(&self, page: usize) -> String {
+        match self.more(page) {
+            Some(where_in) => format!("{}   {where_in}", self.title),
+            None => self.title.clone(),
+        }
     }
 
     /// Scroll down by `rows`, stopping at the last page rather than past it.

@@ -12,6 +12,7 @@ pub mod beacon;
 pub mod border;
 pub mod colour;
 pub mod complete;
+pub mod corner;
 pub mod cost;
 pub mod decrypt;
 pub mod editor;

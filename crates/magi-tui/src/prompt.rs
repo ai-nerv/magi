@@ -208,7 +208,7 @@ pub fn render(
             row,
             tick,
             scan,
-            &crate::fold::strip(badge, shown, row),
+            &crate::fold::strip(badge, shown, row, saying.badge_open),
         ));
     }
 
@@ -470,6 +470,7 @@ mod tests {
             crate::tease::Saying {
                 text: "what are we making?",
                 caret: None,
+                badge_open: false,
                 badge: "",
                 mode: crate::vim::Mode::default(),
                 block: false,
@@ -652,6 +653,7 @@ mod narrow_tests {
             crate::tease::Saying {
                 text: hint,
                 caret: None,
+                badge_open: false,
                 badge: "",
                 mode: crate::vim::Mode::default(),
                 block: false,

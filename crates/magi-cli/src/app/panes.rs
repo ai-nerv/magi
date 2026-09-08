@@ -140,3 +140,47 @@ fn the_cost_view_counts_the_turns_that_finished() {
     assert!(said.contains("300"), "the total is the sum: {said}");
     assert!(!said.contains('$'), "and it invents no price: {said}");
 }
+
+#[test]
+fn pressing_the_corner_a_second_time_closes_what_it_opened() {
+    // A control that only ever opens is one you reach for the keyboard to undo, which is the
+    // opposite of why it is a button.
+    let mut app = App::new();
+    app.press_corner();
+    assert_eq!(
+        app.pane.as_ref().map(|p| p.title.clone()).as_deref(),
+        Some("cost")
+    );
+    app.press_corner();
+    assert!(app.pane.is_none(), "the second press closed it");
+    app.press_corner();
+    assert!(app.pane.is_some(), "and the third opened it again");
+}
+
+#[test]
+fn pressing_the_corner_over_another_view_shows_the_corners_own() {
+    // Closing only when *its* view is up. Pressing the corner while the trace is open should
+    // get you the corner's view, not nothing — the press means "show me this", and it does.
+    let mut app = App::new();
+    app.show_trace();
+    app.press_corner();
+    assert_eq!(
+        app.pane.as_ref().map(|p| p.title.clone()).as_deref(),
+        Some("cost"),
+        "the corner's own view, not a dismissal"
+    );
+}
+
+#[test]
+fn the_corner_draws_and_opens_the_same_thing() {
+    // A corner that showed one thing and opened another would be a button that lies about
+    // itself: you press what you were reading, so what you were reading is what you get.
+    let corner = magi_tui::corner::Corner::default();
+    let mut app = App::new();
+    app.corner = corner;
+    app.press_corner();
+    assert_eq!(
+        app.pane.as_ref().map(|p| p.title.clone()).as_deref(),
+        Some(corner.opens())
+    );
+}

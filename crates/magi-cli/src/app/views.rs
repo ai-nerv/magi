@@ -77,4 +77,24 @@ impl App {
                 .saying(magi_tui::cost::empty()),
         );
     }
+
+    /// Open what the corner is about, or close it if it is already open.
+    ///
+    /// **A second press closes it.** The corner is a control, and a control that only ever opens
+    /// is one you have to reach for the keyboard to undo — which is the opposite of why it is a
+    /// button. Closing only when *its own* view is showing: pressing the corner while some other
+    /// pane is up should get you the corner's, not nothing.
+    pub fn press_corner(&mut self) {
+        if self
+            .pane
+            .as_ref()
+            .is_some_and(|open| open.title == self.corner.opens())
+        {
+            self.pane = None;
+            return;
+        }
+        match self.corner {
+            magi_tui::corner::Corner::Cost => self.show_cost(),
+        }
+    }
 }

@@ -66,18 +66,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
     // The box wears the usage: it is the number you want while you are deciding what to send,
     // and the box is where you are looking when you decide. Cut to a third of the width first --
     // the strip is reserved on every row, so anything long here takes the whole prompt with it.
-    let badge = footer::usage(footer_data);
-    let badge = if badge.chars().count() <= usize::from(area.width) / 3 {
-        badge
-    } else {
-        // The window is the part that matters when there is not room for all of it: the totals
-        // are a tally and this one is a limit you are walking towards.
-        footer::usage(&footer::FooterData {
-            input_tokens: 0,
-            output_tokens: 0,
-            ..footer_data.clone()
-        })
-    };
+    // What the corner wears, and how much of it fits — both the corner's own decision, so a
+    // different corner is a different variant rather than an edit here. See `magi_tui::corner`.
+    let badge = app.corner.fitted(footer_data, area.width);
     let text_rows = prompt::text_rows(&app.editor, rows, area.width, &badge);
     let room = usize::from(rows.saturating_sub(around)).saturating_sub(text_rows + 3);
     // The same number the menu is cut to, which is the point: a surface is drawn in the menu's
@@ -117,9 +108,16 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
     // type, and typing during a turn is allowed and always was. The tease stays out of it --
     // a box writing to itself while the agent works is two things claiming the same line.
     let effort = status::effort(app.status(), app.elapsed());
+    // Drawn harder while what it opens is on screen, so the corner reads as a control that is
+    // currently pressed rather than one that merely can be.
+    let badge_open = app
+        .pane
+        .as_ref()
+        .is_some_and(|open| open.title == app.corner.opens());
     let saying = if effort.is_empty() {
         magi_tui::tease::Saying {
             badge: &badge,
+            badge_open,
             mode: app.modal.mode,
             ..app.tease.saying()
         }
@@ -127,6 +125,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
         magi_tui::tease::Saying {
             text: &effort,
             badge: &badge,
+            badge_open,
             mode: app.modal.mode,
             ..Default::default()
         }
@@ -251,7 +250,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
     // Where the usage badge landed, so a click on it can open the cost view. The same reason
     // `surface_rect` is recorded here: the layout is the only thing that knows, and it knows it
     // once.
-    app.usage_rect = prompt_lines.badge.as_ref().map(|(row, columns)| Rect {
+    app.corner_rect = prompt_lines.badge.as_ref().map(|(row, columns)| Rect {
         x: prompt_area.x + columns.start,
         y: prompt_area.y + u16::try_from(*row).unwrap_or(u16::MAX),
         width: columns.end - columns.start,
@@ -278,16 +277,29 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
         // Settled here because this is the only place that knows how tall the panel is; see
         // `Pane::settle`.
         open.settle(page);
-        let title = open.more(page).map_or_else(
-            || format!(" {} ", open.title),
-            |where_in| format!(" {} · {where_in} ", open.title),
-        );
+
+        // **The heading is inside the frame, not in it.** A border title breaks the rule it is
+        // drawn in, and a double rule with a gap in it reads as a damaged box. Unicode has no
+        // rounded double corner either -- arcs exist for light lines alone -- so the corners are
+        // the square double ones, which is the whole of what a double border can be.
+        let mut rows = vec![
+            ratatui::text::Line::from(ratatui::text::Span::styled(
+                open.heading(page),
+                ratatui::style::Style::default()
+                    .fg(magi_tui::colour::hint())
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            )),
+            ratatui::text::Line::from(String::new()),
+        ];
+        rows.extend(open.showing(page));
+
         frame.render_widget(ratatui::widgets::Clear, panel);
         frame.render_widget(
-            Paragraph::new(open.showing(page)).block(
+            Paragraph::new(rows).block(
                 ratatui::widgets::Block::default()
                     .borders(ratatui::widgets::Borders::ALL)
-                    .title(title),
+                    .border_type(ratatui::widgets::BorderType::Double)
+                    .padding(ratatui::widgets::Padding::horizontal(1)),
             ),
             panel,
         );

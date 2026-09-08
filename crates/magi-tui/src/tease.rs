@@ -84,6 +84,13 @@ pub struct Saying<'a> {
     pub marked: Option<Range<usize>>,
     /// Which session this is, or its usage: drawn down the right.
     pub badge: &'a str,
+    /// Whether the view this badge opens is on screen right now.
+    ///
+    /// Drawn harder while it is, so the corner reads as a control that is *currently pressed*
+    /// rather than one that merely can be. Without it, opening the view from the corner and
+    /// opening it by name look identical, and there is nothing on screen tying the panel to the
+    /// thing that produced it.
+    pub badge_open: bool,
     /// Which mode the prompt is in, drawn on its top edge.
     pub mode: crate::vim::Mode,
 }
@@ -150,6 +157,7 @@ impl Tease {
             block: self.block,
             marked: self.marked.clone(),
             badge: "",
+            badge_open: false,
             mode: crate::vim::Mode::default(),
         }
     }
