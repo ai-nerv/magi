@@ -390,6 +390,8 @@ mod modal_tests {
                 press(KeyCode::Char(c)),
                 &mut editor,
                 &mut None,
+                &mut None,
+                20,
                 false,
                 &mut modal,
             );
@@ -426,6 +428,8 @@ mod modal_tests {
                 press(KeyCode::Char(c)),
                 &mut editor,
                 &mut None,
+                &mut None,
+                20,
                 false,
                 &mut modal,
             );
@@ -443,6 +447,8 @@ mod modal_tests {
             press(KeyCode::Char('x')),
             &mut editor,
             &mut None,
+            &mut None,
+            20,
             false,
             &mut modal,
         );
@@ -452,6 +458,8 @@ mod modal_tests {
                 press(KeyCode::Char('d')),
                 &mut editor,
                 &mut None,
+                &mut None,
+                20,
                 false,
                 &mut modal,
             );
@@ -470,6 +478,8 @@ mod modal_tests {
             press(KeyCode::Char(':')),
             &mut editor,
             &mut None,
+            &mut None,
+            20,
             false,
             &mut modal,
         );
@@ -498,6 +508,8 @@ mod modal_tests {
             press(KeyCode::Left),
             &mut editor,
             &mut None,
+            &mut None,
+            20,
             false,
             &mut modal,
         );
@@ -514,6 +526,8 @@ mod modal_tests {
                 press(KeyCode::Char('j')),
                 &mut editor,
                 &mut None,
+                &mut None,
+                20,
                 false,
                 &mut modal
             ),
@@ -534,6 +548,8 @@ mod modal_tests {
             press(KeyCode::Esc),
             &mut editor,
             &mut None,
+            &mut None,
+            20,
             false,
             &mut modal,
         );
@@ -552,6 +568,8 @@ mod modal_tests {
             press(KeyCode::Char('h')),
             &mut editor,
             &mut overlay,
+            &mut None,
+            20,
             false,
             &mut modal,
         );
@@ -576,6 +594,8 @@ mod motion_tests {
                 KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
                 &mut editor,
                 &mut None,
+                &mut None,
+                20,
                 false,
                 &mut modal,
             );
@@ -604,6 +624,8 @@ mod motion_tests {
                 KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
                 &mut editor,
                 &mut None,
+                &mut None,
+                20,
                 false,
                 &mut modal,
             );

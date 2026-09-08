@@ -23,6 +23,8 @@ fn tab_taking_a_completion_says_so_rather_than_asking_for_a_redraw() {
         press(KeyCode::Tab),
         &mut editor,
         &mut overlay,
+        &mut None,
+        20,
         false,
         &mut typing(),
     );
@@ -39,6 +41,8 @@ fn enter_after_a_tab_submits_what_was_taken() {
         press(KeyCode::Enter),
         &mut editor,
         &mut None,
+        &mut None,
+        20,
         false,
         &mut typing(),
     );

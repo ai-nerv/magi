@@ -22,7 +22,7 @@ pub(super) enum Control {
 ///
 /// Every command here is answered locally. Anything that needs the session becomes a
 /// [`UiCommand`] instead, so the set of things the UI can do alone stays visible in one match.
-pub(super) fn run_command(input: &str, app: &mut App) -> Control {
+pub(super) fn run_command(input: &str, app: &mut App, width: u16) -> Control {
     match input.split_whitespace().next().unwrap_or_default() {
         // vim's spellings, both of them. `:q` closes this window and `:qa` closes every window —
         // and a person who has typed `:qa` for twenty years should not have to find out here
@@ -40,6 +40,17 @@ pub(super) fn run_command(input: &str, app: &mut App) -> Control {
         ":clear" => {
             app.clear_view();
             Control::Send(UiCommand::Branch { keeps: Some(0) })
+        }
+        // Two views of what the session knows, in a float over the transcript. Neither asks the
+        // daemon anything: the trace has been recorded since the session started, and the graph
+        // is whatever has been indexed.
+        ":trace" => {
+            app.show_trace();
+            Control::Continue
+        }
+        ":graph" => {
+            app.show_graph(input, width);
+            Control::Continue
         }
         ":help" => {
             app.show_help();
@@ -107,7 +118,7 @@ mod quitting {
     use crate::app::App;
 
     fn ran(input: &str) -> bool {
-        matches!(run_command(input, &mut App::new()), Control::Quit)
+        matches!(run_command(input, &mut App::new(), 100), Control::Quit)
     }
 
     #[test]

@@ -38,6 +38,8 @@ fn moving_the_highlight_does_not_ask_for_the_list_to_be_rebuilt() {
         down,
         &mut editor,
         &mut overlay,
+        &mut None,
+        20,
         false,
         &mut Modal::default(),
     );
@@ -57,6 +59,8 @@ fn walking_down_the_list_keeps_walking() {
             press(KeyCode::Down, KeyModifiers::NONE),
             &mut editor,
             &mut overlay,
+            &mut None,
+            20,
             false,
             &mut Modal::default(),
         );
@@ -74,6 +78,8 @@ fn typing_still_rebuilds_the_list() {
         press(KeyCode::Char('m'), KeyModifiers::NONE),
         &mut editor,
         &mut overlay,
+        &mut None,
+        20,
         false,
         &mut Modal::default(),
     );
@@ -92,6 +98,8 @@ fn up_from_the_top_still_leaves_for_history() {
         press(KeyCode::Up, KeyModifiers::NONE),
         &mut editor,
         &mut overlay,
+        &mut None,
+        20,
         false,
         &mut Modal::default(),
     );

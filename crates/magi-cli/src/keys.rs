@@ -128,12 +128,53 @@ pub fn handle(
     key: KeyEvent,
     editor: &mut Editor,
     overlay: &mut Option<magi_tui::overlay::Overlay>,
+    pane: &mut Option<magi_tui::pane::Pane>,
+    page: usize,
     busy: bool,
     modal: &mut Modal,
 ) -> Action {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+    // **A float takes the navigation keys before anything else.** It is drawn over the
+    // transcript and it is what the person is looking at, so escape closes it rather than
+    // clearing the prompt, and the arrows scroll it rather than reaching history.
+    if let Some(open) = pane.as_mut() {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                *pane = None;
+                return Action::Dismissed;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                open.up(1);
+                return Action::Moved;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                open.down(1, page);
+                return Action::Moved;
+            }
+            KeyCode::PageUp => {
+                open.up(page);
+                return Action::Moved;
+            }
+            KeyCode::PageDown => {
+                open.down(page, page);
+                return Action::Moved;
+            }
+            KeyCode::Home => {
+                open.top = 0;
+                return Action::Moved;
+            }
+            KeyCode::End => {
+                open.bottom(page);
+                return Action::Moved;
+            }
+            // Everything else is ignored rather than reaching the prompt: a float is modal, and
+            // typing into a prompt you cannot see is how a stray keystroke becomes a sent turn.
+            _ => return Action::Ignore,
+        }
+    }
 
     if let Some(open) = overlay
         .as_mut()

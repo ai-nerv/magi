@@ -22,8 +22,10 @@ pub mod markdown;
 pub mod menu;
 pub mod metric;
 
+pub mod graph;
 pub mod overlay;
 pub mod painted;
+pub mod pane;
 pub mod pick;
 pub mod picker;
 pub mod prompt;
@@ -32,6 +34,7 @@ pub mod select;
 pub mod status;
 pub mod table;
 pub mod tease;
+pub mod trace;
 pub mod transcript;
 pub mod trigger;
 pub mod vim;

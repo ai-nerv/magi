@@ -325,10 +325,18 @@ pub async fn run(
                             continue;
                         }
                         let busy = app.is_busy();
+                        let page = magi_tui::pane::Pane::page(ratatui::layout::Rect {
+                            x: 0,
+                            y: 0,
+                            width: terminal_size().0,
+                            height: terminal_size().1,
+                        });
                         let action = keys::handle(
                             key,
                             &mut app.editor,
                             &mut app.overlay,
+                            &mut app.pane,
+                            page,
                             busy,
                             &mut app.modal,
                         );
@@ -359,7 +367,7 @@ pub async fn run(
                                 dirty = true;
                             }
                             Action::Command(text) => {
-                                match run_command(&text, &mut app) {
+                                match run_command(&text, &mut app, terminal_size().0) {
                                     Control::Quit => break,
                                     Control::Send(command) => {
                                         let _ = command_tx.send(command).await;

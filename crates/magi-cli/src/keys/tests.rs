@@ -15,7 +15,7 @@ pub(super) fn no_paths(_: &str) -> Vec<String> {
 }
 
 fn act(key: KeyEvent, editor: &mut Editor, busy: bool) -> Action {
-    handle(key, editor, &mut None, busy, &mut typing())
+    handle(key, editor, &mut None, &mut None, 20, busy, &mut typing())
 }
 
 /// A prompt already in insert mode, which is what everything below the modal tests is about.
@@ -116,6 +116,8 @@ fn escape_leaves_insert_mode_before_it_interrupts_anything() {
             press(KeyCode::Esc, KeyModifiers::NONE),
             &mut editor,
             &mut None,
+            &mut None,
+            20,
             true,
             &mut modal,
         ),
@@ -128,6 +130,8 @@ fn escape_leaves_insert_mode_before_it_interrupts_anything() {
             press(KeyCode::Esc, KeyModifiers::NONE),
             &mut editor,
             &mut None,
+            &mut None,
+            20,
             true,
             &mut modal,
         ),
@@ -139,6 +143,8 @@ fn escape_leaves_insert_mode_before_it_interrupts_anything() {
             press(KeyCode::Esc, KeyModifiers::NONE),
             &mut editor,
             &mut None,
+            &mut None,
+            20,
             false,
             &mut modal,
         ),
@@ -279,6 +285,8 @@ fn tab_accepts_the_highlighted_completion() {
         press(KeyCode::Tab, KeyModifiers::NONE),
         &mut editor,
         &mut popup,
+        &mut None,
+        20,
         false,
         &mut typing(),
     );
@@ -300,6 +308,8 @@ fn enter_runs_the_command_the_palette_offered() {
         press(KeyCode::Enter, KeyModifiers::NONE),
         &mut editor,
         &mut popup,
+        &mut None,
+        20,
         false,
         &mut modal,
     );
@@ -328,6 +338,8 @@ fn enter_on_a_path_completion_only_completes() {
         press(KeyCode::Enter, KeyModifiers::NONE),
         &mut editor,
         &mut popup,
+        &mut None,
+        20,
         false,
         &mut typing(),
     );
@@ -341,6 +353,8 @@ fn the_arrows_move_the_highlight_while_a_popup_is_open() {
         press(KeyCode::Down, KeyModifiers::NONE),
         &mut editor,
         &mut popup,
+        &mut None,
+        20,
         false,
         &mut typing(),
     );
@@ -361,6 +375,8 @@ fn escape_dismisses_a_popup_before_it_interrupts() {
         press(KeyCode::Esc, KeyModifiers::NONE),
         &mut editor,
         &mut popup,
+        &mut None,
+        20,
         true,
         &mut typing(),
     );
@@ -389,6 +405,8 @@ fn escape_out_of_a_list_says_so_rather_than_going_quiet() {
         press(KeyCode::Esc, KeyModifiers::NONE),
         &mut editor,
         &mut overlay,
+        &mut None,
+        20,
         true,
         &mut typing(),
     );
@@ -403,6 +421,8 @@ fn ctrl_c_dismisses_a_popup_before_it_clears_the_buffer() {
         press(KeyCode::Char('c'), KeyModifiers::CONTROL),
         &mut editor,
         &mut popup,
+        &mut None,
+        20,
         false,
         &mut typing(),
     );

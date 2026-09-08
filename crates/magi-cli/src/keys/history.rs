@@ -33,6 +33,8 @@ fn up_walks_back_through_earlier_prompts() {
             press(KeyCode::Up, KeyModifiers::NONE),
             &mut editor,
             &mut none,
+            &mut None,
+            20,
             false,
             &mut typing(),
         ),
@@ -54,6 +56,8 @@ fn a_recalled_line_does_not_reopen_the_menu_over_itself() {
             press(KeyCode::Up, KeyModifiers::NONE),
             &mut editor,
             &mut none,
+            &mut None,
+            20,
             false,
             &mut typing(),
         );
@@ -75,6 +79,8 @@ fn the_menu_still_owns_the_arrows_while_there_is_menu_left() {
         press(KeyCode::Down, KeyModifiers::NONE),
         &mut editor,
         &mut popup,
+        &mut None,
+        20,
         false,
         &mut typing(),
     );
@@ -92,6 +98,8 @@ fn the_menu_still_owns_the_arrows_while_there_is_menu_left() {
         press(KeyCode::Up, KeyModifiers::NONE),
         &mut editor,
         &mut popup,
+        &mut None,
+        20,
         false,
         &mut typing(),
     );
@@ -114,6 +122,8 @@ fn up_at_the_top_of_the_menu_leaves_it_for_history() {
         press(KeyCode::Up, KeyModifiers::NONE),
         &mut editor,
         &mut popup,
+        &mut None,
+        20,
         false,
         &mut typing(),
     );
@@ -140,6 +150,8 @@ mod the_mouse_is_the_terminals {
             KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
             &mut editor,
             &mut None,
+            &mut None,
+            20,
             false,
             &mut typing(),
         );
@@ -153,6 +165,8 @@ mod the_mouse_is_the_terminals {
             KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
             &mut editor,
             &mut None,
+            &mut None,
+            20,
             false,
             &mut typing(),
         );
