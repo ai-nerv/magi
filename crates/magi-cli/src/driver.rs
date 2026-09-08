@@ -332,12 +332,10 @@ pub async fn run(
                             busy,
                             &mut app.modal,
                         );
-                        // Noted before the match consumes it: a taken completion must not be
-                        // recomputed, and the arms move the action's payload out.
-                        let accepted = matches!(
-                            action,
-                            Action::Accepted | Action::Dismissed | Action::Recalled
-                        );
+                        // Noted before the match consumes it: the arms move the action's payload
+                        // out, and the rule lives in `keys::recomputes` so this and the key
+                        // handler cannot drift apart -- which is the bug it was written for.
+                        let accepted = !keys::recomputes(&action);
                         match action {
                             Action::Submit(text) => {
                                 crate::history::remember(&text);
@@ -527,7 +525,7 @@ pub async fn run(
                                 }
                                 dirty = true;
                             }
-                            Action::Redraw | Action::Accepted | Action::Recalled => dirty = true,
+                            Action::Redraw | Action::Accepted | Action::Recalled | Action::Moved => dirty = true,
                             Action::Ignore => {}
                         }
                         // The popup is derived from the prompt, so it is recomputed after

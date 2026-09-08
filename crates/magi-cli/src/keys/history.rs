@@ -78,7 +78,10 @@ fn the_menu_still_owns_the_arrows_while_there_is_menu_left() {
         false,
         &mut typing(),
     );
-    assert_eq!(action, Action::Redraw);
+    // `Moved` rather than `Redraw`, and the distinction is the whole of why the arrows used to
+    // do nothing here: `Redraw` is also what typing returns, so the driver rebuilt the menu from
+    // the prompt and the highlight went back to the top. See `keys::recomputes`.
+    assert_eq!(action, Action::Moved);
     assert_eq!(
         highlight(&mut popup),
         1,
