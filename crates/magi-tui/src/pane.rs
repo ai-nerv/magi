@@ -141,7 +141,17 @@ impl Pane {
     /// a damaged box rather than a labelled one.
     #[must_use]
     pub fn page(screen: Rect) -> usize {
-        Self::area(screen).height.saturating_sub(4) as usize
+        Self::page_of(Self::area(screen))
+    }
+
+    /// The same, for a caller that already holds the panel's own rectangle.
+    ///
+    /// The pointer handler is one: it is given the rect the last frame drew, not the screen, and
+    /// working back to the screen from it would be [`Pane::area`] run in reverse. One place knows
+    /// how many rows the chrome takes, and both ways in go through it.
+    #[must_use]
+    pub fn page_of(area: Rect) -> usize {
+        area.height.saturating_sub(4) as usize
     }
 
     /// The heading drawn inside the panel: what this is, and where in it you are.

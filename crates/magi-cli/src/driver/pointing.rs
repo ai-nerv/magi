@@ -65,9 +65,26 @@ pub(crate) fn on_the_screen(
     copied: &mut Option<magi_tui::select::Selection>,
 ) -> Pointing {
     use crossterm::event::MouseButton;
+
+    // How far a wheel notch moves the float, if one is open. Read before the match because the
+    // rect and the pane are two fields of the same struct, and the arms below borrow the pane.
+    let page = app.pane_rect.map_or(0, magi_tui::pane::Pane::page_of);
+
     match mouse.kind {
-        MouseEventKind::ScrollUp => app.scrollback.scroll_up(3),
-        MouseEventKind::ScrollDown => app.scrollback.scroll_down(3, view),
+        // **An open float takes the wheel, wherever the pointer is.** The keyboard already treats
+        // it as modal — the arrows scroll it and everything else is swallowed rather than
+        // reaching the prompt — and a wheel that went on moving the transcript would scroll the
+        // one thing on screen the person cannot see. Not decided by where the pointer sits,
+        // either: the panel covers the middle of the screen, so a positional rule would have the
+        // wheel doing two different things a few cells apart.
+        MouseEventKind::ScrollUp => match app.pane.as_mut() {
+            Some(open) => open.up(3),
+            None => app.scrollback.scroll_up(3),
+        },
+        MouseEventKind::ScrollDown => match app.pane.as_mut() {
+            Some(open) => open.down(3, page),
+            None => app.scrollback.scroll_down(3, view),
+        },
         // The pointer passing over a fold handle lights it up. Every cell it crosses arrives here
         // and all but a handful change nothing — `hover_at` says which, and only those cost a
         // frame.
@@ -293,5 +310,113 @@ mod dismissing {
             app.selection.is_some(),
             "a closed float went on taking clicks"
         );
+    }
+}
+
+/// Who the wheel belongs to while a float is open.
+#[cfg(test)]
+mod wheeling {
+    use super::on_the_screen;
+    use crate::app::App;
+    use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
+    use ratatui::text::Line;
+
+    /// Where a pane lands on an eighty-by-thirty screen.
+    const SCREEN: Rect = Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 30,
+    };
+
+    /// An app with a long transcript, and a float over it holding more rows than fit.
+    fn showing() -> App {
+        let mut app = App::new();
+        app.scrollback
+            .set_lines((0..500).map(|n| Line::from(format!("line {n}"))).collect());
+        app.pane = Some(magi_tui::pane::Pane::new(
+            "test",
+            (0..500).map(|n| Line::from(format!("row {n}"))).collect(),
+        ));
+        app.pane_rect = Some(magi_tui::pane::Pane::area(SCREEN));
+        app
+    }
+
+    /// One wheel notch.
+    fn wheel(kind: MouseEventKind) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    /// Turn the wheel, as the driver does.
+    fn turned(app: &mut App, kind: MouseEventKind) {
+        let _ = on_the_screen(app, wheel(kind), SCREEN.height, SCREEN.width, &mut None);
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_float_rather_than_the_transcript() {
+        // The float is drawn over the transcript, so a wheel that went on moving the transcript
+        // would scroll the one thing on screen the person cannot see.
+        let mut app = showing();
+        turned(&mut app, MouseEventKind::ScrollDown);
+        assert_eq!(app.pane.as_ref().expect("a pane").top, 3);
+        assert!(
+            app.scrollback.is_following(),
+            "the transcript moved under the float"
+        );
+    }
+
+    #[test]
+    fn the_wheel_goes_back_up_again() {
+        let mut app = showing();
+        turned(&mut app, MouseEventKind::ScrollDown);
+        turned(&mut app, MouseEventKind::ScrollDown);
+        assert_eq!(app.pane.as_ref().expect("a pane").top, 6);
+        turned(&mut app, MouseEventKind::ScrollUp);
+        assert_eq!(app.pane.as_ref().expect("a pane").top, 3);
+    }
+
+    #[test]
+    fn the_pointer_being_off_the_float_does_not_give_the_wheel_back() {
+        // The panel covers the middle of the screen, so a positional rule would have the wheel
+        // doing two different things a few cells apart. The keyboard is modal here; so is this.
+        let mut app = showing();
+        let far = MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 79,
+            row: 29,
+            modifiers: KeyModifiers::NONE,
+        };
+        let _ = on_the_screen(&mut app, far, SCREEN.height, SCREEN.width, &mut None);
+        assert_eq!(app.pane.as_ref().expect("a pane").top, 3);
+        assert!(app.scrollback.is_following());
+    }
+
+    #[test]
+    fn with_no_float_open_the_wheel_is_the_transcripts_again() {
+        let mut app = showing();
+        app.pane = None;
+        turned(&mut app, MouseEventKind::ScrollUp);
+        assert!(
+            !app.scrollback.is_following(),
+            "the transcript should have scrolled away from the newest output"
+        );
+    }
+
+    #[test]
+    fn scrolling_stops_at_the_last_page_rather_than_past_it() {
+        // Past the end is how a view ends up showing an empty box: the content is above the
+        // viewport and there is nothing on screen to say so.
+        let mut app = showing();
+        for _ in 0..500 {
+            turned(&mut app, MouseEventKind::ScrollDown);
+        }
+        let page = magi_tui::pane::Pane::page_of(app.pane_rect.expect("a drawn pane"));
+        assert_eq!(app.pane.as_ref().expect("a pane").top, 500 - page);
     }
 }
