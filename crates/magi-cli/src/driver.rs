@@ -688,6 +688,16 @@ fn footer_data(app: &App) -> FooterData {
     let window = app.model.as_ref().map_or(0, |m| m.context_window);
     FooterData {
         identity: app.named.clone(),
+        // **This session and whatever melchior says is reachable.** `reachable` is what the layer
+        // last named — it is melchior's answer, not a count magi keeps — and the one added is this
+        // session, which never appears in its own list of peers.
+        //
+        // `own` is unconditionally true until the UI can attach to somebody else. Wiring the
+        // control before the attach exists would draw a thing that does nothing; wiring the count
+        // now settles the geometry, which is the part that is width-critical and easy to get
+        // wrong.
+        crew: app.reachable.len() + 1,
+        own: true,
         model: app.model.as_ref().map_or_else(
             || magi_tui::glyph::no_model().to_owned(),
             |model| model.name.clone(),

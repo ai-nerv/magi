@@ -256,6 +256,8 @@ fn a_footer_row_is_exactly_the_terminal_width() {
         context_window: 200_000,
         identity: "axum/main/alpha".into(),
         model: "claude-opus-5".into(),
+        crew: 1,
+        own: true,
     };
     let lines = magi_tui::footer::render(&data, &[], 70);
     let stats: usize = lines[0]
