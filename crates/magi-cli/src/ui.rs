@@ -248,6 +248,15 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
     // Recorded here for the same reason `live_rows` is: the layout is the only thing that knows,
     // and it knows it only once. Cleared when nothing is holding them, so a pointer over a picker
     // is not translated into coordinates for a surface that closed.
+    // Where the usage badge landed, so a click on it can open the cost view. The same reason
+    // `surface_rect` is recorded here: the layout is the only thing that knows, and it knows it
+    // once.
+    app.usage_rect = prompt_lines.badge.as_ref().map(|(row, columns)| Rect {
+        x: prompt_area.x + columns.start,
+        y: prompt_area.y + u16::try_from(*row).unwrap_or(u16::MAX),
+        width: columns.end - columns.start,
+        height: 1,
+    });
     app.surface_rect = app.holding().map(|_| Rect {
         x: prompt_area.x + prompt::INSET,
         y: prompt_area.y + u16::try_from(prompt_lines.menu.start).unwrap_or(u16::MAX),

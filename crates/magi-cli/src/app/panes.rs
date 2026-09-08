@@ -95,3 +95,48 @@ fn the_pane_is_not_the_menu_slot() {
         "opening a view did not touch the slot pickers, completions and tool surfaces share"
     );
 }
+
+#[test]
+fn the_cost_view_says_nothing_was_spent_before_any_turn_finished() {
+    let mut app = App::new();
+    app.show_cost();
+    let pane = app.pane.expect("a pane");
+    assert_eq!(pane.title, "cost");
+    assert!(
+        pane.showing(10)[0].to_string().contains("nothing spent"),
+        "{:?}",
+        pane.showing(10)[0].to_string()
+    );
+}
+
+#[test]
+fn the_cost_view_counts_the_turns_that_finished() {
+    let mut app = App::new();
+    for (input, output) in [(100_u64, 20_u64), (200, 30)] {
+        app.entries.push(Entry::Assistant {
+            id: magi_proto::MessageId::new("a".to_owned()),
+            text: "said".to_owned(),
+            thinking: String::new(),
+            stop_reason: Some(magi_proto::StopReason::EndTurn),
+            usage: magi_proto::Usage {
+                input,
+                output,
+                cache_read: 0,
+                cache_write: 0,
+            },
+            error: None,
+            signatures: magi_proto::Signatures::default(),
+        });
+    }
+    app.show_cost();
+    let said = app
+        .pane
+        .expect("a pane")
+        .showing(40)
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(said.contains("300"), "the total is the sum: {said}");
+    assert!(!said.contains('$'), "and it invents no price: {said}");
+}

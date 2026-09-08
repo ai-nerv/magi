@@ -82,6 +82,17 @@ pub(crate) fn on_the_screen(
         // it is a press on it rather than the start of a one-character selection.
         MouseEventKind::Down(MouseButton::Left) => {
             app.selection = None;
+            // **The usage badge is a button.** It is the number you are looking at when you
+            // wonder what a session has cost, so a press on it opens the view that answers that
+            // -- the shortest path from noticing to knowing. First, because it sits in the
+            // prompt box's edge and a press that fell through would start a selection instead.
+            if app
+                .usage_rect
+                .is_some_and(|at| within(at, mouse.row, mouse.column))
+            {
+                app.show_cost();
+                return Pointing::Redraw;
+            }
             // Copy first: both chips sit in the same edge, and a press that fell through to the
             // fold would open the block a person meant to take a copy of.
             if let Some(text) = app.copy_at(mouse.row, mouse.column, width) {
@@ -114,4 +125,51 @@ pub(crate) fn on_the_screen(
         _ => return Pointing::Nothing,
     }
     Pointing::Redraw
+}
+
+/// Whether a press landed inside a rectangle.
+///
+/// Its own function because a click target is an easy thing to get subtly wrong — an off-by-one
+/// on the right edge means the last column of a button does nothing, which reads as a button that
+/// works sometimes.
+fn within(at: ratatui::layout::Rect, row: u16, column: u16) -> bool {
+    row >= at.y && row < at.y + at.height && column >= at.x && column < at.x + at.width
+}
+
+#[cfg(test)]
+mod hitting {
+    use super::within;
+    use ratatui::layout::Rect;
+
+    #[test]
+    fn a_click_target_includes_its_own_edges_and_nothing_past_them() {
+        // An off-by-one on the right edge means the last column of a button does nothing, which
+        // reads as a button that works sometimes — the worst kind to debug, because the person
+        // reporting it was clicking in the right place.
+        let at = Rect {
+            x: 90,
+            y: 28,
+            width: 18,
+            height: 1,
+        };
+        assert!(within(at, 28, 90), "left edge");
+        assert!(within(at, 28, 107), "right edge");
+        assert!(!within(at, 28, 108), "one past it");
+        assert!(!within(at, 28, 89), "one before it");
+        assert!(!within(at, 27, 95), "the row above");
+        assert!(!within(at, 29, 95), "and the row below");
+    }
+
+    #[test]
+    fn an_empty_target_catches_nothing() {
+        // A session that has spent nothing wears no badge, and `usage_rect` is `None` — but a
+        // zero-width rect must not swallow clicks either.
+        let none = Rect {
+            x: 10,
+            y: 5,
+            width: 0,
+            height: 0,
+        };
+        assert!(!within(none, 5, 10));
+    }
 }

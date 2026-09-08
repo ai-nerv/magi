@@ -52,6 +52,10 @@ pub(super) fn run_command(input: &str, app: &mut App, width: u16) -> Control {
             app.show_graph(input, width);
             Control::Continue
         }
+        ":cost" => {
+            app.show_cost();
+            Control::Continue
+        }
         ":help" => {
             app.show_help();
             Control::Continue

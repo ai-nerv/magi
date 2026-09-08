@@ -50,4 +50,31 @@ impl App {
                 .saying(magi_tui::graph::Graph::empty()),
         );
     }
+
+    /// Open what this session has spent.
+    ///
+    /// Per turn and in total, in the four counters a provider bills separately. No money: magi
+    /// does not know the rates, melchior does, and a guess printed here would go stale the day a
+    /// provider changed one -- see `magi_tui::cost`.
+    pub fn show_cost(&mut self) {
+        let turns: Vec<magi_tui::cost::Turn> = self
+            .entries
+            .iter()
+            .filter_map(|entry| match entry {
+                magi_proto::Entry::Assistant { usage, .. }
+                    if usage.prompt_tokens() > 0 || usage.output > 0 =>
+                {
+                    Some(*usage)
+                }
+                _ => None,
+            })
+            .enumerate()
+            .map(|(at, usage)| magi_tui::cost::Turn { at: at + 1, usage })
+            .collect();
+        let model = self.model.as_ref().map(|m| m.name.clone());
+        self.pane = Some(
+            magi_tui::pane::Pane::new("cost", magi_tui::cost::lines(&turns, model.as_deref()))
+                .saying(magi_tui::cost::empty()),
+        );
+    }
 }

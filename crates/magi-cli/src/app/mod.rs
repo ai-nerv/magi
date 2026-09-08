@@ -197,6 +197,12 @@ pub struct App {
     /// gets the second half of that sentence. `None` when nothing is holding rows, so a pointer
     /// over an ordinary picker is not translated into coordinates for a surface that has closed.
     pub surface_rect: Option<ratatui::layout::Rect>,
+    /// Where the usage badge is on screen, so a click on it opens the cost view.
+    ///
+    /// The number you are looking at when you wonder what a session has cost is the one worn by
+    /// the prompt box; clicking it is the shortest path from noticing to knowing. `None` when
+    /// there is no badge, which is a session that has spent nothing.
+    pub usage_rect: Option<ratatui::layout::Rect>,
 }
 
 impl Default for App {
@@ -245,6 +251,7 @@ impl App {
             surface: None,
             live_rows: 0..0,
             surface_rect: None,
+            usage_rect: None,
             pending_notice: None,
             no_model: None,
             asking_about: magi_proto::permit::Action::Read {

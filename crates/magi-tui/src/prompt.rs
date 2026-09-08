@@ -130,6 +130,12 @@ pub struct Boxed {
     pub lines: Vec<Line<'static>>,
     /// Which of those rows the menu occupies. Empty when nothing is open.
     pub menu: std::ops::Range<usize>,
+    /// Where the usage badge landed: the row within the box, and the columns it covers.
+    ///
+    /// `None` when there is no badge. Reported for the same reason `menu` is — the strip sits on
+    /// the middle *text* row, which moves as somebody types, and only the renderer knows which
+    /// row that turned out to be. A click on it opens the cost view.
+    pub badge: Option<(usize, std::ops::Range<u16>)>,
 }
 
 /// How far in from the left edge a menu row's text starts: the side, then a space.
@@ -206,6 +212,15 @@ pub fn render(
         ));
     }
 
+    // The strip is drawn on the middle text row, one row down for the top border. Computed from
+    // the same two numbers `fold::strip` uses, rather than measured off the rendered spans: a
+    // reader of either can check it against the other.
+    let worn = u16::try_from(badge.chars().count() + 3).unwrap_or(u16::MAX);
+    let badge_at = (!badge.is_empty()).then(|| {
+        let right = width.saturating_sub(1);
+        (1 + shown / 2, right.saturating_sub(worn)..right)
+    });
+
     let mut opened = 0..0;
     if !menu.is_empty() {
         out.push(divider(width, content, shown, tick, scan));
@@ -231,6 +246,7 @@ pub fn render(
     Boxed {
         lines: out,
         menu: opened,
+        badge: badge_at,
     }
 }
 
