@@ -363,3 +363,29 @@ async fn tool_output_is_masked_before_anything_is_summarised() {
     );
     drop(held);
 }
+
+#[tokio::test]
+async fn a_masked_session_can_still_be_read_back() {
+    // **What makes masking safe.** balthasar replaces a big tool result with a stub because the
+    // text is still in its scrollback — "reversible" is the whole argument for trying it before a
+    // summary. That is only true if something can fetch it back, and until now nothing in magi
+    // could: the shipped stub said "run it again", which for a half-hour test run is a poor answer
+    // when the output is sitting on disk.
+    //
+    // `scroll` is that read, and `config/tools.lua` offers it to the model as `history`. This
+    // checks the verb answers for a session magi streamed — the half a Lua tool cannot be tested
+    // for here, and the half that would silently not work.
+    let Some((mut scribe, _dir, _serving, _alone)) = own_balthasar("scrolling").await else {
+        eprintln!("skipped: balthasar is not installed, and it holds the history");
+        return;
+    };
+    let _session = tooling(&mut scribe, 3).await;
+
+    let rows = scribe.raw("scroll").await.expect("scroll answers");
+    let said = serde_json::to_string(&rows).expect("json");
+    assert!(
+        said.contains("cargo test"),
+        "the history did not come back: {}",
+        &said[..said.len().min(400)]
+    );
+}

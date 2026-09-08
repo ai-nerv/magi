@@ -51,7 +51,7 @@ mod stream;
 pub mod tool;
 
 pub use convert::{FromLua, json_from_lua};
-pub use engine::{Config, Engine, name_session, session};
+pub use engine::{Config, Engine, balthasar_at, name_session, session};
 
 /// Anything that can go wrong loading a config.
 #[derive(Debug, thiserror::Error)]

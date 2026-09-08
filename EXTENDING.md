@@ -84,11 +84,21 @@ What magi tells a file about itself:
 |---|---|
 | `magi.self` | the path of the running binary, so a config can name a peer magi ships rather than hope the right one is on `PATH` |
 | `magi.session` | which session this is, for a tool that has to name one — balthasar's `scroll` reads part of *a* session's history and there is more than one |
+| `magi.balthasar_at` | where this session's balthasar listens |
 
 **`magi.session` is absent outside a session**, and that is the useful part: `magi tools` builds a
 VM to list what is declared, and so does every config test. A tool that needs the id should be
 declared inside `if magi.session then` rather than invent one — that is what the shipped `history`
 tool does.
+
+**Pass `magi.balthasar_at` to anything that talks to balthasar.** Its client falls back to the
+newest socket in the runtime directory when nobody says which, and the newest is a neighbour's as
+often as not the moment a project has two windows open. magi starts its own balthasar and knows
+where it put it:
+
+```lua
+balthasar.fetch({ tool = "balthasar", path = magi.balthasar_at }, "recall", "the deploy command")
+```
 
 ---
 

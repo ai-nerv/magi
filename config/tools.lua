@@ -39,6 +39,17 @@ do -- balthasar
   -- is the only place that id is held, because nothing else in magi needs to know it exists.
   local injection = nil
 
+  -- Which balthasar to ask.
+  --
+  -- **Named, never guessed.** balthasar's client falls back to the newest socket in the runtime
+  -- directory when nobody says which -- right for the common case of one session, and a coin flip
+  -- the moment somebody opens a second window in the same project. magi starts its own balthasar
+  -- and knows exactly where it put it, so it says.
+  --
+  -- Absent outside a session (`magi tools` builds a VM to list what is declared) and absent when
+  -- there is no balthasar at all, and then this is `{ tool = "balthasar" }` exactly as before.
+  local OURS = { tool = "balthasar", path = magi.balthasar_at }
+
   -- Which verbs the model gets. balthasar serves nineteen; the rest are the harness's --
   -- `observe`, `replay` and the transcript plumbing magi drives in Rust, not through here.
   -- The prose comes from balthasar's own `verbs()`; the schemas do not, because balthasar
@@ -83,7 +94,7 @@ do -- balthasar
   }
 
   local asked, offered = pcall(function()
-    return balthasar and balthasar.fetch({ tool = "balthasar" }, "verbs")
+    return balthasar and balthasar.fetch(OURS, "verbs")
   end)
   if asked and type(offered) == "table" then
     for _, v in ipairs(offered) do
@@ -98,7 +109,7 @@ do -- balthasar
             local positional = {}
             for i, name in ipairs(shape.args) do positional[i] = args[name] end
             local answer, why =
-              balthasar.fetch({ tool = "balthasar" }, v.name, table.unpack(positional, 1, #shape.args))
+              balthasar.fetch(OURS, v.name, table.unpack(positional, 1, #shape.args))
             if not answer then return { content = tostring(why), is_error = true } end
             -- Kept, and stripped from what the model sees. The id is bookkeeping between magi
             -- and balthasar; putting it in the context would spend tokens on a handle the model
@@ -169,7 +180,7 @@ do -- balthasar
         -- Capped here as well as by balthasar. Its own default is generous for a plugin reading a
         -- history; this is a model spending its own context to get one back.
         local tokens = math.min(tonumber(args.tokens) or 2000, 8000)
-        local answer, why = balthasar.fetch({ tool = "balthasar" }, "scroll", magi.session, {
+        local answer, why = balthasar.fetch(OURS, "scroll", magi.session, {
           want = want,
           cursor = args.cursor,
           terms = args.terms,
@@ -202,13 +213,13 @@ do -- balthasar
       local args = event.arguments or {}
       local action = args.command or args.path or args.query or ""
 
-      local used = balthasar.fetch({ tool = "balthasar" }, "used", injection, {
+      local used = balthasar.fetch(OURS, "used", injection, {
         tool = event.tool,
         action = action,
       })
       if not used or not used.action then return end
 
-      balthasar.fetch({ tool = "balthasar" }, "outcome", used.action, {
+      balthasar.fetch(OURS, "outcome", used.action, {
         kind = event.is_error and "failed" or "succeeded",
       })
     end,

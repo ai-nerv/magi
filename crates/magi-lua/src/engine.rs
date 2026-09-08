@@ -76,26 +76,39 @@ pub struct Engine {
     inside: crate::shell::Inside,
 }
 
-/// Which session this process is, once something has said.
+/// Which session this process is, and which balthasar holds it.
 ///
 /// **Process-global because a magi *is* one session** — see `magi_host`'s own note on the same
-/// point. There is nothing to disambiguate, so threading an id through `Catalog` and `Backend` and
-/// five construction sites would be carrying a constant about.
-static SESSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+/// point. There is nothing to disambiguate, so threading these through `Catalog` and `Backend` and
+/// five construction sites would be carrying two constants about.
+static SESSION: std::sync::OnceLock<(String, Option<String>)> = std::sync::OnceLock::new();
 
-/// Say which session this process is, so a tool can name it.
+/// Say which session this process is and where its balthasar listens.
+///
+/// **The socket matters as much as the id.** balthasar's own client falls back to "the newest
+/// socket in the directory" when nobody says, and magi has written down why that is wrong: the
+/// newest is a neighbour's as often as not, and two windows in a project reaching each other's
+/// memory layer is the failure the per-session naming exists to prevent. magi starts its own
+/// balthasar and knows exactly where it is; a tool should be told rather than left to guess.
 ///
 /// Called once, as the session comes up. Later calls are ignored rather than refused: a second
 /// session in one process is not a thing that happens, and panicking over it would turn a
 /// harmless mistake into a dead window.
-pub fn name_session(id: &str) {
-    let _ = SESSION.set(id.to_owned());
+pub fn name_session(id: &str, socket: Option<&std::path::Path>) {
+    let at = socket.map(|path| path.display().to_string());
+    let _ = SESSION.set((id.to_owned(), at));
 }
 
 /// What this session is called, if anybody said.
 #[must_use]
 pub fn session() -> Option<&'static str> {
-    SESSION.get().map(String::as_str)
+    SESSION.get().map(|(id, _)| id.as_str())
+}
+
+/// Where this session's balthasar listens, if anybody said and there is one.
+#[must_use]
+pub fn balthasar_at() -> Option<&'static str> {
+    SESSION.get().and_then(|(_, at)| at.as_deref())
 }
 
 impl Default for Engine {
@@ -298,6 +311,12 @@ impl Engine {
             if let Some(id) = session() {
                 let id = luna::String::from_slice(&ctx, id.as_bytes());
                 magi.set(ctx, "session", id).ok();
+            }
+            // And where its balthasar listens, so a memory tool asks *this* session's rather than
+            // whichever socket is newest — which is a neighbour's as often as not.
+            if let Some(at) = balthasar_at() {
+                let at = luna::String::from_slice(&ctx, at.as_bytes());
+                magi.set(ctx, "balthasar_at", at).ok();
             }
 
             for (key, _) in magi.iter(ctx) {
