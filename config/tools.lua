@@ -113,6 +113,74 @@ do -- balthasar
       end
     end
   end
+  -- The counterpart to masking, and the reason masking is safe.
+  --
+  -- balthasar shrinks a full window by replacing a big tool result with a stub -- "`shell` output
+  -- elided (~1200 tokens)" -- because tool output is most of a coding session's window and a
+  -- summary is the expensive lossy last resort. That is reversible only if something can fetch
+  -- the text back, and until now nothing could: the stub said "run it again", which for a
+  -- half-hour test run is a poor answer when the output is sitting in balthasar's scrollback.
+  --
+  -- `scroll` is the read for everything except restoring a session, and it is bounded: balthasar
+  -- says what it left out and where to continue from, so a model asking for a long history gets
+  -- a page rather than the window it was trying to save.
+  --
+  -- Declared here rather than in MEMORY above because it takes this session's id first, which the
+  -- model has no business supplying and no way to know. `magi.session` is absent in a VM nobody
+  -- named a session for -- `magi tools` has one -- and then this tool is simply not offered.
+  if magi.session then
+    magi.tool("history", {
+      description =
+        "Read earlier parts of this conversation back out of the memory layer. " ..
+        "Use it when a tool result has been elided to save context and you need what it said, " ..
+        "or to find something said far enough back that it is no longer in view.",
+      parameters = {
+        type = "object",
+        properties = {
+          want = {
+            type = "string",
+            enum = { "tail", "around", "matching" },
+            description =
+              "tail: the most recent turns. around: what surrounds one turn. " ..
+              "matching: turns mentioning your terms.",
+          },
+          cursor = { type = "integer", description = "Which turn, for `around`." },
+          terms = {
+            type = "array",
+            items = { type = "string" },
+            description = "Words to look for, for `matching`.",
+          },
+          tokens = {
+            type = "integer",
+            description = "How much to read back at most. Keep it small: this spends the window you are trying to save.",
+          },
+        },
+      },
+      transport = { kind = "lua" },
+      run = function(args)
+        args = args or {}
+        local want = args.want or "tail"
+        if want == "around" and not args.cursor then
+          return { content = "`around` needs a cursor -- the turn to read either side of.", is_error = true }
+        end
+        if want == "matching" and not args.terms then
+          return { content = "`matching` needs terms to look for.", is_error = true }
+        end
+        -- Capped here as well as by balthasar. Its own default is generous for a plugin reading a
+        -- history; this is a model spending its own context to get one back.
+        local tokens = math.min(tonumber(args.tokens) or 2000, 8000)
+        local answer, why = balthasar.fetch({ tool = "balthasar" }, "scroll", magi.session, {
+          want = want,
+          cursor = args.cursor,
+          terms = args.terms,
+          tokens = tokens,
+        })
+        if not answer then return { content = tostring(why), is_error = true } end
+        return { content = magi.json.encode(answer) }
+      end,
+    })
+  end
+
 
   -- Close the loop. Every tool that finishes after balthasar handed something over is reported back:
   -- what ran, and whether it worked. balthasar decides for itself whether the action followed any of

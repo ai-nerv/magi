@@ -131,6 +131,13 @@ pub fn entry_lines(entry: &Entry, width: u16, detail: Detail) -> Vec<Line<'stati
         Entry::Compaction { replaces, .. } => {
             marker(&format!(" {replaces} earlier messages summarised "), width)
         }
+        // **Nothing on screen.** A mask changes what the *provider* is sent, and the transcript
+        // still holds what the tool actually said — a reader scrolling back wants the output, not
+        // a rule where it used to be. A compaction earns its marker because the text above it is
+        // genuinely no longer being sent as itself and there may be a great deal of it; one tool
+        // result quietly costing less is not news, and a rule per masked result would be a
+        // transcript mostly made of rules.
+        Entry::Masked { .. } => Vec::new(),
         // `keeps` is a journal index, and printing it says nothing a reader can act on. What
         // matters is that everything above the rule is still on the screen and no longer sent.
         Entry::Branch { keeps, .. } => marker(

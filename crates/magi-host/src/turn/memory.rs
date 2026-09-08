@@ -9,11 +9,21 @@ use crate::session::Session;
 use magi_proto::{AgentStatus, Entry, MessageId};
 use magi_tools::Registry;
 
-/// Summarise the earlier part of the conversation and journal the result.
+/// Do what balthasar's plan says, and journal it.
 ///
-/// Returns whether anything was compacted. A failure is not fatal: the turn goes ahead with
-/// the context it has and either fits or is refused by the provider, which is no worse than
-/// not having tried. Losing the conversation because the summariser had a bad minute would be.
+/// **The whole ladder, in balthasar's order.** Masking first, always: it is free, it is reversible
+/// — the text is still in balthasar's scratch and still on this session's screen — and tool output
+/// is most of a coding session's window. Only what masking could not free is summarised, because a
+/// summary costs a request of its own and loses detail nothing can get back.
+///
+/// magi obeyed only the summary for a while, which was worse than not obeying at all: balthasar
+/// marks a turn masked as it hands the plan over and never offers it again, costing it as a stub
+/// in every later plan — so magi sent the full text for the rest of the session while balthasar
+/// planned against a fiction.
+///
+/// Returns whether anything was *summarised*, which is the one the caller retries on. A failure is
+/// not fatal: the turn goes ahead with the context it has and either fits or is refused by the
+/// provider, which is no worse than not having tried.
 pub(super) async fn compact(
     session: &tokio::sync::Mutex<Session>,
     backend: &Backend,
@@ -24,11 +34,16 @@ pub(super) async fn compact(
         let held = session.lock().await;
         held.entries().to_vec()
     };
+    let Some(plan) = planned(backend, scribe, entries.len()).await else {
+        return false;
+    };
+    masked(session, &plan).await;
+
     // balthasar says how much; `legal` says where that cut may actually fall. Not a second
     // opinion about the amount — the one thing balthasar cannot know, because it is a fact about
     // the provider wire rather than about the conversation. See `crate::compact`.
-    let Some(covered) = planned(backend, scribe, entries.len())
-        .await
+    let Some(covered) = plan
+        .summarises()
         .and_then(|asked| crate::compact::legal(&entries, asked))
     else {
         return false;
@@ -95,22 +110,42 @@ pub(super) async fn compact(
 /// balthasar — it bounds itself — but to make the turn independent of whether it does.
 const PATIENCE: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// How many entries balthasar says to replace with a summary, if any.
+/// What balthasar said to do with the window.
+///
+/// Held as its own type rather than read out of the JSON at each use, because the plan is
+/// consulted three times — masks, summary, and the reason for the log — and a caller reaching into
+/// `serde_json::Value` three times is three chances to spell a key wrong and get `None`.
+struct Plan {
+    /// Tool results to send as a stub, by entry index, with what to send.
+    masks: Vec<(usize, String)>,
+    /// How many entries a summary would replace, when balthasar wants one.
+    summarise: Option<usize>,
+}
+
+impl Plan {
+    /// How many entries at the front to summarise, if balthasar asked for that at all.
+    const fn summarises(&self) -> Option<usize> {
+        self.summarise
+    }
+}
+
+/// What balthasar says to do, or nothing when it has nothing to say.
 ///
 /// **The decision, taken where the memory layer is.** magi used to make this itself — a constant
 /// `KEEP = 8` and a character estimate — then ask balthasar what *it* would do, write the
 /// difference to a debug log, and go ahead with its own answer anyway. Two deciders disagreeing in
 /// a line nobody read.
 ///
-/// `summarise` comes back as a span of cursors, and a cursor counts from one: cursor `to` is the
-/// last entry covered, so the count of entries replaced is `to` itself. `None` when balthasar sees
-/// nothing to compact, which is the ordinary answer for most turns.
+/// Cursors count from one and magi's entry indices from zero, so a cursor `c` names entry `c - 1`
+/// — and `summarise.to`, being the *last* cursor covered, is exactly the *count* of entries
+/// covered. Both conversions happen here, once, so nothing downstream has to hold two spaces in
+/// mind at the same time.
 ///
 /// Best effort, on the same clock as everything else here. A balthasar that has observed nothing
 /// refuses this, which is what a harness that has not streamed its turns gets; a session with no
-/// scribe at all compacts not at all, which is correct rather than a gap — there is no second
-/// opinion to fall back to, and inventing one here is the thing being removed.
-async fn planned(backend: &Backend, scribe: &crate::scribe::Held, entries: usize) -> Option<usize> {
+/// scribe at all is not planned for at all, which is correct rather than a gap — there is no
+/// second opinion to fall back to, and inventing one here is the thing being removed.
+async fn planned(backend: &Backend, scribe: &crate::scribe::Held, entries: usize) -> Option<Plan> {
     let window = backend.context_window?;
     let plan = tokio::time::timeout(PATIENCE, async {
         let mut open = scribe.lock().await;
@@ -123,32 +158,87 @@ async fn planned(backend: &Backend, scribe: &crate::scribe::Held, entries: usize
 
     // **A plan that does not fit is said out loud rather than passed over.** balthasar reserves
     // room for the answer and the injection, and a window smaller than that reserve leaves it
-    // nothing to plan with — it says so in `why` and offers no span. Silently not compacting is
-    // then indistinguishable from having nothing to compact, and the session fills up with
-    // nobody able to say which of the two happened.
-    let fits = plan
-        .get("fits")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(true);
+    // nothing to plan with — it says so in `why` and offers no span. Silently doing nothing is
+    // then indistinguishable from having nothing to do, and the session fills up with nobody able
+    // to say which of the two happened.
     let why = plan
         .get("why")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("no reason given");
-    if !fits {
+    if !plan
+        .get("fits")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true)
+    {
         magi_model::noted!("compact: balthasar cannot plan for this window — {why}");
     }
 
-    let covered = usize::try_from(
-        plan.get("summarise")?
-            .get("to")
-            .and_then(serde_json::Value::as_u64)?,
-    )
-    .ok()?;
-    magi_model::noted!("compact: balthasar replaces {covered} of {entries} entries — {why}");
-    // Its cursors are of its own scrollback and magi's are of this transcript. They agree turn
-    // for turn — every entry is streamed as it settles — and where they might not, `compact::legal`
-    // is what the caller passes this through.
-    Some(covered)
+    // A mask names the cursor it applies to and carries the stub the *tool's own* handler wrote.
+    // One without text is skipped rather than sent empty: balthasar leaves a tool it cannot
+    // describe alone, so an entry here with nothing to say is a shape nobody meant.
+    let masks: Vec<(usize, String)> = plan
+        .get("mask")
+        .and_then(serde_json::Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| {
+                    let cursor = row.get("cursor").and_then(serde_json::Value::as_u64)?;
+                    let shown = row.get("as").and_then(serde_json::Value::as_str)?;
+                    let at = usize::try_from(cursor).ok()?.checked_sub(1)?;
+                    (!shown.is_empty()).then(|| (at, shown.to_owned()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let summarise = plan
+        .get("summarise")
+        .and_then(|span| span.get("to"))
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|to| usize::try_from(to).ok());
+
+    if !masks.is_empty() || summarise.is_some() {
+        magi_model::noted!(
+            "compact: balthasar masks {} and summarises {} of {entries} entries — {why}",
+            masks.len(),
+            summarise.unwrap_or(0)
+        );
+    }
+    Some(Plan { masks, summarise })
+}
+
+/// Write down what the plan said to stub, so the next context is built with it.
+///
+/// **Recorded, not merely applied.** balthasar marks a turn masked as it hands the plan over and
+/// never offers it again; a magi that stubbed a result without writing it down would send the full
+/// text for the rest of the session while balthasar planned against a stub.
+///
+/// A mask naming an entry that is not a tool result is dropped. balthasar only ever masks tool
+/// output — that is where a coding session's tokens are — and a stub on anything else would be
+/// magi inventing a substitution nobody asked for.
+async fn masked(session: &tokio::sync::Mutex<Session>, plan: &Plan) {
+    if plan.masks.is_empty() {
+        return;
+    }
+    let mut held = session.lock().await;
+    for (at, shown) in &plan.masks {
+        if !matches!(
+            held.entries().get(*at),
+            Some(Entry::Tool {
+                result: Some(_),
+                ..
+            })
+        ) {
+            magi_model::noted!("compact: a mask for entry {at}, which is not a tool result");
+            continue;
+        }
+        let id = MessageId::new(format!("m{}", held.cursor().next().0));
+        let _ = held.commit(Entry::Masked {
+            id,
+            at: *at,
+            shown: shown.clone(),
+        });
+    }
 }
 
 /// What this project remembers about the prompt in front of it, as a message.

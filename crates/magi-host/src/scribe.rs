@@ -355,6 +355,27 @@ impl Scribe {
     /// # Errors
     /// Whatever balthasar answered. "nothing has been observed for this session" is the ordinary
     /// one on a harness that has not streamed its turns.
+    /// Say which model this session talks to, and how much it holds.
+    ///
+    /// **balthasar does the compacting, so balthasar has to know what it is compacting for.** It
+    /// cannot be guessed from the turns: a conversation that sits comfortably in a million tokens
+    /// overflowed an eight-thousand-token model twenty turns ago. Told once when the session comes
+    /// up and again whenever `:model` switches, because the answer changes with it.
+    ///
+    /// Without this every plan fell back to balthasar's shipped default of 200,000 — right for
+    /// one model and wrong for the rest, and silently so.
+    ///
+    /// # Errors
+    /// Whatever balthasar answered. A balthasar keeping no scrollback refuses this, which is the
+    /// ordinary answer for one configured without one.
+    pub async fn note_model(&mut self, name: &str, window: u64) -> Result<(), Fault> {
+        let args = vec![
+            serde_json::Value::String(self.session.clone()),
+            serde_json::json!({ "model": name, "context": window }),
+        ];
+        self.family.call("model", args).await.map(|_| ())
+    }
+
     pub async fn plan_for(&mut self, window: u64) -> Result<serde_json::Value, Fault> {
         let values = self
             .family
@@ -437,6 +458,13 @@ pub async fn flush(
         held.take_pending()
     };
     for (cursor, entry) in settled {
+        // **A mask is not news to the layer that ordered it.** balthasar marks a turn masked as
+        // it hands the plan over; magi writes the record so its own transcript agrees. Streaming
+        // it back would file balthasar's own decision as a fresh turn in the scrollback it plans
+        // over — a loop, and one that grows the window it was trying to shrink.
+        if matches!(entry, Entry::Masked { .. }) {
+            continue;
+        }
         scribe.settle(cursor, &entry).await?;
     }
     Ok(())
@@ -544,7 +572,7 @@ fn role(entry: &Entry) -> &'static str {
         Entry::User { .. } | Entry::From { .. } => "user",
         Entry::Assistant { .. } | Entry::Notice { .. } => "assistant",
         Entry::Tool { .. } => "tool",
-        Entry::Branch { .. } | Entry::Compaction { .. } => "system",
+        Entry::Branch { .. } | Entry::Compaction { .. } | Entry::Masked { .. } => "system",
     }
 }
 
@@ -559,6 +587,8 @@ fn kind(entry: &Entry) -> &'static str {
         Entry::From { .. } => "from",
         Entry::Branch { .. } => "branch",
         Entry::Compaction { .. } => "summary",
+        // Never streamed — see `flush`. Named anyway, so the day one is, it is not filed as prose.
+        Entry::Masked { .. } => "mask",
         Entry::Tool { result: None, .. } => "tool_call",
         Entry::Tool { .. } => "tool_result",
         Entry::Assistant { text, thinking, .. } if text.is_empty() && !thinking.is_empty() => {
@@ -574,7 +604,8 @@ fn text(entry: &Entry) -> String {
         Entry::User { text, .. }
         | Entry::From { text, .. }
         | Entry::Notice { text }
-        | Entry::Compaction { summary: text, .. } => text.clone(),
+        | Entry::Compaction { summary: text, .. }
+        | Entry::Masked { shown: text, .. } => text.clone(),
         Entry::Assistant { text, thinking, .. } if text.is_empty() => thinking.clone(),
         Entry::Assistant { text, .. } => text.clone(),
         Entry::Tool {

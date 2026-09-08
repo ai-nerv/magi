@@ -78,6 +78,18 @@ A file that raises costs itself and nothing else. Your package failing is report
 skipped; the program's own configuration failing is fatal, because a config that will not parse
 has not expressed an intention.
 
+What magi tells a file about itself:
+
+| | |
+|---|---|
+| `magi.self` | the path of the running binary, so a config can name a peer magi ships rather than hope the right one is on `PATH` |
+| `magi.session` | which session this is, for a tool that has to name one — balthasar's `scroll` reads part of *a* session's history and there is more than one |
+
+**`magi.session` is absent outside a session**, and that is the useful part: `magi tools` builds a
+VM to list what is declared, and so does every config test. A tool that needs the id should be
+declared inside `if magi.session then` rather than invent one — that is what the shipped `history`
+tool does.
+
 ---
 
 ## 3. The registrars

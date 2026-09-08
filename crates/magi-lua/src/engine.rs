@@ -76,6 +76,28 @@ pub struct Engine {
     inside: crate::shell::Inside,
 }
 
+/// Which session this process is, once something has said.
+///
+/// **Process-global because a magi *is* one session** — see `magi_host`'s own note on the same
+/// point. There is nothing to disambiguate, so threading an id through `Catalog` and `Backend` and
+/// five construction sites would be carrying a constant about.
+static SESSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Say which session this process is, so a tool can name it.
+///
+/// Called once, as the session comes up. Later calls are ignored rather than refused: a second
+/// session in one process is not a thing that happens, and panicking over it would turn a
+/// harmless mistake into a dead window.
+pub fn name_session(id: &str) {
+    let _ = SESSION.set(id.to_owned());
+}
+
+/// What this session is called, if anybody said.
+#[must_use]
+pub fn session() -> Option<&'static str> {
+    SESSION.get().map(String::as_str)
+}
+
 impl Default for Engine {
     fn default() -> Self {
         Self::new()
@@ -264,6 +286,18 @@ impl Engine {
             if let Ok(exe) = std::env::current_exe() {
                 let path = luna::String::from_slice(&ctx, exe.as_os_str().as_encoded_bytes());
                 magi.set(ctx, "self", path).ok();
+            }
+
+            // Which session this is, for a tool that has to name it -- balthasar's `scroll` reads
+            // part of *a* session's history and there is more than one. Process-global like
+            // `self` above, and for the same reason: one magi is one session, so there is nothing
+            // to disambiguate and nothing to thread through a `Backend`.
+            //
+            // Absent in a VM nobody named a session for, which is what a config test has and what
+            // `magi tools` has. A tool that needs it should say so rather than invent one.
+            if let Some(id) = session() {
+                let id = luna::String::from_slice(&ctx, id.as_bytes());
+                magi.set(ctx, "session", id).ok();
             }
 
             for (key, _) in magi.iter(ctx) {
@@ -513,3 +547,7 @@ impl Engine {
         &self.inside
     }
 }
+
+#[cfg(test)]
+#[path = "engine/naming.rs"]
+mod naming;

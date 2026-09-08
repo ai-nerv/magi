@@ -518,6 +518,12 @@ fn events_for(cursor: Cursor, entry: &Entry) -> Vec<HarnessEvent> {
             summary: summary.clone(),
             replaces: *replaces,
         }],
+        // **Nothing on the wire.** A compaction changes what a *reader* sees — a rule, and a great
+        // deal of text no longer sent as itself — so a UI has to be told. A mask changes only what
+        // the provider is sent: the transcript still shows what the tool actually said, and the
+        // host holds the record that makes the substitution. Sending an event would be telling
+        // every attached UI about a decision none of them can act on or draw.
+        Entry::Masked { .. } => Vec::new(),
         Entry::Tool {
             id,
             name,

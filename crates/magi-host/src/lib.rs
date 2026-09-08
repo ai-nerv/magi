@@ -159,6 +159,10 @@ pub async fn serve_on(
         }
     }));
     let _ = DRAINING.set((Arc::clone(&session), Arc::clone(&scribe)));
+    // Named for the VM, so a tool can say which session it is asking about. balthasar's `scroll`
+    // reads part of *a* session's history and there is more than one; everything else magi asks
+    // it is either about the project or about a memory by id.
+    magi_lua::name_session(session.lock().await.id().as_str());
 
     // **The library balthasar ships, in place of the copy this build carries.** A consumer
     // keeping its own copy is a consumer whose copy goes stale, and this one did: magi's copy
@@ -200,6 +204,28 @@ pub async fn serve_on(
             );
         }
     }
+    // **What balthasar is compacting for.** It does the planning, so it has to know the size of
+    // the window it is planning against — and that cannot be guessed from the turns: a
+    // conversation that sits comfortably in a million tokens overflowed an eight-thousand-token
+    // model twenty turns ago. Without this every plan fell back to balthasar's shipped default of
+    // 200,000, right for one model and silently wrong for the rest.
+    //
+    // On the same clock as the two above, and for the same reason: nothing here is needed for the
+    // session to serve its socket.
+    if let Some(backend) = backend.as_ref()
+        && let Some(window) = backend.context_window
+    {
+        let model = backend.model.clone();
+        let _ = tokio::time::timeout(GREETING, async {
+            let mut open = scribe.lock().await;
+            match open.as_mut() {
+                Some(open) => open.note_model(&model, window).await.ok(),
+                None => None,
+            }
+        })
+        .await;
+    }
+
     let mut catalog = catalog;
     let served = tokio::time::timeout(GREETING, async {
         let mut open = scribe.lock().await;

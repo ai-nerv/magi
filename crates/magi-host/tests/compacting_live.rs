@@ -253,3 +253,113 @@ async fn one_prompt_is_never_compacted_twice() {
     );
     drop(held);
 }
+
+/// A round of tool calls, big enough that balthasar wants to mask them.
+///
+/// Tool output is where a coding session's tokens are, and masking is what balthasar tries first.
+/// `shell` because balthasar's shipped config has a mask handler for it — a tool with none is
+/// deliberately left alone, so a fixture using an unnamed tool would prove nothing.
+async fn tooling(scribe: &mut Scribe, count: usize) -> tokio::sync::Mutex<Session> {
+    let mut session = Session::recorded(SessionId::new("s"), Vec::new());
+    session
+        .commit(Entry::User {
+            id: magi_proto::MessageId::new("u0"),
+            text: "run the tests".to_owned(),
+            aside: String::new(),
+        })
+        .expect("commit");
+    for i in 0..count {
+        session
+            .commit(Entry::Assistant {
+                id: magi_proto::MessageId::new(format!("a{i}")),
+                text: String::new(),
+                thinking: String::new(),
+                stop_reason: None,
+                error: None,
+                signatures: magi_proto::Signatures::default(),
+                usage: magi_proto::Usage::default(),
+            })
+            .expect("commit");
+        session
+            .commit(Entry::Tool {
+                id: magi_proto::ToolCallId::new(format!("c{i}")),
+                name: "shell".to_owned(),
+                args: r#"{"command":"cargo test"}"#.to_owned(),
+                result: Some(magi_proto::ToolResult {
+                    output: format!("run {i}: {}", "a line of test output. ".repeat(4_000)),
+                    is_error: false,
+                    shown: None,
+                }),
+                thought_signature: None,
+            })
+            .expect("commit");
+    }
+    for (cursor, entry) in session.take_pending() {
+        let _ = scribe.observe(cursor, &entry).await;
+    }
+    tokio::sync::Mutex::new(session)
+}
+
+#[tokio::test]
+async fn tool_output_is_masked_before_anything_is_summarised() {
+    // **The rung magi was throwing away.** balthasar tries masking first, always: it is free, it
+    // is reversible, and tool output is most of a coding session's window. magi obeyed only the
+    // summary — which was worse than obeying nothing, because balthasar marks a turn masked as it
+    // hands the plan over and never offers it again, so magi sent the full text for the rest of
+    // the session while balthasar planned against a stub.
+    let Some((mut scribe, _dir, _serving, _alone)) = own_balthasar("masking").await else {
+        eprintln!("skipped: balthasar is not installed, and it decides what to mask");
+        return;
+    };
+    let mind = Mind::answering("compact-masking", "done");
+    let session = tooling(&mut scribe, 8).await;
+    turn(&session, &backend(&mind), scribe).await;
+
+    let held = session.lock().await;
+    let entries = held.entries();
+    let masks: Vec<&Entry> = entries
+        .iter()
+        .filter(|e| matches!(e, Entry::Masked { .. }))
+        .collect();
+    assert!(
+        !masks.is_empty(),
+        "nothing was masked in {} entries of tool output",
+        entries.len()
+    );
+
+    // The stub is the *tool's* own words, from balthasar's `balthasar.mask["shell"]` handler —
+    // not something magi invented. An uninformative stub is worse than the output it replaced.
+    let Some(Entry::Masked { shown, at, .. }) = masks.first().copied() else {
+        panic!("a mask record");
+    };
+    assert!(
+        shown.contains("shell") || shown.contains("elided"),
+        "the stub did not come from the tool's handler: {shown:?}"
+    );
+    assert!(
+        matches!(entries.get(*at), Some(Entry::Tool { .. })),
+        "a mask landed on something that is not a tool result"
+    );
+
+    // And what the model was actually sent carries the stub rather than the output.
+    let sent = magi_host::context::of_entries(entries);
+    let bodies: Vec<String> = sent
+        .messages
+        .iter()
+        .flat_map(|message| message.content.clone())
+        .filter_map(|content| match content {
+            magi_model::Content::ToolResult { content, .. } => Some(content),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        bodies.iter().any(|body| body == shown),
+        "the stub never reached the provider"
+    );
+    assert!(
+        bodies.iter().filter(|body| body.len() > 10_000).count() < 8,
+        "every result went in full: {:?}",
+        bodies.iter().map(String::len).collect::<Vec<_>>()
+    );
+    drop(held);
+}

@@ -333,6 +333,36 @@ pub enum Entry {
         /// transcript is what has to be rebuilt from it.
         replaces: usize,
     },
+    /// One tool result sent as a stub instead of itself.
+    ///
+    /// **The cheap rung of the ladder, and the one that matters most.** balthasar tries masking
+    /// before summarising, always: it is free, it is reversible — the text is still in its scratch
+    /// — and tool output is most of a coding session's window. A summary is the expensive lossy
+    /// last resort.
+    ///
+    /// A record rather than an edit, for the same reason [`Entry::Compaction`] is one: sessions
+    /// are append-only, the transcript on screen still shows what the tool actually said, and this
+    /// changes only what the *provider* is sent.
+    ///
+    /// **It must be written down, not merely applied.** balthasar marks a turn masked as it hands
+    /// the plan over and never offers it again, costing it as a stub in every later plan. A magi
+    /// that applied a mask without recording it would send the full text for the rest of the
+    /// session while balthasar planned against a fiction.
+    Masked {
+        /// Stable identity for this record.
+        id: MessageId,
+        /// Which entry is stubbed, counted from the start of the session.
+        ///
+        /// The same space [`Entry::Compaction::replaces`] and [`Entry::Branch::keeps`] count in,
+        /// so all three are answered against one set of indices — see `crate::context`.
+        at: usize,
+        /// What the provider is sent in its place, as the tool's own mask handler wrote it.
+        ///
+        /// Only the tool's author knows what a useful stub says: "3,200 lines of test output, 41
+        /// failures" is worth sending and "[output omitted]" is not. A tool with no handler is
+        /// never masked at all.
+        shown: String,
+    },
 }
 
 /// Opaque provider state that has to be handed back exactly as it arrived.

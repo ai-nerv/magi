@@ -35,8 +35,12 @@ pub fn of(session: &Session) -> Context {
 /// summarised without being shown to the summariser — tool results included, silently.
 #[must_use]
 pub fn of_entries(entries: &[Entry]) -> Context {
-    let (live, summary) = live_entries(entries);
-    let live = live.into_iter().map(|i| &entries[i]);
+    let view = live_entries(entries);
+    let summary = view.summary;
+    let masks = view.masks;
+    // Carried with the entry, because a mask names an entry by its index in the transcript and
+    // the loop below has long since stopped counting.
+    let live = view.live.into_iter().map(|at| (at, &entries[at]));
 
     let mut messages: Vec<Message> = Vec::new();
     if let Some(summary) = summary {
@@ -53,11 +57,17 @@ pub fn of_entries(entries: &[Entry]) -> Context {
     // call auditable -- but a provider needs it inside the message that made it.
     let mut open: Option<usize> = None;
 
-    for entry in live {
+    for (at, entry) in live {
         match entry {
             // A notice is one UI talking to the person in front of it. Sending it to a
             // provider would be telling the model what magi told somebody about magi.
-            Entry::Branch { .. } | Entry::Compaction { .. } | Entry::Notice { .. } => {}
+            //
+            // A mask is bookkeeping about another entry rather than a turn of its own; what it
+            // carries is applied where that entry is written out, below.
+            Entry::Branch { .. }
+            | Entry::Compaction { .. }
+            | Entry::Notice { .. }
+            | Entry::Masked { .. } => {}
             Entry::User { text, aside, .. } => {
                 open = None;
                 // The aside goes with it, under a rule, so the model can tell what the person
@@ -133,12 +143,25 @@ pub fn of_entries(entries: &[Entry]) -> Context {
                     });
                 }
                 if let Some(result) = result {
+                    // **Where masking actually saves the window.** balthasar tries this before
+                    // summarising, always — it is free, it is reversible because the text is
+                    // still in its scratch and still on screen here, and tool output is most of a
+                    // coding session's window. The stub is the tool's own words: only its author
+                    // knows what a useful one says.
+                    //
+                    // The call above is never masked. A result without the call that made it is
+                    // an orphan, and providers refuse those — see `crate::compact::legal`, which
+                    // is the same rule for the other rung of the ladder.
+                    let content = masks
+                        .get(&at)
+                        .cloned()
+                        .unwrap_or_else(|| result.output.clone());
                     messages.push(Message {
                         role: Role::Tool,
                         content: vec![Content::ToolResult {
                             id: id.to_string(),
                             name: name.clone(),
-                            content: result.output.clone(),
+                            content,
                             is_error: result.is_error,
                         }],
                         stop_reason: None,
@@ -252,7 +275,17 @@ fn repair(messages: Vec<Message>) -> Vec<Message> {
     out
 }
 
-/// The entries the provider is shown, and the summary standing in for the rest.
+/// What a view of the transcript comes to.
+struct Live {
+    /// Indices into the transcript, in the order a provider is shown them.
+    live: Vec<usize>,
+    /// The summary standing in for whatever a compaction replaced.
+    summary: Option<String>,
+    /// What a masked entry is sent as instead of itself, by index.
+    masks: std::collections::BTreeMap<usize, String>,
+}
+
+/// The entries the provider is shown, the summary standing in for the rest, and the stubs.
 ///
 /// One pass, because compactions and branches both answer the same question — which entries
 /// are still live — and they compose. A branch after a compaction drops the tail of what
@@ -260,10 +293,16 @@ fn repair(messages: Vec<Message>) -> Vec<Message> {
 /// entries from the start of the session, so both are answered against the same indices, and
 /// neither has to know the other exists.
 ///
-/// Nothing is removed from the journal by either. This is a view.
-fn live_entries(entries: &[Entry]) -> (Vec<usize>, Option<String>) {
+/// **A mask is the third, and it composes with both.** It does not change *which* entries are
+/// live — a masked tool result is still sent — only what one of them says. Answered in the same
+/// pass because it counts in the same space, and because a mask on an entry a branch has already
+/// dropped is a mask on nothing.
+///
+/// Nothing is removed from the journal by any of them. This is a view.
+fn live_entries(entries: &[Entry]) -> Live {
     let mut live: Vec<usize> = Vec::new();
     let mut summary = None;
+    let mut masks: std::collections::BTreeMap<usize, String> = std::collections::BTreeMap::new();
     for (at, entry) in entries.iter().enumerate() {
         match entry {
             // Everything after the branch point stops being live. The entries stay.
@@ -276,10 +315,21 @@ fn live_entries(entries: &[Entry]) -> (Vec<usize>, Option<String>) {
                 summary = Some(text.clone());
                 live.retain(|&i| i >= *replaces);
             }
+            // The record itself is not sent — it is bookkeeping about another entry, like a
+            // branch or a compaction. What it carries is applied where that entry is written out.
+            Entry::Masked {
+                at: which, shown, ..
+            } => {
+                masks.insert(*which, shown.clone());
+            }
             _ => live.push(at),
         }
     }
-    (live, summary)
+    Live {
+        live,
+        summary,
+        masks,
+    }
 }
 
 /// Where "undo the last exchange" rewinds to.
@@ -291,8 +341,9 @@ fn live_entries(entries: &[Entry]) -> (Vec<usize>, Option<String>) {
 /// `None` when there is nothing to undo.
 #[must_use]
 pub fn rewind_point(entries: &[Entry]) -> Option<usize> {
-    let (live, _) = live_entries(entries);
-    live.into_iter()
+    live_entries(entries)
+        .live
+        .into_iter()
         .rev()
         .find(|&i| matches!(entries[i], Entry::User { .. }))
 }
@@ -635,3 +686,7 @@ mod branch_tests {
 
 #[cfg(test)]
 mod repairing;
+
+#[cfg(test)]
+#[path = "context/masking.rs"]
+mod masking;

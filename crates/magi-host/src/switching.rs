@@ -36,6 +36,10 @@ pub(super) async fn switch_model(
         name: backend.model.clone(),
         context_window: backend.context_window.unwrap_or(0),
     };
+    // Taken before the backend is handed to the worker, which consumes it.
+    let planning_for = backend
+        .context_window
+        .map(|window| (backend.model.clone(), window));
     // Gated, like the one it replaces. `Worker::start` is `gated(backend, None)` — a worker
     // nothing asks — so switching the model used to switch the permission model off with it,
     // and every tool for the rest of the session ran without being asked about.
@@ -54,6 +58,24 @@ pub(super) async fn switch_model(
         // point of switching is to see that it happened.
         held.announce_model();
         remember(catalog, held.model_name(), Some(held.thinking().to_owned()));
+    }
+
+    // **And balthasar is told, because the window it plans against just changed.** It does the
+    // compacting; a switch from a million-token model to an eight-thousand-token one changes
+    // every answer it would give, and it has no other way to find out. Told after the switch has
+    // taken, so a failed one does not leave balthasar planning for a model this session is not
+    // talking to.
+    if let Some((model, window)) = planning_for {
+        let told = {
+            let mut open = scribe.lock().await;
+            match open.as_mut() {
+                Some(open) => open.note_model(&model, window).await,
+                None => Ok(()),
+            }
+        };
+        if let Err(why) = told {
+            magi_model::noted!("scribe: balthasar was not told about the new model: {why}");
+        }
     }
     None
 }
