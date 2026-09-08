@@ -66,6 +66,13 @@ pub enum Scan {
     Holding,
     /// A turn is running: the same circuit, at speed.
     Working,
+    /// A floating pane has the keyboard: four comets, evenly spaced.
+    ///
+    /// Four rather than two because the pane is the thing being looked at and the extra pair say
+    /// so — a window with light on all four sides reads as the live one when the box behind it has
+    /// gone dark. It is also a bigger box: two heads on a border twice the length leave most of it
+    /// unlit at any moment, which reads as a border that is sometimes on.
+    Focused,
     /// No animation at all.
     Off,
 }
@@ -76,7 +83,9 @@ pub enum Scan {
 /// at the spinner's rate, and one cell per tick is already brisk.
 fn pace(scan: Scan) -> (usize, usize) {
     let hundredths = match scan {
-        Scan::Resting => metric::rest_pace(),
+        // A pane drifts at the resting pace: it is holding the keyboard, not doing work, and a
+        // window that raced would read as one that was busy.
+        Scan::Resting | Scan::Focused => metric::rest_pace(),
         Scan::Holding => metric::hold_pace(),
         Scan::Working | Scan::Off => metric::work_pace(),
     };
@@ -91,15 +100,22 @@ fn pace(scan: Scan) -> (usize, usize) {
 pub fn edges(width: u16, rows: usize, tick: usize, scan: Scan) -> (Line<'static>, Line<'static>) {
     let width = usize::from(width).max(2);
     let inner = width - 2;
-    let ring = ring_length(inner, rows);
+    let ring = walk_length(inner, rows);
     let heads = heads(scan, tick, inner, rows, ring);
+    // Every cell is addressed by how far round the border it *looks*, not by its index.
+    let walk = |at: usize| walk_of(at, inner, rows);
 
     let mut top = Vec::with_capacity(width);
-    top.push(cell(glyph::corner_top_left(), 0, &heads, ring));
+    top.push(cell(glyph::corner_top_left(), walk(0), &heads, ring));
     for i in 0..inner {
-        top.push(cell(glyph::edge_horizontal(), 1 + i, &heads, ring));
+        top.push(cell(glyph::edge_horizontal(), walk(1 + i), &heads, ring));
     }
-    top.push(cell(glyph::corner_top_right(), 1 + inner, &heads, ring));
+    top.push(cell(
+        glyph::corner_top_right(),
+        walk(1 + inner),
+        &heads,
+        ring,
+    ));
 
     // Anticlockwise along the bottom, because the ring runs clockwise: the bottom-right corner
     // comes before the bottom-left one when you are walking round.
@@ -107,21 +123,21 @@ pub fn edges(width: u16, rows: usize, tick: usize, scan: Scan) -> (Line<'static>
     let mut bottom = Vec::with_capacity(width);
     bottom.push(cell(
         glyph::corner_bottom_left(),
-        bottom_right + inner + 1,
+        walk(bottom_right + inner + 1),
         &heads,
         ring,
     ));
     for i in 0..inner {
         bottom.push(cell(
             glyph::edge_horizontal(),
-            bottom_right + inner - i,
+            walk(bottom_right + inner - i),
             &heads,
             ring,
         ));
     }
     bottom.push(cell(
         glyph::corner_bottom_right(),
-        bottom_right,
+        walk(bottom_right),
         &heads,
         ring,
     ));
@@ -139,15 +155,66 @@ pub fn side(
     scan: Scan,
 ) -> (Span<'static>, Span<'static>) {
     let inner = usize::from(width).max(2) - 2;
-    let ring = ring_length(inner, rows);
+    let ring = walk_length(inner, rows);
     let heads = heads(scan, tick, inner, rows, ring);
     // Right edge runs down after the top-right corner; left edge runs up before the top-left.
     let right = 1 + inner + 1 + row;
-    let left = ring - 1 - row;
+    let left = ring_length(inner, rows) - 1 - row;
     (
-        cell(glyph::edge_vertical(), left, &heads, ring),
-        cell(glyph::edge_vertical(), right, &heads, ring),
+        cell(
+            glyph::edge_vertical(),
+            walk_of(left, inner, rows),
+            &heads,
+            ring,
+        ),
+        cell(
+            glyph::edge_vertical(),
+            walk_of(right, inner, rows),
+            &heads,
+            ring,
+        ),
     )
+}
+/// How much taller a terminal cell is than it is wide.
+///
+/// **The ring used to count cells, and a cell is not a square.** A head moving one cell along the
+/// top travels about half as far, on the glass, as one moving a cell down the side — so the light
+/// visibly accelerated into the corners and slowed out of them, and a box wider than it is tall
+/// read as one wearing two different animations. Two is close enough for every terminal font
+/// anybody uses; the point is that it is not one.
+const TALL: usize = 2;
+
+/// How far round the border a cell sits, measured in what the eye sees rather than in cells.
+///
+/// Cumulative: the sum of every earlier cell's own width, walking clockwise from the top-left
+/// corner. A cell on a side counts [`TALL`]; everything else counts one. Heads travel in this
+/// coordinate and brightness is measured in it, so the light moves at one speed all the way round.
+fn walk_of(at: usize, inner: usize, rows: usize) -> usize {
+    let top_right = 1 + inner;
+    let bottom_right = top_right + 1 + rows;
+    let bottom_left = bottom_right + inner + 1;
+
+    // The top-left corner and the top edge: one each.
+    if at <= top_right {
+        return at;
+    }
+    // Down the right-hand side.
+    if at < bottom_right {
+        return (top_right + 1) + (at - top_right - 1) * TALL;
+    }
+    let after_right = (top_right + 1) + rows * TALL;
+    // The bottom-right corner, then the bottom edge walked anticlockwise.
+    if at <= bottom_left {
+        return after_right + (at - bottom_right);
+    }
+    let after_bottom = after_right + (bottom_left - bottom_right) + 1;
+    // And up the left-hand side.
+    after_bottom + (at - bottom_left - 1) * TALL
+}
+
+/// The whole loop, in the same units.
+fn walk_length(inner: usize, rows: usize) -> usize {
+    4 + inner * 2 + rows * 2 * TALL
 }
 
 /// How many cells the border has, walking all the way round.
@@ -176,6 +243,10 @@ fn heads(scan: Scan, tick: usize, inner: usize, rows: usize, ring: usize) -> Vec
         Scan::Resting | Scan::Working => {
             vec![forward(step % ring), forward((step + ring / 2) % ring)]
         }
+        // Evenly spaced, so the gaps between them are equal however long the border is.
+        Scan::Focused => (0..4)
+            .map(|nth| forward((step + ring * nth / 4) % ring))
+            .collect(),
         // The two long edges, swept in step and reversing at the ends: a shuttle rather than a
         // circuit, because something is waiting to be sent rather than travelling.
         //
@@ -185,6 +256,7 @@ fn heads(scan: Scan, tick: usize, inner: usize, rows: usize, ring: usize) -> Vec
         // ahead of the upper one for the whole sweep.
         Scan::Holding => {
             let span = inner.max(1);
+            let walk = |at: usize| walk_of(at, inner, rows);
             let at = bounce(step, span).min(inner.saturating_sub(1));
             let out = rising(step, span);
             let bottom_right = 1 + inner + 1 + rows;
@@ -192,11 +264,11 @@ fn heads(scan: Scan, tick: usize, inner: usize, rows: usize, ring: usize) -> Vec
             // opposite ends of the ring: the pair moves left together and the tails must too.
             vec![
                 Head {
-                    at: 1 + at,
+                    at: walk(1 + at),
                     forward: out,
                 },
                 Head {
-                    at: bottom_right + inner - at,
+                    at: walk(bottom_right + inner - at),
                     forward: !out,
                 },
             ]
@@ -510,5 +582,83 @@ mod holding_tests {
             cells(Scan::Resting) > 1000,
             "and even resting is a cell a tick"
         );
+    }
+}
+
+#[cfg(test)]
+mod walking {
+    use super::*;
+
+    /// Every cell of a border, in ring order.
+    fn ring(inner: usize, rows: usize) -> Vec<usize> {
+        (0..ring_length(inner, rows)).collect()
+    }
+
+    #[test]
+    fn a_side_cell_is_worth_two_of_a_top_one() {
+        // **A cell is not a square.** One step down the side covers about twice the distance on
+        // the glass that one step along the top does, so a head that moved a cell per tick either
+        // way visibly accelerated into the corners.
+        let (inner, rows) = (10, 4);
+        let walk: Vec<usize> = ring(inner, rows)
+            .iter()
+            .map(|&at| walk_of(at, inner, rows))
+            .collect();
+
+        // Along the top: one apiece.
+        assert_eq!(walk[1] - walk[0], 1);
+        assert_eq!(walk[2] - walk[1], 1);
+        // Down the right-hand side: two.
+        let first_side = 1 + inner + 1;
+        assert_eq!(walk[first_side + 1] - walk[first_side], TALL);
+    }
+
+    #[test]
+    fn the_walk_runs_forward_all_the_way_round_and_closes() {
+        // Strictly increasing, or two cells share a position and the light lands on both; and the
+        // loop has to close exactly, or the head jumps as it wraps.
+        for (inner, rows) in [(1_usize, 1_usize), (10, 4), (78, 20), (200, 2)] {
+            let walk: Vec<usize> = ring(inner, rows)
+                .iter()
+                .map(|&at| walk_of(at, inner, rows))
+                .collect();
+            assert_eq!(walk[0], 0, "{inner}x{rows}");
+            for pair in walk.windows(2) {
+                assert!(pair[1] > pair[0], "{inner}x{rows}: {pair:?}");
+            }
+            let last = *walk.last().expect("a ring");
+            let weight = TALL; // the last cell is on the left-hand side
+            assert_eq!(
+                last + weight,
+                walk_length(inner, rows),
+                "{inner}x{rows}: the loop must close"
+            );
+        }
+    }
+
+    #[test]
+    fn a_focused_border_wears_four_lights_evenly_spaced() {
+        // Four rather than two: a pane is the thing being looked at, and it is a bigger box —
+        // two heads on a border twice the length leave most of it dark at any moment.
+        let (inner, rows) = (78, 20);
+        let ring = walk_length(inner, rows);
+        let lights = heads(Scan::Focused, 0, inner, rows, ring);
+        assert_eq!(lights.len(), 4);
+        let gaps: Vec<usize> = lights.windows(2).map(|p| p[1].at - p[0].at).collect();
+        for gap in &gaps {
+            assert!(
+                gap.abs_diff(ring / 4) <= 1,
+                "evenly spaced round {ring}: {gaps:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_prompt_still_wears_two() {
+        let ring = walk_length(20, 3);
+        assert_eq!(heads(Scan::Resting, 0, 20, 3, ring).len(), 2);
+        assert_eq!(heads(Scan::Working, 0, 20, 3, ring).len(), 2);
+        assert_eq!(heads(Scan::Holding, 0, 20, 3, ring).len(), 2);
+        assert!(heads(Scan::Off, 0, 20, 3, ring).is_empty());
     }
 }

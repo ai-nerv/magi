@@ -53,7 +53,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
         magi_tui::border::Scan::Holding
     };
     let (scan, pane_scan) = if app.pane.is_some() {
-        (magi_tui::border::Scan::Off, scan)
+        (magi_tui::border::Scan::Off, magi_tui::border::Scan::Focused)
     } else {
         (scan, magi_tui::border::Scan::Off)
     };
