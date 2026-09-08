@@ -39,6 +39,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
 
     // The scan says what the session is doing, which is why it is chosen here rather than in the
     // prompt: this is the only place that knows about the turn as well as the text.
+    //
+    // **It goes to whichever box is listening.** While a pane is open it owns the keyboard, so the
+    // light travels its border and the prompt goes dark -- which box you are talking to is a
+    // thing to see rather than a thing to find out by typing into the one that is not.
     let scan = if !app.connected {
         magi_tui::border::Scan::Off
     } else if app.is_busy() {
@@ -47,6 +51,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
         magi_tui::border::Scan::Resting
     } else {
         magi_tui::border::Scan::Holding
+    };
+    let (scan, pane_scan) = if app.pane.is_some() {
+        (magi_tui::border::Scan::Off, scan)
+    } else {
+        (scan, magi_tui::border::Scan::Off)
     };
     // **A row always sits between the transcript and the prompt.** It was taken only when there
     // was something to say in it, so following the newest output put the last line of the
@@ -278,29 +287,15 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
         // `Pane::settle`.
         open.settle(page);
 
-        // **The heading is inside the frame, not in it.** A border title breaks the rule it is
-        // drawn in, and a double rule with a gap in it reads as a damaged box. Unicode has no
-        // rounded double corner either -- arcs exist for light lines alone -- so the corners are
-        // the square double ones, which is the whole of what a double border can be.
-        let mut rows = vec![
-            ratatui::text::Line::from(ratatui::text::Span::styled(
-                open.heading(page),
-                ratatui::style::Style::default()
-                    .fg(magi_tui::colour::hint())
-                    .add_modifier(ratatui::style::Modifier::BOLD),
-            )),
-            ratatui::text::Line::from(String::new()),
-        ];
-        rows.extend(open.showing(page));
-
+        // **The heading is inside the frame, not in it.** A border title is drawn *in* the rule,
+        // which forces the frame to break for the word -- a box with a gap in it reads as damaged
+        // rather than labelled. Inside, it costs a row and the frame stays whole.
+        //
+        // Light lines with arc corners, which is the only weight Unicode gives rounded corners to:
+        // `╭ ╮ ╯ ╰` are all named LIGHT ARC, and there is no double-line arc to pair with `╔`.
         frame.render_widget(ratatui::widgets::Clear, panel);
         frame.render_widget(
-            Paragraph::new(rows).block(
-                ratatui::widgets::Block::default()
-                    .borders(ratatui::widgets::Borders::ALL)
-                    .border_type(ratatui::widgets::BorderType::Double)
-                    .padding(ratatui::widgets::Padding::horizontal(1)),
-            ),
+            Paragraph::new(open.framed(panel.width, page, app.tick, pane_scan)),
             panel,
         );
     }

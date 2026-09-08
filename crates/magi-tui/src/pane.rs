@@ -45,7 +45,8 @@
 //! way the transcript and the overlays work here. That keeps the drawing in one place.
 
 use ratatui::layout::Rect;
-use ratatui::text::Line;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
 
 /// The share of the screen a float takes, in percent.
 ///
@@ -136,8 +137,8 @@ impl Pane {
     ///
     /// Four go elsewhere: two to the border, and two to the heading and the blank line under it.
     /// The heading is inside rather than in the border because a border title is drawn *in* the
-    /// line, which forces the frame to break for it — and a double rule that breaks for a word
-    /// reads as a damaged box rather than a labelled one.
+    /// line, which forces the frame to break for it — and a rule that breaks for a word reads as
+    /// a damaged box rather than a labelled one.
     #[must_use]
     pub fn page(screen: Rect) -> usize {
         Self::area(screen).height.saturating_sub(4) as usize
@@ -185,6 +186,60 @@ impl Pane {
             .collect()
     }
 
+    /// The panel, framed and scanning, `width` columns across.
+    ///
+    /// **The same ring the prompt box wears.** [`crate::border`] addresses a border as one ring of
+    /// cells with a light travelling it, and nothing about that is specific to the prompt — so the
+    /// pane wears it too, and the two look like parts of one program rather than one box drawn by
+    /// hand next to another.
+    ///
+    /// **And it is how the pane says it has the focus.** While a pane is open it owns the
+    /// keyboard: the arrows scroll it, escape closes it, and anything else is swallowed rather
+    /// than reaching a prompt nobody can see. The scan moves here and the prompt goes dark, so
+    /// which box is listening is something you can see rather than something you find out by
+    /// typing into the one that is not.
+    #[must_use]
+    pub fn framed(
+        &self,
+        width: u16,
+        page: usize,
+        tick: usize,
+        scan: crate::border::Scan,
+    ) -> Vec<Line<'static>> {
+        // The heading and the blank under it are content rows like any other, so the sides stay on
+        // the ring and the light runs past them rather than round a hole in the box.
+        let mut body = vec![
+            Line::from(Span::styled(
+                self.heading(page),
+                Style::default()
+                    .fg(crate::colour::hint())
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(String::new()),
+        ];
+        body.extend(self.showing(page));
+
+        let content = body.len();
+        let (top, bottom) = crate::border::edges(width, content, tick, scan);
+        let mut out = Vec::with_capacity(content + 2);
+        out.push(top);
+        for (row, line) in body.into_iter().enumerate() {
+            let (left, right) = crate::border::side(width, content, row, tick, scan);
+            let mut spans = vec![left, Span::raw(" ")];
+            let used: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+            spans.extend(line.spans);
+            // Padded to the column the right-hand side sits in, so a short row does not leave the
+            // border ragged and a long one does not push it off the end.
+            let room = usize::from(width).saturating_sub(3);
+            if used < room {
+                spans.push(Span::raw(" ".repeat(room - used)));
+            }
+            spans.push(right);
+            out.push(Line::from(spans));
+        }
+        out.push(bottom);
+        out
+    }
     /// Whether there is anything above or below what is shown.
     ///
     /// For the title, which is the only place there is room to say it — a float that silently

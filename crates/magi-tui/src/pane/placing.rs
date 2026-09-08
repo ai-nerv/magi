@@ -99,3 +99,66 @@ fn the_bottom_is_the_newest_end() {
     float.bottom(10);
     assert_eq!(float.showing(10)[0].to_string(), "row 40");
 }
+
+#[test]
+fn the_frame_is_the_same_ring_the_prompt_box_wears() {
+    // Not a box drawn by hand beside another box: the same `border` module, so the two are
+    // parts of one program rather than two people's idea of a rounded corner.
+    let pane = Pane::new("trace", rows(3));
+    let drawn = pane.framed(40, 10, 0, crate::border::Scan::Resting);
+    let text: Vec<String> = drawn.iter().map(ToString::to_string).collect();
+    assert!(
+        text[0].starts_with(crate::glyph::corner_top_left()),
+        "{text:?}"
+    );
+    assert!(
+        text[text.len() - 1].starts_with(crate::glyph::corner_bottom_left()),
+        "{text:?}"
+    );
+}
+
+#[test]
+fn every_row_of_the_frame_is_the_width_it_was_given() {
+    // A short row leaves the border ragged; a long one pushes it off the end. Both read as a
+    // broken box rather than a full one.
+    for width in [24_u16, 40, 80] {
+        let pane = Pane::new("cost", rows(4));
+        for line in pane.framed(width, 10, 3, crate::border::Scan::Resting) {
+            assert_eq!(
+                line.to_string().chars().count(),
+                usize::from(width),
+                "at {width}: {line}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_heading_is_inside_the_frame_rather_than_in_the_rule() {
+    // A border title is drawn *in* the line, which forces the frame to break for the word — and
+    // a box with a gap in it reads as damaged rather than labelled.
+    let pane = Pane::new("trace", rows(2));
+    let drawn = pane.framed(40, 10, 0, crate::border::Scan::Off);
+    assert!(!drawn[0].to_string().contains("trace"), "not in the rule");
+    assert!(drawn[1].to_string().contains("trace"), "in the first row");
+}
+
+#[test]
+fn the_scan_moves_with_the_tick() {
+    // The light travels. Two frames one tick apart must differ somewhere on the border, or the
+    // pane is wearing a still picture of an animation.
+    let pane = Pane::new("trace", rows(6));
+    let a = pane.framed(40, 10, 0, crate::border::Scan::Resting);
+    let b = pane.framed(40, 10, 40, crate::border::Scan::Resting);
+    assert_ne!(
+        format!(
+            "{:?}",
+            a.iter().map(|l| l.spans.clone()).collect::<Vec<_>>()
+        ),
+        format!(
+            "{:?}",
+            b.iter().map(|l| l.spans.clone()).collect::<Vec<_>>()
+        ),
+        "the border did not move between ticks"
+    );
+}
