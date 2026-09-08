@@ -404,22 +404,16 @@ pub async fn run(
     // visible through it without going back to the session for a fresh one.
     let cancel = session.lock().await.cancel();
 
+    // **Whether to compact is balthasar's answer, not a threshold here.** magi asked itself
+    // first — a high-water mark over a character estimate — and only then asked balthasar what it
+    // would do, logged the disagreement, and did its own thing. The estimate is gone with it:
+    // balthasar is looking at the same window and knows what it has already masked, so a second
+    // guess made here could only ever be a worse one that sometimes won.
+    //
     // Before the first round, not before every one: a turn adds at most a few messages, and
-    // compacting between rounds of one prompt would summarise a conversation the model is
-    // still in the middle of.
-    let over = {
-        let held = session.lock().await;
-        crate::compact::needed(&crate::context::of(&held), backend.context_window)
-    };
-    if over {
-        // **What balthasar would have sent, beside what magi did.** Structured eviction over
-        // blind truncation is the thing a memory layer is for, and balthasar has the apparatus;
-        // what a model is shown is still the harness's to decide, and a compaction that depended
-        // on another process would change shape when that process was upgraded. Recorded so the
-        // two can be compared — obeying it is a decision to take once there is a number.
-        second_opinion(session, backend, scribe).await;
-        compact(session, backend, registry).await;
-    }
+    // compacting between rounds of one prompt would summarise a conversation the model is still
+    // in the middle of.
+    compact(session, backend, registry, scribe).await;
 
     // **Once per prompt, and after any compaction.** A tool-using turn goes round several times
     // and the recall is about what the person asked, not about what the model has just read; and
@@ -471,7 +465,7 @@ pub async fn run(
         // forgetting something deserves to see that this is why.
         if round.failed == Some(magi_proto::ask::Refusal::Overflow) && !compacted {
             compacted = true;
-            if compact(session, backend, registry).await {
+            if compact(session, backend, registry, scribe).await {
                 continue;
             }
         }
@@ -644,4 +638,4 @@ fn turn_calls(turn: &Turn) -> Vec<magi_core::PendingCall> {
 /// Compaction, and what balthasar is asked and told.
 #[path = "turn/memory.rs"]
 mod memory;
-use memory::{acted_on, compact, remembered, second_opinion};
+use memory::{acted_on, compact, remembered};

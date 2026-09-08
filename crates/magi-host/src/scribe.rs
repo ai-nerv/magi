@@ -337,16 +337,25 @@ impl Scribe {
 
     /// What balthasar would send, given a window.
     ///
-    /// **Consulted, not obeyed.** Structured eviction over blind truncation is the thing a memory
-    /// layer is for, and balthasar has the whole apparatus — but what a model is shown is the
-    /// harness's to decide, and a compaction that depended on another process would be one that
-    /// changed shape when that process was upgraded. So both are computed and the difference is
-    /// recorded; obeying it is a decision to take once there is a number saying it is better.
+    /// **Obeyed, not consulted.** This was consulted: magi computed its own cut from a constant
+    /// and a character estimate, asked balthasar what *it* would do, wrote the difference to a
+    /// debug log, and then did its own thing anyway. Two deciders, disagreeing in a line nobody
+    /// read.
+    ///
+    /// The argument for magi deciding was that a compaction depending on another process would
+    /// change shape when that process was upgraded. That is true and it is the point: balthasar
+    /// decides per turn with everything it knows about the run — what was masked already, what a
+    /// tool's output is worth, what has scrolled past — and magi decided with `KEEP = 8`. Which
+    /// of the two is a memory layer is not a close question.
+    ///
+    /// What comes back is `keep` / `mask` / `drop` / `summarise` in cursor space, plus `fits` and
+    /// a `why` worth logging. magi's remaining job is the one balthasar cannot do: it holds no
+    /// model, so the summary of a span is written here.
     ///
     /// # Errors
     /// Whatever balthasar answered. "nothing has been observed for this session" is the ordinary
     /// one on a harness that has not streamed its turns.
-    pub async fn would_send(&mut self, window: u64) -> Result<serde_json::Value, Fault> {
+    pub async fn plan_for(&mut self, window: u64) -> Result<serde_json::Value, Fault> {
         let values = self
             .family
             .call(

@@ -18,12 +18,19 @@ pub(super) async fn compact(
     session: &tokio::sync::Mutex<Session>,
     backend: &Backend,
     registry: &Registry,
+    scribe: &crate::scribe::Held,
 ) -> bool {
     let entries = {
         let held = session.lock().await;
         held.entries().to_vec()
     };
-    let Some(covered) = crate::compact::covers(&entries) else {
+    // balthasar says how much; `legal` says where that cut may actually fall. Not a second
+    // opinion about the amount — the one thing balthasar cannot know, because it is a fact about
+    // the provider wire rather than about the conversation. See `crate::compact`.
+    let Some(covered) = planned(backend, scribe, entries.len())
+        .await
+        .and_then(|asked| crate::compact::legal(&entries, asked))
+    else {
         return false;
     };
 
@@ -88,54 +95,60 @@ pub(super) async fn compact(
 /// balthasar — it bounds itself — but to make the turn independent of whether it does.
 const PATIENCE: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// Ask balthasar what it would have sent, and say how it differs from what magi will.
+/// How many entries balthasar says to replace with a summary, if any.
 ///
-/// Nothing acts on the answer. It exists so the difference is measurable at all: magi compacts
-/// with `KEEP` and a character estimate, balthasar decides per memory with everything it knows
-/// about the run, and until now there was no way to see that they disagree — let alone by how
-/// much.
+/// **The decision, taken where the memory layer is.** magi used to make this itself — a constant
+/// `KEEP = 8` and a character estimate — then ask balthasar what *it* would do, write the
+/// difference to a debug log, and go ahead with its own answer anyway. Two deciders disagreeing in
+/// a line nobody read.
+///
+/// `summarise` comes back as a span of cursors, and a cursor counts from one: cursor `to` is the
+/// last entry covered, so the count of entries replaced is `to` itself. `None` when balthasar sees
+/// nothing to compact, which is the ordinary answer for most turns.
 ///
 /// Best effort, on the same clock as everything else here. A balthasar that has observed nothing
-/// refuses this, which is the ordinary answer for a harness that has not streamed its turns.
-pub(super) async fn second_opinion(
-    session: &tokio::sync::Mutex<Session>,
-    backend: &Backend,
-    scribe: &crate::scribe::Held,
-) {
-    let Some(window) = backend.context_window else {
-        return;
-    };
-    let ours = {
-        let held = session.lock().await;
-        crate::compact::covers(held.entries()).unwrap_or(0)
-    };
-    let theirs = tokio::time::timeout(PATIENCE, async {
+/// refuses this, which is what a harness that has not streamed its turns gets; a session with no
+/// scribe at all compacts not at all, which is correct rather than a gap — there is no second
+/// opinion to fall back to, and inventing one here is the thing being removed.
+async fn planned(backend: &Backend, scribe: &crate::scribe::Held, entries: usize) -> Option<usize> {
+    let window = backend.context_window?;
+    let plan = tokio::time::timeout(PATIENCE, async {
         let mut open = scribe.lock().await;
-        open.as_mut()?.would_send(window).await.ok()
+        open.as_mut()?.plan_for(window).await.ok()
     })
     .await
+    .inspect_err(|_| magi_model::noted!("compact: balthasar did not plan within {PATIENCE:?}"))
     .ok()
-    .flatten();
-    if let Some(theirs) = theirs {
-        let counted = |what: &str| {
-            theirs
-                .get(what)
-                .and_then(|v| v.as_array())
-                .map_or(0, Vec::len)
-        };
-        magi_model::noted!(
-            "compact: magi replaces {ours} entries; balthasar would keep {}, mask {}, \
-             drop {} and summarise {} — {}",
-            counted("keep"),
-            counted("mask"),
-            counted("drop"),
-            counted("summarise"),
-            theirs
-                .get("why")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("no reason given")
-        );
+    .flatten()?;
+
+    // **A plan that does not fit is said out loud rather than passed over.** balthasar reserves
+    // room for the answer and the injection, and a window smaller than that reserve leaves it
+    // nothing to plan with — it says so in `why` and offers no span. Silently not compacting is
+    // then indistinguishable from having nothing to compact, and the session fills up with
+    // nobody able to say which of the two happened.
+    let fits = plan
+        .get("fits")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    let why = plan
+        .get("why")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("no reason given");
+    if !fits {
+        magi_model::noted!("compact: balthasar cannot plan for this window — {why}");
     }
+
+    let covered = usize::try_from(
+        plan.get("summarise")?
+            .get("to")
+            .and_then(serde_json::Value::as_u64)?,
+    )
+    .ok()?;
+    magi_model::noted!("compact: balthasar replaces {covered} of {entries} entries — {why}");
+    // Its cursors are of its own scrollback and magi's are of this transcript. They agree turn
+    // for turn — every entry is streamed as it settles — and where they might not, `compact::legal`
+    // is what the caller passes this through.
+    Some(covered)
 }
 
 /// What this project remembers about the prompt in front of it, as a message.
