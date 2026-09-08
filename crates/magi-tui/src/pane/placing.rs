@@ -55,10 +55,10 @@ fn a_screen_too_small_to_inset_still_produces_a_drawable_area() {
 fn nothing_to_show_says_so_rather_than_drawing_an_empty_box() {
     // An empty view usually wants to say how to make it non-empty, and a blank rectangle says
     // nothing at all.
-    let float = Pane::new("graph", Vec::new()).saying("run `:graph init` first");
+    let float = Pane::new("trace", Vec::new()).saying("nothing has happened yet");
     let shown = float.showing(10);
     assert_eq!(shown.len(), 1);
-    assert_eq!(shown[0].to_string(), "run `:graph init` first");
+    assert_eq!(shown[0].to_string(), "nothing has happened yet");
 }
 
 #[test]
@@ -167,7 +167,7 @@ fn the_scan_moves_with_the_tick() {
 fn the_window_is_the_same_size_whatever_it_holds() {
     // A window that shrank to its contents would jump every time you scrolled it or opened a
     // different view, and a box that moves under you is one you have to find again each time.
-    let empty = Pane::new("graph", Vec::new()).saying("nothing yet");
+    let empty = Pane::new("cost", Vec::new()).saying("nothing yet");
     let full = Pane::new("trace", rows(500));
     let (page, width) = (18, 60);
     assert_eq!(

@@ -103,10 +103,6 @@ pub struct App {
     /// Named for what it is rather than `trace`, which this struct already spends on the status
     /// line's scroller.
     pub timeline: magi_tui::trace::Trace,
-    /// What this project is made of, once something has indexed it.
-    ///
-    /// Empty until then, and [`magi_tui::graph::Graph::empty`] says how to fill it.
-    pub graph: magi_tui::graph::Graph,
     /// What that list is choosing.
     ///
     /// Held beside the list rather than inside it, because the list is a generic widget and
@@ -222,7 +218,6 @@ impl App {
         Self {
             pane: None,
             timeline: magi_tui::trace::Trace::new(),
-            graph: magi_tui::graph::Graph::new(),
             entries: Vec::new(),
             cursor: Cursor::ZERO,
             status: AgentStatus::Idle,

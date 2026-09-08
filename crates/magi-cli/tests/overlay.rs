@@ -52,8 +52,8 @@ fn the_command_palette_marks_the_selection_and_shows_details() {
             "  :permissions  ask the model what it needs, and d",
             "  :resume       continue a session from this direc",
             "  :trace        what this session has done, as it",
-            "  :graph        what this project is made of, and",
             "  :rewind       undo the last exchange, or :rewind",
+            "  :think        how much reasoning to ask for",
         ]
     );
 }

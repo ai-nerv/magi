@@ -51,39 +51,6 @@ fn an_empty_trace_says_so_rather_than_drawing_an_empty_box() {
 }
 
 #[test]
-fn the_graph_says_how_to_fill_itself() {
-    // Nothing indexes the tree yet. Saying "no index" would name the problem; naming the command
-    // says what to do about it.
-    let mut app = App::new();
-    app.show_graph(":graph", 100);
-    let pane = app.pane.expect("a pane");
-    assert_eq!(pane.title, "graph");
-    assert!(
-        pane.showing(10)[0].to_string().contains(":graph init"),
-        "{:?}",
-        pane.showing(10)[0].to_string()
-    );
-}
-
-#[test]
-fn graph_init_says_it_is_not_built_rather_than_doing_nothing() {
-    // A command that silently did nothing is indistinguishable from an index that found nothing,
-    // and the second is a much worse thing to believe.
-    let mut app = App::new();
-    app.show_graph(":graph init", 100);
-    assert!(app.pane.is_none(), "init does not open the view");
-    let said = app
-        .entries
-        .iter()
-        .filter_map(|e| match e {
-            Entry::Notice { text, .. } => Some(text.clone()),
-            _ => None,
-        })
-        .collect::<String>();
-    assert!(said.contains("not built yet"), "{said}");
-}
-
-#[test]
 fn the_pane_is_not_the_menu_slot() {
     // The separation this design turns on: a tool holding rows and a person opening a view are
     // different things in different places, and neither closes the other.

@@ -23,8 +23,6 @@ pub mod glyph;
 pub mod markdown;
 pub mod menu;
 pub mod metric;
-
-pub mod graph;
 pub mod overlay;
 pub mod painted;
 pub mod pane;

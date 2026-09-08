@@ -1,8 +1,8 @@
 //! The info pane: what magi knows, shown in the middle, on request.
 //!
-//! **One primitive, many views.** `:trace` and `:graph` are the first two; cost breakdowns,
-//! session info and whatever else magi can answer about itself go in the same panel with a
-//! different title and a different list of rows. Adding one is a function that returns
+//! **One primitive, many views.** `:trace` and `:cost` are the first two; session info and
+//! whatever else magi can answer about itself go in the same panel with a different title and a
+//! different list of rows. Adding one is a function that returns
 //! `Vec<Line>` and a line in the command table — not a new renderer, not a new key handler, not
 //! a new place on the screen for a reader to learn.
 //!

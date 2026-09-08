@@ -367,7 +367,7 @@ pub async fn run(
                                 dirty = true;
                             }
                             Action::Command(text) => {
-                                match run_command(&text, &mut app, terminal_size().0) {
+                                match run_command(&text, &mut app) {
                                     Control::Quit => break,
                                     Control::Send(command) => {
                                         let _ = command_tx.send(command).await;

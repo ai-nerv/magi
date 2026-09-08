@@ -94,10 +94,6 @@ pub fn commands() -> Vec<Candidate> {
         (":permissions", "ask the model what it needs, and decide"),
         (":resume", "continue a session from this directory"),
         (":trace", "what this session has done, as it happened"),
-        (
-            ":graph",
-            "what this project is made of, and what depends on what",
-        ),
         (":rewind", "undo the last exchange, or :rewind N"),
         (":think", "how much reasoning to ask for"),
         (":quit", "exit magi, and :q for the same"),
