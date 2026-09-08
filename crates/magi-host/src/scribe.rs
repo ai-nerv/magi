@@ -81,6 +81,46 @@ impl Scribe {
         self.write("observe", cursor, entry).await
     }
 
+    /// Record something that happened that is not a transcript entry.
+    ///
+    /// **The half of the trace the journal cannot carry.** Every [`Entry`] reaches balthasar
+    /// already — [`Scribe::settle`] does it for each one as the turn commits — so the
+    /// conversation and its tool calls are there without anybody asking. Permissions, provider
+    /// retries and compactions are not entries: they happen *around* the transcript rather than
+    /// in it, and until now they reached nothing that outlives the process.
+    ///
+    /// Written at the cursor the turn was at, with a role of `trace`, so a reader can tell an
+    /// observation about the session from something said in it. balthasar takes a free-form
+    /// turn, which is what makes this possible without a verb of its own.
+    ///
+    /// # Errors
+    /// The same as any other write, and treated the same way by the caller: a balthasar that is
+    /// not there costs the trace and nothing else.
+    pub async fn noticed(&mut self, cursor: Cursor, kind: &str, text: &str) -> Result<(), Fault> {
+        let turn = serde_json::json!({
+            "cursor": cursor.0,
+            "role": "trace",
+            "kind": kind,
+            "text": text,
+        });
+        let args = vec![serde_json::Value::String(self.session.clone()), turn];
+        self.family.call("observe", args).await.map(|_| ())
+    }
+
+    /// Call a verb for this session and hand back what came, undeserialised.
+    ///
+    /// For the rows [`Scribe::replay`] cannot represent: it reads into [`Entry`], and a trace row
+    /// is deliberately not one. A reader that wants to see what was actually recorded needs the
+    /// values rather than what they parse into.
+    ///
+    /// # Errors
+    /// The same as any other call, and treated the same way: a balthasar that is not there costs
+    /// the answer and nothing else.
+    pub async fn raw(&mut self, verb: &str) -> Result<Vec<serde_json::Value>, Fault> {
+        let args = vec![serde_json::Value::String(self.session.clone())];
+        self.family.call(verb, args).await
+    }
+
     /// Revise the entry already at this cursor.
     pub async fn amend(&mut self, cursor: Cursor, entry: &Entry) -> Result<(), Fault> {
         self.write("amend", cursor, entry).await

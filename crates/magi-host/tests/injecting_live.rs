@@ -307,3 +307,37 @@ async fn a_balthasar_that_never_answers_does_not_hold_up_a_session() {
         started.elapsed()
     );
 }
+
+#[tokio::test]
+async fn a_permission_reaches_the_memory_layer_as_a_trace_row() {
+    // **The half of the trace the journal cannot carry.** Every transcript entry reaches
+    // balthasar already — the scribe settles each one as the turn commits — so the conversation
+    // and its tool calls are there without anybody asking. A permission is not an entry: it
+    // happens *around* the transcript rather than in it, and before this it reached the watchers
+    // in the session's own VM and nothing that outlives the process. A session that wanted to
+    // know what it had been allowed to do yesterday had nowhere to look.
+    let Some((mut scribe, _dir, _serving)) = own_balthasar("trace", false).await else {
+        eprintln!("skipping: no balthasar");
+        return;
+    };
+
+    scribe
+        .noticed(
+            magi_proto::Cursor(1),
+            "permission",
+            "run `git status` was allowed",
+        )
+        .await
+        .expect("balthasar takes a trace row");
+
+    // Read back through the same door it went in. Not `Scribe::replay`, which deserialises into
+    // `Entry` — a trace row is deliberately not one, so the typed reader would drop exactly what
+    // is being checked here.
+    let rows = scribe
+        .raw("replay")
+        .await
+        .expect("balthasar replays what it was told");
+    let said = format!("{rows:?}");
+    assert!(said.contains("git status"), "the row came back: {said}");
+    assert!(said.contains("permission"), "as a trace row: {said}");
+}

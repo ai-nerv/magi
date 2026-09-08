@@ -343,7 +343,12 @@ fn assistant(id: &MessageId, turn: &Turn) -> Entry {
 /// trail wants both ends of it — even though, buffered like this, the gap it can measure is not
 /// the one that happened. See [`magi_tools::watching::Pending`] for why they are not delivered
 /// where they are decided.
-fn permissions(registry: &Registry, ops: &dyn Ops) {
+async fn permissions(
+    registry: &Registry,
+    ops: &dyn Ops,
+    scribe: &crate::scribe::Held,
+    cursor: magi_proto::Cursor,
+) {
     for noted in ops.noticed() {
         registry.saw(&magi_tools::Event::Asked {
             verb: &noted.verb,
@@ -354,8 +359,29 @@ fn permissions(registry: &Registry, ops: &dyn Ops) {
             about: &noted.about,
             allowed: noted.allowed,
         });
+        // **And to the memory layer, which is what makes the trace outlive the process.** Every
+        // transcript entry reaches balthasar already; a permission is not an entry, so before
+        // this it reached the watchers in this session's VM and nothing else. A session that
+        // wanted to know what it had been allowed to do yesterday had nowhere to look.
+        //
+        // Best effort and never awaited on the critical path of a refusal: a balthasar that is
+        // not there costs the trace and nothing else, which is the same rule every other call
+        // to it follows.
+        let said = format!(
+            "{} {} was {}",
+            noted.verb,
+            noted.about,
+            if noted.allowed { "allowed" } else { "refused" }
+        );
+        let mut open = scribe.lock().await;
+        if let Some(scribe) = open.as_mut()
+            && let Err(why) = scribe.noticed(cursor, "permission", &said).await
+        {
+            magi_model::noted!("turn: the trace could not be recorded: {why}");
+        }
     }
 }
+
 /// Rounds of tool use one prompt may take before the loop gives up.
 ///
 /// A model that keeps asking for tools without finishing is not making progress, and an
@@ -537,7 +563,7 @@ pub async fn run(
         // Preparation is where permission is asked, so this is the first moment the answers
         // exist. Told here rather than at the gate because the gate runs wherever a tool runs
         // and the watchers live on this thread -- see `magi_tools::watching::Pending`.
-        permissions(registry, ops);
+        permissions(registry, ops, scribe, session.lock().await.cursor()).await;
 
         for ((call, prepared), at) in calls.iter().zip(prepared).zip(at) {
             // Checked per call, not per round: the entry is already committed, so a stop between
@@ -583,7 +609,7 @@ pub async fn run(
         }
         // Again after the tools have run: a Lua tool that shells out asks its own questions
         // while it runs, and those are decided after every `prepare` in this round.
-        permissions(registry, ops);
+        permissions(registry, ops, scribe, session.lock().await.cursor()).await;
 
         if cancel.is_requested() {
             session.lock().await.set_status(AgentStatus::Idle);
