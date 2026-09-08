@@ -38,8 +38,9 @@ an error.
 
 ## Status
 
-A real agent: a model answers, tools run in their own processes, and the session is journalled
-and resumable. See `PLAN.md` for how it was built.
+A real agent: a model answers, tools run in their own processes, and the session is held by
+balthasar — which is also what makes it resumable, and what decides when it is compacted. magi
+keeps no transcript of its own. See `PLAN.md` for how it was built.
 
 ```sh
 make run          # magi, for real, in the current directory
@@ -185,8 +186,8 @@ harness spawns, because a layer that started harnesses would have to know what o
 | `magi-core` | the turn loop, as an explicit state machine |
 | `magi-tools` | what a tool is, and the three the floor is made of |
 | `magi-lua` | the Lua VM, and the config API it offers `init.lua` |
-| `magi-journal` | an append-only session journal |
-| `magi-host` | the session: the journal, the socket, and the turns |
+| `magi-journal` | the transcript this process holds; balthasar is what stores it |
+| `magi-host` | the session: the transcript, the socket, and the turns |
 | `magi-tui` | rendering: theme, markdown, transcript, editor, status, footer |
 | `magi-cli` | the UI process, and `melchior.rs` — everything magi knows of the agent layer |
 | `magi-testkit` | fake harness and recordings |

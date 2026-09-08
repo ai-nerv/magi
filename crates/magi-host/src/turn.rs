@@ -1,6 +1,6 @@
 //! Running one turn against a provider.
 //!
-//! The daemon's half of the loop: it owns the socket, the journal and the clock, and holds no
+//! The daemon's half of the loop: it owns the socket, the transcript and the clock, and holds no
 //! agent logic — [`magi_core::Turn`] decides what happens and this drives it.
 
 use crate::session::Session;

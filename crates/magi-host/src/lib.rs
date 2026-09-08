@@ -1,4 +1,4 @@
-//! The session: the journal, the socket, and the turns.
+//! The session: the transcript, the socket, and the turns.
 //!
 //! Answers the same protocol the replay host answers, which is the whole test of M1: this
 //! stands in for `magi fake-host` without a line of the UI moving.
