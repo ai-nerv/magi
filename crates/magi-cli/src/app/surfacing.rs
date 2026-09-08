@@ -72,10 +72,33 @@ impl super::App {
         }
     }
 
+    /// Whether something is stopped until the person answers a question on screen.
+    ///
+    /// **The rule the deadlock came from not having.** A permission, a tool's own question and an
+    /// adoption each hold a caller: a turn waiting on this session's socket, or another session's
+    /// request sitting in melchior. Everything else that can be open — a model list, a completion
+    /// popup, a surface a tool is drawing in — is a convenience nothing waits on.
+    ///
+    /// Three places have to agree about it, and they did not: `ui` drew a surface's rows *instead
+    /// of* the menu, `driver` forwarded every key to that surface, and the question was set into
+    /// state by `applying` regardless. A tool that asked permission while holding rows therefore
+    /// produced a picker that was never drawn and could not be reached, with the turn blocked
+    /// behind it — no answer, no cancel, nothing.
+    #[must_use]
+    pub fn questioned(&self) -> bool {
+        self.picking.as_ref().is_some_and(super::Picking::blocking)
+    }
+
     /// The surface holding the rows, when one is.
+    ///
+    /// **Nothing while a question is waiting.** A surface owns the menu slot and the keyboard,
+    /// which is right while it is the only thing asking for either — and wrong the moment the
+    /// turn stops for a question, because the thing the turn stopped *for* is then unreachable.
+    /// See [`App::questioned`]: this is where that rule is enforced for both, so a caller cannot
+    /// obey it in one place and forget it in the other.
     #[must_use]
     pub fn holding(&self) -> Option<&Surfacing> {
-        self.surface.as_ref()
+        self.surface.as_ref().filter(|_| !self.questioned())
     }
 
     /// Turn a screen cell into one of the tenant's own, when it landed on its rows.
@@ -188,5 +211,89 @@ mod tests {
         app.surfaced(ToolCallId::new("s1"), "dino".to_owned(), 8, String::new());
         app.unsurfaced(&ToolCallId::new("s0"));
         assert!(app.holding().is_some());
+    }
+}
+
+/// A question outranking a surface, which is the deadlock this closes.
+#[cfg(test)]
+mod questioned {
+    use crate::app::{App, Picking};
+    use magi_proto::ToolCallId;
+
+    /// A tool holding rows, as one drawing a panel does.
+    fn holding() -> App {
+        let mut app = App::new();
+        app.surfaced(
+            ToolCallId::new("s0"),
+            "casper".to_owned(),
+            4,
+            "drawing".to_owned(),
+        );
+        app
+    }
+
+    #[test]
+    fn a_surface_holds_the_screen_while_nothing_is_waiting() {
+        let app = holding();
+        assert!(app.holding().is_some());
+        assert!(!app.questioned());
+    }
+
+    /// **The deadlock.** A tool holding rows asks permission: `ui` drew the surface *instead of*
+    /// the menu and `driver` forwarded every key to the surface, so the picker existed in state,
+    /// was never drawn, and could not be reached — with the turn blocked behind it. No answer, no
+    /// cancel, nothing.
+    #[test]
+    fn a_permission_takes_the_screen_back_from_a_surface() {
+        let mut app = holding();
+        app.picking = Some(Picking::Permission {
+            id: ToolCallId::new("q0"),
+            offers: Vec::new(),
+        });
+        assert!(app.questioned());
+        assert!(
+            app.holding().is_none(),
+            "the surface still owns the menu slot and the keyboard"
+        );
+    }
+
+    /// The same for a tool's own question, which blocks a turn exactly as a permission does.
+    #[test]
+    fn a_tools_question_takes_it_too() {
+        let mut app = holding();
+        app.picking = Some(Picking::Asked {
+            id: ToolCallId::new("q1"),
+            rows: Vec::new(),
+        });
+        assert!(app.holding().is_none());
+    }
+
+    /// And an adoption, which holds another session's request inside melchior rather than a turn
+    /// on this socket — a different caller, stuck the same way.
+    #[test]
+    fn an_adoption_takes_it_too() {
+        let mut app = holding();
+        app.picking = Some(Picking::Adoption {
+            id: "r1".to_owned(),
+        });
+        assert!(app.holding().is_none());
+    }
+
+    /// **And the ones that block nothing do not.** A model list, a thinking level and a session
+    /// picker are conveniences: nothing waits on them, so a surface drawing underneath one keeps
+    /// its rows and its keys. Taking the screen for these would break every tool that draws while
+    /// somebody happens to be browsing a list.
+    #[test]
+    fn an_ordinary_list_leaves_a_surface_alone() {
+        for picking in [
+            Picking::Model,
+            Picking::Thinking,
+            Picking::Session { rows: Vec::new() },
+        ] {
+            let mut app = holding();
+            app.picking = Some(picking.clone());
+            assert!(!app.questioned(), "{picking:?} blocks nobody");
+            assert!(app.holding().is_some(), "{picking:?} took the screen");
+        }
     }
 }

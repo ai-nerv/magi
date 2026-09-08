@@ -324,6 +324,18 @@ pub async fn run(
                         if key.kind == crossterm::event::KeyEventKind::Release {
                             continue;
                         }
+                        // **A question takes the screen back from a float.** `:trace` and `:cost`
+                        // are modal for the keyboard — the arrows scroll them and everything else
+                        // is swallowed rather than reaching the prompt — which is right for a view
+                        // somebody opened to read and wrong when a turn has stopped for an answer.
+                        // The picker would be drawn underneath it and Enter would never arrive.
+                        //
+                        // Closed rather than made to yield: a float is a thing you opened and can
+                        // open again, and leaving it up under a question it cannot answer is the
+                        // shape of the deadlock this is fixing.
+                        if app.questioned() {
+                            app.pane = None;
+                        }
                         let busy = app.is_busy();
                         let page = magi_tui::pane::Pane::page(ratatui::layout::Rect {
                             x: 0,

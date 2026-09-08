@@ -62,3 +62,20 @@ pub enum Picking {
         id: String,
     },
 }
+
+impl Picking {
+    /// Whether something is blocked until this is answered.
+    ///
+    /// **The three that stop a turn, and not the three that do not.** A model list, a thinking
+    /// level and a session picker are conveniences: nothing waits on them, and closing one costs
+    /// nobody anything. A permission, a tool's own question and an adoption each hold a *caller*
+    /// — a turn on this session's socket, or another session's request sitting in melchior — and
+    /// a screen that hides one deadlocks the thing waiting.
+    #[must_use]
+    pub const fn blocking(&self) -> bool {
+        matches!(
+            self,
+            Self::Permission { .. } | Self::Asked { .. } | Self::Adoption { .. }
+        )
+    }
+}
