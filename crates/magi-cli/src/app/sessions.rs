@@ -1,23 +1,18 @@
-//! Offering the sessions recorded in this directory.
+//! Offering the sessions balthasar holds.
 //!
 //! Split out under THE RULE; the app next door is what this is about.
 
 use super::{App, Picking};
 
 impl App {
-    /// Offer the sessions recorded in this directory.
+    /// Offer the sessions balthasar holds.
     ///
-    /// Read here rather than asked of the daemon: the journals are files on this machine, this
-    /// process is on the same machine, and a round trip to be told what a directory listing says
-    /// would be a protocol message that earns nothing.
+    /// **Asked, not listed.** This read a directory of JSONL journals once, and then read it as a
+    /// fallback when balthasar was quiet. Both are gone: balthasar is the store, so it is the only
+    /// thing that knows what exists, and a picker built from files offered sessions that could not
+    /// be resumed.
     pub fn open_session_picker(&mut self) {
-        let cwd = std::env::current_dir().unwrap_or_default();
-        let dir = magi_host::paths::sessions_dir();
-        // balthasar first: it is the store, so a directory of journals is either absent or
-        // stale, and a picker built from stale files offers sessions that cannot be resumed.
-        let found = magi_host::paths::recorded()
-            .filter(|found| !found.is_empty())
-            .unwrap_or_else(|| magi_host::paths::summaries(&dir, &cwd.display().to_string()));
+        let found = magi_host::paths::recorded();
         if found.is_empty() {
             self.show_notice(
                 "No earlier sessions in this directory. This one is the first.".to_owned(),

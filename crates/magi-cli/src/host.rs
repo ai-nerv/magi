@@ -34,17 +34,16 @@ use std::path::Path;
 /// Bound before returning, so the UI's first dial cannot race the bind. Everything after that
 /// is a task: the caller goes on to draw.
 ///
-/// `resume` continues this directory's most recent journal instead of starting one.
+/// `resume` continues this directory's most recent session instead of starting one. What that
+/// means is balthasar's to answer — see [`resumable`].
 pub async fn start(
     socket: &Path,
-    sessions: Option<&Path>,
     resume: bool,
     cwd: &Path,
     loaded: Option<&crate::config::Loaded>,
     environ: &std::collections::BTreeMap<String, String>,
     key: &str,
 ) -> Result<()> {
-    let dir = sessions.map_or_else(magi_host::paths::sessions_dir, Path::to_path_buf);
     let cwd = cwd.display().to_string();
     let id = magi_proto::SessionId::new(magi_host::paths::session_id(unix_seconds(), key));
     // Told before started. A sibling reads what a coordinator said as it comes up, so saying it
@@ -59,29 +58,46 @@ pub async fn start(
     // the other's down.
     let ours = crate::balthasar::start(&id.as_str().replace('/', "-"), Path::new(&cwd)).await;
 
-    // With balthasar running there is no journal on disk at all: it is the store, and a second
-    // copy is a copy that goes stale. Without it, the file is the store exactly as before.
+    // **balthasar is the store, and there is no other.** This used to fall back to a JSONL file
+    // per session when it could not be reached, and that fallback was the bug: two stores is one
+    // store and a copy that goes stale, a session resumed from the stale one resumes into
+    // something that half-happened, and — because the fallback was silent — nobody could tell
+    // which of the two they had been using. A session that cannot record is refused instead.
+    //
+    // Refusing is affordable precisely because magi *convenes* balthasar rather than finding it:
+    // reaching here with no balthasar means the binary is missing or would not start, which is a
+    // thing to say out loud rather than to work around.
+    let ours = match ours {
+        crate::balthasar::Started::Ours(socket) => Some(socket),
+        crate::balthasar::Started::Theirs => None,
+        // Said in the words the attempt produced, rather than in a guess made here. This was a
+        // debug log and an `Option`, which was fine when the answer to every cause was "keep a
+        // journal instead"; refusing a session means naming what actually went wrong.
+        crate::balthasar::Started::Refused(why) => {
+            anyhow::bail!(
+                "magi could not convene balthasar, which holds this session's history: {why}\n\
+                 balthasar is the store — there is no local journal to fall back to. \
+                 Install it and put it on PATH, or check `balthasar status`."
+            )
+        }
+    };
     let dialled = match &ours {
         Some(socket) => magi_ipc::family::Family::dial(socket).await,
         None => magi_ipc::family::Family::find(None).await,
     };
-    let mut carried = match dialled {
-        Ok(family) => {
-            let mut scribe = magi_host::scribe::Scribe::over(family, ours.clone(), &id);
-            Some(match resume.then(|| resumable(&mut scribe)) {
-                Some(fut) => fut.await,
-                None => Vec::new(),
-            })
-        }
-        Err(_) => None,
+    let family = dialled.map_err(|why| {
+        anyhow::anyhow!(
+            "magi could not reach balthasar, which holds this session's history: {why}\n\
+             balthasar is the store — there is no local journal to fall back to. \
+             Install it and put it on PATH, or check `balthasar status`."
+        )
+    })?;
+    let mut scribe = magi_host::scribe::Scribe::over(family, ours.clone(), &id);
+    let carried = match resume.then(|| resumable(&mut scribe)) {
+        Some(fut) => fut.await,
+        None => Vec::new(),
     };
-    let session = match carried.take() {
-        Some(entries) => magi_host::session::Session::recorded(id, entries),
-        None => match resume.then(|| free(&dir, &cwd, socket.parent())).flatten() {
-            Some(path) => magi_host::session::Session::open(&path, id, &cwd, unix_seconds())?,
-            None => magi_host::open_session(&dir, &cwd, unix_seconds(), key)?,
-        },
-    };
+    let session = magi_host::session::Session::recorded(id, carried);
     // A stale socket cannot be a running session any more — nothing outlives its process — so
     // one found here was left by a crash and is cleared rather than treated as somebody's.
     if let Some(parent) = socket.parent() {
@@ -156,46 +172,6 @@ fn unix_seconds() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// The newest journal for `cwd` that nothing is still writing to.
-///
-/// `--resume` used to mean "the newest one here", full stop, and that was fine while a directory
-/// had one session. It does not any more: two `magi -r` in one project both took the newest,
-/// both opened it, and appended into one file in whatever order they happened to write — a
-/// transcript neither of them said.
-///
-/// A journal is named after the session that made it and a session id ends in that session's
-/// key, so "is anybody still writing this" is a question `sockets` answers: if something is
-/// listening on the socket that key names, the journal is taken. `None` means every one of them
-/// is, which is a fresh session rather than a refusal — somebody asking to resume wants to start
-/// working.
-///
-/// Dialled rather than looked for. A path is left behind by a crash, and a journal nobody could
-/// ever resume again because the session that wrote it died badly is worse than one opened twice.
-fn free(dir: &Path, cwd: &str, sockets: Option<&Path>) -> Option<std::path::PathBuf> {
-    magi_host::paths::summaries(dir, cwd)
-        .into_iter()
-        .find(|session| {
-            let Some(whose) = session.id.split_once('-').map(|(_, key)| key) else {
-                // A journal from before session ids carried a key. Nothing can be checked, and
-                // the old behaviour is the right one for it.
-                return true;
-            };
-            !answers(sockets, whose)
-        })
-        .map(|session| session.path)
-}
-
-/// Whether a session with this key is still up.
-///
-/// Connecting is the whole test: a socket with nothing behind it refuses, and one still being
-/// served accepts. Nothing is sent — the question is whether anybody is there, and asking it
-/// twice would be a protocol.
-fn answers(sockets: Option<&Path>, key: &str) -> bool {
-    sockets.is_some_and(|dir| {
-        std::os::unix::net::UnixStream::connect(crate::session::socket_in(dir, key)).is_ok()
-    })
-}
-
 /// Put this session's environment where every process it starts will pick it up.
 ///
 /// **Both, and the reason is not symmetry.** Tools are built from the *backend*, so stamping the
@@ -218,7 +194,6 @@ fn stamp(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use magi_model::scratch::Scratch;
 
     fn environ() -> std::collections::BTreeMap<String, String> {
         [
@@ -287,42 +262,6 @@ mod tests {
             Some("delta-rho"),
             "a switch lost the session's name"
         );
-    }
-
-    /// A journal in `dir` for `cwd`, named after the session that made it.
-    fn journal(dir: &Path, id: &str, cwd: &str) {
-        let path = dir.join(format!("{id}.jsonl"));
-        magi_journal::Journal::open(&path, magi_proto::SessionId::new(id.to_owned()), cwd, 1)
-            .expect("journal");
-    }
-
-    #[test]
-    fn resuming_takes_the_newest_journal_nobody_is_writing_to() {
-        // Two `magi -r` in one project both used to take the newest, both open it, and append
-        // into one file in whatever order they happened to write.
-        let dir = Scratch::new("magi-free", "one");
-        journal(&dir, "00000000000000000001-alpha-rho", "/work");
-        journal(&dir, "00000000000000000002-beta-nu", "/work");
-
-        // Nothing is listening in either name, so the newest wins as it always did.
-        let found = free(&dir, "/work", Some(&dir)).expect("a journal");
-        assert!(found.to_string_lossy().contains("beta-nu"), "{found:?}");
-    }
-
-    #[test]
-    fn a_journal_from_before_names_is_still_resumable() {
-        // Written when a session id was a bare timestamp. Nothing can be checked about it, and
-        // refusing to resume it would lose somebody their history over a naming change.
-        let dir = Scratch::new("magi-old", "one");
-        journal(&dir, "00000000000000000007", "/work");
-        assert!(free(&dir, "/work", Some(&dir)).is_some());
-    }
-
-    #[test]
-    fn nothing_to_resume_is_a_fresh_session_rather_than_a_refusal() {
-        // Somebody asking to resume wants to start working.
-        let dir = Scratch::new("magi-none", "one");
-        assert!(free(&dir, "/work", Some(&dir)).is_none());
     }
 
     #[test]

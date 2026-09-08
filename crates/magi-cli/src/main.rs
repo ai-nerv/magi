@@ -45,13 +45,6 @@ struct Cli {
     #[arg(short, long, global = true)]
     resume: bool,
 
-    /// Directory holding session journals.
-    ///
-    /// Global because the front end has to hand it to the daemon it starts, not only to
-    /// a daemon someone started by hand.
-    #[arg(long, global = true)]
-    sessions: Option<PathBuf>,
-
     /// Print the answer and exit, instead of opening the UI.
     #[arg(short, long)]
     print: bool,
@@ -208,16 +201,16 @@ async fn main() -> Result<()> {
             let socket = cli
                 .socket
                 .unwrap_or_else(|| session::socket_for(&project, &key));
-            host::start(
-                &socket,
-                cli.sessions.as_deref(),
-                cli.resume,
-                &cwd,
-                loaded.as_ref(),
-                &environ,
-                &key,
-            )
-            .await?;
+            // **Reaped even when it will not serve.** `start` now refuses a session it cannot
+            // record, and it refuses *after* convening balthasar — so returning the error here
+            // would leave the child this process started running with nothing to talk to. It
+            // dies with its magi either way; this is the way that does not wait for a signal.
+            if let Err(why) =
+                host::start(&socket, cli.resume, &cwd, loaded.as_ref(), &environ, &key).await
+            {
+                balthasar::stop();
+                return Err(why);
+            }
             let outcome = print::run(&socket, prompt).await;
             // Before the socket goes: the turn's own flush runs on a spawned task, which a
             // process exiting this promptly can outrun.
@@ -266,16 +259,16 @@ async fn main() -> Result<()> {
             let socket = cli
                 .socket
                 .unwrap_or_else(|| session::socket_for(&project, &key));
-            host::start(
-                &socket,
-                cli.sessions.as_deref(),
-                cli.resume,
-                &cwd,
-                loaded.as_ref(),
-                &environ,
-                &key,
-            )
-            .await?;
+            // **Reaped even when it will not serve.** `start` now refuses a session it cannot
+            // record, and it refuses *after* convening balthasar — so returning the error here
+            // would leave the child this process started running with nothing to talk to. It
+            // dies with its magi either way; this is the way that does not wait for a signal.
+            if let Err(why) =
+                host::start(&socket, cli.resume, &cwd, loaded.as_ref(), &environ, &key).await
+            {
+                balthasar::stop();
+                return Err(why);
+            }
             let ran = driver::run(&socket, cli.prompt, loaded, &project, started).await;
             // Not on a signal, and not by anybody else: the session is this process, so the
             // only thing that ends it is this process ending.

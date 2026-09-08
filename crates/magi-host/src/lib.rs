@@ -35,7 +35,6 @@ use magi_proto::{
 };
 
 use session::Session;
-use std::path::Path;
 
 use std::sync::Arc;
 use tokio::net::{UnixListener, UnixStream};
@@ -466,10 +465,10 @@ async fn connection(
                         }
                     }
                     Some(UiCommand::Resume { id }) => {
-                        let cwd = catalog.cwd.display().to_string();
-                        let dir = crate::paths::sessions_dir();
-                        // balthasar first, and by replay rather than by file: it is the store,
-                        // so a journal still on disk is either absent or behind.
+                        // **One place to ask, so one answer.** balthasar is the store; there is
+                        // no file to fall back to and no directory to search. A session it does
+                        // not know does not exist, and saying so is better than opening a stale
+                        // copy of one that half-happened.
                         let replayed = match scribe.lock().await.as_mut() {
                             Some(scribe) => scribe.replay_of(&id).await.ok(),
                             None => None,
@@ -482,15 +481,7 @@ async fn connection(
                                     .resume_recorded(SessionId::new(id.clone()), entries);
                                 None
                             }
-                            _ => match crate::paths::journal_for(&dir, &id) {
-                                None => Some(format!("there is no session called {id:?}")),
-                                Some(path) => session
-                                    .lock()
-                                    .await
-                                    .resume(&path, &cwd, seconds())
-                                    .err()
-                                    .map(|why| format!("{id} could not be opened: {why}")),
-                            },
+                            _ => Some(format!("there is no session called {id:?}")),
                         };
                         if let Some(message) = refusal {
                             writer
@@ -729,18 +720,16 @@ pub fn error_event(cursor: Cursor, class: ErrorClass, message: String) -> Harnes
     }
 }
 
-/// Open the session a daemon should serve for `cwd`.
-pub fn open_session(dir: &Path, cwd: &str, now: u64, whose: &str) -> Result<Session, JournalError> {
-    let id = paths::session_id(now, whose);
-    let path = dir.join(format!("{id}.jsonl"));
-    Session::open(&path, magi_proto::SessionId::new(id), cwd, now)
-}
-
-/// Seconds since the epoch, for stamping a journal that is being opened now.
-fn seconds() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
+/// A fresh session, named for the moment it started.
+///
+/// Empty because it is new: balthasar has nothing for a session that has not happened yet, and
+/// this is where its transcript will be sent as it does.
+#[must_use]
+pub fn open_session(now: u64, whose: &str) -> Session {
+    Session::recorded(
+        magi_proto::SessionId::new(paths::session_id(now, whose)),
+        Vec::new(),
+    )
 }
 
 #[cfg(test)]

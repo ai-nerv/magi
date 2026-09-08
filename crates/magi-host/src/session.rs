@@ -2,7 +2,6 @@
 
 use magi_journal::{Journal, JournalError};
 use magi_proto::{AgentStatus, Cursor, Entry, HarnessEvent, SessionId};
-use std::path::Path;
 use tokio::sync::broadcast;
 
 /// Events buffered for a consumer that has fallen behind.
@@ -49,27 +48,16 @@ pub struct Session {
 }
 
 impl Session {
-    /// Open a session, restoring whatever its journal holds.
-    pub fn open(path: &Path, id: SessionId, cwd: &str, now: u64) -> Result<Self, JournalError> {
-        let journal = Journal::open(path, id, cwd, now)?;
-        let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
-        Ok(Self {
-            journal,
-            status: AgentStatus::Idle,
-            cancel: crate::cancel::Cancel::default(),
-            model: None,
-            choices: Vec::new(),
-            thinking: "off".to_owned(),
-            events,
-            waiting: Vec::new(),
-            pending: std::collections::BTreeMap::new(),
-        })
-    }
-
-    /// Open a session on what balthasar holds, keeping nothing on disk.
+    /// Open a session on what balthasar holds.
     ///
-    /// The transcript still lives here — every read comes from it — but this session's copy of
-    /// record is balthasar's, and the entries it starts with are the ones balthasar replayed.
+    /// **The only constructor.** There was a second — a file journal under
+    /// `~/.local/share/magi/sessions/` — and it is gone: two stores is one store and a copy that
+    /// goes stale, and a session resumed from the stale one resumes into something that
+    /// half-happened.
+    ///
+    /// The transcript still lives here, because every read comes from it and a socket round trip
+    /// per read would be absurd. What lives here is a window; the record is balthasar's, and the
+    /// entries this starts with are the ones balthasar replayed.
     #[must_use]
     pub fn recorded(id: SessionId, entries: Vec<Entry>) -> Self {
         let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
@@ -88,21 +76,14 @@ impl Session {
 
     /// Take up what balthasar holds for another session, keeping everyone attached.
     ///
-    /// The counterpart to [`Self::resume`] for a store that is not a file. The journal is
-    /// swapped rather than the `Session` replaced, for the same reason: the broadcast channel is
-    /// what every attached UI holds, and building a new one would leave every subscriber quiet
-    /// on a resume that looked like it worked.
+    /// The journal is swapped rather than the `Session` replaced: the broadcast channel is what
+    /// every attached UI holds, and building a new one would leave every subscriber quiet on a
+    /// resume that looked like it worked.
     pub fn resume_recorded(&mut self, id: SessionId, entries: Vec<Entry>) {
         self.journal = Journal::recorded(id, entries);
         self.status = AgentStatus::Idle;
         self.pending.clear();
         let _ = self.events.send(self.snapshot(self.cursor()));
-    }
-
-    /// Whether this session's transcript is also being written to disk.
-    #[must_use]
-    pub fn is_kept(&self) -> bool {
-        self.journal.is_kept()
     }
 
     /// Whether nothing is running, so something new may start.
@@ -139,25 +120,6 @@ impl Session {
     #[must_use]
     pub fn has_pending(&self) -> bool {
         !self.pending.is_empty()
-    }
-
-    /// Put this session onto a different journal, keeping everyone attached to it.
-    ///
-    /// The journal is swapped rather than the `Session` replaced, because the broadcast channel
-    /// is what every attached UI is holding: building a new `Session` would build a new channel,
-    /// and every subscriber would go quiet on a resume that looked like it worked.
-    ///
-    /// Nothing is carried over. The transcript, the cursor and the status all belong to the
-    /// journal, and a status left behind would have a fresh session claiming to be mid-turn.
-    ///
-    /// # Errors
-    /// When the journal will not open, in which case this session is left on the one it had.
-    pub fn resume(&mut self, path: &Path, cwd: &str, now: u64) -> Result<(), JournalError> {
-        let journal = Journal::open(path, self.journal.session().clone(), cwd, now)?;
-        self.journal = journal;
-        self.status = AgentStatus::Idle;
-        let _ = self.events.send(self.snapshot(self.cursor()));
-        Ok(())
     }
 
     /// The interrupt this session's turns watch.
@@ -584,17 +546,14 @@ fn events_for(cursor: Cursor, entry: &Entry) -> Vec<HarnessEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use magi_model::scratch::{Scratch, ScratchFile};
     use magi_proto::{MessageId, StopReason};
 
-    fn temp(name: &str) -> ScratchFile {
-        Scratch::file("magi-session", name, "s.jsonl")
-    }
-
-    fn session(name: &str) -> (Session, ScratchFile) {
-        let path = temp(name);
-        let session = Session::open(&path, SessionId::new("s1"), "/tmp", 0).expect("open");
-        (session, path)
+    /// A session holding nothing, which is what balthasar replays for one that has not run.
+    ///
+    /// It used to take a scratch path and open a journal on it. There is no file: the name is
+    /// kept only because every test below reads better for saying which session it is about.
+    fn session(_name: &str) -> Session {
+        Session::recorded(SessionId::new("s1"), Vec::new())
     }
 
     #[test]
@@ -607,7 +566,7 @@ mod tests {
         //
         // Asserted here rather than through a turn, because in one process the `amend` always
         // wins the race and any end-to-end test passes whether or not this holds.
-        let (mut session, _dir) = session("revise-ending");
+        let mut session = session("revise-ending");
         let mut live = session.subscribe();
         let id = MessageId::new("a1");
         let started = Entry::Assistant {
@@ -662,7 +621,7 @@ mod tests {
 
     #[test]
     fn committing_publishes_to_subscribers() {
-        let (mut s, _dir) = session("publish");
+        let mut s = session("publish");
         let mut rx = s.subscribe();
         s.commit(user("hi")).expect("commit");
         let event = rx.try_recv().expect("an event");
@@ -671,7 +630,7 @@ mod tests {
 
     #[test]
     fn a_cold_snapshot_carries_nothing() {
-        let (mut s, _dir) = session("cold");
+        let mut s = session("cold");
         s.commit(user("hi")).expect("commit");
         match s.snapshot(Cursor::ZERO) {
             HarnessEvent::SessionSnapshot { entries, .. } => assert!(entries.is_empty()),
@@ -681,7 +640,7 @@ mod tests {
 
     #[test]
     fn a_resume_snapshot_carries_what_the_ui_already_saw() {
-        let (mut s, _dir) = session("resume");
+        let mut s = session("resume");
         s.commit(user("one")).expect("commit");
         s.commit(user("two")).expect("commit");
         match s.snapshot(Cursor(1)) {
@@ -692,7 +651,7 @@ mod tests {
 
     #[test]
     fn replay_covers_only_what_follows_the_cursor() {
-        let (mut s, _dir) = session("replay");
+        let mut s = session("replay");
         s.commit(user("one")).expect("commit");
         s.commit(user("two")).expect("commit");
         let events = s.replay(Cursor(1));
@@ -702,7 +661,7 @@ mod tests {
 
     #[test]
     fn an_unfinished_assistant_entry_replays_without_an_end_event() {
-        let (mut s, _dir) = session("unfinished");
+        let mut s = session("unfinished");
         s.commit(Entry::Assistant {
             id: MessageId::new("a1"),
             text: "partial".into(),
@@ -724,7 +683,7 @@ mod tests {
 
     #[test]
     fn a_finished_assistant_entry_replays_start_delta_and_end() {
-        let (mut s, _dir) = session("finished");
+        let mut s = session("finished");
         s.commit(Entry::Assistant {
             id: MessageId::new("a1"),
             text: "done".into(),
@@ -740,7 +699,7 @@ mod tests {
 
     #[test]
     fn status_is_published_but_not_journalled() {
-        let (mut s, _dir) = session("status");
+        let mut s = session("status");
         let mut rx = s.subscribe();
         s.set_status(AgentStatus::Working {
             label: "Thinking".into(),

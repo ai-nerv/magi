@@ -175,11 +175,11 @@ async fn what_a_session_commits_reaches_balthasar_when_it_is_flushed() {
     let Some(scribe) = scribe("flush").await else {
         return;
     };
-    let dir = Scratch::new("magi-flush", "one");
-    let journal = dir.join("session.jsonl");
+    let _dir = Scratch::new("magi-flush", "one");
+
     let id = SessionId::new(format!("magi-scribe-{}-flush", std::process::id()));
 
-    let session = magi_host::session::Session::open(&journal, id, "/tmp", 1).expect("open");
+    let session = magi_host::session::Session::recorded(id, Vec::new());
     let session = tokio::sync::Mutex::new(session);
 
     {

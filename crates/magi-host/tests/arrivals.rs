@@ -42,7 +42,7 @@ async fn serving(name: &str, mind: &Mind) -> (Scratch, std::path::PathBuf) {
     // Inside the scratch, so the guard takes the socket with the journal. Still well under
     // `SUN_LEN`: the whole path is the temporary directory, one short name and `s.sock`.
     let path = dir.join("s.sock");
-    let session = Session::open(&dir.join("s.jsonl"), SessionId::new("s"), "/tmp", 0).expect("s");
+    let session = Session::recorded(SessionId::new("s"), Vec::new());
     let listener = magi_ipc::bind(&path).await.expect("bind");
     let backend = backend(mind);
     tokio::spawn(async move {

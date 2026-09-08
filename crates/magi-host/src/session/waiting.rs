@@ -11,8 +11,7 @@ mod waiting_tests {
 
     fn session(name: &str) -> (Session, Scratch) {
         let dir = Scratch::new("magi-wait", name);
-        let session =
-            Session::open(&dir.join("s.jsonl"), SessionId::new("s"), "/tmp", 0).expect("session");
+        let session = Session::recorded(SessionId::new("s"), Vec::new());
         (session, dir)
     }
 

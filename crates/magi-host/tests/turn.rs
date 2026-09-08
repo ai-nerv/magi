@@ -2,7 +2,7 @@
 //!
 //! No account and no network: a script on disk plays the part, so the path a real turn takes —
 //! ask built, melchior spawned, answer read a line at a time, deltas folded, entry amended,
-//! journal written — is exercised end to end.
+//! handed to the store — is exercised end to end.
 //!
 //! What is *not* here any more is retry policy and HTTP status classification. melchior owns
 //! both, and they have their own tests over there. What is left is the half magi still decides:
@@ -37,8 +37,8 @@ fn backend(mind: &Mind) -> Backend {
 
 fn session(name: &str) -> (tokio::sync::Mutex<Session>, Scratch) {
     let dir = Scratch::new("magi-turn", name);
-    let path = dir.join("s.jsonl");
-    let session = Session::open(&path, SessionId::new("s"), "/tmp", 0).expect("session");
+
+    let session = Session::recorded(SessionId::new("s"), Vec::new());
     (tokio::sync::Mutex::new(session), dir)
 }
 
@@ -55,8 +55,8 @@ async fn turn(session: &tokio::sync::Mutex<Session>, backend: &Backend) {
 }
 
 #[tokio::test]
-async fn a_turn_streams_into_the_journal() {
-    let (session, dir) = session("ok");
+async fn a_turn_streams_into_the_transcript_and_is_queued_for_the_store() {
+    let (session, _dir) = session("ok");
     let mind = Mind::saying(
         "turn-ok",
         &[
@@ -69,7 +69,7 @@ async fn a_turn_streams_into_the_journal() {
     );
     turn(&session, &backend(&mind)).await;
 
-    let held = session.lock().await;
+    let mut held = session.lock().await;
     let entries = held.entries();
     assert_eq!(entries.len(), 1, "one assistant entry, amended in place");
     let Entry::Assistant {
@@ -91,9 +91,18 @@ async fn a_turn_streams_into_the_journal() {
     // the whole reason the wire between magi and melchior carries opaque strings intact.
     assert_eq!(signatures.thinking.as_deref(), Some("sig-abc"));
 
-    // The journal holds it too, not just the in-memory transcript.
-    let source = std::fs::read_to_string(dir.join("s.jsonl")).expect("journal");
-    assert!(source.contains("append-only"), "the turn reached the disk");
+    // **And it is queued for the store, not just held on screen.** This read the sentence back
+    // out of a JSONL file on disk; there is no file, because balthasar is the store and magi
+    // keeping a second copy was a copy that goes stale. What is queued is what the scribe hands
+    // over, so this is the same claim at the seam it now crosses.
+    let queued = held.take_pending();
+    assert!(
+        queued.iter().any(|(_, entry)| matches!(
+            entry,
+            Entry::Assistant { text, .. } if text.contains("append-only")
+        )),
+        "the turn was never handed to the store: {queued:?}"
+    );
 
     drop(held);
 }

@@ -40,17 +40,39 @@ struct Ours {
 }
 
 /// How long to wait for a freshly started balthasar to bind.
-const PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
+///
+/// **Generous, because giving up early is now fatal.** This was five seconds and a fallback: a
+/// magi that waited too little kept its own journal instead, and nobody noticed. There is no
+/// fallback — a session that cannot record does not start — so a cold start that opens a store
+/// on a loaded machine must not be mistaken for a broken install. Waiting longer costs nothing in
+/// the case that matters, because the loop below stops the moment the child *exits*, which is
+/// what a genuinely broken install does immediately.
+const PATIENCE: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// What came of trying to convene this session's store.
+#[derive(Debug)]
+pub enum Started {
+    /// One was started here, listening on this socket.
+    Ours(PathBuf),
+    /// Somebody else already said which one to talk to — a magi spawned by a balthasar, or a
+    /// test pointing at a fixture. Theirs, and not ours to start or to stop.
+    Theirs,
+    /// It could not be convened, and this is why, in words worth showing somebody.
+    Refused(String),
+}
 
 /// Start a balthasar for this session and return the socket it bound.
 ///
-/// `None` when balthasar is not installed or did not bind in time, which is the ordinary case on
-/// a machine without it: the session then keeps its own journal exactly as it did before.
-pub async fn start(instance: &str, project: &Path) -> Option<PathBuf> {
+/// **The reason is carried out rather than logged.** This returned an `Option`, and `None` meant
+/// three different things — not installed, did not bind, somebody else's — which was tolerable
+/// while the caller's answer to all three was "keep a journal instead". The caller now refuses the
+/// session, so what it says to the person has to be the actual cause; a debug log nobody has
+/// enabled is not that.
+pub async fn start(instance: &str, project: &Path) -> Started {
     // Somebody else already said which one to talk to — a magi spawned by a balthasar, or a test
     // pointing at a fixture. Theirs, not ours to start.
     if std::env::var_os("MAGI_API_SOCKET").is_some_and(|v| !v.is_empty()) {
-        return None;
+        return Started::Theirs;
     }
 
     let dir = magi_ipc::family::socket_dir();
@@ -73,14 +95,22 @@ pub async fn start(instance: &str, project: &Path) -> Option<PathBuf> {
         .arg("--tied")
         .arg(std::process::id().to_string())
         .current_dir(project)
-        // Silenced: this shares a terminal with the UI, and a line on stderr lands in the middle
-        // of a frame.
+        // Piped rather than silenced. It must not reach the terminal — this shares one with the
+        // UI, and a line on stderr lands in the middle of a frame — but throwing it away meant a
+        // balthasar that refused to start said why to nobody. That was survivable while magi kept
+        // its own journal instead; now the session does not start, so its last words are the
+        // whole of what a person has to go on. `path must be shorter than SUN_LEN` is a real one:
+        // an opaque "exited (1)" for a socket path a few characters too long.
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .inspect_err(|why| magi_model::noted!("balthasar: serve could not be started: {why}"))
-        .ok()?;
+        .stderr(Stdio::piped())
+        .spawn();
+    let child = match child {
+        Ok(child) => child,
+        Err(why) => {
+            return Started::Refused(format!("`balthasar serve` could not be started: {why}"));
+        }
+    };
     if let Ok(mut held) = STARTED.lock() {
         *held = Some(Ours {
             child,
@@ -90,19 +120,66 @@ pub async fn start(instance: &str, project: &Path) -> Option<PathBuf> {
 
     // Polled rather than assumed. A socket appears when balthasar binds it, and dialling before
     // then is the one failure that would look like "balthasar is not installed".
+    //
+    // **The child is watched as well as the socket.** A balthasar that refuses its own config, or
+    // cannot open its store, exits at once — and waiting the full patience for a socket that will
+    // never appear turns an instant, explicable failure into a twenty-second one reported as a
+    // timeout. Noticing the exit is also what lets the patience be generous.
     let deadline = std::time::Instant::now() + PATIENCE;
     while std::time::Instant::now() < deadline {
         if magi_ipc::family::blocking::Family::dial(&socket).is_ok() {
-            return Some(socket);
+            return Started::Ours(socket);
+        }
+        if let Some(status) = exited() {
+            let said = last_words();
+            stop();
+            return Started::Refused(match said.is_empty() {
+                true => format!(
+                    "`balthasar serve` exited ({status}) without binding {}",
+                    socket.display()
+                ),
+                false => format!("`balthasar serve` exited ({status}): {said}"),
+            });
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
-    magi_model::noted!(
-        "balthasar: nothing bound {} within {PATIENCE:?}",
-        socket.display()
-    );
     stop();
-    None
+    Started::Refused(format!(
+        "balthasar did not bind {} within {PATIENCE:?}",
+        socket.display()
+    ))
+}
+
+/// How the balthasar this process started ended, if it has.
+///
+/// `None` while it is still running, which is the ordinary answer every time round the loop above.
+/// Reaped through the handle rather than by pid: this is the process that spawned it, so its exit
+/// status is here to be read and asking the kernel about a pid would race a reaper.
+fn exited() -> Option<std::process::ExitStatus> {
+    let mut held = STARTED.lock().ok()?;
+    held.as_mut()?.child.try_wait().ok().flatten()
+}
+
+/// What a balthasar that would not start said on its way out.
+///
+/// The last line rather than all of them, and empty when it said nothing: this goes into a
+/// sentence a person reads, and a stack of them would bury the one that names the cause. Read only
+/// after the child has exited, so the pipe is closed and this cannot block.
+fn last_words() -> String {
+    use std::io::Read;
+    let mut said = String::new();
+    if let Ok(mut held) = STARTED.lock()
+        && let Some(ours) = held.as_mut()
+        && let Some(pipe) = ours.child.stderr.as_mut()
+    {
+        let _ = pipe.read_to_string(&mut said);
+    }
+    said.lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_default()
+        .trim()
+        .to_owned()
 }
 
 /// End the balthasar this process started, and clear the path it was listening on.
@@ -376,8 +453,9 @@ mod tests {
         // Set for the length of this test only, and read before anything is spawned.
         let saved = std::env::var_os("MAGI_API_SOCKET");
         assert!(
-            saved.is_none() || start("x", Path::new("/tmp")).await.is_none(),
-            "an explicit socket means somebody else's balthasar"
+            saved.is_none() || matches!(start("x", Path::new("/tmp")).await, Started::Theirs),
+            "an explicit socket means somebody else's balthasar — not ours to start, and not a \
+             refusal either"
         );
     }
 }

@@ -21,7 +21,7 @@ fn temp(name: &str) -> (Scratch, PathBuf) {
 
 async fn start(name: &str) -> (Scratch, PathBuf) {
     let (dir, socket) = temp(name);
-    let session = open_session(&dir, "/tmp", 1, "").expect("session");
+    let session = open_session(1, "");
     let listener = magi_ipc::bind(&socket).await.expect("bind");
     tokio::spawn(async move { serve(listener, session, None).await });
     (dir, socket)
@@ -170,7 +170,7 @@ async fn two_uis_both_see_a_prompt_either_one_submits() {
 }
 
 #[tokio::test]
-async fn the_journal_outlives_the_daemon() {
+async fn a_session_keeps_no_transcript_of_its_own() {
     let (dir, socket) = start("durable").await;
     {
         let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
@@ -180,21 +180,30 @@ async fn the_journal_outlives_the_daemon() {
         }
     }
 
-    let journal = std::fs::read_dir(&dir)
+    // **Inverted, and that is the point.** This used to find the session's JSONL journal here and
+    // read the prompt back out of it. There is no journal: balthasar is the store, and magi
+    // keeping a second copy was a copy that goes stale. So what is asserted is the absence — a
+    // session that ran, answered and was disconnected from wrote nothing of its own anywhere.
+    //
+    // That the transcript survives the connection is next door, in
+    // `a_prompt_survives_the_ui_and_is_replayed_on_reattach`, where it belongs: it is a property
+    // of the session, not of a file.
+    let ours: Vec<_> = std::fs::read_dir(&dir)
         .expect("read dir")
         .flatten()
-        .map(|e| e.path())
-        .find(|p| p.extension().is_some_and(|e| e == "jsonl"))
-        .expect("a journal");
-    let source = std::fs::read_to_string(&journal).expect("read");
-    assert!(source.contains("persisted"), "the prompt reached the disk");
-    assert!(source.lines().count() >= 3, "meta, prompt, reply");
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|end| end == "jsonl"))
+        .collect();
+    assert!(
+        ours.is_empty(),
+        "magi wrote a transcript of its own beside the store: {ours:?}"
+    );
 }
 
 /// A daemon that asks `mind`, so a submitted prompt starts a real turn.
 async fn start_with_mind(name: &str, mind: &Mind) -> (Scratch, PathBuf) {
     let (dir, socket) = temp(name);
-    let session = open_session(&dir, "/tmp", 1, "").expect("session");
+    let session = open_session(1, "");
     let backend = magi_host::turn::Backend {
         tools: Vec::new(),
         clients: Vec::new(),
@@ -298,8 +307,8 @@ async fn an_amended_entry_is_not_announced_as_a_new_one() {
     // and every message once empty and once full.
     use magi_proto::{Entry, MessageId, ToolCallId, ToolResult};
 
-    let (dir, _socket) = temp("amend");
-    let session = open_session(&dir, "/tmp", 1, "").expect("session");
+    let (_dir, _socket) = temp("amend");
+    let session = open_session(1, "");
     let session = std::sync::Arc::new(tokio::sync::Mutex::new(session));
 
     let mut live = session.lock().await.subscribe();
@@ -391,8 +400,8 @@ async fn what_a_turn_cost_reaches_the_ui() {
     // only a cold replay uses, had the right one, so nothing that replayed noticed.
     use magi_proto::{Entry, MessageId, Signatures, StopReason, Usage};
 
-    let (dir, _socket) = temp("usage");
-    let session = open_session(&dir, "/tmp", 1, "").expect("session");
+    let (_dir, _socket) = temp("usage");
+    let session = open_session(1, "");
     let session = std::sync::Arc::new(tokio::sync::Mutex::new(session));
     let mut live = session.lock().await.subscribe();
 
@@ -475,7 +484,7 @@ fn two_models() -> magi_host::catalog::Catalog {
 
 async fn start_with_catalog(name: &str) -> (Scratch, PathBuf) {
     let (dir, socket) = temp(name);
-    let session = open_session(&dir, "/tmp", 1, "").expect("session");
+    let session = open_session(1, "");
     let catalog = two_models();
     let backend = catalog.backend("local/a");
     let listener = magi_ipc::bind(&socket).await.expect("bind");

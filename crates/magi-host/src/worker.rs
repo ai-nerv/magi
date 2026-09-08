@@ -341,9 +341,8 @@ mod tests {
         drop(queue);
         let worker = Worker { jobs };
 
-        let dir = Scratch::new("magi-worker", "one");
-        let session =
-            Session::open(&dir.join("s.jsonl"), SessionId::new("s"), "/tmp", 0).expect("session");
+        let _dir = Scratch::new("magi-worker", "one");
+        let session = Session::recorded(SessionId::new("s"), Vec::new());
         let session = Arc::new(Mutex::new(session));
 
         // Returns rather than hanging: the send fails and there is nothing to wait for.
@@ -357,9 +356,8 @@ mod tests {
         drop(queue);
         let worker = Worker { jobs };
 
-        let dir = Scratch::new("magi-worker2", "one");
-        let session =
-            Session::open(&dir.join("s.jsonl"), SessionId::new("s"), "/tmp", 0).expect("session");
+        let _dir = Scratch::new("magi-worker2", "one");
+        let session = Session::recorded(SessionId::new("s"), Vec::new());
         let session = Arc::new(Mutex::new(session));
 
         worker.run(Arc::clone(&session)).await;

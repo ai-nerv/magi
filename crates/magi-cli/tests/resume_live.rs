@@ -113,11 +113,7 @@ fn a_second_run_picks_up_the_conversation_balthasar_kept() {
     let dir = workspace("kept");
     let mind = Mind::answering("resume-kept", "noted");
 
-    let first = magi(
-        &dir,
-        &mind,
-        &["--sessions", "sessions", "-p", "remember gerbil"],
-    );
+    let first = magi(&dir, &mind, &["-p", "remember gerbil"]);
     assert!(
         first.status.success(),
         "stderr: {}",
@@ -126,11 +122,7 @@ fn a_second_run_picks_up_the_conversation_balthasar_kept() {
 
     // A separate process, after the first is entirely gone — along with the balthasar it
     // started, which is the point. What survives is the store, not a running thing.
-    let second = magi(
-        &dir,
-        &mind,
-        &["--sessions", "sessions", "--resume", "-p", "and now?"],
-    );
+    let second = magi(&dir, &mind, &["--resume", "-p", "and now?"]);
     assert!(
         second.status.success(),
         "stderr: {}",
@@ -168,7 +160,7 @@ fn with_balthasar_holding_it_there_is_no_journal_on_disk() {
     // arrangements would be indistinguishable from the outside.
     let dir = workspace("nj");
     let mind = Mind::answering("resume-nojournal", "noted");
-    let run = magi(&dir, &mind, &["--sessions", "sessions", "-p", "hello"]);
+    let run = magi(&dir, &mind, &["-p", "hello"]);
     assert!(
         run.status.success(),
         "stderr: {}",
@@ -193,11 +185,7 @@ fn resuming_where_nothing_was_kept_starts_a_session_rather_than_failing() {
     // because "resume found nothing" and "resume could not ask" arrive at the same empty list.
     let dir = workspace("nk");
     let mind = Mind::answering("resume-empty", "hello there");
-    let run = magi(
-        &dir,
-        &mind,
-        &["--sessions", "sessions", "--resume", "-p", "first words"],
-    );
+    let run = magi(&dir, &mind, &["--resume", "-p", "first words"]);
     assert!(
         run.status.success(),
         "stderr: {}",
@@ -226,7 +214,7 @@ fn a_finished_run_leaves_no_socket_behind() {
     // socket is left when none was ever made is a test that cannot fail.
     let dir = workspace("ns");
     let mind = Mind::answering("resume-nosocket", "bye");
-    let run = magi(&dir, &mind, &["--sessions", "sessions", "-p", "hello"]);
+    let run = magi(&dir, &mind, &["-p", "hello"]);
     assert!(
         run.status.success(),
         "stderr: {}",

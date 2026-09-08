@@ -324,8 +324,7 @@ mod context_tests {
 
     fn session(name: &str) -> (Session, Scratch) {
         let dir = Scratch::new("magi-ctx", name);
-        let session =
-            Session::open(&dir.join("s.jsonl"), SessionId::new("s"), "/tmp", 0).expect("session");
+        let session = Session::recorded(SessionId::new("s"), Vec::new());
         (session, dir)
     }
 
@@ -523,8 +522,7 @@ mod branch_tests {
 
     fn session(name: &str) -> (Session, Scratch) {
         let dir = Scratch::new("magi-branch", name);
-        let session =
-            Session::open(&dir.join("s.jsonl"), SessionId::new("s"), "/tmp", 0).expect("session");
+        let session = Session::recorded(SessionId::new("s"), Vec::new());
         (session, dir)
     }
 
