@@ -199,6 +199,13 @@ pub struct App {
     /// pressing it is the shortest path from noticing to knowing. `None` when the corner is
     /// wearing nothing, which is a session that has nothing to say there yet.
     pub corner_rect: Option<ratatui::layout::Rect>,
+    /// Where the info pane landed, so a press outside it can close it.
+    ///
+    /// Recorded rather than recomputed, for the same reason [`App::corner_rect`] is: the layout
+    /// is the only thing that knows where the float went, and a second opinion here would be a
+    /// click target that agrees with the drawing until one of the two changes. `None` when no
+    /// pane is open, which is what makes "outside the pane" a question worth asking at all.
+    pub pane_rect: Option<ratatui::layout::Rect>,
     /// What the corner is showing, and therefore what pressing it opens.
     ///
     /// One slot, one setting. See [`magi_tui::corner::Corner`].
@@ -251,6 +258,7 @@ impl App {
             live_rows: 0..0,
             surface_rect: None,
             corner_rect: None,
+            pane_rect: None,
             corner: magi_tui::corner::Corner::default(),
             pending_notice: None,
             no_model: None,

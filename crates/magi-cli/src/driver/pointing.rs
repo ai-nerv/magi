@@ -93,6 +93,25 @@ pub(crate) fn on_the_screen(
                 app.press_corner();
                 return Pointing::Redraw;
             }
+            // **A float is dismissed by clicking off it**, which is what every other floating
+            // thing on a screen does and therefore what a hand does without being told. After the
+            // corner, because that badge is a button with its own toggle: pressing it while some
+            // other view is open should get you the corner's view, not an empty screen.
+            //
+            // A press *inside* the float goes nowhere at all. The pane is drawn over the
+            // transcript and covers it, so a click that fell through would begin a text selection
+            // in a conversation the person cannot see — the float would be a hole in the screen
+            // rather than a thing on it.
+            //
+            // Rect and pane both, because the rect is a drawing artefact and the pane is the
+            // truth: a view closed by a key leaves its rect behind until the next frame, and a
+            // rect alone would let a closed float go on swallowing clicks.
+            if let Some(at) = app.pane_rect.filter(|_| app.pane.is_some()) {
+                if !within(at, mouse.row, mouse.column) {
+                    app.pane = None;
+                }
+                return Pointing::Redraw;
+            }
             // Copy first: both chips sit in the same edge, and a press that fell through to the
             // fold would open the block a person meant to take a copy of.
             if let Some(text) = app.copy_at(mouse.row, mouse.column, width) {
@@ -171,5 +190,108 @@ mod hitting {
             height: 0,
         };
         assert!(!within(none, 5, 10));
+    }
+}
+
+/// Dismissing the float by clicking off it.
+#[cfg(test)]
+mod dismissing {
+    use super::{Pointing, on_the_screen};
+    use crate::app::App;
+    use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::layout::Rect;
+
+    /// Where a pane lands on an eighty-by-thirty screen.
+    const SCREEN: Rect = Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 30,
+    };
+
+    /// An app with a pane open, and its rect recorded as a draw would have.
+    fn showing() -> App {
+        let mut app = App::new();
+        app.show_trace();
+        app.pane_rect = Some(magi_tui::pane::Pane::area(SCREEN));
+        app
+    }
+
+    /// A left press at this cell.
+    fn press(row: u16, column: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }
+    }
+
+    /// Run one press against the screen, as the driver does.
+    fn clicked(app: &mut App, at: MouseEvent) -> Pointing {
+        on_the_screen(app, at, SCREEN.height, SCREEN.width, &mut None)
+    }
+
+    #[test]
+    fn a_press_outside_the_float_closes_it() {
+        // What every other floating thing on a screen does, and therefore what a hand does
+        // without being told.
+        let mut app = showing();
+        assert!(app.pane.is_some());
+        let _ = clicked(&mut app, press(0, 0));
+        assert!(
+            app.pane.is_none(),
+            "a press in the corner should dismiss it"
+        );
+    }
+
+    #[test]
+    fn a_press_inside_the_float_leaves_it_open() {
+        let mut app = showing();
+        let at = app.pane_rect.expect("a drawn pane");
+        let _ = clicked(&mut app, press(at.y + 1, at.x + 1));
+        assert!(app.pane.is_some());
+    }
+
+    #[test]
+    fn a_press_inside_the_float_does_not_reach_what_it_covers() {
+        // The pane is drawn over the transcript and covers it. A click that fell through would
+        // begin a selection in a conversation the person cannot see — a hole in the screen
+        // rather than a thing on it.
+        let mut app = showing();
+        let at = app.pane_rect.expect("a drawn pane");
+        let _ = clicked(&mut app, press(at.y + 2, at.x + 3));
+        assert!(
+            app.selection.is_none(),
+            "a press on the float began a selection underneath it"
+        );
+    }
+
+    #[test]
+    fn the_edges_belong_to_the_float() {
+        // Off-by-one on a dismissal is worse than on a button: it closes the thing you were
+        // trying to click on, and the click that reports it looked like it was on the border.
+        let mut app = showing();
+        let at = app.pane_rect.expect("a drawn pane");
+        let _ = clicked(&mut app, press(at.y, at.x));
+        assert!(app.pane.is_some(), "the top-left corner is the float's");
+
+        let mut app = showing();
+        let _ = clicked(&mut app, press(at.y + at.height - 1, at.x + at.width - 1));
+        assert!(app.pane.is_some(), "and so is the bottom-right");
+    }
+
+    #[test]
+    fn a_stale_rect_with_no_pane_open_swallows_nothing() {
+        // The rect is a drawing artefact and the pane is the truth: a view closed by a key leaves
+        // its rect behind until the next frame, and a click then must reach the transcript.
+        let mut app = showing();
+        app.pane = None;
+        let at = app.pane_rect.expect("the rect the last frame left");
+        let _ = clicked(&mut app, press(at.y + 1, at.x + 1));
+        assert!(
+            app.selection.is_some(),
+            "a closed float went on taking clicks"
+        );
     }
 }

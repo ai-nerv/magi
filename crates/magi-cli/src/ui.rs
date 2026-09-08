@@ -280,6 +280,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
     // **A float, over the finished screen and under nothing.** It is what the person asked to
     // look at, so it is drawn last and covers whatever it lands on rather than reflowing the
     // conversation to make room — a view opened for a moment gives the transcript back untouched.
+    // Where the float landed, so a press outside it can close it. Recorded rather than
+    // recomputed by the pointer handler: this is the only place that knows, and a second opinion
+    // would be a click target that agrees with the drawing until one of the two changes.
+    app.pane_rect = app.pane.as_ref().map(|_| magi_tui::pane::Pane::area(area));
     if let Some(open) = app.pane.as_mut() {
         let panel = magi_tui::pane::Pane::area(area);
         let page = magi_tui::pane::Pane::page(area);
