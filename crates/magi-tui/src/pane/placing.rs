@@ -162,3 +162,22 @@ fn the_scan_moves_with_the_tick() {
         "the border did not move between ticks"
     );
 }
+
+#[test]
+fn the_window_is_the_same_size_whatever_it_holds() {
+    // A window that shrank to its contents would jump every time you scrolled it or opened a
+    // different view, and a box that moves under you is one you have to find again each time.
+    let empty = Pane::new("graph", Vec::new()).saying("nothing yet");
+    let full = Pane::new("trace", rows(500));
+    let (page, width) = (18, 60);
+    assert_eq!(
+        empty.framed(width, page, 0, crate::border::Scan::Off).len(),
+        full.framed(width, page, 0, crate::border::Scan::Off).len(),
+        "one row of content and five hundred draw the same box"
+    );
+    assert_eq!(
+        empty.framed(width, page, 0, crate::border::Scan::Off).len(),
+        page + 4,
+        "the page, the heading, the blank under it, and two border rows"
+    );
+}

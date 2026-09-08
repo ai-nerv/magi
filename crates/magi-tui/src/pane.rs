@@ -219,7 +219,12 @@ impl Pane {
         ];
         body.extend(self.showing(page));
 
-        let content = body.len();
+        // **The panel is the size it is, whatever it holds.** Padded out to the full page rather
+        // than shrunk to fit: a window that changed size with its contents would jump every time
+        // you scrolled it or opened a different view, and a box that moves under you is one you
+        // have to find again each time. It is a window, and a window has a size.
+        let content = page + 2;
+        body.resize(content, Line::from(String::new()));
         let (top, bottom) = crate::border::edges(width, content, tick, scan);
         let mut out = Vec::with_capacity(content + 2);
         out.push(top);
