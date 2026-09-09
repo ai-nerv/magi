@@ -1,15 +1,6 @@
-//! `--resume` when balthasar is the store, against a balthasar that is really there.
-//!
-//! The existing resume test runs with no memory layer, where the journal on disk is the record
-//! and resuming means reading a file back. This is the other arrangement, and it is the one a
-//! person with balthasar installed actually gets: **there is no journal at all**. balthasar holds
-//! the transcript, the session id is asked for over a socket, and the entries come back through
-//! `resume`. Nothing about that path is exercised by reading a file.
-//!
-//! Skipped when balthasar is not installed, the way the other `*_live` tests are. It cannot be
-//! faked: the claim is that a *separate program* still has the conversation after the process
-//! that had it is gone, and a stand-in that returned the right entries would be asserting that
-//! this test knows what it wants to see.
+//! `--resume` when balthasar is the store, against a balthasar that is really there: there is no
+//! journal at all, so the transcript comes back over a socket. It cannot be faked — the claim is
+//! that a separate program still has the conversation after the process that had it is gone.
 
 use magi_model::scratch::Scratch;
 
@@ -18,10 +9,7 @@ use magi_testkit::mind::MODEL;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Whether there is a balthasar to test against.
-///
-/// Looked for the way magi looks for it — a program on `PATH` — rather than at a build path, so
-/// what is tested is the one a person would get.
+/// Whether there is a balthasar to test against, looked for the way magi looks for it.
 fn installed() -> bool {
     let Ok(path) = std::env::var("PATH") else {
         return false;
@@ -30,20 +18,9 @@ fn installed() -> bool {
         .any(|dir| Path::new(dir).join("balthasar").exists())
 }
 
-/// A workspace with no fake balthasar in front of the real one.
-///
-/// **A checkout**, because that is what a person runs magi in and because it is what makes each
-/// of these a scope of its own. Without it they shared one: balthasar scopes a directory that is
-/// not a checkout by walking up for one, and a stray `.git` high above — this machine had one in
-/// the temporary directory and another in the home directory — collects every directory beneath
-/// it. Four tests then ran four sessions into a single store, and `--resume` picked up whichever
-/// had most recently written to it.
-///
-/// **Short names**, because a unix socket path may not exceed `SUN_LEN` — 108 bytes. The
-/// directory's own name becomes the project and the project appears *inside* the socket path, so
-/// a descriptive name here is spent twice. Under `gate-hermetic`, which nests the whole run in a
-/// private temporary directory, that is what pushes it over: these passed alone and failed under
-/// the gate, which is the arrangement the gate exists to catch.
+/// A workspace with no fake balthasar in front of the real one. A checkout, because balthasar scopes
+/// a directory that is not one by walking up for a `.git`, and a stray one high above collects every
+/// directory beneath it. Short names, because a unix socket path may not exceed `SUN_LEN`.
 fn workspace(name: &str) -> Scratch {
     let dir = Scratch::new("mr", name);
     for under in ["run", "sessions", "data", ".git"] {
@@ -106,28 +83,11 @@ fn journals(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Fail unless the balthasar this run talked to was the one this run started.
-///
-/// **This file has cried wolf for most of a day, and this is the line that stops it.** Everything
-/// below asserts about a transcript coming back out of a store; when it does not, the message the
-/// reader gets is "the earlier prompt came back out of balthasar" failing, which reads as magi
-/// having lost the conversation. It is almost never that. The store the run reached was somebody
-/// else's, or it reached none and kept a journal instead — both are facts about the machine, and
-/// both were investigated as code bugs three separate times before the real cause turned out to
-/// be a runtime directory with eighteen hundred stale entries in it.
-///
-/// Two things say so, and each is a different way for the environment to be wrong:
-///
-/// - **A journal on disk.** magi keeps one only when balthasar is not the store. Its presence is
-///   the run telling you outright that nothing here is about resume.
-/// - **No `balthasar/` under the run's own runtime directory.** That directory is made when magi
-///   convenes a balthasar of its own. Missing, the run answered `Started::Theirs` and recorded
-///   into whichever balthasar the *developer's* shell names — which is also how a test came to
-///   write its prompts into somebody's real memory.
-///
-/// The count of what is lying around in the family's shared directories goes into the message
-/// too. It is not a cause on its own, but it is the thing nobody thinks to look at, and a number
-/// in the failure is what turns "resume is broken" into "the machine needs sweeping".
+/// Fail unless the balthasar this run talked to was the one this run started. Everything below
+/// asserts about a transcript coming back out of a store, and when it does not the cause is almost
+/// always the machine rather than magi. Two things say so: a journal on disk, which magi keeps only
+/// when balthasar is not the store; and no `balthasar/` under the run's own runtime directory, which
+/// means the run recorded into whichever balthasar the developer's shell names.
 fn kept_by_its_own_balthasar(dir: &Path) {
     let left = journals(dir);
     assert!(
@@ -148,11 +108,8 @@ fn kept_by_its_own_balthasar(dir: &Path) {
     );
 }
 
-/// What the family has left lying about in the shared runtime directories.
-///
-/// Read only when something has already failed. The directories are shared with every other
-/// magi, melchior and balthasar on the machine, so a number here is context for a failure and
-/// never a verdict on one — which is why nothing asserts against it.
+/// What the family has left lying about in the shared runtime directories, read only when something
+/// has already failed. Context for a failure and never a verdict, which is why nothing asserts on it.
 fn lying_around() -> String {
     let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").filter(|it| !it.is_empty()) else {
         return "there is no XDG_RUNTIME_DIR to sweep".to_owned();
@@ -189,14 +146,10 @@ fn a_second_run_picks_up_the_conversation_balthasar_kept() {
         "stderr: {}",
         String::from_utf8_lossy(&first.stderr)
     );
-    // Before anything is asserted about what came back, that there was somewhere for it to come
-    // back *from*. Checked here rather than at the end because the whole cost of this test has
-    // been the order: an environment fault that surfaces as the last assertion is one a reader
-    // spends the afternoon reading the resume path over.
+    // Before anything is asserted about what came back, that there was somewhere for it to come from.
     kept_by_its_own_balthasar(&dir);
 
-    // A separate process, after the first is entirely gone — along with the balthasar it
-    // started, which is the point. What survives is the store, not a running thing.
+    // A separate process, after the first is entirely gone along with the balthasar it started.
     let second = magi(&dir, &mind, &["--resume", "-p", "and now?"]);
     assert!(
         second.status.success(),
@@ -204,8 +157,7 @@ fn a_second_run_picks_up_the_conversation_balthasar_kept() {
         String::from_utf8_lossy(&second.stderr)
     );
 
-    // The only externally visible proof: what the second run sent to the model. A resume that
-    // found nothing still answers, and answers plausibly, so the reply says nothing at all.
+    // A resume that found nothing still answers, and answers plausibly, so only the ask says anything.
     let asks = mind.asks();
     assert_eq!(asks.len(), 2, "one ask per run: {asks:?}");
     assert!(
@@ -230,9 +182,8 @@ fn with_balthasar_holding_it_there_is_no_journal_on_disk() {
         eprintln!("skipping: no balthasar on PATH");
         return;
     }
-    // The claim that makes the test above worth having. Were a journal still being written, a
-    // resume could be reading that file and balthasar could be doing nothing — and the two
-    // arrangements would be indistinguishable from the outside.
+    // Were a journal still being written, a resume could be reading that file and balthasar doing
+    // nothing, and the two arrangements would be indistinguishable from the outside.
     let dir = workspace("nj");
     let mind = Mind::answering("resume-nojournal", "noted");
     let run = magi(&dir, &mind, &["-p", "hello"]);
@@ -255,9 +206,8 @@ fn resuming_where_nothing_was_kept_starts_a_session_rather_than_failing() {
         eprintln!("skipping: no balthasar on PATH");
         return;
     }
-    // `--resume` in a directory nothing has run in. There is a balthasar, it answers, and it has
-    // nothing to replay -- which is an ordinary first session and not an error. Worth pinning,
-    // because "resume found nothing" and "resume could not ask" arrive at the same empty list.
+    // An ordinary first session, not an error. Worth pinning, because "resume found nothing" and
+    // "resume could not ask" arrive at the same empty list.
     let dir = workspace("nk");
     let mind = Mind::answering("resume-empty", "hello there");
     let run = magi(&dir, &mind, &["--resume", "-p", "first words"]);
@@ -281,12 +231,8 @@ fn a_finished_run_leaves_no_socket_behind() {
         eprintln!("skipping: no balthasar on PATH");
         return;
     }
-    // The file as well as the process. Leaving it would not break the next magi — it sweeps —
-    // but "nothing outlives the window" should be true of both, and a directory filling with
-    // the names of finished sessions is how the last daemon pile announced itself.
-    //
-    // Here rather than against a stand-in, because a stand-in binds nothing: asserting that no
-    // socket is left when none was ever made is a test that cannot fail.
+    // The file as well as the process. Here rather than against a stand-in, because a stand-in binds
+    // nothing: asserting no socket is left when none was made is a test that cannot fail.
     let dir = workspace("ns");
     let mind = Mind::answering("resume-nosocket", "bye");
     let run = magi(&dir, &mind, &["-p", "hello"]);

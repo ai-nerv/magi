@@ -1,21 +1,12 @@
-//! Reading `.gitignore`, without a regex engine.
-//!
-//! Not all of gitignore. What is here is the pattern forms people actually write in one —
-//! `target/`, `*.log`, `/dist`, `node_modules`, `!keep.log` — matched by walking the string
-//! once. The full grammar wants a glob compiler and a regex behind it, and that pair was eight
-//! hundred kilobytes of binary to decide which filenames go in a popup.
-//!
-//! Where this and git disagree, it is on the exotic end — character classes, `**` in the middle
-//! of a pattern — and it disagrees by *offering* a file rather than hiding one. A completion
-//! list with one extra entry is a worse list; a completion list missing the file you wanted is
-//! a broken feature.
+//! Reading `.gitignore` without a regex engine: the pattern forms people write — `target/`,
+//! `*.log`, `/dist`, `node_modules`, `!keep.log` — matched by walking the string once. Where this
+//! and git disagree it is on the exotic end, and it errs by offering a file rather than hiding one.
 
 use std::path::Path;
 
 /// One line of a `.gitignore`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rule {
-    /// The pattern, with its markers stripped off.
     pattern: String,
     /// `!`: a match here un-ignores rather than ignores.
     negated: bool,
@@ -109,11 +100,8 @@ impl Ignores {
     }
 }
 
-/// Whether `text` matches a glob of `*` and `?` and literals.
-///
-/// Iterative rather than recursive, with one backtrack point for the last `*` seen. That is the
-/// whole algorithm: a pattern with twenty stars in it costs twenty steps, not two to the
-/// twentieth, and a `.gitignore` from a stranger's repository cannot hang the completion popup.
+/// Whether `text` matches a glob of `*` and `?` and literals. Iterative rather than recursive, with
+/// one backtrack point for the last `*` seen, so twenty stars cost twenty steps rather than 2^20.
 #[must_use]
 pub fn matches(pattern: &str, text: &str) -> bool {
     let pattern: Vec<char> = pattern.chars().collect();
@@ -183,9 +171,7 @@ mod tests {
 
     #[test]
     fn several_stars_do_not_cost_exponential_time() {
-        // The reason this backtracks once rather than recursing. A pattern like this against a
-        // long string is the classic way to hang a naive matcher, and a `.gitignore` comes from
-        // whatever repository you happen to have opened.
+        // A pattern like this against a long string is the classic way to hang a naive matcher.
         let text = "a".repeat(64);
         assert!(!matches("*a*a*a*a*a*a*a*a*b", &text));
     }

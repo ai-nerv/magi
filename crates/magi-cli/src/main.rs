@@ -1,8 +1,4 @@
-//! The magi UI process.
-//!
-//! One multi-call binary: `magi` runs the UI, `magi fake-host` serves a recording. Tau does
-//! the same with 15 components in 79 lines, and it is why out-of-process pieces still ship as
-//! a single artifact.
+//! The magi UI process: one multi-call binary, so out-of-process pieces ship as a single artifact.
 
 mod app;
 mod balthasar;
@@ -53,34 +49,14 @@ struct Cli {
     print: bool,
 
     /// Serve this session with no terminal, and stay reachable until something ends it.
-    ///
-    /// How an agent is started. It comes up bound, named and on every peer's roster with a screen
-    /// published, gets on with whatever prompt it was given, and waits. Nothing draws until
-    /// somebody moves a screen onto it with `alt+,` or `alt+.`, and it prints what it is called on
-    /// stdout so whoever started it has a name to address.
-    ///
-    /// Not a daemon and there is deliberately no way to make it one. It holds the melchior and the
-    /// balthasar it convened, and both go when it does — so ending it is `kill`, or a `stop` from a
-    /// session that holds the right to.
     #[arg(long)]
     headless: bool,
 
-    /// Which process this session must not outlive.
-    ///
-    /// Not for people: `magi fork` sets it on the child it starts, beside `--headless`. It implies
-    /// one — a session watching a parent while drawing its own screen is nothing anybody wants —
-    /// so what it adds is the lifetime, and only the lifetime. Without it a headless magi is a
-    /// root, which is what a `magi` in a terminal is too.
+    /// Which process this session must not outlive. `magi fork` sets it; implies `--headless`.
     #[arg(long, hide = true, value_name = "PID")]
     tied: Option<u32>,
 
-    /// What this session is for, in one word. `main` when nothing says.
-    ///
-    /// Written into the directory at birth rather than assigned once the session is up, because
-    /// otherwise there is a window in which an agent is on every peer's roster described as
-    /// something it is not — and a coordinator fanning work out during it routes by a description
-    /// nobody wrote. It is the whole of what a headless magi has to go on: nobody minted one, so
-    /// there is no role for it to inherit.
+    /// What this session is for, in one word. `main` when nothing says. Written in at birth.
     #[arg(long, value_name = "NAME")]
     role: Option<String>,
 
@@ -98,29 +74,12 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Run a tool peer. Not for people: magi spawns these itself.
-    ///
-    /// The multi-call shape Tau uses — out-of-process tools with single-artifact deployment,
-    /// so `command = "magi"` in a declaration needs nothing else installed.
     #[command(subcommand)]
     Ext(Ext),
-    /// Print the Lua client library for magi's own surface.
-    ///
-    /// What a sibling needs in order to talk to a running magi: framing, encoding, discovery
-    /// and the verbs, as one plain-Lua file to `require`. Redirect it — `magi lua-api >
-    /// config/clients/magi.lua` — because getting a file onto disk is the caller's business
-    /// and a flag that picked the path would be magi inventing a convention nobody asked for.
-    ///
-    /// The agent surface has its own, printed by `melchior lua-api`. It left with the layer.
-    ///
-    /// `client` is the family's name for it; `lua-api` is what this program called it first.
+    /// Print the Lua client library for magi's own surface, as one plain-Lua file to `require`.
     #[command(alias = "client")]
     LuaApi,
     /// Every verb this program answers, on each of its doors.
-    ///
-    /// magi coordinates rather than being coordinated, so it answers the floor of the family
-    /// contract and not `needs` or `configure` — see FAMILY.md. It answers `verbs` for the same
-    /// reason every sibling does: a family where one program can be asked what it speaks and
-    /// another cannot has stopped being one.
     Verbs {
         /// Answer in JSON. The default, and accepted so every sibling takes the same flags.
         #[arg(long)]
@@ -131,17 +90,9 @@ enum Command {
     },
     /// Start a child session of this one, and print what it is called.
     ///
-    /// Run from inside a session — from a tool, or a shell a session started. melchior names the
-    /// child and mints the secret that makes it stoppable; magi starts the process. The child has
-    /// no terminal of its own and does not want one: `alt+,` and `alt+.` move this screen onto it.
-    ///
-    /// Returns as soon as the child is up. What it is doing after that is asked of it by name.
+    /// melchior names it and mints the secret that makes it stoppable; magi starts the process.
     Fork {
-        /// What the child is for, in one word. `main` when nothing says.
-        ///
-        /// Given at birth rather than assigned once it is up, because otherwise there is a window
-        /// in which a child is on every peer's roster described as something it is not, and a
-        /// coordinator fanning work out during it routes by a description nobody wrote.
+        /// What the child is for, in one word. `main` when nothing says. Given at birth.
         #[arg(long)]
         role: Option<String>,
         /// What that role means, in a sentence a coordinator can route by.
@@ -154,18 +105,9 @@ enum Command {
     Tools,
     /// Acknowledge the installed packages, so they may run.
     ///
-    /// A file in your own `plugin/` directory runs on sight -- you put it there. A package under
-    /// `site/pack/` is somebody else's code that arrived by being fetched, so it runs once you
-    /// have said it may, and stops running again the moment it changes. This is where you say so.
-    ///
-    /// Prints what it acknowledged. Run it after installing or updating anything.
+    /// A package under `site/pack/` runs once you have said it may, and stops when it changes.
     Acknowledge,
     /// Say what a session here would be made of, without starting one.
-    ///
-    /// Which configuration was read, which of its lines were kept, what the tool registry ends
-    /// up holding and where each entry came from, and whether the siblings are actually
-    /// answering. Everything a session decides at start-up, decided and printed rather than
-    /// discovered by noticing that something is missing.
     Doctor,
     /// List the providers and models magi knows about.
     Models {
@@ -184,17 +126,11 @@ enum Command {
     },
 }
 
-/// **Not `#[tokio::main]`, and the reason is the prologue.**
-///
-/// melchior names this session, and that name is what the run and the agent are taken from — so
-/// it has to be settled before the balthasar those are filed in is spawned. Naming it in the
-/// prologue makes the order a shape rather than a rule to remember: there is nowhere later to
-/// put it.
+/// Not `#[tokio::main]`: melchior names this session in the prologue, and the run and agent are
+/// taken from that name, so it is settled before balthasar is spawned.
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    // Only a session has a prologue. Skipped for the argument error a `-p` with no prompt is, so
-    // the complaint arrives without a configuration having been read or a layer started for a
-    // session that never opens.
+    // Only a session has a prologue, so an argument error arrives without a layer being started.
     let opening = (cli.command.is_none() && !(cli.print && cli.prompt.is_none())).then(|| {
         opening::Opening::begin(
             cli.socket.clone(),
@@ -204,9 +140,7 @@ fn main() -> Result<()> {
             },
         )
     });
-    // `fork` is not a session and must not open one. It asks *this* session's melchior for a name
-    // and starts a process with it; a prologue here would name a second session, announce it, and
-    // then throw it away — leaving the child's parent to be whichever of the two answered first.
+    // `fork` is not a session: a prologue here would name a second one and throw it away.
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
@@ -215,8 +149,7 @@ fn main() -> Result<()> {
 
 async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
     let cwd = std::env::current_dir()?;
-    // Only for the replay host, and for a socket somebody named by hand. Every real session
-    // names its own after a key nothing else holds — see [`session::socket_for`].
+    // Only for the replay host and a socket named by hand; every real session names its own.
     let socket = cli
         .socket
         .clone()
@@ -271,26 +204,20 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
             harness.serve(listener).await?;
             Ok(())
         }
-        // Journalled like any other session, so a `-p` answer is resumable rather than thrown
-        // away with the process that printed it.
+        // Journalled like any other session, so a `-p` answer is resumable.
         None if cli.print => {
             let Some(prompt) = cli.prompt else {
                 anyhow::bail!("`-p` needs a prompt: magi -p \"…\"");
             };
-            // Its own session like any other: journalled, and reachable by name while it runs.
             let opening = opening.expect("a session's prologue runs before the runtime");
             let loaded = opening.loaded;
-            // Held for the run, so its socket is up while the turn is: a `-p` that another
-            // session wants to ask about is one that has to be answering.
+            // Held for the run, so its socket is up while the turn is.
             let _layer = opening.started;
             let environ = inherited(loaded.as_ref(), &opening.named);
             // Named in the prologue, because melchior publishes it there — see [`opening`].
             let key = opening.key;
             let socket = opening.socket;
-            // **Reaped even when it will not serve.** `start` now refuses a session it cannot
-            // record, and it refuses *after* convening balthasar — so returning the error here
-            // would leave the child this process started running with nothing to talk to. It
-            // dies with its magi either way; this is the way that does not wait for a signal.
+            // Reaped even when it will not serve: `start` refuses after convening balthasar.
             if let Err(why) = host::start(
                 &socket,
                 cli.resume,
@@ -309,8 +236,7 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
                 return Err(why);
             }
             let outcome = print::run(&socket, prompt).await;
-            // Before the socket goes: the turn's own flush runs on a spawned task, which a
-            // process exiting this promptly can outrun.
+            // Before the socket goes: the turn's own flush runs on a task this exit can outrun.
             magi_host::drain().await;
             balthasar::stop();
             host::done(&socket);
@@ -327,27 +253,18 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
             Ok(())
         }
         None => {
-            // The configuration, the layer and this session's name, all settled before the
-            // runtime existed — see [`opening`].
+            // The configuration, the layer and this session's name, settled before the runtime.
             let opening = opening.expect("a session's prologue runs before the runtime");
             let loaded = opening.loaded;
             let project = opening.project;
             let started = opening.started;
             let environ = inherited(loaded.as_ref(), &opening.named);
 
-            // This session's own socket, named after a key nothing else shares. Named after the
-            // *directory*, a second `magi` started in the same place found the first already
-            // answering and joined it — one session, one journal, one transcript, and whatever
-            // either of them typed appearing in both.
-            //
-            // Settled in the prologue rather than here: melchior publishes this path at announce
-            // time, and it has already been started — see [`opening`].
+            // Named after a key nothing else shares; named after the directory, a second `magi` in
+            // the same place joined the first. Settled in the prologue — see [`opening`].
             let key = opening.key;
             let socket = opening.socket;
-            // **Reaped even when it will not serve.** `start` now refuses a session it cannot
-            // record, and it refuses *after* convening balthasar — so returning the error here
-            // would leave the child this process started running with nothing to talk to. It
-            // dies with its magi either way; this is the way that does not wait for a signal.
+            // Reaped even when it will not serve: `start` refuses after convening balthasar.
             if let Err(why) = host::start(
                 &socket,
                 cli.resume,
@@ -365,18 +282,13 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
                 balthasar::stop();
                 return Err(why);
             }
-            // The same session either way, and the same everything above this line: it is bound,
-            // announced, recorded and reachable before anything decides whether there is a
-            // terminal. What differs is only who is looking — see [`child`], which is what a
-            // session with no screen of its own runs instead of a driver. Its socket was
-            // published to melchior in the prologue like anybody's, so a screen can arrive later.
+            // The same session either way: bound, announced and recorded before anything looks.
             let ran = if headless(&cli) {
                 child::run(&socket, cli.prompt, started, cli.tied).await
             } else {
                 driver::run(&socket, cli.prompt, loaded, &project, started).await
             };
-            // Not on a signal, and not by anybody else: the session is this process, so the
-            // only thing that ends it is this process ending.
+            // Not on a signal: the session is this process, so only this process ending ends it.
             magi_host::drain().await;
             balthasar::stop();
             host::done(&socket);
@@ -385,20 +297,10 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
     }
 }
 
-/// Everything this session starts inherits this, and it is how they learn which session it is.
-///
-/// `named` is `project/role/id` as melchior gave it, or empty when melchior is not installed. The three
-/// variables are melchior's own names for them, so `melchior tool` — which is a program magi does not
-/// build and does not link — finds itself without magi having to explain anything.
-///
-/// Empty when there is no name, rather than a plausible one: a tool that invented a name would
-/// sign messages as a session that does not exist.
-///
-/// **`BALTHASAR_AGENT` is deliberately not here.** balthasar reads the agent out of the
-/// *connecting* process's environment, and the memory tools are functions in this process's own
-/// Lua VM — so the map handed to children is the one place setting it would have no effect on
-/// the connections that matter. It is established in this process's own environment instead,
-/// which children inherit anyway. See [`crate::balthasar::pin_agent`].
+/// Everything this session starts inherits this, under melchior's own names for the variables.
+/// Empty when there is no name, because a tool that invented one would sign as a session that does
+/// not exist. `BALTHASAR_AGENT` is deliberately absent: balthasar reads the agent out of the
+/// *connecting* process's environment, and the memory tools run in this process's own Lua VM.
 fn inherited(
     loaded: Option<&crate::config::Loaded>,
     named: &str,
@@ -410,16 +312,11 @@ fn inherited(
         environ.insert("MAGI_MELCHIOR_ROLE".to_owned(), role.to_owned());
         environ.insert("MAGI_MELCHIOR_ID".to_owned(), id.to_owned());
     }
-    // The `agent` tool is a separate process from the one holding the socket, and both have to
-    // answer the same way about who may be reached. Set on only one of them, a refusal would
-    // depend on which of the two a model happened to go through.
+    // The `agent` tool is a separate process from the one holding the socket, and both must agree.
     if let Some(talk) = talk(loaded) {
         environ.insert(melchior::TALK.to_owned(), talk.to_owned());
     }
-    // Which process this session *is*, so that something it starts can start a child that dies
-    // with it. It is here rather than worked out by whoever needs it because nothing downstream
-    // can: `magi fork` runs a shell or two below this process, and walking up a chain of parents
-    // asking each one whether it is a magi is a guess where this is a fact.
+    // Which process this session *is*: `magi fork` runs a shell or two below it and cannot tell.
     environ.insert(
         crate::forking::SESSION_PID.to_owned(),
         std::process::id().to_string(),
@@ -427,21 +324,12 @@ fn inherited(
     environ
 }
 
-/// Whether this session comes up without a terminal.
-///
-/// **One mode, and `--tied` is a modifier of it rather than a second door.** They were one flag
-/// while a fork was the only way to reach the path, and splitting them into two would have put the
-/// same park loop behind two names for the sake of a difference that is one `select!` arm. So
-/// `--tied` implies `--headless`: it adds a lifetime, and a session watching a parent while
-/// drawing its own screen is not a thing anybody wants.
+/// Whether this session comes up without a terminal. `--tied` implies `--headless`.
 fn headless(cli: &Cli) -> bool {
     cli.headless || cli.tied.is_some()
 }
 
-/// How far this session may reach, as the config said it.
-///
-/// Passed through rather than parsed: the levels are the layer's vocabulary, and magi checking
-/// the spelling would put the list of them in two programs.
+/// How far this session may reach: passed through unparsed, since the levels are the layer's.
 fn talk(loaded: Option<&crate::config::Loaded>) -> Option<&str> {
     loaded.and_then(|l| l.config.string("agent_talk"))
 }
@@ -451,10 +339,7 @@ fn talk(loaded: Option<&crate::config::Loaded>) -> Option<&str> {
 enum Ext {
     /// A persistent shell, spoken to over the tool protocol.
     Shell,
-    /// Tools written in Lua, served from their own process.
-    ///
-    /// The second implementation of the protocol, and the one that proves it is a protocol:
-    /// it is a different language, a different lifecycle, and it cannot answer a `Cancel`.
+    /// Tools written in Lua, served from their own process; the peer that cannot answer a `Cancel`.
     Lua {
         /// The file to load. Nothing is discovered; the config names it.
         file: PathBuf,
@@ -483,14 +368,7 @@ mod inheriting {
         );
     }
 
-    /// **This session's agent is not one to hand down.**
-    ///
-    /// Everything else in this map is the same for a session and everything it starts — the
-    /// project, the run, how far either may reach. The agent is the one thing that is different
-    /// for each of them, and a child that inherited its parent's would file its scratch in the
-    /// parent's directory: the separation would be on disk and absent from the answers, which is
-    /// the whole of what the agent dimension exists to give. A child is told its own name when
-    /// it is spawned, by whoever named it.
+    /// A child that inherited its parent's agent would file its scratch in the parent's directory.
     #[test]
     fn the_agent_is_not_something_a_session_hands_its_children() {
         let environ = inherited(None, "magi/main/alpha-rho");
@@ -500,11 +378,7 @@ mod inheriting {
         );
     }
 
-    /// **And this session's pid is.**
-    ///
-    /// The opposite of the agent, and it is the same question answered the other way: what a
-    /// child needs is the pid of the *session*, not of whichever shell is between them. Handed
-    /// down, `magi fork` reads one fact instead of guessing at a chain of parents.
+    /// What a child needs is the pid of the *session*, not of whichever shell is between them.
     #[test]
     fn the_process_this_session_is_goes_to_everything_it_starts() {
         let environ = inherited(None, "magi/main/alpha-rho");

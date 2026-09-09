@@ -1,31 +1,17 @@
-//! Naming a keypress, for whoever is holding the rows.
-//!
-//! A surface is drawn by another process, often in another language, and handing it the bytes this
-//! terminal happened to send would make every tenant learn crossterm's encoding to recognise an
-//! `enter`. magi has already decoded one to get here, so it passes on the name.
-//!
-//! Deliberately small. `j`, `space`, `enter`, `esc`, `up`, `ctrl+c` — the keys a person presses at
-//! something on a screen. A tenant that needs more than this is asking for a text editor, and a
-//! text editor is what the prompt box already is.
+//! Naming a keypress, for whoever is holding the rows. A surface is drawn by another process, often
+//! in another language, and handing it this terminal's bytes would make every tenant learn
+//! crossterm's encoding to recognise an `enter`. magi has decoded one, so it passes the name.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-/// What to call this keypress, or `None` for one nothing can name.
-///
-/// `None` rather than a fallback string: a tenant matching on names should never have to guard
-/// against one it could not have anticipated, and a key with no name is one nobody binds.
-///
-/// **The whole keyboard, since a surface may be a program.** This was once six keys, on the
-/// argument that a tenant wanting more was asking for a text editor. Then a tenant *was* one: a
-/// surface can hold a pty now, and `htop` wants its function keys and `vim` wants everything. A
-/// key with no name here is a key that program can never be sent.
+/// What to call this keypress, or `None` for one nothing can name — a fallback string would make a
+/// tenant guard against names it could not anticipate. The whole keyboard, because a surface may
+/// hold a pty: a key with no name here is a key that program can never be sent.
 #[must_use]
 pub fn named(key: KeyEvent) -> Option<String> {
     let base = match key.code {
         KeyCode::Char(' ') => "space".to_owned(),
-        // **As the terminal sent it, capital or not.** It used to be lowercased, so that a tenant
-        // binding `j` caught the shifted one too. That silently made a capital letter untypeable,
-        // which is fine for a game and not for anything you type into.
+        // As the terminal sent it, capital or not: lowercasing makes a capital letter untypeable.
         KeyCode::Char(c) => c.to_string(),
         KeyCode::Enter => "enter".to_owned(),
         KeyCode::Esc => "esc".to_owned(),
@@ -45,9 +31,8 @@ pub fn named(key: KeyEvent) -> Option<String> {
         KeyCode::F(n) => format!("f{n}"),
         _ => return None,
     };
-    // Shift stays out of it: it is already in the character the terminal sent, and naming it as
-    // well would give one keypress two names. On the keys that carry no character it is the only
-    // way to say so, which is what `backtab` is instead of `shift+tab`.
+    // Shift stays out of it: it is already in the character the terminal sent. On keys carrying no
+    // character it is the only way to say so, which is what `backtab` is instead of `shift+tab`.
     let mut name = base;
     if key.modifiers.contains(KeyModifiers::ALT) {
         name = format!("alt+{name}");
@@ -77,8 +62,7 @@ mod tests {
 
     #[test]
     fn control_and_alt_are_named_and_shift_is_not() {
-        // Shift is already in the character the terminal sent. Naming it as well would give one
-        // keypress two names, and a tenant binding `j` would see `shift+j` for a capital.
+        // Shift is already in the character the terminal sent; naming it gives one key two names.
         let ctrl = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(named(ctrl).as_deref(), Some("ctrl+c"));
         let alt = KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT);
@@ -89,15 +73,13 @@ mod tests {
 
     #[test]
     fn a_capital_stays_a_capital() {
-        // It used to be lowercased so a tenant binding `j` caught the shifted one too, which made
-        // a capital letter untypeable — fine for a game, wrong for a pty with an editor in it.
+        // Lowercasing made a capital untypeable — fine for a game, wrong for a pty with an editor.
         assert_eq!(named(key(KeyCode::Char('J'))).as_deref(), Some("J"));
     }
 
     #[test]
     fn the_keys_a_program_wants_have_names_too() {
-        // `htop` wants its function keys and `vim` wants the lot. A key with no name here is one
-        // that program can never be sent.
+        // A key with no name here is one that program can never be sent.
         assert_eq!(named(key(KeyCode::F(7))).as_deref(), Some("f7"));
         assert_eq!(named(key(KeyCode::Home)).as_deref(), Some("home"));
         assert_eq!(named(key(KeyCode::PageDown)).as_deref(), Some("pagedown"));
@@ -107,8 +89,7 @@ mod tests {
 
     #[test]
     fn a_key_with_no_name_is_not_invented_one() {
-        // A tenant matching on names should never have to guard against one nobody could have
-        // anticipated. A key with no name here is a key nothing binds.
+        // A tenant matching on names should not have to guard against one nobody anticipated.
         assert_eq!(named(key(KeyCode::CapsLock)), None);
     }
 }
@@ -118,22 +99,17 @@ mod tests {
 mod probe {
     #[test]
     fn the_enhancement_api_is_available() {
-        // Compile-time only: this asserts the symbols exist in the crossterm we build against,
-        // so the release-reporting path below is not written against an API that is not there.
+        // Compile-time only: asserts the symbols exist in the crossterm we build against.
         let _ = crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES;
         // The one that makes a release arrive for a key that produces text — space, a letter.
-        // Without it the protocol reports press and repeat for those and never an `up`.
         let _ = crossterm::event::KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES;
         let _ = crossterm::event::KeyEventKind::Release;
         let _ = crossterm::event::KeyEventKind::Repeat;
     }
 }
 
-/// What this key event did: went down, repeated, or came back up.
-///
-/// A terminal that does not speak the Kitty protocol only ever sends presses, so everything is
-/// [`magi_proto::surfacing::Held::Down`] there — which is what a tenant reading only `down`
-/// already expects.
+/// What this key event did: went down, repeated, or came back up. A terminal that does not speak
+/// the Kitty protocol only sends presses, so everything is [`magi_proto::surfacing::Held::Down`].
 #[must_use]
 pub fn held(key: KeyEvent) -> magi_proto::surfacing::Held {
     use crossterm::event::KeyEventKind;
@@ -146,10 +122,7 @@ pub fn held(key: KeyEvent) -> magi_proto::surfacing::Held {
 }
 
 /// What the pointer did, and with which button, or `None` for something a surface has no name for.
-///
-/// The middle and right buttons cross even though nothing in magi's own chrome uses them: a tenant
-/// is a program with a screen, and deciding for it which buttons exist is the sort of narrowing
-/// that has to be undone one tool at a time.
+/// The middle and right buttons cross even though magi's own chrome uses neither.
 #[must_use]
 pub fn pointed(
     kind: crossterm::event::MouseEventKind,
@@ -178,10 +151,8 @@ pub fn pointed(
     })
 }
 
-/// What magi would forward for each kind of key event.
-///
-/// Isolates magi's own plumbing from the terminal's: if a `Repeat` arrives, this proves it
-/// crosses as one. It says nothing about whether a given terminal ever *sends* one.
+/// What magi would forward for each kind of key event: if a `Repeat` arrives, this proves it
+/// crosses as one. It says nothing about whether a given terminal ever sends one.
 #[cfg(test)]
 mod forwarding {
     use super::*;
@@ -201,9 +172,7 @@ mod forwarding {
 
     #[test]
     fn a_repeat_is_not_a_press() {
-        // The symptom when this is wrong: holding a key re-triggers on every repeat, so a jump
-        // lands and immediately jumps again. Distinguishable only if the two stay distinct all
-        // the way across.
+        // Holding a key would re-trigger on every repeat, so a jump lands and jumps again.
         use crossterm::event::KeyEventKind;
         assert_ne!(
             held(kind(KeyEventKind::Repeat)),
@@ -213,8 +182,7 @@ mod forwarding {
 
     #[test]
     fn a_press_a_drag_and_a_release_stay_three_things() {
-        // A tenant that could not tell them apart could not have a button you hold, which is what
-        // both games use the pointer for.
+        // A tenant that could not tell them apart could not have a button you hold.
         use crossterm::event::{MouseButton, MouseEventKind};
         use magi_proto::surfacing::{Button, Pointed};
         assert_eq!(

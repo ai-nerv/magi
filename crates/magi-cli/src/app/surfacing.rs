@@ -1,8 +1,5 @@
-//! Rows a tool is holding, and what it last drew in them.
-//!
-//! The UI's whole share of a surface. It reserves the space, keeps the most recent frame, and
-//! sends keys to whoever holds it — and it never reads what is in there. A permission prompt, a
-//! file picker and a game are the same three fields.
+//! Rows a tool is holding, and what it last drew in them. The UI reserves the space, keeps the
+//! most recent frame and sends keys to whoever holds it; it never reads what is in there.
 
 use magi_proto::ToolCallId;
 use magi_proto::tooling::Span;
@@ -10,25 +7,16 @@ use magi_proto::tooling::Span;
 /// A surface currently on the screen.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Surfacing {
-    /// Which surface this is, so keys reach it and its frames land in it.
     pub id: ToolCallId,
-    /// The tool holding it, for a footer that says who has the screen.
     pub tool: String,
-    /// How many rows were reserved.
-    ///
-    /// Kept even though the frames say how many they drew: the reservation is what the layout is
-    /// built from, and a surface whose height changed with every frame would make the transcript
-    /// above it jump each time its tenant drew a shorter one.
+    /// The reservation the layout is built from, not the height of the last frame, so the
+    /// transcript above does not jump when a tenant draws a shorter one.
     pub rows: u16,
     /// What it is for, shown until it draws its first frame.
     pub about: String,
-    /// The last frame it drew.
     pub drawn: Vec<Vec<Span>>,
-    /// Where it asked for the terminal's own cursor, in its own coordinates.
-    ///
-    /// `None` for almost every surface: a game paints its own picture and wants nothing blinking
-    /// in it. A tenant that draws a field somebody types into asks for it, and then the caret an
-    /// IME and a screen reader follow is in the field rather than back in the prompt.
+    /// Where it asked for the terminal's own cursor, in its own coordinates. `None` unless the
+    /// tenant draws a field somebody types into.
     pub cursor: Option<magi_proto::surfacing::At>,
 }
 
@@ -45,10 +33,8 @@ impl super::App {
         });
     }
 
-    /// Keep what a surface drew, if it is the one holding the rows.
-    ///
-    /// A frame for a surface that is not on screen is dropped. It belonged to rows that are gone,
-    /// and drawing it into whatever is there now would put one tool's output inside another's.
+    /// Keep what a surface drew, if it is the one holding the rows. A frame for a surface that is
+    /// not on screen is dropped, or one tool's output lands inside another's.
     pub(super) fn drew(
         &mut self,
         id: &ToolCallId,
@@ -59,8 +45,7 @@ impl super::App {
             && surface.id == *id
         {
             surface.drawn = lines;
-            // Per frame, like the rows: a caret that stayed where the last frame put it would be
-            // one a tenant could never take back.
+            // Per frame, so a tenant can take the caret back.
             surface.cursor = cursor;
         }
     }
@@ -72,41 +57,22 @@ impl super::App {
         }
     }
 
-    /// Whether something is stopped until the person answers a question on screen.
-    ///
-    /// **The rule the deadlock came from not having.** A permission, a tool's own question and an
-    /// adoption each hold a caller: a turn waiting on this session's socket, or another session's
-    /// request sitting in melchior. Everything else that can be open — a model list, a completion
-    /// popup, a surface a tool is drawing in — is a convenience nothing waits on.
-    ///
-    /// Three places have to agree about it, and they did not: `ui` drew a surface's rows *instead
-    /// of* the menu, `driver` forwarded every key to that surface, and the question was set into
-    /// state by `applying` regardless. A tool that asked permission while holding rows therefore
-    /// produced a picker that was never drawn and could not be reached, with the turn blocked
-    /// behind it — no answer, no cancel, nothing.
+    /// Whether something is stopped until the person answers a question on screen: a permission, a
+    /// tool's own question and an adoption each hold a caller, and everything else is a convenience.
     #[must_use]
     pub fn questioned(&self) -> bool {
         self.picking.as_ref().is_some_and(super::Picking::blocking)
     }
 
-    /// The surface holding the rows, when one is.
-    ///
-    /// **Nothing while a question is waiting.** A surface owns the menu slot and the keyboard,
-    /// which is right while it is the only thing asking for either — and wrong the moment the
-    /// turn stops for a question, because the thing the turn stopped *for* is then unreachable.
-    /// See [`App::questioned`]: this is where that rule is enforced for both, so a caller cannot
-    /// obey it in one place and forget it in the other.
+    /// The surface holding the rows, and nothing while [`App::questioned`] — a surface owns the
+    /// menu slot and the keyboard, which would leave the blocking question unreachable.
     #[must_use]
     pub fn holding(&self) -> Option<&Surfacing> {
         self.surface.as_ref().filter(|_| !self.questioned())
     }
 
-    /// Turn a screen cell into one of the tenant's own, when it landed on its rows.
-    ///
-    /// `None` for anywhere else, and that is the whole of the filtering: a surface hears about the
-    /// pointer over its rows and about nothing else on the screen. Clicking the transcript above
-    /// it is the transcript's business, and forwarding it would let a tenant watch the pointer
-    /// wander around a window it was given eight rows of.
+    /// Turn a screen cell into one of the tenant's own, when it landed on its rows. `None`
+    /// anywhere else: a surface hears about the pointer over its rows and nothing more.
     #[must_use]
     pub fn pointed_at(&self, row: u16, column: u16) -> Option<(u16, u16)> {
         let rect = self.surface_rect?;
@@ -142,8 +108,6 @@ mod tests {
 
     #[test]
     fn a_frame_for_rows_that_are_gone_is_dropped() {
-        // It belonged to a surface that has ended. Drawing it into whatever holds the rows now
-        // would put one tool's output inside another's.
         let mut app = App::new();
         app.surfaced(
             ToolCallId::new("s1"),
@@ -157,8 +121,6 @@ mod tests {
 
     #[test]
     fn a_click_arrives_in_the_tenant_own_coordinates() {
-        // The whole of magi's share of the pointer: it knows where it drew the rows, and turns a
-        // screen cell into one of the tenant's. The tenant is never told the other half.
         let mut app = App::new();
         app.surface_rect = Some(ratatui::layout::Rect {
             x: 2,
@@ -173,8 +135,6 @@ mod tests {
 
     #[test]
     fn the_pointer_anywhere_else_is_not_the_surface_business() {
-        // A surface hears about its own rows and about nothing else on the screen. Forwarding the
-        // rest would let a tenant granted eight rows watch the pointer cross the whole window.
         let mut app = App::new();
         app.surface_rect = Some(ratatui::layout::Rect {
             x: 2,
@@ -190,8 +150,7 @@ mod tests {
 
     #[test]
     fn nothing_holding_rows_translates_nothing() {
-        // A picker is drawn in the same slot. A click on one must not arrive as coordinates for
-        // a surface that closed.
+        // A picker is drawn in the same slot.
         assert_eq!(App::new().pointed_at(22, 6), None);
     }
 
@@ -205,8 +164,7 @@ mod tests {
 
     #[test]
     fn ending_one_that_is_not_on_screen_leaves_the_one_that_is() {
-        // Two surfaces in a turn, the first ending after the second opened. Taking the rows on
-        // any `Unsurfaced` would blank a surface that is still being played.
+        // Two surfaces in a turn, the first ending after the second opened.
         let mut app = App::new();
         app.surfaced(ToolCallId::new("s1"), "dino".to_owned(), 8, String::new());
         app.unsurfaced(&ToolCallId::new("s0"));
@@ -239,10 +197,6 @@ mod questioned {
         assert!(!app.questioned());
     }
 
-    /// **The deadlock.** A tool holding rows asks permission: `ui` drew the surface *instead of*
-    /// the menu and `driver` forwarded every key to the surface, so the picker existed in state,
-    /// was never drawn, and could not be reached — with the turn blocked behind it. No answer, no
-    /// cancel, nothing.
     #[test]
     fn a_permission_takes_the_screen_back_from_a_surface() {
         let mut app = holding();
@@ -257,7 +211,6 @@ mod questioned {
         );
     }
 
-    /// The same for a tool's own question, which blocks a turn exactly as a permission does.
     #[test]
     fn a_tools_question_takes_it_too() {
         let mut app = holding();
@@ -268,8 +221,8 @@ mod questioned {
         assert!(app.holding().is_none());
     }
 
-    /// And an adoption, which holds another session's request inside melchior rather than a turn
-    /// on this socket — a different caller, stuck the same way.
+    /// An adoption holds another session's request inside melchior rather than a turn on this
+    /// socket — a different caller, stuck the same way.
     #[test]
     fn an_adoption_takes_it_too() {
         let mut app = holding();
@@ -279,10 +232,7 @@ mod questioned {
         assert!(app.holding().is_none());
     }
 
-    /// **And the ones that block nothing do not.** A model list, a thinking level and a session
-    /// picker are conveniences: nothing waits on them, so a surface drawing underneath one keeps
-    /// its rows and its keys. Taking the screen for these would break every tool that draws while
-    /// somebody happens to be browsing a list.
+    /// A surface drawing under a non-blocking list keeps its rows and its keys.
     #[test]
     fn an_ordinary_list_leaves_a_surface_alone() {
         for picking in [

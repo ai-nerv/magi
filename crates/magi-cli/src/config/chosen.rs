@@ -1,17 +1,9 @@
-//! Which model this directory actually uses.
-//!
-//! The question has two answers — what was remembered here and what the configuration says — and
-//! the whole point of this module is the relationship between them.
+//! Which model this directory actually uses: what was remembered here, against what the configuration says.
 
 use super::{Loaded, remembered};
 
-/// The model this directory will actually use, and the provider offering it.
-///
-/// What was chosen here last, over what the configuration says — and *over* means it is tried
-/// first, not that it wins. A remembered name that no longer resolves, or whose provider has no
-/// credential, must not be able to take a working configuration down with it: it is a preference,
-/// and a preference that can disable a setting is a bug. That is what the first version did, and
-/// what it looked like was "No model is configured" on a machine whose `magi.model` was fine.
+/// The model this directory will actually use, and the provider offering it. A remembered name is
+/// tried first, not preferred: one that no longer resolves must not disable a working configuration.
 pub(super) fn chosen(loaded: &Loaded, catalog: &magi_host::catalog::Catalog) -> Option<String> {
     let usable = |name: &str| catalog.backend(name).map(|backend| backend.model);
     remembered()
@@ -21,16 +13,8 @@ pub(super) fn chosen(loaded: &Loaded, catalog: &magi_host::catalog::Catalog) -> 
         .or_else(|| loaded.config.string("model").and_then(usable))
 }
 
-/// The name that was asked for, whether or not it can be used.
-///
-/// Not the same question as [`chosen`], and the difference is the whole of a bug. `chosen` answers
-/// "what will run", so it is `None` when the provider has no credential — and that is exactly the
-/// case the daemon's refusal exists to explain. Fed a `None`, it fell back to "No model is
-/// configured", which is false: one *is* configured, its key is not set, and saying so is the
-/// difference between a person setting a variable and a person believing the thing is broken.
-///
-/// So: what will actually run when something will, and otherwise the first name that was asked
-/// for, so `Catalog::unusable` has a name to give a reason about.
+/// The name that was asked for, whether or not it can be used: what will actually run when something
+/// will, otherwise the first name asked for, so `Catalog::unusable` has a name to give a reason about.
 pub(super) fn asked(loaded: &Loaded, catalog: &magi_host::catalog::Catalog) -> Option<String> {
     chosen(loaded, catalog)
         .or_else(|| remembered().model)
@@ -64,9 +48,6 @@ pub(crate) mod tests {
     }
 
     /// Two cards: one that can be used and one whose key is not set.
-    ///
-    /// Written here rather than asked of melchior, because these are about how a name resolves
-    /// and a test that reached for a sibling would be asserting about the machine it runs on.
     pub(super) fn catalog() -> magi_host::catalog::Catalog {
         let card = |id: &str, ready: bool| Card {
             id: id.to_owned(),
@@ -87,8 +68,7 @@ pub(crate) mod tests {
 
     #[test]
     fn a_remembered_name_that_resolves_to_nothing_does_not_veto_the_configuration() {
-        // `remembered.or_else(configured)` only falls back when nothing was remembered, so a
-        // stale name reported "No model is configured" on a machine whose `magi.model` was good.
+        // A stale remembered name must not mask a `magi.model` that is good.
         let held = catalog();
         let usable = |name: &str| held.backend(name).map(|b| b.model);
         assert!(
@@ -103,8 +83,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_picker_and_the_worker_are_told_the_same_model() {
-        // Two entry points read this. Computing it twice let the daemon report one model in its
-        // picker and answer with another.
+        // Two entry points read this; computing it twice let the picker and the answer disagree.
         let held = catalog();
         let loaded = loaded(r#"magi.model = "open/good""#);
         let named = chosen(&loaded, &held);
@@ -120,9 +99,7 @@ mod asked_tests {
 
     #[test]
     fn a_configured_model_is_named_even_when_its_provider_has_no_key() {
-        // The regression: pointing `Catalog::chosen` at what *runs* made it `None` in exactly the
-        // case the refusal exists to explain, and "No model is configured" came back on a machine
-        // whose `magi.model` was set and whose key merely was not.
+        // A configured model whose key is unset must still be named, not reported as absent.
         let held = catalog();
         let loaded = loaded(r#"magi.model = "paid/keyless""#);
         assert!(
@@ -152,9 +129,8 @@ mod entry_point {
 
     #[test]
     fn the_entry_point_names_every_file_beside_it() {
-        // The shipped tree is not a plugin directory: `config/` is read through `magi.load`
-        // alone, so a file in it that `init.lua` never names is a file that ships and does
-        // nothing. What is discovered lives under `plugin/` and `pack/`, which this is not.
+        // The shipped tree is not a plugin directory: `config/` is read through `magi.load` alone,
+        // and what is discovered lives under `plugin/` and `pack/`.
         let init = checkout("init.lua");
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config");
         let mut checked = 0;
@@ -194,8 +170,7 @@ mod entry_point {
 
     #[test]
     fn a_client_is_named_before_the_tool_that_loads_it() {
-        // A tool declares itself by loading its sibling's client library, so the order in the
-        // entry point is load-bearing rather than tidy.
+        // A tool declares itself by loading its sibling's client library; entry-point order matters.
         let init = checkout("init.lua");
         let client = init
             .find("magi.load(\"clients/")
@@ -206,10 +181,7 @@ mod entry_point {
 
     #[test]
     fn the_entry_point_names_no_model_of_its_own() {
-        // Protocols and providers were magi's until melchior took the model. A tree that still
-        // shipped them would be a second catalog nobody reads and everybody has to keep in
-        // step -- and the drift would show up as a model that works from one program and not
-        // the other.
+        // Protocols and providers moved to melchior; shipping them here would be a second catalog.
         let init = checkout("init.lua");
         assert!(!init.contains("magi.load(\"apis"), "{init}");
         assert!(!init.contains("magi.load(\"providers"), "{init}");
@@ -217,8 +189,7 @@ mod entry_point {
 
     #[test]
     fn a_merged_file_and_a_split_one_land_in_the_same_bucket() {
-        // The tree keeps one file per kind; somebody who prefers a file per protocol should not
-        // have to tell the host about it.
+        // The tree keeps one file per kind; a file per protocol needs no host change.
         assert_eq!(kind("apis.lua"), Some("apis"));
         assert_eq!(kind("apis/google.lua"), Some("apis"));
         assert_eq!(kind("tools.lua"), Some("tools"));

@@ -1,30 +1,13 @@
-//! `magi doctor` — what a session here would be made of, without starting one.
-//!
-//! **Everything below is answerable before a turn runs, and none of it was.** Which config files
-//! were read, which of their lines magi kept, what the registry ends up holding, and which
-//! siblings are actually there. A person whose tool is missing, whose setting did nothing, or
-//! whose memory layer is quietly absent had one way to find out: start a session and notice the
-//! absence of an effect.
-//!
-//! The composition is built by the same [`magi_lua::tool::assemble`] a session builds, for the
-//! reason that function exists at all: an answer assembled a second way is an answer about a
-//! different program. What differs is deliberate and stated — nobody to ask, no screen to lend,
-//! and the working directory rather than a gated root, because this runs nothing.
-//!
-//! Siblings are *asked*, not looked for. A program on `$PATH` is not a running one, and a socket
-//! that accepts is not one that answers — which is the failure this command would most often be
-//! run to diagnose.
+//! `magi doctor` — what a session here would be made of, without starting one: which config files
+//! were read, which of their lines magi kept, what the registry holds, and which siblings are
+//! there. The composition is built by the same [`magi_lua::tool::assemble`] a session uses, with
+//! nobody to ask, no screen to lend, and the working directory rather than a gated root.
 
-/// Print the composition of a session in this directory.
-///
-/// Never fails. A configuration that will not load is the loudest thing this can report, not a
-/// reason to stop: a machine where nothing is installed and a machine where `init.lua` has a
-/// syntax error are the two this command exists for, and both used to answer by refusing to say
-/// anything at all.
+/// Print the composition of a session in this directory. Never fails: a configuration that will not
+/// load is the loudest thing this can report, not a reason to stop.
 pub fn print() {
-    // Everything below still holds when this fails. The builtins are compiled in and the
-    // siblings are on `$PATH` or are not, and neither depends on a configuration existing —
-    // which is exactly what somebody staring at a session that will not start needs told.
+    // Everything below still holds when this fails: the builtins are compiled in and the siblings
+    // are on `$PATH` or are not.
     let (loaded, refused) = match crate::config::load() {
         Ok(loaded) => (loaded, None),
         Err(why) => (nothing_loaded(), Some(why.to_string())),
@@ -138,22 +121,16 @@ fn nothing_loaded() -> crate::config::Loaded {
     }
 }
 
-/// The programs a session reaches for, and what each is for.
-///
-/// Named rather than discovered: what magi expects to find is a fact about magi, and a list
-/// built by looking would answer "what is installed" instead of "what is missing".
+/// The programs a session reaches for, and what each is for. Named rather than discovered, so the
+/// report answers "what is missing" instead of "what is installed".
 const SIBLINGS: &[(&str, &str)] = &[
     ("casper", "tools"),
     ("melchior", "the model"),
     ("balthasar", "memory"),
 ];
 
-/// Whether `name` is installed, and whether it actually answers.
-///
-/// Asked, not looked for. A program on `$PATH` is not a running one, a socket that accepts is
-/// not one that answers, and both of those are exactly what somebody runs this command to find
-/// out. The question is the one magi itself asks each of them, so an answer here means the
-/// session would work.
+/// Whether `name` is installed, and whether it actually answers: a program on `$PATH` is not a
+/// running one, and a socket that accepts is not one that answers.
 fn sibling(name: &str, what: &str) -> String {
     let Some(path) = which(name) else {
         return format!("not installed — no {what}");

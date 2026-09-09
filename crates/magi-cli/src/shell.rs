@@ -1,16 +1,8 @@
-//! `magi ext shell` — the peer that makes `bash` work.
-//!
-//! A tool in its own process, speaking the five-message protocol over stdin and stdout. It
-//! exists because running commands is the thing that most wants a boundary: arbitrary
-//! execution, isolatable later, and — the part a function in a VM cannot do — **stateful**.
-//!
-//! One `sh` runs for the life of the peer, so `cd build` and `export FOO=1` carry over to the
-//! next call. That is the whole reason this is a process: a per-call spawn would make the
-//! boundary pure cost and a shell that forgets where it is is not a shell.
-//!
-//! **Three threads, because a peer that can only be interrupted between calls cannot be
-//! interrupted at all.** One reads requests from the host, one reads the shell's output, and
-//! the main thread runs commands. Nothing here ever blocks on a read it cannot abandon.
+//! `magi ext shell` — the peer that makes `bash` work: a tool in its own process, speaking the
+//! five-message protocol over stdin and stdout. One `sh` runs for the life of the peer, so `cd` and
+//! `export` carry over to the next call. Three threads — one reads requests from the host, one
+//! reads the shell's output, one runs commands — because a peer that can only be interrupted
+//! between calls cannot be interrupted at all.
 
 use magi_ipc::blocking::{FrameReader, FrameWriter};
 use magi_proto::{ToolCallId, ToolReport, ToolRequest};
@@ -26,33 +18,21 @@ use std::time::Duration;
 /// How often a running command looks up to see whether it is still wanted.
 const INTERRUPT_POLL: Duration = Duration::from_millis(25);
 
-/// Written after every command so the reader knows where its output ended.
-///
-/// A persistent shell gives no other signal: the stream does not close between commands, so
-/// without a marker a reader cannot tell "finished" from "still thinking". The exit status
-/// rides along because `$?` is only meaningful on the line right after.
-///
-/// Unguessable per session and per command, for two reasons that pull in opposite directions.
-/// Output that does not end in a newline runs into the marker on the same line, so the reader
-/// has to find it anywhere rather than only at the start -- and a marker that can be found
-/// anywhere is one a command could print to fake an ending. A nonce it cannot know settles
-/// both: `cat` a file with no trailing newline works, and nothing can counterfeit the end.
+/// Written after every command so the reader knows where its output ended: a persistent shell gives
+/// no other signal, and the exit status rides along because `$?` is only meaningful on the next
+/// line. Unguessable per session and per command, because output with no trailing newline runs into
+/// the marker on the same line and a marker found anywhere is one a command could counterfeit.
 fn marker(nonce: &str, seq: u64) -> String {
     format!("__magi_{nonce}_{seq}__")
 }
 
-/// Run the peer until its input closes.
-///
-/// The request reader is a thread of its own because this one is inside the command an
-/// interrupt is asking it to abandon. A peer that reads only between calls leaves
-/// `ToolRequest::Cancel` sitting unread in a pipe until the thing it was meant to stop has
-/// finished on its own, which is the same as not implementing it.
+/// Run the peer until its input closes. The request reader is a thread of its own because this one
+/// is inside the command an interrupt is asking it to abandon.
 pub fn run() -> anyhow::Result<()> {
     let mut shell = Session::start()?;
     let mut writer = FrameWriter::new(std::io::stdout());
 
-    // Declared on connect rather than configured by the host: the peer is the only thing that
-    // knows what it can actually do.
+    // Declared on connect rather than configured by the host: the peer knows what it can do.
     let which = shell_name();
     writer.write_blocking(&ToolReport::Declare {
         name: "shell".to_owned(),
@@ -93,9 +73,8 @@ pub fn run() -> anyhow::Result<()> {
                         return;
                     }
                 }
-                // Raising a flag is the whole of it. Acting on it belongs to the thread that
-                // is waiting on the command, because that is the thread that knows what it is
-                // waiting for and the only one that can stop.
+                // Raising a flag is the whole of it: acting on it belongs to the thread waiting on
+                // the command, which is the only one that can stop.
                 Ok(ToolRequest::Cancel { .. }) => interrupted.store(true, Ordering::SeqCst),
                 // The host went away. Nothing to report to, so leave quietly.
                 Err(_) => return,
@@ -119,31 +98,17 @@ struct Session {
     child: Child,
     /// The terminal we write commands into. A `File`, because that is what a pty is.
     stdin: std::fs::File,
-    /// The shell's output, a line at a time.
-    ///
-    /// A channel rather than the pipe itself, because a pipe cannot be read with a deadline
-    /// and an interrupt that has to wait for the next line is not an interrupt. Killing the
-    /// shell does not help: a command that spawned anything leaves that child holding the
-    /// same pipe open, so the read blocks on for as long as the thing being interrupted runs.
+    /// A channel rather than the pipe, because a pipe cannot be read with a deadline. Killing
+    /// the shell does not help: a command that spawned anything holds the same pipe open.
     lines: Receiver<String>,
-    /// The named pipe the output comes down.
-    ///
-    /// Kept only to unlink. The reader removes the name as soon as both ends are open, so this
-    /// is for the shell that never opened its end — a peer that was killed in the moment
-    /// between being told about the pipe and the shell getting round to it, which over a test
-    /// run that starts a peer per case leaves the temporary directory full of them.
+    /// The named pipe the output comes down, kept only to unlink: the reader removes the name as
+    /// soon as both ends are open, so this is for the shell that never opened its end.
     fifo: std::path::PathBuf,
-    /// Raised by the request reader when the host asks for a stop.
     interrupted: Arc<AtomicBool>,
-    /// Unguessable per-session half of the end-of-command marker.
     nonce: String,
-    /// Commands run so far, which is the other half.
     seq: u64,
-    /// Whether the shell has gone, so the next call starts a fresh one.
-    ///
-    /// A command may legitimately end its shell -- `exit`, or something that kills it -- and
-    /// running it in a subshell instead would cost the persistence that is the whole reason
-    /// this is a process. So the death is expected and recovered from rather than prevented.
+    /// Whether the shell has gone, so the next call starts a fresh one: `exit` is a legitimate
+    /// thing to run, and a subshell would cost the persistence this process exists for.
     dead: bool,
 }
 
@@ -158,16 +123,8 @@ fn nonce() -> String {
     )
 }
 
-/// Which shell to run.
-///
-/// `$MAGI_SHELL`, then `$SHELL`, then `sh`. It was `sh` outright, which threw away the thing
-/// that makes this tool worth having: a person's own shell is the one that knows their aliases,
-/// their functions, and — for a shell like oslo — a whole scripting surface the model can reach
-/// through the same tool it already has. Running the lowest common denominator is a choice to
-/// be useless on every machine equally.
-///
-/// `sh` remains the floor, because a login shell recorded in the environment is not always a
-/// shell that exists on this machine.
+/// Which shell to run: `$MAGI_SHELL`, then `$SHELL`, then `sh`. A person's own shell knows their
+/// aliases and functions; `sh` is the floor, because a recorded login shell may not exist here.
 #[must_use]
 pub fn shell_command() -> String {
     let magi_shell = std::env::var("MAGI_SHELL").ok();
@@ -199,20 +156,10 @@ fn name_of(command: &str) -> String {
         .map_or_else(|| command.to_owned(), |n| n.to_string_lossy().into_owned())
 }
 
-/// Open a pseudo-terminal: the side we hold, and the side the shell gets.
-///
-/// **A pipe is not good enough for a real shell.** Writing to a pipe a shell block-buffers, so
-/// nothing arrives until it exits; writing to a terminal it line-buffers, which is what the
-/// end-of-command marker depends on. `sh` happened to behave, which is why pipes worked while
-/// this ran `sh` and stopped the moment it ran the user's own — oslo produced nothing at all for
-/// the whole 600-second timeout. Tau's shell extension runs on a pty for the same reason.
-///
-/// A terminal is also what makes a shell answer "yes" to *am I interactive*, which is what loads
-/// aliases and functions in the first place — and it is why `TERM` is set to `dumb` on the way
-/// in. The shell is interactive here in the sense that matters (it reads commands and keeps its
-/// state) and not in the sense that does not (nobody is looking at it), and `dumb` is how that
-/// second half is said. A shell that draws a prompt anyway pays for it on every keystroke of
-/// every command written into it, which is slow enough to read as a hang.
+/// Open a pseudo-terminal: the side we hold, and the side the shell gets. A shell writing to a pipe
+/// block-buffers, so nothing arrives until it exits; on a terminal it line-buffers, which is what
+/// the end-of-command marker depends on. A terminal is also what makes a shell answer yes to *am I
+/// interactive*, which is what loads aliases — and why `TERM` is `dumb`, so it draws no prompt.
 fn open_pty() -> anyhow::Result<(OwnedFd, OwnedFd)> {
     use rustix::pty::OpenptFlags;
     let controller = rustix::pty::openpt(OpenptFlags::RDWR | OpenptFlags::NOCTTY)?;
@@ -226,9 +173,8 @@ fn open_pty() -> anyhow::Result<(OwnedFd, OwnedFd)> {
         .write(true)
         .open(path)?;
 
-    // Echo off. A terminal repeats what is written to it, so every command would come back as
-    // the first line of its own output — and the end-of-command marker would arrive before the
-    // command had run.
+    // Echo off: a terminal repeats what is written to it, so every command would come back as the
+    // first line of its own output.
     if let Ok(mut attrs) = rustix::termios::tcgetattr(&controller) {
         attrs.local_modes -= rustix::termios::LocalModes::ECHO;
         let _ =
@@ -237,30 +183,15 @@ fn open_pty() -> anyhow::Result<(OwnedFd, OwnedFd)> {
     Ok((controller, OwnedFd::from(device)))
 }
 
-/// The descriptor a command's output is written to, apart from the terminal.
-///
-/// **The terminal is the shell's, not ours.** An interactive shell owns its screen: it redraws
-/// the line being typed, paints a prompt before and after every command, and — for a shell with
-/// history suggestions, which oslo has — writes a *guess* at what you are about to type. All of
-/// that arrived in the middle of tool output, so a tool result held the prompt three times, the
-/// script the peer had just sent, and a line from somebody's shell history that was never run.
-///
-/// Neither stripping nor counting fixes that: a prompt is whatever the person configured, and a
-/// redraw is not a line. So the output does not share the terminal at all. The shell keeps the
-/// pty and may write whatever it likes there — nothing reads it — and each command is run with
-/// its output redirected to this descriptor, which carries the markers and the output and
-/// nothing else.
-///
-/// The shell opens it itself, from a named pipe this side made — rather than being handed an
-/// inherited descriptor, which needs code between fork and exec, which needs `unsafe`, which
-/// this workspace does not have. `exec 3>` is POSIX and every shell worth running has it.
+/// The descriptor a command's output is written to, apart from the terminal. The terminal is the
+/// shell's: an interactive one redraws the line being typed, paints prompts, and may write a guess
+/// at what comes next, none of which is the command's and none of which can be stripped reliably.
+/// The shell opens this itself from a named pipe: inheriting a descriptor needs code between
+/// fork and exec, which needs `unsafe`; `exec 3>` is POSIX.
 const REPORT_FD: i32 = 3;
 
-/// Make the fifo somewhere that will have it.
-///
-/// The temporary directory, then the working directory. A peer running under `bwrap` with the
-/// filesystem bound read-only has no writable `/tmp` — the session directory is the one place it
-/// can write, and a shell that cannot make its own output channel is a shell that does not start.
+/// Make the fifo somewhere that will have it: the temporary directory, then the working directory.
+/// A peer under `bwrap` with a read-only filesystem has no writable `/tmp`.
 fn make_fifo() -> anyhow::Result<std::path::PathBuf> {
     sweep_stale_fifos();
     let name = format!("magi-shell-{}-{}", std::process::id(), nonce());
@@ -284,12 +215,8 @@ fn make_fifo() -> anyhow::Result<std::path::PathBuf> {
     ))
 }
 
-/// Remove the fifos of peers that are no longer running.
-///
-/// A peer killed between telling its shell about the pipe and the shell opening it leaves the
-/// name behind — nothing unlinks it, because the process that would have is gone. One per dead
-/// peer is nothing; a test run that starts a peer per case leaves dozens. The pid is in the
-/// name, so whether it is still wanted is a question `/proc` answers.
+/// Remove the fifos of peers that are no longer running: one is left behind whenever a peer is
+/// killed between telling its shell about the pipe and the shell opening it. The pid is in it.
 fn sweep_stale_fifos() {
     let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
         return;
@@ -309,14 +236,9 @@ fn sweep_stale_fifos() {
     }
 }
 
-/// A named pipe for one shell's output, and the lines that come out of it.
-///
-/// Opening a fifo for reading blocks until somebody opens it for writing, and vice versa — so
-/// the read happens on the thread that will go on doing it, and the shell is told to open the
-/// other end from the caller. Whichever arrives first waits for the other.
-///
-/// The path is removed as soon as both ends are open. What is left is a pipe with exactly two
-/// holders and no name, which nothing else on the machine can join.
+/// A named pipe for one shell's output, and the lines that come out of it. Opening a fifo for
+/// reading blocks until somebody opens it for writing, so the read happens on the thread that will
+/// go on doing it. The path is removed as soon as both ends are open.
 fn report_pipe() -> anyhow::Result<(std::path::PathBuf, Receiver<String>)> {
     let path = make_fifo()?;
     let (lines, incoming) = std::sync::mpsc::channel();
@@ -332,12 +254,10 @@ fn report_pipe() -> anyhow::Result<(std::path::PathBuf, Receiver<String>)> {
             line.clear();
             match reader.read_line(&mut line) {
                 Ok(0) | Err(_) => return,
-                // A closed receiver means this shell was abandoned. The thread outlives it
-                // only until whatever still holds the descriptor lets go, which is exactly as
-                // long as the interrupted command keeps running.
+                // A closed receiver means this shell was abandoned; the thread outlives it only
+                // until whatever still holds the descriptor lets go.
                 Ok(_) => {
-                    // A command that writes to a terminal of its own ends lines with CRLF, and
-                    // a stray carriage return in tool output is noise the model reads as data.
+                    // A command writing to a terminal of its own ends lines with CRLF.
                     let cleaned = line.trim_end_matches(['\r', '\n']).to_owned();
                     if lines.send(cleaned).is_err() {
                         return;
@@ -354,13 +274,8 @@ fn spawn_shell(
     nonce: &str,
 ) -> anyhow::Result<(Child, std::fs::File, Receiver<String>, std::path::PathBuf)> {
     let (controller, device) = open_pty()?;
-    // **A terminal on all three.** A shell writing to a pipe block-buffers, so nothing arrives
-    // until it exits — which is why nothing came back at all once this ran the user's own shell
-    // instead of `sh`. Worse, a shell like oslo reads a piped stdin to EOF before running any of
-    // it, so a persistent session over pipes is not merely slow, it is impossible.
-    //
-    // On a terminal both problems go: output is line-buffered, and the shell behaves as the REPL
-    // this protocol assumes. Tau's shell extension is on a pty for the same reason.
+    // A terminal on all three. A shell writing to a pipe block-buffers, so nothing arrives until it
+    // exits — and a shell like oslo reads a piped stdin to EOF before running any of it.
     let child = Command::new(shell_command())
         .env("TERM", "dumb")
         .stdin(Stdio::from(device.try_clone()?))
@@ -372,8 +287,7 @@ fn spawn_shell(
     let mut to_shell = std::fs::File::from(controller.try_clone()?);
     let terminal = std::fs::File::from(controller);
 
-    // Read and thrown away. A terminal nobody reads fills, and a shell writing into a full one
-    // stops — taking the command with it.
+    // Read and thrown away: a terminal nobody reads fills, and a shell writing into it stops.
     std::thread::spawn(move || {
         let mut sink = BufReader::new(terminal);
         let mut ignored = String::new();
@@ -382,13 +296,8 @@ fn spawn_shell(
         }
     });
 
-    // The first two things the shell is told, before any command can be sent.
-    //
-    // A function rather than three lines per call, because a shell with a history records
-    // everything it is fed as though somebody typed it — which is a feature: oslo keeps the
-    // `magi` profile's history and that is the log of what the agent did. Three lines of
-    // plumbing per command made that log unreadable. One line per call, holding the command
-    // itself, leaves a history you can search for what was actually run.
+    // The first two things the shell is told, before any command can be sent. A function rather
+    // than three lines per call, because a shell with a history records everything it is fed.
     let (path, incoming) = report_pipe()?;
     writeln!(to_shell, "exec {REPORT_FD}>'{}'", path.display())?;
     writeln!(
@@ -419,9 +328,8 @@ impl Session {
 
     /// Replace the shell, keeping the interrupt flag the reader thread already holds.
     fn restart(&mut self) -> anyhow::Result<()> {
-        // A fresh marker, because a line from the abandoned shell arriving late must not be
-        // able to end a command in this one. Made before the shell, which bakes it into its
-        // helper so a call site carries only its sequence number.
+        // A fresh marker, so a late line from the abandoned shell cannot end a command in this
+        // one. Made before the shell, which bakes it into its helper.
         let nonce = nonce();
         let (child, stdin, lines, fifo) = spawn_shell(&nonce)?;
         let _ = self.child.kill();
@@ -442,32 +350,17 @@ impl Session {
         if self.dead && self.restart().is_err() {
             return ("the shell could not be restarted".to_owned(), true);
         }
-        // A stop raised while nothing was running belongs to nothing, and left set it would
-        // cancel the next command instead.
+        // A stop raised while nothing was running would cancel the next command instead.
         self.interrupted.store(false, Ordering::SeqCst);
 
-        // stderr is folded into stdout for this command only, so ordering survives without the
-        // shell's own diagnostics being redirected for the rest of its life.
+        // stderr is folded into stdout for this command only, so ordering survives.
         self.seq += 1;
         let open = format!("{}o", marker(&self.nonce, self.seq));
         let close = format!("{}c", marker(&self.nonce, self.seq));
         // `< /dev/null` on the command group, because the shell's stdin IS this protocol's
-        // control channel: a command that reads stdin would eat the next command rather than
-        // find input. `cat` echoes it back and the marker lands in the tool result with a
-        // meaningless exit status; `sort`, `sudo`, `ssh` and `read` swallow it and the call
-        // hangs for the whole of CALL_TIMEOUT, taking the persistent shell's state with it when
-        // the peer is killed. Nothing legitimate reads stdin here -- the peer never feeds a
-        // command input.
-        //
-        // **Three lines, and the command inside `eval`.** Both were one compound command until a
-        // call arrived with no command in it at all: an empty command line makes the whole thing
-        // a syntax error, the shell parses none of it, and neither marker is ever printed —
-        // silence, for the whole timeout, over a mistake the host could have been told about
-        // instantly. Separate lines mean the markers are parsed apart from what they bracket,
-        // and `eval` moves a bad command from a parse error to a runtime one, where its message
-        // still reaches the person who wrote it.
-        // One line, and the command is the readable part of it. Three lines of plumbing per call
-        // is three lines in the history of a shell that keeps one.
+        // control channel: a command that read stdin would eat the next command. Three lines,
+        // with the command inside `eval`, so an empty or malformed command is a runtime error
+        // whose message still comes back rather than a parse error that prints no marker.
         let quoted = command.replace('\'', r"'\''");
         let script = format!("__magi '{quoted}' {}\n", self.seq);
         if write!(self.stdin, "{script}").is_err() || self.stdin.flush().is_err() {
@@ -475,21 +368,13 @@ impl Session {
         }
 
         let mut output = String::new();
-        // What arrives on [`REPORT_FD`], and nothing else does:
-        //
-        //   OPEN                <- discarded
-        //   ...the output...
-        //   CLOSE<status>
-        //
-        // The open marker is still waited for rather than assumed. A command interrupted in the
-        // last call can have left its own output in flight, and a marker nothing can guess is
-        // what separates that from this.
+        // What arrives on [`REPORT_FD`]: an OPEN marker, the output, then CLOSE<status>. The
+        // open marker is waited for rather than assumed, because an interrupted command can
+        // have left its own output in flight.
         let mut started = false;
         loop {
             if self.interrupted.swap(false, Ordering::SeqCst) {
-                // Abandoned rather than waited out. The shell is killed and a fresh one starts
-                // on the next call; anything the command had spawned may outlive it, which is
-                // the honest cost of interrupting something mid-flight.
+                // Abandoned rather than waited out; anything the command spawned may outlive it.
                 self.dead = true;
                 output.push_str("\n(interrupted; a fresh shell starts on the next call)");
                 return (output, true);
@@ -504,9 +389,8 @@ impl Session {
                     if let Some(at) = line.find(&close) {
                         let code = line[at + close.len()..].trim_end();
                         let failed = code != "0";
-                        // Each marker is printed after a newline of its own, so that output
-                        // ending without one does not share a line with it. The cost is a blank
-                        // line whenever the output already ended in one.
+                        // Each marker is printed after a newline of its own, so output ending
+                        // without one does not share a line with it.
                         while output.ends_with('\n') {
                             output.pop();
                         }
@@ -552,8 +436,7 @@ mod tests {
 
     #[test]
     fn state_persists_between_calls() {
-        // The reason this is a process rather than a function: a shell that forgets where it
-        // is is not a shell.
+        // The reason this is a process rather than a function.
         let mut shell = Session::start().expect("a shell");
         shell.run("cd /tmp");
         let (output, _) = shell.run("pwd");
@@ -575,8 +458,7 @@ mod tests {
 
     #[test]
     fn a_command_that_ends_the_shell_is_survived() {
-        // `exit` is a legitimate thing to run, and a subshell would cost the persistence that
-        // is the reason this is a process at all. So the death is recovered from.
+        // `exit` is a legitimate thing to run, and a subshell would cost the persistence.
         let mut shell = Session::start().expect("a shell");
         let (output, failed) = shell.run("echo before; exit 3");
         assert!(failed);
@@ -606,10 +488,8 @@ mod tests {
 
     #[test]
     fn a_call_with_no_command_in_it_is_answered_rather_than_waited_out() {
-        // A call for a tool this peer does not have arrives with no `command` argument at all.
-        // Run as a bare word it made the whole script a syntax error, so the shell parsed none
-        // of it and printed neither marker: silence for the whole timeout, over a mistake the
-        // host could have been told about at once.
+        // A call with no `command` argument made the whole script a syntax error, so neither
+        // marker was printed: silence for the whole timeout.
         let mut shell = Session::start().expect("a shell");
         let (_, failed) = shell.run("");
         assert!(!failed, "an empty command is not a failure");
@@ -617,9 +497,8 @@ mod tests {
 
     #[test]
     fn nothing_of_the_shell_own_screen_reaches_the_output() {
-        // An interactive shell paints a prompt around every command and, if it suggests from
-        // history, a guess at what comes next. All of it used to land in the middle of the tool
-        // result. The output goes down a descriptor of its own now, and this is what says so.
+        // An interactive shell paints a prompt around every command; the output goes down a
+        // descriptor of its own now, and this is what says so.
         let mut shell = Session::start().expect("a shell");
         let (output, _) = shell.run("echo only-this");
         assert_eq!(output, "only-this");
@@ -627,8 +506,7 @@ mod tests {
 
     #[test]
     fn a_command_that_will_not_parse_says_why() {
-        // Through `eval`, so the shell's complaint is a runtime message on the command's own
-        // stderr rather than a parse error that stops the markers being printed too.
+        // Through `eval`, so the complaint is a runtime message rather than a parse error.
         let mut shell = Session::start().expect("a shell");
         let (output, failed) = shell.run("if then");
         assert!(failed, "it did not run");
@@ -637,8 +515,7 @@ mod tests {
 
     #[test]
     fn output_that_does_not_end_in_a_newline_still_ends_the_read() {
-        // `cat` on a file with no trailing newline runs straight into the marker, which is
-        // what hung the first version of this.
+        // `cat` on a file with no trailing newline runs straight into the marker.
         let mut shell = Session::start().expect("a shell");
         let (output, failed) = shell.run("printf no-newline");
         assert_eq!(output, "no-newline");
@@ -670,9 +547,8 @@ mod stdin_tests {
 
     #[test]
     fn a_command_that_reads_stdin_does_not_eat_its_own_marker() {
-        // The shell's stdin is this protocol's control channel. `sort` reads to EOF and never
-        // echoes, so before the redirect it swallowed the end-of-command marker and the call
-        // hung for the whole of CALL_TIMEOUT, taking the persistent shell with it.
+        // The shell's stdin is this protocol's control channel: `sort` reads to EOF, so before the
+        // redirect it swallowed the end-of-command marker and the call hung.
         let mut shell = Session::start().expect("a shell");
         let (output, is_error) = shell.run("sort");
         assert!(!is_error, "{output}");
@@ -684,8 +560,7 @@ mod stdin_tests {
 
     #[test]
     fn a_command_that_echoes_stdin_does_not_leak_the_marker() {
-        // `cat` echoed the marker back, so it landed in the tool result and the exit status
-        // reported was the one printed by the leaked line rather than the command's.
+        // `cat` echoed the marker back, so the exit status reported was the leaked line's.
         let mut shell = Session::start().expect("a shell");
         let (output, _) = shell.run("cat");
         assert!(
@@ -706,10 +581,8 @@ mod stdin_tests {
     }
 }
 
-///
-/// A shell on a terminal writes colour, title and shell-integration codes into the same stream
-/// as its output. None of it is the command's, and a model handed `\u{1b}]3008;start=…` reads it
-/// as data. CSI sequences end at their final byte; OSC ones run to a BEL or an ST.
+/// Take a shell's own colour, title and shell-integration codes out of a line: none of it is the
+/// command's. CSI sequences end at their final byte; OSC ones run to a BEL or an ST.
 fn strip_escapes(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut chars = line.chars().peekable();

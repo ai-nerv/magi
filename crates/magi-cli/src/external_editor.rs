@@ -1,8 +1,5 @@
-//! Editing the prompt in `$EDITOR`.
-//!
-//! A coding prompt is a paragraph, and past a few lines the right tool is the user's own
-//! editor. The terminal must be released first: a full-screen editor and a raw-mode TUI
-//! cannot share a tty.
+//! Editing the prompt in `$EDITOR`. The terminal must be released first: a full-screen editor and
+//! a raw-mode TUI cannot share a tty.
 
 use anyhow::{Context, Result};
 use std::io::Write;
@@ -13,12 +10,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// Suffix for the scratch file, so the editor picks a syntax.
 const SUFFIX: &str = "magi-prompt.md";
 
-/// Run one editor command over `text` and return what was saved.
-///
-/// `Ok(None)` means the prompt should be left exactly as it was: the editor exited non-zero
-/// and the edit was abandoned. The command is a parameter rather than read from the
-/// environment here so the round trip stays testable without `set_var`, which
-/// `deny(unsafe_code)` rules out anyway.
+/// Run one editor command over `text` and return what was saved. `Ok(None)` means the editor
+/// exited non-zero and the prompt should be left exactly as it was.
 pub fn edit_with(editor: &str, text: &str) -> Result<Option<String>> {
     let mut parts = editor.split_whitespace();
     let Some(program) = parts.next() else {
@@ -63,10 +56,8 @@ pub fn editor_command() -> Option<String> {
         .find(|value| !value.trim().is_empty())
 }
 
-/// A scratch path unique to this call.
-///
-/// The counter matters: keying only on the process id makes two concurrent edits share a
-/// file, and the second one silently wins.
+/// A scratch path unique to this call. The counter matters: keying only on the process id makes
+/// two concurrent edits share a file, and the second one silently wins.
 fn scratch_path() -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
@@ -104,13 +95,8 @@ mod tests {
 
     #[test]
     fn the_scratch_file_does_not_survive_the_edit() {
-        // The path the *edit* used, not a path nothing ever created. `scratch_path` takes a new
-        // counter every call, so asking it for one and then asserting *that* one is absent said
-        // nothing: it had never existed. The editor here records the path it was handed.
-        // `cp -t <dir>` keeps the name it was given, so what lands in `dir` names the path the
-        // edit actually used. A shell script written here and run immediately would have been
-        // simpler and races: another test's `fork` inherits the write handle and `execve`
-        // answers ETXTBSY.
+        // The editor records the path it was handed, because `scratch_path` takes a new counter
+        // every call and asking it for a fresh one would assert over a path that never existed.
         let dir = Scratch::new("magi-editor", "removed");
         let editor = format!("cp -t {}", dir.display());
 
@@ -132,10 +118,7 @@ mod tests {
 
     #[test]
     fn a_trailing_newline_from_the_editor_is_stripped() {
-        // The command is split on whitespace, so the `sh -c '…'` this used to pass arrived as
-        // five words, `sh` failed to parse the first of them, the edit was abandoned, and the
-        // assertion held over `None` however this function behaved. `sed -i $a\\` appends to the
-        // last line, which on a file with no terminator is exactly how an editor adds one.
+        // The command is split on whitespace, so a `sh -c '…'` here would arrive as five words.
         let edited = edit_with("sed -i $a\\", "line").expect("edit runs");
         assert_eq!(
             edited.as_deref(),

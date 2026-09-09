@@ -1,17 +1,9 @@
-//! Reading one setting at a time.
-//!
-//! Split from the loading under THE RULE. This module does two jobs -- put the Lua files
-//! together in the right order, then answer questions about what they said -- and the second
-//! half grows every time a setting is added.
+//! Reading one setting at a time, split from the loading of the Lua files in `mod.rs`.
 
 use super::Loaded;
 
-/// Permissions the configuration granted outright.
-///
-/// `magi.allow` is a list of rules somebody wrote down deliberately, which is a question already
-/// answered: those go into the ledger at startup rather than being prompted for. Anything not
-/// listed is asked about the first time it comes up.
-///
+/// Permissions the configuration granted outright: `magi.allow` rules go into the ledger at startup
+/// rather than being prompted for. Anything not listed is asked about the first time it comes up.
 /// ```lua
 /// magi.allow = {
 ///   { verb = "read",  anything = true },
@@ -40,8 +32,7 @@ pub fn grants(loaded: &Loaded) -> Vec<magi_proto::permit::Grant> {
                     path: path.to_owned(),
                 }
             } else {
-                // A rule naming no width grants nothing. Silently widening a typo to `Anything`
-                // would be the worst possible reading of it.
+                // A rule naming no width grants nothing; widening a typo to `Anything` would not.
                 return None;
             };
             Some(Grant { verb, scope })
@@ -49,24 +40,19 @@ pub fn grants(loaded: &Loaded) -> Vec<magi_proto::permit::Grant> {
         .collect()
 }
 
-/// What the model is told it is, for this session.
-///
-/// Assembled here because this is where the configuration and the working directory are both
-/// in hand. Every milestone before this one sent nothing: the model got tool schemas and no
-/// idea what it was, where it was, or what machine it was on.
+/// What the model is told it is, for this session: assembled where the configuration and the
+/// working directory are both in hand.
 #[must_use]
 pub fn system(loaded: &Loaded) -> Option<String> {
     let cwd = std::env::current_dir().unwrap_or_default();
     magi_host::system::assemble(loaded.config.string("system"), &cwd, &today())
 }
 
-/// Today, as the model should read it.
 fn today() -> String {
     let seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    // Civil from days, so a date needs no calendar crate. The model wants to know roughly
-    // when it is, not to do arithmetic with it.
+    // Civil from days, so a date needs no calendar crate.
     let days = i64::try_from(seconds / 86_400).unwrap_or(0) + 719_468;
     let era = days.div_euclid(146_097);
     let doe = days.rem_euclid(146_097);
@@ -79,12 +65,8 @@ fn today() -> String {
     format!("{year:04}-{month:02}-{day:02}")
 }
 
-/// What to ask for beyond the conversation.
-///
-/// `magi.thinking` is off unless asked for. Reasoning costs tokens and money, and a default
-/// that quietly spends both is the wrong kind of surprise — but the whole branch that requests
-/// it existed in every protocol description with nothing ever setting this, so asking was
-/// impossible rather than merely off.
+/// What to ask for beyond the conversation. `magi.thinking` is off unless asked for, since
+/// reasoning costs tokens and money.
 #[must_use]
 pub fn options(loaded: &Loaded) -> magi_proto::ask::Wants {
     let thinking = loaded
@@ -99,27 +81,19 @@ pub fn options(loaded: &Loaded) -> magi_proto::ask::Wants {
     }
 }
 
-/// Everything `magi.ui` says about how the screen looks.
-///
-/// One table, three kinds of value, and the names come from the three modules themselves — so a
-/// colour, a glyph or a size that exists is one a config can set, and there is no list here to
-/// keep in step with them.
-///
+/// Everything `magi.ui` says about how the screen looks. The names come from the colour, glyph and
+/// metric modules themselves; one that is not any of theirs is ignored rather than refused.
 /// ```lua
 /// magi.ui.accent    = 1
 /// magi.ui.marker    = "▶ "
 /// magi.ui.menu_rows = 12
 /// ```
-///
-/// A name that is not any of theirs is ignored rather than refused: a config written for a later
-/// magi should not stop an earlier one from starting.
 pub fn adopt_ui(loaded: &Loaded) {
     let Some(ui) = loaded.config.get("ui").and_then(|v| v.as_object()) else {
         return;
     };
 
-    // A value of the wrong kind is left alone rather than coerced. `accent = "red"` is a mistake,
-    // and painting something anyway would hide it behind a colour nobody chose.
+    // A value of the wrong kind is left alone rather than coerced, so the mistake stays visible.
     let mut palette = magi_tui::colour::Palette::default();
     palette.overlay(&|name| {
         ui.get(name)
@@ -134,8 +108,7 @@ pub fn adopt_ui(loaded: &Loaded) {
             .and_then(serde_json::Value::as_str)
             .map(ToOwned::to_owned)
     });
-    // A spinner with no frames is a division by zero at the one moment somebody is watching, so
-    // an empty list is read as "say nothing about the spinner" rather than obeyed.
+    // An empty frame list is read as "say nothing about the spinner": obeying it divides by zero.
     if let Some(frames) = ui.get("spinner").and_then(|v| v.as_array()) {
         let drawn: Vec<String> = frames
             .iter()
@@ -145,8 +118,7 @@ pub fn adopt_ui(loaded: &Loaded) {
             glyphs.spinner = drawn;
         }
     }
-    // The same, and an empty list *is* obeyed here: a person who wants a blank prompt has said
-    // something, and a placeholder is not load-bearing the way a spinner frame is.
+    // An empty list *is* obeyed here — a blank prompt is a choice, a blank spinner frame is not.
     for (name, into) in [
         ("placeholders", &mut glyphs.placeholders),
         ("openers", &mut glyphs.openers),
@@ -205,8 +177,7 @@ mod ui_tests {
 
     #[test]
     fn a_field_can_be_set_without_declaring_the_table_first() {
-        // `magi.ui` exists before any config runs, so this is an assignment rather than an
-        // attempt to index a nil.
+        // `magi.ui` exists before any config runs, so this assigns rather than indexes a nil.
         let chosen = palette_of("magi.ui.accent = 1");
         assert_eq!(chosen.accent, 1);
         assert_eq!(chosen.muted, magi_tui::colour::STOCK.muted, "and only that");
@@ -248,14 +219,11 @@ mod ui_tests {
     }
 }
 
-/// Environment every process magi starts is given, beside the mandatory pairs.
-///
+/// Environment every process magi starts is given, beside the mandatory pairs. A flat table of
+/// strings; anything that is not one is skipped rather than stringified.
 /// ```lua
 /// magi.env = { RUST_LOG = "warn", PAGER = "cat" }
 /// ```
-///
-/// A flat table of strings. Anything that is not one is skipped rather than stringified: an
-/// environment variable holding `table: 0x...` is a typo that would otherwise reach a shell.
 #[must_use]
 pub fn environ(loaded: &Loaded) -> std::collections::BTreeMap<String, String> {
     let Some(table) = loaded.config.get("env").and_then(|v| v.as_object()) else {
@@ -267,19 +235,12 @@ pub fn environ(loaded: &Loaded) -> std::collections::BTreeMap<String, String> {
         .collect()
 }
 
-/// The SHA-256 casper's program must hash to, if this configuration pinned one.
-///
-/// **casper supplies the whole tool set and is found on `$PATH`.** That is the largest trust
-/// assumption magi makes and the one it made with no acknowledgement at all: a `casper` earlier
-/// on the path than the real one owns `shell`, `read` and everything else the model calls.
-/// Pinning binds the session to the bytes it was set up against, exactly as an MCP server's
-/// `sha256` does.
-///
+/// The SHA-256 casper's program must hash to, if this configuration pinned one. casper is found on
+/// `$PATH` and supplies the whole tool set, so pinning binds the session to the bytes it was set up
+/// against. `None` is the ordinary case and starts anything.
 /// ```lua
 /// magi.casper_sha256 = "…"   -- from `magi doctor`
 /// ```
-///
-/// `None` is the ordinary case and starts anything.
 #[must_use]
 pub fn casper_pin(loaded: &Loaded) -> Option<String> {
     loaded
@@ -289,16 +250,9 @@ pub fn casper_pin(loaded: &Loaded) -> Option<String> {
         .filter(|pin| !pin.trim().is_empty())
 }
 
-/// What this configuration tells casper to be, as the JSON it goes over.
-///
-/// **casper is one process per call, and this is the difference that follows.** melchior and
-/// balthasar are asked once and run for the session, so `configure` setting something in-process
-/// is the whole of what they need. A `configure` sent to casper would reach the process that
-/// answered it and no other — it would report the setting taken and every later `casper run`
-/// would be a fresh process knowing nothing about it. So the settings ride on every spawn.
-///
-/// Empty when `magi.casper` says nothing, which is the ordinary case and means "whatever casper
-/// is by default".
+/// What this configuration tells casper to be, as the JSON it goes over. casper is one process per
+/// call, so a `configure` would reach only the process that answered it and the settings ride on
+/// every spawn instead. Empty when `magi.casper` says nothing.
 #[must_use]
 pub fn casper_configure(loaded: &Loaded) -> String {
     let Some(table) = loaded.config.get("casper").and_then(|v| v.as_object()) else {
@@ -337,8 +291,7 @@ mod environ_tests {
 
     #[test]
     fn a_value_that_is_not_a_string_is_left_out() {
-        // Otherwise a nested table reaches a shell as `table: 0x55f...`, which is a typo that
-        // presents as a mysterious environment rather than as a mistake in the config.
+        // Otherwise a nested table reaches a shell as `table: 0x55f...`.
         let seen = from(r#"magi.env = { GOOD = "yes", BAD = { 1, 2 } }"#);
         assert_eq!(seen.get("GOOD").map(String::as_str), Some("yes"));
         assert!(!seen.contains_key("BAD"));
@@ -420,9 +373,7 @@ mod placeholder_tests {
 
     #[test]
     fn every_one_has_a_relative_it_can_be_edited_into() {
-        // The engine walks to the words that differ, shows them, takes them and types the
-        // replacement. A line with nothing near it in the pool can only be retyped whole, which
-        // is the one performance that teaches nothing -- so every line needs a family.
+        // A line with nothing near it in the pool is retyped whole, so every line needs a family.
         let lines = shipped();
         let words = |line: &str| -> Vec<String> {
             line.split_whitespace().map(ToOwned::to_owned).collect()
@@ -459,16 +410,14 @@ mod placeholder_tests {
 
     #[test]
     fn none_of_them_carry_the_markup_the_old_engine_used() {
-        // `a ~~b~~ c` was the format when the correction was written out by hand. The engine
-        // works the difference out for itself now, and a stray `~~` would be typed literally.
+        // The engine works the difference out itself now; a stray `~~` would be typed literally.
         for line in shipped() {
             assert!(!line.contains("~~"), "{line:?} still has strike markers");
         }
     }
     #[test]
     fn none_of_them_is_too_long_for_an_ordinary_terminal() {
-        // A line wider than the box falls back to the short hint, which is correct and also
-        // means the line is never seen. Eighty columns less the box and its padding.
+        // Wider than the box falls back to the short hint: eighty columns less the box and padding.
         for line in shipped() {
             let shown = line.replace("~~", "").chars().count();
             assert!(shown <= 76, "{line:?} is {shown} columns");

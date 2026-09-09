@@ -1,13 +1,6 @@
 //! What magi tells you about itself.
-//!
-//! The keys are written out because a binding is a `match` arm and a match cannot describe
-//! itself. The commands are not: they come from the same list the completion popup offers, so
-//! the two cannot say different things — which they already had, twice.
 
-/// The keys `:help` lists.
-///
-/// Written out because a key binding is a `match` arm and a match cannot describe itself. The
-/// commands are not: see [`text`].
+/// The keys `:help` lists, written out because a `match` arm cannot describe itself.
 const KEYS: &str = "\
 **Keys**
 
@@ -33,12 +26,8 @@ const KEYS: &str = "\
   says there is somewhere to go. A peer's screen is read-only: what you type goes
   nowhere until you come back to your own.";
 
-/// What `:help` prints.
-///
-/// The command list is built from the same one the completion popup offers, rather than
-/// written out beside it. Two lists drift the moment either is edited, and this pair already
-/// had: `:model` and `:rewind` were both offered by the popup and absent from the help of the
-/// commit that added them.
+/// What `:help` prints. The command list is built from the same one the completion popup offers,
+/// rather than written out beside it; two lists drift the moment either is edited.
 pub fn text() -> String {
     let commands = magi_tui::complete::commands()
         .iter()
@@ -54,8 +43,6 @@ mod help_tests {
 
     #[test]
     fn every_command_the_popup_offers_is_in_the_help() {
-        // The pair had already drifted: `:model` and `:rewind` were both offered and both
-        // missing from the help of the commit that added them.
         let text = text();
         for candidate in magi_tui::complete::commands() {
             assert!(
@@ -68,7 +55,6 @@ mod help_tests {
 
     #[test]
     fn the_help_says_how_to_scroll() {
-        // Six bindings that existed since M0 and were documented nowhere.
         for key in ["pgup", "shift+↑/↓", "shift+home/end"] {
             assert!(text().contains(key), "{key}");
         }

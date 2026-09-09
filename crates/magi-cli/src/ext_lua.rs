@@ -1,19 +1,7 @@
-//! `magi ext lua` — a second peer, so the protocol has more than one implementation.
-//!
-//! A protocol with one implementation is a function call with extra steps: nothing forces the
-//! host to say what it means, because the only peer is the one that was written alongside it.
-//! This is the second, and it is deliberately unlike the first — a different language for the
-//! tool body, a different lifecycle, and one thing it cannot do at all.
-//!
-//! **It cannot be interrupted.** A Lua body runs to completion inside a stackless VM; there is
-//! no point between entering it and leaving it at which a `Cancel` could be noticed. So this
-//! peer does not answer one, and the host kills it after the grace period. That is not a gap
-//! being papered over — it is what a second peer is for. A boundary that only works for peers
-//! that can do everything is not a boundary, and the host's timeout is load-bearing precisely
-//! because a peer like this exists.
-//!
-//! **It runs a file the host named.** Nothing is discovered: the config says which file, and a
-//! file the config did not name is never loaded.
+//! `magi ext lua` — a second peer, so the protocol has more than one implementation. It cannot be
+//! interrupted: a Lua body runs to completion inside a stackless VM, so this peer never answers a
+//! `Cancel` and the host kills it after the grace period. It runs the file the config named and
+//! discovers nothing.
 
 use anyhow::{Context, Result};
 use magi_ipc::blocking::{FrameReader, FrameWriter};
@@ -30,8 +18,8 @@ pub fn run(path: &Path) -> Result<()> {
     let mut reader = FrameReader::new(std::io::stdin());
     let mut writer = FrameWriter::new(std::io::stdout());
 
-    // One `Declare` per tool, and the file may hold several. This is the thing a config cannot
-    // do for a peer: what a file offers is known by running it, and only the peer runs it.
+    // One `Declare` per tool, and the file may hold several: what a file offers is known by
+    // running it, and only the peer runs it.
     let declared = engine.tools();
     if declared.is_empty() {
         anyhow::bail!(
@@ -106,8 +94,7 @@ mod tests {
 
     #[test]
     fn a_file_declaring_nothing_is_refused_rather_than_served() {
-        // A peer that answers no calls would sit there being connected to, and the mistake
-        // would present as a tool that is never offered rather than as a file that is wrong.
+        // A peer that answers no calls presents as a tool never offered rather than a wrong file.
         let path = peer_file("empty", "local unused = 1\n");
         let why = run(&path).expect_err("a peer with no tools is an error");
         assert!(why.to_string().contains("declared no tools"), "{why}");

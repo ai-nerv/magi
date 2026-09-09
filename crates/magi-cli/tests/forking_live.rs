@@ -1,29 +1,8 @@
-//! `magi fork` against the real melchior and the real balthasar.
-//!
-//! Six stages of multi-agent work went in before anything had ever *started* an agent. Kinship,
-//! the run-scoped crew, the parent-and-child gate on `assign` and the `stop` token were all
-//! written and all tested, and every one of them was tested against a pair of sessions somebody
-//! had assembled by setting environment variables by hand. This is the first pair that was made
-//! the way a person makes one.
-//!
-//! **None of it can be faked, and that is why it is here rather than beside the code.** The claim
-//! is that a *separate process*, named by a *separate program*, comes up in the same run as its
-//! parent and files its memory in a directory of its own. A stand-in for melchior would be
-//! asserting that this test knows what it wants to see, and a stand-in for balthasar would leave
-//! the one thing that is actually on disk — the scratch directory — with nothing in it.
-//!
-//! Skipped when either program is missing, the way the other `*_live` tests are — and skipped
-//! when what is installed is too old to be asked, which is not the same thing. The three
-//! programs are released apart and every machine will meet a build of one that predates the
-//! other; a suite that failed on that would be reporting a stale install as a broken fork.
-//!
-//! # What is read, and what is asked
-//!
-//! The notes melchior leaves beside a socket say all of this — `<id>.parent`, `<id>.session` —
-//! and they are deliberately not read here. They are melchior's own file format in melchior's own
-//! directory, and a test in this repository that walked it would be magi holding a second opinion
-//! about a layout it does not own. `crew` and `whoami` are the answers those notes exist to
-//! produce, so they are what is asked. The store *is* magi's own, and it is read off disk.
+//! `magi fork` against the real melchior and the real balthasar. The claim is that a separate
+//! process, named by a separate program, comes up in the same run as its parent and files its memory
+//! in a directory of its own, so neither sibling can be faked. Skipped when either is missing, and
+//! when what is installed is too old to be asked. melchior's notes beside a socket are its own file
+//! format and are not read here; `crew` and `whoami` are asked instead. The store is magi's own.
 
 use magi_model::scratch::Scratch;
 use std::path::{Path, PathBuf};
@@ -31,30 +10,17 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// How long to wait for something a spawned session does on its own clock.
-///
-/// Generous. Convening balthasar is allowed twenty seconds by itself, and a loaded machine
-/// running four of these at once is the case this must not fail on.
 const PATIENCE: Duration = Duration::from_secs(40);
 
-/// How long to wait for a session's first line before calling it stuck rather than slow.
-///
-/// Far above [`PATIENCE`] on purpose: this is not a claim about how quickly a session should come
-/// up, it is the difference between a suite that fails and a suite that never returns.
+/// How long to wait for a session's first line before calling it stuck: far above [`PATIENCE`], and
+/// the difference between a suite that fails and a suite that never returns.
 const HANGING: Duration = Duration::from_secs(180);
 
-/// Held for the whole of each test here, so only one of them is running sessions at a time.
-///
-/// **Load is the thing being kept down, not a shared fixture.** Each of these stands up two or
-/// three sessions, and a session is a magi, a melchior and a balthasar — so four at once is a
-/// dozen processes with a store apiece, on a machine already running the rest of the suite in
-/// parallel. Measured: with them concurrent, `resume_live` began failing to reach balthasar in
-/// time, which is a suite reporting the machine rather than the code.
+/// Held for the whole of each test here, so only one is running sessions at a time. Each stands up
+/// two or three, and a session is a magi, a melchior and a balthasar with a store apiece.
 static ALONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Take [`ALONE`], ignoring a poisoning left by some other test's failure.
-///
-/// A panic elsewhere has already been reported; refusing to run the rest would turn one failure
-/// into a page of them.
 fn alone() -> std::sync::MutexGuard<'static, ()> {
     ALONE
         .lock()
@@ -69,21 +35,15 @@ fn installed(program: &str) -> bool {
     })
 }
 
-/// A workspace to run in, or nothing when this machine cannot answer the question.
-///
-/// **Installed is not the same as new enough.** These three programs are released apart, so a
-/// machine is going to have a melchior that predates the run-scoped `crew` — and a test that ran
-/// against one would report a stale install as a broken fork, which is the least useful failure
-/// there is. Probed rather than read off a version, because none of them carries one and "does it
-/// answer this" is the question anyway.
+/// A workspace to run in, or nothing when this machine cannot answer the question. Installed is not
+/// new enough: probed rather than read off a version, because none of them carries one.
 fn ready(name: &str) -> Option<Scratch> {
     if !installed("melchior") || !installed("balthasar") {
         eprintln!("skipping: melchior and balthasar are not both on PATH");
         return None;
     }
     let dir = workspace(name);
-    // The refusal, not the answer. `crew` with nothing running is a perfectly good answer that
-    // happens to name nobody, so a probe that looked for content would skip on every machine.
+    // The refusal, not the answer: `crew` with nothing running names nobody and would skip everywhere.
     if asked(&dir, "probe", "crew", None)
         .1
         .contains("not one of agent's verbs")
@@ -94,19 +54,9 @@ fn ready(name: &str) -> Option<Scratch> {
     Some(dir)
 }
 
-/// A project to run sessions in, with the runtime and config trees of its own.
-///
-/// **A checkout**, because balthasar scopes a directory that is not one by walking up for a
-/// `.git` — and a stray one above the temporary directory would collect every test here into a
-/// single store, where each is meant to be a run of its own.
-///
-/// **Short names.** A unix socket path may not exceed `SUN_LEN`, the project's name appears
-/// inside the socket path, and under `gate-hermetic` the whole run is nested in a private
-/// temporary directory. A descriptive name here is what pushes it over.
-///
-/// **Settling**, because the sessions started in here outlive the test by a moment: a balthasar
-/// tied to a magi notices that process die by looking, and its sqlite is still open while it
-/// does. See [`Scratch::settling`] for the leak that found.
+/// A project to run sessions in. A checkout, because balthasar scopes a directory that is not one by
+/// walking up for a `.git`; short names, because a socket path may not exceed `SUN_LEN`; settling,
+/// because a balthasar tied to a magi notices it die by looking, with its sqlite still open.
 fn workspace(name: &str) -> Scratch {
     let dir = Scratch::new("mf", name).settling();
     for under in ["p", "r", "c", "d"] {
@@ -117,10 +67,7 @@ fn workspace(name: &str) -> Scratch {
 }
 
 /// The binary under test, in this workspace, with nothing of the developer's machine in it.
-///
-/// Three `XDG_` variables did not make that true. `MAGI_API_SOCKET` outranks all of them —
-/// see [`magi_testkit::only_its_own_store`] — and the suite is developed from inside a session
-/// that sets it.
+/// `MAGI_API_SOCKET` outranks the three `XDG_` variables — see [`magi_testkit::only_its_own_store`].
 fn magi(dir: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_magi"));
     magi_testkit::only_its_own_store(&mut command);
@@ -132,11 +79,8 @@ fn magi(dir: &Path) -> Command {
     command
 }
 
-/// A session with no terminal, and the name melchior gave it.
-///
-/// Tied to this test process, which outlives every session it starts. Killed on drop — including
-/// the drop an `assert!` unwinds through, which is the case that would otherwise leave a magi, a
-/// melchior and a balthasar running for every failure.
+/// A session with no terminal, and the name melchior gave it. Killed on drop, including the drop an
+/// `assert!` unwinds through.
 struct Session {
     process: Child,
     named: String,
@@ -150,11 +94,8 @@ impl Drop for Session {
 }
 
 impl Session {
-    /// Start one and wait until it says what it is called.
-    ///
-    /// The line is how a session with no screen announces itself, and reading it is also how this
-    /// waits: it is printed once the socket is bound, melchior has answered and balthasar has been
-    /// convened, so a name arriving means the session is up.
+    /// Start one and wait until it says what it is called. The name is printed once the socket is
+    /// bound, melchior has answered and balthasar has been convened.
     fn start(dir: &Path, prompt: &str) -> Self {
         let mut process = magi(dir)
             .arg("--tied")
@@ -165,9 +106,7 @@ impl Session {
             .stderr(Stdio::piped())
             .spawn()
             .expect("magi runs");
-        // Bounded, because the alternative is not a slow test but a stuck one. See
-        // [`magi_testkit::first_line_within`]; `HANGING` is a backstop, not the patience a
-        // healthy session is held to.
+        // Bounded, because the alternative is not a slow test but a stuck one.
         let named = magi_testkit::first_line_within(&mut process, HANGING);
         let mut session = Self {
             process,
@@ -183,12 +122,8 @@ impl Session {
         self.named.rsplit('/').next().unwrap_or_default()
     }
 
-    /// End it the way a person would, and wait until it has finished writing.
-    ///
-    /// A signal rather than the `kill` in [`Drop`], which is `SIGKILL` and leaves the transcript
-    /// where it was: a session hands what it has to balthasar on the way out, and there is no way
-    /// out of a `SIGKILL`. Anything checking what reached the store has to end a session and not
-    /// merely stop it existing.
+    /// End it the way a person would, and wait until it has finished writing. A signal rather than
+    /// the `SIGKILL` in [`Drop`]: a session hands what it has to balthasar on the way out.
     fn end(&mut self) {
         let _ = Command::new("kill")
             .arg(self.process.id().to_string())
@@ -197,16 +132,9 @@ impl Session {
     }
 }
 
-/// The session forked by the process with this pid, if it is still running.
-///
-/// Found by its argv, which is where `magi fork` puts the pid its child watches. Asked of `/proc`
-/// rather than of melchior, because the question is about the *process*: a child that had left
-/// the directory and gone on running is exactly the failure worth catching.
-///
-/// **The program is checked as well as the flag.** balthasar takes a `--tied` of its own and the
-/// one a session convenes carries that session's pid — so a match on the flag alone finds the
-/// parent's memory layer, and this reported a child that had gone and a child where there was
-/// none, depending on which of the two the loop reached first.
+/// The session forked by the process with this pid, if it is still running. Found by its argv in
+/// `/proc`, because the question is about the process. The program is checked as well as the flag:
+/// balthasar takes a `--tied` of its own carrying the session's pid.
 fn forked_by(parent: u32) -> Option<u32> {
     let looking = format!("--tied\0{parent}\0");
     for entry in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
@@ -233,12 +161,8 @@ fn forked_by(parent: u32) -> Option<u32> {
     None
 }
 
-/// Run something as `id`, with the environment a session hands the things it starts.
-///
-/// The four that matter: who this is, and which process the session is — the second is what a
-/// fork gives its child to watch. Set here rather than taken from a running session because that
-/// is exactly what `inherited` in `main.rs` does for a tool, and a test that read it back off a
-/// live process would be checking that the process agrees with itself.
+/// Run something as `id`, with the environment a session hands the things it starts. Set here rather
+/// than read off a live process, which would only check that the process agrees with itself.
 fn as_session(command: &mut Command, id: &str, role: &str, pid: u32) {
     command
         .env("MAGI_MELCHIOR_PROJECT", "p")
@@ -285,13 +209,8 @@ fn fork(dir: &Path, parent: &Session, role: &str, prompt: &str) -> String {
     id
 }
 
-/// Whether melchior can see `them` from `me` at all.
-///
-/// `list` rather than `crew`, and that difference is what makes the waiting honest. `crew` is
-/// scoped to the run, so a child that had minted a run of its own would never appear in one — and
-/// a test that waited on `crew` before asserting on `crew` would report every kinship failure as
-/// a timeout with nothing in it. `list` is the project, so it says "the child is up" without
-/// having an opinion about whose it is.
+/// Whether melchior can see `them` from `me` at all. `list` rather than `crew`: `crew` is scoped to
+/// the run, so waiting on it would report every kinship failure as an empty timeout.
 fn listening(dir: &Path, me: &str, them: &str) -> bool {
     asked(dir, me, "list", None).1.contains(them)
 }
@@ -308,10 +227,8 @@ fn until(what: &str, mut look: impl FnMut() -> bool) {
     panic!("gave up waiting for {what}");
 }
 
-/// Every agent that has a scratch directory in this project's store, and which run it is in.
-///
-/// `<project>/balthasar/magi/<run>/<agent>/memory.db`, which is balthasar's arrangement and
-/// magi's own store — so it is read rather than asked for.
+/// Every agent that has a scratch directory in this project's store, and which run it is in:
+/// `<project>/balthasar/magi/<run>/<agent>/memory.db`.
 fn scratches(dir: &Path) -> Vec<(String, String)> {
     let mut found = Vec::new();
     let runs = std::fs::read_dir(dir.join("p/balthasar/magi"));
@@ -336,7 +253,6 @@ fn scratches(dir: &Path) -> Vec<(String, String)> {
     found
 }
 
-/// Whether a process is still there.
 fn running(pid: u32) -> bool {
     PathBuf::from(format!("/proc/{pid}")).exists()
 }
@@ -347,11 +263,8 @@ fn a_forked_child_belongs_to_the_run_that_forked_it() {
     let Some(dir) = ready("kin") else {
         return;
     };
-    // **The claim the whole stage is about.** Every session before this one was a root, `Root` to
-    // every other session on the machine, because nothing had ever handed a name and a run down.
-    // A child that minted a run of its own would come up in a crew of one, file its memory where
-    // the parent will not look, and read as a stranger to the thing that started it — and every
-    // relation the last six stages built would go on being correct and inert.
+    // A child that minted a run of its own would come up in a crew of one and file its memory where
+    // the parent will not look, while every relation the earlier stages built stayed correct and inert.
     let parent = Session::start(&dir, "remember the gerbil");
     let child = fork(&dir, &parent, "reviewer", "look at the diff");
     until("the child to be listening", || {
@@ -369,8 +282,7 @@ fn a_forked_child_belongs_to_the_run_that_forked_it() {
         "the child came up a stranger to its parent: {said}"
     );
 
-    // And from the other end, which is the half that would still pass if only the parent's notes
-    // were right: a child that had minted its own run would name a crew with nobody else in it.
+    // From the other end, which is the half that would still pass if only the parent's notes were right.
     let (ok, said) = asked(&dir, &child, "crew", None);
     assert!(ok, "{said}");
     assert!(
@@ -382,8 +294,8 @@ fn a_forked_child_belongs_to_the_run_that_forked_it() {
         "the child does not know whose it is: {said}"
     );
 
-    // One run named, not two. `crew` heads its answer with the run it is listing, so the two
-    // answers agreeing on that line is the two agents agreeing on which run they are in.
+    // `crew` heads its answer with the run it is listing, so the two answers agreeing on that line is
+    // the two agents agreeing on which run they are in.
     let run = |said: &str| said.lines().next().unwrap_or_default().trim().to_owned();
     assert_eq!(
         run(&asked(&dir, parent.id(), "crew", None).1),
@@ -398,14 +310,9 @@ fn a_forked_child_files_its_scratch_beside_its_parents_and_not_in_it() {
     let Some(dir) = ready("scr") else {
         return;
     };
-    // **The trap that costs a day.** balthasar reads the agent out of the connecting peer's
-    // `/proc/<pid>/environ`, so a child spawned with its parent's `BALTHASAR_AGENT` opens the
-    // parent's `memory.db` and the two file their working notes on top of one another. The
-    // separation would be absent from disk while every answer went on claiming it, and nothing
-    // anywhere would say so.
-    //
-    // Read off disk, because that is where the failure is. Asking either session which agent it
-    // is would get the right answer from both, which is exactly the problem.
+    // balthasar reads the agent out of the connecting peer's `/proc/<pid>/environ`, so a child
+    // spawned with its parent's `BALTHASAR_AGENT` opens the parent's `memory.db`. Read off disk,
+    // because asking either session which agent it is gets the right answer from both.
     let mut parent = Session::start(&dir, "remember the gerbil");
     let child = fork(&dir, &parent, "reviewer", "look at the diff");
     until("the child to be listening", || {
@@ -413,19 +320,15 @@ fn a_forked_child_files_its_scratch_beside_its_parents_and_not_in_it() {
     });
     let theirs = forked_by(parent.process.id()).expect("the child is a running process");
 
-    // The transcript reaches balthasar when a session lets go of it, so both are ended first —
-    // and *waited for*, so what is read is what they finished writing rather than how far they
-    // had got. The child is stopped, which is how a coordinator ends a subagent; the parent is
-    // signalled, which is the only thing that reaches a process with no terminal.
+    // The transcript reaches balthasar when a session lets go of it, so both are ended and waited
+    // for. The child is stopped; the parent is signalled, the only thing that reaches a headless one.
     let (ok, said) = asked(&dir, parent.id(), "stop", Some(&child));
     assert!(ok, "the parent could not stop its own child: {said}");
     until("the child to finish", || !running(theirs));
     parent.end();
 
-    // A balthasar that predates per-agent scratch files nothing under `<run>/<agent>/` for
-    // *anybody*, forked or not, so it cannot be asked this question at all. Told apart from the
-    // failure being looked for by which session is missing: sharing an agent leaves one directory
-    // where there should be two, and an old balthasar leaves none where there should be two.
+    // A balthasar that predates per-agent scratch files leaves none where there should be two, which
+    // is how it is told apart from the failure being looked for: sharing an agent leaves one.
     let found = scratches(&dir);
     if found.is_empty() {
         eprintln!("skipping: the installed balthasar does not key scratch by agent");
@@ -457,9 +360,8 @@ fn a_child_is_stopped_by_the_session_that_started_it_and_by_nobody_else() {
     let Some(dir) = ready("stp") else {
         return;
     };
-    // The token. It is minted by the parent, kept on the parent's socket, and it is the whole of
-    // what makes a `stop` refusable — so it is worth checking that a session which is merely
-    // *there* cannot end somebody else's subagent.
+    // The token is minted by the parent and kept on the parent's socket, and is the whole of what
+    // makes a `stop` refusable.
     let parent = Session::start(&dir, "remember the gerbil");
     let stranger = Session::start(&dir, "a session of my own");
     let child = fork(&dir, &parent, "reviewer", "look at the diff");
@@ -488,10 +390,8 @@ fn a_child_does_not_outlive_the_session_that_forked_it() {
     let Some(dir) = ready("out") else {
         return;
     };
-    // A child that stays up when its parent goes is a name in the directory that answers and that
-    // nobody can stop: the token a `stop` is checked against went with the session that minted it.
-    // `kill -9` on purpose — the exits with a way out are the easy half, and the ones that matter
-    // are the ones where nothing of the parent's ever runs again.
+    // A child that stays up when its parent goes is a name that answers and that nobody can stop.
+    // `kill -9` on purpose: the exits where nothing of the parent's ever runs again are the ones.
     let parent = Session::start(&dir, "remember the gerbil");
     let child = fork(&dir, &parent, "reviewer", "look at the diff");
     until("the child to be listening", || {

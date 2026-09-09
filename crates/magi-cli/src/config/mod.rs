@@ -1,45 +1,25 @@
-//! Loading the config, and the catalog that is part of it.
-//!
-//! The config is Lua because the interesting configs are programs: probe the machine, loop over
-//! a directory of endpoints, branch on whether a GPU box answers. A provider declared in a loop
-//! is the same table as one written out by hand, and neither is a fragment anybody has to merge.
-//!
-//! **The built-in catalog is not special.** It is the first config file, run through the same VM
-//! and the same registrar as the user's, so a user file that declares `magi.provider("groq",
-//! ...)` replaces it by the ordinary rule that registration is keyed. One mechanism, not two.
+//! Loading the config, and the catalog that is part of it. The config is Lua because the interesting
+//! configs are programs. The built-in catalog is the first config file, run through the same VM and
+//! the same registrar as the user's, so a user file declaring the same name replaces it.
 
 use magi_lua::{Config, Engine, LuaError};
 use std::collections::BTreeSet;
 
 /// Everything the config files said, in one value.
 pub struct Loaded {
-    /// Settings and registrations, as the config left them.
     pub config: Config,
-    /// Every tool description that was run, as `(name, source)`.
     pub tools: Vec<(String, String)>,
-    /// The family's client libraries, as `(name, source)`.
     pub clients: Vec<(String, String)>,
 }
 
-/// Run `init.lua`, then everything it asked for, and collect what they declared.
-///
-/// **One entry point, and then the directories.** The host runs `init.lua` and nothing else by
-/// name; every other file it uses is reached through `magi.load`, so a config that names all of
-/// its own files can still be read top to bottom. What is *installed* is discovered — see
-/// [`discovered`] — because requiring an edit to `init.lua` to enable a package makes every
-/// package a merge conflict with the person's own configuration.
-///
-/// **Nothing is compiled in.** A protocol description, a catalog and a tool are configuration:
-/// they change without the binary changing, and a binary carrying a copy is a binary you rebuild
-/// to fix a wire format. So every one of them is read from the config directory at run time, and
-/// `make configs` is what puts them there.
+/// Run `init.lua`, then everything it asked for, and collect what they declared. `init.lua` is the
+/// only file run by name; what is installed is discovered — see [`discovered`]. Nothing is compiled
+/// in: protocol descriptions, catalogs and tools are read from the config directory at run time.
 pub fn load() -> Result<Loaded, LuaError> {
     let mut engine = Engine::new();
     let mut tools: Vec<(String, String)> = Vec::new();
-    // **Borrowed, not vendored.** Every sibling serves its own client library, so magi asks for
-    // them before anything runs -- a tool description opens its sibling's client as it loads, and
-    // a copy of one that had fallen behind silently removed every memory tool from every session
-    // on a machine. See `lent`.
+    // Every sibling serves its own client library, so magi asks rather than vendoring — a stale
+    // copy silently removed every memory tool from every session. See `lent`.
     let mut clients: Vec<(String, String)> = lent::borrowed();
 
     let entry = config_dir()
@@ -57,8 +37,8 @@ pub fn load() -> Result<Loaded, LuaError> {
     engine.install_clients(&clients);
     engine.run_file(&entry)?;
 
-    // Drained in rounds so a loaded file may load more, and the clients of a round are installed
-    // before its tools run: a tool description opens its sibling's client as it loads.
+    // Drained in rounds so a loaded file may load more; a round's clients are installed before its
+    // tools run, since a tool description opens its sibling's client as it loads.
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut drain = |engine: &mut Engine| -> Result<(), LuaError> {
         loop {
@@ -83,10 +63,8 @@ pub fn load() -> Result<Loaded, LuaError> {
             for (path, source) in &round {
                 match kind(path) {
                     Some("clients") => continue,
-                    // Read and run like any other file, but nothing is kept: a protocol
-                    // description is melchior's now, and a copy held here would be a copy that
-                    // drifts. A config that still names one is not an error — it simply declares
-                    // to nobody.
+                    // Run like any other file, but nothing is kept: a protocol description is
+                    // melchior's now.
                     Some("apis") => engine.run(source, path)?,
                     Some("tools") => {
                         engine.run(source, path)?;
@@ -100,32 +78,21 @@ pub fn load() -> Result<Loaded, LuaError> {
     };
     drain(&mut engine)?;
 
-    // **Then whatever is installed, discovered rather than named.** After `init.lua` and
-    // everything it asked for, so a configuration that names all of its own files behaves exactly
-    // as it did; before the project file, which is still read last and still may not declare.
+    // Then whatever is installed, after everything `init.lua` named and before the project file.
     let cwd = std::env::current_dir().unwrap_or_default();
     let found = discovered::run(
         &mut engine,
         &magi_lua::plugins::Roots::discovered(&cwd),
         &mut drain,
     )?;
-    // **Kept, because the session rebuilds its VM from these.** A Lua state does not cross a
-    // thread, so the worker re-runs the declarations on its own thread from what was collected
-    // here. A discovered file that was not collected ran into a VM that is thrown away: it showed
-    // up in `magi tools` and a turn could not call it.
-    //
-    // Appended after the named files, in runtimepath order, so `after/plugin/` still means last.
+    // Kept because the session rebuilds its VM from these on the worker's thread — a Lua state does
+    // not cross a thread — and appended in runtimepath order, so `after/plugin/` still means last.
     for (name, source) in found {
         layer(&mut tools, name, source);
     }
 
-    // The line between the two kinds of configuration. Above it is the machine's own, which
-    // the user wrote. Below it is a file that arrived with a checkout.
-    //
-    // Unless the user said otherwise: `magi.trusted` names directories whose project files are
-    // as good as their own. The decision belongs to the person, it is made once, and it lives
-    // in the config only they can edit -- which is the whole of what a trust boundary needs to
-    // be. Without a way to say yes, the rule would be worked around instead of used.
+    // The line between the machine's own configuration and a file that arrived with a checkout,
+    // unless `magi.trusted` names the directory: the decision lives in the config only the user edits.
     engine.harvest();
     let machine = trusts_here(&engine.config()).then(|| Trusted::snapshot(&mut engine));
 
@@ -133,9 +100,8 @@ pub fn load() -> Result<Loaded, LuaError> {
     for path in magi_lua::search_paths() {
         if path.exists() && path.file_name().is_some_and(|n| n == ".magi.lua") {
             engine.run_file(&path)?;
-            // A vouched directory's file is as good as the machine's own, so a tool it declares
-            // has to reach the daemon and not just this VM. Without this, vouching for a
-            // directory would honour its providers and silently drop its tools.
+            // A vouched directory's file is as good as the machine's own, so its tools have to
+            // reach the daemon and not just this VM.
             if machine.is_none()
                 && let Ok(source) = std::fs::read_to_string(&path)
             {
@@ -145,20 +111,14 @@ pub fn load() -> Result<Loaded, LuaError> {
     }
     engine.harvest();
 
-    // Everything a config said that magi did not keep, whoever said it. A declaration for
-    // something a sibling owns and a setting nested past what can be described both end up here,
-    // and both were silent before: the config author wrote a line that did nothing and there was
-    // no way to find that out except by noticing the absence of an effect.
+    // Everything a config said that magi did not keep, whoever said it; both cases were silent before.
     for said in &engine.config().unkept {
         eprintln!("magi: {said}");
     }
 
     if let Some(machine) = &machine {
-        // A changed privileged setting is fatal, not a warning. The others describe something a
-        // project file offered that will not be used, and carrying on without it is right. This
-        // one is a project file having *already* changed how the rest of the session is
-        // governed — `confine` off, a grant added, itself vouched for — and there is nothing
-        // sensible to carry on with: the value it wanted is the value the config now holds.
+        // A changed privileged setting is fatal: a project file has already changed how the rest of
+        // the session is governed, and the value it wanted is the value the config now holds.
         if let Some(name) = machine.altered(&mut engine) {
             return Err(LuaError::Runtime {
                 file: ".magi.lua".to_owned(),
@@ -175,10 +135,7 @@ pub fn load() -> Result<Loaded, LuaError> {
     collect(engine.config(), tools, clients)
 }
 
-/// Acknowledge every installed package, so it may run.
-///
-/// Prints what it took. Nothing installed prints so and is not an error — it is what a machine
-/// that has installed nothing should say.
+/// Acknowledge every installed package, so it may run. Nothing installed is not an error.
 pub fn acknowledge() {
     let Some(dir) = config_dir() else {
         eprintln!("magi: no configuration directory to write a manifest in");
@@ -188,10 +145,8 @@ pub fn acknowledge() {
     let files = discovered::installed(&magi_lua::plugins::Roots::discovered(&cwd));
     let manifest = magi_lua::acknowledged::manifest_in(&dir);
 
-    // **Written even when there is nothing, because the manifest replaces rather than merges.**
-    // Returning early on an empty list looked tidy and was wrong: acknowledge, remove the
-    // package, acknowledge again, and the digest of a file nobody has any more stayed in the
-    // manifest. The siblings all write it; this was the one that did not.
+    // Written even when there is nothing, because the manifest replaces rather than merges: a
+    // digest left behind would still acknowledge a package that was removed.
     match magi_lua::acknowledged::acknowledge(&manifest, &files) {
         Ok(taken) => {
             for (path, _) in &files {
@@ -205,10 +160,8 @@ pub fn acknowledge() {
         Err(why) => eprintln!("magi: {why}"),
     }
 }
-/// Whether the working directory is one the machine's config vouched for.
-///
-/// Inverted on purpose: `Some(Trusted)` means a boundary is being enforced, and a trusted
-/// directory has none. Ancestors count, so trusting a worktree root covers what is under it.
+/// Whether the working directory is one the machine's config vouched for. Inverted on purpose:
+/// `Some(Trusted)` means a boundary is enforced. Ancestors count, so a worktree root covers what is under it.
 fn trusts_here(config: &Config) -> bool {
     let Ok(cwd) = std::env::current_dir() else {
         return true;
@@ -234,11 +187,7 @@ fn layer(files: &mut Vec<(String, String)>, name: String, source: String) {
     }
 }
 
-/// Everything the registrar collected, as one value.
-///
-/// No providers. A catalog of models was read here once, from `providers.lua`, and it is
-/// melchior's now: which models exist, which protocol each speaks and what credential each takes
-/// are one subject, and magi keeping half of it was a second thing to keep in step.
+/// Everything the registrar collected, as one value. No providers: melchior owns the model.
 fn collect(
     config: Config,
     tools: Vec<(String, String)>,
@@ -251,13 +200,8 @@ fn collect(
     })
 }
 
-/// Which program owns the model here.
-///
-/// `magi.melchior` when a configuration named one, and the sibling's own name otherwise. One
-/// function, because this used to be read in one place and assumed in two others: the layer was
-/// started with what the config said and the catalog of models was read from whatever `PATH`
-/// held, so pointing this at your own build gave you that build for the turn and a list of
-/// models from a different one.
+/// Which program owns the model here: `magi.melchior` when a configuration named one, and the
+/// sibling's own name otherwise. One function, so the layer and the model list cannot disagree.
 #[must_use]
 pub fn mind(loaded: &Loaded) -> String {
     loaded
@@ -267,12 +211,8 @@ pub fn mind(loaded: &Loaded) -> String {
         .to_owned()
 }
 
-/// Everything the daemon could talk to, so `:model` has something to pick among.
-///
-/// Built once at start rather than re-read on each switch: a session should keep answering
-/// with what it was started with, and picking up an edit made since would leave a person
-/// asking why it is using a model they did not choose.
-/// The cards come from melchior, which owns them.
+/// Everything the daemon could talk to, so `:model` has something to pick among. Built once at start
+/// rather than re-read on each switch. The cards come from melchior, which owns them.
 #[must_use]
 pub fn catalog(loaded: &Loaded, cards: Vec<magi_proto::ask::Card>) -> magi_host::catalog::Catalog {
     let mut catalog = magi_host::catalog::Catalog {
@@ -313,31 +253,18 @@ pub fn remembered() -> magi_host::remember::Chosen {
         .unwrap_or_default()
 }
 
-/// The backend a daemon should run turns against, if one is both chosen and usable.
-///
-/// A model that is configured but has no credential yields `None` rather than an error: the
-/// daemon still starts, and the refusal it journals names what to set. A daemon that would not
-/// start because a key was missing is a worse answer than a session that says so.
+/// The backend a daemon should run turns against, if one is both chosen and usable. A model that is
+/// configured but has no credential yields `None`, so the daemon still starts and journals a refusal.
 #[must_use]
 pub fn backend(catalog: &magi_host::catalog::Catalog) -> Option<magi_host::turn::Backend> {
-    // A lookup rather than a second assembly. It was a second assembly, and the two disagreed
-    // about what "configured" meant more than once.
     catalog
         .chosen()
         .as_deref()
         .and_then(|name| catalog.backend(name))
 }
 
-/// Configuration files edited since the daemon on `socket` started.
-///
-/// A session holds the tool set it was built with. Nothing said so, and the two disagreed in
-/// the worst direction: `magi tools` reads the configuration and lists a tool you just added,
-/// the running session was never told about it, and the model reports that the tool is not
-/// registered -- which reads as a broken tool rather than a stale session. Same shape as "I ran
-/// `make configs` and still nothing".
-///
-/// The socket is bound when the session starts, so its mtime is when the session began. No
-/// protocol change and nothing to keep in sync: a file newer than that was not read.
+/// Configuration files edited since the daemon on `socket` started. A session holds the tool set it
+/// was built with, and the socket's mtime is when the session began, so a newer file was not read.
 #[must_use]
 pub fn edited_since_start(socket: &std::path::Path) -> Vec<std::path::PathBuf> {
     let Ok(started) = std::fs::metadata(socket).and_then(|m| m.modified()) else {
@@ -350,10 +277,7 @@ pub fn edited_since_start(socket: &std::path::Path) -> Vec<std::path::PathBuf> {
     newer_than(&watched, started)
 }
 
-/// Which of `files` were modified after `started`.
-///
-/// Split out so it can be tested: the caller's half depends on a config directory and a live
-/// daemon, and neither is something a test should have to stand up to check an mtime compare.
+/// Which of `files` were modified after `started`. Split out so it can be tested without a daemon.
 #[must_use]
 fn newer_than(
     files: &[std::path::PathBuf],
@@ -370,13 +294,8 @@ fn newer_than(
         .collect()
 }
 
-/// Files the installed config directory contributes, in the order they are applied.
-///
-/// Every installed file a session could have read, for the staleness check.
-///
-/// Not what gets loaded — `init.lua` decides that, and only what it names runs. This is the
-/// wider net a "your config changed since this daemon started" warning wants: a file the user
-/// edited is worth mentioning whether or not their entry point currently reaches it.
+/// Files the installed config directory contributes, in the order they are applied. Not what gets
+/// loaded — `init.lua` decides that — but the wider net a staleness warning wants.
 fn watched_files() -> Vec<std::path::PathBuf> {
     let Some(dir) = config_dir() else {
         return Vec::new();
@@ -387,8 +306,7 @@ fn watched_files() -> Vec<std::path::PathBuf> {
         out.extend(lua_files(&dir.join(group)));
     }
 
-    // The discovered roots too. A plugin is configuration like any other; editing one and having
-    // nothing happen until a restart would make the directories feel like a lesser kind of file.
+    // The discovered roots too: a plugin is configuration like any other.
     for group in ["plugin", "after/plugin"] {
         out.extend(lua_files(&dir.join(group)));
     }
@@ -425,35 +343,17 @@ pub fn config_dir() -> Option<std::path::PathBuf> {
         .map(|base| base.join("magi"))
 }
 
-/// What the machine's own configuration had declared, before any project file ran.
-///
-/// A `.magi.lua` arrives with a checkout: cloning a repository and running `magi` in it must not
-/// be enough to add a tool, because a process tool names a command to run.
-///
-/// It guarded providers too, and no longer needs to: `magi.provider` was a registrar that kept
-/// what it was handed where nothing read it, so a provider could not be added by anybody, and
-/// the guard was watching a door that opened onto nothing. melchior owns the model.
-///
-/// A project file can still *choose*: `magi.model` picks among the models melchior already
-/// offers. That is the useful half, and it carries no authority.
+/// What the machine's own configuration had declared, before any project file ran. A `.magi.lua`
+/// arrives with a checkout, and cloning a repository must not be enough to add a tool. A project
+/// file can still *choose* with `magi.model`, which carries no authority.
 pub struct Trusted {
     tools: BTreeSet<String>,
     /// What [`PRIVILEGED_SETTINGS`] were before a project file ran.
-    ///
-    /// magi had no equivalent of this at all, and it is the half that matters most: a checked-in
-    /// `.magi.lua` could set `magi.confine = false`, add to `magi.allow`, or name its own
-    /// directory in `magi.trusted` — turning off the wall, granting itself permissions, or
-    /// vouching for itself — and none of it was refused or even reported. Declarations were
-    /// guarded and the switches that govern them were not.
     settings: Vec<Option<serde_json::Value>>,
 }
 
-/// Settings a project's own file may not assign.
-///
-/// `confine` is the wall; `allow` is what may happen without asking; `trusted` decides which
-/// files this rule applies to at all — a file that could set the last one could exempt itself.
-/// Named here rather than inferred, the way balthasar names its own: the list is short, and a
-/// rule about which settings are dangerous should be readable in one place.
+/// Settings a project's own file may not assign: `confine` is the wall, `allow` is what may happen
+/// without asking, and a file that could set `trusted` could exempt itself.
 const PRIVILEGED_SETTINGS: &[&str] = &["confine", "allow", "trusted"];
 
 impl Trusted {
@@ -474,11 +374,8 @@ impl Trusted {
             .collect()
     }
 
-    /// Which privileged setting a project file changed, if it changed one.
-    ///
-    /// Compared by value against the snapshot taken before it ran. Byte-equal is no change: a
-    /// project file may read `magi.confine` and assign it back — configs do that, and refusing
-    /// it would make the rule fire on a file that changed nothing.
+    /// Which privileged setting a project file changed, if it changed one. Compared by value, so a
+    /// project file that reads `magi.confine` and assigns it back has changed nothing.
     fn altered(&self, engine: &mut Engine) -> Option<&'static str> {
         let now = Self::privileged(engine);
         PRIVILEGED_SETTINGS
@@ -488,16 +385,9 @@ impl Trusted {
             .map(|(_, name)| *name)
     }
 
-    /// One message per declaration a project file made that will not be honoured.
-    ///
-    /// Reported rather than silently dropped: a config author who wrote something that does
-    /// nothing needs to know, and a repository trying it is worth seeing.
+    /// One message per declaration a project file made that will not be honoured, rather than a silent drop.
     fn refusals(&self, engine: &mut Engine) -> Vec<String> {
-        // Providers are not here any more, and it is worth saying why: `magi.provider` kept
-        // nothing for anybody, so the machine's own configuration could not declare one either
-        // and this loop only ever fired on the case where both sides were equally ignored.
-        // melchior owns the model; a project file naming a provider is now told so by
-        // `Config::unkept`, in the same words a machine configuration gets.
+        // melchior owns the model; a project file naming a provider is told so by `Config::unkept`.
         let mut out = Vec::new();
         for (name, _) in engine.tools() {
             if !self.tools.contains(&name) {
@@ -512,10 +402,8 @@ impl Trusted {
     }
 }
 
-/// The source behind one `magi.load` path, read from the config directory.
-///
-/// A path that is not there is skipped rather than fatal: an entry point may load a file that is
-/// optional on this machine, and a missing optional is not a broken configuration.
+/// The source behind one `magi.load` path, read from the config directory. A path that is not there
+/// is skipped rather than fatal.
 fn source_of(path: &str) -> Option<String> {
     let file = config_dir()?.join(path);
     std::fs::read_to_string(file).ok()
@@ -529,11 +417,8 @@ fn stem(path: &str) -> String {
         .unwrap_or_else(|| path.to_owned())
 }
 
-/// Which bucket a loaded path belongs to, if any.
-///
-/// By the first path component, so `apis.lua` and `apis/google.lua` land in the same place: the
-/// shipped tree keeps one file per kind, and somebody who prefers a file per protocol should not
-/// have to tell the host about it.
+/// Which bucket a loaded path belongs to, if any. By the first path component, so `apis.lua` and
+/// `apis/google.lua` land in the same place.
 fn kind(path: &str) -> Option<&'static str> {
     ["apis", "tools", "clients"]
         .into_iter()
@@ -558,8 +443,7 @@ mod pinning_tests {
 
     #[test]
     fn a_configuration_may_pin_the_program_that_supplies_every_tool() {
-        // casper is found on `$PATH` and owns `shell`, `read` and everything else the model
-        // calls — the largest trust assumption magi makes, and the one it made silently.
+        // casper is found on `$PATH` and owns `shell`, `read` and everything else the model calls.
         let loaded = from(r#"magi.casper_sha256 = "abc123""#);
         assert_eq!(casper_pin(&loaded).as_deref(), Some("abc123"));
         assert_eq!(
@@ -570,8 +454,7 @@ mod pinning_tests {
 
     #[test]
     fn saying_nothing_pins_nothing() {
-        // The ordinary case. A pin is opt-in: `magi doctor` prints what casper actually hashed
-        // to, which is where the value comes from.
+        // A pin is opt-in: `magi doctor` prints what casper actually hashed to.
         assert_eq!(casper_pin(&from("")), None);
         assert_eq!(casper_pin(&from(r#"magi.casper_sha256 = "  ""#)), None);
     }
@@ -595,10 +478,8 @@ mod mind_tests {
 
     #[test]
     fn a_named_melchior_is_the_one_the_catalog_is_read_from() {
-        // The divergence this function removes. `magi.melchior` was honoured where the layer is
-        // started and ignored where the models are listed, so pointing it at your own build gave
-        // you that build for the turn and `PATH`'s for the list of models the turn chooses from
-        // — a session running against one melchior while showing another's catalog.
+        // `magi.melchior` was honoured where the layer is started and ignored where the models are
+        // listed, so a session ran against one melchior while showing another's catalog.
         let loaded = from(r#"magi.melchior = "/opt/melchior-next""#);
         assert_eq!(mind(&loaded), "/opt/melchior-next");
         assert_eq!(
@@ -627,8 +508,7 @@ mod staleness_tests {
 
     #[test]
     fn a_file_edited_after_the_session_started_is_reported() {
-        // The whole point: `magi tools` lists the tool you just added, the running daemon was
-        // never told, and the model reports it as unregistered.
+        // `magi tools` lists the tool you just added; the running daemon was never told.
         let dir = scratch("edited");
         let file = dir.join("greet.lua");
         std::fs::write(&file, "x").expect("write");
@@ -655,8 +535,7 @@ mod staleness_tests {
 
     #[test]
     fn no_pid_file_is_no_claim_either_way() {
-        // Nothing is running, so nothing is out of date. Warning here would fire on every
-        // first start in a directory.
+        // Nothing is running, so nothing is out of date; warning here would fire on every first start.
         let dir = scratch("nopid");
         assert!(edited_since_start(&dir.join("a.sock")).is_empty());
     }

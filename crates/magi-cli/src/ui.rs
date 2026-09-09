@@ -1,12 +1,6 @@
-//! Drawing the screen.
-//!
-//! magi owns every cell: the transcript is a buffer it keeps and scrolls, not lines handed to
-//! the terminal. That is what the wheel, the scroll keys, the edge rule and clicking a block
-//! open are all written against.
-//!
-//! Below the transcript: the status line, then the prompt box — which holds whatever menu is
-//! open — then the footer. The two edge rules are the transcript's own, drawn against its top
-//! and bottom when it runs past them.
+//! Drawing the screen. magi owns every cell: the transcript is a buffer it keeps and scrolls, which
+//! is what the wheel, the scroll keys, the edge rule and clicking a block open are written against.
+//! Below it: the status line, the prompt box holding whatever menu is open, then the footer.
 
 use crate::app::App;
 
@@ -23,26 +17,18 @@ pub fn chrome_rows() -> u16 {
     metric::prompt_min_rows() + metric::footer_rows()
 }
 
-/// Draw the live region, and say how many rows a surface could have had in it.
-///
-/// **The room is measured where it is drawn.** It depends on the footer, the rule above the
-/// prompt and however many lines the prompt is currently wrapped over, so anything working it out
-/// a second time would be a copy of this arithmetic that drifts from it. The session is the one
-/// that grants rows and has no terminal to measure, so what comes back here is what it is told.
+/// Draw the live region, and say how many rows a surface could have had in it. The room is measured
+/// where it is drawn — it depends on the footer, the rule and the prompt's wrapping — and the
+/// session that grants rows has no terminal to measure.
 pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u16 {
     let area = frame.area();
-    // Before anything is measured: an emptied prompt gets a new placeholder, and the one it
-    // gets is what this frame draws.
+    // Before anything is measured: an emptied prompt gets a new placeholder.
     app.settle_prompt();
 
     let rows = area.height;
 
-    // The scan says what the session is doing, which is why it is chosen here rather than in the
-    // prompt: this is the only place that knows about the turn as well as the text.
-    //
-    // **It goes to whichever box is listening.** While a pane is open it owns the keyboard, so the
-    // light travels its border and the prompt goes dark -- which box you are talking to is a
-    // thing to see rather than a thing to find out by typing into the one that is not.
+    // The scan says what the session is doing, so it is chosen here rather than in the prompt. It
+    // goes to whichever box is listening, since a pane owns the keyboard while it is open.
     let scan = if !app.connected {
         magi_tui::border::Scan::Off
     } else if app.is_busy() {
@@ -57,50 +43,31 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
     } else {
         (scan, magi_tui::border::Scan::Off)
     };
-    // **A row always sits between the transcript and the prompt.** It was taken only when there
-    // was something to say in it, so following the newest output put the last line of the
-    // conversation directly against the box you answer in, and scrolling away pushed everything
-    // up by one. Reserved either way: what changes is whether the row is blank or carries the
-    // rule, not how much room the transcript has.
-    //
-    // "Not following" is exactly "you have scrolled away from the newest output", which is when
-    // the rule is worth drawing. It says only that the transcript continues.
+    // A row always sits between the transcript and the prompt, reserved either way: what changes is
+    // whether it is blank or carries the rule, not how much room the transcript has.
     let scrolled = !app.scrollback.is_following();
     let more_rows = 1;
 
-    // The menu goes inside the box, so the box is as tall as the two of them together and there
-    // is no second region under it. What it may not do is take the whole screen: one row of
-    // transcript stays, or a list opened mid-turn hides the turn it is about.
+    // The menu goes inside the box, so there is no second region under it. It may not take the
+    // whole screen: one row of transcript stays.
     let around = metric::footer_rows() + more_rows + 1;
-    // The box wears the usage: it is the number you want while you are deciding what to send,
-    // and the box is where you are looking when you decide. Cut to a third of the width first --
-    // the strip is reserved on every row, so anything long here takes the whole prompt with it.
-    // What the corner wears, and how much of it fits — both the corner's own decision, so a
-    // different corner is a different variant rather than an edit here. See `magi_tui::corner`.
+    // The box wears the usage, cut to a third of the width first — the strip is reserved on every
+    // row, so anything long here takes the whole prompt with it. See `magi_tui::corner`.
     let badge = app.corner.fitted(footer_data, area.width);
     let text_rows = prompt::text_rows(&app.editor, rows, area.width, &badge);
     let room = usize::from(rows.saturating_sub(around)).saturating_sub(text_rows + 3);
-    // The same number the menu is cut to, which is the point: a surface is drawn in the menu's
-    // slot, so the rows it may have are the rows a list may have.
+    // The same number the menu is cut to: a surface is drawn in the menu's slot.
     let granted = u16::try_from(room).unwrap_or(u16::MAX);
-    // Keyed on what is open, so a permission ask after a model list is a second opening while
-    // either one narrowing under a query is still the first.
+    // Keyed on what is open, so a permission ask after a model list is a second opening.
     app.landing
         .showing(app.overlay.as_ref().map(magi_tui::overlay::Overlay::key));
-    // **Rows a tool is holding go where every other choice goes: inside the box.** A picker, a
-    // permission, a completion and a surface are the same thing to a reader — something asking
-    // for the keyboard — and they belong in the one place already reserved for that. Given a
-    // region of its own above the prompt, a surface opened a band in the middle of the screen and
-    // was the only control here that did not appear where the others do.
-    //
-    // It wins over an overlay, because a surface has the keyboard while it is up: a list left
-    // underneath would be one nothing could reach.
+    // Rows a tool is holding go inside the box, where a picker, a permission and a completion
+    // already go. It wins over an overlay, because a surface has the keyboard while it is up.
     let mut menu = match app.holding() {
         Some(held) if !held.drawn.is_empty() => {
             magi_tui::painted::lines(&held.drawn, ratatui::style::Style::default())
         }
-        // Before its first frame. Otherwise the box would jump open on nothing, then again when
-        // the tenant drew.
+        // Before its first frame, so the box does not jump open on nothing and again after.
         Some(held) => vec![ratatui::text::Line::from(ratatui::text::Span::styled(
             held.about.clone(),
             ratatui::style::Style::default().fg(magi_tui::colour::dim()),
@@ -112,13 +79,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
             .unwrap_or_default(),
     };
     menu.truncate(room);
-    // While a turn runs the box says so, in the placeholder's slot: it is where you are looking
-    // and it is the one place with room for a sentence. It gets out of the way the moment you
-    // type, and typing during a turn is allowed and always was. The tease stays out of it --
-    // a box writing to itself while the agent works is two things claiming the same line.
+    // While a turn runs the box says so in the placeholder's slot, and gets out of the way the
+    // moment you type. The tease stays out of it.
     let effort = status::effort(app.status(), app.elapsed());
-    // Drawn harder while what it opens is on screen, so the corner reads as a control that is
-    // currently pressed rather than one that merely can be.
+    // Drawn harder while what it opens is on screen, so the corner reads as currently pressed.
     let badge_open = app
         .pane
         .as_ref()
@@ -154,9 +118,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
         .max(1);
 
     // Above the box: the transcript and its edge rules, and nothing else. Below it: one row, which
-    // the footer draws — what the agent is doing, then usage, then the model. The status line had
-    // a row of its own above the box, which is a row of chrome for one word, in the one place
-    // where nothing should stand between what was said and where you answer it.
+    // the footer draws.
     let [live_area, prompt_area, footer_area] = Layout::vertical([
         Constraint::Min(0),
         Constraint::Length(prompt_rows),
@@ -164,16 +126,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
     ])
     .areas(area);
 
-    // The whole transcript is ours and the reader's scroll position decides what shows.
-    //
-    // An empty session draws nothing. There was a greeting here — a name, the model, the
-    // directory and four key hints — and it was right for somebody meeting the thing for the
-    // first time and wrong for everybody after that. The prompt's own placeholder still names
-    // `:`, which is the one line of it worth keeping.
+    // The whole transcript is ours and the reader's scroll position decides what shows. An empty
+    // session draws nothing.
     let mut laid = transcript::laid_out(app.entries(), area.width, app.detail, &app.flipped);
-    // After the layout and before the lines are handed over, because the highlight is a fact
-    // about the pointer rather than about the transcript: it must not survive into the next
-    // frame on its own, and re-rendering is what clears it.
+    // After the layout and before the lines are handed over: the highlight is a fact about the
+    // pointer, and re-rendering is what clears it.
     if let Some((line, column)) = app.hovering
         && let Some(under) = laid.lines.get_mut(line)
     {
@@ -182,8 +139,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
     app.owners = laid.owners;
     app.blocks = laid.blocks;
     app.scrollback.set_lines(laid.lines);
-    // Each edge that has something past it takes a row out of the transcript for its rule, so
-    // both sit against the text rather than out in the chrome.
+    // Each edge with something past it takes a row for its rule, so both sit against the text.
     let above = app.scrollback.hidden_above() > 0;
     let live_area = Rect {
         y: live_area.y + u16::from(above),
@@ -193,16 +149,14 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
         ..live_area
     };
     let view = app.scrollback.view(live_area.height).to_vec();
-    // Bottom-aligned: a transcript grows towards the prompt, so a short one sits above
-    // it rather than stranded at the top of the screen under a field of blank rows.
+    // Bottom-aligned: a transcript grows towards the prompt.
     let used = u16::try_from(view.len()).unwrap_or(live_area.height);
     let anchored = Rect {
         y: live_area.y + live_area.height.saturating_sub(used),
         height: used.min(live_area.height),
         ..live_area
     };
-    // The rows the transcript actually landed on, which is what a click is measured
-    // against. Bottom-anchored, so a short transcript does not start at the top.
+    // The rows the transcript landed on, which is what a click is measured against.
     app.live_rows = anchored.y..anchored.y + anchored.height;
     frame.render_widget(Paragraph::new(view), anchored);
     if above {
@@ -226,11 +180,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
         );
     }
 
-    // The UI picks the mood, not the agent: a list being open and the prompt having text in it
-    // are both states worth showing and neither is anything the daemon reports.
-    // Anything open on the screen outranks whatever the agent is doing, because it is the thing
-    // holding everything up. A permission ask arrives *during* a turn, so asking `is_busy()`
-    // first meant the one moment magi is waiting on you was the one moment it said `Working`.
+    // The UI picks the mood, not the agent. Anything open on the screen outranks whatever the agent
+    // is doing: a permission ask arrives *during* a turn, so `is_busy()` first said `Working`.
     let mood = if !app.connected {
         magi_tui::beacon::Mood::Away
     } else if app
@@ -252,13 +203,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
     if !app.connected {
         status_line.spans.extend(status::queued(app.queued));
     }
-    // Where the tenant's rows actually landed, which is what a click on them is measured against.
-    // Recorded here for the same reason `live_rows` is: the layout is the only thing that knows,
-    // and it knows it only once. Cleared when nothing is holding them, so a pointer over a picker
-    // is not translated into coordinates for a surface that closed.
-    // Where the usage badge landed, so a click on it can open the cost view. The same reason
-    // `surface_rect` is recorded here: the layout is the only thing that knows, and it knows it
-    // once.
+    // Where the tenant's rows and the usage badge actually landed, which is what a click on either
+    // is measured against: the layout is the only thing that knows, and it knows it once.
     app.corner_rect = prompt_lines.badge.as_ref().map(|(row, columns)| Rect {
         x: prompt_area.x + columns.start,
         y: prompt_area.y + u16::try_from(*row).unwrap_or(u16::MAX),
@@ -277,26 +223,19 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
         footer_area,
     );
 
-    // **A float, over the finished screen and under nothing.** It is what the person asked to
-    // look at, so it is drawn last and covers whatever it lands on rather than reflowing the
-    // conversation to make room — a view opened for a moment gives the transcript back untouched.
-    // Where the float landed, so a press outside it can close it. Recorded rather than
-    // recomputed by the pointer handler: this is the only place that knows, and a second opinion
-    // would be a click target that agrees with the drawing until one of the two changes.
+    // A float, over the finished screen and under nothing: it covers what it lands on rather than
+    // reflowing the conversation. Its rect is recorded here, the only place that knows, so a press
+    // outside it can close it.
     app.pane_rect = app.pane.as_ref().map(|_| magi_tui::pane::Pane::area(area));
     if let Some(open) = app.pane.as_mut() {
         let panel = magi_tui::pane::Pane::area(area);
         let page = magi_tui::pane::Pane::page(area);
-        // Settled here because this is the only place that knows how tall the panel is; see
-        // `Pane::settle`.
+        // Settled here because this is the only place that knows how tall the panel is.
         open.settle(page);
 
-        // **The heading is inside the frame, not in it.** A border title is drawn *in* the rule,
-        // which forces the frame to break for the word -- a box with a gap in it reads as damaged
-        // rather than labelled. Inside, it costs a row and the frame stays whole.
-        //
-        // Light lines with arc corners, which is the only weight Unicode gives rounded corners to:
-        // `╭ ╮ ╯ ╰` are all named LIGHT ARC, and there is no double-line arc to pair with `╔`.
+        // The heading is inside the frame, not in it: a border title breaks the rule for the word,
+        // and a box with a gap in it reads as damaged. Light lines with arc corners, the only
+        // weight Unicode gives rounded corners to.
         frame.render_widget(ratatui::widgets::Clear, panel);
         frame.render_widget(
             Paragraph::new(open.framed(panel.width, page, app.tick, pane_scan)),
@@ -304,14 +243,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
         );
     }
 
-    // Last, over the finished screen: the effect is about the text arriving, and text that has
-    // not been drawn yet cannot arrive. Off unless `magi.ui.decrypt_ms` says otherwise.
+    // Last, over the finished screen: text that has not been drawn yet cannot arrive.
     if let Some(progress) = magi_tui::decrypt::progress() {
         magi_tui::decrypt::over(frame.buffer_mut(), area, progress);
     }
-    // And again over a list that has just opened, on its rows alone. A model list, a permission
-    // ask and a session picker all arrive the same way the screen did — the box is already
-    // there, and the choices land into it.
+    // And again over a list that has just opened, on its rows alone.
     if let Some(progress) = app.landing.progress() {
         let rows = u16::try_from(menu.len()).unwrap_or(0);
         let top = prompt_area.y + prompt_area.height.saturating_sub(1 + rows);
@@ -325,19 +261,15 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
             progress,
         );
     }
-    // The box only. A glitch in the middle of a tool result is indistinguishable from a tool
-    // that printed a glitch.
+    // The box only: a glitch mid tool result is indistinguishable from a tool that printed one.
     magi_tui::decrypt::flicker(frame.buffer_mut(), prompt_area);
-    // Last of all, over everything: a selection is about what is on the screen, and a highlight
-    // drawn before the effects would be the one thing they could scribble on.
+    // Last of all: a highlight drawn before the effects is the one thing they could scribble on.
     if let Some(selection) = app.selection {
         magi_tui::select::over(frame.buffer_mut(), selection);
     }
 
-    // **A tenant that asked for the cursor gets it.** While a surface holds the keyboard the
-    // prompt is not where you are typing, so leaving the caret parked in it points an IME and a
-    // screen reader at a box nothing is going into. Only when it asks: a game wants nothing
-    // blinking in its picture, and that is nearly every surface.
+    // A tenant that asked for the cursor gets it: while a surface has the keyboard, a caret parked
+    // in the prompt points an IME and a screen reader at a box nothing is going into.
     if let Some((rect, at)) = app
         .surface_rect
         .zip(app.holding().and_then(|held| held.cursor))
@@ -352,16 +284,13 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
     granted
 }
 
-/// Park the terminal cursor on the same cell the inverted block is drawn on.
-///
-/// The visible cursor is the inverted cell; this is for the terminal's own benefit â an IME
-/// candidate window and a screen reader both follow the hardware cursor, not the colours.
+/// Park the terminal cursor on the same cell the inverted block is drawn on. The visible cursor is
+/// the inverted cell; an IME window and a screen reader both follow the hardware one.
 fn place_hardware_cursor(frame: &mut Frame<'_>, app: &App, area: Rect, rows: u16, badge: &str) {
     if area.height < 2 {
         return;
     }
-    // Where the caret lands once the text is folded, not where it sits in a logical line. A long
-    // line is several rows now, and the two answers differ by however many times it wrapped.
+    // Where the caret lands once the text is folded, not where it sits in a logical line.
     let (cursor_row, cursor_col) = fold::caret(&app.editor, area.width, badge);
     let visible = prompt::visible_rows(rows);
     let offset = cursor_row.saturating_sub(visible.saturating_sub(1));
@@ -371,18 +300,14 @@ fn place_hardware_cursor(frame: &mut Frame<'_>, app: &App, area: Rect, rows: u16
     if row >= area.height {
         return;
     }
-    // And two columns in: the left bar, then the padding column. This used to be `area.x + col`,
-    // which was right while the prompt was two rules and text starting in column zero — with
-    // the box it put the terminal's cursor two cells to the left of the one drawn into the
-    // line, so the caret and the block disagreed about where you were typing.
+    // And two columns in: the left bar, then the padding column.
     let col = u16::try_from(cursor_col)
         .unwrap_or(u16::MAX)
         .saturating_add(metric::gutter());
     frame.set_cursor_position((area.x + col.min(area.width.saturating_sub(1)), area.y + row));
 }
 
-/// The edge says the transcript continues, so "is this the end" is answered by looking rather
-/// than by reading a count somewhere else on the screen.
+/// The edge says the transcript continues, so "is this the end" is answered by looking.
 #[cfg(test)]
 mod continues_past_the_edge {
     use super::*;
@@ -456,8 +381,7 @@ mod continues_past_the_edge {
 
     #[test]
     fn the_lower_rule_sits_against_the_text_it_is_about() {
-        // It had a row of its own down by the prompt, with the status line between it and the
-        // transcript — and a rule with a blank row above it marks nothing.
+        // A rule with a blank row above it marks nothing.
         let rows = drawn(30, 10);
         let lower = *rules(&rows).last().expect("a rule below");
         let last = rows[..lower]
@@ -562,10 +486,8 @@ mod inside_the_box {
     }
 }
 
-/// Where a surface landed, which is what a click on it is measured against.
-///
-/// The one thing in the whole surface path that can be silently wrong: an off-by-one here is a
-/// game that jumps when you click one row above it, and nothing about the picture says so.
+/// Where a surface landed, which is what a click on it is measured against — the one thing in the
+/// surface path that can be silently wrong, since nothing about the picture shows an off-by-one.
 #[cfg(test)]
 mod where_the_rows_landed {
     use super::*;
@@ -617,8 +539,7 @@ mod where_the_rows_landed {
 
     #[test]
     fn the_rect_names_the_rows_the_tenant_actually_drew_on() {
-        // Checked against the frame rather than against the arithmetic that produced it. The two
-        // agreeing is the whole claim: a click at screen row `rect.y + 1` is the tenant's row 1.
+        // Checked against the frame rather than the arithmetic that produced it.
         let (app, terminal) = played(None);
         let drawn = rows(&terminal);
         let rect = app.surface_rect.expect("the rows were recorded");

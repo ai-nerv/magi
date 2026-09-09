@@ -1,44 +1,21 @@
-//! Configuration nobody named.
-//!
-//! `init.lua` is still the entry point and `magi.load` is still how a file asks for another
-//! one — a named file is the auditable case and stays the one to reach for. What this adds is
-//! the directories: drop a `.lua` in `~/.config/magi/plugin/`, or install a package under
-//! `~/.local/share/magi/site/pack/*/start/*/`, and it runs.
-//!
-//! **The mechanism is balthasar's, which had it first.** magi's loader carried a comment saying
-//! nothing was discovered by scanning and called that "the property a plugin mechanism will
-//! need" — future tense, beside a tested implementation in the next repository. See
-//! [`magi_lua::plugins`].
-//!
-//! **A file that fails costs itself and nothing else.** `init.lua` is fatal because a config that
-//! will not parse has not expressed an intention; a discovered file is somebody else's package,
-//! and taking the session down over it would make installing one a risk rather than a try.
+//! Configuration nobody named: a `.lua` dropped in `~/.config/magi/plugin/`, or a package installed
+//! under `~/.local/share/magi/site/pack/*/start/*/`, runs without `init.lua` naming it. A discovered
+//! file that fails is reported and skipped; only `init.lua` is fatal. See [`magi_lua::plugins`].
 
 use magi_lua::Engine;
 use magi_lua::acknowledged;
 use magi_lua::plugins::{Roots, Trust, runtimepath};
 
-/// Run every discovered file, in runtimepath order.
-///
-/// Only the owner's own roots. A project's `.magi.lua` is read further down in `load`, under the
-/// trust rules that already exist there, and reading it here as well would run it twice.
-///
-/// The roots are a parameter rather than looked up here, so what this does is a function of what
-/// it is handed. Reading the environment inside would make every test of the order depend on the
-/// machine it ran on — and setting an environment variable to arrange one is `unsafe`, which is
-/// denied across this workspace.
-///
-/// Returns what it ran, as `(name, source)`, in the order it ran them.
-///
-/// **The session rebuilds its VM from these.** The worker cannot be handed the VM this ran in — a
-/// Lua state does not cross a thread — so it re-runs the declarations on its own thread, from the
-/// sources the loader collected. A discovered file that was not collected therefore ran here,
-/// declared into a VM that is thrown away, and reached no session at all: `magi tools` listed it
-/// and a turn could not call it.
+/// Run every discovered file, in runtimepath order, returning what it ran as `(name, source)`.
+/// Only the owner's own roots: a project's `.magi.lua` is read further down in `load`, under the
+/// trust rules there, and reading it here too would run it twice. The roots are a parameter, so the
+/// result does not depend on the machine it ran on. The session rebuilds its VM from the returned
+/// sources — a Lua state does not cross a thread — so a file that ran here but was not collected
+/// reached no session at all.
 ///
 /// # Errors
-/// Never for a plugin's own failure — those are reported and skipped. Only if draining what one
-/// of them asked for fails, which is the same fatality `init.lua` already has.
+/// Never for a plugin's own failure — those are reported and skipped. Only if draining what one of
+/// them asked for fails.
 pub fn run(
     engine: &mut Engine,
     roots: &Roots,
@@ -58,9 +35,7 @@ pub fn run(
         let Ok(source) = std::fs::read_to_string(&path) else {
             continue;
         };
-        // **A package runs when you have said it may, and not before.** Your own `plugin/` files
-        // are yours and run on sight; this is for what arrived under `site/pack/` by being
-        // fetched, and can change under you between one run and the next.
+        // Your own `plugin/` files run on sight; this is for what arrived under `site/pack/`.
         if trust.needs_acknowledging() && !acknowledged::cleared(&known, &path, &source) {
             eprintln!(
                 "magi: {}; run `magi acknowledge` to clear it",
@@ -77,19 +52,15 @@ pub fn run(
             continue;
         }
         // A plugin may `magi.load` files of its own, so what it asked for is drained before the
-        // next one runs — otherwise the second plugin's declarations would land before the
-        // first's, and `after/` would stop meaning last.
+        // next one runs, or `after/` would stop meaning last.
         drain(engine)?;
         ran.push((named, source));
     }
     Ok(ran)
 }
 
-/// Every installed file, with what it holds right now.
-///
-/// What `magi trust` acknowledges. Only the installed ones: acknowledging your own configuration
-/// would put a digest in the manifest for a file that never needed one, and the next edit to it
-/// would then look like a package that changed.
+/// Every installed file, with what it holds right now — what `magi trust` acknowledges. Only the
+/// installed ones: the owner's own files never needed a digest, and an edit would look like change.
 #[must_use]
 pub fn installed(roots: &Roots) -> Vec<(std::path::PathBuf, String)> {
     runtimepath(roots)
@@ -110,9 +81,7 @@ mod tests {
 
     #[test]
     fn a_dropped_file_runs_and_a_broken_one_does_not_stop_the_rest() {
-        // No edit to `init.lua`, no `magi.load` naming any of them. And a package that raises is
-        // that package's problem: taking the session down over somebody else's file would make
-        // installing one a risk rather than a try.
+        // No edit to `init.lua`, no `magi.load` naming any of them; a package that raises is skipped.
         let dir = Scratch::new("magi-disc", "dropped");
         let plugin = dir.join("plugin");
         std::fs::create_dir_all(&plugin).expect("mkdir");
@@ -140,8 +109,7 @@ mod tests {
 
     #[test]
     fn after_wins_over_a_plugin_that_set_the_same_thing() {
-        // The registrars replace by name and the last write decides, so `after/` is how a person
-        // overrides something a package they installed declared.
+        // The registrars replace by name and the last write decides, so `after/` overrides.
         let dir = Scratch::new("magi-disc", "after");
         std::fs::create_dir_all(dir.join("plugin")).expect("mkdir");
         std::fs::create_dir_all(dir.join("after/plugin")).expect("mkdir");
@@ -161,8 +129,7 @@ mod tests {
 
     #[test]
     fn a_project_file_is_not_run_here() {
-        // It is read further down in `load`, under the trust rules that live there. Running it
-        // here as well would run it twice — and the second time as the owner's own.
+        // It is read further down in `load`, under the trust rules there; here it would run twice.
         let dir = Scratch::new("magi-disc", "project");
         std::fs::write(dir.join(".magi.lua"), "magi.model = \"theirs\"\n").expect("write");
 
@@ -179,10 +146,7 @@ mod tests {
 
     #[test]
     fn a_discovered_file_cannot_spawn_a_process() {
-        // The half that makes discovery safe to have at all. The sandbox is applied in
-        // `Engine::new`, so this is a property of the VM rather than of the loader — and the
-        // point of asserting it here is that discovery is what made it matter: until now every
-        // file that ran had been named by somebody.
+        // The sandbox is applied in `Engine::new`, so it is a property of the VM, not of the loader.
         let mut engine = Engine::new();
         assert!(
             engine.run("return os.execute(\"true\")", "plugin").is_err(),
@@ -216,9 +180,7 @@ mod acknowledging {
 
     #[test]
     fn a_package_nobody_acknowledged_does_not_run() {
-        // Fail-closed, and the whole of what P8 is for: fetching is `git clone`, the idea is the
-        // lockfile. An unacknowledged package is not a warning that scrolls past — it is code
-        // that did not run.
+        // Fail-closed: an unacknowledged package is not a warning, it is code that did not run.
         let (_dir, roots) = installed_package("fresh", "magi.model = \"theirs\"\n");
         let mut engine = Engine::new();
         run(&mut engine, &roots, &mut |_| Ok(())).expect("discovery");
@@ -241,8 +203,7 @@ mod acknowledging {
 
     #[test]
     fn a_package_that_changed_after_being_acknowledged_stops_running() {
-        // The case the digest is for. An acknowledgement that survived an update would be an
-        // acknowledgement of code nobody has read.
+        // An acknowledgement that survived an update would acknowledge code nobody has read.
         let (dir, roots) = installed_package("changed", "magi.model = \"theirs\"\n");
         let config = roots.config.clone().expect("a config root");
         let manifest = acknowledged::manifest_in(&config);
@@ -262,8 +223,7 @@ mod acknowledging {
 
     #[test]
     fn your_own_plugin_directory_never_needs_acknowledging() {
-        // A prompt about your own configuration is one nobody reads, and training people to say
-        // yes is worse than not asking. This is the line: acknowledge what somebody else wrote.
+        // Only what somebody else wrote is acknowledged; a prompt about your own config is noise.
         let dir = Scratch::new("magi-ack-disc", "own");
         std::fs::create_dir_all(dir.join("plugin")).expect("mkdir");
         std::fs::write(dir.join("plugin/mine.lua"), "magi.model = \"mine\"\n").expect("write");
@@ -289,10 +249,8 @@ mod collecting {
 
     #[test]
     fn what_ran_is_handed_back_so_the_session_can_run_it_too() {
-        // **Found by running it.** A Lua state does not cross a thread, so the worker rebuilds
-        // its VM on its own thread from the sources the loader collected. A discovered file that
-        // was not collected ran here, declared into a VM that is thrown away, and reached no
-        // session: it appeared in `magi tools` and a turn could not call it.
+        // A Lua state does not cross a thread, so the worker rebuilds its VM from the collected
+        // sources: a discovered file that was not collected reaches no session.
         let dir = Scratch::new("magi-disc", "collected");
         std::fs::create_dir_all(dir.join("plugin")).expect("mkdir");
         std::fs::write(
@@ -316,9 +274,8 @@ mod collecting {
 
     #[test]
     fn a_file_that_did_not_run_is_not_handed_back() {
-        // A broken plugin and an unacknowledged package are both skipped, and neither must end
-        // up in what the session re-runs — the second time would raise on the worker's thread,
-        // where the whole VM is abandoned over one bad description.
+        // A broken plugin and an unacknowledged package are skipped and must not be re-run on the
+        // worker's thread, where the whole VM is abandoned over one raise.
         let dir = Scratch::new("magi-disc", "not-collected");
         std::fs::create_dir_all(dir.join("plugin")).expect("mkdir");
         std::fs::write(dir.join("plugin/broken.lua"), "error(\"no\")\n").expect("write");
@@ -341,10 +298,8 @@ mod forgetting {
 
     #[test]
     fn acknowledging_after_a_package_is_gone_forgets_it() {
-        // **The manifest replaces rather than merges**, so this is what clears a removed package.
-        // Short-circuiting on an empty list looked tidy and left the digest of a file nobody has
-        // any more sitting in the manifest — where, if the package ever came back with different
-        // contents at the same path, it would read as still acknowledged.
+        // The manifest replaces rather than merges, so this is what clears a removed package: a
+        // left-behind digest would read as still acknowledged if the path ever came back.
         let dir = Scratch::new("magi-ack-disc", "forgets");
         let at = dir.join("site/pack/vendor/start/thing/plugin");
         std::fs::create_dir_all(&at).expect("mkdir");

@@ -1,11 +1,6 @@
-//! What a repository is allowed to say.
-//!
-//! `.magi.lua` arrives with a checkout. Cloning something and running `magi` in it must not be
-//! enough to add a tool — which can name a command — or a provider, which names a URL the whole
-//! conversation is sent to. The second is the dangerous one and the one that looks harmless.
-//!
-//! Run through the binary rather than the library, because the boundary is between two files on
-//! disk and only a real process reads them in the real order.
+//! What a repository is allowed to say. `.magi.lua` arrives with a checkout, and cloning something
+//! must not be enough to add a tool — which names a command — or a provider, which names a URL the
+//! whole conversation is sent to. Run through the binary, because the boundary is two files on disk.
 
 use magi_model::scratch::Scratch;
 
@@ -23,10 +18,7 @@ fn workspace(name: &str) -> Scratch {
     dir
 }
 
-/// What the machine's own configuration says.
-///
-/// `init.lua` is appended to rather than replaced: it is the entry point, and a test that
-/// overwrote it would be testing a config that loads no protocols and no catalog.
+/// What the machine's own configuration says. `init.lua` is appended to rather than replaced.
 fn machine(dir: &Path, file: &str, source: &str) {
     let path = dir.join("config/magi").join(file);
     if file == "init.lua" {
@@ -55,12 +47,8 @@ fn magi(dir: &Path, args: &[&str]) -> std::process::Output {
         .expect("run magi")
 }
 
-/// The same, with a fake melchior in front of whatever this machine has.
-///
-/// Anything that reads the model catalog needs one: `magi models` shells out to
-/// `melchior models --json`, so without it the catalog is empty and a test about *choosing* a
-/// model has nothing to choose between. In front rather than instead, for the same reason
-/// `oneshot.rs` does it: the run still needs an ordinary `PATH` for everything else.
+/// The same, with a fake melchior in front of whatever this machine has: `magi models` shells out to
+/// `melchior models --json`, so without one the catalog is empty. In front rather than instead.
 fn with_melchior(dir: &Path, mind: &Mind, args: &[&str]) -> std::process::Output {
     let inherited = std::env::var("PATH").unwrap_or_default();
     let mut command = Command::new(env!("CARGO_BIN_EXE_magi"));
@@ -77,12 +65,8 @@ fn with_melchior(dir: &Path, mind: &Mind, args: &[&str]) -> std::process::Output
 
 #[test]
 fn a_project_naming_a_provider_is_told_it_does_nothing() {
-    // The exfiltration case as it was written: a repository naming an endpoint the conversation
-    // is sent to. It was refused by a guard on `magi.provider`, which turns out to have been
-    // guarding a door onto nothing — the registrar stored what it was handed where nothing read
-    // it, so no configuration could add a provider, the machine's own included. melchior owns
-    // the model. What is left to check is that the URL still goes nowhere, and that saying so is
-    // not silent.
+    // A repository naming an endpoint the conversation is sent to. melchior owns the model, so what
+    // is left to check is that the URL goes nowhere and that saying so is not silent.
     let dir = workspace("provider");
     project(
         &dir,
@@ -135,14 +119,8 @@ magi.tool("mine", {
 
 #[test]
 fn a_project_may_still_choose_among_what_the_machine_offers() {
-    // The useful half, and the half that carries no authority: picking a model.
-    //
-    // The catalog comes from a fake melchior on the run's own `PATH`, not from the one this
-    // machine happens to have installed. It used to name a model the shipped catalog declares,
-    // which passes wherever melchior exists and fails everywhere else — `magi models` shells out
-    // to `melchior models --json` and gets nothing, so the list is empty and the assertion reads
-    // as "the project's choice was ignored" when the truth is that nothing offered anything.
-    // CI found it the first time these tests ran somewhere without the siblings.
+    // The catalog comes from a fake melchior on the run's own `PATH`: naming a model the shipped
+    // catalog declares passes wherever melchior exists and fails everywhere else.
     let dir = workspace("choose");
     let mind = Mind::answering("trust-choose", "unused");
     project(&dir, &format!("magi.model = \"{MODEL}\"\n"));
@@ -158,9 +136,7 @@ fn a_project_may_still_choose_among_what_the_machine_offers() {
 
 #[test]
 fn the_machine_config_can_add_a_tool_that_a_project_cannot() {
-    // The same declaration, moved one file up, is honoured. Without this the test above would
-    // pass for a version that simply never loaded installed tools at all -- which is what it
-    // did before this milestone.
+    // Without this the test above would pass for a version that never loaded installed tools.
     let dir = workspace("installed");
     std::fs::write(
         dir.join("config/magi/tools/mine.lua"),
@@ -174,8 +150,7 @@ magi.tool("mine", {
     )
     .expect("write");
 
-    // Named from the entry point, because nothing is discovered by scanning: a file the
-    // machine's `init.lua` does not load does not run, however it got into the directory.
+    // Nothing is discovered by scanning: a file the machine's `init.lua` does not load does not run.
     machine(&dir, "init.lua", "magi.load(\"tools/mine.lua\")\n");
 
     let output = magi(&dir, &["tools"]);
@@ -192,13 +167,10 @@ magi.tool("mine", {
 
 #[test]
 fn the_installed_tool_file_is_the_one_that_runs() {
-    // There is no shipped copy to lose to any more: the binary carries no configuration, so the
-    // file on disk is the only one there is. This pins that it is actually read.
+    // The binary carries no configuration, so the file on disk is the only one there is.
     let dir = workspace("override");
-    // The transport, not the description: since M4 a peer declares its own description and
-    // that wins, so asserting on one tests which binary happens to be on PATH rather than
-    // which file was read. This test passed for a year of afternoons because the `magi` it
-    // found had no `ext` subcommand, the peer never started, and the config's claim stood.
+    // The transport, not the description: a peer declares its own description and that wins, so
+    // asserting on one tests which binary is on PATH rather than which file was read.
     machine(
         &dir,
         "tools.lua",
@@ -229,10 +201,7 @@ magi.tool("shell", {
 
 #[test]
 fn a_directory_the_machine_vouched_for_may_declare_anything() {
-    // The escape hatch, and the reason the rule is usable rather than merely safe. The
-    // decision is the user's, made once, in the config only they can edit. Without it the rule
-    // would be worked around instead of used -- and a project-local endpoint is a real thing
-    // to want.
+    // The escape hatch: the decision is the user's, made once, in the config only they can edit.
     let dir = workspace("vouched");
     let here = dir.join("project").display().to_string();
     machine(
@@ -259,17 +228,14 @@ magi.tool("ours", {
     );
     let output = magi(&dir, &["models", "--all"]);
     let said = String::from_utf8_lossy(&output.stderr);
-    // Not refused, which is the whole of what vouching does. Whether the provider then works
-    // is no longer visible from here and is not this test's business: melchior owns the
-    // catalog, so a provider named in magi's config declares to nobody -- see `config/mod.rs`.
-    // What is on trial is the gate, and a vouched file passes it silently.
+    // Not refused, which is the whole of what vouching does. Whether the provider then works is
+    // melchior's business — a provider named in magi's config declares to nobody.
     assert!(
         !said.contains("will not be used"),
         "nothing was refused: {said}"
     );
 
-    // And its tools, not only its providers. Honouring one and dropping the other would make
-    // vouching mean half of what it says.
+    // And its tools, not only its providers.
     let output = magi(&dir, &["tools"]);
     let listed = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -280,13 +246,8 @@ magi.tool("ours", {
 
 #[test]
 fn no_two_shipped_tool_files_claim_the_same_tool() {
-    // Registration is keyed, so two files declaring `bash` means the later one wins and the
-    // earlier one silently does not exist. A sandboxed-bash *example* was shipped in
-    // `config/tools/` describing itself as "not registered by default"; it was installed with
-    // everything else, won the key, and pointed the shell at `/home/you/project`. The next
-    // command anyone ran answered "bwrap: Can't find source path".
-    //
-    // Anything under `config/` is live configuration. This is the check that says so.
+    // Registration is keyed, so two files declaring `bash` means the later one wins and the earlier
+    // silently does not exist. Anything under `config/` is live configuration, examples included.
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config");
     let mut claimed: std::collections::BTreeMap<String, Vec<String>> =
         std::collections::BTreeMap::new();
@@ -321,11 +282,8 @@ fn no_two_shipped_tool_files_claim_the_same_tool() {
     }
 }
 
-/// Copy the checkout's `config/` into a test's config directory.
-///
-/// The binary carries no configuration, so a test that isolates `XDG_CONFIG_HOME` has to install
-/// one — the same thing `make configs` does for a person. Without it there is no entry point, and
-/// every test fails identically at "no configuration".
+/// Copy the checkout's `config/` into a test's config directory — the same thing `make configs` does
+/// for a person. Without it every test fails identically at "no configuration".
 fn install_config(into: &Path) {
     fn copy(from: &Path, to: &Path) {
         std::fs::create_dir_all(to).expect("mkdir");
@@ -345,11 +303,8 @@ fn install_config(into: &Path) {
 
 #[test]
 fn a_project_cannot_turn_off_the_wall_or_grant_itself_anything() {
-    // The half magi had no check for at all. Declarations were guarded; the settings that govern
-    // them were not — so a checked-in `.magi.lua` could set `magi.confine = false`, add to
-    // `magi.allow`, or name its own directory in `magi.trusted`, and none of it was refused or
-    // even reported. The last is the sharpest: a file that can set `trusted` exempts itself from
-    // every other rule here.
+    // Declarations were guarded; the settings that govern them were not. A file that can set
+    // `trusted` exempts itself from every other rule here.
     for setting in [
         "magi.confine = false\n",
         "magi.allow = { { verb = \"read\", anything = true } }\n",

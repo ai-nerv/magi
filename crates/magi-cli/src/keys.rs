@@ -1,10 +1,6 @@
-//! Key handling.
-//!
-//! Shift+Enter for a newline requires the Kitty keyboard protocol; without it a terminal
-//! reports both Enter and Shift+Enter identically and there is nothing to disambiguate.
-//!
-//! When something is open under the prompt it takes the navigation keys first, so Tab, the arrows,
-//! Enter, and Escape mean "the popup" rather than "the prompt".
+//! Key handling. Shift+Enter for a newline requires the Kitty keyboard protocol; without it a
+//! terminal reports Enter and Shift+Enter identically. When something is open under the prompt it
+//! takes the navigation keys first.
 
 #[cfg(test)]
 #[path = "keys/accept.rs"]
@@ -17,20 +13,13 @@ use magi_tui::Editor;
 use magi_tui::complete::{Completion, Kind};
 pub use modal::Modal;
 
-/// A movement of the transcript view.
-///
-/// Emitted in both backends. Inline mode has no owned buffer to move, so it lets the key
-/// through to the terminal, whose own scrollback answers it — which is the point: the two
-/// backends must not differ in what the user can do, only in who keeps the history.
+/// A movement of the transcript view, emitted in both backends: inline mode has no owned buffer, so
+/// it lets the key through to the terminal's own scrollback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scroll {
-    /// Up one page.
     PageUp,
-    /// Down one page.
     PageDown,
-    /// To the first line.
     Top,
-    /// To the newest output, resuming follow.
     Bottom,
     /// Up a few lines, for a mouse wheel.
     LineUp,
@@ -41,83 +30,45 @@ pub enum Scroll {
 /// What a keypress asks the driver to do.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Action {
-    /// The buffer changed; redraw.
     Redraw,
     /// A completion was taken, and the popup must stay closed until the next keystroke.
     Accepted,
-    /// The highlight moved inside an open list; the list itself must not be recomputed.
-    ///
-    /// **Its own action because `Redraw` was not specific enough.** The completion popup is
-    /// derived from the prompt and rebuilt after every keystroke that is not one of these, and a
-    /// rebuild starts at the first row. So Up and Down moved the highlight, the driver
-    /// immediately recomputed the menu from a prompt that had not changed, and the selection went
-    /// back to the top — the arrow keys did nothing at all, on every list `/` opened.
-    ///
-    /// The guard beside the rebuild already said "not while a list is open"; it tested only for
-    /// the picker, which is the list the arrows *did* work in.
+    /// The highlight moved inside an open list; the list itself must not be recomputed, because a
+    /// rebuild starts at the first row.
     Moved,
-    /// A line came back from history, and the popup must not reopen over it.
-    ///
-    /// Its own action because recalling `:model` used to put the command menu back on screen,
-    /// and the menu owns the arrow keys — so the next Up moved the highlight instead of
-    /// reaching further back, and history stopped at the first slash command in it.
+    /// A line came back from history, and the popup must not reopen over it: the menu owns the
+    /// arrow keys, so history would stop at the first slash command in it.
     Recalled,
     /// Show tool results in full, or fold them back.
     ToggleDetail,
-    /// Take the mouse from the terminal for the wheel and for clicking, or give it back.
-    ///
-    /// A capture is all-or-nothing, and the terminal has it by default: dragging out a
-    /// selection is what a terminal is for, and magi holding the mouse is the only thing that
-    /// can stop it. This is the opt-in, and the footer says when it is on.
     /// A row was taken from an open selection list.
     Chose(String),
-    /// A selection list was left without taking a row.
-    ///
-    /// Distinct from [`Action::Accepted`] because something may be waiting on the answer: a
-    /// permission question closed with no reply leaves the turn that asked it blocked until it
-    /// gives up on its own, which reads as a hang.
+    /// A selection list was left without taking a row. Distinct from [`Action::Accepted`] because a
+    /// permission question closed with no reply leaves the turn that asked it blocked.
     Dismissed,
-    /// Send this prompt.
     Submit(String),
-    /// Run this colon command.
     Command(String),
-    /// Interrupt the running turn.
     Interrupt,
-    /// Point the screen at the next agent along, or the previous one.
-    ///
-    /// **The keys are the feature.** The two arrows in the footer are the sign that they exist;
-    /// the footer is a plain `Paragraph` with nothing recording where it landed, and a control
-    /// you can only click is one nobody finds twice.
+    /// Point the screen at the next agent along, or the previous one. The two arrows in the footer
+    /// are the only sign they exist, and a control you can only click is one nobody finds twice.
     Crew {
         /// Along the ring rather than back down it.
         forward: bool,
     },
     /// Hand the prompt to `$EDITOR`.
     ExternalEdit,
-    /// Move the transcript view.
     Scroll(Scroll),
-    /// Start a search of the transcript.
     Search,
     /// Go to the next or previous match.
     Match {
-        /// Forwards through the transcript, or backwards.
         forward: bool,
     },
-    /// Nothing happened.
     Ignore,
 }
 
-/// Whether the completion popup must be recomputed from the prompt after this action.
-///
-/// **One definition, because the driver and the key handler disagreeing is the bug this exists
-/// for.** The popup is derived from the prompt, so a keystroke that changed the prompt has to
-/// rebuild it — that is how typing narrows the menu. A keystroke that only moved the highlight
-/// has not changed the prompt, and rebuilding starts the list at the top again.
-///
-/// That is precisely what happened: Up and Down returned [`Action::Redraw`], which is also what
-/// typing returns, so the driver could not tell the two apart and recomputed after both. Every
-/// piece worked alone — the highlight moved, the popup drew the row it was told to — and the
-/// arrow keys did nothing on any list `/` opened.
+/// Whether the completion popup must be recomputed from the prompt after this action. One
+/// definition, because a keystroke that only moved the highlight must not rebuild the list — which
+/// is what made the arrow keys do nothing on every list `/` opened.
 #[must_use]
 pub fn recomputes(action: &Action) -> bool {
     !matches!(
@@ -125,14 +76,9 @@ pub fn recomputes(action: &Action) -> bool {
         Action::Accepted | Action::Dismissed | Action::Recalled | Action::Moved
     )
 }
-/// Apply a keypress to the editor and whatever is open under it.
-///
-/// `busy` gates submission: a prompt sent mid-turn would be a steering message, which is an
-/// M2 concern, so for now Enter during a turn does nothing.
-/// A selection list outranks the prompt for the navigation keys, and so does a completion popup,
-/// for the same reason: while one is open it is what the arrows are about. They are one slot —
-/// see [`magi_tui::overlay::Overlay`] — but not one block of handling, because quit and interrupt
-/// go between them.
+/// Apply a keypress to the editor and whatever is open under it. `busy` gates submission. A
+/// selection list and a completion popup each outrank the prompt for the navigation keys; they are
+/// one slot but not one block of handling, because quit and interrupt go between them.
 pub fn handle(
     key: KeyEvent,
     editor: &mut Editor,
@@ -146,9 +92,7 @@ pub fn handle(
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
-    // **A float takes the navigation keys before anything else.** It is drawn over the
-    // transcript and it is what the person is looking at, so escape closes it rather than
-    // clearing the prompt, and the arrows scroll it rather than reaching history.
+    // A float takes the navigation keys first: escape closes it rather than clearing the prompt.
     if let Some(open) = pane.as_mut() {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
@@ -179,8 +123,7 @@ pub fn handle(
                 open.bottom(page);
                 return Action::Moved;
             }
-            // Everything else is ignored rather than reaching the prompt: a float is modal, and
-            // typing into a prompt you cannot see is how a stray keystroke becomes a sent turn.
+            // Everything else is ignored rather than reaching the prompt: a float is modal.
             _ => return Action::Ignore,
         }
     }
@@ -191,21 +134,17 @@ pub fn handle(
     {
         match key.code {
             KeyCode::Esc => {
-                // One escape closes the whole list, not one character of the query. Backspace
-                // is how you widen it; escape is how you leave.
+                // One escape closes the whole list, not one character of the query.
                 *overlay = None;
                 return Action::Dismissed;
             }
-            // Typing narrows the list rather than reaching the prompt. Fifty-three rows is
-            // more than anyone should arrow through, and the prompt is holding whatever it was
-            // holding — this is not an edit of it.
+            // Typing narrows the list rather than reaching the prompt.
             KeyCode::Char(c) if !ctrl && !alt => {
                 open.push(c);
                 return Action::Accepted;
             }
             KeyCode::Backspace => {
-                // A query that has run out closes nothing: backspacing past the start is a
-                // widened list, and leaving is what escape is for.
+                // Backspacing past the start is a widened list; leaving is what escape is for.
                 open.pop();
                 return Action::Accepted;
             }
@@ -218,9 +157,8 @@ pub fn handle(
                 return Action::Accepted;
             }
             KeyCode::Enter | KeyCode::Tab => {
-                // Only closes when something was actually taken. A row that cannot be used
-                // says so and leaves the list up, because the next thing you want is a
-                // different row and not to retype the query that found this one.
+                // Only closes when something was actually taken; a row that cannot be used leaves
+                // the list up.
                 return match open.take() {
                     Some(chosen) => {
                         *overlay = None;
@@ -233,19 +171,16 @@ pub fn handle(
         }
     }
 
-    // Normal mode, before anything that could take a character as text. Nothing below this
-    // point is reached with a bare letter while the prompt is in normal mode, which is the
-    // whole of what modal means: `i` is a command until it is told to be an `i`.
+    // Normal mode, before anything that could take a character as text: `i` is a command until it
+    // is told to be an `i`.
     if !modal.mode.is_insert() && overlay.is_none() {
         return modal::normal(key, editor, modal, busy);
     }
 
-    // Quit and interrupt outrank the popup: a user reaching for them wants out, not a
-    // dismissed menu they then have to escape from a second time.
+    // Quit and interrupt outrank the popup: a user reaching for them wants out.
     match key.code {
-        // Neither of these leaves any more. `:q` is the way out, and a key that quits on an
-        // empty prompt is a key that quits when you meant to clear one -- which is the same
-        // keystroke, told apart only by what happened to be in the box.
+        // Neither of these leaves any more: a key that quits on an empty prompt is a key that quits
+        // when you meant to clear one.
         KeyCode::Char('c') if ctrl => {
             if overlay
                 .as_ref()
@@ -260,10 +195,8 @@ pub fn handle(
         KeyCode::Char('d') if ctrl && editor.is_blank() => return Action::Ignore,
         KeyCode::Char('x') if ctrl => return Action::ExternalEdit,
         KeyCode::Char('o') if ctrl => return Action::ToggleDetail,
-        // **The unshifted `<` and `>` keys**, which is what the footer draws. Alt because the
-        // characters themselves are text a prompt has to be able to hold, and because both are
-        // free in every mode: a bare character reaches the editor, and every other modifier on
-        // these two is already spoken for by a word motion or a kill.
+        // The unshifted `<` and `>` keys, which the footer draws. Alt because the characters
+        // themselves are text a prompt has to hold, and every other modifier is spoken for.
         KeyCode::Char(',') if alt => return Action::Crew { forward: false },
         KeyCode::Char('.') if alt => return Action::Crew { forward: true },
         _ => {}
@@ -279,9 +212,7 @@ pub fn handle(
                 return Action::Redraw;
             }
             KeyCode::Up => {
-                // At the top of the menu, Up leaves it for history rather than wrapping round
-                // to the bottom. A menu that wraps is one you cannot walk out of, and typing
-                // `/` put it between the user and every earlier prompt they had.
+                // At the top of the menu, Up leaves it for history rather than wrapping round.
                 if open.selected == 0 {
                     *overlay = None;
                     editor.history_prev();
@@ -297,17 +228,12 @@ pub fn handle(
             KeyCode::Tab => {
                 accept(open, editor);
                 *overlay = None;
-                // Not `Redraw`: the popup is recomputed from the prompt after every key, and
-                // what was just accepted still matches what offered it. Saying so keeps the
-                // caller from reopening the menu the user has this moment chosen from, which
-                // left every exact-match command -- `:help`, `:quit` -- impossible to submit.
+                // Not `Redraw`: the popup is recomputed from the prompt after every key, so saying
+                // so keeps the caller from reopening the menu just chosen from.
                 return Action::Accepted;
             }
             KeyCode::Enter => {
-                // Tab completes; Enter runs. A palette where enter only fills the box asks
-                // for the key twice to reach one command, and reads as a menu that does
-                // nothing -- which is what `:model` looked like for as long as this was
-                // shared with Tab. A path completion is not a command, so there enter still
+                // Tab completes; Enter runs. A path completion is not a command, so there enter
                 // only completes: the line it belongs to is not finished yet.
                 let command = open.kind == Kind::Command;
                 accept(open, editor);
@@ -315,8 +241,7 @@ pub fn handle(
                 if !command {
                     return Action::Accepted;
                 }
-                // Through the command line, which has the prompt's own text put aside and
-                // owes it back whether the command runs or not.
+                // Through the command line, which owes the prompt's text back either way.
                 return modal::finish_command(editor, modal);
             }
             _ => {}
@@ -326,16 +251,13 @@ pub fn handle(
     match key.code {
         KeyCode::PageUp => Action::Scroll(Scroll::PageUp),
         KeyCode::PageDown => Action::Scroll(Scroll::PageDown),
-        // Shift is what separates "move the transcript" from "move within the prompt", which
-        // is why Home and End alone stay line motions.
+        // Shift separates "move the transcript" from "move within the prompt".
         KeyCode::Home if shift => Action::Scroll(Scroll::Top),
         KeyCode::End if shift => Action::Scroll(Scroll::Bottom),
         KeyCode::Up if shift => Action::Scroll(Scroll::LineUp),
         KeyCode::Down if shift => Action::Scroll(Scroll::LineDown),
 
-        // Out of insert mode, and only that. Interrupting a turn is the *second* escape, from
-        // normal mode, because a key that both left a mode and cancelled a turn would cancel
-        // one every time somebody finished typing.
+        // Out of insert mode, and only that: interrupting a turn is the *second* escape.
         KeyCode::Esc if modal.commanding() => {
             modal.close_command(editor);
             Action::Redraw
@@ -349,8 +271,7 @@ pub fn handle(
             editor.newline();
             Action::Redraw
         }
-        // The command line runs whatever is on it, whether or not a turn is going: `:q` and
-        // `:model` are the UI's business and do not wait on the daemon.
+        // The command line runs whether or not a turn is going: `:q` does not wait on the daemon.
         KeyCode::Enter if modal.commanding() => modal::finish_command(editor, modal),
         KeyCode::Enter => {
             if busy {
@@ -362,8 +283,7 @@ pub fn handle(
                 None => Action::Ignore,
             }
         }
-        // Backspacing the colon away is how vim leaves a command line, and the prompt gets its
-        // text back the same as if escape had done it.
+        // Backspacing the colon away is how vim leaves a command line, and the prompt is restored.
         KeyCode::Backspace if modal.commanding() && editor.text() == ":" => {
             modal.close_command(editor);
             Action::Redraw

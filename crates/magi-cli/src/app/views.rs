@@ -1,17 +1,9 @@
 //! Opening the info pane: which view, and what goes in it.
-//!
-//! Split out under THE RULE; the app these hang off is next door. Together they are the whole
-//! of what a view costs — a function that returns rows and a line in the command table. That is
-//! the point of the pane being one primitive rather than one panel per thing worth showing.
 
 use super::App;
 
 impl App {
-    /// Open the timeline of what this session has done.
-    ///
-    /// Opens at the newest end, because that is what somebody typing `:trace` is asking about —
-    /// a view that opened at the first thing that ever happened would need scrolling before it
-    /// answered anything.
+    /// Open the timeline of what this session has done, at the newest end.
     pub fn show_trace(&mut self) {
         self.pane = Some(
             magi_tui::pane::Pane::new("trace", self.timeline.lines())
@@ -20,11 +12,8 @@ impl App {
         );
     }
 
-    /// Open what this session has spent.
-    ///
-    /// Per turn and in total, in the four counters a provider bills separately. No money: magi
-    /// does not know the rates, melchior does, and a guess printed here would go stale the day a
-    /// provider changed one -- see `magi_tui::cost`.
+    /// Open what this session has spent, per turn and in total. Tokens, not money: magi does not
+    /// know the rates, melchior does.
     pub fn show_cost(&mut self) {
         let turns: Vec<magi_tui::cost::Turn> = self
             .entries
@@ -47,12 +36,8 @@ impl App {
         );
     }
 
-    /// Open what the corner is about, or close it if it is already open.
-    ///
-    /// **A second press closes it.** The corner is a control, and a control that only ever opens
-    /// is one you have to reach for the keyboard to undo — which is the opposite of why it is a
-    /// button. Closing only when *its own* view is showing: pressing the corner while some other
-    /// pane is up should get you the corner's, not nothing.
+    /// Open what the corner is about; a second press closes it. Closes only when the corner's own
+    /// view is showing, so pressing it over some other pane opens the corner's.
     pub fn press_corner(&mut self) {
         if self
             .pane

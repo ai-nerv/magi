@@ -1,76 +1,32 @@
 //! What an open selection list is choosing, and where its answer goes.
-//!
-//! Its own file because the answer is the interesting part: the list is a generic widget
-//! and every row looks alike, so what separates one list from another is entirely which
-//! of these it was opened as. Held beside the list rather than inside it — without it
-//! every answer went to the same place, and picking a thinking level asked for a model
-//! called "medium".
 
 use magi_proto::ToolCallId;
 
-/// What an open selection list is choosing.
+/// What an open selection list is choosing. Rows carry `(label, meaning)` because the picker is
+/// taken by the keypress that chose a row, leaving no list to index by position.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Picking {
-    /// Which model answers.
     Model,
-    /// How much reasoning to ask for.
     Thinking,
-    /// Which earlier session to continue.
-    ///
-    /// Carries what each row said beside the id it means, because a row is labelled with what a
-    /// person can read — what they asked for — and that is not an id. The picker is taken by the
-    /// keypress that chose a row, so by the time this is read there is no list left to index.
     Session {
-        /// Every row, as `(what it said, which session it was)`.
         rows: Vec<(String, String)>,
     },
-    /// A question a tool asked in its own words.
-    ///
-    /// The general form of [`Self::Permission`]. Carries the question's id, because the answer
-    /// has to find the turn blocked on it, and each row as `(what it said, what it means)` —
-    /// the same shape [`Self::Session`] needs and for the same reason: the picker is taken by
-    /// the keypress that chose a row, so by the time this is read there is no list left to
-    /// index by position.
     Asked {
-        /// Which question is being answered.
         id: ToolCallId,
-        /// Every row, as `(the label drawn, the option id that goes back)`.
-        ///
-        /// A tool that labelled two options identically gets the first of them, which is also
-        /// what a person choosing between two identical rows would expect.
         rows: Vec<(String, String)>,
     },
-    /// Whether a tool may do what it is about to do.
-    ///
-    /// Carries the question's id, because the answer has to find its way back to the turn that
-    /// is blocked on it, and the widths on offer, because they were computed from the action by
-    /// the side that knows what the action was.
     Permission {
-        /// Which question is being answered.
         id: ToolCallId,
-        /// The widths, in the order they were offered.
         offers: Vec<magi_proto::permit::Scope>,
     },
-    /// Whether another session may become this one's child.
-    ///
-    /// Not a [`Permission`](Self::Permission) even though it looks like one on screen, and the
-    /// difference is where the answer goes: a permission unblocks a turn over this session's own
-    /// socket, and this goes down the pipe to melchior, which is holding a request another session
-    /// is waiting on. Same picker, two entirely different destinations.
+    /// Answered down the pipe to melchior, not over this session's own socket.
     Adoption {
-        /// Which request, as melchior named it.
         id: String,
     },
 }
 
 impl Picking {
-    /// Whether something is blocked until this is answered.
-    ///
-    /// **The three that stop a turn, and not the three that do not.** A model list, a thinking
-    /// level and a session picker are conveniences: nothing waits on them, and closing one costs
-    /// nobody anything. A permission, a tool's own question and an adoption each hold a *caller*
-    /// — a turn on this session's socket, or another session's request sitting in melchior — and
-    /// a screen that hides one deadlocks the thing waiting.
+    /// Whether a caller — a turn on this socket, or a request held in melchior — waits on this.
     #[must_use]
     pub const fn blocking(&self) -> bool {
         matches!(

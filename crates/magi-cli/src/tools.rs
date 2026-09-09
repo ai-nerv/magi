@@ -1,10 +1,7 @@
 //! `magi tools` — what the model can call, and how each one is reached.
 
-/// Print the registry, transport and all.
-///
-/// The transport is shown because it is the thing a person needs to know: a Lua tool runs in
-/// this process, a process tool is a peer with its own life, and which one a tool is decides
-/// what happens when it misbehaves.
+/// Print the registry, transport and all: a Lua tool runs in this process, a process tool is a peer
+/// with its own life, and which it is decides what happens when it misbehaves.
 pub fn print() -> Result<(), magi_lua::LuaError> {
     let loaded = crate::config::load()?;
     let mut engine = magi_lua::Engine::new();

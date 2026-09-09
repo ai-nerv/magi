@@ -1,9 +1,5 @@
-//! Pointing the loop at somebody else, against two real sockets.
-//!
-//! Two facts are worth a socket rather than an assertion about one. What a session is *asked for*
-//! on a swap decides whether the peer's history arrives at all, and whether the UI claims a screen
-//! on a session that already has one. Neither is visible from inside the loop; both are the first
-//! frame it writes.
+//! Pointing the loop at somebody else, against two real sockets. What a session is asked for on a
+//! swap is not visible from inside the loop; it is the first frame the loop writes.
 
 use super::*;
 use magi_model::scratch::Scratch;
@@ -51,26 +47,16 @@ struct Swapped {
     own: Heard,
     peer: Heard,
     commands: mpsc::Sender<UiCommand>,
-    /// Held open, not read: the loop's reader task ends the moment nobody is taking events, and
-    /// a connection that ended for that reason would prove nothing about the one under test.
+    /// Held open, not read: the loop's reader task ends the moment nobody is taking events.
     _events: mpsc::Receiver<HarnessEvent>,
-    /// Held for the same reason: a watch with no sender answers `changed` immediately and for
-    /// ever, which is the driver having gone rather than the screen having moved.
+    /// Held for the same reason: a watch with no sender answers `changed` immediately and for ever.
     _target: watch::Sender<PathBuf>,
-    /// The directory both sockets are in, removed when this is dropped.
-    ///
-    /// It used to unlink the two paths by name here instead, which left them behind whenever
-    /// [`swap`] panicked between binding the first and returning this — and a week of that is a
-    /// temporary directory full of sockets. The guard also covers the unwind, which the two
-    /// `remove_file` calls did and a last line would not.
+    /// The directory both sockets are in, removed when this is dropped — including on an unwind.
     _at: Scratch,
 }
 
-/// Attach to our own session at `from`, then point the screen at a peer.
-///
-/// **Short names.** A unix socket path may not exceed `SUN_LEN` — 108 bytes — and under
-/// `gate-hermetic` the whole run already sits in a private temporary directory. One directory
-/// holding `own` and `peer` is shorter than two paths that each spell out both.
+/// Attach to our own session at `from`, then point the screen at a peer. One short directory holding
+/// `own` and `peer`, because a unix socket path may not exceed `SUN_LEN` — 108 bytes.
 async fn swap(name: &str, from: Cursor) -> Swapped {
     let at = Scratch::new("sw", name);
     let own_at = at.join("own.sock");
@@ -104,12 +90,9 @@ async fn swap(name: &str, from: Cursor) -> Swapped {
     }
 }
 
-/// The one number that decides whether a peer appears to have said anything.
-///
-/// A session answers an attach by keeping back as many entries as the cursor claims are already
-/// held. Carried across a swap, the count from our own session withholds exactly that much of the
-/// peer's history — and on a screen that has been open a while, that is all of it. Nothing errors;
-/// the agent simply looks like it has never spoken.
+/// A session answers an attach by keeping back as many entries as the cursor claims are held, so our
+/// own session's count carried across a swap withholds that much of the peer's history. Nothing
+/// errors; the agent simply looks like it has never spoken.
 #[tokio::test]
 async fn a_peer_is_asked_for_its_history_from_the_beginning() {
     let swapped = swap("cursor", Cursor(400)).await;
@@ -129,8 +112,7 @@ async fn a_peer_is_asked_for_its_history_from_the_beginning() {
     }
 }
 
-/// Two UIs holding a screen on one session is a tool given rows in a terminal it will never
-/// draw in. The peer's own UI is the one that lives there.
+/// Two UIs holding a screen on one session is a tool given rows in a terminal it will never draw in.
 #[tokio::test]
 async fn only_our_own_session_is_told_there_is_a_screen_here() {
     let swapped = swap("draws", Cursor::ZERO).await;
@@ -179,7 +161,6 @@ async fn a_command_meant_for_our_own_session_never_reaches_a_peer() {
         })
         .await
         .expect("queued");
-    // Long enough for a frame to cross a unix socket in the same process many times over.
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     let asked = swapped.peer.lock().expect("heard").clone();
     assert!(

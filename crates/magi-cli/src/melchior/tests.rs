@@ -1,22 +1,16 @@
 //! What magi knows about melchior, and what it does not.
-//!
-//! Split out under THE RULE; the two directions of the pipe are next door.
 
 use super::*;
 
-/// Where a session in `project` would bind its own UI socket.
-///
-/// Made the way a real one is rather than written out, because that is the whole of what is
-/// being handed to melchior: a literal would prove the flag is accepted, not that what goes
-/// through it is the path this process would bind.
+/// Where a session in `project` would bind its own UI socket, made the way a real one is: a literal
+/// would prove the flag is accepted, not that what goes through it is the path this process binds.
 fn a_screen(project: &str) -> std::path::PathBuf {
     crate::session::socket_for(project, &crate::session::key())
 }
 
 #[test]
 fn a_missing_melchior_is_a_session_without_siblings() {
-    // The balthasar rule: a sibling not being installed is the ordinary case, not a failure.
-    // This is the one that decides whether somebody with no melchior can use magi at all.
+    // A sibling not being installed is the ordinary case, not a failure.
     assert!(
         Melchior::start(
             "melchior-that-is-not-installed",
@@ -29,11 +23,8 @@ fn a_missing_melchior_is_a_session_without_siblings() {
     );
 }
 
-/// What the spawn would say, without spawning anything.
-///
-/// The screen is handed in rather than made here, because [`crate::session::key`] is a pid
-/// and a clock: two calls in one process give two paths, and a test that made its own to
-/// compare against would be comparing two different sessions.
+/// What the spawn would say, without spawning anything. The screen is handed in because
+/// [`crate::session::key`] is a pid and a clock: two calls in one process give two paths.
 fn argv(screen: &std::path::Path, role: Role<'_>) -> Vec<String> {
     serving("melchior", "magi", None, screen, role)
         .get_args()
@@ -43,11 +34,8 @@ fn argv(screen: &std::path::Path, role: Role<'_>) -> Vec<String> {
 
 #[test]
 fn every_session_tells_the_layer_where_its_screen_is() {
-    // **The one a headless magi rests on.** melchior cannot work this path out — it is named
-    // after a key this process keeps to itself — so `--ui` is the whole of how a peer learns
-    // where to attach. Dropped for a session with no terminal of its own, which is the
-    // plausible-looking change, a headless agent would be on every roster with nowhere to
-    // look and nothing anywhere would say so.
+    // melchior cannot work this path out — it is named after a key this process keeps to itself —
+    // so `--ui` is the whole of how a peer learns where to attach.
     let screen = a_screen("magi");
     let said = argv(&screen, Role::default());
     let at = said
@@ -63,9 +51,8 @@ fn every_session_tells_the_layer_where_its_screen_is() {
 
 #[test]
 fn a_role_and_what_it_is_for_reach_the_layer_together() {
-    // Both or neither. melchior takes whichever source speaks first entirely, so a magi that
-    // passed the name and dropped the sentence would leave the description to be picked up
-    // from a config — a role nobody declared, described by somebody who never met it.
+    // Both or neither: melchior takes whichever source speaks first entirely, so a name without
+    // its sentence would leave the description to be picked up from a config.
     let screen = a_screen("magi");
     let said = argv(
         &screen,
@@ -80,8 +67,7 @@ fn a_role_and_what_it_is_for_reach_the_layer_together() {
             .any(|two| two == ["--role-description", "reads diffs"])
     );
 
-    // And nothing at all for a session that was not told, which is every session somebody
-    // opened at a terminal: the flags are how the command line speaks, not a default.
+    // And nothing at all for a session that was not told: the flags are the command line.
     let quiet = argv(&screen, Role::default());
     assert!(!quiet.iter().any(|arg| arg == "--role"));
     assert!(!quiet.iter().any(|arg| arg == "--role-description"));
@@ -89,8 +75,7 @@ fn a_role_and_what_it_is_for_reach_the_layer_together() {
 
 #[test]
 fn a_session_nobody_minted_is_its_own_run() {
-    // The ordinary case: somebody opened a terminal. A root's run is its own id, which is
-    // the same thing melchior writes into `<project>/<id>.session` for it.
+    // The ordinary case: a root's run is its own id, which is what melchior writes for it too.
     assert_eq!(
         run_from(None, "magi/main/alpha-rho").as_deref(),
         Some("alpha-rho")
@@ -99,9 +84,7 @@ fn a_session_nobody_minted_is_its_own_run() {
 
 #[test]
 fn a_minted_session_belongs_to_the_run_that_started_it() {
-    // And not to itself. A subagent that worked out its own run would start a second one
-    // every time a coordinator spawned a coordinator, and its memory would land beside
-    // nobody's.
+    // And not to itself: a subagent working out its own run would start a second one each time.
     assert_eq!(
         run_from(Some("alpha-rho"), "magi/worker/iota-mu").as_deref(),
         Some("alpha-rho")
@@ -110,16 +93,14 @@ fn a_minted_session_belongs_to_the_run_that_started_it() {
 
 #[test]
 fn a_session_with_no_melchior_belongs_to_no_run() {
-    // Nothing named it, so there is nothing to file it under — and balthasar's own fallback,
-    // one directory per run, is what a harness that never heard of runs already gets.
+    // Nothing named it, so there is nothing to file it under.
     assert_eq!(run_from(None, ""), None);
     assert_eq!(run_from(Some("   "), ""), None);
 }
 
 #[test]
 fn a_prompt_naming_nobody_asks_melchior_nothing() {
-    // Not merely empty — it must not *run* anything. A process per prompt, for a prompt that
-    // named no instances, would be a spawn on every keystroke's worth of work.
+    // Not merely empty — it must not *run* anything: a process per prompt that named nobody.
     assert!(briefing("melchior-that-is-not-installed", "fix the parser", "magi").is_empty());
 }
 
@@ -142,9 +123,7 @@ fn what_melchior_says_is_read_as_what_it_means() {
     assert_eq!(run, "psi-omicron-1788913233");
     assert!(at.ends_with("psi-omicron"));
 
-    // A melchior too old to say which run it is in still names a session. The line that
-    // starts one failing to parse is a magi that will not open at all, and the run has a
-    // fallback where the name has none.
+    // A melchior too old to say which run it is in still names a session.
     let older: Heard = serde_json::from_str(
         r#"{"event":"listening","at":"/run/melchior/magi/psi-omicron","as":"magi/main/psi-omicron"}"#,
     )
@@ -164,9 +143,8 @@ fn what_melchior_says_is_read_as_what_it_means() {
 
 #[test]
 fn a_roster_names_each_peer_with_its_role_and_its_screen() {
-    // The other half of the wire, byte for byte as melchior writes it. Nothing fails when a
-    // field name drifts: the line parses, `agents` is empty, and the session simply has no
-    // peers — which reads as nobody else being up.
+    // The other half of the wire, byte for byte as melchior writes it: a drifted field name leaves
+    // `agents` empty rather than failing.
     let said: Heard = serde_json::from_str(
         r#"{"event":"around","agents":[{"id":"beta-nu","role":"reviewer","ui":"/run/user/1000/magi/magi/1f4a.host"},{"id":"psi-eta","role":"main","ui":null}]}"#,
     )
@@ -181,18 +159,15 @@ fn a_roster_names_each_peer_with_its_role_and_its_screen() {
         around[0].ui.as_deref(),
         Some(std::path::Path::new("/run/user/1000/magi/magi/1f4a.host"))
     );
-    // An agent whose harness published no screen is a peer with a name, not a line magi
-    // refuses to read.
+    // An agent whose harness published no screen is a peer with a name.
     assert_eq!(around[1].id, "psi-eta");
     assert_eq!(around[1].ui, None);
 }
 
 #[test]
 fn an_older_melchior_that_says_only_names_still_has_peers() {
-    // The two programs are released apart, so every build of one meets a build of the other
-    // that predates it. Read strictly, this is a `$` popup that offers nobody for the life
-    // of the session, with nothing anywhere saying why — and a name with no role and no
-    // screen is exactly what magi had before any of this existed.
+    // The two programs are released apart, so every build of one meets one of the other that
+    // predates it; read strictly this is a `$` popup that offers nobody.
     let said: Heard = serde_json::from_str(r#"{"event":"around","names":["beta-nu","psi-eta"]}"#)
         .expect("an older melchior still reads");
     let Heard::Around { agents, names } = said else {
@@ -208,8 +183,7 @@ fn an_older_melchior_that_says_only_names_still_has_peers() {
     );
     assert!(around.iter().all(|them| them.ui.is_none()));
 
-    // And a melchior halfway between the two, which names its agents and says nothing about
-    // where they draw.
+    // And a melchior halfway between: names its agents, says nothing about where they draw.
     let said: Heard =
         serde_json::from_str(r#"{"event":"around","agents":[{"id":"beta-nu"}]}"#).expect("reads");
     let Heard::Around { agents, names } = said else {
@@ -223,22 +197,13 @@ fn an_older_melchior_that_says_only_names_still_has_peers() {
 
 #[test]
 fn a_line_from_a_newer_melchior_is_not_read_as_something_it_is_not() {
-    // Two repositories move apart. A `heard` this build has never seen should fail to parse
-    // rather than land in the nearest arm — an unknown line read as a `message` would put
-    // something in the transcript that nobody said.
+    // A `heard` this build has never seen must fail to parse rather than land in the nearest arm.
     assert!(serde_json::from_str::<Heard>(r#"{"event":"whistling","tune":"…"}"#).is_err());
 }
 
-/// A project name nothing else will take, and the directory melchior files it under.
-///
-/// **melchior's runtime directory cannot be pointed at a scratch from here.** The three tests
-/// below spawn the real program, which keeps a project under `$XDG_RUNTIME_DIR/melchior/<name>`;
-/// [`Melchior::start`] builds the child's environment itself, and `set_var` is `unsafe`, which
-/// this workspace denies. So the directory is taken away afterwards instead — from a `Drop`, not
-/// a last line, because two of these tests return early when melchior is missing and all three
-/// can fail an assertion. Without it each run left three more behind for good: this machine had
-/// fifteen, and `tools_live` walks that same directory looking for a sibling that answers, so
-/// every corpse in it is a socket some other test dials and waits on.
+/// A project name nothing else will take, and the directory melchior files it under. Its runtime
+/// directory cannot be pointed at a scratch from here — `set_var` is `unsafe` and this workspace
+/// denies it — so the directory is taken away from a `Drop` afterwards instead.
 struct Project(String);
 
 impl Project {
@@ -261,18 +226,13 @@ impl Drop for Project {
         let runtime = std::env::var_os("XDG_RUNTIME_DIR")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(std::env::temp_dir);
-        // Safe to remove wholesale: the name carries this pid, so nothing outside this process
-        // has ever filed anything here. Both melchiors are already gone by now — the layer's
-        // `Drop` waits for it, and [`Sibling`] waits for the other — so nothing recreates it.
+        // Safe to remove wholesale: the name carries this pid, and both melchiors are gone by now.
         let _ = std::fs::remove_dir_all(runtime.join("melchior").join(&self.0));
     }
 }
 
-/// The second session, killed when the test ends rather than on its last line.
-///
-/// The same failure as the trailing `remove_dir_all`: `let _ = them.kill()` at the bottom does
-/// not run on the unwind, so every failing assertion left a melchior on the process table — and
-/// a `kill` without a `wait` leaves a zombie even when it does run.
+/// The second session, killed when the test ends rather than on its last line: a trailing
+/// `let _ = them.kill()` does not run on the unwind, and a `kill` without a `wait` leaves a zombie.
 struct Sibling(std::process::Child);
 
 impl Drop for Sibling {
@@ -282,10 +242,8 @@ impl Drop for Sibling {
     }
 }
 
-/// A second session in the same project, so there is somebody to be talked to.
-///
-/// A bare child rather than another [`Melchior`], on purpose: if the thing under test is broken,
-/// the fixture must not be broken the same way.
+/// A second session in the same project. A bare child rather than another [`Melchior`], so a broken
+/// thing under test cannot have a fixture broken the same way.
 fn a_sibling(project: &str) -> Option<(std::process::Child, String)> {
     let mut child = Command::new("melchior")
         .args(["serve", "--project", project])
@@ -323,12 +281,9 @@ fn id_of(named: &str) -> &str {
 
 #[test]
 fn a_session_keeps_hearing_after_the_line_that_named_it() {
-    // The bug this is here for, and it is the whole feature: `start` read the first line
-    // through a reader it then dropped, which closed the pipe. The name arrived, the session
-    // looked healthy, and no message ever reached the transcript again -- one line heard,
-    // then silence, with nothing anywhere saying so.
-    // Declared before the layer and the sibling, so it drops after both: locals go in reverse,
-    // and a directory removed while a melchior is still writing to it comes straight back.
+    // `start` read the first line through a reader it then dropped, which closed the pipe: the name
+    // arrived and no message reached the transcript again. Declared before the layer and the
+    // sibling so it drops after both, since a directory removed mid-write comes straight back.
     let project = Project::named("hears");
     let Some((mut layer, _at)) = Melchior::start(
         "melchior",
@@ -393,8 +348,7 @@ fn a_session_keeps_hearing_after_the_line_that_named_it() {
 
 #[test]
 fn a_session_hears_every_message_rather_than_the_first() {
-    // A pipe read once is not a pipe read: the failure that started this looked exactly like
-    // a working session until the second thing arrived.
+    // A pipe read once is not a pipe read: the failure looked exactly like a working session.
     let project = Project::named("again");
     let Some((mut layer, _at)) = Melchior::start(
         "melchior",
@@ -440,9 +394,7 @@ fn a_session_hears_every_message_rather_than_the_first() {
 
 #[test]
 fn what_the_session_is_doing_keeps_reaching_the_layer() {
-    // The other direction, and the same failure mode: a channel that looks fine because the
-    // first write succeeded. A sibling asking `status` is told whatever was last said, so
-    // one that died after a message reads as a session frozen mid-turn forever.
+    // The other direction, and the same failure mode: a channel that looks fine after one write.
     let project = Project::named("doing");
     let Some((mut layer, _at)) = Melchior::start(
         "melchior",

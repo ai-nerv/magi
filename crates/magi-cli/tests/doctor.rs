@@ -1,21 +1,12 @@
-//! `magi doctor`, against the real binary.
-//!
-//! Everything this command answers is decided at start-up and was previously discoverable only
-//! by starting a session and noticing an absence. The properties worth holding are that it
-//! answers without one, that it says where each tool came from, and that a sibling which is not
-//! there is reported as not there rather than omitted — an empty list and a missing program look
-//! identical, and telling them apart is most of why somebody runs this.
+//! `magi doctor`, against the real binary. It answers without starting a session, says where each
+//! tool came from, and reports a missing sibling as missing rather than omitting it.
 
 use magi_model::scratch::Scratch;
 
 use std::process::Command;
 
-/// `magi doctor` in a directory of its own, with `PATH` holding only what is passed.
-///
-/// `$XDG_CONFIG_HOME` points at an empty directory, so this is the machine where nothing is
-/// installed — the one somebody actually runs this on, and the one CI is. That case used to make
-/// the command exit non-zero having printed nothing, which is the least useful possible answer
-/// to "why will my session not start".
+/// `magi doctor` in a directory of its own, with `PATH` holding only what is passed and
+/// `$XDG_CONFIG_HOME` empty.
 fn doctor(path: &std::path::Path) -> String {
     let dir = Scratch::new("magi-doctor", "run");
     let config = Scratch::new("magi-doctor", "config");
@@ -38,8 +29,7 @@ fn doctor(path: &std::path::Path) -> String {
 
 #[test]
 fn a_machine_with_no_siblings_says_so_for_each_of_them() {
-    // The case the command exists for. With none of them installed a session still starts, and
-    // silently has no tools, no model and no memory.
+    // With none of them installed a session still starts, and silently has no tools or model.
     let empty = Scratch::new("magi-doctor", "empty-path");
     let said = doctor(&empty);
 
@@ -57,8 +47,7 @@ fn a_machine_with_no_siblings_says_so_for_each_of_them() {
 
 #[test]
 fn the_builtins_are_listed_with_where_they_came_from() {
-    // The three that are compiled in are there whatever else is missing, and a listing that did
-    // not say where a tool came from could not distinguish those from a config's own.
+    // The three compiled-in tools are there whatever else is missing.
     let empty = Scratch::new("magi-doctor", "builtins");
     let said = doctor(&empty);
 
@@ -73,9 +62,8 @@ fn the_builtins_are_listed_with_where_they_came_from() {
 
 #[test]
 fn a_machine_with_no_configuration_still_gets_an_answer() {
-    // The case this command is most for, and the one it used to refuse: `config::load` reports
-    // "no configuration; run `make configs`" and the whole report went with it. What is compiled
-    // in and what is on `$PATH` do not depend on a configuration existing.
+    // `config::load` reports "no configuration; run `make configs`"; what is compiled in and what
+    // is on `$PATH` do not depend on a configuration existing.
     let empty = Scratch::new("magi-doctor", "no-config");
     let said = doctor(&empty);
     assert!(said.contains("will not load"), "it says so: {said}");
@@ -89,8 +77,6 @@ fn a_machine_with_no_configuration_still_gets_an_answer() {
 
 #[test]
 fn it_answers_without_starting_a_session() {
-    // No socket, no daemon, no model. If this ever needs one, the command has stopped being
-    // usable for the case it was written for: a machine where the session will not start.
     let empty = Scratch::new("magi-doctor", "cold");
     let said = doctor(&empty);
     assert!(said.contains("configuration"), "{said}");

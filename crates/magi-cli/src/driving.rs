@@ -1,29 +1,14 @@
-//! What magi tells its siblings, from its own configuration.
-//!
-//! One configuration, in one place. A person edits `~/.config/magi/init.lua`; casper, melchior
-//! and balthasar are told what follows from it, and none is left reading a file of its own that
-//! might disagree.
-//!
-//! **Asked before told.** Each sibling declares what it takes and magi answers only that, so a
-//! setting one of them renames comes back refused by name instead of failing silently on the far
-//! side. What magi has no answer for is simply not sent, and the sibling keeps its own default.
+//! What magi tells its siblings, from its own configuration. Each sibling declares what it takes and
+//! magi answers only that, so a setting one of them renames comes back refused by name instead of
+//! failing silently. What magi has no answer for is not sent, and the sibling keeps its own default.
 
 use magi_host::driving;
 
 /// Every sibling magi drives, and what it is called on `PATH`.
-///
-/// casper is here because it takes settings like the other two do: which tools are off, what
-/// each may load, how much output one may return. It was left out while it had nothing to
-/// answer, and a coordinator that skips a sibling which now declares `needs` is a person
-/// editing `magi.casper` and watching nothing happen.
 const SIBLINGS: &[&str] = &["casper", "melchior", "balthasar"];
 
-/// Tell each sibling what this configuration implies for it.
-///
-/// Quiet when a sibling is not installed: there is nothing to coordinate, and a session that
-/// refused to start over an absent sibling would be worse than one that carries on without it.
-/// A refusal *is* said out loud — a setting the far side would not take is a coordinator and a
-/// sibling disagreeing about what a name means, which is worth a line on stderr.
+/// Tell each sibling what this configuration implies for it. Quiet when a sibling is not installed;
+/// a refusal is said out loud, being a coordinator and a sibling disagreeing about what a name means.
 pub async fn settle(loaded: &crate::config::Loaded) {
     for program in SIBLINGS {
         let needs = driving::needs(program).await;
@@ -51,9 +36,8 @@ pub async fn settle(loaded: &crate::config::Loaded) {
     }
 }
 
-/// What magi's configuration says, in the vocabulary each sibling uses.
-///
-/// Two sources, and the sibling's own block wins.
+/// What magi's configuration says, in the vocabulary each sibling uses. Two sources, and the
+/// sibling's own block wins:
 ///
 /// ```lua
 /// magi.model    = "openrouter/anthropic/claude-sonnet-4.5"  -- shared: what magi is using
@@ -63,10 +47,7 @@ pub async fn settle(loaded: &crate::config::Loaded) {
 /// magi.melchior  = { max_tokens = 4000 }
 /// ```
 ///
-/// The shared pair are settings magi genuinely has an opinion about and a sibling might share the
-/// name for. Everything else belongs to one sibling and is written under its name, so a person
-/// reading the config can see which program a line is aimed at — and a name that sibling does not
-/// take comes back refused rather than sitting there doing nothing.
+/// A name the sibling does not take comes back refused rather than sitting there doing nothing.
 fn answers(loaded: &crate::config::Loaded, program: &str) -> Vec<(String, serde_json::Value)> {
     let mut out: Vec<(String, serde_json::Value)> = Vec::new();
     if let Some(thinking) = loaded.config.string("thinking") {
@@ -116,16 +97,13 @@ mod tests {
 
     #[test]
     fn a_setting_magi_has_no_opinion_about_is_not_invented() {
-        // A coordinator repeating a sibling's own default is a coordinator that will drift from
-        // it the first time the sibling changes its mind.
+        // A coordinator repeating a sibling's own default will drift from it.
         let offered = answers(&loaded(""), "melchior");
         assert!(offered.is_empty(), "{offered:?}");
     }
 
     #[tokio::test]
     async fn an_absent_sibling_is_passed_over_rather_than_fatal() {
-        // Nothing installed under these names in a test environment is the ordinary case; this
-        // must return rather than refuse.
         settle(&loaded(r#"magi.thinking = "off""#)).await;
     }
 }
@@ -154,8 +132,7 @@ mod blocks {
 
     #[test]
     fn caspers_table_of_tools_is_aimed_at_casper() {
-        // The one sibling whose settings are tables rather than scalars, and the reason the
-        // coordinator had to learn to write them: this used to arrive as `casper.tools = nil`.
+        // The one sibling whose settings are tables rather than scalars.
         let held = loaded(r#"magi.casper = { tools = { dino = { off = true } } }"#);
         let said = answers(&held, "casper");
         assert!(said.iter().any(|(n, _)| n == "tools"), "{said:?}");
@@ -165,8 +142,7 @@ mod blocks {
 
     #[test]
     fn a_siblings_block_wins_over_the_shared_answer() {
-        // Both name `thinking`. The one written under the sibling is the one aimed at it, so it
-        // is the one that goes -- and it goes once, not twice with the last write deciding.
+        // Both name `thinking`. The one written under the sibling goes, once.
         let held = loaded(
             r#"
             magi.thinking = "off"
