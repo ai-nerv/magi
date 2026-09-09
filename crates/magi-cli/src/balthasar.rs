@@ -98,9 +98,12 @@ pub async fn start(instance: &str, project: &Path, agent: Option<&str>) -> Start
     // Polled rather than assumed: a socket appears when balthasar binds it. The child is watched as
     // well, so an install that exits at once is not reported twenty seconds later as a timeout.
     let deadline = std::time::Instant::now() + PATIENCE;
+    let mut bound = false;
     while std::time::Instant::now() < deadline {
-        if answering(&socket).await {
-            return Started::Ours(socket);
+        match reached(&socket).await {
+            Reached::Answering => return Started::Ours(socket),
+            Reached::Bound => bound = true,
+            Reached::Nothing => {}
         }
         if let Some(status) = exited() {
             let said = last_words();
@@ -115,6 +118,11 @@ pub async fn start(instance: &str, project: &Path, agent: Option<&str>) -> Start
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
+    // Bound and still busy opening its store. The session may have it: a write is on a clock of its
+    // own, long enough to outlast the rest of that, where refusing here loses the session outright.
+    if bound {
+        return Started::Ours(socket);
+    }
     stop();
     Started::Refused(format!(
         "balthasar did not bind {} within {PATIENCE:?}",
@@ -122,11 +130,21 @@ pub async fn start(instance: &str, project: &Path, agent: Option<&str>) -> Start
     ))
 }
 
-/// Whether balthasar answers, not merely binds: it opens its store on the first call, not at bind.
-async fn answering(path: &Path) -> bool {
-    match magi_ipc::family::Family::dial(path).await {
-        Ok(mut open) => open.call("verbs", Vec::new()).await.is_ok(),
-        Err(_) => false,
+/// How far a poll got: balthasar opens its store on the first call, so it answers after it binds.
+enum Reached {
+    Nothing,
+    Bound,
+    Answering,
+}
+
+/// Dial, and ask for something every balthasar answers.
+async fn reached(path: &Path) -> Reached {
+    let Ok(mut open) = magi_ipc::family::Family::dial(path).await else {
+        return Reached::Nothing;
+    };
+    match open.call("verbs", Vec::new()).await {
+        Ok(_) => Reached::Answering,
+        Err(_) => Reached::Bound,
     }
 }
 
