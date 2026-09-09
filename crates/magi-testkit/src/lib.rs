@@ -96,7 +96,11 @@ mod tests {
         // **The whole point, and it has to be timed rather than merely asserted.** A broken
         // deadline gives the same `None` in the end — it just takes the child's lifetime to do
         // it, which in the live suites is for ever. So the clock is what is checked.
-        let mut child = saying("sleep 30");
+        // `exec`, so `kill` below reaches the sleep. Without it `sh` forks one and the kill takes
+        // only the shell: the sleep is reparented to init and outlives the whole suite, which is
+        // what `gate-hermetic` found here once it started asking by environment as well as by
+        // working directory.
+        let mut child = saying("exec sleep 30");
         let started = Instant::now();
         let said = super::first_line_within(&mut child, Duration::from_millis(300));
         let took = started.elapsed();
