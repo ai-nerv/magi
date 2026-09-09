@@ -1,13 +1,7 @@
-//! The seam every tool runs through.
-//!
-//! A tool never touches the filesystem or spawns a process directly; it asks an [`Ops`]. That
-//! one indirection is what lets execution be redirected to an SSH host, a container, or a
-//! sandbox without touching a tool — Pi gets the same property for roughly zero lines, and it
-//! is the cheapest good idea in either codebase.
-//!
-//! It is also the safety boundary for Lua tools: a description registered from a config file
-//! is handed an `Ops`, so what it can reach is decided here rather than by what the VM happens
-//! to expose.
+//! The seam every tool runs through: a tool never touches the filesystem or spawns a process
+//! directly, it asks an [`Ops`], so execution can be redirected to an SSH host, a container or a
+//! sandbox without touching a tool. It is also the safety boundary for Lua tools, whose reach is
+//! decided here rather than by what the VM happens to expose.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -17,14 +11,11 @@ use std::process::Command;
 pub struct Shell {
     /// Exit status, or `None` if a signal ended it.
     pub code: Option<i32>,
-    /// Standard output.
     pub stdout: String,
-    /// Standard error.
     pub stderr: String,
 }
 
 impl Shell {
-    /// Whether the command reported success.
     #[must_use]
     pub fn ok(&self) -> bool {
         self.code == Some(0)
@@ -36,19 +27,10 @@ pub trait Ops: Send + Sync {
     /// Where relative paths resolve from.
     fn cwd(&self) -> PathBuf;
 
-    /// The path a tool is about to act on, as the person should be asked about it.
-    ///
-    /// **One string for the question and the deed.** A tool used to build its permit subject with
-    /// a bare `cwd().join(path)` while `Real`'s own resolution normalised before opening, so `a/../b`
-    /// was asked about as `<root>/a/../b` and opened as `<root>/b`. A `Directory` grant is matched
-    /// textually — deliberately, because re-resolving in the matcher could answer about a
-    /// different file — so the two spellings never met: a grant earned by answering the question
-    /// did not cover the file, and one written against the root covered `<root>/../etc/shadow`,
-    /// which starts with it.
-    ///
-    /// Lexical, like `resolve`: `canonicalize` needs the path to exist, and a write to a new file
-    /// has to be asked about before it does. That leaves a symlink inside the granted directory
-    /// still resolving out of it, which is a separate decision and not this one.
+    /// The path a tool is about to act on, as the person should be asked about it: one string for
+    /// the question and the deed, because a `Directory` grant is matched textually and two
+    /// spellings of the same file would otherwise never meet. Lexical, like `resolve`, since a
+    /// write to a new file has to be asked about before the file exists.
     fn resolved(&self, path: &Path) -> PathBuf {
         let joined = if path.is_absolute() {
             path.to_owned()
@@ -73,24 +55,14 @@ pub trait Ops: Send + Sync {
     /// Run a shell command.
     ///
     /// # Errors
-    /// When the command could not be started at all. A command that ran and failed is a
-    /// [`Shell`] with a non-zero code, not an error: the model needs to see what it said.
+    /// When the command could not be started at all. A command that ran and failed is a [`Shell`]
+    /// with a non-zero code, not an error.
     fn shell(&self, command: &str) -> Result<Shell, String>;
 
-    /// Ask whether `action` may happen, blocking until it is answered.
-    ///
-    /// Called by a tool *before* it acts, not by the registry, because only the tool knows what
-    /// it is about to do: "run this command" and "read this file" are different questions and a
-    /// person can only answer the one they were actually asked.
-    ///
-    /// `tool` is its own name, and is carried rather than derived from the action. The prompt
-    /// said "read wants to read ." for a `grep` call, because the verb was standing in for the
-    /// name — fine while `read` was the only thing that read, and a false sentence in a security
-    /// prompt the moment `grep`, `find` and `ls` arrived.
-    ///
-    /// The default allows. Every `Ops` in the tree except [`Real`] is a test double, and a
-    /// double that had to be taught about permissions would make every tool test a permissions
-    /// test. `Real` is the one that gates.
+    /// Ask whether `action` may happen, blocking until it is answered. Called by a tool before it
+    /// acts, not by the registry, because only the tool knows what it is about to do; `tool` is its
+    /// own name rather than the verb, so a `grep` call does not say "read wants to read .". The
+    /// default allows — [`Real`] is the one that gates.
     ///
     /// # Errors
     /// When it was refused, with a sentence the model reads as a result.
@@ -99,53 +71,29 @@ pub trait Ops: Send + Sync {
         Ok(())
     }
 
-    /// Take on grants a parent session already holds.
-    ///
-    /// `&self`, because the ledger is behind a lock: this arrives while the session is running,
-    /// from a person on the other side of a socket accepting it as a child, and there is no
-    /// moment at which the session could be rebuilt around it instead.
-    ///
-    /// Nothing by default. A double that has no ledger has nothing to add to, and a tool test
-    /// should not have to know that adoption exists.
+    /// Take on grants a parent session already holds. `&self`, because the ledger is behind a lock:
+    /// this arrives while the session is running. Nothing by default.
     fn take_on(&self, grants: Vec<magi_proto::permit::Grant>) {
         let _ = grants;
     }
 
-    /// Permission questions decided since the last time this was asked.
-    ///
-    /// Read by the turn loop, which is where the watchers are; see
-    /// [`crate::watching::Pending`] for why they are not told at the gate.
-    ///
-    /// Nothing by default, which is right for every `Ops` that has no gate to ask through.
+    /// Permission questions decided since the last time this was asked, read by the turn loop where
+    /// the watchers are; see [`crate::watching::Pending`]. Nothing by default.
     fn noticed(&self) -> Vec<crate::watching::Noted> {
         Vec::new()
     }
 }
 
-/// Ops against the real machine, rooted at one directory.
-///
-/// The root is where **relative** paths resolve from — the session's directory, so `src/main.rs`
-/// means what it means in the shell you started in.
-///
-/// It is not a wall by default, and that is deliberate. It used to be: an absolute path outside
-/// the session was refused, and the effect was not safety but a detour. Asked to edit
-/// `/tmp/scratch/hello.py`, the model was told "outside this session's directory", so it reached
-/// for `bash` and did the same edit through a `python3` heredoc — unreviewable, undiffed, and
-/// through the one tool that has no confinement at all. A rule that only the careful tools obey
-/// moves work to the careless one.
-///
-/// Confinement is a *configuration*, the same way sandboxing is (§5e): `magi.confine = true`
-/// restores the wall, and `bwrap` in front of the shell peer is what actually contains anything.
+/// Ops against the real machine, rooted at one directory. The root is where *relative* paths
+/// resolve from — the session's directory, so `src/main.rs` means what it means in the shell you
+/// started in. Not a wall by default: a rule only the careful tools obey moves work to `bash`.
+/// Confinement is a configuration, `magi.confine = true`, and `bwrap` is what contains anything.
 pub struct Real {
     root: PathBuf,
     confined: bool,
     /// What has already been allowed, and who to ask when it has not.
     gate: Option<Gate>,
-    /// Questions and answers, written down for whoever can be told.
-    ///
-    /// The audit trail nothing kept: a permission was put to somebody, answered, written into
-    /// the ledger and then existed nowhere. See [`crate::watching::Pending`] for why this is a
-    /// buffer rather than the watchers themselves.
+    /// Questions and answers, written down for whoever can be told; see [`crate::watching::Pending`].
     noticed: crate::watching::Pending,
 }
 
@@ -207,26 +155,17 @@ impl Real {
         }
     }
 
-    /// Keep this one inside its root, or do not.
-    ///
-    /// **Confinement and gating are independent, and used not to be.** There were three
-    /// constructors and no way to ask for both, so `magi.confine = true` was honoured only by
-    /// `confined` — the arm with no approver — and every session with a UI attached silently
-    /// dropped it. The setting therefore applied exactly to the runs nobody was watching, which
-    /// is the opposite of what somebody turning it on is asking for.
-    ///
-    /// A method rather than a fourth constructor: the two are orthogonal, and the combinations
-    /// grow by multiplication.
+    /// Keep this one inside its root, or do not. A method rather than a fourth constructor:
+    /// confinement and gating are independent, and the combinations grow by multiplication.
     #[must_use]
     pub fn confining(mut self, confined: bool) -> Self {
         self.confined = confined;
         self
     }
 
-    /// Resolve a path against the root, refusing anything that escapes it when confined.
-    ///
-    /// Checked after normalising rather than by looking for `..` in the text: `a/../../etc` has
-    /// no leading `..` and still escapes, and a symlink has none at all.
+    /// Resolve a path against the root, refusing anything that escapes it when confined. Checked
+    /// after normalising rather than on the text: `a/../../etc` has no leading `..` and a symlink
+    /// has none at all.
     fn resolve(&self, path: &Path) -> Result<PathBuf, String> {
         let joined = if path.is_absolute() {
             path.to_owned()
@@ -248,10 +187,8 @@ impl Real {
     }
 }
 
-/// Resolve `.` and `..` without touching the filesystem.
-///
-/// `canonicalize` would be stricter but requires the path to exist, and a write to a new file
-/// has to be checked before it does.
+/// Resolve `.` and `..` without touching the filesystem. `canonicalize` would be stricter but
+/// requires the path to exist, and a write to a new file has to be checked before it does.
 fn normalise(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for part in path.components() {
@@ -284,11 +221,8 @@ impl Ops for Real {
         std::fs::write(&path, contents).map_err(|e| format!("{}: {e}", path.display()))
     }
 
-    /// Consult the ledger, and ask if it has nothing to say.
-    ///
-    /// The answer is recorded before it is acted on, so a person asked once about a directory is
-    /// not asked again about the next file in it — which is the difference between a permission
-    /// prompt and a nuisance.
+    /// Consult the ledger, and ask if it has nothing to say. The answer is recorded before it is
+    /// acted on, so a person asked once about a directory is not asked again about the next file.
     fn allow(&self, tool: &str, action: &magi_proto::permit::Action) -> Result<(), String> {
         let Some(gate) = &self.gate else {
             return Ok(());
@@ -296,8 +230,6 @@ impl Ops for Real {
         if gate.ledger.lock().is_ok_and(|ledger| ledger.allows(action)) {
             return Ok(());
         }
-        // Said before the answer, because the gap between the two is a person deciding and how
-        // long that took is often the interesting part.
         let decision = gate.approver.ask(tool, action);
         if let Ok(mut ledger) = gate.ledger.lock() {
             ledger.remember(action, &decision);
@@ -322,8 +254,6 @@ impl Ops for Real {
     }
 
     fn take_on(&self, grants: Vec<magi_proto::permit::Grant>) {
-        // Nothing when there is no gate: an ungated session already allows everything, and
-        // handing it grants would be writing a rule that decides nothing.
         if let Some(gate) = &self.gate
             && let Ok(mut ledger) = gate.ledger.lock()
         {
@@ -388,8 +318,7 @@ mod tests {
 
     #[test]
     fn an_escape_hidden_behind_a_descent_is_still_refused() {
-        // `a/../../etc` has no leading `..` and still escapes, which is why the check happens
-        // after normalising rather than on the text.
+        // `a/../../etc` has no leading `..` and still escapes, so the check happens after normalising.
         let (ops, _dir) = rooted("hidden");
         assert!(ops.read(Path::new("a/../../etc/passwd")).is_err());
     }
@@ -437,9 +366,7 @@ mod reach_tests {
 
     #[test]
     fn a_path_outside_the_session_is_reachable() {
-        // The refusal was not safety. Told "outside this session's directory", a model reaches
-        // for `bash` and does the same edit through a heredoc — through the one tool with no
-        // confinement at all, and with no diff to show for it.
+        // The refusal was not safety: a model told "outside this session's directory" uses `bash`.
         let session = scratch("session");
         let elsewhere = scratch("elsewhere");
         let file = elsewhere.join("hello.py");
@@ -478,14 +405,12 @@ mod reach_tests {
 
     #[test]
     fn confinement_still_catches_a_path_that_climbs_out() {
-        // `a/../../etc` has no leading `..` and still escapes.
         let session = scratch("climb");
         let ops = Real::confined(session.to_path_buf());
         assert!(ops.read(Path::new("a/../../etc/passwd")).is_err());
     }
 }
 
-/// Asking, refusing, and taking on what a parent already holds.
 #[path = "ops/gating.rs"]
 #[cfg(test)]
 mod gating;

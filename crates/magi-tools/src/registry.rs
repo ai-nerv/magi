@@ -4,70 +4,41 @@ use crate::watching::{Event, Watch};
 use crate::{Cancel, Ops, Output};
 use std::collections::BTreeMap;
 
-/// Something the model can call.
-///
-/// Implemented once per transport, never once per tool: `builtin` here, `lua` in `magi-lua`,
-/// `process` over the wire. A caller holding a `&dyn Tool` cannot tell which it has.
-///
-/// Deliberately not `Send + Sync`. A Lua tool's body lives in a VM that is neither, and a
-/// registry is built on -- and never leaves -- the worker thread that owns it. Demanding the
-/// bounds would force an `unsafe impl` asserting exactly what the design already guarantees.
+/// Something the model can call. Implemented once per transport, never once per tool, and a caller
+/// holding a `&dyn Tool` cannot tell which it has. Deliberately not `Send + Sync`: a Lua tool's
+/// body lives in a VM that is neither, and a registry never leaves the worker thread that owns it.
 pub trait Tool {
-    /// The name the model calls it by.
     fn name(&self) -> &str;
 
-    /// What it does, in the model's terms.
     fn description(&self) -> &str;
 
     /// JSON Schema for its arguments.
     fn parameters(&self) -> serde_json::Value;
 
-    /// Run it.
-    ///
-    /// Infallible on purpose: every failure a tool can have is something the model should read,
-    /// so it comes back as [`Output::error`] rather than as an error the turn loop has to
-    /// invent a message for.
+    /// Run it. Infallible on purpose: every failure a tool can have is something the model should
+    /// read, so it comes back as [`Output::error`].
     fn run(&self, arguments: &serde_json::Value, ops: &dyn Ops, cancel: &dyn Cancel) -> Output;
 
-    /// How this tool is reached, and what it was built with, in one line for a person.
-    ///
-    /// For saying what a session is actually composed of without starting one. A built-in and a
-    /// Lua tool are their own answer — they run here — so the default is the empty list; only a
-    /// peer has a command line and an environment worth naming, and only a peer can have been
-    /// built with the wrong one.
+    /// How this tool is reached, and what it was built with, in one line for a person. The empty
+    /// list by default: only a peer has a command line and an environment worth naming.
     fn composition(&self) -> Vec<(&'static str, String)> {
         Vec::new()
     }
 
-    /// Ask the tool to confirm what it offers, before the model is told about it.
-    ///
-    /// Nothing by default, because a tool written here is its own description and cannot
-    /// disagree with itself. A peer can: it is another program, and what a config says about
-    /// it is a claim rather than a fact.
+    /// Ask the tool to confirm what it offers, before the model is told about it. Nothing by
+    /// default: only a peer can disagree, being another program that a config only makes claims about.
     fn probe(&self, _ops: &dyn Ops) {}
 
-    /// Start the call without waiting for it, if this tool can be waited on separately.
-    ///
-    /// The half of a round that overlaps. A model asking for three files, or a grep and an ls,
-    /// used to pay for them one after another; sending all three and then collecting them costs
-    /// the slowest rather than the sum.
-    ///
-    /// [`Sending::Inline`] by default, which means "there is nothing to overlap — call `run`".
-    /// That is the honest answer for a built-in, whose work is a syscall, and for a Lua tool,
-    /// whose work happens in a VM this thread owns. Only a peer has something to wait *for*:
-    /// it is another process, and the waiting is what overlaps.
-    ///
-    /// Anything a tool refuses before sending — a permission it was denied — comes back here as
-    /// [`Sending::Refused`], because a call that never went out has its answer already.
+    /// Start the call without waiting for it, if this tool can be waited on separately: the half of
+    /// a round that overlaps, so three files cost the slowest rather than the sum.
+    /// [`Sending::Inline`] by default, meaning there is nothing to overlap — only a peer has
+    /// something to wait *for*. Anything refused before sending comes back as [`Sending::Refused`].
     fn send(&self, arguments: &serde_json::Value, ops: &dyn Ops) -> Sending {
         let _ = (arguments, ops);
         Sending::Inline
     }
 
-    /// Wait for a call [`Tool::send`] started.
-    ///
-    /// Only called after `send` answered [`Sending::Sent`], so the default cannot be reached by
-    /// a tool that did not opt in.
+    /// Wait for a call [`Tool::send`] started; only reached after `send` answered [`Sending::Sent`].
     fn wait(&self, cancel: &dyn Cancel) -> Output {
         let _ = cancel;
         Output::error("this tool was never sent")
@@ -84,11 +55,8 @@ pub enum Sending {
     Refused(Output),
 }
 
-/// Every tool the session can reach.
-///
-/// Keyed by name, so a later declaration replaces an earlier one and the name is the identity.
-/// Tau needs per-instance prefixes because two instances of one extension both declare
-/// `shell`; a keyed registrar makes that impossible to express in the first place.
+/// Every tool the session can reach, keyed by name, so a later declaration replaces an earlier one
+/// and the name is the identity.
 #[derive(Default)]
 pub struct Registry {
     tools: BTreeMap<String, Box<dyn Tool>>,
@@ -96,36 +64,26 @@ pub struct Registry {
 }
 
 impl Registry {
-    /// An empty registry.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Be told what happens.
-    ///
-    /// For anything that needs to know what actually happened rather than what was asked for —
-    /// a memory layer recording whether acting on what it suggested worked, say. Several
-    /// watchers may be added; each is told in turn, and none can affect the result. What they
-    /// can be told is [`Event`].
+    /// Be told what happens: for anything that needs to know what actually happened rather than what
+    /// was asked for. Several may be added, each told in turn; what they hear is [`Event`].
     pub fn watch(&mut self, watcher: Box<dyn Watch>) {
         self.watching.add(watcher);
     }
 
-    /// The handle the watchers hang off, for whoever else has something to report.
-    ///
-    /// The permission gate is the other one: it is built beside the registry and neither owns
-    /// the other, so the audience is what they share. See [`crate::watching::Watchers`].
+    /// The handle the watchers hang off, for whoever else has something to report — the permission
+    /// gate is the other one. See [`crate::watching::Watchers`].
     #[must_use]
     pub fn watchers(&self) -> crate::watching::Watchers {
         self.watching.clone()
     }
 
-    /// Tell every watcher, and let none of them matter.
-    ///
-    /// The registry holds the watchers because it is the one thing every part of a session
-    /// already has a reference to — the turn loop, the approver and the compactor all reach it,
-    /// and none of them would otherwise have anywhere to report to.
+    /// Tell every watcher, and let none of them matter. The registry holds them because it is the
+    /// one thing every part of a session already has a reference to.
     pub fn saw(&self, event: &Event<'_>) {
         self.watching.saw(event);
     }
@@ -139,18 +97,14 @@ impl Registry {
         });
     }
 
-    /// Add a tool, replacing any of the same name.
-    ///
-    /// Replacement rather than refusal because a config that declares `bash` means it: the
+    /// Add a tool, replacing any of the same name: a config that declares `bash` means it, and the
     /// point of shipping a default is that it can be overridden.
     pub fn register(&mut self, tool: Box<dyn Tool>) {
         self.tools.insert(tool.name().to_owned(), tool);
     }
 
-    /// Ask every tool to confirm what it offers.
-    ///
-    /// Called once, after the registry is built and before any turn: a schema the model was
-    /// given cannot be corrected halfway through a conversation it has already used it in.
+    /// Ask every tool to confirm what it offers. Called once, before any turn: a schema the model
+    /// was given cannot be corrected halfway through a conversation it has already used it in.
     pub fn probe(&self, ops: &dyn Ops) {
         for tool in self.tools.values() {
             tool.probe(ops);
@@ -163,13 +117,11 @@ impl Registry {
         self.tools.get(name).map(AsRef::as_ref)
     }
 
-    /// How many tools are registered.
     #[must_use]
     pub fn len(&self) -> usize {
         self.tools.len()
     }
 
-    /// Whether nothing is registered.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
@@ -188,14 +140,10 @@ impl Registry {
             .collect()
     }
 
-    /// Run a call, or say why it could not be run.
-    ///
-    /// An unknown tool is an [`Output::error`] rather than a hole: the model asked for
-    /// something that does not exist and needs to be told, not left waiting.
-    ///
-    /// Every result is bounded here. This is the only point every transport passes through, and
-    /// a tool cannot be trusted to cap itself: a peer is another program, and a Lua tool has no
-    /// way to write the spill file that makes a cap survivable. See [`crate::bound`].
+    /// Run a call, or say why it could not be run. An unknown tool is an [`Output::error`] rather
+    /// than a hole. Every result is bounded here, the only point every transport passes through,
+    /// because a peer is another program and a Lua tool cannot write a spill file. See
+    /// [`crate::bound`].
     #[must_use]
     pub fn call(
         &self,
@@ -206,10 +154,9 @@ impl Registry {
     ) -> Output {
         match self.get(name) {
             Some(tool) => {
-                // Checked here rather than by each tool, because this is where the schema is:
-                // the tool published one and nothing ever read it back, so a call that did not
-                // fit reached the tool anyway and failed in words about the tool's own internals
-                // instead of about the call. The tool is not entered when it does not fit.
+                // Checked here rather than by each tool, because this is where the schema is: a
+                // call that does not fit used to reach the tool and fail in words about the tool's
+                // own internals. The tool is not entered when it does not fit.
                 let arguments = match crate::schema::check(arguments, &tool.parameters()) {
                     Ok(checked) => checked,
                     Err(wrong) => {
@@ -221,9 +168,8 @@ impl Registry {
                 let output = tool.run(&arguments, ops, cancel);
                 self.finished(name, &arguments, output.is_error);
                 Output {
-                    // Masked before it is capped, so a credential cannot survive by being in
-                    // the half that got cut — and before anything sees it: this is the one place
-                    // every result of every transport passes through.
+                    // Masked before it is capped, so a credential cannot survive by being in the
+                    // half that got cut, and before anything sees it.
                     content: crate::bound::apply(name, crate::masking::apply(output.content)),
                     is_error: output.is_error,
                     shown: None,
@@ -239,13 +185,9 @@ impl Registry {
         }
     }
 
-    /// Answer a call whose arguments are still the text the model streamed.
-    ///
-    /// The entry point a turn uses, and the reason it exists: the raw text is the only place a
-    /// repair can happen, and it was being thrown away. `call.parsed().unwrap_or(Value::Null)`
-    /// handed the tool `null` **as if the model had asked for nothing** — no error, no retry, and
-    /// nothing anywhere saying the arguments had not parsed, so the model sent the same broken
-    /// call again. See [`crate::repair`] for what is mended and what is reported.
+    /// Answer a call whose arguments are still the text the model streamed. The entry point a turn
+    /// uses, and the reason it exists: the raw text is the only place a repair can happen. See
+    /// [`crate::repair`] for what is mended and what is reported.
     #[must_use]
     pub fn answer(
         &self,
@@ -257,14 +199,9 @@ impl Registry {
         self.finish(self.prepare(name, arguments, ops), ops, cancel)
     }
 
-    /// Check a call and start it, without waiting for the answer.
-    ///
-    /// The first half of a round, and it runs **one call at a time**: repairing, checking against
-    /// the schema and asking the person for permission are all things that must happen in the
-    /// order the model asked, and two permission prompts racing onto one screen is not a faster
-    /// round but an unanswerable one. Pi draws the line in the same place — sequential
-    /// preparation, parallel execution, results in source order (`agent-loop.ts:489-554`).
-    ///
+    /// Check a call and start it, without waiting for the answer. The first half of a round, and it
+    /// runs **one call at a time**: repairing, checking against the schema and asking the person
+    /// happen in the order the model asked, and two prompts racing onto one screen is unanswerable.
     /// What overlaps is the *waiting*, which is [`Registry::finish`].
     #[must_use]
     pub fn prepare(&self, name: &str, arguments: &str, ops: &dyn Ops) -> Prepared {
@@ -302,11 +239,8 @@ impl Registry {
         }
     }
 
-    /// Collect what [`Registry::prepare`] started.
-    ///
-    /// The second half, and the half that overlaps: a call already sent is only waited on here,
-    /// so a round of calls to different peers costs the slowest rather than the sum. Called in
-    /// the order the model asked, so the transcript is the same whatever the timing was.
+    /// Collect what [`Registry::prepare`] started: the half that overlaps, so a round of calls to
+    /// different peers costs the slowest rather than the sum. Called in the order the model asked.
     #[must_use]
     pub fn finish(&self, prepared: Prepared, ops: &dyn Ops, cancel: &dyn Cancel) -> Output {
         let Prepared { name, state } = prepared;
@@ -354,8 +288,6 @@ impl Prepared {
     }
 
     /// Whether this call is already out and only needs collecting.
-    ///
-    /// What makes a round worth splitting: nothing is overlapping unless something is in flight.
     #[must_use]
     pub fn in_flight(&self) -> bool {
         matches!(self.state, State::Sent(_))
@@ -364,14 +296,8 @@ impl Prepared {
 
 /// How far a prepared call got.
 enum State {
-    /// Sent to a peer, waiting to be collected — with the arguments it was sent.
-    ///
-    /// **The arguments are carried here for the watchers**, who are told what a call ran with
-    /// after it finishes. This variant held nothing, and `finish` started `ran` at `Null` and
-    /// assigned it only on the inline path, so every peer tool — `shell` among them — reported to
-    /// every watcher that it had run with no arguments at all. The one shipped watcher reports
-    /// outcomes to the memory layer, so what it recorded about most of a session's work was that
-    /// something happened and nothing about what.
+    /// Sent to a peer, waiting to be collected — with the arguments it was sent, carried here for
+    /// the watchers, who are told what a call ran with after it finishes.
     Sent(serde_json::Value),
     /// Not sent; run it where it stands, with these arguments.
     Inline(serde_json::Value),
@@ -382,11 +308,6 @@ enum State {
 #[cfg(test)]
 mod tests {
     /// A credential a tool printed does not reach the transcript.
-    ///
-    /// **End to end through the one seam every result crosses.** The journal is durable and the
-    /// model sees it every turn: one `printenv` and a key is on disk, in a context window, and
-    /// back at the provider on every subsequent request — inside the `KEEP` tail that compaction
-    /// preserves verbatim. Nothing masked anything before this.
     #[test]
     fn a_credential_a_tool_printed_never_reaches_the_caller() {
         struct Leaks(String);
@@ -405,9 +326,8 @@ mod tests {
             }
         }
 
-        // Whatever this machine actually holds, so the test is about the seam and not about a
-        // value invented here. Skipped when there is nothing secret in the environment, which is
-        // the ordinary case for a runner.
+        // Whatever this machine actually holds, so the test is about the seam and not a value
+        // invented here. Skipped when there is nothing secret in the environment.
         let Some((name, value)) = crate::masking::secrets().into_iter().next() else {
             return;
         };
@@ -536,9 +456,7 @@ mod bound_tests {
     #[test]
     fn a_flood_is_capped_before_it_reaches_the_caller() {
         // The cap is here and not in the tool, because a peer is another program and a Lua tool
-        // cannot write a spill file. One `cat` of a lockfile used to be permanent: journalled,
-        // replayed on every request, inside the tail compaction keeps verbatim, and then fed to
-        // the summariser.
+        // cannot write a spill file. One `cat` of a lockfile used to be permanent.
         let mut registry = Registry::new();
         registry.register(Box::new(Flood));
         let ops = crate::ops::Real::new(std::env::temp_dir());
@@ -649,8 +567,8 @@ mod checked_tests {
 
     #[test]
     fn a_call_that_does_not_fit_never_reaches_the_tool() {
-        // The whole point. It used to reach the tool, which failed for its own reasons in its
-        // own words, and nothing said the call had been wrong.
+        // It used to reach the tool, which failed for its own reasons in its own words, and nothing
+        // said the call had been wrong.
         let (registry, ops, ran) = counted();
         let out = registry.call("read", &serde_json::json!({}), &ops, &crate::Uncancelled);
         assert!(out.is_error);
@@ -660,9 +578,8 @@ mod checked_tests {
 
     #[test]
     fn malformed_json_comes_back_naming_the_problem_rather_than_as_null() {
-        // The defect this milestone is about: `parsed().unwrap_or(Null)` handed the tool
-        // `null`, which reads as "the model asked for nothing", and it failed for a reason
-        // that had nothing to do with the mistake.
+        // `parsed().unwrap_or(Null)` handed the tool `null`, which reads as "the model asked for
+        // nothing", so it failed for a reason that had nothing to do with the mistake.
         let (registry, ops, ran) = counted();
         let out = registry.answer("read", r#"{"path": "a.rs"#, &ops, &crate::Uncancelled);
         assert!(out.is_error);

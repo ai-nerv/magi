@@ -1,9 +1,7 @@
 //! What a watcher is told when a call finishes, on both completion paths.
-//!
-//! Split out under THE RULE; the registry that raises these is next door.
 
-// Brought in here so the module below can keep saying `use super::*` and mean what it meant
-// when it lived in `registry.rs` -- a private import is visible to descendant modules.
+// A private import is visible to descendant modules, so the module below keeps saying
+// `use super::*` and meaning what it meant in `registry.rs`.
 use super::*;
 
 #[cfg(test)]
@@ -67,11 +65,8 @@ mod watching_tests {
 
     #[test]
     fn a_watcher_is_told_what_a_sent_call_ran_with() {
-        // **The defect this exists for.** `State::Sent` carried nothing, so `finish` reported
-        // `null` arguments for every peer tool — `shell` included, which is most of what a
-        // session does. The one shipped watcher reports outcomes to the memory layer, so what it
-        // recorded about most of a session's work was that something happened and nothing about
-        // what. A hook that misreports is worse than no hook, because somebody builds on it.
+        // `State::Sent` carried nothing, so `finish` reported `null` arguments for every peer tool,
+        // `shell` included.
         let seen = Rc::new(RefCell::new(Vec::new()));
         let mut registry = Registry::new();
         registry.register(Box::new(Peer));
@@ -79,8 +74,8 @@ mod watching_tests {
 
         let ops = Nowhere;
         let cancel = crate::cancel::Uncancelled;
-        // The registry is handed the argument text as the model streamed it, and parses it at
-        // the one funnel every transport crosses.
+        // The registry is handed the argument text as the model streamed it, and parses it at the
+        // one funnel every transport crosses.
         let asked = r#"{"path":"src/main.rs"}"#;
         let prepared = registry.prepare("peer", asked, &ops);
         assert!(prepared.in_flight(), "a peer tool is sent, not run inline");

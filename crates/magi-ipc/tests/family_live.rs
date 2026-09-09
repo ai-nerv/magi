@@ -1,49 +1,29 @@
-//! The family client against a balthasar that is actually running.
-//!
-//! Skipped when there is none, because the framing is what these prove and a mock would be magi
-//! agreeing with magi. Point them at one with `MAGI_API_SOCKET`, or let them find one under
+//! The family client against a balthasar that is actually running, skipped when there is none.
+//! Point them at one with `MAGI_API_SOCKET`, or let them find one under
 //! `$XDG_RUNTIME_DIR/balthasar`.
 
 use magi_ipc::family::{Family, Fault, candidates};
 use std::time::Duration;
 
-/// How long a socket has to answer before this decides there is nothing behind it.
-///
-/// **Dialling is not liveness.** A unix socket whose owner has wedged, or is halfway through
-/// shutting down, accepts instantly and then never answers — or answers by hanging up. Taking the
-/// connection as proof is how these four tests failed a whole suite with `Connection reset by
-/// peer` while reporting it as a broken wire.
-///
-/// It is a shared directory and a workspace run fills it: every test that spawns `magi` starts a
-/// balthasar of its own in there, so at any moment several of these sockets belong to a process
-/// that is about to be killed. [`magi-host`'s `scribe_live`] learned this first and probes the
-/// same way, for the same reason.
+/// How long a socket has to answer before this decides there is nothing behind it. Dialling is not
+/// liveness: a socket whose owner has wedged or is shutting down accepts instantly and then never
+/// answers.
 const ANSWERS_WITHIN: Duration = Duration::from_secs(3);
 
-/// How many to try before deciding none of them is a live balthasar.
-///
-/// Walked rather than taking the newest and giving up on it, which is what left these skipping —
-/// or failing — whenever the most recent socket happened to belong to a dying test. Bounded so a
-/// directory full of dead ones costs seconds rather than minutes.
+/// How many to try before deciding none is a live balthasar: the newest socket in a shared
+/// directory may belong to a test that is about to be killed.
 const AT_MOST: usize = 4;
 
 /// The first balthasar that answers, or `None` and a line saying why each one did not.
-///
-/// Skipping rather than failing: these prove the framing against something real, and there is no
-/// honest verdict to give when there is nothing real to ask.
 async fn dial() -> Option<Family> {
     let found = looking().await;
-    // **`MAGI_REQUIRE_LIVE=1` turns a skip into a failure.** Skipping is right by default — there
-    // is no honest verdict when there is nothing real to ask — but it means a green run proves
-    // nothing on its own, and these are exactly the tests somebody reaches for to confirm a wire
-    // change reached the far side. Setting it says "there is one running, so hold me to it".
+    // `MAGI_REQUIRE_LIVE=1` turns a skip into a failure.
     if found.is_none() && std::env::var("MAGI_REQUIRE_LIVE").is_ok_and(|v| v == "1") {
         panic!("MAGI_REQUIRE_LIVE=1 and no balthasar answered; see the skip lines above");
     }
     found
 }
 
-/// The first balthasar that answers, if any.
 async fn looking() -> Option<Family> {
     for path in candidates(None).into_iter().take(AT_MOST) {
         let mut family = match Family::dial(&path).await {
@@ -53,8 +33,7 @@ async fn looking() -> Option<Family> {
                 continue;
             }
         };
-        // One cheap round trip. What is being asked is not what it answers but whether it answers
-        // at all — and `verbs` is the one call every balthasar has had since v1.
+        // One cheap round trip: `verbs` is the one call every balthasar has had since v1.
         match tokio::time::timeout(ANSWERS_WITHIN, family.call("verbs", Vec::new())).await {
             Ok(Ok(_)) => return Some(family),
             Ok(Err(e)) => eprintln!("skipping {}: refused: {e}", path.display()),
@@ -136,10 +115,7 @@ async fn a_turn_can_be_observed_and_replayed() {
 
 #[tokio::test]
 async fn a_real_balthasar_answers_cbor_in_cbor() {
-    // The two halves of the family agreeing, over a real socket, in both encodings. Neither
-    // repository can prove this alone: magi's own tests can only show that it *writes* CBOR, and
-    // balthasar's that it answers what it was handed. What is under test here is that the byte
-    // one produces is the byte the other reads.
+    // The two halves of the family agreeing, over a real socket, in both encodings.
     let Some(open) = dial().await else {
         return;
     };
@@ -159,8 +135,8 @@ async fn a_real_balthasar_answers_cbor_in_cbor() {
 
 #[tokio::test]
 async fn the_same_question_gets_the_same_answer_in_either_encoding() {
-    // One connection, asked twice. Not two connections: a balthasar accepts them one at a time,
-    // so a test holding one open while it dials again waits for itself.
+    // One connection asked twice: a balthasar accepts them one at a time, so dialling again while
+    // holding one open waits for itself.
     let Some(mut open) = dial().await else {
         return;
     };

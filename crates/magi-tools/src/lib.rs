@@ -1,14 +1,6 @@
-//! What a tool is, and the three the floor is made of.
-//!
-//! A tool is a name, a schema, and something that runs. What that something *is* — Rust here,
-//! a Lua function, or a process on the other end of a socket — is a property of its
-//! declaration, not a different registry. The turn loop cannot tell them apart, and that is
-//! the point: adding a way to reach a tool must not add a way to run one.
-//!
-//! Only `read`, `write` and `edit` live here. They are the floor: pure filesystem, already
-//! behind [`ops::Ops`], and the things that must never be missing. `bash` is deliberately not
-//! among them — it is the tool whose requirements justify a process boundary, so it is
-//! declared as one in `config/tools/`.
+//! What a tool is, and the three the floor is made of. A tool is a name, a schema, and something
+//! that runs; whether that is Rust, a Lua function or a process on the other end of a socket is a
+//! property of its declaration, not a different registry. Only `read`, `write` and `edit` live here.
 
 pub mod approve;
 pub mod bound;
@@ -36,19 +28,13 @@ pub use watching::{Event, Watch, Watchers};
 
 use serde::{Deserialize, Serialize};
 
-/// What a tool produced.
-///
-/// Two faces, and they are not the same content: `content` is what the model reads and `shown`
-/// is what the person is drawn. A tool with nothing to add about how it should look leaves the
-/// second empty, which is what every tool here does.
+/// What a tool produced. `content` is what the model reads and `shown` is what the person is drawn;
+/// they are not the same content, and a tool with nothing to add leaves the second empty.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Output {
-    /// Text the model sees.
     pub content: String,
-    /// Whether the tool failed.
-    ///
-    /// A tool that ran and reported a problem is still a result, not an error: the model needs
-    /// to read what went wrong in order to do something about it.
+    /// Whether the tool failed. A tool that ran and reported a problem is still a result, not an
+    /// error: the model needs to read what went wrong in order to do something about it.
     pub is_error: bool,
     /// What the person sees, when it is more than the text.
     #[serde(default, skip_serializing_if = "Option::is_none")]

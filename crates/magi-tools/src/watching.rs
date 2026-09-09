@@ -1,31 +1,17 @@
-//! What a watcher can be told, and the names those things go by.
-//!
-//! A hook surface with one event is a callback. magi had exactly one — a tool finished — fired
-//! from one place, with one shipped consumer, so the only extension anybody could write was one
-//! that counted tool calls. The events here are the ones where a watcher can do something a
-//! configuration cannot: time a turn, keep an audit trail of what was permitted, attach state to
-//! a session, or see what left the context window, which is otherwise entirely silent.
-//!
-//! **Every one of these already existed as a typed value inside the host.** None of it is new
-//! information; what was missing was a name for it and a way out.
-//!
-//! **Told after the fact, and answered with nothing.** A watcher cannot change what happened and
-//! cannot fail it — see [`Watch`] for why that is the whole point rather than a limitation.
+//! What a watcher can be told, and the names those things go by. The events here are the ones where
+//! a watcher can do something a configuration cannot: time a turn, keep an audit trail of what was
+//! permitted, attach state to a session, or see what left the context window. Told after the fact
+//! and answered with nothing — see [`Watch`].
 
-/// Something that happened, on its way to every watcher.
-///
-/// Borrowed rather than owned: these are emitted on paths that run every turn, and a watcher that
-/// wants to keep a value can clone the part it wants. The lifetime is what stops this becoming an
-/// allocation per event for the sessions — the overwhelming majority — that register none.
+/// Something that happened, on its way to every watcher. Borrowed rather than owned: these are
+/// emitted on paths that run every turn, and most sessions register no watcher at all.
 #[derive(Debug, Clone, Copy)]
 pub enum Event<'a> {
     /// A tool ran to completion, whether or not it worked.
     Tool {
-        /// Which tool.
         name: &'a str,
         /// What it actually ran with, which is not always what was asked for.
         arguments: &'a serde_json::Value,
-        /// Whether it reported a problem.
         is_error: bool,
     },
     /// A turn began — one exchange with the model, before anything is sent.
@@ -35,11 +21,8 @@ pub enum Event<'a> {
     },
     /// A turn finished, successfully or not.
     TurnEnded {
-        /// The model it went to.
         model: &'a str,
-        /// How long it took, in milliseconds.
         took_ms: u64,
-        /// Whether it produced an answer.
         ok: bool,
     },
     /// A permission was put to whoever answers them.
@@ -49,57 +32,29 @@ pub enum Event<'a> {
         /// What it was about — a path, a command, a host.
         about: &'a str,
     },
-    /// And what came back.
-    ///
-    /// Separate from [`Event::Asked`] because the gap between them is a person deciding, and the
-    /// interesting thing to record is often how long that took.
+    /// And what came back; separate from [`Event::Asked`] because the gap is a person deciding.
     Answered {
-        /// `read`, `write`, `run`, `reach`.
         verb: &'a str,
-        /// What it was about.
         about: &'a str,
-        /// Whether it was allowed.
         allowed: bool,
     },
     /// A session started, or was picked up again.
-    Session {
-        /// Which session.
-        id: &'a str,
-        /// Whether this was a resume rather than a fresh start.
-        resumed: bool,
-    },
-    /// The context window was compacted.
-    ///
-    /// The one event with no other way to observe it: compaction happens between turns and
-    /// leaves nothing in the transcript saying what it took out.
-    Compacted {
-        /// How many entries went.
-        dropped: usize,
-        /// How many stayed.
-        kept: usize,
-    },
-    /// The mind was asked again after an attempt failed.
-    ///
-    /// **The thing you want to see when a turn is slow and you do not know why.** It is said on
-    /// the status line while it is happening and then it is gone; nothing writes it down.
+    Session { id: &'a str, resumed: bool },
+    /// The context window was compacted, which leaves nothing in the transcript saying what it took.
+    Compacted { dropped: usize, kept: usize },
+    /// The mind was asked again after an attempt failed. Said on the status line and then gone.
     Retried {
         /// Which program is doing the asking — melchior, or whatever stands in for it.
         mind: &'a str,
-        /// Which attempt just failed, counting from one.
         attempt: u32,
-        /// How many will be made in all.
         of: u32,
-        /// How long before the next one.
         delay_ms: u64,
     },
 }
 
 impl Event<'_> {
-    /// The name a watcher matches on.
-    ///
-    /// Stable, lowercase, and dotted. A watcher branches on this, so renaming one breaks
-    /// configurations that nobody here can see — which is why they are written out rather than
-    /// derived from the variant name.
+    /// The name a watcher matches on: stable, lowercase and dotted. Written out rather than derived
+    /// from the variant name, because renaming one breaks configurations nobody here can see.
     #[must_use]
     pub fn kind(&self) -> &'static str {
         match self {
@@ -114,12 +69,8 @@ impl Event<'_> {
         }
     }
 
-    /// The event as the value a watcher outside Rust receives.
-    ///
-    /// `kind` is in the object rather than beside it, so a watcher that stores one keeps what it
-    /// needs to tell them apart later. The fields of a tool event keep the names they have always
-    /// had — `tool`, `arguments`, `is_error` — because configurations were written against them
-    /// before any of the others existed.
+    /// The event as the value a watcher outside Rust receives. `kind` is in the object rather than
+    /// beside it, and a tool event keeps the field names `tool`, `arguments` and `is_error`.
     #[must_use]
     pub fn value(&self) -> serde_json::Value {
         let mut body = match *self {
@@ -158,58 +109,36 @@ impl Event<'_> {
     }
 }
 
-/// Something told what happened, after it has happened.
-///
-/// Told *after* the fact and answered with nothing: a watcher that could change a result would
-/// be a tool wearing a different name, and one that could fail would be a way for observation to
-/// break the thing observed. Several may be registered; each is told in turn, and none can affect
-/// another or the session.
-///
-/// Not `Send + Sync`, for the same reason [`crate::Tool`] is not: the interesting watchers live
-/// in the same VM the Lua tools do, and demanding the bounds would force an `unsafe impl`
-/// asserting what the single-threaded design already guarantees.
+/// Something told what happened, after it has happened, and answered with nothing: a watcher that
+/// could change a result would be a tool wearing a different name. Several may be registered, each
+/// told in turn. Not `Send + Sync`, like [`crate::Tool`]: the interesting watchers live in the Lua VM.
 pub trait Watch {
-    /// Something happened.
     fn saw(&self, event: &Event<'_>);
 }
 
-/// The watchers of one session, shared by everything that has something to report.
-///
-/// **A handle rather than a list, because the events do not come from one place.** The registry
+/// The watchers of one session, shared by everything that has something to report: the registry
 /// raises tool events, the turn loop raises turn and compaction events, and the permission gate
-/// raises the ones about what was allowed — three owners, one audience. Passing the registry into
-/// the gate would be a tool registry deciding permissions; passing the gate into the registry
-/// would be the reverse. This is the thing both of them hold.
-///
-/// `Rc` rather than `Arc`, for the same reason [`Watch`] is not `Send`: the watchers live in the
-/// Lua VM, on the thread that owns it.
+/// raises the ones about what was allowed. `Rc` rather than `Arc`, because they live in the Lua VM.
 #[derive(Default, Clone)]
 pub struct Watchers(std::rc::Rc<std::cell::RefCell<Vec<Box<dyn Watch>>>>);
 
 impl Watchers {
-    /// Nobody watching.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Add one.
     pub fn add(&self, watcher: Box<dyn Watch>) {
         self.0.borrow_mut().push(watcher);
     }
 
-    /// Whether anything is listening.
     #[must_use]
     pub fn any(&self) -> bool {
         self.0.borrow().is_empty().eq(&false)
     }
 
-    /// Tell every watcher, and let none of them matter.
-    ///
-    /// **A watcher that watches from inside a watcher is skipped, not a panic.** These are
-    /// re-entrant by construction — a Lua watcher runs in the VM, and what it does there can
-    /// reach a tool, which raises an event of its own. Refusing the inner report costs that one
-    /// observation; taking the borrow anyway would end the session over an observation.
+    /// Tell every watcher, and let none of them matter. A watcher that watches from inside a watcher
+    /// is skipped rather than a panic: these are re-entrant by construction.
     pub fn saw(&self, event: &Event<'_>) {
         let Ok(watching) = self.0.try_borrow() else {
             return;
@@ -222,8 +151,6 @@ impl Watchers {
 
 impl std::fmt::Debug for Watchers {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // The watchers themselves have nothing to print — they are closures in another VM — so
-        // this says how many there are, which is the only fact about them from out here.
         match self.0.try_borrow() {
             Ok(watching) => write!(f, "Watchers({})", watching.len()),
             Err(_) => f.write_str("Watchers(busy)"),
@@ -231,46 +158,28 @@ impl std::fmt::Debug for Watchers {
     }
 }
 
-/// A permission question and the answer it got.
-///
-/// Owned, because it outlives the call that raised it — see [`Pending`].
+/// A permission question and the answer it got, owned because it outlives the call — see [`Pending`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Noted {
-    /// `read`, `write`, `run`, `reach`.
     pub verb: String,
-    /// What it was about — a path, a command, a host.
     pub about: String,
-    /// Whether it was allowed.
     pub allowed: bool,
 }
 
-/// Permission questions waiting to be told to somebody.
-///
-/// **The one place an event cannot be delivered where it happens.** A permission is decided
-/// through `Ops`, which is `Send + Sync` because tools run wherever they run; a [`Watch`] is
-/// neither, because the interesting watchers live in the Lua VM on the thread that owns it.
-/// Handing the watchers to the gate would mean either an `unsafe impl` asserting a bound the
-/// design does not have, or moving the VM, and neither is worth an observation.
-///
-/// So the gate writes them down and the turn loop reads them out between rounds, on the thread
-/// where the watchers are. They arrive slightly late and in order, which is what a watcher of an
-/// after-the-fact event was promised anyway; nothing here is a hook that could have changed the
-/// answer, and a watcher that timed the wait would have to read `waited_ms` rather than its own
-/// clock — which is why the wait is not recorded and the two events are reported adjacent.
+/// Permission questions waiting to be told to somebody. A permission is decided through `Ops`, which
+/// is `Send + Sync`, and a [`Watch`] is not — so the gate writes them down and the turn loop reads
+/// them out between rounds, on the thread where the watchers are. They arrive slightly late and in
+/// order, so a watcher timing the wait has to read `waited_ms` rather than its own clock.
 #[derive(Default, Clone, Debug)]
 pub struct Pending(std::sync::Arc<std::sync::Mutex<Vec<Noted>>>);
 
 impl Pending {
-    /// Nothing waiting.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Write one down.
-    ///
-    /// A poisoned lock drops it rather than propagating: a permission was still decided
-    /// correctly, and losing the record of it is not worth failing the call that raised it.
+    /// Write one down. A poisoned lock drops it rather than propagating.
     pub fn note(&self, noted: Noted) {
         if let Ok(mut waiting) = self.0.lock() {
             waiting.push(noted);
@@ -293,8 +202,6 @@ mod tests {
 
     #[test]
     fn every_event_carries_its_own_name() {
-        // A watcher branches on `kind`, so an event whose value does not carry it is one that
-        // cannot be told apart from any other after it has been stored.
         let nothing = serde_json::Value::Null;
         let events = [
             Event::Tool {
@@ -343,8 +250,7 @@ mod tests {
 
     #[test]
     fn a_tool_event_keeps_the_field_names_configurations_were_written_against() {
-        // The one compatibility promise here: `config/tools.lua` reads `event.tool`,
-        // `event.arguments` and `event.is_error`, and so does everybody else's.
+        // The compatibility promise: `config/tools.lua` reads `event.tool` and `event.arguments`.
         let arguments = serde_json::json!({ "command": "ls" });
         let value = Event::Tool {
             name: "bash",
@@ -359,8 +265,6 @@ mod tests {
 
     #[test]
     fn a_watcher_is_told_and_cannot_answer() {
-        // The shape of the contract, pinned: `saw` returns nothing, so there is no value a
-        // watcher could return that anything would read.
         struct Counting(RefCell<Vec<String>>);
         impl Watch for Counting {
             fn saw(&self, event: &Event<'_>) {

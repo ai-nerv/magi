@@ -1,18 +1,8 @@
-//! Tools from an MCP server.
-//!
-//! **The one interoperability gap that matters.** Everything else this family does is its own —
-//! its own wire, its own directory, its own walls — and that is defensible because those are
-//! about sessions on one machine. Tools are different: the ecosystem settled, MCP won, and a
-//! harness that cannot run an MCP server is one a person has to leave to use a filesystem
-//! browser somebody else already wrote.
-//!
-//! **Nothing else changes.** A transport is a property of a declaration, not a second registry —
-//! so an MCP tool registers beside a builtin, a Lua tool and a casper tool, is checked against
-//! the same schema, asks the same person for the same permission, is capped by the same
+//! Tools from an MCP server. A transport is a property of a declaration, not a second registry, so
+//! an MCP tool registers beside a builtin, a Lua tool and a casper tool, is checked against the
+//! same schema, asks the same person for the same permission, and is capped by the same
 //! [`crate::bound`] and masked by the same [`crate::masking`]. The turn loop does not know MCP
 //! exists.
-//!
-//! # The protocol, as much of it as a client needs
 //!
 //! JSON-RPC 2.0, one object per line, over the server's stdin and stdout. Three calls:
 //!
@@ -26,10 +16,9 @@
 //! <- {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":…}]}}
 //! ```
 //!
-//! Newline-delimited, not length-prefixed: that is MCP's framing and it is the one part of this
-//! that cannot be chosen. A server may write anything it likes to stderr and a great many do —
-//! it is read and kept, because "broken pipe" is what a missing binary looks like on the wire
-//! and the reason is always on stderr.
+//! Newline-delimited, not length-prefixed: that is MCP's framing and the one part of this that
+//! cannot be chosen. A server's stderr is read and kept, because "broken pipe" is what a missing
+//! binary looks like on the wire.
 
 use crate::{Cancel, Ops, Output, Tool};
 use std::cell::RefCell;
@@ -38,35 +27,19 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-/// Which revision of MCP this client speaks.
-///
-/// Sent in `initialize` and compared against what comes back. A server that answers with a
-/// different one is not refused — the specification says to negotiate down, and every server in
-/// the wild answers with whatever it supports — but the disagreement is worth a line in the log,
-/// because a tool that behaves oddly against a newer server is otherwise a mystery.
+/// Which revision of MCP this client speaks, sent in `initialize` and compared against what comes
+/// back. A server that answers with a different one is not refused, only logged.
 const PROTOCOL: &str = "2025-06-18";
 
-/// How long a server has to answer one call.
-///
-/// Generous. An MCP server may be doing real work — a web request, a database query — and the
-/// person can interrupt. What this bounds is the case where it has stopped answering at all,
-/// which is otherwise a turn that never ends.
+/// How long a server has to answer one call. Generous, because a server may be doing real work and
+/// the person can interrupt; what this bounds is a server that has stopped answering at all.
 const PATIENCE: std::time::Duration = std::time::Duration::from_secs(120);
 
-/// The content hash of the program at `command`, as hex.
-///
-/// **An MCP server is somebody else's code, running as you, with your tools.** pi binds a server
-/// to the bytes it was approved as, and it is the one part of MCP's security story a client can
-/// actually implement: the protocol has no notion of which server you meant, and a `command` in
-/// a config is a name that resolves to whatever is on `$PATH` today.
-///
-/// Answered rather than enforced here. What is done with it is [`Server::start`]'s business: a
-/// declaration that pinned one refuses a mismatch, and one that did not is told the hash so it
-/// can pin it. Reporting a hash nobody asked for is what makes pinning a thing a person can
-/// start doing, rather than a thing they have to know about first.
-///
-/// `None` when the program cannot be found or read — which is not a failure here: it is about to
-/// fail to start, with a better message than this could give.
+/// The content hash of the program at `command`, as hex. An MCP server is somebody else's code
+/// running as you with your tools, and a `command` in a config is a name that resolves to whatever
+/// is on `$PATH` today. Answered rather than enforced: [`Server::start`] refuses a mismatch when a
+/// declaration pinned one, and is told the hash when it did not, which is how pinning gets started.
+/// `None` when the program cannot be found or read.
 #[must_use]
 pub fn fingerprint(command: &str) -> Option<String> {
     use sha2::Digest;
@@ -86,11 +59,8 @@ fn resolve(command: &str) -> Option<std::path::PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-/// A running MCP server, and the connection to it.
-///
-/// One process however many tools it offers, because that is what the protocol is: a server
-/// publishes a list and every call names one of them. A process per tool would start the same
-/// program five times and give each copy a fifth of the state it keeps.
+/// A running MCP server, and the connection to it. One process however many tools it offers,
+/// because that is what the protocol is: a server publishes a list and every call names one.
 pub struct Server {
     /// What it was started from, for saying which server a failure belongs to.
     named: String,
@@ -98,11 +68,8 @@ pub struct Server {
     writer: ChildStdin,
     /// Lines as they arrive, so a read can be given a deadline.
     lines: std::sync::mpsc::Receiver<Result<String, String>>,
-    /// Whatever it complained about on the way down.
-    ///
-    /// A server that fails to start fails on the wire as a closed pipe, which says nothing
-    /// anybody can act on. The reason is on its stderr — a missing binary, a bad argument, a
-    /// missing credential — and that is the sentence the model and the person need.
+    /// Whatever it complained about on the way down. A server that fails to start fails on the wire
+    /// as a closed pipe; the reason anybody can act on is on its stderr.
     complaint: Arc<Mutex<String>>,
     /// The next JSON-RPC id. Ids must not repeat within a connection.
     next: u64,
@@ -114,8 +81,7 @@ impl Server {
     /// Start `command` and complete the handshake.
     ///
     /// # Errors
-    /// When the process will not start, or will not answer `initialize`. Both are the same thing
-    /// to a caller — there are no tools from this server — and the message says which.
+    /// When the process will not start, or will not answer `initialize`. Both mean no tools.
     pub fn start(
         command: &str,
         args: &[String],
@@ -195,10 +161,8 @@ impl Server {
         Ok(server)
     }
 
-    /// `initialize`, then the notification that says the client is ready.
-    ///
-    /// The notification is not optional. A server that has been initialised and not told so is
-    /// entitled to refuse everything after it, and several do.
+    /// `initialize`, then the notification that says the client is ready. The notification is not
+    /// optional: a server initialised and not told so may refuse everything after it, and several do.
     fn handshake(&mut self) -> Result<(), String> {
         let said = self.call(
             "initialize",
@@ -239,8 +203,7 @@ impl Server {
                         .and_then(|v| v.as_str())
                         .unwrap_or_default()
                         .to_owned(),
-                    // MCP calls it `inputSchema`; everything here calls it `parameters`, and the
-                    // registry checks a call against it like any other.
+                    // MCP calls it `inputSchema`; everything here calls it `parameters`.
                     parameters: tool
                         .get("inputSchema")
                         .cloned()
@@ -253,9 +216,8 @@ impl Server {
     /// Run one tool.
     ///
     /// # Errors
-    /// When the server will not answer. A tool that ran and *failed* is not an error here: it
-    /// comes back as an [`Output`] the model reads, which is the same rule every other transport
-    /// follows.
+    /// When the server will not answer. A tool that ran and *failed* is not an error here: it comes
+    /// back as an [`Output`] the model reads, as with every other transport.
     pub fn run(&mut self, name: &str, arguments: &serde_json::Value) -> Result<Output, String> {
         let said = self.call(
             "tools/call",
@@ -299,8 +261,8 @@ impl Server {
                 }
             };
             let Ok(said) = serde_json::from_str::<serde_json::Value>(&line) else {
-                // Not JSON at all. Servers do print banners to stdout, wrongly, and dying on one
-                // would make a working server unusable over a line nobody reads.
+                // Not JSON at all. Servers do print banners to stdout, and dying on one would make
+                // a working server unusable.
                 magi_model::noted!(
                     "mcp: {} wrote a line that is not JSON: {line:.120}",
                     self.named
@@ -364,19 +326,14 @@ impl Drop for Server {
 /// What a server said about one of its tools.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Declared {
-    /// The name the model calls it by.
     pub name: String,
-    /// What it does, in the model's terms.
     pub description: String,
     /// JSON Schema for its arguments.
     pub parameters: serde_json::Value,
 }
 
-/// The text of an MCP result, as the model should read it.
-///
-/// MCP answers content as a list of typed parts. Only `text` is carried through: an image or a
-/// resource has no place in a transcript that goes to a provider as text, and saying so plainly
-/// beats passing base64 the model cannot use.
+/// The text of an MCP result, as the model should read it. MCP answers content as a list of typed
+/// parts; only `text` is carried through, since an image has no place in a transcript sent as text.
 fn text_of(result: &serde_json::Value) -> String {
     let Some(parts) = result.get("content").and_then(|v| v.as_array()) else {
         return String::new();
@@ -400,10 +357,8 @@ fn text_of(result: &serde_json::Value) -> String {
         .join("\n")
 }
 
-/// One tool from an MCP server.
-///
-/// Holds the server rather than a copy of it: several tools come from one process, and each of
-/// them calling it is the protocol working as designed.
+/// One tool from an MCP server. Holds the server rather than a copy of it: several tools come from
+/// one process, and each of them calling it is the protocol working as designed.
 pub struct McpTool {
     server: Rc<RefCell<Server>>,
     declared: Declared,
@@ -413,8 +368,7 @@ impl McpTool {
     /// Every tool a server offers, ready to register.
     ///
     /// # Errors
-    /// When the server will not start or will not list. Both mean no tools from it, and the
-    /// message says which — a session carries on without them, as it does without casper.
+    /// When the server will not start or will not list. Both mean no tools from it.
     pub fn all(
         command: &str,
         args: &[String],
@@ -452,8 +406,7 @@ impl Tool for McpTool {
         if let Ok(server) = self.server.try_borrow() {
             out.push(("server", server.named.clone()));
             if let Some(fingerprint) = &server.fingerprint {
-                // Printed so it can be copied into the declaration's `sha256`, which is the
-                // whole of how pinning gets started.
+                // Printed so it can be copied into the declaration's `sha256`.
                 out.push(("sha256", fingerprint.clone()));
             }
         }
@@ -479,12 +432,8 @@ mod tests {
     use crate::{Registry, Tool, Uncancelled, ops::Real};
     use magi_model::scratch::Scratch;
 
-    /// A server that speaks exactly as much of MCP as a client needs.
-    ///
-    /// Written here rather than mocked, because what is under test is the *protocol*: the
-    /// handshake a server may refuse everything without, the notification that is not optional,
-    /// the id matching that a notification arriving mid-call would break. A mock would agree
-    /// with whatever this client happens to do.
+    /// A server that speaks exactly as much of MCP as a client needs. Written here rather than
+    /// mocked, because what is under test is the *protocol* and a mock would agree with this client.
     const SERVER: &str = r#"
 import sys, json
 TOOLS = [{"name": "echo", "description": "Echo what it was given.",
@@ -539,8 +488,8 @@ for line in sys.stdin:
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name(), "echo");
         assert_eq!(tools[0].description(), "Echo what it was given.");
-        // MCP calls it `inputSchema` and everything here calls it `parameters`; the registry
-        // checks a call against it like any other, so the rename has to happen at the boundary.
+        // MCP calls it `inputSchema` and everything here calls it `parameters`, so the rename has
+        // to happen at the boundary.
         assert_eq!(
             tools[0].parameters()["properties"]["text"]["type"],
             "string"
@@ -565,8 +514,7 @@ for line in sys.stdin:
     #[test]
     fn a_notification_arriving_mid_call_is_not_mistaken_for_the_answer() {
         // The server writes a progress notification before every result. A client that took the
-        // next line as its answer would read that one — and the failure is a tool that returns
-        // nothing, intermittently, against servers that report progress.
+        // next line as its answer would read that one and return nothing.
         let (_dir, command, args) = serving("progress");
         let tools = McpTool::all(&command, &args, &Default::default(), None).expect("it starts");
         for _ in 0..3 {
@@ -581,8 +529,8 @@ for line in sys.stdin:
 
     #[test]
     fn the_initialized_notification_is_not_optional() {
-        // A server that has been initialised and not told so is entitled to refuse everything
-        // after it, and several do. This one does, which is why `tools/list` works at all above.
+        // A server that has been initialised and not told so is entitled to refuse everything after
+        // it, and several do.
         let (_dir, command, args) = serving("handshake");
         let mut server = Server::start(&command, &args, &Default::default(), None)
             .expect("the handshake completes");
@@ -594,9 +542,7 @@ for line in sys.stdin:
 
     #[test]
     fn an_mcp_tool_registers_beside_every_other_kind() {
-        // The whole design claim: a transport is a property of a declaration, not a second
-        // registry. It is checked against the same schema, capped by the same bound, and the
-        // turn loop does not know MCP exists.
+        // The whole design claim: a transport is a property of a declaration, not a second registry.
         let (_dir, command, args) = serving("registry");
         let mut registry = Registry::new();
         crate::builtin::install(&mut registry);
@@ -622,10 +568,8 @@ for line in sys.stdin:
 
     #[test]
     fn a_pinned_server_that_is_not_the_pinned_program_refuses_to_start() {
-        // **An MCP server is somebody else's code, running as you, with your tools**, and the
-        // `command` in a config is a name that resolves to whatever is on `$PATH` today. This is
-        // the one part of MCP's security story a client can implement: the protocol has no
-        // notion of *which* server you meant.
+        // An MCP server is somebody else's code, running as you, with your tools, and the `command`
+        // in a config is a name that resolves to whatever is on `$PATH` today.
         let (_dir, command, args) = serving("pinned");
         let actual = super::fingerprint(&command).expect("python3 is readable");
 
@@ -648,8 +592,8 @@ for line in sys.stdin:
 
     #[test]
     fn a_server_says_what_it_hashed_to_so_a_pin_can_be_written() {
-        // How pinning gets started: `magi doctor` prints this beside the tool, and a person
-        // copies it into the declaration. A feature nobody can discover is one nobody uses.
+        // How pinning gets started: `magi doctor` prints this beside the tool and a person copies
+        // it into the declaration.
         let (_dir, command, args) = serving("fingerprint");
         let tools = McpTool::all(&command, &args, &Default::default(), None).expect("it starts");
         let said: std::collections::BTreeMap<_, _> = tools[0].composition().into_iter().collect();

@@ -1,38 +1,18 @@
-//! Making sense of the JSON a model actually emitted.
-//!
-//! A tool call arrives as a string the model streamed, and models get two things wrong often
-//! enough to be worth handling rather than reporting: a **raw control character inside a string**
-//! — a literal newline in a `content` argument is the common one, and writing code into an `edit`
-//! call is where it happens — and an **invalid backslash escape**, `\d` from a regex or a Windows
-//! path written `C:\Users`. Both are one character from valid, and both make `serde_json` refuse
-//! the whole document.
-//!
-//! What that cost before this module: the parse error was thrown away and the tool was handed
-//! `null` **as if the model had asked for nothing**. The tool then failed for an unrelated reason
-//! — "read needs a path" — and nothing anywhere said the arguments had not parsed, so the model
-//! made the same mistake again. Pi repairs the same two cases for the same reason
-//! (`ai/src/utils/json-parse.ts:31-60`).
-//!
-//! **Repair is not guessing.** Nothing here changes what the document *says*: a raw newline
-//! becomes `\n`, which is the same newline, and a stray backslash becomes a literal backslash,
-//! which is what it plainly was. Anything still unparseable afterwards is reported, because a
-//! model told its JSON was malformed can fix it and a model handed `null` cannot.
+//! Making sense of the JSON a model actually emitted. Models get two things wrong often enough to
+//! repair rather than report: a raw control character inside a string — a literal newline in an
+//! `edit` call's `content` — and an invalid backslash escape out of a regex or a Windows path.
+//! Nothing here changes what the document says; anything still unparseable is reported.
 
-/// The escapes JSON actually defines.
-///
-/// A backslash in front of anything else is not an escape — it is a backslash somebody forgot to
-/// double, which is why `\d` and `C:\Users` are the two that turn up.
+/// The escapes JSON actually defines. A backslash before anything else was forgotten, not meant.
 const ESCAPES: [char; 8] = ['"', '\\', '/', 'b', 'f', 'n', 'r', 't'];
 
 /// Parse the arguments of a call, repairing what models get wrong.
 ///
 /// # Errors
-/// When it still does not parse, with the message the model is shown. A truncated turn produces
-/// one of these and nothing can be done about it — but saying so is the point.
+/// When it still does not parse, with the message the model is shown.
 pub fn arguments(raw: &str) -> Result<serde_json::Value, String> {
     let text = raw.trim();
-    // A call with no arguments at all is an empty object, not a failure. Providers differ on
-    // whether they send `{}` or nothing, and a tool that takes no arguments is called both ways.
+    // A call with no arguments at all is an empty object, not a failure: providers differ.
     if text.is_empty() {
         return Ok(serde_json::json!({}));
     }
@@ -48,11 +28,8 @@ pub fn arguments(raw: &str) -> Result<serde_json::Value, String> {
     })
 }
 
-/// Escape what a model left raw inside a string.
-///
-/// One pass, tracking whether the cursor is inside a string literal. Everything outside one is
-/// passed through untouched: the structure is the model's and this is not the place to guess at
-/// a missing brace.
+/// Escape what a model left raw inside a string. One pass, tracking whether the cursor is inside a
+/// string literal; everything outside one is passed through untouched.
 #[must_use]
 pub fn mend(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 16);
@@ -65,8 +42,7 @@ pub fn mend(text: &str) -> String {
                 out.push(c);
             }
             // A backslash inside a string either starts an escape or is one the model forgot to
-            // double. Outside a string it is not JSON at all and is left where it is, because
-            // the error should name the structure rather than a repair nobody asked for.
+            // double. Outside a string it is left where it is.
             '\\' if inside => match chars.peek() {
                 Some(next) if ESCAPES.contains(next) || *next == 'u' => {
                     out.push(c);
@@ -76,8 +52,7 @@ pub fn mend(text: &str) -> String {
                 }
                 _ => out.push_str("\\\\"),
             },
-            // The whole point. A literal newline in a JSON string is invalid; the same newline
-            // written `\n` is the string the model meant.
+            // A literal newline in a JSON string is invalid; escaped, it is the string the model meant.
             '\n' if inside => out.push_str("\\n"),
             '\r' if inside => out.push_str("\\r"),
             '\t' if inside => out.push_str("\\t"),
@@ -120,8 +95,7 @@ mod tests {
 
     #[test]
     fn a_backslash_that_is_not_an_escape_becomes_a_backslash() {
-        // `\d` out of a regex, and `C:\Users` out of a path. Both are plainly a literal
-        // backslash and neither is valid JSON.
+        // Out of a regex, and out of a Windows path. Both are plainly a literal backslash.
         let value = arguments(r#"{"pattern":"\d+","path":"C:\Users"}"#).expect("repaired");
         assert_eq!(value["pattern"], r"\d+");
         assert_eq!(value["path"], r"C:\Users");
@@ -138,24 +112,21 @@ mod tests {
 
     #[test]
     fn a_newline_between_fields_is_not_touched() {
-        // Outside a string a newline is whitespace and already valid. Escaping it would make a
-        // pretty-printed object unparseable.
+        // Outside a string a newline is whitespace and already valid.
         let value = arguments("{\n  \"path\": \"a.rs\"\n}").expect("parses");
         assert_eq!(value["path"], "a.rs");
     }
 
     #[test]
     fn nothing_at_all_is_an_empty_object() {
-        // Providers differ on whether a no-argument call sends `{}` or nothing, and a tool that
-        // takes no arguments is called both ways.
         assert_eq!(arguments("").expect("empty"), serde_json::json!({}));
         assert_eq!(arguments("   ").expect("blank"), serde_json::json!({}));
     }
 
     #[test]
     fn something_beyond_repair_says_so_rather_than_becoming_nothing() {
-        // A truncated turn produces this and nothing can be done about it. Saying so is the
-        // point: the model was handed `null` before, which reads as "you asked for nothing".
+        // A truncated turn produces this and nothing can be done about it. Saying so is the point:
+        // the model was handed `null` before, which reads as "you asked for nothing".
         let why = arguments(r#"{"path": "a.rs"#).expect_err("truncated");
         assert!(why.contains("not valid JSON"), "{why}");
         assert!(why.contains("JSON object"), "and says what to do: {why}");

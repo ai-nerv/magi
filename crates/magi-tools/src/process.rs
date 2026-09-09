@@ -1,18 +1,8 @@
-//! A tool that lives in its own process.
-//!
-//! The boundary `bash` justifies: arbitrary execution, a working directory that has to survive
-//! between calls, and the thing you would most want to isolate. Any language, crash-isolated,
-//! and later sandboxable — none of which a function in a VM can be.
-//!
-//! **Long-lived and lazily started.** A per-call spawn would make the boundary pure cost:
-//! `cd build` then `make` has to work, which means one process holding its own cwd and
-//! environment across calls. Started on first use so a declared tool nobody calls costs
-//! nothing, and restarted on the next call if it dies.
-//!
-//! **Reads on its own thread.** A blocking read cannot be given a deadline, so a caller that
-//! reads inline can neither time out nor notice an interrupt: it is inside `read` until the
-//! peer chooses to answer, and a peer that never answers holds the turn open forever. The
-//! thread turns the pipe into a channel, and a channel can be waited on for a bounded time.
+//! A tool that lives in its own process: the boundary `bash` justifies — arbitrary execution, a
+//! working directory that has to survive between calls, crash isolation and later a sandbox.
+//! Long-lived and started on first use, restarted on the next call if it dies. Reads happen on
+//! their own thread, because a blocking read cannot be given a deadline and a peer that never
+//! answers would hold the turn open forever.
 
 use crate::{Cancel, Ops, Output, Tool};
 use magi_ipc::blocking::{FrameReader, FrameWriter};
@@ -23,21 +13,13 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// How long to wait for a peer to answer one call.
-///
-/// A shell command may legitimately take minutes, so this is generous; it exists to stop a
-/// wedged peer holding a turn open forever, not to bound useful work.
+/// How long to wait for a peer to answer one call. Generous: it stops a wedged peer holding a turn
+/// open forever, not useful work.
 const CALL_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// How long this call may take.
-///
-/// A `timeout` in the arguments, clamped to [`CALL_TIMEOUT`] as a ceiling. Enforced by the host
-/// rather than left to the peer: the peer is the thing that might be wedged, and a deadline it
-/// enforces itself is one it can fail to. The argument is passed on regardless, so a peer that
-/// wants to stop early can.
-///
-/// The ceiling is not negotiable. A tool that could ask for an hour could hold a turn open for
-/// an hour, which is what this constant exists to prevent.
+/// How long this call may take: a `timeout` in the arguments, clamped to [`CALL_TIMEOUT`]. Enforced
+/// by the host rather than the peer, which is the thing that might be wedged, and the argument is
+/// passed on regardless so a peer that wants to stop early can. The ceiling is not negotiable.
 fn allowed(arguments: &serde_json::Value) -> Duration {
     arguments
         .get("timeout")
@@ -48,21 +30,14 @@ fn allowed(arguments: &serde_json::Value) -> Duration {
 }
 
 /// How long a peer has to acknowledge a cancellation before it is killed.
-///
-/// Short, because the peer is being asked to stop and the user is waiting. A peer that answers
-/// keeps its state; one that does not is not in a position to be trusted with it.
 const CANCEL_GRACE: Duration = Duration::from_secs(5);
 
-/// How often a waiting call looks up to see whether it is still wanted.
-///
-/// The interrupt is a flag, not a channel, so it has to be polled. Short enough that `esc`
-/// feels immediate, long enough that a running tool costs nothing to wait on.
+/// How often a waiting call looks up to see whether it is still wanted; the interrupt is a flag,
+/// not a channel, so it has to be polled.
 const CANCEL_POLL: Duration = Duration::from_millis(50);
 
-/// How long a peer has to say what it offers.
-///
-/// Bounded so a peer that declares nothing costs a moment rather than the session. What it
-/// costs is the config's claim standing unchallenged, which is where things were before.
+/// How long a peer has to say what it offers, bounded so a peer that declares nothing costs a
+/// moment rather than the session.
 const DECLARE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// How much of a peer's stderr is kept to explain its death.
@@ -76,13 +51,8 @@ pub struct ProcessTool {
     name: String,
     /// What the config claimed, used until the peer has been asked.
     claimed: Declared,
-    /// What the peer said when it was asked, which settles it.
-    ///
-    /// The peer is the authority. A config can only describe what somebody believed a program
-    /// did when they wrote the line, and a model handed a schema the peer does not implement
-    /// calls it with the wrong arguments and is told nothing useful about why. Set once,
-    /// before any turn: a schema cannot be corrected halfway through a conversation that has
-    /// already used it.
+    /// What the peer said when it was asked, which settles it: the peer is the authority, and a
+    /// config only describes what somebody believed. Set once, before any turn.
     confirmed: std::cell::OnceCell<Declared>,
     command: String,
     args: Vec<String>,
@@ -92,10 +62,8 @@ pub struct ProcessTool {
     peer: RefCell<Option<Peer>>,
     /// Calls answered so far, so an id is never reused.
     next: std::cell::Cell<u64>,
-    /// The call that has been sent and not yet collected, with how long it may take.
-    ///
-    /// At most one: a peer answers one call at a time, so a second call to the same tool has
-    /// nothing to overlap with the first.
+    /// The call that has been sent and not yet collected, with how long it may take. At most one: a
+    /// peer answers one call at a time.
     flight: RefCell<Option<(ToolCallId, Duration)>>,
 }
 
@@ -112,25 +80,17 @@ struct Peer {
     /// The peer's stdin. `Option` so dropping it can close the pipe, which is how a peer is
     /// asked to stop: it reads until its input ends, then runs its own cleanup.
     writer: Option<FrameWriter<std::process::ChildStdin>>,
-    /// Whatever the peer complained about on the way down.
-    ///
-    /// Kept because a peer that fails to start fails on the wire as "broken pipe", which says
-    /// nothing anyone can act on. The reason is almost always on its stderr -- a missing
-    /// binary, a bad argument, a config error -- and that is the sentence the model and the
-    /// user actually need.
+    /// Whatever the peer complained about on the way down. A peer that fails to start fails on the
+    /// wire as "broken pipe"; the reason anyone can act on is on its stderr.
     complaint: Arc<Mutex<String>>,
 }
 
 /// How long to let a peer finish after its input closes, and how often to look.
-///
-/// Short: this runs when a registry is torn down, and a peer that has not gone by then is one
-/// that is not going to. Long enough that the ordinary case — read EOF, clean up, exit — wins.
 const GOODBYE_TRIES: usize = 40;
 const GOODBYE_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 
 /// How a call ended.
 enum Ended {
-    /// The peer answered.
     Answered(Output),
     /// The peer is not usable and should be replaced.
     Lost(String),
@@ -163,9 +123,6 @@ impl ProcessTool {
     }
 
     /// Start the peer with these extra environment pairs.
-    ///
-    /// Builder rather than a sixth argument: it is the one thing about a peer that is usually
-    /// nothing, and nine call sites passing an empty map say nothing at any of them.
     #[must_use]
     pub fn with_env(mut self, env: std::collections::BTreeMap<String, String>) -> Self {
         self.env = env;
@@ -181,14 +138,13 @@ impl ProcessTool {
         crate::environ::apply(&mut command, &self.env);
         let mut child = command
             .args(&self.args)
-            // Rooted where the session is, so a peer that resolves relative paths agrees with
-            // the tools that do not go through it.
+            // Rooted where the session is, so a peer that resolves relative paths agrees with the
+            // tools that do not go through it.
             .current_dir(ops.cwd())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            // Captured rather than inherited. A daemon is started with its own output going
-            // nowhere, so an inherited stderr is a diagnostic written to no one; and when a
-            // peer dies on startup its complaint is the only thing that explains the failure.
+            // Captured rather than inherited: a daemon's stderr goes nowhere, and a peer that dies
+            // on startup leaves its only explanation there.
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("could not start {}: {e}", self.command))?;
@@ -234,11 +190,8 @@ impl ProcessTool {
         Ok(())
     }
 
-    /// Whatever the peer wrote to its stderr, trimmed.
-    /// Waited for, briefly. The draining thread is still finishing when the wire notices the
-    /// peer has gone, and reading the slot at once gets an empty string — which is the very
-    /// failure this exists to fix. The peer is already dead, so its stderr is closed and the
-    /// wait ends as soon as the thread does.
+    /// Whatever the peer wrote to its stderr, trimmed. Waited for briefly: the draining thread is
+    /// still finishing when the wire notices the peer has gone, and the slot would read empty.
     fn complaint(&self) -> String {
         let deadline = Instant::now() + COMPLAINT_WAIT;
         loop {
@@ -255,18 +208,10 @@ impl ProcessTool {
         }
     }
 
-    /// Stop the peer, so the next call starts a fresh one.
-    ///
-    /// Taken and dropped rather than killed. [`Peer::drop`] closes the peer's stdin and gives it
-    /// a moment to stop, which is what lets the peer run its own cleanup -- the shell peer kills
-    /// the shell it started there. Killing it here reached the same `Peer::drop` afterwards, but
-    /// by then the peer was already dead of SIGKILL and had run nothing: every session leaked the
-    /// shell it had opened, and a machine that had been running magi for a day carried a thousand
-    /// orphaned shells parented to init.
-    ///
-    /// Taken out of the cell first, so the borrow is released before the wait: `Peer::drop`
-    /// blocks for up to a second, and a tool holding its own `RefCell` for that long is a
-    /// deadlock waiting for a second caller.
+    /// Stop the peer, so the next call starts a fresh one. Taken and dropped rather than killed:
+    /// [`Peer::drop`] closes the peer's stdin and lets it run its own cleanup — the shell peer kills
+    /// the shell it started there — and killing it here leaked one orphaned shell per session.
+    /// Taken out of the cell first, so the borrow is released before the wait.
     fn drop_peer(&self) {
         let peer = self.peer.borrow_mut().take();
         drop(peer);
@@ -277,10 +222,8 @@ impl ProcessTool {
         self.confirmed.get().unwrap_or(&self.claimed)
     }
 
-    /// Read what the peer declares on connect, and take its word for it.
-    ///
-    /// Bounded, because a peer that never declares is one whose config claim is all there is
-    /// -- which is no worse than before it was asked, and better than refusing to run it.
+    /// Read what the peer declares on connect, and take its word for it. Bounded: a peer that never
+    /// declares is one whose config claim is all there is.
     fn adopt(&self) {
         let mut held = self.peer.borrow_mut();
         let Some(peer) = held.as_mut() else { return };
@@ -296,8 +239,7 @@ impl ProcessTool {
                     description,
                     parameters,
                 })) => {
-                    // A peer may serve several tools and declares each; this one takes only
-                    // its own, and the rest are somebody else's to adopt.
+                    // A peer may serve several tools and declares each; this one takes only its own.
                     if name == self.name {
                         let _ = self.confirmed.set(Declared {
                             description,
@@ -312,16 +254,8 @@ impl ProcessTool {
         }
     }
 
-    /// Send one call and wait for the peer to answer it.
-    ///
-    /// Bounded three ways, because a peer is another program and none of them can be assumed:
-    /// the call has a deadline, an interrupt is passed on and then enforced, and a peer whose
-    /// stream ends is reported rather than waited on.
-    /// What a lost peer is reported as.
-    ///
-    /// The peer's own words first: "broken pipe" is what the wire saw, and the reason is on its
-    /// stderr. A peer that could not start says so there, and without it the failure is
-    /// unactionable for both the model and the user.
+    /// What a lost peer is reported as. The peer's own words first: "broken pipe" is what the wire
+    /// saw, and the reason a model or a user can act on is on its stderr.
     fn lost(&self, why: &str) -> Output {
         let said = self.complaint();
         self.drop_peer();
@@ -332,11 +266,9 @@ impl ProcessTool {
         }
     }
 
-    /// Write the call and return, leaving the answer for [`Tool::wait`].
-    ///
-    /// Split from the waiting so a round of calls to *different* peers overlaps: the requests go
-    /// out one after another and the answers are collected in the order the model asked, so the
-    /// round costs the slowest peer rather than the sum of them. See [`crate::Sending`].
+    /// Write the call and return, leaving the answer for [`Tool::wait`]. Split from the waiting so
+    /// a round of calls to *different* peers overlaps and costs the slowest rather than the sum.
+    /// See [`crate::Sending`].
     fn post(&self, arguments: &serde_json::Value) -> Result<ToolCallId, String> {
         let id = ToolCallId::new(format!("c{}", self.next.get()));
         self.next.set(self.next.get() + 1);
@@ -394,8 +326,8 @@ impl ProcessTool {
                         shown: None,
                     });
                 }
-                // A report for a call that is not this one, or a declaration arriving late.
-                // Skipped rather than treated as an answer: the peer may serve several tools.
+                // A report for another call, or a late declaration. Skipped rather than treated as
+                // an answer: the peer may serve several tools.
                 Ok(Ok(_)) => {}
                 Ok(Err(e)) => return Ended::Lost(e),
                 Err(RecvTimeoutError::Disconnected) => {
@@ -403,7 +335,7 @@ impl ProcessTool {
                 }
                 Err(RecvTimeoutError::Timeout) => {
                     // Sent once, then enforced. Asking twice would tell a peer that is already
-                    // winding down to start again, and asking forever would never end.
+                    // winding down to start again.
                     if !asked_to_stop && cancel.is_cancelled() {
                         asked_to_stop = true;
                         deadline = Instant::now() + CANCEL_GRACE;
@@ -466,10 +398,9 @@ impl Tool for ProcessTool {
     }
 
     fn run(&self, arguments: &serde_json::Value, ops: &dyn Ops, cancel: &dyn Cancel) -> Output {
-        // A peer is another program, so the question is asked here rather than trusted to it.
-        // A shell command is asked as a *command*, with its program named separately, because
-        // "any `git` command" is the answer people actually want to give and they cannot give
-        // it if the question was "may the shell tool run".
+        // A peer is another program, so the question is asked here rather than trusted to it. A
+        // shell command is asked as a *command*, with its program named separately, because "any
+        // `git` command" is the answer people actually want to give.
         if let Some(action) = self.action(arguments)
             && let Err(why) = ops.allow(&self.name, &action)
         {
@@ -490,9 +421,8 @@ impl Tool for ProcessTool {
     }
 
     fn send(&self, arguments: &serde_json::Value, ops: &dyn Ops) -> crate::Sending {
-        // The permission question is asked *here*, in the phase that runs one call at a time,
-        // because it is a question to a person: two prompts racing onto one screen is not a
-        // faster round, it is an unanswerable one.
+        // Asked *here*, in the phase that runs one call at a time, because it is a question to a
+        // person: two prompts racing onto one screen is an unanswerable round, not a faster one.
         if let Some(action) = self.action(arguments)
             && let Err(why) = ops.allow(&self.name, &action)
         {
@@ -501,8 +431,8 @@ impl Tool for ProcessTool {
         if let Err(why) = self.ensure(ops) {
             return crate::Sending::Refused(Output::error(why));
         }
-        // One peer answers one call at a time, so a second call to the *same* tool has nothing
-        // to overlap with the first and waits its turn. Overlap is between peers.
+        // One peer answers one call at a time, so a second call to the *same* tool waits its turn.
+        // Overlap is between peers.
         if self.flight.borrow().is_some() {
             return crate::Sending::Inline;
         }
@@ -543,8 +473,7 @@ mod timeout_tests {
 
     #[test]
     fn a_short_timeout_is_honoured() {
-        // The point: `bash` with something that may hang should not hold the turn for ten
-        // minutes before anyone finds out.
+        // `bash` with something that may hang should not hold the turn for ten minutes.
         assert_eq!(
             allowed(&serde_json::json!({ "timeout": 5 })),
             Duration::from_secs(5)
@@ -579,11 +508,9 @@ mod timeout_tests {
 }
 
 impl ProcessTool {
-    /// What this call is about to do, in the terms a person is asked about.
-    ///
-    /// Only a `command` argument is recognised, which is the shell's. A peer that takes
-    /// something else is not asked about — its own schema is the description of what it does,
-    /// and inventing an action from arguments this code does not understand would put a
+    /// What this call is about to do, in the terms a person is asked about. Only a `command`
+    /// argument is recognised, which is the shell's; a peer that takes something else is not asked
+    /// about, because inventing an action from arguments this code does not understand would put a
     /// sentence in front of somebody that does not mean what it says.
     fn action(&self, arguments: &serde_json::Value) -> Option<magi_proto::permit::Action> {
         let command = arguments.get("command")?.as_str()?;
@@ -594,12 +521,8 @@ impl ProcessTool {
     }
 }
 
-/// The program a command line runs, for the "any `git` command" answer.
-///
-/// Shared with the Lua shell native, which asks the same question about the same kind of string.
-///
-/// Leading environment assignments are stepped over: `FOO=1 git status` is a `git` command, and
-/// a person offered "any `FOO=1` command" would rightly not know what they were being asked.
+/// The program a command line runs, for the "any `git` command" answer, shared with the Lua shell
+/// native. Leading environment assignments are stepped over: `FOO=1 git status` is a `git` command.
 pub fn first_word(command: &str) -> String {
     command
         .split_whitespace()
@@ -619,7 +542,6 @@ mod action_tests {
 
     #[test]
     fn leading_environment_is_stepped_over() {
-        // Somebody offered "any `FOO=1` command" would rightly not know what was being asked.
         assert_eq!(first_word("FOO=1 BAR=2 git push"), "git");
     }
 
@@ -635,20 +557,13 @@ mod action_tests {
 }
 
 impl Drop for Peer {
-    /// Stop the peer, so it can stop whatever it started.
-    ///
-    /// A `Child` that is merely dropped is leaked: Rust neither kills nor reaps it. The peer
-    /// then outlives the registry that owned it, and so does anything it spawned — the shell
-    /// peer's own shell among them, which is how a test run left two and a half thousand
-    /// orphaned `bash` processes parented to init.
-    ///
-    /// Killed rather than asked, because the ask is "close its stdin" and stdin is owned by the
-    /// writer this cannot move out of. The shell peer's shell sits on a pty whose controller
-    /// dies with the peer, which is what takes it down in turn.
+    /// Stop the peer, so it can stop whatever it started. A `Child` that is merely dropped is
+    /// leaked: Rust neither kills nor reaps it, so the peer and anything it spawned outlive the
+    /// registry that owned it. Killed rather than asked, because the ask is "close its stdin" and
+    /// stdin is owned by the writer this cannot move out of.
     fn drop(&mut self) {
-        // Closing its input first, because that is how a peer is told to stop, and stopping is
-        // what lets its own cleanup run — the shell peer kills the shell it started there. A
-        // `Child` that is merely dropped is leaked: Rust neither kills nor reaps it.
+        // Closing its input first, because that is how a peer is told to stop, and stopping is what
+        // lets its own cleanup run — the shell peer kills the shell it started there.
         self.writer = None;
         for _ in 0..GOODBYE_TRIES {
             match self.child.try_wait() {

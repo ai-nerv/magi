@@ -1,46 +1,25 @@
-//! Tools that live in casper.
-//!
-//! magi keeps `read`, `write` and `edit` — the floor it can never be without. Everything else is
-//! casper's, and this is how it is reached: ask what exists, hand over a call, read back what it
-//! produced.
-//!
-//! # Why a spawn and not a socket
-//!
-//! casper runs programs, and *a socket that runs commands is remote code execution*. So its
-//! socket answers only what exists, and a call goes over the spawn link — argv and stdin, from a
-//! process that could have run the command itself. One exec per call, which is the same shape
-//! [`crate::process`] pays for and for the same reason: the boundary is the point.
-//!
-//! # What comes back is two things
-//!
-//! A tool result is read by the model *and* drawn for the person, and those are not the same
-//! content. [`magi_proto::tooling::Ran`] carries both: `said` is what the model reads, and
-//! `shown` is a painted view or a question. This module keeps `said`, because a [`Tool`] returns
-//! text; the view is carried alongside by [`Ran::shown`] for the caller that draws.
+//! Tools that live in casper. magi keeps `read`, `write` and `edit` — the floor it can never be
+//! without; everything else is casper's, reached by asking what exists, handing over a call and
+//! reading back what it produced. casper runs programs, and a socket that runs commands is remote
+//! code execution, so its socket answers only what exists and a call goes over the spawn link, one
+//! exec per call. [`magi_proto::tooling::Ran`] carries `said` for the model and `shown` for the
+//! screen; this module keeps `said`, because a [`Tool`] returns text.
 
 use crate::question::Asks;
 use crate::{Cancel, Ops, Output, Tool};
 use magi_proto::tooling::{Call, Card, Ran, Shown};
 use std::sync::Arc;
 
-/// The program that owns the tools.
-///
-/// Found on `PATH`, like every other sibling. Named here rather than inline so a test can put
-/// something else in its place without touching the environment: `PATH` is process-wide, and
-/// tests that fought over it would be tests that pass alone and fail together.
+/// The program that owns the tools, found on `PATH`. Named here rather than inline so a test can
+/// put something else in its place: `PATH` is process-wide, and tests fighting over it flake.
 pub const CASPER: &str = "casper";
 
-/// The variable casper reads its configuration out of.
-///
-/// Named here as well as there because it is a wire between two repositories, like everything
-/// else in this module: casper cannot depend on magi and magi cannot depend on casper, so the
-/// spelling is written down on both sides and the family contract says what it means.
+/// The variable casper reads its configuration out of. Named here as well as there because it is a
+/// wire between two repositories that cannot depend on each other.
 pub const CONFIGURE: &str = "CASPER_CONFIGURE";
 
-/// What casper says it offers.
-///
-/// Empty when casper is not installed or would not answer. Not an error: a session without it
-/// keeps the tools magi declares itself, exactly as it did before casper existed.
+/// What casper says it offers. Empty when casper is not installed or would not answer, which is not
+/// an error: the session keeps the tools magi declares itself.
 #[must_use]
 pub fn cards() -> Vec<Card> {
     cards_from(CASPER)
@@ -52,12 +31,8 @@ pub fn cards_from(program: &str) -> Vec<Card> {
     cards_configured(program, "")
 }
 
-/// The same, saying what this session has configured casper to be.
-///
-/// **casper is one process per call, so the configuration goes on every spawn.** melchior and
-/// balthasar are asked once and then run for the session; a `configure` that reached only the
-/// process running it would have casper report a setting as taken and every later call know
-/// nothing about it. Empty is the ordinary case and means "whatever casper is by default".
+/// The same, saying what this session has configured casper to be. casper is one process per call,
+/// so the configuration goes on every spawn. Empty means "whatever casper is by default".
 #[must_use]
 pub fn cards_configured(program: &str, configured: &str) -> Vec<Card> {
     let Ok(out) = std::process::Command::new(program)
@@ -73,13 +48,8 @@ pub fn cards_configured(program: &str, configured: &str) -> Vec<Card> {
     listed(rows(&out.stdout).unwrap_or_default())
 }
 
-/// The cards in a reply's rows, whichever of the two shapes they arrived in.
-///
-/// Flat is the contract: `result` is the rows and a row is a card. casper sent its listings as a
-/// single row that was itself a list, and this read that shape alone — so the two agreed with
-/// each other and with nothing else in the family. Both are read here, because the two programs
-/// ship from separate repositories and a magi that only understands the new casper is a magi
-/// that loses every tool the moment the versions differ.
+/// The cards in a reply's rows, whichever of the two shapes they arrived in. Flat is the contract;
+/// the nested shape casper also sends is read too, because the two ship from separate repositories.
 fn listed(rows: Vec<serde_json::Value>) -> Vec<Card> {
     if let Some(nested) = rows.first().filter(|first| first.is_array()) {
         return serde_json::from_value(nested.clone()).unwrap_or_default();
@@ -105,8 +75,7 @@ fn rows(body: &[u8]) -> Option<Vec<serde_json::Value>> {
 ///
 /// # Errors
 /// A refusal — casper could not be started, or would not take the call. Distinct from a tool that
-/// *ran* and reported a problem, which comes back as [`Ran::failed`] and is something the model
-/// should read.
+/// *ran* and reported a problem, which comes back as [`Ran::failed`].
 pub fn run(program: &str, call: &Call) -> Result<Ran, String> {
     run_configured(program, call, "")
 }
@@ -134,9 +103,7 @@ pub fn run_configured(program: &str, call: &Call, configured: &str) -> Result<Ra
 
     if let Some(mut stdin) = child.stdin.take() {
         // Written and closed. casper reads to end of file, so a handle left open is a call that
-        // never starts. A half-written body is worse than a failed spawn: casper answers
-        // something unreadable, and that is the message the caller is given for what was really
-        // a broken pipe.
+        // never starts, and a half-written body reads back as an unreadable answer.
         if let Err(why) = stdin.write_all(&body) {
             magi_model::noted!("casper: the call to {program} was not fully written: {why}");
         }
@@ -146,8 +113,7 @@ pub fn run_configured(program: &str, call: &Call, configured: &str) -> Result<Ra
         .map_err(|why| format!("{program} did not finish: {why}"))?;
 
     let rows = rows(&out.stdout).ok_or_else(|| {
-        // The reply shape is what a client parses; anything else is a casper that answered
-        // something this build cannot read, which is worth saying rather than swallowing.
+        // Anything else is a casper that answered something this build cannot read.
         format!("{program} answered something unreadable")
     })?;
     let first = rows
@@ -168,15 +134,10 @@ pub struct CasperTool {
 }
 
 impl CasperTool {
-    /// Every tool `program` offers, if it is the program that was pinned.
-    ///
-    /// **casper supplies magi's entire tool set and is resolved off `$PATH` with no
-    /// acknowledgement.** That is a larger trust assumption than the one MCP servers get pinned
-    /// for: a `casper` earlier on the path than the real one owns `shell`, `read` and everything
-    /// else the model calls. Same mechanism as [`crate::mcp`], same reason.
-    ///
-    /// `None` for `pinned` is the ordinary case and starts anything. `magi doctor` prints what
-    /// the program actually hashed to, which is where a pin comes from.
+    /// Every tool `program` offers, if it is the program that was pinned. casper supplies magi's
+    /// entire tool set and is resolved off `$PATH`, so a `casper` earlier on the path owns `shell`,
+    /// `read` and everything else the model calls. `None` for `pinned` starts anything, which is
+    /// the ordinary case; `magi doctor` prints what the program actually hashed to.
     #[must_use]
     pub fn pinned(
         program: &str,
@@ -204,11 +165,8 @@ impl CasperTool {
         Self::all(program, asks, holds, configured)
     }
 
-    /// Every tool casper offers, ready to register.
-    ///
-    /// `asks` is how a question reaches the person. A tool that never asks never uses it; one
-    /// that does cannot finish without it, which is why it is taken here rather than looked up
-    /// when the question arrives.
+    /// Every tool casper offers, ready to register. `asks` is how a question reaches the person,
+    /// taken here rather than looked up when the question arrives.
     #[must_use]
     pub fn all(
         program: &str,
@@ -238,8 +196,8 @@ impl Tool for CasperTool {
                 format!("{} run {}", self.program, self.card.name),
             ),
         ];
-        // Printed so it can be pinned. This program supplies the whole tool set and is found on
-        // `$PATH`, which is the largest unacknowledged trust assumption magi makes.
+        // Printed so it can be pinned: this program supplies the whole tool set and is found on
+        // `$PATH`.
         if let Some(fingerprint) = crate::mcp::fingerprint(&self.program) {
             out.push(("sha256", fingerprint));
         }
@@ -265,31 +223,23 @@ impl Tool for CasperTool {
             cwd: ops.cwd().display().to_string(),
             answered: None,
         };
-        // **magi decides, casper describes.** The card says which verb this tool acts under and
-        // the ledger answers — the same ledger, the same prompt and the same standing grants
-        // every tool here goes through. Without this a tool could be moved out of magi's config
-        // and quietly leave the gate behind it, which is the one thing that must not happen
-        // while tools are being moved.
+        // magi decides, casper describes: the card says which verb this tool acts under and the
+        // ledger answers, so a tool moved out of magi's config cannot leave the gate behind it.
         if let Some(action) = wants(&self.card, arguments)
             && let Err(why) = ops.allow(&self.card.name, &action)
         {
             return Output::error(why);
         }
-        // **A call may stop and ask, and then go on.** Bounded, because a tool that asked
-        // forever would hold the turn open forever: two questions is a permission and then a
-        // confirmation, which is as far as anything has needed to go, and a third is a
-        // declaration in a loop rather than one talking to a person.
+        // A call may stop and ask, and then go on. Bounded, because a tool that asked forever would
+        // hold the turn open forever; two questions is as far as anything has needed to go.
         for _ in 0..3 {
             let ran = match run_configured(&self.program, &call, &self.configured) {
-                // A refusal is still something the model reads: it asked for a tool that could
-                // not be reached, and the answer is to try another way rather than end the turn.
+                // A refusal is still something the model reads, and it can try another way round.
                 Err(why) => return Output::error(why),
                 Ok(ran) => ran,
             };
-            // **Rows a tool fills itself.** The general form of a question: magi reserves the
-            // space and drives the surface, and what goes in it is the tool's business. The
-            // answer comes back as an id and resumes the call exactly as an answered question
-            // does — one mechanism, so a picker, a permission and a game are one code path.
+            // Rows a tool fills itself, the general form of a question: magi reserves the space and
+            // drives the surface, and the answer comes back as an id and resumes the call.
             if let Some(Shown::Surface(surface)) = &ran.shown {
                 let Some(chosen) = self.holds.hold(&self.card.name, surface, arguments) else {
                     return Output::error(format!(
@@ -304,8 +254,8 @@ impl Tool for CasperTool {
                 return finished(ran);
             };
             let Some(choice) = self.asks.ask(&self.card.name, ask) else {
-                // Nobody answered. Told to the model rather than left as an empty result: a
-                // blank answer to a call it made reads as a tool that silently does nothing.
+                // Nobody answered. Told to the model, because a blank result reads as a tool that
+                // silently does nothing.
                 return Output::error(format!(
                     "{} stopped to ask \"{}\" and nobody answered",
                     self.card.name, ask.question
@@ -323,11 +273,6 @@ impl Tool for CasperTool {
 #[cfg(test)]
 mod tests {
     /// A pinned casper that is not the pinned program supplies nothing.
-    ///
-    /// **This program supplies magi's entire tool set and is resolved off `$PATH`.** A `casper`
-    /// earlier on the path than the real one owns `shell`, `read` and everything else the model
-    /// calls — a larger trust assumption than the one an MCP server gets pinned for, and one
-    /// made with no acknowledgement at all until now.
     #[test]
     fn a_pinned_casper_that_is_not_the_pinned_program_supplies_no_tools() {
         let asks: Arc<dyn Asks> = Arc::new(crate::question::Unanswered);
@@ -342,8 +287,7 @@ mod tests {
         );
         assert!(wrong.is_empty(), "a substituted casper supplied tools");
 
-        // And the real one, pinned to what it actually is, supplies what it always did. Skipped
-        // when casper is not installed, which is a session with no tools from it either way.
+        // Skipped when casper is not installed, which is a session with no tools from it either way.
         if let Some(actual) = crate::mcp::fingerprint(CASPER) {
             let right = CasperTool::pinned(CASPER, asks, holds, Some(&actual), "");
             assert_eq!(
@@ -364,8 +308,7 @@ mod tests {
 
     #[test]
     fn a_casper_that_is_not_there_offers_nothing_rather_than_failing() {
-        // The ordinary case on a machine without it. A session then keeps the tools magi
-        // declares itself, exactly as it did before casper existed.
+        // The ordinary case on a machine without it: the session keeps the tools magi declares.
         assert!(cards_from("magi-no-such-casper-anywhere").is_empty());
     }
 
@@ -397,8 +340,7 @@ mod tests {
     #[test]
     fn cards_are_read_in_either_shape_casper_has_sent_them() {
         // Flat is the contract; nested is what casper sent for as long as it has existed. The two
-        // programs are installed separately, so a magi that understood only one of them would
-        // lose every tool it has the moment the other side was upgraded first.
+        // programs are installed separately and either side can be upgraded first.
         let card =
             serde_json::json!({ "name": "cat", "description": "read a file", "parameters": {} });
         let flat = listed(vec![card.clone()]);
@@ -409,11 +351,8 @@ mod tests {
     }
 }
 
-/// One finished call, as the registry wants it.
-///
-/// Both faces cross: `said` for the model, `shown` for the screen. A tool that reported a
-/// problem is still a result — the model needs to read what went wrong in order to do something
-/// about it — so a failure carries its view too.
+/// One finished call, as the registry wants it: `said` for the model, `shown` for the screen. A
+/// tool that reported a problem is still a result, so a failure carries its view too.
 fn finished(ran: Ran) -> Output {
     Output {
         content: ran.said,
@@ -422,17 +361,13 @@ fn finished(ran: Ran) -> Output {
     }
 }
 
-/// What this call is about to do, in magi's own vocabulary.
-///
-/// `None` when the card names no verb, or names one this build has no meaning for: a tool that
-/// touches nothing a person would want a say over is not gated, and a verb nobody recognises is
-/// *not* silently treated as harmless — it is treated as `run`, which is the most guarded thing
-/// there is. A newer casper inventing a verb should be asked about, not waved through.
+/// What this call is about to do, in magi's own vocabulary. `None` when the card names no verb — a
+/// tool that touches nothing a person would want a say over is not gated. A verb this build has no
+/// meaning for is treated as `run`, the most guarded thing there is, rather than waved through.
 fn wants(card: &Card, arguments: &serde_json::Value) -> Option<magi_proto::permit::Action> {
     use magi_proto::permit::Action;
     let needs = card.needs.as_deref()?;
-    // The argument a person would judge it by, when there is an obvious one. A tool with no
-    // path in its arguments is asked about by name, which is still better than not being asked.
+    // The argument a person would judge it by; a tool with no path is asked about by name.
     let text = |key: &str| {
         arguments
             .get(key)
@@ -461,11 +396,9 @@ fn wants(card: &Card, arguments: &serde_json::Value) -> Option<magi_proto::permi
                     command
                 }
             };
-            // The same reading the process transport uses. Two of them disagreed: this one took
-            // the first word outright, so `FOO=1 git status` offered "any `FOO=1` command" — a
-            // question nobody could answer sensibly, and one whose grant then covered every
-            // command line starting `FOO=1`, including one that goes on to say something else
-            // entirely. A permission subject that differs by transport is its own bug.
+            // The same reading the process transport uses. Taking the first word outright made
+            // `FOO=1 git status` offer "any `FOO=1` command", whose grant then covered every
+            // command line starting `FOO=1`. A permission subject that differs by transport is a bug.
             let program = crate::process::first_word(&command);
             let program = if program.is_empty() {
                 card.name.clone()
@@ -494,8 +427,8 @@ mod gating {
 
     #[test]
     fn a_tool_that_needs_nothing_is_not_gated() {
-        // Asking about something nobody would want a say over is how a permission prompt
-        // becomes a nuisance, and a nuisance is answered without being read.
+        // Asking about something nobody would want a say over turns a prompt into a nuisance, and a
+        // nuisance is answered without being read.
         assert!(wants(&card(None), &serde_json::json!({})).is_none());
     }
 
@@ -523,16 +456,14 @@ mod gating {
 
     #[test]
     fn a_verb_nobody_recognises_is_guarded_rather_than_waved_through() {
-        // A newer casper inventing a verb must not be treated as harmless: the safe reading of
-        // "I do not know what this is" is the most guarded thing there is, not the least.
+        // A newer casper inventing a verb must not be treated as harmless.
         let odd = wants(&card(Some("teleport")), &serde_json::json!({}));
         assert!(matches!(odd, Some(Action::Run { .. })), "{odd:?}");
     }
 
     #[test]
     fn a_tool_with_nothing_to_name_is_asked_about_by_its_own_name() {
-        // Better than an empty prompt: "bash wants to run bash" is odd, and "bash wants to run"
-        // with a blank where the command goes is worse.
+        // Better than an empty prompt: "bash wants to run" with a blank where the command goes.
         let bare = wants(&card(Some("read")), &serde_json::json!({}));
         assert_eq!(
             bare,

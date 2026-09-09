@@ -1,44 +1,25 @@
-//! The one cap on what a tool may return.
-//!
-//! There was none. `shell.rs` accumulated every line into one `String`, `process.rs`
-//! concatenated every chunk, `Output` was a bare `String`, the registry returned it verbatim
-//! and the turn journalled it whole. One `cat` of a lockfile was therefore permanent: the blob
-//! is replayed on every subsequent request, it sits inside the `KEEP` tail that compaction
-//! preserves verbatim, and the summariser is then handed the same blob. A single noisy command
-//! cost the whole conversation, and the model got nothing it could act on.
-//!
-//! Here rather than in the tools, because a peer is another program and cannot be trusted to
-//! cap itself, a Lua tool has no way to write a spill file, and `config/tools/bash.lua` has no
-//! knob to set. Every result of every transport passes through [`crate::Registry::call`], which
-//! is the only place that is true of.
+//! The one cap on what a tool may return. An uncapped result is permanent: it is replayed on every
+//! subsequent request, it sits inside the `KEEP` tail that compaction preserves verbatim, and the
+//! summariser is handed the same blob. Here rather than in the tools because every result of every
+//! transport passes through [`crate::Registry::call`], the only place that is true of.
 
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 
 /// The most lines a result may carry into the transcript.
-///
-/// Pi's number. It is a budget for a reader and for a context window, not a guess about what a
-/// command produces.
 const MAX_LINES: usize = 2_000;
 
-/// The most bytes a result may carry, whichever limit is reached first.
-///
-/// A minified bundle or a single-line JSON blob is one line and megabytes, so a line count
-/// alone is not a bound.
+/// The most bytes a result may carry, whichever limit is reached first: a minified bundle or a
+/// single-line JSON blob is one line and megabytes, so a line count alone is not a bound.
 const MAX_BYTES: usize = 50_000;
 
-/// How much of the budget is spent on the beginning rather than the end.
-///
-/// Both ends are kept because both matter and which one matters depends on the tool: a file
-/// read wants its head, and a build that failed wants its tail. Dropping the middle is the only
-/// rule that serves both without knowing which tool this was.
+/// How much of the budget is spent on the beginning rather than the end. Both ends are kept and the
+/// middle dropped: a file read wants its head, and a build that failed wants its tail.
 const HEAD_SHARE: usize = 2;
 
-/// Cap `content`, spilling the whole of it to a file when it does not fit.
-///
-/// Returns the text the model should see. The spill path is named in it; nothing else has to
-/// know the file exists.
+/// Cap `content`, spilling the whole of it to a file when it does not fit. Returns the text the
+/// model should see, with the spill path named in it.
 #[must_use]
 pub fn apply(tool: &str, content: String) -> String {
     let lines: Vec<&str> = content.lines().collect();
@@ -106,26 +87,16 @@ fn take<'a>(lines: &[&'a str], max_lines: usize, max_bytes: usize, end: End) -> 
     taken
 }
 
-/// How long a spilled result is kept.
-///
-/// Tau expires its spool by age and by call count; this does the first half. Without it the
-/// directory grows for the life of the machine, because nothing else knows the files exist —
-/// the note that named one is in a transcript, and the session that produced it is long gone.
+/// How long a spilled result is kept. Without it the directory grows for the life of the machine,
+/// because nothing else knows the files exist.
 const SPILL_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Write the full output beside the others, and answer where it went.
-///
-/// Outside the session directory on purpose: a tool that dumps a lockfile should not leave a
-/// file in the repository it was reading. That means `read` cannot open it — `Ops` refuses
-/// paths outside the session root — so the note names the path and says nothing about which
-/// tool to use, because which tool can reach it depends on what is registered.
-///
-/// Best effort. A result that could not be spilled is still capped; losing the overflow is
-/// better than passing it on, which is the thing this exists to prevent.
+/// Write the full output beside the others, and answer where it went. Outside the session directory
+/// on purpose, so `read` cannot open it — `Ops` refuses paths outside the session root — and the
+/// note names the path only. Best effort: a result that could not be spilled is still capped.
 fn spill(tool: &str, content: &str) -> Option<PathBuf> {
-    // Per user. The temporary directory is shared: a fixed name there belongs to whoever created
-    // it first, and every later user either fails to write or writes their tool output into a
-    // directory somebody else owns and can read. The siblings already name theirs this way.
+    // Per user. The temporary directory is shared: a fixed name there belongs to whoever created it
+    // first, and every later user either fails to write or writes into a directory somebody owns.
     let uid = rustix::process::getuid().as_raw();
     let dir = std::env::temp_dir().join(format!("magi-output-{uid}"));
     std::fs::create_dir_all(&dir).ok()?;
@@ -143,11 +114,8 @@ fn spill(tool: &str, content: &str) -> Option<PathBuf> {
     Some(path)
 }
 
-/// Drop spills older than [`SPILL_TTL`].
-///
-/// On the way to writing a new one, so it costs nothing when nothing is spilling and needs no
-/// timer, no daemon and no cleanup path of its own. Failures are ignored: another process may
-/// be doing the same thing, and losing the race is not an error.
+/// Drop spills older than [`SPILL_TTL`], on the way to writing a new one, so it needs no timer and
+/// no cleanup path of its own. Failures are ignored: another process may be doing the same thing.
 fn expire(dir: &std::path::Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -170,24 +138,15 @@ fn expire(dir: &std::path::Path) {
 mod tests {
     use super::*;
 
-    /// Run `apply` and delete whatever it spilled.
-    ///
-    /// The spill directory is shared, so a test that leaves its file behind leaves it for
-    /// everyone — including the person whose machine the suite just ran on.
+    /// Run `apply` and delete whatever it spilled; the spill directory is shared.
     fn applied(tool: &str, content: String) -> String {
         let out = apply(tool, content);
         if let Some(path) = spilled_path(&out) {
             let path = std::path::PathBuf::from(path);
             let _ = std::fs::remove_file(&path);
-            // **The directory is left alone, and that is the fix for a flake.** Removing it
-            // raced: `spill` creates the directory and then the file, and a sibling test that
-            // emptied and removed it in between turned the next `File::create` into a `None`,
-            // a note with no path in it, and a panic on `expect("a path")` — in a test that had
-            // done nothing wrong, on CI, about one run in twenty.
-            //
-            // Nothing is owed here anyway. `gate-hermetic` exempts `magi-output-<uid>` by name
-            // because the product legitimately creates it, and `spill` expires its contents
-            // after a day.
+            // The directory is left alone. Removing it raced: `spill` creates the directory and
+            // then the file, so a sibling test that emptied it in between broke `File::create`.
+            // `gate-hermetic` exempts `magi-output-<uid>` by name.
         }
         out
     }
@@ -272,8 +231,7 @@ mod expiry_tests {
     #[test]
     fn a_stale_spill_is_dropped_on_the_way_past() {
         // Without this the directory grows for the life of the machine: nothing else knows the
-        // files exist, because the note that named one is in a transcript and the session that
-        // produced it is gone.
+        // files exist.
         let dir = Scratch::new("magi-expire", "one");
         let old = dir.join("old.txt");
         std::fs::write(&old, "x").expect("write");

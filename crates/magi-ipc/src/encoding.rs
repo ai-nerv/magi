@@ -1,42 +1,23 @@
-//! Which encoding a body on the family wire is in.
-//!
-//! One shape, two encodings: JSON for anything that might be read by a person or piped through a
-//! text tool, CBOR for a caller that is only going to parse it. Both carry the same fields, and
-//! nothing is expressible in one and not the other.
-//!
-//! **Copied rather than shared**, like the framing above it. There is no crate common to the
-//! family and there is not going to be one — a shared library is the dependency the separation
-//! exists to avoid. What keeps the copies honest is that they are small enough to read in one
-//! sitting and each is tested where it lives.
-//!
-//! **Nothing is negotiated.** A body says what it is in its first byte, so a reply can be read
-//! without having been told what to expect and a peer that has never heard of CBOR is unaffected.
+//! Which encoding a body on the family wire is in. Nothing is negotiated: a body says what it is
+//! in its first byte, so a reply can be read without having been told what to expect.
 
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
-/// How a body on the wire is encoded.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Wire {
-    /// Text. The default, and what every sibling understands.
     #[default]
     Json,
-    /// Bytes, for a caller that is not going to read it.
     Cbor,
 }
 
 impl Wire {
-    /// Which encoding `body` is in.
-    ///
-    /// JSON's top level here is an object or an array, so it begins `{` or `[` after any leading
-    /// space. CBOR's is a map or an array, whose first byte is major type 4 or 5 — `0x80`–`0xBF`.
-    /// The ranges do not overlap, so this is a reading rather than a guess.
+    /// Which encoding `body` is in: JSON's top level begins `{` or `[` after any leading space,
+    /// CBOR's first byte is major type 4 or 5 — `0x80`–`0xBF`. The ranges do not overlap.
     #[must_use]
     pub fn of(body: &[u8]) -> Self {
         match body.iter().find(|b| !b.is_ascii_whitespace()) {
             Some(0x80..=0xBF) => Self::Cbor,
-            // Anything else is read as JSON, including rubbish: a caller that sent nonsense gets
-            // told what was wrong with it rather than "not a map".
             _ => Self::Json,
         }
     }
@@ -84,8 +65,6 @@ mod tests {
 
     #[test]
     fn a_reply_is_read_without_being_told_which_it_is() {
-        // What the client actually needs: it asked in one encoding, and reads whatever came
-        // back. A sibling that answers in the other one is understood rather than refused.
         for wire in [Wire::Json, Wire::Cbor] {
             let body = wire
                 .write(&serde_json::json!({"ok": true, "family": 1, "n": 1, "result": [7]}))
