@@ -1,13 +1,9 @@
 //! The provider-neutral message model.
 //!
 //! One shape every provider maps into and out of. Pure data: no HTTP, no provider imports, no
-//! runtime. `magi-provider` owns the wire, this crate owns what is on it.
-//!
-//! The thing that makes cross-provider switching survivable is the `signature` field on
-//! [`Content::Text`] and [`Content::Thinking`], and `thought_signature` on
-//! [`Content::ToolCall`]: opaque strings carrying whatever a provider needs to accept its own
-//! reasoning back. Pi keeps three such slots and calls them signature carriers; without them,
-//! changing model mid-session corrupts reasoning continuity.
+//! runtime. The `signature` field on [`Content::Text`] and [`Content::Thinking`], and
+//! `thought_signature` on [`Content::ToolCall`], carry whatever a provider needs to accept its own
+//! reasoning back; without them, changing model mid-session corrupts reasoning continuity.
 
 pub mod noted;
 pub mod scratch;
@@ -17,135 +13,91 @@ pub use usage::{Cost, Usage};
 
 use serde::{Deserialize, Serialize};
 
-/// Why a turn stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
-    /// The model finished.
     EndTurn,
-    /// The model asked for tools; the turn continues once they run.
     ToolUse,
-    /// The output hit the token limit mid-generation.
-    ///
-    /// Every tool call in the turn must be failed: truncated JSON can still pass schema
-    /// validation, so the arguments may be well-formed and wrong.
+    /// The output hit the token limit mid-generation. Every tool call in the turn must be failed:
+    /// truncated JSON can still pass schema validation.
     Length,
-    /// The user interrupted.
     Aborted,
-    /// The turn failed.
     Error,
 }
 
-/// How much reasoning to ask for.
-///
-/// Provider-neutral levels; a model maps them to whatever it actually accepts, and marks the
-/// ones it cannot do. Pi calls this a thinking level map.
+/// How much reasoning to ask for. Provider-neutral levels; a model maps them to what it accepts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThinkingLevel {
-    /// No reasoning.
     Off,
-    /// The smallest budget the model offers.
     Minimal,
-    /// A small budget.
     Low,
-    /// The usual budget.
     Medium,
-    /// A large budget.
     High,
-    /// The largest budget the model offers.
     Max,
 }
 
-/// One block of a message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum Content {
-    /// Ordinary prose.
     Text {
-        /// The text.
         text: String,
-        /// Opaque provider state for this block, replayed verbatim.
-        ///
-        /// One of the three signature carriers. Never parsed, never generated — only stored
-        /// and handed back, because only the provider that issued it can read it.
+        /// Opaque provider state for this block, replayed verbatim. Never parsed, never generated.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
     },
-    /// Reasoning the model chose to expose.
     Thinking {
-        /// The reasoning text.
         thinking: String,
-        /// Opaque provider state for this block, replayed verbatim.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
     },
-    /// An image, as base64 with its media type.
     Image {
-        /// Base64 payload.
         data: String,
         /// IANA media type, e.g. `image/png`.
         media_type: String,
     },
-    /// The model asking for a tool.
     ToolCall {
         /// Provider-issued identity, matched by [`Content::ToolResult`].
         id: String,
-        /// Tool name.
         name: String,
-        /// Arguments as JSON.
         arguments: serde_json::Value,
-        /// Opaque provider state for this call, replayed verbatim.
-        ///
-        /// The third signature carrier. Google issues one per call rather than per message.
+        /// Opaque provider state for this call, replayed verbatim. Google issues one per call
+        /// rather than per message.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         thought_signature: Option<String>,
     },
-    /// What a tool produced.
     ToolResult {
-        /// The call this answers.
         id: String,
         /// Tool name. Some dialects require it on the result as well as the call.
         name: String,
-        /// Text the model sees.
         content: String,
-        /// Whether the tool failed.
         is_error: bool,
     },
 }
 
-/// Who produced a message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
-    /// The person.
     User,
-    /// The model.
     Assistant,
     /// Tool output, which some dialects carry as its own role.
     Tool,
 }
 
-/// One message in a conversation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Message {
-    /// Who produced it.
     pub role: Role,
-    /// Its blocks, in order.
     pub content: Vec<Content>,
     /// Why the turn stopped, on assistant messages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_reason: Option<StopReason>,
-    /// What it cost, on assistant messages.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
-    /// Detail when `stop_reason` is [`StopReason::Error`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
 impl Message {
-    /// A user message carrying one block of text.
     #[must_use]
     pub fn user(text: impl Into<String>) -> Self {
         Self {
@@ -160,7 +112,6 @@ impl Message {
         }
     }
 
-    /// An assistant message carrying one block of text.
     #[must_use]
     pub fn assistant(text: impl Into<String>) -> Self {
         Self {
@@ -175,7 +126,6 @@ impl Message {
         }
     }
 
-    /// All text blocks joined, which is what a print mode prints.
     #[must_use]
     pub fn text(&self) -> String {
         self.content
@@ -188,7 +138,6 @@ impl Message {
             .join("")
     }
 
-    /// The tool calls this message asks for.
     pub fn tool_calls(&self) -> impl Iterator<Item = (&str, &str, &serde_json::Value)> {
         self.content.iter().filter_map(|c| match c {
             Content::ToolCall {
@@ -202,14 +151,10 @@ impl Message {
     }
 }
 
-/// A tool the model may call.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Tool {
-    /// Name the model uses to call it.
     pub name: String,
-    /// What it does, in the model's terms.
     pub description: String,
-    /// JSON Schema for its arguments.
     pub parameters: serde_json::Value,
 }
 
@@ -219,9 +164,7 @@ pub struct Context {
     /// Instructions that ride outside the conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system: Option<String>,
-    /// The conversation so far.
     pub messages: Vec<Message>,
-    /// Tools the model may call.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<Tool>,
 }
@@ -305,30 +248,20 @@ mod tests {
     }
 }
 
-/// One thing that happened while an answer streamed.
-///
-/// Provider-neutral, and here rather than beside a provider because magi no longer has one:
-/// melchior speaks the protocols and hands back a `Said` (`magi-proto`), which the broker
-/// turns into these. The turn loop has always been written against this vocabulary and did not
-/// need to change when the model moved.
+/// One thing that happened while an answer streamed. Provider-neutral: melchior speaks the
+/// protocols and hands back a `Said`, which the broker turns into these.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Delta {
-    /// Response text.
     Text(String),
-    /// Reasoning text.
     Thinking(String),
     /// Opaque provider state for the block being streamed, to be replayed verbatim.
     Signature(String),
-    /// A tool call began.
     ToolCallStart {
-        /// Provider-issued identity.
         id: String,
-        /// Tool name.
         name: String,
     },
     /// Arguments for the tool call in progress, as raw JSON text.
     ToolCallArgs(String),
-    /// The turn finished.
     Stop(StopReason),
     /// Token counts, which arrive at their own pace.
     Usage(Usage),

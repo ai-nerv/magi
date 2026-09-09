@@ -1,8 +1,5 @@
-//! A harness that isn't one.
-//!
-//! Serves a recorded event stream over a real Unix socket so the UI can be developed against
-//! a file instead of a model. The transport is production code; only the source of events is
-//! fake, which is what makes this useful rather than a mock.
+//! A harness that isn't one: a recorded event stream served over a real Unix socket. The transport
+//! is production code; only the source of events is fake.
 
 pub mod conformance;
 pub mod mind;
@@ -10,43 +7,22 @@ pub mod replay;
 
 pub use mind::Mind;
 
-/// A temporary directory that removes itself, even when a test panics. See [`magi_model::scratch`].
+/// A temporary directory that removes itself. See [`magi_model::scratch`].
 pub use magi_model::scratch::Scratch;
 pub use replay::{FakeHarness, Recording};
 
-/// Take away the two variables that would point a spawned magi at somebody else's balthasar.
-///
-/// **The suite is developed from inside a magi session, and a session exports these.**
-/// `MAGI_API_SOCKET` set means "somebody already said which balthasar to talk to", so
-/// `balthasar::start` answers `Theirs` and convenes none — the test's magi then records its
-/// prompts into the *developer's own memory* and resumes out of it. Both halves of that are bad:
-/// the run writes where it was never meant to, and `resume_live` then asserts about a store four
-/// other things are also writing to, so it fails for a reason that has nothing to do with magi.
-/// `MAGI_BALTHASAR_INSTANCE` does the quieter version of the same thing by moving the socket
-/// directory out from under the `XDG_RUNTIME_DIR` each test carefully set.
-///
-/// `forking.rs` already removes `MAGI_API_SOCKET` when it starts a child, and says why at length.
-/// This is the same removal for the same reason, on the way into a test rather than a fork.
+/// Take away the two variables that would point a spawned magi at somebody else's balthasar:
+/// `MAGI_API_SOCKET` makes `balthasar::start` answer `Theirs`, so a test records into the
+/// developer's own memory, and `MAGI_BALTHASAR_INSTANCE` moves the socket directory.
 pub fn only_its_own_store(command: &mut std::process::Command) {
     command.env_remove("MAGI_API_SOCKET");
     command.env_remove("MAGI_BALTHASAR_INSTANCE");
 }
 
 /// The first line a spawned process prints, or nothing if it has not printed one in `patience`.
-///
-/// **`read_line` on a child's stdout has no deadline, and that is how a suite hangs instead of
-/// failing.** Both live tests that start a session wait for its name this way, and a session that
-/// comes up and never announces itself — one whose melchior was killed out from under it, which
-/// happened while this was being written — leaves the read blocked for ever. `cargo test` waits,
-/// `gate-hermetic` waits, and CI waits until the job's own timeout kills it with nothing to say.
-/// Twelve minutes went into one of those before anybody thought to look at `ps`.
-///
-/// The deadline is a backstop and not an assertion, so it is set well above anything a healthy
-/// session takes: it can only fire where the alternative was waiting for ever.
-///
-/// The reader keeps going after the first line, discarding. Nothing reads a session's stdout
-/// again, and a child whose pipe fills up stops rather than exits — a second way to wait for
-/// ever, and one this arrangement closes on the way past.
+/// `read_line` on a child's stdout has no deadline, so a session that never announces itself
+/// blocks for ever. The reader keeps going after the first line, discarding: a child whose pipe
+/// fills up stops rather than exits.
 pub fn first_line_within(
     process: &mut std::process::Child,
     patience: std::time::Duration,
@@ -59,7 +35,6 @@ pub fn first_line_within(
         let mut line = String::new();
         let read = reader.read_line(&mut line).unwrap_or(0);
         let _ = say.send(if read > 0 { Some(line) } else { None });
-        // The thread ends when the child does, because that is what closes the pipe.
         std::io::copy(&mut reader, &mut std::io::sink()).ok();
     });
     heard.recv_timeout(patience).ok().flatten()
@@ -70,7 +45,6 @@ mod tests {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
-    /// Start `sh -c` with its stdout on a pipe.
     fn saying(script: &str) -> std::process::Child {
         Command::new("sh")
             .arg("-c")
@@ -93,13 +67,8 @@ mod tests {
 
     #[test]
     fn a_process_that_never_says_anything_is_given_up_on() {
-        // **The whole point, and it has to be timed rather than merely asserted.** A broken
-        // deadline gives the same `None` in the end — it just takes the child's lifetime to do
-        // it, which in the live suites is for ever. So the clock is what is checked.
-        // `exec`, so `kill` below reaches the sleep. Without it `sh` forks one and the kill takes
-        // only the shell: the sleep is reparented to init and outlives the whole suite, which is
-        // what `gate-hermetic` found here once it started asking by environment as well as by
-        // working directory.
+        // Timed rather than merely asserted: a broken deadline gives the same `None` in the end.
+        // `exec`, so the `kill` below reaches the sleep rather than the shell that forked it.
         let mut child = saying("exec sleep 30");
         let started = Instant::now();
         let said = super::first_line_within(&mut child, Duration::from_millis(300));

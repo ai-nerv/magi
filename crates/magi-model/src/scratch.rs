@@ -1,52 +1,29 @@
-//! A temporary directory that removes itself.
+//! A temporary directory that removes itself on `Drop`, so a failing test leaks nothing.
 //!
-//! **Every test here used to clean up on its last line.** A `let _ = remove_dir_all(&dir);` after
-//! the assertions runs when the test passes and does not run when it fails: `assert!` unwinds
-//! straight past it. So the directories a *failing* test left behind stayed, and the delete-then-
-//! create helpers only ever revisited their own name under their own pid — which never repeats.
-//! The tree filled up quietly, across two renames of this project, and nothing anywhere said so.
-//!
-//! The fix is the one the language already offers: own the directory, and let `Drop` do it. A
-//! guard runs on the unwind as well as on the return, which is the case that was leaking.
-//!
-//! In the model crate rather than the testkit because the testkit depends on half the workspace
-//! and the crates that need this are among them; a leaf has no such problem. It is re-exported
-//! from `magi_testkit` so a test still writes one name.
+//! In the model crate, not the testkit, because the crates that need it are among the testkit's
+//! own dependencies.
 
 use std::path::{Path, PathBuf};
 
-/// Distinguishes two scratches made in one process.
-///
-/// The pid alone is not enough. Two tests in one binary run on two threads, and a name is the
-/// caller's to choose — so two that happened to choose the same one deleted each other's fixture
-/// halfway through. A counter costs nothing and removes the question.
+/// Distinguishes two scratches made in one process; the pid does not tell two threads apart.
 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// A directory under the temporary directory, removed when this is dropped.
-///
-/// Derefs to [`Path`], so a helper that used to hand back a `PathBuf` can hand back one of these
-/// and every `dir.join(…)` at the call sites keeps compiling. What stops compiling is a caller
-/// that wanted to *own* the path — those want [`Scratch::leak`] or `.to_path_buf()`, and the
-/// compiler names each one.
+/// A directory under the temporary directory, removed when this is dropped. Derefs to [`Path`];
+/// a caller that wants to own the path wants [`Scratch::leak`].
 #[derive(Debug)]
 pub struct Scratch {
     path: PathBuf,
-    /// Whether to wait for the processes working in here before removing it. See
-    /// [`Scratch::settling`].
+    /// Whether to wait for the processes working in here. See [`Scratch::settling`].
     settles: bool,
 }
 
 impl Scratch {
-    /// A fresh directory, named after `prefix` and `name`.
-    ///
-    /// # Panics
-    /// If the directory cannot be created, which is a broken machine rather than a failed test.
+    /// A fresh directory, named after `prefix` and `name`. Panics if it cannot be created.
     #[must_use]
     pub fn new(prefix: &str, name: &str) -> Self {
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!("{prefix}-{}-{n}-{name}", std::process::id()));
-        // Still removed first. A pid is reused eventually, and a run that was killed rather than
-        // unwound leaves its directory behind for the next process that happens to match.
+        // A pid is reused eventually, and a run that was killed leaves its directory behind.
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("a scratch directory");
         Self {
@@ -55,27 +32,16 @@ impl Scratch {
         }
     }
 
-    /// Wait for whoever is working in here to leave before removing it.
-    ///
-    /// **For the tests that start processes in the directory, where `Drop` alone is not enough.**
-    /// A session's balthasar is tied to the magi that convened it and notices that process die by
-    /// looking, not by being told — so for a moment after the last session is gone its sqlite is
-    /// still open. A directory removed in that moment comes straight back, holding a `memory.db`
-    /// and its write-ahead log, and `gate-hermetic` then reports a leak against a test that
-    /// cleaned up perfectly. `mf-…-kin/p/balthasar/…/memory.db` is the one that was found.
-    ///
-    /// Not the default, because it costs a walk of `/proc` per drop and the two hundred scratches
-    /// that never start anything have nobody to wait for.
+    /// Wait for the processes working in here to leave before removing it: a session's balthasar
+    /// notices its magi die by looking, so its sqlite is briefly still open and a directory removed
+    /// in that moment comes straight back. Not the default; it costs a walk of `/proc` per drop.
     #[must_use]
     pub fn settling(mut self) -> Self {
         self.settles = true;
         self
     }
 
-    /// Keep the directory, and stop owning it.
-    ///
-    /// For the handful of tests that inspect what was left behind after the thing that wrote it
-    /// has gone. Whoever calls this owns the cleanup.
+    /// Keep the directory, and stop owning it. Whoever calls this owns the cleanup.
     #[must_use]
     pub fn leak(self) -> PathBuf {
         let path = self.path.clone();
@@ -84,40 +50,27 @@ impl Scratch {
     }
 }
 
-/// Whether any process still has its working directory inside `dir`.
-///
-/// Asked of `/proc` rather than of the sockets a session leaves behind: one killed with `SIGKILL`
-/// never unlinks its socket, so an empty directory would never arrive and the wait would always
-/// run to its deadline. It also needs no pid from the caller, which matters because a forked
-/// child is not the test's to own — it is started by the parent session and named only by
-/// melchior.
+/// Whether any process still has its working directory inside `dir`. Asked of `/proc`, not of the
+/// sockets a session leaves behind: one killed with `SIGKILL` never unlinks its socket.
 fn anybody_in(dir: &Path) -> bool {
     std::fs::read_dir("/proc")
         .into_iter()
         .flatten()
         .flatten()
-        // Unreadable is not ours: another user's process answers `EACCES`, and a pid that finished
-        // between the listing and the link answers `ENOENT`. Both mean "not in here".
+        // Unreadable is another user's, and a pid that has since finished is gone.
         .any(|entry| {
             std::fs::read_link(entry.path().join("cwd")).is_ok_and(|at| at.starts_with(dir))
         })
 }
 
-/// A path *inside* a scratch directory, where the directory is what is removed.
-///
-/// The shape a dozen helpers here already had: hand back the journal path, and clean up the
-/// directory around it. Returning the [`Scratch`] instead would push the `join` out to every
-/// caller for no gain, and holding only the file path would delete the directory the moment the
-/// helper returned. Derefs to the file, so a caller writes `&temp("x")` as it always did.
+/// A path inside a scratch directory, where the directory is what is removed.
 #[derive(Debug)]
 pub struct ScratchFile {
-    /// Kept for its `Drop`, which is the entire point.
     _dir: Scratch,
     path: PathBuf,
 }
 
 impl Scratch {
-    /// A named file inside a fresh scratch directory.
     #[must_use]
     pub fn file(prefix: &str, name: &str, file: &str) -> ScratchFile {
         let dir = Scratch::new(prefix, name);
@@ -157,16 +110,13 @@ impl AsRef<Path> for Scratch {
 impl Drop for Scratch {
     fn drop(&mut self) {
         if self.settles {
-            // Bounded, because a wait with no end turns a leak into a hang — and a leak at least
-            // announces itself. Short, because what is being waited for is another process's poll
-            // interval rather than any work.
+            // Bounded, because a wait with no end turns a leak into a hang.
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             while std::time::Instant::now() < deadline && anybody_in(&self.path) {
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }
         }
-        // Ignored: the test has already said whether it passed, and a cleanup that panicked
-        // during an unwind would abort the process and hide it.
+        // Ignored: a cleanup that panicked during an unwind would abort the process.
         let _ = std::fs::remove_dir_all(&self.path);
     }
 }
@@ -187,7 +137,6 @@ mod tests {
 
     #[test]
     fn a_scratch_removes_itself_when_a_test_panics() {
-        // The case the trailing `remove_dir_all` never covered, and the whole reason for this.
         let path = std::panic::catch_unwind(|| {
             let dir = Scratch::new("magi-scratch", "panicked");
             let path = dir.to_path_buf();
@@ -201,7 +150,6 @@ mod tests {
 
     #[test]
     fn two_scratches_of_one_name_are_two_directories() {
-        // Two tests in one binary may choose the same name, and a pid does not tell them apart.
         let a = Scratch::new("magi-scratch", "same");
         let b = Scratch::new("magi-scratch", "same");
         assert_ne!(a.to_path_buf(), b.to_path_buf());

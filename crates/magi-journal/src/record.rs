@@ -6,30 +6,19 @@ use serde::{Deserialize, Serialize};
 /// The journal format. Stays `0`: while magi is the only reader, breaking it is free.
 pub const JOURNAL_VERSION: u16 = 0;
 
-/// One line of a journal.
-///
-/// Entries are stored, not events. A completed assistant message is one line rather than the
-/// hundreds of deltas that produced it — Pi does the same, and it is the difference between a
-/// session file you can `less` and one you cannot.
+/// One line of a journal. Entries are stored, not events: a completed assistant message is one
+/// line rather than the hundreds of deltas that produced it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "record")]
 pub enum Record {
-    /// The first line of every journal.
     Meta {
-        /// Always [`JOURNAL_VERSION`] for journals this build writes.
         version: u16,
-        /// The session this file holds.
         session: SessionId,
-        /// Working directory the session was started in.
         cwd: String,
-        /// Unix seconds at creation.
         started: u64,
     },
-    /// A transcript entry, in the order it settled.
     Entry {
-        /// Position in the log; also what a UI resumes from.
         cursor: Cursor,
-        /// The entry itself.
         entry: Entry,
     },
 }

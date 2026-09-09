@@ -2,24 +2,17 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Tokens consumed by one request.
-///
-/// Cache reads and writes are counted apart from ordinary input because they are priced apart,
-/// and because their ratio is the only way to tell whether caching is working.
+/// Tokens consumed by one request. Cache reads and writes are counted apart from ordinary input
+/// because they are priced apart.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
-    /// Prompt tokens billed at the input rate.
     pub input: u64,
-    /// Completion tokens.
     pub output: u64,
-    /// Prompt tokens served from cache.
     pub cache_read: u64,
-    /// Prompt tokens written to cache.
     pub cache_write: u64,
 }
 
 impl Usage {
-    /// Every token that counted towards the context window.
     #[must_use]
     pub const fn prompt_tokens(self) -> u64 {
         self.input + self.cache_read + self.cache_write
@@ -32,7 +25,6 @@ impl Usage {
         (prompt > 0).then(|| self.cache_read as f64 / prompt as f64 * 100.0)
     }
 
-    /// Add another request's tokens to this total.
     pub const fn add(&mut self, other: Self) {
         self.input += other.input;
         self.output += other.output;
@@ -40,7 +32,6 @@ impl Usage {
         self.cache_write += other.cache_write;
     }
 
-    /// What these tokens cost at `cost`.
     #[must_use]
     pub fn price(self, cost: Cost) -> f64 {
         let per_million = |tokens: u64, rate: f64| tokens as f64 / 1_000_000.0 * rate;
@@ -54,20 +45,14 @@ impl Usage {
 /// Dollars per million tokens.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct Cost {
-    /// Ordinary prompt tokens.
     #[serde(default)]
     pub input: f64,
-    /// Completion tokens.
     #[serde(default)]
     pub output: f64,
-    /// Prompt tokens served from cache, usually far cheaper than `input`.
-    ///
-    /// Defaults to zero rather than to `input`: a provider that does not price caching
-    /// separately is not the same as one whose cache is free, and only the catalog knows
-    /// which this is.
+    /// Prompt tokens served from cache, usually far cheaper than `input`. Defaults to zero rather
+    /// than to `input`: only the catalog knows whether a provider prices caching separately.
     #[serde(default)]
     pub cache_read: f64,
-    /// Prompt tokens written to cache, usually dearer than `input`.
     #[serde(default)]
     pub cache_write: f64,
 }
