@@ -1,186 +1,102 @@
 //! The magi↔casper contract: what a tool is, and the two faces of what it produced.
 //!
-//! casper owns the tools. magi asks it what exists, hands it a call, and draws what comes back.
-//!
-//! # Two faces
-//!
-//! A tool result is read by two different readers and they do not want the same thing. The model
-//! wants text it can reason about; the person wants it drawn the way the rest of the screen is
-//! drawn. So a [`Ran`] carries [`Ran::said`] for the model and [`Ran::shown`] for the screen, and
-//! either may be absent: a `bash` has no view, a permission question has no result yet.
-//!
-//! # Paint carries meaning, not colour
-//!
-//! A [`Span`] names a [`Role`] and never a colour. magi resolves the role against its own palette,
-//! which is what makes a `patch` and a highlighted `cat` agree: both emit `added` or `keyword`,
-//! and one palette paints them. A tool that chose colours would be a second palette to keep in
-//! step, and it would be wrong on the first theme somebody set.
+//! A [`Ran`] carries [`Ran::said`] for the model and [`Ran::shown`] for the screen, and either may
+//! be absent. A [`Span`] names a [`Role`] and never a colour; magi resolves the role against its
+//! own palette.
 
 use serde::{Deserialize, Serialize};
 
-/// One tool, as casper describes it.
-///
-/// The same three things magi's own tools carry — a name, a description and a schema — plus what
-/// the tool would need permission for. casper describes; magi decides. A sibling that could grant
+/// One tool, as casper describes it. casper describes and magi decides: a sibling that could grant
 /// itself a permission would make the ledger a suggestion.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Card {
-    /// The name the model calls it by.
     pub name: String,
-    /// What it does, in the model's terms.
     pub description: String,
-    /// JSON Schema for its arguments.
     pub parameters: serde_json::Value,
-    /// The permission verb this tool acts under, if it needs one.
-    ///
-    /// `read`, `write`, `run`, `reach` — magi's own vocabulary, because magi is what answers.
-    /// `None` for a tool that touches nothing a person would want a say over.
+    /// The permission verb this tool acts under — `read`, `write`, `run`, `reach`, magi's own
+    /// vocabulary. `None` for a tool that touches nothing a person would want a say over.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub needs: Option<String>,
 }
 
-/// One call, on its way to casper.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Call {
-    /// Which tool.
     pub tool: String,
-    /// Its arguments, as the model gave them.
     pub args: serde_json::Value,
     /// Where the session is rooted, so a relative path means what the person means.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub cwd: String,
-    /// An answer to the question the last [`Ask`] posed, when this call is resuming one.
-    ///
-    /// The id of the chosen option. A tool that asked nothing ignores it.
+    /// The id of the option chosen in answer to the last [`Ask`], when this call resumes one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answered: Option<String>,
 }
 
-/// What a tool produced.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Ran {
-    /// What the model reads.
-    ///
-    /// Empty for a tool that has not finished — one waiting on an answer has produced nothing
-    /// yet, and sending the model an empty result would end the call it is still in.
+    /// What the model reads. Empty for a tool that has not finished: sending the model an
+    /// empty result would end the call it is still in.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub said: String,
-    /// Whether it failed.
-    ///
-    /// A tool that ran and reported a problem is still a result: the model needs to read what
-    /// went wrong in order to do something about it.
+    /// Whether it failed. A tool that ran and reported a problem is still a result.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub failed: bool,
-    /// What the person sees, when it is more than the text.
-    ///
-    /// `None` means "draw `said` as plain text", which is what every tool does before anybody
-    /// writes it a view. Nothing has to be ported for casper to be useful.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shown: Option<Shown>,
 }
 
-/// The outcome of a tool call.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolResult {
-    /// Text the model sees.
     pub output: String,
-    /// Whether the tool failed.
     pub is_error: bool,
-    /// What the *person* sees, when a tool said more than the text.
-    ///
-    /// The second of the two faces — see [`crate::tooling`]. `None` is what every tool produced
-    /// before casper existed and what most still produce: draw `output` as plain text.
-    ///
-    /// Optional on the wire as well as in the type, so a journal written by a build that had
-    /// never heard of it still loads. A transcript is the record of what happened, and a field
-    /// added later must not make yesterday's session unreadable.
+    /// What the person sees, when a tool said more than the text. Optional on the wire as well as
+    /// in the type, so a journal written before it existed still loads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shown: Option<Shown>,
 }
 
-/// What magi draws for this result.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "shown")]
 pub enum Shown {
-    /// Painted lines, in roles magi resolves against its palette.
     Painted {
-        /// Each line, as the spans it is made of.
         lines: Vec<Vec<Span>>,
     },
-    /// A question for the person, and the answers they may give.
-    ///
-    /// The tool has not finished. magi draws this, sends the chosen id back as
-    /// [`Call::answered`], and the call resumes — which is the same mechanism a permission, a
-    /// file picker and a confirmation all need.
+    /// A question for the person. The tool has not finished: magi draws this, sends the chosen id
+    /// back as [`Call::answered`], and the call resumes.
     Ask(Ask),
-    /// Rows the tool is asking for, and will fill itself.
-    ///
-    /// The general form of [`Ask`]. A question has a shape magi chose; a surface has whatever
-    /// shape its tenant draws, and magi cannot tell a permission prompt from a file picker from a
-    /// game — which is the point. The list of things that can appear there is not a list anybody
-    /// has to extend.
-    ///
-    /// magi owns *how much* room there is, because only magi knows what else is on the screen. It
-    /// reserves, clips to the reservation, forwards input while the surface holds it, and blits
-    /// back what comes out without reading it.
+    /// Rows the tool is asking for, and will fill itself. magi owns how much room there is, and
+    /// reserves, clips, forwards input and blits back what comes out without reading it.
     Surface(Surface),
 }
 
-/// Rows a tool has asked for, and what to open to fill them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Surface {
-    /// How many rows it wants.
-    ///
-    /// A request, not a grant: magi gives it this many or fewer, and says which in the first
-    /// frame. A tenant that drew past what it was given would run over whatever is below it.
+    /// How many rows it wants. A request, not a grant: magi gives this many or fewer and says
+    /// which in the first frame.
     pub rows: u16,
-    /// What this surface is for, in one line, for a harness that cannot draw it.
-    ///
-    /// `magi -p` has no screen and no person, and a run that silently drew nothing would look
-    /// like a hang. It says this instead and declines.
     pub about: String,
-    /// Milliseconds between ticks, for a surface that moves on its own.
-    ///
-    /// `None` for one that only answers input — a picker redraws when a key arrives and at no
-    /// other time, and ticking it would be a wakeup a hundred times a second to draw the same
-    /// rows. Something animating asks for a tick and gets one whether or not anybody is typing.
+    /// Milliseconds between ticks, for a surface that moves on its own; `None` for one that only
+    /// answers input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tick: Option<u16>,
 }
 
-/// A run of text with one meaning.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Span {
-    /// What this text is.
     #[serde(default)]
     pub role: Role,
-    /// The text itself.
     pub text: String,
-    /// A colour chosen outright, overriding the role.
-    ///
-    /// **The exception to "a tool never chooses a colour", and it is narrow.** Roles exist so a
-    /// `patch` and a highlighted `cat` agree with the rest of the screen: they are *output*, they
-    /// are read alongside everything else, and a tool picking its own green would be a second
-    /// palette to keep in step. A [`Shown::Surface`] is not that. It is a picture in rows nothing
-    /// else is drawn in, and a dinosaur is brown whatever anybody's theme says — asking for
-    /// `added` there would mean "green, because I want green", which is a role lying about itself.
-    ///
-    /// So: surfaces may use this, tool output should not. `None` everywhere else, and the role
-    /// answers — which is what every tool that is not a picture keeps doing.
-    ///
-    /// Needs a terminal that speaks 24-bit colour. One that does not will approximate.
+    /// A colour chosen outright, overriding the role. For a [`Shown::Surface`] only: a picture is
+    /// drawn in rows nothing else is, and `added` there would be a role lying about itself. Tool
+    /// output keeps to roles. Needs a terminal that speaks 24-bit colour.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rgb: Option<[u8; 3]>,
-    /// A background chosen outright, for the same narrow reason as [`Span::rgb`].
-    ///
-    /// What makes a run of text read as *inverted* rather than merely coloured, which is how a
-    /// picture says "this is held down right now" without a second row to say it in.
+    /// A background chosen outright, for the same narrow reason as [`Span::rgb`]. What makes a run
+    /// of text read as inverted rather than merely coloured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bg: Option<[u8; 3]>,
 }
 
 impl Span {
-    /// A span of `text` in `role`.
     #[must_use]
     pub fn new(role: Role, text: impl Into<String>) -> Self {
         Self {
@@ -191,10 +107,6 @@ impl Span {
         }
     }
 
-    /// A span of `text` in a colour of its own.
-    ///
-    /// For a surface drawing a picture. See [`Span::rgb`] for why that is the one place a chosen
-    /// colour belongs.
     #[must_use]
     pub fn painted(rgb: [u8; 3], text: impl Into<String>) -> Self {
         Self {
@@ -206,82 +118,53 @@ impl Span {
     }
 }
 
-/// What a span of text *is*, which magi turns into a colour.
-///
-/// Closed on purpose. An open vocabulary is a second palette: a tool naming its own role would be
-/// asking magi to invent a colour for it, and the answer would differ per tool. Four families,
-/// because that is what the tools actually produce.
+/// What a span of text is, which magi turns into a colour. Closed: an open vocabulary would be a
+/// second palette.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     // Prose.
-    /// Ordinary text.
     #[default]
     Text,
-    /// Present but secondary.
     Muted,
-    /// Present and nearly out of the way.
     Dim,
-    /// A heading, or the name of the thing below it.
     Title,
-    /// A path, a filename, a location.
     Path,
 
     // Outcome.
-    /// It worked.
     Ok,
-    /// It worked, and something is worth knowing.
     Warn,
-    /// It did not work.
     Error,
 
     // Change.
-    /// A line a patch adds.
     Added,
-    /// A line a patch removes.
     Removed,
-    /// The `@@` and `+++` rows, which say *where* rather than what.
     Marker,
-    /// A line a patch leaves alone.
     Context,
 
     // Code.
-    /// A language keyword.
     Keyword,
-    /// A string literal.
     String,
-    /// A numeric literal.
     Number,
-    /// A comment.
     Comment,
-    /// A type name.
     Type,
-    /// A function name.
     Func,
 }
 
-/// A question a tool is putting to the person.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Ask {
-    /// What is being asked, in one line.
     pub question: String,
-    /// What may be answered.
-    ///
-    /// Never empty: a question with no answers is a message, and a message is `said`.
+    /// What may be answered. Never empty: a question with no answers is a message, and a message
+    /// is `said`.
     pub options: Vec<Answer>,
-    /// More about what is being asked, for the rows under the question.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub detail: Vec<Vec<Span>>,
 }
 
-/// One answer to an [`Ask`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Answer {
-    /// What comes back as [`Call::answered`].
     pub id: String,
-    /// What the row says.
     pub label: String,
-    /// A second line, when the label alone does not say what it means.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub about: String,
 }
@@ -292,8 +175,6 @@ mod tests {
 
     #[test]
     fn a_result_with_nothing_to_show_is_the_text_and_no_more() {
-        // What every tool does before anybody writes it a view. The absent fields do not travel:
-        // a `bash` result should not carry three nulls describing what it is not.
         let ran = Ran {
             said: "a\nb".to_owned(),
             ..Ran::default()
@@ -305,8 +186,6 @@ mod tests {
 
     #[test]
     fn a_painted_result_keeps_its_roles_and_never_names_a_colour() {
-        // The whole point. A tool that sent a colour would be a second palette, and it would
-        // disagree with the first the moment somebody set a theme.
         let ran = Ran {
             said: "-was\n+now".to_owned(),
             shown: Some(Shown::Painted {
@@ -328,8 +207,7 @@ mod tests {
 
     #[test]
     fn a_question_carries_no_result_because_the_tool_has_not_finished() {
-        // The distinction `said` and `shown` exist for. Sending the model an empty result here
-        // would end a call that is still waiting on a person.
+        // Sending the model an empty result here would end a call still waiting on a person.
         let ran = Ran {
             shown: Some(Shown::Ask(Ask {
                 question: "run `rm -rf build`?".to_owned(),
@@ -360,8 +238,6 @@ mod tests {
 
     #[test]
     fn the_two_kinds_of_view_are_told_apart_by_the_tag() {
-        // A reader that could not tell a painted result from a question would draw a picker as
-        // text, or wait for an answer to a diff.
         let painted = serde_json::to_string(&Shown::Painted { lines: Vec::new() }).expect("enc");
         assert!(painted.contains(r#""shown":"painted""#), "{painted}");
         let ask = serde_json::to_string(&Shown::Ask(Ask {
@@ -375,8 +251,6 @@ mod tests {
 
     #[test]
     fn a_card_never_grants_itself_anything() {
-        // casper describes what a tool would do; magi decides whether it may. A card carries the
-        // verb and no answer to it, so there is nothing here a sibling could set to "allowed".
         let card = Card {
             name: "bash".to_owned(),
             description: "Run a command.".to_owned(),
@@ -390,15 +264,14 @@ mod tests {
 
     #[test]
     fn a_role_that_is_not_given_is_ordinary_text() {
-        // So an adapter that knows nothing about a line can still emit it.
         let span: Span = serde_json::from_str(r#"{"text":"hello"}"#).expect("decodes");
         assert_eq!(span.role, Role::Text);
     }
 
     #[test]
     fn every_role_round_trips_by_the_name_it_is_written_with() {
-        // Both sides read this vocabulary from the same list or they do not agree at all, and a
-        // renamed variant is a role that silently becomes `text` on the far side.
+        // Both sides read this vocabulary from the same list, and a renamed variant is a role that
+        // silently becomes `text` on the far side.
         for (role, name) in [
             (Role::Added, "added"),
             (Role::Removed, "removed"),

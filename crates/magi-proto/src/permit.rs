@@ -1,17 +1,9 @@
 //! What a tool wants to do, and what it has been allowed to do.
 //!
-//! On the wire because both ends need it: the daemon asks, the UI answers, and a grant the
-//! person made is a fact the daemon has to be told rather than something it can work out.
-//!
-//! **The shape of the question.** A tool does not ask "may I run?" — it says what it is about
-//! to do, in terms a person can judge without reading the tool's source. Reading a file is a
-//! different question from writing one, and running `git status` is a different question from
-//! running `rm -rf`, even though both are "the shell".
-//!
-//! **The shape of the answer.** One request can be answered at several widths, because how much
-//! you want to grant depends on what was asked. Saying yes to *this exact command, once* and
-//! saying yes to *anything under this directory, forever* are both reasonable answers to the
-//! same prompt, and a system that offers only one of them will be answered carelessly.
+//! On the wire because both ends need it: the daemon asks, the UI answers, and a grant the person
+//! made is a fact the daemon has to be told. A tool says what it is about to do, in terms a person
+//! can judge without reading its source, and one request can be answered at several widths — this
+//! command once, or anything under this directory forever.
 
 use serde::{Deserialize, Serialize};
 
@@ -19,32 +11,23 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum Action {
-    /// Read a path.
     Read {
-        /// The path, as the tool resolved it.
         path: String,
     },
-    /// Create, overwrite or modify a path.
     Write {
-        /// The path, as the tool resolved it.
         path: String,
     },
-    /// Run a command in a shell.
     Run {
-        /// The command line, verbatim.
         command: String,
         /// Its first word, which is what a person judges it by.
         program: String,
     },
-    /// Reach a host over the network.
     Network {
-        /// The host, as the tool named it.
         host: String,
     },
 }
 
 impl Action {
-    /// The verb, for a prompt.
     #[must_use]
     pub fn verb(&self) -> &'static str {
         match self {
@@ -55,7 +38,6 @@ impl Action {
         }
     }
 
-    /// What it is about to act on, for a prompt.
     #[must_use]
     pub fn subject(&self) -> &str {
         match self {
@@ -66,11 +48,8 @@ impl Action {
     }
 }
 
-/// How widely an answer applies.
-///
-/// Ordered from narrowest to widest, and a person is offered several of them at once: the width
-/// they want depends on what was asked, and a prompt that offers only "yes" trains them to press
-/// yes.
+/// How widely an answer applies, narrowest first. A person is offered several at once: a prompt
+/// that offers only "yes" trains them to press yes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum Scope {
@@ -78,22 +57,16 @@ pub enum Scope {
     Once,
     /// This exact path, or this exact command line.
     Exact,
-    /// Anything under a directory.
     Directory {
-        /// The directory, without a trailing separator.
         path: String,
     },
-    /// Any command beginning with this program.
     Program {
-        /// The first word of the command line.
         program: String,
     },
-    /// Every action of this kind, anywhere.
     Anything,
 }
 
 impl Scope {
-    /// How it reads in a menu.
     #[must_use]
     pub fn label(&self, action: &Action) -> String {
         match self {
@@ -120,7 +93,6 @@ impl Scope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Lifetime {
-    /// Until this session ends.
     Session,
     /// Written down, and honoured next time.
     Always,
@@ -130,11 +102,8 @@ pub enum Lifetime {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum Decision {
-    /// Allowed, at this width, for this long.
     Allow {
-        /// How widely it applies.
         scope: Scope,
-        /// How long it lasts.
         lifetime: Lifetime,
     },
     /// Refused. The tool is told, and the model reads it as a result.
@@ -144,14 +113,11 @@ pub enum Decision {
 /// A standing permission.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Grant {
-    /// Which verb it covers.
     pub verb: String,
-    /// How widely.
     pub scope: Scope,
 }
 
 impl Grant {
-    /// Whether this grant answers `action`.
     #[must_use]
     pub fn covers(&self, action: &Action) -> bool {
         if self.verb != action.verb() {
@@ -186,18 +152,9 @@ impl Grant {
 
 /// Whether a command line does more than run the program it starts with.
 ///
-/// **`git status; rm -rf /` starts with `git`.** A `Program` grant answers "any `git` command",
-/// and the program is read off the first word — so without this, one shell metacharacter turns
-/// the narrowest useful width into an unbounded shell. That is not a bypass of the model; it is
-/// the model answering a question it was asked wrongly.
-///
-/// Anything carrying one of these is not covered by *any* program grant, so it is asked about
-/// instead. Refusing to answer is the safe direction: the cost is a prompt for a command that
-/// happens to quote a `|`, and the cost the other way is every grant anyone has ever given.
-///
-/// Deliberately not a parser. Whether a `;` inside single quotes is really a separator is a
-/// question about a shell's grammar, and a permission check that has to be right cannot be the
-/// place that first implements one.
+/// `git status; rm -rf /` starts with `git`, and a `Program` grant reads the program off the first
+/// word — so anything carrying one of these metacharacters is covered by no program grant and is
+/// asked about instead. Deliberately not a parser: refusing to answer is the safe direction.
 #[must_use]
 pub fn chains(command: &str) -> bool {
     command.contains([';', '&', '|', '`', '$', '(', ')', '<', '>', '\n'])
@@ -260,9 +217,8 @@ mod tests {
 
     #[test]
     fn a_network_grant_answers_a_network_action() {
-        // It did not, for as long as `Action::Network` existed. `offers` produced a `Directory`
-        // for a host and `covers` matched `Directory` only against a read or a write, so the
-        // grant was written down, looked right in the ledger, and answered nothing.
+        // It did not, for as long as `Action::Network` existed: `covers` matched `Directory` only
+        // against a read or a write, so the grant was written down and answered nothing.
         let grant = Grant {
             verb: "reach".to_owned(),
             scope: Scope::Directory {
@@ -313,9 +269,8 @@ mod tests {
 
     #[test]
     fn exact_is_not_matched_here_because_it_needs_the_subject() {
-        // `Exact` is stored as the narrowest thing that *does* carry its subject — a directory
-        // of one file, or a program of one word — rather than as a variant that has to be
-        // compared against the original request.
+        // `Exact` is stored as the narrowest thing that does carry its subject — a directory of
+        // one file, or a program of one word.
         let grant = Grant {
             verb: "read".to_owned(),
             scope: Scope::Exact,
