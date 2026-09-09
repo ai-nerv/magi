@@ -80,9 +80,11 @@ impl Mind {
     /// for the behaviour they are checking.
     #[must_use]
     pub fn silent(name: &str) -> Self {
-        // Bounded, because nothing kills the child when the turn stops waiting for it. Long
-        // enough that no test outlasts it, short enough to leave nothing behind.
-        written(name, "sleep 30\n")
+        // `exec`, so the shell becomes the sleep rather than waiting on one. The broker kills
+        // this child when an interrupted turn drops it; a `sleep` one level below the shell is
+        // reparented to init instead and outlives the whole suite, which is what `gate-hermetic`
+        // found three of. Bounded as well, for the paths that never spawn through the broker.
+        written(name, "exec sleep 30\n")
     }
 
     /// Every ask this melchior was given, in order, as it arrived.

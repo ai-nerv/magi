@@ -132,6 +132,12 @@ pub async fn ask_through(
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
+        // **What an interrupt actually stops.** A turn races this future against the interrupt
+        // and drops it on a stop, and a dropped `tokio::process::Child` is detached rather than
+        // ended — so the ask kept running, still connected to the provider, still streaming an
+        // answer nobody would read and the account would still be billed for. It has no effect
+        // on the ordinary path, where `wait()` below has already reaped it.
+        .kill_on_drop(true)
         .spawn()
         .map_err(|why| {
             magi_model::noted!("broker: {program} ask could not be started: {why}");
