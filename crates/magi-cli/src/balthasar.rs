@@ -99,7 +99,7 @@ pub async fn start(instance: &str, project: &Path, agent: Option<&str>) -> Start
     // well, so an install that exits at once is not reported twenty seconds later as a timeout.
     let deadline = std::time::Instant::now() + PATIENCE;
     while std::time::Instant::now() < deadline {
-        if magi_ipc::family::blocking::Family::dial(&socket).is_ok() {
+        if answering(&socket).await {
             return Started::Ours(socket);
         }
         if let Some(status) = exited() {
@@ -120,6 +120,17 @@ pub async fn start(instance: &str, project: &Path, agent: Option<&str>) -> Start
         "balthasar did not bind {} within {PATIENCE:?}",
         socket.display()
     ))
+}
+
+/// Whether balthasar is answering here, rather than merely bound. It binds before it opens a store
+/// and opens one on the first call it is asked, which for a store that does not exist yet takes
+/// longer than the clock any turn keeps: a session that started at the bind spent the whole of its
+/// first exchange waiting, and dropped what it could not hand over.
+async fn answering(path: &Path) -> bool {
+    match magi_ipc::family::Family::dial(path).await {
+        Ok(mut open) => open.call("verbs", Vec::new()).await.is_ok(),
+        Err(_) => false,
+    }
 }
 
 /// How the balthasar this process started ended, if it has. Reaped through the handle, not by
