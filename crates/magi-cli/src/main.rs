@@ -20,6 +20,7 @@ mod keying;
 mod keys;
 mod melchior;
 mod models;
+mod opening;
 mod paths;
 mod print;
 mod session;
@@ -124,9 +125,26 @@ enum Command {
     },
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// **Not `#[tokio::main]`, and the reason is the prologue.**
+///
+/// melchior names this session, and that name is what the run and the agent are taken from — so
+/// it has to be settled before the balthasar those are filed in is spawned. Naming it in the
+/// prologue makes the order a shape rather than a rule to remember: there is nowhere later to
+/// put it.
+fn main() -> Result<()> {
     let cli = Cli::parse();
+    // Only a session has a prologue. Skipped for the argument error a `-p` with no prompt is, so
+    // the complaint arrives without a configuration having been read or a layer started for a
+    // session that never opens.
+    let opening = (cli.command.is_none() && !(cli.print && cli.prompt.is_none()))
+        .then(opening::Opening::begin);
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(run(cli, opening))
+}
+
+async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
     let cwd = std::env::current_dir()?;
     // Only for the replay host, and for a socket somebody named by hand. Every real session
     // names its own after a key nothing else holds — see [`session::socket_for`].
@@ -182,21 +200,13 @@ async fn main() -> Result<()> {
                 anyhow::bail!("`-p` needs a prompt: magi -p \"…\"");
             };
             // Its own session like any other: journalled, and reachable by name while it runs.
-            let loaded = crate::config::load().ok();
-            let project =
-                session::project(loaded.as_ref().and_then(|l| l.config.string("project")));
-            let program = loaded
-                .as_ref()
-                .map_or_else(|| magi_host::broker::MELCHIOR.to_owned(), config::mind);
+            let opening = opening.expect("a session's prologue runs before the runtime");
+            let loaded = opening.loaded;
+            let project = opening.project;
             // Held for the run, so its socket is up while the turn is: a `-p` that another
             // session wants to ask about is one that has to be answering.
-            let _layer = melchior::Melchior::start(&program, &project, talk(loaded.as_ref()));
-            let environ = inherited(
-                loaded.as_ref(),
-                &_layer
-                    .as_ref()
-                    .map_or_else(String::new, |(layer, _)| layer.named.clone()),
-            );
+            let _layer = opening.started;
+            let environ = inherited(loaded.as_ref(), &opening.named);
             let key = session::key();
             let socket = cli
                 .socket
@@ -205,8 +215,19 @@ async fn main() -> Result<()> {
             // record, and it refuses *after* convening balthasar — so returning the error here
             // would leave the child this process started running with nothing to talk to. It
             // dies with its magi either way; this is the way that does not wait for a signal.
-            if let Err(why) =
-                host::start(&socket, cli.resume, &cwd, loaded.as_ref(), &environ, &key).await
+            if let Err(why) = host::start(
+                &socket,
+                cli.resume,
+                &cwd,
+                loaded.as_ref(),
+                &environ,
+                host::Named {
+                    key: &key,
+                    run: opening.run.as_deref(),
+                    agent: opening.agent.as_deref(),
+                },
+            )
+            .await
             {
                 balthasar::stop();
                 return Err(why);
@@ -230,26 +251,13 @@ async fn main() -> Result<()> {
             Ok(())
         }
         None => {
-            // Loaded once, here. Every later reader is handed this one: a second `load` in the
-            // same process runs every configuration file again and repeats every refusal it
-            // printed the first time.
-            let loaded = crate::config::load().ok();
-            let project =
-                session::project(loaded.as_ref().and_then(|l| l.config.string("project")));
-
-            // melchior first, because it names this session and the name goes into the environment
-            // everything else inherits. Absent, this is a session with no siblings and no
-            // `agent` tool — and otherwise a working session, which is the whole point of the
-            // layer being a separate program.
-            let program = loaded
-                .as_ref()
-                .map_or_else(|| magi_host::broker::MELCHIOR.to_owned(), config::mind);
-            let started = melchior::Melchior::start(&program, &project, talk(loaded.as_ref()));
-            let named = started
-                .as_ref()
-                .map(|(melchior, _)| melchior.named.clone())
-                .unwrap_or_default();
-            let environ = inherited(loaded.as_ref(), &named);
+            // The configuration, the layer and this session's name, all settled before the
+            // runtime existed — see [`opening`].
+            let opening = opening.expect("a session's prologue runs before the runtime");
+            let loaded = opening.loaded;
+            let project = opening.project;
+            let started = opening.started;
+            let environ = inherited(loaded.as_ref(), &opening.named);
 
             // This session's own socket, named after a key nothing else shares. Named after the
             // *directory*, a second `magi` started in the same place found the first already
@@ -263,8 +271,19 @@ async fn main() -> Result<()> {
             // record, and it refuses *after* convening balthasar — so returning the error here
             // would leave the child this process started running with nothing to talk to. It
             // dies with its magi either way; this is the way that does not wait for a signal.
-            if let Err(why) =
-                host::start(&socket, cli.resume, &cwd, loaded.as_ref(), &environ, &key).await
+            if let Err(why) = host::start(
+                &socket,
+                cli.resume,
+                &cwd,
+                loaded.as_ref(),
+                &environ,
+                host::Named {
+                    key: &key,
+                    run: opening.run.as_deref(),
+                    agent: opening.agent.as_deref(),
+                },
+            )
+            .await
             {
                 balthasar::stop();
                 return Err(why);
@@ -288,6 +307,12 @@ async fn main() -> Result<()> {
 ///
 /// Empty when there is no name, rather than a plausible one: a tool that invented a name would
 /// sign messages as a session that does not exist.
+///
+/// **`BALTHASAR_AGENT` is deliberately not here.** balthasar reads the agent out of the
+/// *connecting* process's environment, and the memory tools are functions in this process's own
+/// Lua VM — so the map handed to children is the one place setting it would have no effect on
+/// the connections that matter. It is established in this process's own environment instead,
+/// which children inherit anyway. See [`crate::balthasar::pin_agent`].
 fn inherited(
     loaded: Option<&crate::config::Loaded>,
     named: &str,
@@ -329,4 +354,52 @@ enum Ext {
         /// The file to load. Nothing is discovered; the config names it.
         file: PathBuf,
     },
+}
+
+/// What a session hands its children, and what it must keep for itself.
+#[cfg(test)]
+mod inheriting {
+    use super::*;
+
+    #[test]
+    fn the_three_melchior_names_go_to_everything_this_session_starts() {
+        let environ = inherited(None, "magi/main/alpha-rho");
+        assert_eq!(
+            environ.get("MAGI_MELCHIOR_PROJECT").map(String::as_str),
+            Some("magi")
+        );
+        assert_eq!(
+            environ.get("MAGI_MELCHIOR_ROLE").map(String::as_str),
+            Some("main")
+        );
+        assert_eq!(
+            environ.get("MAGI_MELCHIOR_ID").map(String::as_str),
+            Some("alpha-rho")
+        );
+    }
+
+    /// **This session's agent is not one to hand down.**
+    ///
+    /// Everything else in this map is the same for a session and everything it starts — the
+    /// project, the run, how far either may reach. The agent is the one thing that is different
+    /// for each of them, and a child that inherited its parent's would file its scratch in the
+    /// parent's directory: the separation would be on disk and absent from the answers, which is
+    /// the whole of what the agent dimension exists to give. A child is told its own name when
+    /// it is spawned, by whoever named it.
+    #[test]
+    fn the_agent_is_not_something_a_session_hands_its_children() {
+        let environ = inherited(None, "magi/main/alpha-rho");
+        assert!(
+            !environ.contains_key(crate::balthasar::AGENT),
+            "a child inherited its parent's agent and would file scratch in its directory"
+        );
+    }
+
+    #[test]
+    fn a_session_with_no_name_hands_down_none_of_them() {
+        // A tool that invented a name would sign messages as a session that does not exist.
+        let environ = inherited(None, "");
+        assert!(!environ.contains_key("MAGI_MELCHIOR_ID"));
+        assert!(!environ.contains_key(crate::balthasar::AGENT));
+    }
 }

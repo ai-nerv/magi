@@ -35,6 +35,46 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 /// the environment tools are spawned from, since those are two processes and one setting.
 pub const TALK: &str = "MAGI_MELCHIOR_TALK";
 
+/// What a session learns its *run* from: the id of the root that started the whole tree.
+///
+/// melchior's name again. It is set by whoever minted this session, inherited unchanged however
+/// deep the tree goes, and absent for a session somebody started at a terminal — which is a root,
+/// and a root's run is its own id. See [`run_of`].
+pub const SESSION: &str = "MAGI_MELCHIOR_SESSION";
+
+/// Which run this session belongs to.
+///
+/// **The same rule melchior applies to itself**, which is what makes the two agree: `serve` reads
+/// this variable out of the environment magi spawned it with and writes the answer to
+/// `<project>/<id>.session`, treating a session with no note as its own root. Working it out here
+/// a second way would give magi and the directory two different names for one run.
+///
+/// `None` for a session with no melchior, which has no id and therefore no run to belong to.
+///
+/// `named` is `project/role/id` as melchior gave it.
+#[must_use]
+pub fn run_of(named: &str) -> Option<String> {
+    let minted = std::env::var(SESSION).ok();
+    run_from(minted.as_deref(), named)
+}
+
+/// The same answer, with the environment handed in rather than read.
+///
+/// Split out so the two cases can be checked without setting a process-wide variable.
+fn run_from(minted: Option<&str>, named: &str) -> Option<String> {
+    minted
+        .map(str::trim)
+        .filter(|run| !run.is_empty())
+        .or_else(|| {
+            named
+                .split('/')
+                .nth(2)
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+        })
+        .map(ToOwned::to_owned)
+}
+
 /// What melchior says, one JSON object per line on its stdout.
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
@@ -46,6 +86,13 @@ pub enum Heard {
         /// Who this session is, as `project/role/id`.
         #[serde(rename = "as")]
         named: String,
+        /// Which run it belongs to, as the note beside its socket says.
+        ///
+        /// Defaulted rather than required, so an older melchior — which says nothing here — still
+        /// names a session rather than failing to parse the line that starts one. What magi does
+        /// without it is [`run_of`].
+        #[serde(default)]
+        run: String,
     },
     /// A message arrived from another session.
     Message {
@@ -116,6 +163,9 @@ pub struct Melchior {
     program: String,
     /// What this session ended up being called.
     pub named: String,
+    /// Which run it belongs to, as melchior's own note says. Empty from a melchior too old to
+    /// say — see [`run_of`], which is what magi falls back to.
+    pub run: String,
 }
 
 impl Melchior {
@@ -157,7 +207,7 @@ impl Melchior {
             let _ = child.kill();
             return None;
         }
-        let Ok(Heard::Listening { at, named }) = serde_json::from_str::<Heard>(&first) else {
+        let Ok(Heard::Listening { at, named, run }) = serde_json::from_str::<Heard>(&first) else {
             let _ = child.kill();
             return None;
         };
@@ -170,6 +220,7 @@ impl Melchior {
                 hears: Some(reading),
                 program: program.to_owned(),
                 named,
+                run,
             },
             std::path::PathBuf::from(at),
         ))
@@ -292,6 +343,35 @@ mod tests {
     }
 
     #[test]
+    fn a_session_nobody_minted_is_its_own_run() {
+        // The ordinary case: somebody opened a terminal. A root's run is its own id, which is
+        // the same thing melchior writes into `<project>/<id>.session` for it.
+        assert_eq!(
+            run_from(None, "magi/main/alpha-rho").as_deref(),
+            Some("alpha-rho")
+        );
+    }
+
+    #[test]
+    fn a_minted_session_belongs_to_the_run_that_started_it() {
+        // And not to itself. A subagent that worked out its own run would start a second one
+        // every time a coordinator spawned a coordinator, and its memory would land beside
+        // nobody's.
+        assert_eq!(
+            run_from(Some("alpha-rho"), "magi/worker/iota-mu").as_deref(),
+            Some("alpha-rho")
+        );
+    }
+
+    #[test]
+    fn a_session_with_no_melchior_belongs_to_no_run() {
+        // Nothing named it, so there is nothing to file it under — and balthasar's own fallback,
+        // one directory per run, is what a harness that never heard of runs already gets.
+        assert_eq!(run_from(None, ""), None);
+        assert_eq!(run_from(Some("   "), ""), None);
+    }
+
+    #[test]
     fn a_prompt_naming_nobody_asks_melchior_nothing() {
         // Not merely empty — it must not *run* anything. A process per prompt, for a prompt that
         // named no instances, would be a spawn on every keystroke's worth of work.
@@ -307,14 +387,24 @@ mod tests {
     fn what_melchior_says_is_read_as_what_it_means() {
         // The wire between two repositories, and the only place magi knows its shape.
         let listening: Heard = serde_json::from_str(
-            r#"{"event":"listening","at":"/run/melchior/magi/psi-omicron","as":"magi/main/psi-omicron"}"#,
+            r#"{"event":"listening","at":"/run/melchior/magi/psi-omicron","as":"magi/main/psi-omicron","run":"psi-omicron-1788913233"}"#,
         )
         .expect("reads");
-        let Heard::Listening { at, named } = listening else {
+        let Heard::Listening { at, named, run } = listening else {
             panic!("not a listening line");
         };
         assert_eq!(named, "magi/main/psi-omicron");
+        assert_eq!(run, "psi-omicron-1788913233");
         assert!(at.ends_with("psi-omicron"));
+
+        // A melchior too old to say which run it is in still names a session. The line that
+        // starts one failing to parse is a magi that will not open at all, and the run has a
+        // fallback where the name has none.
+        let older: Heard = serde_json::from_str(
+            r#"{"event":"listening","at":"/run/melchior/magi/psi-omicron","as":"magi/main/psi-omicron"}"#,
+        )
+        .expect("an older melchior still reads");
+        assert!(matches!(older, Heard::Listening { run, .. } if run.is_empty()));
 
         let arrived: Heard = serde_json::from_str(
             r#"{"event":"message","who":"magi/main/beta-nu","sort":"attention","text":"look"}"#,

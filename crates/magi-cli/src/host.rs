@@ -29,6 +29,21 @@ use anyhow::{Context, Result};
 use std::os::unix::fs::FileTypeExt;
 use std::path::Path;
 
+/// The three names a session opens under.
+///
+/// One parameter rather than three because they are one fact between them, and because two of
+/// the three are `Option<&str>`: a call site that swapped those would compile, and would file
+/// every agent's scratch under the run.
+pub struct Named<'a> {
+    /// This process's own, for the two files nothing else may share: its host socket, and the
+    /// balthasar it convenes.
+    pub key: &'a str,
+    /// melchior's run, which balthasar files a history under — see [`recorded_as`].
+    pub run: Option<&'a str>,
+    /// Which agent of that run this is, which balthasar files scratch under.
+    pub agent: Option<&'a str>,
+}
+
 /// Open this session and start serving it, without waiting for it to finish.
 ///
 /// Bound before returning, so the UI's first dial cannot race the bind. Everything after that
@@ -42,10 +57,11 @@ pub async fn start(
     cwd: &Path,
     loaded: Option<&crate::config::Loaded>,
     environ: &std::collections::BTreeMap<String, String>,
-    key: &str,
+    named: Named<'_>,
 ) -> Result<()> {
+    let Named { key, run, agent } = named;
     let cwd = cwd.display().to_string();
-    let id = magi_proto::SessionId::new(magi_host::paths::session_id(unix_seconds(), key));
+    let id = magi_proto::SessionId::new(recorded_as(run, key));
     // Told before started. A sibling reads what a coordinator said as it comes up, so saying it
     // afterwards would configure the turn after this one.
     if let Some(loaded) = loaded {
@@ -54,9 +70,13 @@ pub async fn start(
 
     // Started here, not found. magi convenes its siblings: a session whose transcript depended
     // on somebody else having launched a memory layer would record sometimes and not others.
-    // Named after this session, so two windows in a project get one each and neither can take
-    // the other's down.
-    let ours = crate::balthasar::start(&id.as_str().replace('/', "-"), Path::new(&cwd)).await;
+    //
+    // **Named after the key, not after the run.** These two were one value, and separating them
+    // is what lets several agents of one run each convene their own layer: the run is shared by
+    // every agent in it by design, so a socket named after it would have the second agent's
+    // `balthasar serve` refused the address the first is holding — a subagent that will not
+    // start, reported as "balthasar could not be convened". The key is one process's own.
+    let ours = crate::balthasar::start(key, Path::new(&cwd), agent).await;
 
     // **balthasar is the store, and there is no other.** This used to fall back to a JSONL file
     // per session when it could not be reached, and that fallback was the bug: two stores is one
@@ -162,6 +182,25 @@ fn sweep(dir: &Path) {
     }
 }
 
+/// What balthasar files this session's history and its scratch under.
+///
+/// **melchior's run, when there is one.** A run is the root main and everything under it, frozen
+/// at birth, and it is the segment balthasar opens a scratch directory for —
+/// `<project>/balthasar/<tool>/<run>/<agent>/memory.db`. magi's key cannot be that name: it is
+/// the pid and the clock, so it is a different value in every process, and a coordinator and its
+/// subagents would each file their memory in a directory none of the others could name.
+///
+/// The key stays as the fallback, for a session with no melchior. There is no run to belong to
+/// then, and a name unique to this process is what "one directory per run" already means.
+///
+/// Existing histories keep the names they were written under. Nothing is moved.
+fn recorded_as(run: Option<&str>, key: &str) -> String {
+    match run.map(str::trim).filter(|run| !run.is_empty()) {
+        Some(run) => run.to_owned(),
+        None => magi_host::paths::session_id(unix_seconds(), key),
+    }
+}
+
 /// Seconds since the epoch, for naming a session.
 ///
 /// A session id is a sortable timestamp, which is what makes "the most recent session" a
@@ -187,6 +226,33 @@ fn stamp(
     catalog.environ = environ.clone();
     if let Some(backend) = backend.as_mut() {
         backend.environ = environ.clone();
+    }
+}
+
+/// Which name a session's history is kept under.
+#[cfg(test)]
+mod naming {
+    use super::*;
+
+    #[test]
+    fn a_session_in_a_run_is_recorded_as_the_run() {
+        // The whole of stage 2's second half: `<session>` in balthasar's scratch path is
+        // melchior's run, so every agent of one run opens a directory beside its siblings'
+        // rather than one nothing else can name.
+        assert_eq!(recorded_as(Some("alpha-rho"), "beef00042"), "alpha-rho");
+    }
+
+    #[test]
+    fn a_session_with_no_melchior_falls_back_to_its_own_key() {
+        // pid and clock, exactly as before. There is no run to belong to, and inventing one
+        // would file this session's memory under a name that does not exist.
+        for absent in [None, Some(""), Some("   ")] {
+            let fallback = recorded_as(absent, "beef00042");
+            assert!(
+                fallback.ends_with("-beef00042"),
+                "the key is what tells apart two sessions started in one second: {fallback}"
+            );
+        }
     }
 }
 

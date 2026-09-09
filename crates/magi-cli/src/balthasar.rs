@@ -27,6 +27,36 @@ use std::sync::Mutex;
 /// The balthasar this process started, so it can be ended and its path cleared.
 static STARTED: Mutex<Option<Ours>> = Mutex::new(None);
 
+/// What balthasar reads a connection's agent out of.
+///
+/// balthasar's name for it, spelled here because magi is what sets it — the same arrangement as
+/// [`melchior::TALK`](crate::melchior::TALK), and for the same reason: the two programs do not
+/// link, so the coupling is a variable name and nothing else.
+pub const AGENT: &str = "BALTHASAR_AGENT";
+
+/// The id out of `project/role/id`, which is what an agent is called.
+///
+/// **Told to the balthasar this magi spawns, not set on this process.** balthasar reads the agent
+/// out of the connecting peer's `/proc/<pid>/environ`, and that file is the block the kernel wrote
+/// at `exec` — `setenv` allocates on the heap and never touches it, so a variable this process
+/// sets is one balthasar cannot read however early it is set. Measured, not assumed: `getenv`
+/// answers and `/proc/self/environ` does not contain it.
+///
+/// So the name goes to the child at spawn, where it *is* in the initial block, and balthasar
+/// falls back to its own when a peer's says nothing. That is sound for one balthasar per magi —
+/// and a subagent, spawned with its own name in its own initial block, overrides it by being read
+/// from the peer where the fallback is only consulted second.
+///
+/// A magi with no melchior has no id and nothing is set. An invented one would file somebody's
+/// memory under a name that does not exist.
+pub fn agent_of(named: &str) -> Option<&str> {
+    named
+        .split('/')
+        .nth(2)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+}
+
 /// A balthasar this magi started, and the path it was told to bind.
 ///
 /// The path is kept beside the child because only the two together can be tidied up: the child
@@ -68,7 +98,7 @@ pub enum Started {
 /// while the caller's answer to all three was "keep a journal instead". The caller now refuses the
 /// session, so what it says to the person has to be the actual cause; a debug log nobody has
 /// enabled is not that.
-pub async fn start(instance: &str, project: &Path) -> Started {
+pub async fn start(instance: &str, project: &Path, agent: Option<&str>) -> Started {
     // Somebody else already said which one to talk to — a magi spawned by a balthasar, or a test
     // pointing at a fixture. Theirs, not ours to start.
     if std::env::var_os("MAGI_API_SOCKET").is_some_and(|v| !v.is_empty()) {
@@ -83,7 +113,13 @@ pub async fn start(instance: &str, project: &Path) -> Started {
     // good, and after a week the directory is a list of sessions that ended.
     sweep_stale(&dir);
 
-    let child = Command::new("balthasar")
+    let mut spawning = Command::new("balthasar");
+    // Where this magi's own memory is filed. In the child's initial environment, which is the
+    // only place balthasar can read it from — see [`agent_of`].
+    if let Some(agent) = agent {
+        spawning.env(AGENT, agent);
+    }
+    let child = spawning
         .arg("serve")
         .arg("--instance")
         .arg(instance)
@@ -448,12 +484,28 @@ mod tests {
         sweep_stale(Path::new("/nonexistent/magi-sweep-nothing-here"));
     }
 
+    #[test]
+    fn the_agent_is_the_last_part_of_the_name_melchior_gave() {
+        assert_eq!(agent_of("magi/main/alpha-rho"), Some("alpha-rho"));
+        assert_eq!(agent_of("magi/reviewer/zeta-pi"), Some("zeta-pi"));
+    }
+
+    #[test]
+    fn a_session_with_no_melchior_is_named_nothing_rather_than_a_guess() {
+        // An invented agent name files somebody's memory under a name that does not exist, and
+        // balthasar's own answer for a peer that names none — one directory per run — is the
+        // arrangement that was there before agents were.
+        for named in ["", "magi", "magi/main", "magi/main/", "magi/main/   "] {
+            assert_eq!(agent_of(named), None, "{named:?} was named as something");
+        }
+    }
+
     #[tokio::test]
     async fn a_socket_somebody_else_named_is_not_ours_to_start() {
         // Set for the length of this test only, and read before anything is spawned.
         let saved = std::env::var_os("MAGI_API_SOCKET");
         assert!(
-            saved.is_none() || matches!(start("x", Path::new("/tmp")).await, Started::Theirs),
+            saved.is_none() || matches!(start("x", Path::new("/tmp"), None).await, Started::Theirs),
             "an explicit socket means somebody else's balthasar — not ours to start, and not a \
              refusal either"
         );
