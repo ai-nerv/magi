@@ -210,8 +210,12 @@ make verify       # all of it
 | `gate-proto-size` | `magi-proto` under 4,000 lines |
 | `gate-reachable` | no crate unreachable from the binary |
 | `gate-cycles` | no two top-level modules depend on each other |
-| `gate-hermetic` | the suite leaves nothing behind in `$TMPDIR` |
+| `gate-hermetic` | the suite leaves behind no file and no process |
 | `gate-wire` | one way of saying a thing crosses a boundary |
+| `gate-one-store` | balthasar holds the history and magi keeps no copy |
+| `gate-family` | the binary answers the family contract |
+| `gate-sandbox` | one Lua VM, sandboxed, and a checkout cannot govern the session |
+| `gate-lints` | every crate takes the workspace's denials and nothing takes them back |
 
 `gate-cycles` is the one pi never built. It built *reachability* — and a cycle is maximally
 reachable, so a reachability gate passes at 240,000 lines with the knot still in it. Ours had the
@@ -221,7 +225,14 @@ three cycles nobody had named.
 `gate-hermetic` runs the suite under a `TMPDIR` of its own and asserts it is empty afterwards.
 Every test used to tidy up on its last line — and `assert!` unwinds straight past a trailing
 `remove_dir_all`, so a *failing* test always leaked. Three thousand six hundred directories had
-collected before anything looked.
+collected before anything looked. It also counts what survives: a leaked process is found by its
+working directory *or* by `$TMPDIR` appearing in its environment, because cargo runs a test binary
+in the package directory and a child inherits that — the cwd question alone is blind to every
+test that does not call `current_dir`.
+
+`gate-sandbox` holds the count of Lua VMs at one. The sandbox's own tests prove the removals work;
+what they cannot prove is that every VM went through the constructor that applies them, and a
+second `Lua::full()` is a full standard library with no test anywhere going red.
 
 `gate-modules` earns its place on its own: a file nobody declares is not a compile error, not a
 warning and not run — it simply is not part of the crate. Two were found at once, each holding
