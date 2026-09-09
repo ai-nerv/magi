@@ -54,11 +54,21 @@ runtime="${XDG_RUNTIME_DIR:-}"
 # with it, and the gate stops *before* the process check and before it prints a verdict. What the
 # reader gets is three lines about sort order and no answer, on the run where something actually
 # leaked. Found by breaking three checks at once and watching only the first one report.
+#
+# **Every level, not the top one.** This listed each program's directory with `ls -A` and stopped
+# there, and the entries under `$runtime/magi` are one directory per *project* — so a session that
+# left its socket behind in a project directory that already existed added nothing to the listing
+# and the diff was empty. That is the leak this check was written for: `sweep()` unlinks a corpse
+# socket only in the directory the next magi in *that* project opens, so one left anywhere else
+# stays until the machine reboots, and a probe that dials it reads a corpse as a live daemon.
+# Seven were sitting under `$XDG_RUNTIME_DIR/magi` on this machine — left by sessions started by
+# hand rather than by the suite, which is why the gate had never been red about them, and exactly
+# what it would have missed had the suite left them.
 runtime_listing() {
   [ -n "$runtime" ] || return 0
   for program in melchior balthasar magi; do
     if [ -d "$runtime/$program" ]; then
-      ls -A "$runtime/$program" | sed "s|^|$program/|"
+      find "$runtime/$program" -mindepth 1 | sed "s|^$runtime/||"
     fi
   done | LC_ALL=C sort
 }
@@ -74,8 +84,23 @@ runtime_listing >"$before"
 # thirty-nine after it never ran at all. Six tests were made to fail on purpose to check this, and
 # the run took two seconds and reached one binary. So the gate was strictest about exactly the
 # case it exists for — and looked green doing it, because a leak nothing executed cannot appear.
+#
+# **The profile is whichever one the rest of the run already built.** A leak is a leak in either,
+# so the only thing the choice decides is whether the workspace is compiled a second time into a
+# second target directory. This was pinned to debug: `.make.lua` builds `--release` in every
+# recipe and says why, so `make verify` compiled everything twice and `target/debug` had grown to
+# 47GB beside a 3.3GB `target/release` for a second copy of the same suite. Release is the
+# default for that reason; CI's own verify step is a debug one and sets `GATE_PROFILE=debug`, so
+# neither place pays for two.
+case "${GATE_PROFILE:-release}" in
+  release) profile=--release ;;
+  debug) profile= ;;
+  *) echo "gate-hermetic: GATE_PROFILE must be release or debug" >&2; exit 1 ;;
+esac
+
 status=0
-TMPDIR="$root" cargo test --all-targets --no-fail-fast --quiet >"$out" 2>&1 || status=$?
+# shellcheck disable=SC2086
+TMPDIR="$root" cargo test --all-targets $profile --no-fail-fast --quiet >"$out" 2>&1 || status=$?
 
 runtime_listing >"$after"
 
@@ -114,6 +139,7 @@ if [ -n "$new" ]; then
   echo "gate-hermetic: the suite left these under $runtime:" >&2
   printf '  %s\n' $new >&2
   echo "gate-hermetic: a session started by hand during the run also lands here" >&2
+  echo "gate-hermetic: so does a sibling repository's suite, if one is running at the same time" >&2
   failed=1
 fi
 
@@ -124,21 +150,41 @@ fi
 # passing or failing, and nothing looked because everything anybody looked at was the process
 # that was named.
 #
-# Asked by working directory rather than by name. Every process the suite starts inherits a cwd
-# inside `$root`, which `mktemp -d` made moments ago and nothing else on the machine has ever
-# been in — so this cannot mistake a developer's own editor or session for a leak, and it needs
-# no list of program names to keep up to date. A scratch directory already removed still answers
-# `/tmp/gh-…/mf-… (deleted)`, which begins with `$root` and is still a leak.
+# Asked by `$root` rather than by name. `mktemp -d` made it moments ago and nothing else on the
+# machine has ever carried that string, so neither question below can mistake a developer's own
+# editor or session for a leak, and neither needs a list of program names to keep up to date.
+#
+# **Two questions, because the first one alone was blind and looked thorough.** The cwd check was
+# written on the premise that every process the suite starts inherits a cwd inside `$root`, and
+# that is not what cargo does: a test binary runs with its cwd set to the *package* directory, so
+# a child inherits `…/nerv/magi` unless the test explicitly called `current_dir`. Over half the
+# files here that spawn something never call it. Measured rather than reasoned about — a `sleep`
+# started with this repository as its cwd and `TMPDIR=$root` in its environment was invisible to
+# the cwd predicate and named immediately by the environment one. The `sleep 600` this caught when
+# it landed was caught because `lifecycle.rs` happens to set `current_dir`; that is a property of
+# one fixture, not of the check.
+#
+# The environment is the predicate that does not depend on the test: `TMPDIR` is set for the whole
+# run and every descendant inherits it, and the `XDG_*` directories the tests point at their own
+# scratches are all under it too. A scratch directory already removed still answers
+# `/tmp/gh-…/mf-… (deleted)` on cwd, which begins with `$root` and is still a leak, so the first
+# question is kept as well.
 survivors=$(
-  for entry in /proc/[0-9]*; do
-    at=$(readlink "$entry/cwd" 2>/dev/null) || continue
-    case "$at" in
-      "$root"/*|"$root")
-        # `tr` because a cmdline is NUL-separated, and an unreadable one is still a pid worth
-        # naming.
-        echo "${entry#/proc/} $(tr '\0' ' ' <"$entry/cmdline" 2>/dev/null)"
-        ;;
-    esac
+  {
+    for entry in /proc/[0-9]*; do
+      at=$(readlink "$entry/cwd" 2>/dev/null) || continue
+      case "$at" in
+        "$root"/*|"$root") echo "${entry#/proc/}" ;;
+      esac
+    done
+    # One pass over `/proc` rather than a fork per pid. `-s` because a process that ends between
+    # the glob and the read is not an error, and `-a` because an environ is NUL-separated and
+    # grep would otherwise call it binary and print nothing useful.
+    grep -lsa -- "$root" /proc/[0-9]*/environ 2>/dev/null \
+      | sed 's|^/proc/||; s|/environ$||'
+  } | LC_ALL=C sort -un | while IFS= read -r pid; do
+    # `tr` because a cmdline is NUL-separated, and an unreadable one is still a pid worth naming.
+    echo "$pid $(tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null)"
   done
 )
 
