@@ -216,6 +216,7 @@ make verify       # all of it
 | `gate-family` | the binary answers the family contract |
 | `gate-sandbox` | one Lua VM, sandboxed, and a checkout cannot govern the session |
 | `gate-lints` | every crate takes the workspace's denials and nothing takes them back |
+| `gate-comments` | a comment describes the block; it is not a fifth of the code arguing with it |
 
 `gate-cycles` is the one pi never built. It built *reachability* — and a cycle is maximally
 reachable, so a reachability gate passes at 240,000 lines with the knot still in it. Ours had the
@@ -237,6 +238,12 @@ second `Lua::full()` is a full standard library with no test anywhere going red.
 `gate-modules` earns its place on its own: a file nobody declares is not a compile error, not a
 warning and not run — it simply is not part of the crate. Two were found at once, each holding
 tests that had silently not run since the commit that moved them.
+
+`gate-comments` caps comment lines at 20% of the code in the same file. `SAFETY:` notes do not
+count, from the `SAFETY:` line onward, and every file gets a floor of three lines whatever its
+size. It flagged 175 files at first: the prose had grown into the argument for each decision, the
+story of the bug behind it, and the case against alternatives nobody had proposed. What a comment
+is for is the block underneath it.
 
 The gates are not advisory. Every agent this one was measured against carries dead code nothing
 reaches and a god file in the tens of thousands of lines — 6,549 in one, 34,875 in another. None
