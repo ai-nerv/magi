@@ -1,16 +1,10 @@
 //! The shipped examples, run.
 //!
-//! pi ships roughly seventy-eight example extensions. That is not documentation — it is how they
-//! know the extension surface works, and ours had never been used by anybody who did not write
-//! it. An example that does not load is worse than no example, because somebody copies it.
-//!
-//! These load each file exactly as a plugin directory would and check that it declared what it
-//! says it declares. What they cannot check is that `rg` finds anything, which is the tool's
-//! business rather than the surface's.
+//! They load each file exactly as a plugin directory would and check that it declared what it says
+//! it declares. An example that does not load is worse than none, because somebody copies it.
 
 use magi_lua::Engine;
 
-/// One example, read from the tree at run time — the way a plugin directory reads one.
 fn example(name: &str) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples/plugin")
@@ -20,8 +14,8 @@ fn example(name: &str) -> String {
 
 #[test]
 fn every_example_loads_in_a_plain_vm() {
-    // The sandbox is on, nothing is lent, and no configuration has run first. That is what a
-    // plugin directory hands a file, so it is what these are held to.
+    // The sandbox is on, nothing is lent, and no configuration has run first — what a plugin
+    // directory hands a file.
     for name in ["ripgrep.lua", "status-line.lua"] {
         let mut engine = Engine::new();
         engine
@@ -49,10 +43,8 @@ fn the_tool_example_declares_a_tool_with_everything_a_tool_owes() {
         "the model is told what it does"
     );
     assert!(spec.get("parameters").is_some(), "and held to a schema");
-    // **The field whose absence only showed up by running it.** A tool with a `run` and no
-    // transport is refused at load — "missing field `transport`" — because the registry has no
-    // way to guess that the function is the point. An example that gets this wrong is worse than
-    // no example: somebody copies it and gets a tool the session will not register.
+    // A tool with a `run` and no transport is refused at load; the registry cannot guess that the
+    // function is the point.
     assert_eq!(
         spec.get("transport")
             .and_then(|t| t.get("kind"))
@@ -69,9 +61,8 @@ fn the_tool_example_declares_a_tool_with_everything_a_tool_owes() {
 
 #[test]
 fn the_watcher_example_registers_a_watcher_and_survives_every_kind_of_event() {
-    // The failure this catches is the one that made it necessary: a watcher written when there
-    // was one kind of event assumed every event had a `tool` field. Handing it all of them is
-    // the whole test.
+    // The failure this catches: a watcher written when there was one kind of event assumed every
+    // event had a `tool` field.
     let mut engine = Engine::new();
     engine
         .run(&example("status-line.lua"), "status-line.lua")
@@ -90,7 +81,6 @@ fn the_watcher_example_registers_a_watcher_and_survives_every_kind_of_event() {
         engine.call_watchers(&event);
     }
 
-    // Nothing is asserted about the file: `magi.fs.write` refuses when no ops are lent, which is
-    // exactly this situation, and the example is written to carry on when it does.
+    // `magi.fs.write` refuses when no ops are lent, and the example carries on when it does.
     engine.harvest();
 }

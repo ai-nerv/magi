@@ -30,70 +30,43 @@ use std::rc::Rc;
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "kebab-case", tag = "kind")]
 pub enum Transport {
-    /// A Lua function in the worker's VM.
-    ///
-    /// No process, no serialisation. It gets [`Ops`] — read and write, path-checked — and the
-    /// VM's own natives: sockets, JSON, directory listing. Deliberately **not** a shell: if a
-    /// tool needs to run commands it is a process, and it is isolated because it is one.
+    /// A Lua function in the worker's VM. No process, no serialisation: it gets [`Ops`] and the
+    /// VM's own natives. Deliberately not a shell; a tool that runs commands is a process.
     Lua,
-    /// A peer in its own process, spoken to over the wire.
-    ///
-    /// Any language, crash-isolated, and later sandboxable. What a tool that needs to outlive
-    /// one call, hold a working directory, or be untrusted should be.
+    /// A peer in its own process, spoken to over the wire. Any language, crash-isolated, and what
+    /// a tool that must outlive one call or be untrusted should be.
     Process {
-        /// The program to run.
         command: String,
-        /// Its arguments.
         #[serde(default, deserialize_with = "lua_list")]
         args: Vec<String>,
         /// Environment for this peer, beside what every process magi starts already gets.
         #[serde(default)]
         env: std::collections::BTreeMap<String, String>,
     },
-    /// An MCP server: a program that publishes several tools and is spoken to in JSON-RPC.
-    ///
-    /// The one declaration that registers *more than one* tool. MCP servers publish a list —
-    /// a filesystem server offers half a dozen — so the name a config gives this declaration is
-    /// the server's, and the names the model sees are the server's own.
-    ///
-    /// Nothing else about it is special. Each tool it publishes registers beside a builtin, a
-    /// Lua tool and a casper tool; is checked against the schema the server published; asks the
-    /// same person for the same permission; and is capped and masked on the way back like any
-    /// other. A transport is a property of a declaration, not a second registry.
+    /// An MCP server: a program that publishes several tools, spoken to in JSON-RPC. The one
+    /// declaration that registers more than one tool, so the name a config gives it is the
+    /// server's and the names the model sees are the server's own.
     Mcp {
-        /// The program to run.
         command: String,
-        /// Its arguments.
         #[serde(default, deserialize_with = "lua_list")]
         args: Vec<String>,
-        /// Environment for the server, beside what every process magi starts already gets.
         #[serde(default)]
         env: std::collections::BTreeMap<String, String>,
-        /// The SHA-256 this server's program must hash to, if it is pinned.
-        ///
-        /// **An MCP server is somebody else's code, running as you, with your tools**, and
-        /// `command` is a name that resolves to whatever is on `$PATH` today. Pinning binds the
-        /// declaration to the bytes it was written against; a mismatch refuses to start and says
-        /// both hashes.
-        ///
-        /// Optional, and unset is the ordinary case. `magi doctor` prints what each server
-        /// actually hashed to, which is how a person starts pinning rather than something they
-        /// have to know about first.
+        /// The SHA-256 this server's program must hash to, if it is pinned. An MCP server is
+        /// somebody else's code running as you, and `command` resolves to whatever is on `$PATH`
+        /// today; a mismatch refuses to start and says both hashes. `magi doctor` prints what each
+        /// server actually hashed to.
         #[serde(default)]
         sha256: Option<String>,
     },
-    /// An ordinary program magi runs, with arguments built from the call.
-    ///
-    /// Not a peer: the child is any unix tool and magi reads what it printed. This is how a config
-    /// declares `grep`, `find` or `jq` without a peer to write or a shell string to quote. There is
-    /// no shell -- see [`magi_tools::command::render`] for what an argument is and is not.
+    /// An ordinary program magi runs, with arguments built from the call. Not a peer: magi reads
+    /// what the child printed. There is no shell — see [`magi_tools::command::render`] for what an
+    /// argument is and is not.
     Command {
-        /// The program to run.
         command: String,
         /// Its arguments, each a literal or `{name}` naming a declared property.
         #[serde(default, deserialize_with = "lua_list")]
         args: Vec<String>,
-        /// Environment for this program, beside what every process magi starts already gets.
         #[serde(default)]
         env: std::collections::BTreeMap<String, String>,
         /// Seconds it may run before it is killed.
@@ -105,13 +78,10 @@ pub enum Transport {
 /// A tool as a config declared it.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Declaration {
-    /// What it does, in the model's terms.
     #[serde(default)]
     pub description: String,
-    /// JSON Schema for its arguments.
     #[serde(default = "empty_object")]
     pub parameters: serde_json::Value,
-    /// How it is reached.
     pub transport: Transport,
 }
 
@@ -128,7 +98,6 @@ pub struct LuaTool {
 }
 
 impl LuaTool {
-    /// Build one from a declaration the VM already holds.
     #[must_use]
     pub fn new(engine: Rc<RefCell<Engine>>, name: &str, declaration: &Declaration) -> Self {
         Self {
@@ -153,9 +122,8 @@ impl Tool for LuaTool {
         self.parameters.clone()
     }
 
-    // A Lua body runs to completion inside the VM, so there is no point between entering it
-    // and leaving it at which an interrupt could be noticed. Honesty about that is better than
-    // a check that could never fire.
+    // A Lua body runs to completion inside the VM, so there is no point between entering it and
+    // leaving it at which an interrupt could be noticed.
     fn run(&self, arguments: &serde_json::Value, _ops: &dyn Ops, _cancel: &dyn Cancel) -> Output {
         let answer = self.engine.borrow_mut().call_tool(&self.name, arguments);
         match answer {
@@ -169,11 +137,8 @@ impl Tool for LuaTool {
                     .get("is_error")
                     .and_then(serde_json::Value::as_bool)
                     .unwrap_or(false),
-                // A tool declared here may paint its output too, in the same vocabulary
-                // casper's use. Not a privilege of the far side: what makes the colours agree
-                // is the roles, and a Lua tool that has structure worth naming should be able
-                // to name it. Absent, or in a shape this build cannot read, is plain text —
-                // the answer a tool gets for saying nothing.
+                // A tool declared here may paint its output too, in the vocabulary casper's use.
+                // Absent, or in a shape this build cannot read, is plain text.
                 shown: value
                     .get("shown")
                     .and_then(|shown| serde_json::from_value(shown.clone()).ok()),
@@ -187,23 +152,10 @@ impl Tool for LuaTool {
 
 /// Build the whole registry, in the one order a session uses.
 ///
-/// **This sequence existed twice.** `magi tools` ran it to list what the model may call and the
-/// worker ran it to give the model something to call, and the two differed in three ways. Two of
-/// those were principled and are parameters here: a listing must not stop to ask a permission
-/// question, and it has no screen to lend a tool. The third was a defect — the listing passed an
-/// empty environment where a session passes the backend's, so a process tool that reads one was
-/// described by `magi tools` as it would never actually run.
-///
-/// Answers the registry and the names casper supplied, which a listing needs to say where each
-/// tool came from and a session does not.
-///
-/// `casper` is the SHA-256 that program must hash to, if a configuration pinned one. It supplies
-/// the whole tool set and is found on `$PATH`, which is the largest unacknowledged trust
-/// assumption here.
-///
-/// Probing is the caller's. It is the one step where the difference is real rather than
-/// accidental: a listing probes through plain `Ops` at the working directory, and a session
-/// probes through the gated `Ops` its tools will actually act with.
+/// Two differences between a listing and a session are principled and are parameters here: a
+/// listing must not stop to ask a permission question, and it has no screen to lend a tool.
+/// Answers the registry and the names casper supplied. `casper` is the SHA-256 that program must
+/// hash to, if a configuration pinned one. Probing is the caller's.
 pub fn assemble(
     engine: Rc<RefCell<Engine>>,
     asker: std::sync::Arc<dyn magi_tools::question::Asks>,
@@ -214,13 +166,9 @@ pub fn assemble(
 ) -> (magi_tools::Registry, std::collections::BTreeSet<String>) {
     let mut registry = magi_tools::Registry::new();
 
-    // **casper first, so anything nearer wins.** Registration is keyed, so the last declaration
-    // of a name is the one that runs — and the order is a precedence rule: casper is the
-    // furthest away, the compiled-in floor is next, and a person's own `tools.lua` is nearest
-    // and beats both. A config that declares `shell` means it.
-    //
-    // Nothing when casper is not installed: a session then has exactly the tools it had before
-    // casper existed.
+    // casper first, so anything nearer wins: registration is keyed, the compiled-in floor is next,
+    // and a person's own `tools.lua` is nearest and beats both. Nothing when casper is not
+    // installed, so a session then has exactly the tools it had before casper existed.
     let mut from_casper = std::collections::BTreeSet::new();
     for tool in magi_tools::casper::CasperTool::pinned(
         magi_tools::casper::CASPER,
@@ -247,19 +195,16 @@ pub fn assemble(
     (registry, from_casper)
 }
 
-/// Build every declared tool into one registry, on top of the floor.
-///
-/// Both transports land here and the registry cannot tell them apart — which is the whole
-/// design. A declaration that will not parse is skipped with a reason on stderr rather than
-/// failing the daemon: one broken tool should cost you that tool, not the session.
+/// Build every declared tool into one registry, on top of the floor. Both transports land here and
+/// the registry cannot tell them apart. A declaration that will not parse is skipped with a reason
+/// on stderr: one broken tool should cost you that tool, not the session.
 pub fn install(
     engine: Rc<RefCell<Engine>>,
     registry: &mut magi_tools::Registry,
     environ: &std::collections::BTreeMap<String, String>,
 ) {
-    // Installed once, whether or not anything is watching. A registrar with nothing in it
-    // costs one empty lookup per tool call, and wiring it conditionally would mean a config
-    // that adds a watcher after startup silently never fires.
+    // Installed once, whether or not anything is watching: wiring it conditionally would mean a
+    // config that adds a watcher after startup silently never fires.
     registry.watch(Box::new(LuaWatch::new(Rc::clone(&engine))));
 
     let declared = engine.borrow_mut().tools();
@@ -303,9 +248,8 @@ pub fn install(
                     Some(seconds) => tool.with_timeout(*seconds),
                     None => tool,
                 };
-                // A placeholder naming a property the schema does not declare can never be
-                // filled, so the argument silently vanishes at every call. Caught here, where
-                // there is somebody to tell, rather than at the call where there is not.
+                // A placeholder naming a property the schema does not declare can never be filled,
+                // so the argument silently vanishes at every call.
                 if let Some(unknown) = undeclared(&tool, &declaration.parameters) {
                     eprintln!(
                         "magi: the tool {name:?} was not registered: its arguments name {unknown:?}, which it does not declare"
@@ -338,9 +282,8 @@ pub fn install(
                 env,
                 sha256,
             } => {
-                // The server is asked what it offers, at load, because that is the only thing
-                // that knows — a config listing its tools would be a copy that drifts. The name
-                // this declaration was given is the *server's*, and does not become a tool.
+                // The server is asked what it offers, at load, because that is the only thing that
+                // knows. The name this declaration was given is the server's, and is not a tool.
                 let environ: std::collections::BTreeMap<String, String> = environ
                     .iter()
                     .chain(env)
@@ -352,9 +295,7 @@ pub fn install(
                             registry.register(Box::new(tool));
                         }
                     }
-                    // Reported and skipped, like every other tool that will not register: a
-                    // session with one server missing is a session with fewer tools, not a
-                    // session that will not start.
+                    // Reported and skipped, like every other tool that will not register.
                     Err(why) => {
                         eprintln!("magi: the MCP server {name:?} offered nothing: {why}");
                     }
@@ -364,11 +305,9 @@ pub fn install(
     }
 }
 
-/// A list that may arrive as an empty table.
-///
-/// Lua has one table type, so `{}` is both an empty array and an empty object and there is no
-/// way to tell which was meant. Everything above this reads it as an object, which would make
-/// `args = {}` — the ordinary way to say "no arguments" — a type error.
+/// A list that may arrive as an empty table. Lua has one table type, so `{}` is both an empty
+/// array and an empty object; reading it as an object would make `args = {}` — the ordinary way to
+/// say "no arguments" — a type error.
 fn lua_list<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -387,9 +326,7 @@ where
     }
 }
 
-/// An MCP server, declared in a config and reached through the registry.
-///
-/// Split from this file under THE RULE, which caps a file at 800 lines.
+/// An MCP server, declared in a config and reached through the registry. Split under THE RULE.
 #[cfg(test)]
 #[path = "tool/mcp.rs"]
 mod mcp_tests;
@@ -400,7 +337,6 @@ mod tests {
     use magi_tools::Registry;
     use magi_tools::ops::Real;
 
-    /// Run a config chunk and build what it declared.
     pub(super) fn built(source: &str) -> (Registry, Rc<RefCell<Engine>>) {
         let mut engine = Engine::new();
         engine
@@ -560,11 +496,9 @@ mod tests {
     }
 }
 
-/// A placeholder in a command's arguments that its schema never declares.
-///
-/// `{limit}` against a schema with no `limit` property can never be filled, so the argument
-/// disappears from every call and the tool quietly runs unbounded. The declaration is wrong, and
-/// the config author is the only one who can fix it.
+/// A placeholder in a command's arguments that its schema never declares. `{limit}` against a
+/// schema with no `limit` property can never be filled, so the argument disappears from every call
+/// and the tool quietly runs unbounded.
 fn undeclared(
     tool: &magi_tools::command::CommandTool,
     parameters: &serde_json::Value,
@@ -575,12 +509,10 @@ fn undeclared(
         .find(|name| !declared.is_some_and(|properties| properties.contains_key(name)))
 }
 
-/// A config can declare a tool that is an ordinary program.
 #[cfg(test)]
 mod command_transport {
     use super::*;
 
-    /// The transport a declaration parses into.
     fn transport(lua: &str) -> Result<Transport, String> {
         let mut engine = Engine::new();
         engine.run(lua, "test.lua").map_err(|e| e.to_string())?;
@@ -684,20 +616,14 @@ mod command_transport {
     }
 }
 
-/// A Lua function told what happened.
-///
-/// The seam a memory layer needs and magi's Rust should not know about. magi reports *what
-/// happened*; what to do with that — report it to balthasar, time it, count it, ignore it — is
-/// a configuration's business, and lives in Lua beside the client it would use.
-///
-/// Failures are swallowed on purpose. A watcher that raised would turn observing a session into
-/// a way of breaking one, and the whole point of watching after the fact is that it cannot.
+/// A Lua function told what happened. magi reports what happened; what to do with it is a
+/// configuration's business. Failures are swallowed on purpose: a watcher that raised would turn
+/// observing a session into a way of breaking one.
 pub struct LuaWatch {
     engine: Rc<RefCell<Engine>>,
 }
 
 impl LuaWatch {
-    /// Watch through `engine`.
     #[must_use]
     pub fn new(engine: Rc<RefCell<Engine>>) -> Self {
         Self { engine }

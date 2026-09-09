@@ -1,27 +1,14 @@
 //! An MCP server, declared in a config and reached through the registry.
 //!
-//! Split from [`super`] under THE RULE.
-//!
-//! **The one interoperability gap that mattered.** Everything else this family does is its own
-//! wire on purpose; tools are the exception, because the ecosystem settled and a harness that
-//! cannot run an MCP server is one somebody has to leave to use what other people wrote.
-//!
-//! The design claim under test is that nothing else changed: a config declares a transport like
-//! any other, the server's own names appear in the registry, and the registry checks a call
-//! against the schema the *server* published.
+//! Tools are this family's one interoperability exception. The claim under test is that nothing
+//! else changed: a config declares a transport like any other, and the registry checks a call
+//! against the schema the server published.
 
 use super::tests::built;
 use magi_tools::ops::Real;
 
-/// An MCP server declared in a config puts its tools in the registry.
-///
-/// **The one interoperability gap that mattered.** Everything else this family does is its
-/// own wire on purpose; tools are the exception, because the ecosystem settled and a harness
-/// that cannot run an MCP server is one somebody has to leave to use what others wrote.
-///
-/// The design claim under test is that nothing else changed: the config declares a transport
-/// like any other, the server's own names appear in the registry, and the registry checks a
-/// call against the schema the *server* published.
+/// An MCP server declared in a config puts its tools in the registry, under the server's own
+/// names, checked against the server's own schema.
 #[test]
 fn a_config_may_declare_an_mcp_server_and_its_tools_appear() {
     use magi_model::scratch::Scratch;
@@ -66,8 +53,7 @@ for line in sys.stdin:
         at.display().to_string()
     ));
 
-    // The server's own name, not the declaration's: MCP servers publish a list, and what the
-    // model calls is what the server called it.
+    // The server's own name, not the declaration's: what the model calls is what the server did.
     assert!(registry.get("weather").is_some(), "the server's tool");
     assert!(
         registry.get("weather-server").is_none(),

@@ -1,15 +1,11 @@
 //! Which session a VM belongs to.
 //!
-//! One test, on purpose: [`super::SESSION`] is a process-global that can be set once, so a second
-//! test asserting the absent case would pass or fail on the order the runner happened to pick.
-//! Both halves are checked here, in order, where the order is the test's own.
+//! One test on purpose: [`super::SESSION`] is a process-global set once, so both halves are here.
 
 use super::{Engine, balthasar_at, name_session, session};
 
-/// **The two states, in the only sequence that can be observed.** Absent is what a VM nobody named
-/// a session for has — `magi tools` builds one, and so does every config test — and a tool that
-/// needs the id guards on it rather than inventing one. `config/tools.lua` does exactly that for
-/// `history`, which reads this session's own scrollback back out of balthasar.
+/// The two states, in the only sequence that can be observed. A tool that needs the id guards on
+/// the absent case rather than inventing one.
 #[test]
 fn a_vm_learns_which_session_it_is_once_somebody_says() {
     assert!(session().is_none(), "nothing has named a session yet");
@@ -38,9 +34,8 @@ fn a_vm_learns_which_session_it_is_once_somebody_says() {
         )
         .expect("the named VM");
 
-    // **And where its balthasar is**, which is the half that stops a memory tool reaching a
-    // neighbour's. balthasar's client takes the newest socket in the directory when nobody says,
-    // and the newest is somebody else's as often as not the moment a project has two windows.
+    // And where its balthasar is, which is what stops a memory tool reaching a neighbour's: the
+    // client takes the newest socket in the directory when nobody says.
     assert_eq!(
         balthasar_at(),
         Some("/run/user/1000/balthasar/api@ours.sock")
@@ -53,8 +48,7 @@ fn a_vm_learns_which_session_it_is_once_somebody_says() {
         )
         .expect("the named VM knows its socket");
 
-    // Said once. A second session in one process is not a thing that happens, and refusing it
-    // loudly would turn a harmless mistake into a dead window.
+    // Said once. A second session in one process is not a thing that happens.
     name_session("something-else", None);
     assert_eq!(
         session(),

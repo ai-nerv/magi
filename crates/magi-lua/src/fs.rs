@@ -1,23 +1,13 @@
 //! The directory lister the family's clients use to find each other.
 //!
-//! A sibling's client prefers `host.fs.ls(dir)` over shelling out to `io.popen`, because a
-//! sandboxed host may refuse the latter. Offering it is what lets hexe's and oslo's clients
-//! discover their own sockets while running inside magi.
-//!
-//! **`fs.write` goes through the gate.** A watcher can see a turn begin and end and had no way to
-//! do anything with that: `io` is removed entirely, so a Lua watcher could observe a session and
-//! not write a line about it anywhere. Writing runs through the same `Ops` the file tools do —
-//! the person is asked, the answer is remembered, and `magi.confine` applies — and it answers only
-//! while the session's ops are lent, so a config file cannot write to disk while it is being read.
-//!
-//! **`fs.dir` is deliberately not offered.** A client asks the host for "the directory my
-//! sockets live in", and any host that answers gets believed — so magi answering would send
-//! hexe's client looking for hexe sockets in magi's directory. Listing is generic and safe to
-//! lend; naming your own runtime directory is not.
+//! A sibling's client prefers `host.fs.ls(dir)` over shelling out to `io.popen`, which a sandboxed
+//! host may refuse. `fs.write` runs through the same `Ops` the file tools do, and answers only
+//! while the session's ops are lent, so a config cannot write while it is being read. `fs.dir` is
+//! deliberately not offered: a client believes whatever host answers "the directory my sockets
+//! live in", so magi answering would send hexe's client to magi's directory.
 
 use luna::{Callback, CallbackReturn, Context, Table, Value};
 
-/// Build the `fs` table.
 pub fn table<'gc>(ctx: Context<'gc>, lent: crate::shell::Lent) -> Table<'gc> {
     let fs = Table::new(&ctx);
     let ls = Callback::from_fn(&ctx, |ctx, _exec, mut stack| {
@@ -29,8 +19,7 @@ pub fn table<'gc>(ctx: Context<'gc>, lent: crate::shell::Lent) -> Table<'gc> {
         let path = String::from_utf8_lossy(path.as_bytes()).into_owned();
 
         let out = Table::new(&ctx);
-        // An unreadable directory is an empty listing, not a raise: a client probing several
-        // candidate directories expects "nothing here", and most of them will not exist.
+        // An unreadable directory is an empty listing, not a raise: a client probes several.
         if let Ok(entries) = std::fs::read_dir(&path) {
             let mut index = 1_i64;
             for entry in entries.flatten() {
@@ -41,8 +30,7 @@ pub fn table<'gc>(ctx: Context<'gc>, lent: crate::shell::Lent) -> Table<'gc> {
                     .ok();
 
                 // Modification time, because the client sorts by it to prefer the newest session.
-                // Absent rather than zero when the filesystem will not say: zero would sort as
-                // the oldest, which is a different claim from "unknown".
+                // Absent rather than zero when the filesystem will not say.
                 if let Some(mtime) = entry
                     .metadata()
                     .ok()
@@ -60,9 +48,8 @@ pub fn table<'gc>(ctx: Context<'gc>, lent: crate::shell::Lent) -> Table<'gc> {
     });
     fs.set(ctx, "ls", ls).ok();
 
-    // Writing, through the same seam the file tools use. Two returns rather than a raise, like
-    // `magi.shell`: a watcher that could not write its line has learned something, and taking
-    // the session down over it would be observation breaking the thing observed.
+    // Writing, through the same seam the file tools use. Two returns rather than a raise: taking
+    // the session down because a watcher could not write would break the thing observed.
     let write = Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
         let (path, contents): (Value, Value) = stack.consume(ctx)?;
         let (Value::String(path), Value::String(contents)) = (path, contents) else {
@@ -77,8 +64,7 @@ pub fn table<'gc>(ctx: Context<'gc>, lent: crate::shell::Lent) -> Table<'gc> {
 
         let held = lent.borrow();
         let Some(ops) = held.as_ref() else {
-            // Config load time: nothing has been lent yet, and a description that could write
-            // while it was being *read* is a worse hole than the one this fills.
+            // Config load time: nothing has been lent yet.
             stack.replace(ctx, (Value::Nil, "magi.fs.write is not available here"));
             return Ok(CallbackReturn::Return);
         };
@@ -106,9 +92,8 @@ mod tests {
 
     #[test]
     fn writing_before_anything_is_lent_is_refused_rather_than_done() {
-        // Config load time. A description that could write to disk while it was being *read*
-        // would be a worse hole than the one `fs.write` fills — and every config file in every
-        // checkout is read before anybody has been asked anything.
+        // Config load time. Every config file in every checkout is read before anybody has been
+        // asked anything.
         let mut engine = Engine::new();
         engine
             .run(

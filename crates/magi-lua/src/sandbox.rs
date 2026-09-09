@@ -1,22 +1,14 @@
 //! What a config cannot reach.
 //!
-//! `Lua::full()` hands the VM the whole standard library, which includes `os.execute` and
-//! `io.popen`. A Lua tool with those can spawn processes, and then the process transport is a
-//! stylistic preference rather than the only way to run a command — which is the opposite of
-//! the design. So they are removed.
-//!
-//! Removed rather than never installed, because the alternative is assembling a standard
-//! library by hand and quietly missing something the next luna release adds. A short list of
-//! what must not be reachable is auditable; a long list of what may be is not.
+//! `Lua::full()` includes `os.execute` and `io.popen`; a Lua tool with those can spawn, and the
+//! process transport becomes a preference rather than the only way to run a command. Removed
+//! rather than never installed: a short list of what must not be reachable is auditable.
 
 use luna::{Lua, Value};
 
-/// Globals a config must not have, and why each one is on the list.
-///
-/// `os.execute` and `io.popen` spawn. `os.remove`, `os.rename` and `os.tmpname` write outside
-/// the `Ops` seam, which is where path checking lives. `os.exit` would let a config file end
-/// the daemon. `io` goes wholesale: every remaining member of it opens a file, and a tool that
-/// needs one has `Ops`.
+/// Globals a config must not have, and why each is on the list. `os.execute` and `io.popen` spawn.
+/// `os.remove`, `os.rename` and `os.tmpname` write outside the `Ops` seam. `os.exit` would let a
+/// config end the daemon. `io` goes wholesale; a tool that needs a file has `Ops`.
 const REMOVED: &[(&str, &str)] = &[
     ("os", "execute"),
     ("os", "exit"),
@@ -26,22 +18,14 @@ const REMOVED: &[(&str, &str)] = &[
     ("os", "setlocale"),
 ];
 
-/// Globals removed entirely.
 const REMOVED_TABLES: &[&str] = &["io", "package", "dofile", "loadfile", "require"];
 
 /// Take away what a config must not be able to do.
 ///
 /// # Panics
-/// If a removal did not take.
-///
-/// **The write was the one discarded error in this workspace that is a hole rather than an
-/// inconvenience.** `Table::set` returns a `Result` and it went to `.ok()`: luna has
-/// `set_readonly`, so a standard-library table that is read-only in some later release declines
-/// every removal, `apply` returns having done nothing, and the VM keeps `os.execute` with no test
-/// anywhere going red — the tests below probe a VM this function claims to have trimmed.
-///
-/// Refusing to start is the answer. A magi that cannot sandbox its VM is about to run somebody
-/// else's `.magi.lua` with a full standard library.
+/// If a removal did not take. `Table::set` returns a `Result` and luna has `set_readonly`, so a
+/// read-only standard-library table would decline every removal in silence and leave the VM with
+/// `os.execute`. A magi that cannot sandbox its VM refuses to start.
 pub fn apply(lua: &mut Lua) {
     lua.enter(|ctx| {
         for (table, field) in REMOVED {
@@ -74,7 +58,6 @@ pub fn apply(lua: &mut Lua) {
 mod tests {
     use crate::Engine;
 
-    /// What one expression evaluates to inside a fresh engine.
     fn probe(expression: &str) -> String {
         let mut engine = Engine::new();
         engine
@@ -93,8 +76,7 @@ mod tests {
 
     #[test]
     fn a_config_cannot_spawn_a_process() {
-        // The line that makes the process transport meaningful: if a description could spawn,
-        // nobody would use the boundary, and `bash` being a peer would be decoration.
+        // If a description could spawn, nobody would use the boundary.
         assert_eq!(probe("os.execute"), "nil");
         assert_eq!(probe("io"), "nil");
     }

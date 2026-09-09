@@ -1,23 +1,15 @@
 //! Running a command from a Lua tool.
 //!
-//! The sandbox removes `os.execute` and `io.popen`, and keeps removing them. The objection those
-//! answer is not "a config must never run anything" — it is that spawning outside the [`Ops`] seam
-//! happens with nothing checking the path, nothing asking the person, and nothing bounding what
-//! comes back. `magi.shell` runs *through* the seam: the same [`Ops::allow`] the shell peer is
-//! gated by, the same permission scopes, the same refusals.
+//! The sandbox removes `os.execute` and `io.popen`, because spawning outside the [`Ops`] seam
+//! happens with nothing checking the path and nothing asking the person. `magi.shell` runs through
+//! the seam: the same [`Ops::allow`] the shell peer is gated by, the same scopes, the same refusals.
 //!
 //! ```lua
 //! local out, err = magi.shell("rg --json -e " .. pattern)
 //! ```
 //!
-//! **What this is for, and what it is not.** A tool that runs one fixed program with arguments
-//! from the call is a `command` transport — declared, no code. This is for the rest: choosing
-//! `rg` when it is there and `grep` when it is not, running two things and merging them, reading
-//! an answer and reshaping it before the model sees it.
-//!
-//! **Only inside a tool call.** At config load time there is no call, nobody has been asked
-//! anything, and a description that could spawn while it was being *read* would be a worse hole
-//! than the one this closes. The slot is empty except while a tool's `run` is on the stack.
+//! Only inside a tool call: the slot is empty except while a tool's `run` is on the stack, so a
+//! description cannot spawn while it is being read.
 
 use luna::{Callback, CallbackReturn, Context, Value};
 use magi_tools::Ops;
@@ -36,7 +28,6 @@ const OUTSIDE: &str = "magi.shell is only available inside a tool's run function
 /// What a caller is told when the daemon never lent an `Ops` — every path except a real session.
 const UNAVAILABLE: &str = "magi.shell is not available here";
 
-/// Build the `magi.shell` function.
 pub fn callback<'gc>(ctx: Context<'gc>, lent: Lent, inside: Inside) -> Callback<'gc> {
     Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
         let command: Value = stack.consume(ctx)?;
@@ -56,8 +47,8 @@ pub fn callback<'gc>(ctx: Context<'gc>, lent: Lent, inside: Inside) -> Callback<
             return Ok(CallbackReturn::Return);
         };
 
-        // Asked before it runs, and asked as a *command* with its program named separately, so
-        // "any `rg` command" is an answer somebody can actually give.
+        // Asked as a command with its program named separately, so "any `rg` command" is an answer
+        // somebody can give.
         let action = magi_tools::permit::Action::Run {
             command: command.clone(),
             program: magi_tools::process::first_word(&command),
@@ -68,8 +59,8 @@ pub fn callback<'gc>(ctx: Context<'gc>, lent: Lent, inside: Inside) -> Callback<
         }
 
         match ops.shell(&command) {
-            // A non-zero exit is not a failure. `rg`, `grep` and `fd` all exit 1 for "nothing
-            // matched", and the tool is the one that knows whether that mattered.
+            // A non-zero exit is not a failure: `rg`, `grep` and `fd` all exit 1 for "nothing
+            // matched", and the tool knows whether that mattered.
             Ok(answer) => {
                 let out = luna::String::from_slice(&ctx, answer.stdout.as_bytes());
                 if answer.ok() {
@@ -92,7 +83,6 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::Mutex;
 
-    /// An `Ops` that records what it was asked to run, and whether it allowed it.
     struct Watching {
         allow: bool,
         ran: Mutex<Vec<String>>,
@@ -127,7 +117,6 @@ mod tests {
         }
     }
 
-    /// Declare a tool whose body calls `magi.shell`, call it, and say what came back.
     fn through(ops: Option<std::rc::Rc<Watching>>, body: &str) -> (String, Option<String>) {
         let mut engine = Engine::new();
         if let Some(ops) = ops.clone() {
@@ -171,8 +160,7 @@ mod tests {
 
     #[test]
     fn a_refused_command_never_runs() {
-        // The whole value of this over `os.execute`: it goes through the gate. If a future
-        // change makes the gate optional this becomes `os.execute` with extra steps.
+        // If a future change makes the gate optional this becomes `os.execute` with extra steps.
         let ops = std::rc::Rc::new(Watching {
             allow: false,
             ran: Mutex::new(Vec::new()),
@@ -187,8 +175,8 @@ mod tests {
 
     #[test]
     fn without_a_seam_it_says_so_rather_than_running() {
-        // `magi tools`, a config being read, a test: every path but a real session lends no
-        // `Ops`, and a native that quietly did nothing would be worse than one that answers.
+        // Every path but a real session lends no `Ops`, and a native that quietly did nothing
+        // would be worse than one that answers.
         let (content, _) = through(
             None,
             "local out, err = magi.shell('echo hi') return { content = tostring(err) }",
@@ -198,8 +186,7 @@ mod tests {
 
     #[test]
     fn a_config_being_read_cannot_spawn() {
-        // The boundary that keeps this from being worse than what the sandbox removed: a
-        // description that could run something while it was being *read* would spawn before
+        // A description that could run something while it was being read would spawn before
         // anybody had been asked anything.
         let mut engine = Engine::new();
         engine.attach_ops(std::rc::Rc::new(Watching {
