@@ -6,6 +6,7 @@
 
 mod app;
 mod balthasar;
+mod child;
 mod clipboard;
 mod config;
 mod doctor;
@@ -13,6 +14,7 @@ mod driver;
 mod driving;
 mod ext_lua;
 mod external_editor;
+mod forking;
 mod help;
 mod history;
 mod host;
@@ -49,6 +51,15 @@ struct Cli {
     /// Print the answer and exit, instead of opening the UI.
     #[arg(short, long)]
     print: bool,
+
+    /// Serve this session with no terminal, and end when this process does.
+    ///
+    /// Not for people: `magi fork` sets it on the child it starts. The two halves are one flag
+    /// because a session may not have either without the other — a child with no screen and no
+    /// lifetime of its own is a subagent, and one with no screen and no pid to watch is a name in
+    /// the directory that answers forever and that nobody holds the token to stop.
+    #[arg(long, hide = true, value_name = "PID")]
+    tied: Option<u32>,
 
     /// What to ask. Submitted on start; without it the UI opens empty.
     prompt: Option<String>,
@@ -90,6 +101,27 @@ enum Command {
         /// Answer in CBOR rather than JSON.
         #[arg(long)]
         cbor: bool,
+    },
+    /// Start a child session of this one, and print what it is called.
+    ///
+    /// Run from inside a session — from a tool, or a shell a session started. melchior names the
+    /// child and mints the secret that makes it stoppable; magi starts the process. The child has
+    /// no terminal of its own and does not want one: `alt+,` and `alt+.` move this screen onto it.
+    ///
+    /// Returns as soon as the child is up. What it is doing after that is asked of it by name.
+    Fork {
+        /// What the child is for, in one word. `main` when nothing says.
+        ///
+        /// Given at birth rather than assigned once it is up, because otherwise there is a window
+        /// in which a child is on every peer's roster described as something it is not, and a
+        /// coordinator fanning work out during it routes by a description nobody wrote.
+        #[arg(long)]
+        role: Option<String>,
+        /// What that role means, in a sentence a coordinator can route by.
+        #[arg(long)]
+        role_description: Option<String>,
+        /// What the child should get on with. Without it, it comes up idle and waits to be told.
+        prompt: Option<String>,
     },
     /// List the tools the model can call, and how each is reached.
     Tools,
@@ -138,6 +170,9 @@ fn main() -> Result<()> {
     // session that never opens.
     let opening = (cli.command.is_none() && !(cli.print && cli.prompt.is_none()))
         .then(|| opening::Opening::begin(cli.socket.clone()));
+    // `fork` is not a session and must not open one. It asks *this* session's melchior for a name
+    // and starts a process with it; a prologue here would name a second session, announce it, and
+    // then throw it away — leaving the child's parent to be whichever of the two answered first.
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
@@ -169,6 +204,15 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
             config::acknowledge();
             Ok(())
         }
+        Some(Command::Fork {
+            role,
+            role_description,
+            prompt,
+        }) => forking::fork(
+            role.as_deref(),
+            role_description.as_deref(),
+            prompt.as_deref(),
+        ),
         Some(Command::Tools) => {
             tools::print()?;
             Ok(())
@@ -287,7 +331,14 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
                 balthasar::stop();
                 return Err(why);
             }
-            let ran = driver::run(&socket, cli.prompt, loaded, &project, started).await;
+            // The same session either way, and the same everything above this line: it is bound,
+            // announced, recorded and reachable before anything decides whether there is a
+            // terminal. What differs is only who is looking — see [`child`], which is what a
+            // session another session forked runs instead of a screen.
+            let ran = match cli.tied {
+                Some(parent) => child::run(&socket, cli.prompt, started, parent).await,
+                None => driver::run(&socket, cli.prompt, loaded, &project, started).await,
+            };
             // Not on a signal, and not by anybody else: the session is this process, so the
             // only thing that ends it is this process ending.
             magi_host::drain().await;
@@ -329,6 +380,14 @@ fn inherited(
     if let Some(talk) = talk(loaded) {
         environ.insert(melchior::TALK.to_owned(), talk.to_owned());
     }
+    // Which process this session *is*, so that something it starts can start a child that dies
+    // with it. It is here rather than worked out by whoever needs it because nothing downstream
+    // can: `magi fork` runs a shell or two below this process, and walking up a chain of parents
+    // asking each one whether it is a magi is a guess where this is a fact.
+    environ.insert(
+        crate::forking::SESSION_PID.to_owned(),
+        std::process::id().to_string(),
+    );
     environ
 }
 
@@ -391,6 +450,21 @@ mod inheriting {
         assert!(
             !environ.contains_key(crate::balthasar::AGENT),
             "a child inherited its parent's agent and would file scratch in its directory"
+        );
+    }
+
+    /// **And this session's pid is.**
+    ///
+    /// The opposite of the agent, and it is the same question answered the other way: what a
+    /// child needs is the pid of the *session*, not of whichever shell is between them. Handed
+    /// down, `magi fork` reads one fact instead of guessing at a chain of parents.
+    #[test]
+    fn the_process_this_session_is_goes_to_everything_it_starts() {
+        let environ = inherited(None, "magi/main/alpha-rho");
+        assert_eq!(
+            environ.get(crate::forking::SESSION_PID).map(String::as_str),
+            Some(std::process::id().to_string().as_str()),
+            "a fork could not tell a child what to outlive"
         );
     }
 
