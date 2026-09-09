@@ -1,11 +1,6 @@
-//! What happens when another session says something, against a real session on a real socket.
-//!
-//! The rule under test is invisible when it is wrong. An arrival is committed either way, so a
-//! session that should have answered and did not looks exactly like one with nothing to say:
-//! the message is in the transcript, the screen is idle, and nothing anywhere reports a problem.
-//!
-//! That is how `ask` came to be a one-way trip. It sends a `question`, which woke the receiver;
-//! `reply` sends an `answer`, which woke nobody — so two agents got one exchange and stopped.
+//! What happens when another session says something, against a real session on a real socket. The
+//! rule is invisible when it is wrong: an arrival is committed either way, so a session that should
+//! have answered and did not looks exactly like one with nothing to say.
 
 use magi_model::scratch::Scratch;
 
@@ -23,9 +18,7 @@ fn backend(mind: &Mind) -> Backend {
         casper_configure: String::new(),
         cwd: std::env::temp_dir(),
         model: "fake/one".to_owned(),
-        // A real path to a real program, because the worker spawns it: a backend that cannot be
-        // asked cannot answer at all, and the failure would read as "the arrival did not wake
-        // it" rather than "there was nothing to wake".
+        // A real path to a real program, because the worker spawns it.
         mind: mind.program().display().to_string(),
         wants: magi_proto::ask::Wants::default(),
         context_window: Some(200_000),
@@ -39,8 +32,7 @@ fn backend(mind: &Mind) -> Backend {
 /// A session serving on its own socket, and the path to reach it at.
 async fn serving(name: &str, mind: &Mind) -> (Scratch, std::path::PathBuf) {
     let dir = Scratch::new("magi-arr", name);
-    // Inside the scratch, so the guard takes the socket with the journal. Still well under
-    // `SUN_LEN`: the whole path is the temporary directory, one short name and `s.sock`.
+    // Inside the scratch, so the guard takes the socket with the journal. Still under `SUN_LEN`.
     let path = dir.join("s.sock");
     let session = Session::recorded(SessionId::new("s"), Vec::new());
     let listener = magi_ipc::bind(&path).await.expect("bind");
@@ -57,10 +49,8 @@ async fn serving(name: &str, mind: &Mind) -> (Scratch, std::path::PathBuf) {
     (dir, path)
 }
 
-/// Attach, hand over one arrival, and report every event that follows within `patience`.
-///
-/// The second half of the answer is whether the mind was asked at all. "No turn ran" has to
-/// mean nothing was spawned, not merely that no event happened to arrive before a timeout.
+/// Attach, hand over one arrival, and report every event that follows within `patience`. "No turn
+/// ran" has to mean nothing was spawned, not that no event arrived before a timeout.
 async fn arrival_of(sort: &str, name: &str) -> (Vec<HarnessEvent>, bool) {
     let mind = Mind::answering(&format!("arr-{name}"), "thanks");
     let (_dir, path) = serving(name, &mind).await;
@@ -117,8 +107,7 @@ fn was_committed(seen: &[HarnessEvent]) -> bool {
 
 #[tokio::test]
 async fn an_answer_wakes_the_session_that_asked() {
-    // The reported bug, end to end: two agents talked once and then stopped. `reply` sends an
-    // `answer`, and an answer that does not start a turn means the asker never reads it.
+    // The reported bug end to end: an `answer` that does not start a turn is never read.
     let (seen, asked) = arrival_of("answer", "answer").await;
     assert!(was_committed(&seen), "it never reached the transcript");
     assert!(
@@ -142,8 +131,7 @@ async fn work_handed_over_wakes_whoever_it_was_handed_to() {
 
 #[tokio::test]
 async fn a_note_is_committed_without_starting_a_turn() {
-    // The other half of the rule. A session that answers everything that arrives is one nobody
-    // leaves running, and this is what stops the fix from being "wake for everything".
+    // A session that answers everything that arrives is one nobody leaves running.
     let (seen, asked) = arrival_of("note", "note").await;
     assert!(
         was_committed(&seen),

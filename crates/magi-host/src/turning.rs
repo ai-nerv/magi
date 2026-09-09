@@ -1,22 +1,11 @@
-//! Starting a turn for something addressed to this session, and what happens after it.
-//!
-//! Split out under THE RULE; the session next door is what these drive. They belong together
-//! because they are one path with a boundary in the middle: [`submit`] journals what opened a
-//! turn and runs it, and [`after`] is everything the session owes once it has stopped —
-//! flushing to balthasar, and answering whatever arrived while it was busy.
+//! Starting a turn for something addressed to this session, and what happens after it. [`submit`]
+//! journals what opened a turn and runs it; [`after`] flushes to balthasar and answers arrivals.
 
 use super::*;
 
-/// Journal what opened a turn, and run it.
-///
-/// `opening` is what was said and by whom: a prompt somebody typed, or a message another
-/// instance sent. Both start a turn the same way and for the same reason — something addressed
-/// to this session arrived and wants an answer — so they are one path rather than two that
-/// would drift.
-///
-/// It is journalled before the provider is called, so an interrupted turn still shows what was
-/// asked. Without a backend the refusal is a well-formed assistant entry rather than an error
-/// out of band — the transcript stays uniform and the UI needs no second path.
+/// Journal what opened a turn, and run it. Journalled before the provider is called, so an
+/// interrupted turn still shows what was asked; without a backend the refusal is a well-formed
+/// assistant entry rather than an error out of band.
 pub(super) async fn submit(
     session: &Arc<Mutex<Session>>,
     opening: Entry,
@@ -26,8 +15,7 @@ pub(super) async fn submit(
 ) -> Result<(), HostError> {
     {
         let mut held = session.lock().await;
-        // A stop belongs to the turn it interrupted. Left set, it would cancel the prompt typed
-        // to replace the one the user just stopped.
+        // A stop belongs to the turn it interrupted, or it cancels the replacement prompt.
         held.cancel().clear();
         held.commit(opening)?;
     }
@@ -48,28 +36,17 @@ pub(super) async fn submit(
         return Ok(());
     };
 
-    // Spawned, not awaited. This runs on the connection's own task, which is also the task
-    // forwarding events to the attached UI: waiting here means nothing reaches the screen until
-    // the turn is over, so a streaming response arrives all at once at the end.
-    //
-    // Overlapping turns are not a risk. The worker is one thread taking one job at a time, so
-    // a second prompt queues behind the first exactly as it did when this awaited.
+    // Spawned, not awaited: this task also forwards events to the attached UI, so awaiting would
+    // hold the whole streaming response back until the turn ended. The worker takes one job at a time.
     let session = Arc::clone(session);
     let scribe = Arc::clone(scribe);
     tokio::spawn(async move { after(session, worker, scribe).await });
     Ok(())
 }
 
-/// Run a turn, then deal with whatever arrived while it was running.
-///
-/// The other half of the waiting room. An arrival during a turn is held rather than delivered
-/// — see [`session::Session::waiting`] — and this is where it comes back out: the turn ends,
-/// the messages are committed in the order they came, and if any of them wanted an answer, one
-/// more turn runs to give it.
-///
-/// A loop, because more can arrive during *that* turn. It ends when a turn finishes with an
-/// empty waiting room, which is the ordinary case: a session with nobody talking to it does one
-/// pass and stops.
+/// Run a turn, then deal with whatever arrived while it was running. An arrival during a turn is
+/// held — see [`session::Session::waiting`] — and comes back out here. Loops, because more can
+/// arrive during that turn.
 async fn after(
     session: Arc<Mutex<Session>>,
     worker: Arc<worker::Worker>,
@@ -78,13 +55,8 @@ async fn after(
     loop {
         worker.run(Arc::clone(&session)).await;
 
-        // The turn boundary, which is where durability is owed. Amendments during streaming are
-        // coalesced by cursor in the session, so a message written a hundred times on the way
-        // through goes over once, as it finally stood.
+        // The turn boundary, which is where durability is owed.
         if let Err(fault) = crate::scribe::flush(&session, &mut *scribe.lock().await).await {
-            // Said once, in the transcript, rather than swallowed. A session whose transcript
-            // stopped being recorded must not look like one that is fine, and while magi's own
-            // journal is still the copy of record this costs memory rather than the session.
             let mut held = session.lock().await;
             let id = MessageId::new(format!("n{}", held.cursor().next().0));
             let _ = held.commit(Entry::Assistant {
@@ -102,9 +74,7 @@ async fn after(
         if arrived.is_empty() {
             return;
         }
-        // Committed together and answered once. Ten subagents reporting during one turn is ten
-        // things to read and one turn to read them in — waking once per message would spend a
-        // turn on each and let the last of them arrive during the answer to the first.
+        // Committed together and answered once: waking per message would spend a turn on each.
         let mut answer = false;
         {
             let mut held = session.lock().await;

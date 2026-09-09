@@ -1,60 +1,31 @@
-//! Every model this session could talk to, as melchior described them.
-//!
-//! A [`crate::turn::Backend`] names one model. Switching to another needs the parts a backend
-//! does *not* vary — the tools, the clients, the working directory — kept somewhere that
-//! outlives the choice. That is this.
-//!
-//! **The cards come from melchior and nothing here second-guesses them.** Which protocol a model
-//! speaks, where it lives and what credential it takes are melchior's; magi holds a name, a
-//! window and whether it is ready, because those are the three things a picker and a compaction
-//! need. A harness that kept its own opinion about the rest would be a second thing to keep in
-//! step, and it would be wrong first.
-//!
-//! Held by the session rather than re-read on each switch, so `/model` picks among what this
-//! session actually started with. Re-reading would mean a switch could silently pick up an edit
-//! made since, and "why is it using a model I did not choose" is a bad question to be left with.
+//! Every model this session could talk to, as melchior described them, beside the parts a
+//! [`crate::turn::Backend`] does not vary. Held by the session rather than re-read on each switch,
+//! so `/model` picks among what this session actually started with.
 
 use crate::turn::Backend;
 use magi_proto::ask::Card;
 
-/// The models a session can choose between.
 #[derive(Debug, Clone)]
 pub struct Catalog {
     /// Tool descriptions, as `(name, source)`.
     pub tools: Vec<(String, String)>,
     /// The family's client libraries, as `(name, source)`.
     pub clients: Vec<(String, String)>,
-    /// Where the session is rooted.
     pub cwd: std::path::PathBuf,
-    /// What melchior says this machine can talk to.
     pub cards: Vec<Card>,
-    /// What to ask for beyond the conversation.
     pub wants: magi_proto::ask::Wants,
-    /// What the model is told it is.
     pub system: Option<String>,
     /// Whether the file tools refuse paths outside `cwd`.
     pub confine: bool,
-    /// Permissions a configuration granted in advance.
     pub grants: Vec<magi_proto::permit::Grant>,
     /// The SHA-256 casper's program must hash to, if this configuration pinned one.
-    ///
-    /// casper supplies the whole tool set and is found on `$PATH` — the largest trust assumption
-    /// here, and the one made with no acknowledgement until now.
     pub casper: Option<String>,
     /// What this session tells casper to be, on every spawn. See [`crate::turn::Backend`].
     pub casper_configure: String,
-    /// Which program owns the model, as `magi.melchior` named it.
-    ///
-    /// One name for the whole session. It was honoured when the layer was started and ignored
-    /// where the catalog of models was read, so a person who pointed it at their own build got
-    /// that build for the turn and whatever `PATH` held for the list of models the turn could
-    /// choose from.
+    /// Which program owns the model, as `magi.melchior` named it. One name for the whole session.
     pub mind: String,
-    /// Environment every process this session starts is given.
     pub environ: std::collections::BTreeMap<String, String>,
-    /// What the configuration asked for, whether or not it can be reached.
-    ///
-    /// Kept so a refusal can name what was wanted rather than what was settled for.
+    /// What the configuration asked for, kept so a refusal can name it rather than the fallback.
     pub chosen: Option<String>,
 }
 
@@ -79,11 +50,8 @@ impl Catalog {
         }
     }
 
-    /// The backend for a model, by qualified or bare name.
-    ///
-    /// `None` when no such model exists, or when melchior says it is not ready. The second is
-    /// not an error: the model is real and the answer is to set a key, which is what
-    /// [`Self::unusable`] explains.
+    /// The backend for a model, by qualified or bare name. `None` when no such model exists, or
+    /// when melchior says it is not ready — which [`Self::unusable`] explains.
     #[must_use]
     pub fn backend(&self, name: &str) -> Option<Backend> {
         let card = self.find(name)?;
@@ -104,10 +72,8 @@ impl Catalog {
         })
     }
 
-    /// Why a named model cannot be used, when that is the reason it was refused.
-    ///
-    /// Separated from `backend` because "there is no such model" and "you have not set a key
-    /// for it" send a person to two different places, and a single `None` sends them to neither.
+    /// Why a named model cannot be used. Apart from `backend` because "no such model" and "no key
+    /// set for it" send a person to two different places.
     #[must_use]
     pub fn unusable(&self, name: &str) -> Option<String> {
         let card = self.find(name)?;
@@ -123,11 +89,8 @@ impl Catalog {
         })
     }
 
-    /// Every model in the catalog, ready or not, with what it would take.
-    ///
-    /// All of them, because the person asking has usually configured nothing: a list of the two
-    /// local providers they do not run teaches less than a list of forty with "set
-    /// ANTHROPIC_API_KEY" beside the one they wanted.
+    /// Every model in the catalog, ready or not, with what it would take. All of them, because the
+    /// person asking has usually configured nothing.
     #[must_use]
     pub fn choices(&self) -> Vec<magi_proto::ModelChoice> {
         let mut out: Vec<magi_proto::ModelChoice> = self
@@ -145,8 +108,7 @@ impl Catalog {
                 reasoning: card.reasons,
             })
             .collect();
-        // Ready ones first, then by name: the list is for choosing from, and what you can
-        // choose right now belongs at the top of it.
+        // Ready ones first, then by name.
         out.sort_by(|a, b| {
             a.requirement
                 .is_empty()
@@ -157,10 +119,7 @@ impl Catalog {
         out
     }
 
-    /// Every model that could be switched to right now, sorted.
-    ///
-    /// Only the ready ones. A list that includes forty models you cannot reach is a list nobody
-    /// reads to the end of.
+    /// Every model that could be switched to right now, sorted. Ready ones only.
     #[must_use]
     pub fn usable(&self) -> Vec<String> {
         let mut out: Vec<String> = self
@@ -179,10 +138,8 @@ impl Catalog {
         self.chosen.clone()
     }
 
-    /// Resolve a name the way melchior would.
-    ///
-    /// The full id first, then a bare model name when exactly one card ends in it. Split at the
-    /// first slash only: several catalogs use slashes inside a model id, so
+    /// Resolve a name the way melchior would: the full id first, then a bare model name when
+    /// exactly one card ends in it. Split at the first slash only, so
     /// `openrouter/anthropic/claude-sonnet-4.5` is one provider and one model.
     fn find(&self, name: &str) -> Option<&Card> {
         if let Some(card) = self.cards.iter().find(|card| card.id == name) {
@@ -190,8 +147,7 @@ impl Catalog {
         }
         let mut matched = self.cards.iter().filter(|card| card.name == name);
         let first = matched.next()?;
-        // Ambiguous is not resolved by guessing: two providers serving the same model name would
-        // otherwise be settled by declaration order, which nobody chose.
+        // Ambiguous is not resolved by guessing: declaration order is nobody's choice.
         matched.next().is_none().then_some(first)
     }
 }

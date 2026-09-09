@@ -1,15 +1,7 @@
-//! Putting a permission question to whoever is attached, from inside a turn.
-//!
-//! The awkward shape this solves: a tool runs on a blocking thread deep inside a turn, and the
-//! only person who can answer it is on the other end of a socket being served by an async loop.
-//! Neither end can call the other directly.
-//!
-//! So the question goes out as an event and the answer comes back on a channel. The tool blocks
-//! on a plain [`std::sync::mpsc`] receiver — it is not async and must not become async for this
-//! — and the command loop, which *is* async, drops the answer into it with a non-blocking send.
-//!
-//! **Nobody attached means no.** A question nobody can see is not a question, and answering it
-//! on their behalf is the whole failure this mechanism exists to prevent.
+//! Putting a permission question to whoever is attached, from inside a turn. A tool runs on a
+//! blocking thread deep inside a turn and the only person who can answer is behind an async socket,
+//! so the question goes out as an event and the answer comes back on a plain [`std::sync::mpsc`]
+//! receiver. Nobody attached means no: a question nobody can see is not a question.
 
 use magi_proto::permit::{Action, Decision};
 use magi_proto::{Cursor, HarnessEvent, ToolCallId};
@@ -18,16 +10,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// How long a question waits before it answers itself with a refusal.
-///
-/// Long, because somebody may be reading it. Bounded, because a turn that waits forever on a UI
-/// that has gone is a daemon nothing can recover.
 const PATIENCE: Duration = Duration::from_secs(300);
 
-/// The questions currently outstanding.
-///
-/// Two maps, because the two kinds of question carry different answers: a permission comes back
-/// as a [`Decision`], and a general one as the id of a chosen option. One map holding an enum of
-/// both would make every reader unpack a thing it already knows the shape of.
+/// The questions currently outstanding. Two maps, because a permission comes back as a
+/// [`Decision`] and a general question as the id of a chosen option.
 #[derive(Default)]
 pub struct Pending {
     waiting: Mutex<HashMap<ToolCallId, std::sync::mpsc::Sender<Decision>>>,
@@ -35,16 +21,13 @@ pub struct Pending {
 }
 
 impl Pending {
-    /// An empty set.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Deliver an answer to whoever is waiting for it.
-    ///
-    /// An id nobody is waiting on is dropped: the turn it belonged to is over, and acting on it
-    /// would allow something nobody is watching.
+    /// Deliver an answer to whoever is waiting for it. An id nobody is waiting on is dropped: the
+    /// turn it belonged to is over.
     pub fn answer(&self, id: &ToolCallId, decision: Decision) {
         let Ok(mut waiting) = self.waiting.lock() else {
             return;
@@ -61,10 +44,7 @@ impl Pending {
         Some(receiver)
     }
 
-    /// Deliver a chosen option to whoever is waiting for it.
-    ///
-    /// An id nobody is waiting on is dropped, for the same reason a permission's is: the turn it
-    /// belonged to is over, and acting on it would resume something nobody is watching.
+    /// Deliver a chosen option to whoever is waiting for it; an id nobody waits on is dropped.
     pub fn chose(&self, id: &ToolCallId, choice: String) {
         let Ok(mut choosing) = self.choosing.lock() else {
             return;
@@ -96,10 +76,8 @@ impl Pending {
     }
 }
 
-/// The tool casper draws a permission with.
-///
-/// Named here rather than in the config, because magi is what opens it: a name only one side knew
-/// would be a prompt that silently stopped appearing the day somebody renamed it.
+/// The tool casper draws a permission with. Named here rather than in the config, because magi is
+/// what opens it.
 const PROMPT: &str = "permission";
 
 /// Asks by publishing an event, and waits on the channel.
@@ -132,9 +110,7 @@ impl Asker {
     }
 
     /// The same, drawing its permission prompt on a surface rather than in magi's own picker.
-    ///
-    /// Separate from [`Self::new`] because a magi with no casper has no surface to draw on, and
-    /// an asker that required one could not ask at all.
+    /// Separate from [`Self::new`] because a magi with no casper has no surface to draw on.
     #[must_use]
     pub fn drawn_by(mut self, holds: Arc<dyn magi_tools::holding::Holds>) -> Self {
         self.holds = Some(holds);
@@ -145,17 +121,12 @@ impl Asker {
 impl magi_tools::approve::Approver for Asker {
     fn ask(&self, tool: &str, action: &Action) -> Decision {
         if !(self.attached)() {
-            // Nobody is looking. Saying yes here would make the gate a formality on exactly the
-            // sessions nobody is watching, which are the ones it matters on.
+            // Nobody is looking. Saying yes here would make the gate a formality on unwatched runs.
             return Decision::Deny;
         }
-        // **Drawn by whoever can draw it.** The prompt is a surface now: magi decides that a
-        // permission is needed and what it is about, and casper draws the question and collects
-        // the keystroke. What comes back is the id of a row — magi maps that onto its own scopes
-        // here, because a sibling that answered "allowed" would make this ledger a suggestion.
-        //
-        // Falling back to the built-in picker when there is no surface to be had. A magi with no
-        // casper installed must still be able to ask, or every gated tool becomes a refusal.
+        // The prompt is a surface: magi decides that a permission is needed, casper draws it, and
+        // what comes back is the id of a row that magi maps onto its own scopes here. Falling back
+        // to the built-in picker when there is none, or every gated tool becomes a refusal.
         if let Some(decision) = self.through_a_surface(tool, action) {
             return decision;
         }
@@ -180,16 +151,12 @@ impl magi_tools::approve::Approver for Asker {
 }
 
 impl Asker {
-    /// Put the permission on a surface, and read back what was chosen.
-    ///
-    /// `None` when there is no surface to put it on — no casper, or nobody attached — and the
-    /// caller falls back to the picker magi draws itself.
+    /// Put the permission on a surface, and read back what was chosen. `None` when there is no
+    /// surface to put it on, and the caller falls back to the picker magi draws itself.
     fn through_a_surface(&self, tool: &str, action: &Action) -> Option<Decision> {
         let holds = self.holds.as_ref()?;
         let offers = magi_tools::permit::Ledger::offers(action);
-        // The rows a prompt this size needs: a heading, the subject, a blank, a row per offer and
-        // the Deny beneath them, and the line saying which keys do what. Asked for rather than
-        // assumed, because only the thing drawing it knows how tall it is.
+        // Asked for rather than assumed, because only the thing drawing it knows how tall it is.
         let rows = u16::try_from(offers.len() + 6).unwrap_or(u16::MAX);
         let mut rows_json: Vec<serde_json::Value> = offers
             .iter()
@@ -219,9 +186,8 @@ impl Asker {
                 "offers": rows_json,
             }),
         )?;
-        // **An id, mapped here.** Anything that is not an offer's index is a refusal, which covers
-        // "no", a surface that ended without answering, and a casper newer than this build
-        // offering something it has no name for. Denying is the safe reading of all three.
+        // An id, mapped here. Anything that is not an offer's index is a refusal, which covers "no",
+        // a surface that ended without answering, and a casper offering what this build cannot name.
         let decision = chosen
             .parse::<usize>()
             .ok()
@@ -230,9 +196,7 @@ impl Asker {
                 scope: scope.clone(),
                 lifetime: magi_proto::permit::Lifetime::Session,
             });
-        // Told to whoever is attached, because the UI is where a grant is remembered and this one
-        // was decided on the tool thread. Without it a session that lends its permissions to a
-        // child would lend everything answered at a picker and nothing answered at a surface.
+        // Told to whoever is attached, because the UI is where a grant is remembered.
         if let Decision::Allow { scope, .. } = &decision
             && let Some(grant) = magi_tools::permit::standing(action, scope)
         {
@@ -248,9 +212,7 @@ impl Asker {
 impl magi_tools::question::Asks for Asker {
     fn ask(&self, tool: &str, ask: &magi_proto::tooling::Ask) -> Option<String> {
         if !(self.attached)() {
-            // Nobody is looking, so nobody can answer. Choosing on their behalf is the failure
-            // this mechanism exists to prevent, and it matters most on exactly the sessions
-            // where nobody is watching.
+            // Nobody is looking, so nobody can answer; choosing on their behalf is what this prevents.
             return None;
         }
         let n = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -266,40 +228,26 @@ impl magi_tools::question::Asks for Asker {
             detail: ask.detail.clone(),
         });
 
-        // The same patience a permission gets. A turn that waited forever on a UI that has gone
-        // is a daemon nothing can recover, and an unanswered question is not a refusal — the
-        // tool decides what to make of it.
+        // The same patience a permission gets. An unanswered question is not a refusal — the tool decides.
         let answer = receiver.recv_timeout(PATIENCE).ok();
         self.pending.drop_choice(&id);
         answer
     }
 }
 
-/// The three ways a turn reaches whoever is attached.
-///
-/// A permission, a question, and rows a tool draws in itself. They have never travelled apart —
-/// each is the same UI seen from a different distance — and carrying them as three parameters
-/// said they were three things.
+/// The three ways a turn reaches whoever is attached: a permission, a question, and rows a tool
+/// draws in itself. They have never travelled apart.
 #[derive(Clone)]
 pub struct Person {
-    /// Asked before a tool that needs permission runs.
     pub approver: Arc<dyn magi_tools::approve::Approver>,
-    /// Asked when a tool has a question of its own.
     pub asks: Arc<dyn magi_tools::question::Asks>,
-    /// Given the rows when a tool wants to draw its own.
     pub holds: Arc<dyn magi_tools::holding::Holds>,
     /// The surfaces currently on screen, so a keypress reaches the one holding the rows.
-    ///
-    /// Here rather than a parameter of its own because it travels with the rest: the command loop
-    /// that delivers an answer to a question is the loop that delivers a key to a surface.
     pub surfaces: Arc<crate::holder::Holding>,
 }
 
 impl Person {
-    /// Every face of one asker, and the holder that gives out rows.
-    ///
-    /// The holder is separate because it is not an asker: it spawns a process and pumps frames,
-    /// which has nothing to do with putting a question on a channel.
+    /// Every face of one asker, plus the holder, which is not an asker: it spawns and pumps frames.
     #[must_use]
     pub fn of(
         asker: Arc<Asker>,
@@ -358,7 +306,6 @@ mod tests {
     fn a_question_is_published_with_the_widths_it_can_be_answered_at() {
         let (pending, asker, seen) = asker(true);
         let answering = std::thread::spawn(move || {
-            // Wait for it to register, then answer.
             for _ in 0..200 {
                 let id = ToolCallId::new("p0");
                 pending.answer(
@@ -447,8 +394,7 @@ mod permitting {
 
     #[test]
     fn the_surface_is_shown_what_is_being_decided_and_told_nothing_it_could_decide_with() {
-        // The trust boundary. It gets the tool, the verb, the subject and the rows to draw — and
-        // no field it could set to "allowed", because the scopes never leave this side.
+        // The trust boundary: no field it could set to "allowed", because scopes never leave this side.
         let (asker, holder, _) = asking(Some("no".to_owned()));
         asker.ask("shell", &running("rm -rf build"));
         let shown = holder.shown.lock().expect("held");
@@ -463,8 +409,6 @@ mod permitting {
 
     #[test]
     fn the_id_a_surface_returns_is_mapped_onto_a_scope_here() {
-        // It answers with the index of a row it drew. What that *means* is worked out on this
-        // side, from the offers this side produced.
         let action = running("cargo test");
         let offers = magi_tools::permit::Ledger::offers(&action);
         let (asker, _, _) = asking(Some("0".to_owned()));
@@ -479,8 +423,6 @@ mod permitting {
 
     #[test]
     fn an_answer_that_names_no_offer_is_a_refusal() {
-        // Covers "no", a surface that ended without answering, and a casper newer than this build
-        // offering something it has no name for. Denying is the safe reading of all three.
         for said in ["no", "", "17", "allow-everything"] {
             let (asker, _, _) = asking(Some(said.to_owned()));
             assert_eq!(
@@ -493,11 +435,9 @@ mod permitting {
 
     #[test]
     fn a_grant_made_on_a_surface_is_still_told_to_the_screen() {
-        // The UI remembers what this session holds so a child can be lent it, and it learns that
-        // from the answers it sends. This one never passes through it.
+        // The UI learns what this session holds from the answers it sends; this never passes through it.
         let action = running("cargo test");
-        // A row that actually stands. "just this once" is not remembered and should not be —
-        // there is nothing standing about it — so choosing it here would test nothing.
+        // A row that actually stands: "just this once" is not remembered, so it would test nothing.
         let nth = magi_tools::permit::Ledger::offers(&action)
             .iter()
             .position(|scope| magi_tools::permit::standing(&action, scope).is_some())
@@ -515,8 +455,7 @@ mod permitting {
 
     #[test]
     fn without_a_surface_the_question_still_gets_asked() {
-        // A magi with no casper installed. Falling through to the picker rather than refusing,
-        // because an asker that could not ask would make every gated tool a refusal.
+        // A magi with no casper installed, falling through to the picker rather than refusing.
         let seen = Arc::new(Mutex::new(Vec::new()));
         let kept = Arc::clone(&seen);
         let asker = Asker::new(
@@ -525,8 +464,7 @@ mod permitting {
             Box::new(|| Cursor::ZERO),
             Box::new(|| true),
         );
-        // Nobody answers, so it times out into a refusal — but the *question* is what is under
-        // test, and it was published.
+        // Nobody answers, so it times out into a refusal; the question is what is under test.
         std::thread::spawn(move || asker.ask("shell", &running("ls")));
         std::thread::sleep(Duration::from_millis(200));
         assert!(
@@ -540,8 +478,7 @@ mod permitting {
 
     #[test]
     fn a_scope_offered_is_a_scope_that_can_be_chosen() {
-        // Every row the surface is given maps back to something, or a person could pick a row
-        // that quietly did nothing.
+        // Every row the surface is given maps back to something.
         let action = running("git status");
         let offers = magi_tools::permit::Ledger::offers(&action);
         for (nth, scope) in offers.iter().enumerate() {
@@ -562,12 +499,8 @@ mod permitting {
     }
 }
 
-/// Every gated tool, not only the ones that run commands.
-///
-/// The claim this file makes is that a permission is a surface now. Tested through the real
-/// gate — the one `read`, `write` and every casper tool go through — rather than by calling the
-/// asker directly, because "the same `Approver` is used for all of them" is exactly the kind of
-/// thing that stays true right up until somebody adds a second path.
+/// Every gated tool, not only the ones that run commands. Tested through the real gate rather than
+/// by calling the asker directly, because a second path is exactly what would go unnoticed.
 #[cfg(test)]
 mod every_verb {
     use super::permitting::{Fixed, asking};
@@ -638,8 +571,7 @@ mod every_verb {
 
     #[test]
     fn a_yes_on_the_surface_lets_the_read_through() {
-        // The other half. A prompt that could only refuse would pass the test above and be
-        // useless, and "the surface said allow" has to reach the file.
+        // The other half: "the surface said allow" has to reach the file.
         let dir = Scratch::new("magi-asking-y", "one");
         std::fs::write(dir.join("note.txt"), "hello").expect("a file");
         // Row zero, which is `Once` for every action: allowed, and nothing left standing.
@@ -655,9 +587,7 @@ mod every_verb {
 
     #[test]
     fn the_ledger_still_answers_the_second_time() {
-        // The surface is asked once. A prompt per file in a directory somebody already allowed
-        // is the difference between a permission and a nuisance, and moving the prompt out of
-        // magi must not have moved the remembering with it.
+        // The surface is asked once: moving the prompt out of magi must not move the remembering.
         let dir = Scratch::new("magi-asking-l", "one");
         std::fs::write(dir.join("a.txt"), "one").expect("a file");
         std::fs::write(dir.join("b.txt"), "two").expect("a file");
@@ -689,8 +619,7 @@ mod every_verb {
 
     #[test]
     fn nobody_attached_is_still_a_refusal_whoever_would_have_drawn_it() {
-        // The rule the whole mechanism exists for, and the surface must not have opened a way
-        // round it: a question nobody can see is not a question.
+        // The surface must not have opened a way round it: a question nobody sees is not a question.
         let asker = super::Asker::new(
             std::sync::Arc::new(super::Pending::new()),
             Box::new(|_| {}),

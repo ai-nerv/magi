@@ -1,15 +1,6 @@
-//! Asking melchior, instead of asking a model.
-//!
-//! magi is the middle. It gathers the context — from the transcript balthasar holds — hands it
-//! to melchior as an [`Ask`], and writes down what comes back. The protocols, the credentials
-//! and the HTTP are melchior's, and nothing in this file knows what any of them look like.
-//!
-//! # Why a spawn and not a socket
-//!
-//! A turn is a stream, and the family socket is request and reply. One exec per turn gives the
-//! stream for free — melchior writes a [`Said`] per line and exits when the turn is over — and
-//! costs a process for something that already takes seconds. When a turn needs to be *steered*
-//! rather than watched, this becomes a socket; until then a pipe is the honest shape.
+//! Asking melchior instead of asking a model: magi gathers the context, hands it over as an
+//! [`Ask`], and writes down what comes back. One exec per turn rather than the family socket,
+//! because a turn is a stream and the socket is request and reply.
 
 use magi_model::Context;
 use magi_model::Delta;
@@ -19,9 +10,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 /// What went wrong asking, when the asking itself failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Trouble {
-    /// What to tell a person.
     pub message: String,
-    /// Which kind of failure, so the turn can act rather than only report.
     pub why: Refusal,
 }
 
@@ -36,21 +25,12 @@ impl std::fmt::Display for Trouble {
 pub struct Retry {
     /// Which attempt just failed, counting from one.
     pub attempt: u32,
-    /// How many will be made in all.
     pub max_attempts: u32,
-    /// How long before the next one.
     pub delay_ms: u64,
 }
 
-/// Whether `program` is reachable to ask.
-///
-/// Looked for once and not cached: a person installing it mid-session should not have to
-/// restart, and the cost is a `stat` per turn.
-///
-/// Takes the name rather than assuming [`MELCHIOR`]. `magi.melchior` may point at another
-/// binary, and it was honoured when the session layer was started and ignored here and by
-/// [`cards`] — so a person who set it got their own melchior for the turn and whatever was on
-/// `PATH` for the catalog of models that turn had to choose from.
+/// Whether `program` is reachable to ask. Looked for once and not cached, so installing it
+/// mid-session works. Takes the name rather than assuming [`MELCHIOR`], which `magi.melchior` moves.
 #[must_use]
 pub fn available(program: &str) -> bool {
     if program.contains(std::path::MAIN_SEPARATOR) {
@@ -63,9 +43,8 @@ pub fn available(program: &str) -> bool {
 /// Run one turn through melchior, reporting each delta as it arrives.
 ///
 /// # Errors
-/// When melchior could not be started or spoke something this build cannot read. A model that
-/// refused is not an error here: it arrives as [`Said::Failed`] and is returned as [`Trouble`],
-/// which is the same shape a provider failure had.
+/// When melchior could not be started or spoke something this build cannot read; a model that
+/// refused is not an error here but a [`Trouble`] carrying [`Said::Failed`].
 pub async fn ask(
     model: &str,
     context: &Context,
@@ -75,10 +54,8 @@ pub async fn ask(
     ask_reporting(model, context, wants, on_delta, |_| {}).await
 }
 
-/// The same, saying when melchior is waiting to try again.
-///
-/// A backoff is invisible from here — melchior does the waiting — and forty seconds of nothing
-/// reads as a hang. This is how the status line learns to say otherwise.
+/// The same, saying when melchior is waiting to try again — a backoff is invisible from here, and
+/// forty seconds of nothing reads as a hang.
 ///
 /// # Errors
 /// As [`ask`].
@@ -92,12 +69,8 @@ pub async fn ask_reporting(
     ask_through(MELCHIOR, model, context, wants, on_delta, on_retry).await
 }
 
-/// The program that owns the model.
-///
-/// Found on `PATH`, like every other sibling. Public because a [`crate::turn::Backend`] carries
-/// the name it will ask, so a test can put something else in its place without touching the
-/// environment: `PATH` is process-wide, and tests that fought over it would be tests that pass
-/// alone and fail together.
+/// The program that owns the model, found on `PATH`. Public because a [`crate::turn::Backend`]
+/// carries the name it will ask, so a test can substitute one without touching process-wide `PATH`.
 pub const MELCHIOR: &str = "melchior";
 
 /// The same, against a named program.
@@ -123,20 +96,15 @@ pub async fn ask_through(
         why: Refusal::Invalid,
     })?;
 
-    // JSON rather than CBOR, though melchior reads both. What crosses here is a conversation
-    // and a signature, and a signature is already text; CBOR's advantage is bytes nobody is
-    // going to read, and these are read constantly while this is being built.
+    // JSON rather than CBOR, though melchior reads both: what crosses here is read constantly.
     let mut child = tokio::process::Command::new(program)
         .arg("ask")
         .arg("--json")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
-        // **What an interrupt actually stops.** A turn races this future against the interrupt
-        // and drops it on a stop, and a dropped `tokio::process::Child` is detached rather than
-        // ended — so the ask kept running, still connected to the provider, still streaming an
-        // answer nobody would read and the account would still be billed for. It has no effect
-        // on the ordinary path, where `wait()` below has already reaped it.
+        // A dropped `tokio::process::Child` is detached rather than ended, so an interrupted ask
+        // would keep running, still streaming and still billed.
         .kill_on_drop(true)
         .spawn()
         .map_err(|why| {
@@ -148,10 +116,8 @@ pub async fn ask_through(
         })?;
 
     if let Some(mut stdin) = child.stdin.take() {
-        // Written and closed. melchior reads to end of file, so a handle left open is a turn
-        // that never starts. A half-written ask is reported below as a melchior that gave a
-        // reply this build cannot read, which sends the reader to the wire format for a fault
-        // that was in this pipe.
+        // Written and closed: melchior reads to end of file, so a handle left open is a turn that
+        // never starts.
         if let Err(why) = stdin.write_all(&body).await {
             magi_model::noted!("broker: the ask to {program} was not fully written: {why}");
         }
@@ -172,8 +138,7 @@ pub async fn ask_through(
             continue;
         }
         let Ok(said) = serde_json::from_str::<Said>(&line) else {
-            // A line this build cannot read is not a reason to abandon a turn in progress: a
-            // newer melchior may say things this one has no name for, and the answer so far is
+            // A newer melchior may say things this build has no name for, and the answer so far is
             // still the answer.
             continue;
         };
@@ -193,8 +158,7 @@ pub async fn ask_through(
             } => on_retry(Retry {
                 attempt,
                 max_attempts: of,
-                // Milliseconds, because that is what the status line shows and a float of
-                // seconds would be rounded there anyway.
+                // Milliseconds, because that is what the status line shows.
                 delay_ms: (seconds * 1000.0) as u64,
             }),
             other => on_delta(carried(other)),
@@ -202,8 +166,7 @@ pub async fn ask_through(
     }
     let _ = child.wait().await;
 
-    // Silence is the one answer a reader cannot interpret, so it is named here rather than
-    // returned as success. A turn that ends without a terminal lost its mind mid-sentence.
+    // A turn that ends without a terminal is named here rather than returned as success.
     ended.unwrap_or_else(|| {
         Err(Trouble {
             message: format!("{program} stopped without finishing the turn"),
@@ -212,10 +175,8 @@ pub async fn ask_through(
     })
 }
 
-/// One [`Said`], as the turn machinery already understands it.
-///
-/// The inverse of melchior's own translation. `Stop` and `Failed` are handled by the caller,
-/// which is why they are absent: one ends the stream and the other ends the turn.
+/// One [`Said`], as the turn machinery already understands it. `Stop` and `Failed` are absent
+/// because the caller takes them: one ends the stream, the other ends the turn.
 fn carried(said: Said) -> Delta {
     match said {
         Said::Text { text } => Delta::Text(text),
@@ -224,22 +185,17 @@ fn carried(said: Said) -> Delta {
         Said::ToolCallStart { id, name } => Delta::ToolCallStart { id, name },
         Said::ToolCallArgs { args } => Delta::ToolCallArgs(args),
         Said::Spent { usage } => Delta::Usage(usage),
-        // Unreachable by construction: the caller takes both before this is called. Mapped to a
-        // stop rather than panicking, because a `todo!()` here would be a crash in a turn.
+        // Unreachable by construction: the caller takes both before this is called.
         Said::Stop { reason } => Delta::Stop(reason),
         Said::Failed { .. } | Said::Retrying { .. } => Delta::Stop(magi_model::StopReason::Error),
     }
 }
 
-/// Ask for a value rather than a conversation, and parse what comes back.
-///
-/// For the places magi wants a *shape* — the permissions a config declares it needs, and
-/// anything else that asks the model to fill in a schema. The stream is collected rather than
-/// published: nobody is watching, and half of a JSON object on screen is worse than none.
+/// Ask for a value rather than a conversation, and parse what comes back. The stream is collected
+/// rather than published: half of a JSON object on screen is worse than none.
 ///
 /// # Errors
-/// Whatever [`ask`] would return, and [`Refusal::Invalid`] when the answer will not parse as the
-/// shape that was asked for.
+/// Whatever [`ask`] would return, and [`Refusal::Invalid`] when the answer will not parse.
 pub async fn value(
     model: &str,
     context: &Context,
@@ -254,8 +210,7 @@ pub async fn value(
     })
     .await?;
 
-    // A call is preferred over prose: Anthropic answers a schema by calling a forced tool, and
-    // anything in the text beside it is commentary.
+    // A call is preferred over prose: Anthropic answers a schema by calling a forced tool.
     let raw = if args.trim().is_empty() { &text } else { &args };
     serde_json::from_str(raw.trim()).map_err(|why| Trouble {
         message: format!("the answer was not the shape that was asked for: {why}"),
@@ -263,14 +218,8 @@ pub async fn value(
     })
 }
 
-/// What melchior says this machine can talk to.
-///
-/// Asked once, when a session starts. A card is small and there are a few hundred of them, so
-/// the cost is a process and a parse — against which the alternative is magi keeping its own
-/// catalog, which is the thing that drifts.
-///
-/// Empty when melchior is not installed or would not answer. Not an error: a session with no
-/// models says so when a prompt arrives, which is where a person can act on it.
+/// What melchior says this machine can talk to, asked once when a session starts. Empty when
+/// melchior is not installed or would not answer, which is not an error.
 pub async fn cards(program: &str) -> Vec<magi_proto::ask::Card> {
     let Ok(out) = tokio::process::Command::new(program)
         .arg("models")
@@ -365,9 +314,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_absent_melchior_is_reported_rather_than_hung() {
-        // Nothing to ask, so this must come back rather than wait. The message names the thing
-        // that is missing, because "the model did not answer" would send somebody to the wrong
-        // half of the family.
+        // The message names the thing that is missing rather than blaming the model.
         if available(MELCHIOR) {
             return;
         }

@@ -1,39 +1,24 @@
-//! Which surfaces are open, and what reaches them.
-//!
-//! The registry, split from the thing that drives a tenant. What is here is shared and touched
-//! from everywhere — a client attaching, a key arriving on the socket, a window resizing — while
-//! [`super::Holder`] is one surface's own spawn and its loop. They are different lifetimes and
-//! different callers, and the seam is exactly where the mutex is.
+//! Which surfaces are open, and what reaches them: the registry, shared and touched from
+//! everywhere, split from [`super::Holder`], which is one surface's own spawn and its loop.
 
 use magi_proto::ToolCallId;
 use std::sync::Mutex;
 
-/// Something for an open surface to wake up about.
-///
-/// Two things reach a tenant from outside its own clock, and both arrive on one channel because
-/// the loop that reads them is the loop that blocks: a second source would need a second thread to
-/// wait on it.
+/// Something for an open surface to wake up about. Both sources arrive on one channel because the
+/// loop that reads them is the loop that blocks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Nudge {
-    /// A key the person pressed.
     Key(String, magi_proto::surfacing::Held),
-    /// The pointer, in the surface's own coordinates.
-    ///
-    /// Translated before it got here, by the only thing that knows where the rows landed. What
-    /// arrives is a row and a column inside the reservation, and anything outside it never
-    /// arrives at all.
+    /// The pointer, in the surface's own coordinates. Translated before it got here; anything
+    /// outside the reservation never arrives at all.
     Pointer(
         magi_proto::surfacing::Pointed,
         Option<magi_proto::surfacing::Button>,
         u16,
         u16,
     ),
-    /// The room under it changed, because the window or the prompt did.
-    ///
-    /// **Width is the terminal's, height is magi's — but neither is promised once.** The width
-    /// travels here, because it is whatever the window happens to be and nothing else knows it.
-    /// The height does not: it is a grant, so it is worked out again where grants are made, out of
-    /// the room now reported. Otherwise the number would be decided in two places.
+    /// The room under it changed, because the window or the prompt did. The width travels here; the
+    /// height does not, because it is a grant and is worked out again where grants are made.
     Room(u16, bool),
 }
 
@@ -41,41 +26,23 @@ pub enum Nudge {
 #[derive(Default)]
 pub struct Holding {
     typing: Mutex<std::collections::HashMap<ToolCallId, std::sync::mpsc::Sender<Nudge>>>,
-    /// How wide the screen is, as the client last reported it.
-    ///
-    /// Zero until one says. The session has no terminal of its own, and a tenant told a width
-    /// nobody measured lays itself out for a screen that is not there.
+    /// How wide the screen is, as the client last reported it. Zero until one says.
     cols: std::sync::atomic::AtomicU16,
-    /// How many rows a surface could be drawn in, as the client last reported them.
-    ///
-    /// Meaningless until [`Holding::measured`] is set, because zero is a real answer here — a
-    /// window short enough to have no room at all — and one that has to be told apart from nobody
-    /// having said yet.
+    /// How many rows a surface could be drawn in. Meaningless until [`Holding::measured`] is set,
+    /// because zero is a real answer here and has to be told apart from nobody having said yet.
     rows: std::sync::atomic::AtomicU16,
-    /// Whether any client has reported its room.
-    ///
-    /// Before the first [`Holding::sized`] a tool gets what it asked for. It is the only honest
-    /// answer: refusing would deny a surface on a screen that has room for it, and granting a
-    /// measured zero would deny one on the strength of a number nobody supplied.
+    /// Whether any client has reported its room. Before the first [`Holding::sized`] a tool gets
+    /// what it asked for: granting a measured zero would deny it on a number nobody supplied.
     measured: std::sync::atomic::AtomicBool,
-    /// How many attached clients can draw rows a tool asks for.
-    ///
-    /// A count rather than a flag, because a session may be attached to twice: a surface is worth
-    /// reserving while at least one client that can draw one is still there.
+    /// How many attached clients can draw rows a tool asks for; a session may be attached to twice.
     screens: std::sync::atomic::AtomicUsize,
-    /// Whether the screen can report a key being held.
-    ///
-    /// The Kitty keyboard protocol. A tenant is told at open, so one that would otherwise wait for
-    /// a release knows there is never going to be one here and can behave accordingly rather than
-    /// look broken on the terminals that cannot send one.
+    /// Whether the screen can report a key being held — the Kitty keyboard protocol. A tenant is
+    /// told at open, so one that would wait for a release knows there is never going to be one.
     holds: std::sync::atomic::AtomicBool,
 }
 
-/// One attached client's ability to draw, for as long as it is attached.
-///
-/// A guard rather than a pair of calls, because the interesting case is the connection that ends
-/// without saying so — a UI that was killed — and a decrement somebody has to remember is a
-/// decrement that gets skipped exactly then.
+/// One attached client's ability to draw, for as long as it is attached. A guard, because the
+/// interesting case is the connection that ends without saying so.
 pub struct Drawing<'a> {
     held: Option<&'a Holding>,
 }
@@ -110,11 +77,8 @@ impl Holding {
         Self::default()
     }
 
-    /// Deliver a key to the surface it was meant for.
-    ///
-    /// A key for a surface nobody is holding is dropped rather than queued: it belonged to rows
-    /// that are gone, and delivering it to whatever holds them now would be acting on a keypress
-    /// the person aimed somewhere else.
+    /// Deliver a key to the surface it was meant for. A key for a surface nobody is holding is
+    /// dropped rather than queued: it belonged to rows that are gone.
     pub fn keyed(&self, id: &ToolCallId, key: String, state: magi_proto::surfacing::Held) {
         if let Ok(typing) = self.typing.lock()
             && let Some(sender) = typing.get(id)
@@ -123,10 +87,7 @@ impl Holding {
         }
     }
 
-    /// Deliver a pointer event to the surface it landed in.
-    ///
-    /// Dropped for a surface nobody holds, for the same reason a key is: those rows are gone, and
-    /// whatever is there now is not what the person clicked on.
+    /// Deliver a pointer event to the surface it landed in; dropped for a surface nobody holds.
     pub fn moused(
         &self,
         id: &ToolCallId,
@@ -169,19 +130,12 @@ impl Holding {
     }
 
     /// Note how much room the screen has and what its keyboard can say, and tell anything drawing
-    /// on it.
-    ///
-    /// Told rather than left to be read: a tenant is asleep between frames, and one that only
-    /// learned the width when it next happened to wake would draw at the old one until then.
+    /// on it. Told rather than read: a tenant asleep between frames would draw at the old width.
     pub fn sized(&self, rows: Option<u16>, cols: u16, holds: bool) {
-        // **Any of the three can be news.** The width and the room change when the window does;
-        // what the keyboard can say changes the first time a repeat or a release arrives, which may
-        // be long after a surface opened. Waking only on the width would leave a game that had just
-        // been proved able to read a hold still offering the control it had at open.
+        // Any of the three can be news: the width, the room, and what the keyboard can say.
         let grew = self.cols.swap(cols, std::sync::atomic::Ordering::Relaxed) != cols;
         // Both swaps, then the question. Written as one `||` the second never ran once the first
-        // was true, so the very first report — which always changes the room — was the one that
-        // left `measured` unset, and every grant after it was made as though nobody had looked.
+        // was true, so the first report left `measured` unset and every grant after was unmeasured.
         let room = rows.is_some_and(|rows| {
             let moved = self.rows.swap(rows, std::sync::atomic::Ordering::Relaxed) != rows;
             let first = !self
@@ -200,10 +154,8 @@ impl Holding {
         }
     }
 
-    /// How wide a surface may draw, falling back to a width most terminals have.
-    ///
-    /// The fallback is for the moment before the first client says: a tenant asked to lay itself
-    /// out for zero columns would draw nothing at all.
+    /// How wide a surface may draw, falling back to a width most terminals have. The fallback is
+    /// for the moment before the first client says.
     #[must_use]
     pub fn across(&self) -> u16 {
         match self.cols.load(std::sync::atomic::Ordering::Relaxed) {
@@ -212,11 +164,8 @@ impl Holding {
         }
     }
 
-    /// How many rows there are to grant, or `None` while nobody has measured.
-    ///
-    /// No fallback, unlike the width. A made-up width costs a tenant one badly wrapped frame; a
-    /// made-up height is a tenant laying itself out below the bottom of the screen, believing the
-    /// rows are there, and reading keys aimed at the part of it nobody can see.
+    /// How many rows there are to grant, or `None` while nobody has measured. No fallback, unlike
+    /// the width: a made-up height lays a tenant out below the bottom of the screen.
     #[must_use]
     pub fn down(&self) -> Option<u16> {
         self.measured
@@ -224,12 +173,8 @@ impl Holding {
             .then(|| self.rows.load(std::sync::atomic::Ordering::Relaxed))
     }
 
-    /// The rows a surface asking for `wanted` may actually have.
-    ///
-    /// **The grant is the smaller of what was asked and what is there.** A tool asks for the size
-    /// it would like to be; only magi knows what else is on the screen, and it is the one that
-    /// says. `None` is a screen with no room at all, where the honest answer is that this surface
-    /// cannot open rather than that it opened into nothing.
+    /// The rows a surface asking for `wanted` may actually have: the smaller of what was asked and
+    /// what is there. `None` is a screen with no room at all, where the surface cannot open.
     #[must_use]
     pub fn granting(&self, wanted: u16) -> Option<u16> {
         match self.down() {
@@ -248,8 +193,6 @@ mod reaching {
 
     #[test]
     fn a_key_for_a_surface_nobody_holds_is_dropped() {
-        // Its rows are gone. Delivering it to whatever holds them now would act on a keypress the
-        // person aimed somewhere else entirely.
         let held = Holding::new();
         held.keyed(&ToolCallId::new("gone"), "j".to_owned(), Held::Down);
     }
@@ -285,8 +228,6 @@ mod reaching {
 
     #[test]
     fn a_click_on_rows_nobody_holds_is_dropped() {
-        // The same rule a key follows. Those rows are gone, and whatever is drawn there now is
-        // not what the person aimed at.
         use magi_proto::surfacing::Pointed;
         let held = Holding::new();
         held.moused(&ToolCallId::new("gone"), Pointed::Press, None, 0, 0);
@@ -294,8 +235,6 @@ mod reaching {
 
     #[test]
     fn a_width_that_changed_reaches_everything_drawing() {
-        // Told rather than left to be read. A tenant is asleep between frames, and one that only
-        // learned the width when it next happened to wake would draw at the old one until then.
         let held = Holding::new();
         let nudges = held.opening(ToolCallId::new("s0")).expect("registered");
         held.sized(Some(20), 120, false);
@@ -308,8 +247,7 @@ mod reaching {
 
     #[test]
     fn a_width_that_did_not_change_wakes_nothing() {
-        // A redraw sends the size every frame. Forwarding each one would wake a tenant on every
-        // keystroke anybody typed anywhere, to tell it something it already knows.
+        // A redraw sends the size every frame; forwarding each would wake a tenant on every keystroke.
         let held = Holding::new();
         held.sized(Some(20), 120, false);
         let nudges = held.opening(ToolCallId::new("s0")).expect("registered");
@@ -319,15 +257,12 @@ mod reaching {
 
     #[test]
     fn a_width_nobody_has_measured_is_one_a_tenant_can_draw_in() {
-        // Before the first client says. A tenant asked to lay itself out for zero columns would
-        // draw nothing at all.
         assert_eq!(Holding::new().across(), 80);
     }
 
     #[test]
     fn the_room_that_shrank_reaches_everything_drawing() {
-        // The room changes without the width doing: a prompt that grew a line took a row off
-        // every surface on the screen, and a tenant not told is one drawing below the fold.
+        // The room changes without the width doing: a prompt that grew a line took a row off every surface.
         let held = Holding::new();
         held.sized(Some(20), 120, false);
         let nudges = held.opening(ToolCallId::new("s0")).expect("registered");
@@ -371,8 +306,6 @@ mod screens {
 
     #[test]
     fn a_client_that_cannot_draw_is_not_a_screen() {
-        // `magi -p`. Reserving rows for it would hold the turn open until the surface timed out,
-        // waiting on a keypress from a terminal that is not there.
         let held = Holding::new();
         let _print = Drawing::attach(&held, false);
         assert!(!held.on_a_screen());
@@ -385,15 +318,11 @@ mod screens {
             let _ui = Drawing::attach(&held, true);
             assert!(held.on_a_screen());
         }
-        // Dropped with the connection, so a UI that was killed takes its screen with it rather
-        // than leaving the session believing there is still one.
         assert!(!held.on_a_screen());
     }
 
     #[test]
     fn one_screen_among_several_clients_is_enough() {
-        // A session can be attached to twice. A surface is worth reserving while at least one
-        // client that can draw it is still there.
         let held = Holding::new();
         let _print = Drawing::attach(&held, false);
         let ui = Drawing::attach(&held, true);

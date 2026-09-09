@@ -1,13 +1,6 @@
-//! The coordinated half of the contract, against siblings that are actually installed.
-//!
-//! `needs` and `configure` are two programs agreeing about what a name means, and the only way
-//! that agreement can be checked is by asking the other program. Everything in `driving`'s own
-//! tests is magi agreeing with magi: they pin the Lua that gets written, not whether anybody
-//! accepts it — which is why casper could send its declarations in a shape magi could not read
-//! for as long as it did, with both sides' tests green.
-//!
-//! Skipped when a sibling is not installed. `MAGI_REQUIRE_LIVE=1` turns that skip into a failure,
-//! for the run where you know they are there and want to be held to it.
+//! The coordinated half of the contract, against siblings that are actually installed: `needs` and
+//! `configure` are two programs agreeing what a name means, and only the other program can confirm
+//! it. Skipped when a sibling is absent; `MAGI_REQUIRE_LIVE=1` turns that skip into a failure.
 
 use magi_host::driving;
 
@@ -60,8 +53,7 @@ async fn every_sibling_declares_what_it_takes_in_a_shape_magi_can_read() {
 
 #[tokio::test]
 async fn a_setting_nobody_declared_comes_back_refused_by_name() {
-    // The half that makes a rename survivable. A sibling that ignored what it did not recognise
-    // would leave a misspelled setting looking exactly like an applied one.
+    // A sibling that ignored what it did not recognise would make a misspelling look applied.
     for program in ["casper", "melchior", "balthasar"] {
         if absent(program) {
             continue;
@@ -78,9 +70,8 @@ async fn a_setting_nobody_declared_comes_back_refused_by_name() {
 
 #[tokio::test]
 async fn a_table_setting_survives_the_round_trip() {
-    // casper is the sibling whose settings are tables, and the reason the coordinator had to
-    // learn to write them. This is the whole loop: ask what it takes, write the Lua for it, hand
-    // it over, and read back that it was set rather than refused.
+    // casper is the sibling whose settings are tables: ask what it takes, write the Lua, hand it
+    // over, and read back that it was set rather than refused.
     if absent("casper") {
         return;
     }
@@ -111,12 +102,8 @@ async fn a_table_setting_survives_the_round_trip() {
 
 #[tokio::test]
 async fn what_a_coordinator_says_reaches_a_sibling_it_spawns_per_call() {
-    // **The hole `configure` alone left.** casper is one process per call, so a `configure` that
-    // set something in the process answering it reported the setting taken and changed nothing:
-    // every later `casper tools` and `casper run` was a fresh process that knew nothing about it.
-    // melchior and balthasar do not have this problem — they are asked once and then run.
-    //
-    // So the settings ride on every spawn, and this is the test that says they arrive.
+    // casper is one process per call, so a `configure` that set something in the process answering
+    // it changed nothing later. The settings ride on every spawn, and this says they arrive.
     if absent("casper") {
         return;
     }
@@ -139,9 +126,7 @@ async fn what_a_coordinator_says_reaches_a_sibling_it_spawns_per_call() {
 
 #[tokio::test]
 async fn a_setting_a_sibling_would_refuse_is_named_before_it_is_relied_on() {
-    // What `configure` is still for on a spawn-per-call program: a dry run. A coordinator wants
-    // to know *which* of its settings would be refused before it commits to sending them on
-    // every spawn, and "refused" without a name is not something it can act on.
+    // What `configure` is still for on a spawn-per-call program: a dry run naming what it refuses.
     if absent("casper") {
         return;
     }

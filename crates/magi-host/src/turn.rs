@@ -1,7 +1,5 @@
-//! Running one turn against a provider.
-//!
-//! The daemon's half of the loop: it owns the socket, the transcript and the clock, and holds no
-//! agent logic — [`magi_core::Turn`] decides what happens and this drives it.
+//! Running one turn against a provider: the daemon owns the socket, the transcript and the clock,
+//! and holds no agent logic — [`magi_core::Turn`] decides what happens and this drives it.
 
 use crate::session::Session;
 use magi_core::{Step, Turn};
@@ -9,70 +7,35 @@ use magi_model::StopReason;
 use magi_proto::{AgentStatus, Entry, MessageId, ToolCallId};
 use magi_tools::{Ops, Registry};
 
-/// What the daemon needs to reach a model.
-///
-/// Plain data, and sendable: the protocol it names is built on the worker's own thread, because
-/// a Lua VM is neither `Send` nor `Sync` and cannot be handed over after the fact.
+/// What the daemon needs to reach a model. Plain data, and sendable: the protocol it names is built
+/// on the worker's own thread, because a Lua VM is neither `Send` nor `Sync`.
 #[derive(Debug, Clone)]
 pub struct Backend {
-    /// Tool descriptions to run in the VM, as `(name, source)`.
     pub tools: Vec<(String, String)>,
-    /// The family's client libraries, so a Lua tool can talk to a sibling.
     pub clients: Vec<(String, String)>,
     /// The SHA-256 casper's program must hash to, if this configuration pinned one.
     pub casper: Option<String>,
-    /// What this session tells casper to be, on every spawn.
-    ///
-    /// casper is one process per call, so a `configure` that reached only the process answering
-    /// it would report a setting as taken and change nothing. Empty means "whatever casper is by
-    /// default", which is the ordinary case.
+    /// What this session tells casper to be, on every spawn, since casper is one process per call.
     pub casper_configure: String,
-    /// Where the session is rooted, which is what tools resolve paths against.
     pub cwd: std::path::PathBuf,
-    /// Permissions a configuration granted before anybody was asked anything.
-    ///
-    /// A rule written down is a question already answered, so these go into the ledger at
-    /// startup rather than being prompted for.
+    /// Permissions a configuration granted in advance; they go into the ledger at startup.
     pub grants: Vec<magi_proto::permit::Grant>,
-    /// Environment every process this session starts is given, beside the mandatory pairs.
     pub environ: std::collections::BTreeMap<String, String>,
-    /// Whether the file tools refuse paths outside `cwd`.
-    ///
-    /// Off unless a config asks. See [`magi_tools::ops::Real`] for why a wall only the careful
-    /// tools obey is worse than no wall.
+    /// Whether the file tools refuse paths outside `cwd`. See [`magi_tools::ops::Real`].
     pub confine: bool,
-    /// Which model to ask for, as melchior names it: `provider/model`.
-    ///
-    /// A name and nothing else. magi does not know which protocol this model speaks, where it
-    /// lives, or what credential it takes -- melchior owns all three, and a harness that held a
-    /// second opinion about any of them would be a second thing to keep in step.
+    /// Which model to ask for, as melchior names it: `provider/model`. A name and nothing else.
     pub model: String,
-    /// The program that owns the model, found on `PATH`.
-    ///
-    /// [`crate::broker::MELCHIOR`] in every session. Named per backend rather than compiled in
-    /// so a test can point one turn at a stand-in: `PATH` is process-wide, and tests that fought
-    /// over it would be tests that pass alone and fail together.
+    /// The program that owns the model, found on `PATH`. Named per backend, not compiled in.
     pub mind: String,
-    /// What to ask for beyond the conversation.
     pub wants: magi_proto::ask::Wants,
-    /// How much this model will read, as melchior's card reported it.
-    ///
-    /// Carried rather than looked up, because the only thing magi does with it is decide when to
-    /// compact -- and asking melchior that on every turn would be a process per decision.
+    /// How much this model will read, as melchior's card reported it. Carried rather than looked up.
     pub context_window: Option<u64>,
-    /// What the model is told it is, before the conversation starts.
-    ///
-    /// Assembled once, when the daemon starts. Rebuilding it per turn would let a project file
-    /// change what the model was told between one message and the next, with nothing in the
-    /// transcript to say so.
+    /// What the model is told it is. Assembled once, when the daemon starts.
     pub system: Option<String>,
 }
 
-/// Run one turn and journal what it produced.
-///
-/// Deltas are published as they arrive and the entry is amended as it grows, so a UI attaching
-/// mid-turn sees the same partial message a UI that was there all along sees. A crash leaves
-/// the partial message rather than nothing, which is why the entry is written before it ends.
+/// Run one turn and journal what it produced. The entry is written before the turn ends, so a UI
+/// attaching mid-turn extends a partial message and a crash leaves one rather than nothing.
 async fn one_turn(
     session: &tokio::sync::Mutex<Session>,
     backend: &Backend,
@@ -98,26 +61,15 @@ async fn one_turn(
     let mut turn = Turn::new();
     let mut retries_seen: Vec<(u32, u32, u64)> = Vec::new();
 
-    // The entry exists before the first delta, so a UI attaching mid-turn has something to
-    // extend rather than a message that appears fully formed at the end.
     session.lock().await.commit(assistant(&id, &turn))?;
 
-    // One channel for both, because the order matters: a delta from the second attempt arriving
-    // before the retry that discarded the first would be thrown away with it. Two channels
-    // cannot promise that; one can.
-    //
-    // A channel at all because the callbacks are synchronous and the session is behind an async
-    // lock — and because the whole value of saying "retrying" is saying it *during* the wait. A
-    // person watching a spinner for forty seconds needs to know it is a wait and not a hang.
+    // One channel for both: a delta from the second attempt arriving before the retry that
+    // discarded the first would be thrown away with it.
     let (arrivals, mut arriving) = tokio::sync::mpsc::unbounded_channel();
     let retries = arrivals.clone();
     let outcome = {
-        // The provider call is raced against the interrupt rather than polled after it: a model
-        // mid-answer holds this future for as long as it keeps talking, and a flag checked when
-        // it returns is a stop that arrives once the work it was stopping is already paid for.
-        // melchior owns the model. magi gathers the context and writes down the answer; which
-        // protocol this model speaks, where it lives and what credential it takes are not
-        // magi's to know, and there is no second opinion here to drift from melchior's.
+        // Raced against the interrupt rather than polled after it: a model mid-answer holds this
+        // future for as long as it keeps talking, and a flag checked on return stops nothing.
         let streaming = crate::broker::ask_through(
             &backend.mind,
             &backend.model,
@@ -142,26 +94,18 @@ async fn one_turn(
                 () = cancel.requested() => break Ok(()),
                 Some(arrival) = arriving.recv() => {
                     match arrival {
-                        // Applied and published as it arrives, which is the whole milestone.
-                        // Revised rather than amended: an amendment writes the message to disk
-                        // and flushes, which per token would write it once per token, each copy
-                        // longer than the last.
+                        // Revised rather than amended: an amendment writes to disk and flushes.
                         Arrival::Delta(delta) => {
                             turn.apply(delta);
                             session.lock().await.revise(assistant(&id, &turn));
                         }
                         Arrival::Retrying { attempt, max_attempts, delay_ms } => {
                             retries_seen.push((attempt, max_attempts, delay_ms));
-                            // What the attempt published has to be taken back. The transcript
-                            // can say so — a message that is not an extension of itself is
-                            // described in full rather than as an append — so this is one
-                            // revision back to nothing.
+                            // What the attempt published has to be taken back, to nothing.
                             turn = Turn::new();
                             let mut held = session.lock().await;
                             held.revise(assistant(&id, &turn));
-                            // The UI has had a display for this since M0 that nothing ever set:
-                            // during an overload a person saw "Thinking" for a minute with no
-                            // sign that anything had gone wrong or would be tried again.
+                            // Nothing ever set this, so an overload showed "Thinking" for a minute.
                             held.set_status(AgentStatus::Retrying {
                                 attempt,
                                 max_attempts,
@@ -175,21 +119,12 @@ async fn one_turn(
         }
     };
 
-    // Whatever the select! did not get to before the stream ended. A delta and the end of the
-    // stream can arrive in the same poll, and the loop breaks on the outcome.
+    // A delta and the end of the stream can arrive in the same poll, and the loop breaks on the outcome.
     while let Ok(arrival) = arriving.try_recv() {
         match arrival {
             Arrival::Delta(delta) => turn.apply(delta),
-            // **A retry that landed in the same poll the stream ended in.** This arm used to be
-            // absent, so the arrival was read out of the channel and dropped: the status was
-            // never set and nothing was ever published. It cost a person the one thing they
-            // needed to know — that the answer took two attempts and the first was thrown away —
-            // and it did so about one turn in three, which is how it was found.
-            //
-            // Handled exactly as the loop handles it, because the ordering is the same: a retry
-            // is announced before the attempt that follows it streams, and everything after it
-            // in a FIFO channel is that attempt. Resetting here discards the abandoned attempt's
-            // text and keeps the one that succeeded.
+            // A retry that landed in the same poll the stream ended in. Handled exactly as the loop
+            // handles it: everything after a retry in a FIFO channel belongs to the attempt after it.
             Arrival::Retrying {
                 attempt,
                 max_attempts,
@@ -209,8 +144,7 @@ async fn one_turn(
     }
     session.lock().await.revise(assistant(&id, &turn));
 
-    // Whatever arrived before the interrupt is kept: the model said it, and a transcript that
-    // drops a half-finished answer leaves the next prompt with no account of what happened.
+    // Whatever arrived before the interrupt is kept: the model said it.
     if cancel.is_requested() {
         turn.abort(StopReason::Aborted);
         let mut held = session.lock().await;
@@ -235,8 +169,7 @@ async fn one_turn(
     }
 
     if let Err(error) = outcome {
-        // An error is a value, not an exception: the transcript stays well-formed and the UI
-        // needs no error branch. Pi's discipline, and the reason its renderer has none.
+        // An error is a value, not an exception: the transcript stays well-formed.
         let refused = error.why;
         turn.abort(StopReason::Error);
         let mut held = session.lock().await;
@@ -260,9 +193,7 @@ async fn one_turn(
     let mut held = session.lock().await;
 
     held.amend(assistant(&id, &turn))?;
-    // Idle only when the turn is actually over. A round that stopped for tools is followed by
-    // the tools running and another round; saying "idle" in between is a flicker that reads as
-    // the end to anything watching the status rather than the transcript.
+    // Idle only when the turn is over; a round that stopped for tools is followed by another round.
     if !matches!(turn.state(), magi_core::TurnState::ToolsPending) {
         held.set_status(AgentStatus::Idle);
     }
@@ -273,39 +204,26 @@ async fn one_turn(
     })
 }
 
-/// What one round produced.
-///
-/// The turn on its own cannot say *why* it stopped: a failure becomes an error entry and a
-/// sentence, and by then the class that would tell the loop whether to act is gone. This
-/// carries it back, so an overflow can be answered by compacting instead of by giving up.
+/// What one round produced. The turn on its own cannot say why it stopped, and by the time a
+/// failure is an error entry the class is gone — so an overflow can be answered by compacting.
 struct Round {
     turn: Turn,
     /// Set when the provider refused, and the class it refused with.
     failed: Option<magi_proto::ask::Refusal>,
-    /// Every retry this round took, as `(attempt, of, delay_ms)`.
-    ///
-    /// Carried out rather than reported from here: the watchers hang off the registry, which a
-    /// single round does not have and should not be given — one round is the exchange with the
-    /// provider and nothing else. The loop that owns both says it.
+    /// Every retry this round took, as `(attempt, of, delay_ms)`; the loop that owns the watchers
+    /// is what reports them.
     retries: Vec<(u32, u32, u64)>,
 }
 
-/// Something the provider call said, in the order it said it.
-///
-/// One type down one channel, because the order is what makes a retraction safe. A delta from
-/// the second attempt arriving before the retry that discarded the first would be discarded
-/// with it, and two channels have no way to promise it does not.
+/// Something the provider call said, in the order it said it. One type down one channel, because
+/// the order is what makes a retraction safe.
 enum Arrival {
-    /// Part of the answer.
     Delta(magi_model::Delta),
     /// The attempt failed and another is starting. Everything published so far is retracted.
-    /// The mind said an attempt failed and another is starting.
     Retrying {
         /// Which attempt just failed, counting from one.
         attempt: u32,
-        /// How many will be made in all.
         max_attempts: u32,
-        /// How long before the next one.
         delay_ms: u64,
     },
 }
@@ -316,8 +234,7 @@ fn assistant(id: &MessageId, turn: &Turn) -> Entry {
         id: id.clone(),
         text: turn.text().to_owned(),
         thinking: turn.thinking().to_owned(),
-        // Carried into the journal, because the journal is what the next request is built
-        // from. Captured by the turn and then dropped here was the whole of the bug.
+        // Carried into the journal, because the journal is what the next request is built from.
         signatures: magi_proto::Signatures {
             text: None,
             thinking: turn.signature().map(str::to_owned),
@@ -325,10 +242,7 @@ fn assistant(id: &MessageId, turn: &Turn) -> Entry {
         usage: turn.usage(),
         stop_reason: match turn.state() {
             magi_core::TurnState::Finished(reason) => Some(reason),
-            // A message that asked for tools is finished as a message: the model said its
-            // piece and stopped. Reporting `None` marked it as still streaming, so no
-            // `AssistantEnded` was ever published for it -- and anything waiting for a turn to
-            // end had only the idle flicker between rounds to go on, which is not the end.
+            // A message that asked for tools is finished as a message; `None` marked it streaming.
             magi_core::TurnState::ToolsPending => Some(StopReason::ToolUse),
             _ => None,
         },
@@ -336,13 +250,8 @@ fn assistant(id: &MessageId, turn: &Turn) -> Entry {
     }
 }
 
-/// Tell the watchers about permissions decided since the last time.
-///
-/// Two events per question, adjacent and in order: what was asked, and what came back. They are
-/// separate because the gap between them is a person deciding, and a watcher keeping an audit
-/// trail wants both ends of it — even though, buffered like this, the gap it can measure is not
-/// the one that happened. See [`magi_tools::watching::Pending`] for why they are not delivered
-/// where they are decided.
+/// Tell the watchers about permissions decided since the last time: two events per question,
+/// adjacent and in order. See [`magi_tools::watching::Pending`] for why not where they are decided.
 async fn permissions(
     registry: &Registry,
     ops: &dyn Ops,
@@ -359,14 +268,8 @@ async fn permissions(
             about: &noted.about,
             allowed: noted.allowed,
         });
-        // **And to the memory layer, which is what makes the trace outlive the process.** Every
-        // transcript entry reaches balthasar already; a permission is not an entry, so before
-        // this it reached the watchers in this session's VM and nothing else. A session that
-        // wanted to know what it had been allowed to do yesterday had nowhere to look.
-        //
-        // Best effort and never awaited on the critical path of a refusal: a balthasar that is
-        // not there costs the trace and nothing else, which is the same rule every other call
-        // to it follows.
+        // And to the memory layer: a permission is not a transcript entry, so before this it
+        // reached only this session's VM. Best effort, never awaited on the path of a refusal.
         let said = format!(
             "{} {} was {}",
             noted.verb,
@@ -383,16 +286,10 @@ async fn permissions(
 }
 
 /// Rounds of tool use one prompt may take before the loop gives up.
-///
-/// A model that keeps asking for tools without finishing is not making progress, and an
-/// unbounded loop spends money proving it. High enough that real work never reaches it.
 const MAX_ROUNDS: usize = 24;
 
-/// Run a prompt to completion: provider, tools, provider, until the turn ends.
-///
-/// Tools run between turns rather than during one, because a provider's answer is what says
-/// which tools to run. Every result is journalled as its own entry, so the transcript shows
-/// what was asked and what came back rather than only the conclusion.
+/// Run a prompt to completion: provider, tools, provider, until the turn ends. Every result is
+/// journalled as its own entry, so the transcript shows what was asked and what came back.
 pub async fn run(
     session: &tokio::sync::Mutex<Session>,
     backend: &Backend,
@@ -400,38 +297,22 @@ pub async fn run(
     ops: &dyn Ops,
     scribe: &crate::scribe::Held,
 ) -> Result<(), crate::HostError> {
-    // Taken once: the handle is a clone of shared state, so a stop asked for mid-round is
-    // visible through it without going back to the session for a fresh one.
+    // Taken once: the handle is a clone of shared state, so a mid-round stop is visible through it.
     let cancel = session.lock().await.cancel();
 
-    // **Whether to compact is balthasar's answer, not a threshold here.** magi asked itself
-    // first — a high-water mark over a character estimate — and only then asked balthasar what it
-    // would do, logged the disagreement, and did its own thing. The estimate is gone with it:
-    // balthasar is looking at the same window and knows what it has already masked, so a second
-    // guess made here could only ever be a worse one that sometimes won.
-    //
-    // Before the first round, not before every one: a turn adds at most a few messages, and
-    // compacting between rounds of one prompt would summarise a conversation the model is still
-    // in the middle of.
+    // Whether to compact is balthasar's answer, not a threshold here. Before the first round, not
+    // before every one: compacting between rounds summarises a conversation still in progress.
     compact(session, backend, registry, scribe).await;
 
-    // **Once per prompt, and after any compaction.** A tool-using turn goes round several times
-    // and the recall is about what the person asked, not about what the model has just read; and
-    // recalling before a compaction would spend the budget on a window that is about to change
-    // shape. Nothing when there is no balthasar, which is the session magi had before there was
-    // one.
+    // Once per prompt, and after any compaction: the recall is about what the person asked, and
+    // recalling first would spend the budget on a window that is about to change shape.
     let (remembered, injection) = remembered(session, backend, scribe).await;
 
-    // One reactive compaction per prompt. A second overflow after summarising is not a
-    // conversation that is too long -- it is one whose kept tail alone will not fit, and
-    // compacting again would summarise the summary and still fail.
+    // One reactive compaction per prompt: a second overflow means the kept tail alone will not fit.
     let mut compacted = false;
 
     for _ in 0..MAX_ROUNDS {
-        // **A turn is one exchange with the model, and this is where a watcher learns of it.**
-        // Timing, cost accounting and an external status line all want the two ends of this and
-        // could get neither: the only event magi raised was a tool finishing, so a turn with no
-        // tool calls in it was invisible from outside.
+        // A turn is one exchange with the model, and this is where a watcher learns of it.
         registry.saw(&magi_tools::Event::TurnBegan {
             model: &backend.model,
         });
@@ -460,9 +341,7 @@ pub async fn run(
             ok: round.failed.is_none(),
         });
 
-        // The estimate above is deliberately rough; this is the provider's own answer. The
-        // failed round stays in the transcript, because a reader who notices the model
-        // forgetting something deserves to see that this is why.
+        // The estimate above is rough; this is the provider's own answer. The failed round stays.
         if round.failed == Some(magi_proto::ask::Refusal::Overflow) && !compacted {
             compacted = true;
             if compact(session, backend, registry, scribe).await {
@@ -471,14 +350,12 @@ pub async fn run(
         }
         let turn = round.turn;
 
-        // An interrupted turn has already been journalled as aborted; continuing would call the
-        // provider again with the stop still pending and abort that one too.
+        // An interrupted turn is already journalled as aborted; continuing would abort the next too.
         if cancel.is_requested() {
             return Ok(());
         }
 
-        // A truncated turn poisons its own calls: `length` can land mid-arguments, and
-        // truncated JSON can still parse into something schema-valid.
+        // `length` can land mid-arguments, and truncated JSON can still parse as schema-valid.
         let poisoned = turn.poisoned_results();
         if !poisoned.is_empty() {
             let mut held = session.lock().await;
@@ -487,9 +364,7 @@ pub async fn run(
                     id: ToolCallId::new(call.id.clone()),
                     name: call.name.clone(),
                     args: call.arguments.clone(),
-                    // No protocol description emits one yet. The slot is here because the
-                    // journal is what the next request is rebuilt from, and a journal that
-                    // cannot hold what the model layer holds is lossy by construction.
+                    // No description emits one yet; the journal must hold what the model layer does.
                     thought_signature: None,
                     result: Some(magi_proto::ToolResult {
                         output: "The response was truncated before this call was complete. \
@@ -509,12 +384,8 @@ pub async fn run(
             return Ok(());
         }
 
-        // Where each call was journalled, so its answer lands on its own entry. Amending "the
-        // last entry" is right for a message still streaming and wrong here: a round commits
-        // every call before running any, so by the time the first result arrives there are two
-        // more entries after it. Every result but the last went to the wrong entry and was then
-        // overwritten, leaving calls with `result: null` that the model had made and never got
-        // an answer to.
+        // Where each call was journalled, so its answer lands on its own entry. A round commits
+        // every call before running any, so amending "the last entry" puts every result but one wrong.
         let mut at = Vec::with_capacity(calls.len());
         {
             let mut held = session.lock().await;
@@ -522,9 +393,8 @@ pub async fn run(
                 label: "Running tools".into(),
             });
             for call in &calls {
-                // Journalled before it is run, and before the registry is consulted: a call
-                // that went nowhere is still something the transcript can account for. Tau
-                // calls this commit-before-route and it is its best idea.
+                // Journalled before it is run and before the registry is consulted, so a call that
+                // went nowhere is still something the transcript can account for.
                 at.push(held.commit(Entry::Tool {
                     id: ToolCallId::new(call.id.clone()),
                     name: call.name.clone(),
@@ -535,17 +405,10 @@ pub async fn run(
             }
         }
 
-        // Sequential preparation, parallel execution, results in source order — Pi's shape
-        // (`agent-loop.ts:489-554`), and the only one available here. `Tool` is deliberately not
-        // `Send`, because a Lua tool runs in a VM that is not, so this cannot be threads. It does
-        // not need to be: a peer is another *process*, so writing its request and coming back for
-        // the answer is all the concurrency there is to have. Three calls to three peers cost the
-        // slowest rather than the sum; a built-in or a Lua tool has nothing to overlap and says
-        // so, and runs where it stands.
-        //
-        // Preparation stays one at a time on purpose. Checking arguments is cheap, but asking a
-        // person for permission is not, and two prompts racing onto one screen is not a faster
-        // round but an unanswerable one.
+        // Sequential preparation, parallel execution, results in source order. `Tool` is
+        // deliberately not `Send`, so this cannot be threads; a peer is another process, so writing
+        // its request and coming back is all the concurrency there is. Preparation stays one at a
+        // time: two permission prompts racing onto one screen is an unanswerable round.
         let mut prepared = Vec::with_capacity(calls.len());
         for call in &calls {
             if cancel.is_requested() {
@@ -554,30 +417,20 @@ pub async fn run(
             }
             prepared.push(Some(registry.prepare(&call.name, &call.arguments, ops)));
         }
-        // Preparation is where permission is asked, so this is the first moment the answers
-        // exist. Told here rather than at the gate because the gate runs wherever a tool runs
-        // and the watchers live on this thread -- see `magi_tools::watching::Pending`.
+        // Preparation is where permission is asked; told here because the watchers live on this thread.
         permissions(registry, ops, scribe, session.lock().await.cursor()).await;
 
         for ((call, prepared), at) in calls.iter().zip(prepared).zip(at) {
-            // Checked per call, not per round: the entry is already committed, so a stop between
-            // two tools leaves a result saying it was never run rather than a call with no answer.
+            // Checked per call: the entry is committed, so a stop leaves a result, not a bare call.
             let output = match prepared {
-                // A call already in flight is collected even after an interrupt: the peer is
-                // running it either way, and the answer is owed to the entry that was committed
-                // before it went out.
+                // A call in flight is collected even after an interrupt: the peer runs it either way.
                 Some(prepared) if !cancel.is_requested() || prepared.in_flight() => {
                     registry.finish(prepared, ops, &cancel)
                 }
                 _ => magi_tools::Output::error("cancelled before this tool ran"),
             };
-            // **The other half of the loop.** Memories were put in front of this turn; this says
-            // what the turn then did, which is the only signal balthasar has for whether any of
-            // them were worth offering. Without it a memory layer ranks by recency and
-            // similarity forever and never by whether anything it gave was used.
-            //
-            // After the tool, before the entry is amended: the answer is known and the lock is
-            // not held. Best effort, and off entirely when balthasar keeps no ledger.
+            // The other half of the loop: what the turn did with what it was given, the only signal
+            // balthasar has. After the tool, before the entry is amended, and off with no ledger.
             if let Some(injection) = &injection {
                 acted_on(scribe, injection, call, output.is_error).await;
             }
@@ -592,17 +445,14 @@ pub async fn run(
                     result: Some(magi_proto::ToolResult {
                         output: output.content,
                         is_error: output.is_error,
-                        // The other face, carried into the transcript so the renderer can draw
-                        // what the tool *meant* rather than guess at it from the text. A tool
-                        // that said nothing about how it looks leaves this empty, which is
-                        // what every tool did before casper existed.
+                        // The other face, carried into the transcript so the renderer can draw what
+                        // the tool meant rather than guess at it from the text.
                         shown: output.shown,
                     }),
                 },
             )?;
         }
-        // Again after the tools have run: a Lua tool that shells out asks its own questions
-        // while it runs, and those are decided after every `prepare` in this round.
+        // Again after the tools have run: a Lua tool that shells out asks its own questions.
         permissions(registry, ops, scribe, session.lock().await.cursor()).await;
 
         if cancel.is_requested() {

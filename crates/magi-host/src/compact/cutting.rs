@@ -35,10 +35,8 @@ fn a_cut_between_two_turns_is_left_where_it_was_asked_for() {
     assert_eq!(legal(&plain(10), 4), Some(4));
 }
 
-/// **The bug this exists for.** A cut between an assistant message and the tool result answering
-/// it sends the result on its own; Anthropic answers 400, the retry classifier calls that
-/// `Invalid` — neither retryable nor `Overflow` — and nothing recovers. Every long tool-heavy
-/// session ended that way, with `/clear` the only way out.
+/// A cut between an assistant message and the tool result answering it sends the result on its own,
+/// which Anthropic answers 400 and the retry classifier calls `Invalid` — nothing recovers.
 #[test]
 fn a_cut_landing_on_an_answer_moves_past_it() {
     let mut entries = plain(10);
@@ -94,16 +92,10 @@ fn a_cut_covering_nothing_is_refused() {
     assert_eq!(legal(&plain(4), 0), None);
 }
 
-/// Everything the cut declares replaced is everything the summariser was shown.
-///
-/// **The two used to be computed apart**, in two spaces that agree only when every entry makes
-/// exactly one message — and a `Notice` makes none. So a transcript with notices in its head
-/// declared more replaced than it summarised, and the difference was tool results dropped in
-/// silence.
+/// Everything the cut declares replaced is everything the summariser was shown. Computed apart they
+/// disagree wherever an entry makes no message, and the difference is tool results dropped silently.
 #[test]
 fn what_is_declared_replaced_is_what_was_summarised() {
-    // Notices among the conversation, which is the ordinary case — every permission question and
-    // every model switch writes one — and each makes no message at all.
     let mut entries: Vec<Entry> = Vec::new();
     for i in 0..14 {
         entries.push(Entry::User {

@@ -1,29 +1,15 @@
-//! What the turn does about memory: compaction, and what balthasar is asked and told.
-//!
-//! Split out under THE RULE; the loop that calls all of this is next door. They belong together
-//! because each is the same shape — best effort, on the turn's own clock, and a session with no
-//! balthasar behaves exactly as it did before there was one.
+//! What the turn does about memory: compaction, and what balthasar is asked and told. Each is best
+//! effort on the turn's own clock, and a session with no balthasar behaves as it did before one.
 
 use super::Backend;
 use crate::session::Session;
 use magi_proto::{AgentStatus, Entry, MessageId};
 use magi_tools::Registry;
 
-/// Do what balthasar's plan says, and journal it.
-///
-/// **The whole ladder, in balthasar's order.** Masking first, always: it is free, it is reversible
-/// — the text is still in balthasar's scratch and still on this session's screen — and tool output
-/// is most of a coding session's window. Only what masking could not free is summarised, because a
-/// summary costs a request of its own and loses detail nothing can get back.
-///
-/// magi obeyed only the summary for a while, which was worse than not obeying at all: balthasar
-/// marks a turn masked as it hands the plan over and never offers it again, costing it as a stub
-/// in every later plan — so magi sent the full text for the rest of the session while balthasar
-/// planned against a fiction.
-///
-/// Returns whether anything was *summarised*, which is the one the caller retries on. A failure is
-/// not fatal: the turn goes ahead with the context it has and either fits or is refused by the
-/// provider, which is no worse than not having tried.
+/// Do what balthasar's plan says, and journal it. Masking first, always — it is free and reversible
+/// — and only what masking could not free is summarised. balthasar marks a turn masked as it hands
+/// the plan over and never offers it again, so a mask not applied leaves it planning against a
+/// fiction. Returns whether anything was summarised, which is the one the caller retries on.
 pub(super) async fn compact(
     session: &tokio::sync::Mutex<Session>,
     backend: &Backend,
@@ -39,9 +25,7 @@ pub(super) async fn compact(
     };
     masked(session, &plan).await;
 
-    // balthasar says how much; `legal` says where that cut may actually fall. Not a second
-    // opinion about the amount — the one thing balthasar cannot know, because it is a fact about
-    // the provider wire rather than about the conversation. See `crate::compact`.
+    // balthasar says how much; `crate::compact::legal` says where that cut may actually fall.
     let Some(covered) = plan
         .summarises()
         .and_then(|asked| crate::compact::legal(&entries, asked))
@@ -56,18 +40,12 @@ pub(super) async fn compact(
         });
     }
 
-    // **The messages of exactly the entries being replaced.** These were two boundaries once:
-    // the journal recorded `entries.len() - KEEP` and the summariser was given
-    // `messages.len() - KEEP`, computed independently in two spaces that agree only when every
-    // entry makes exactly one message. A `Notice`, a `Branch`, a `Compaction` and an assistant
-    // entry that errored each make none, so every one of them in the head of the transcript
-    // pushed the entry cut past the message cut — and what fell between was declared summarised
-    // without ever being shown to the summariser.
+    // The messages of exactly the entries being replaced. Entry counts and message counts agree
+    // only when every entry makes one message, and a `Notice`, `Branch` or `Compaction` makes none.
     let asked = crate::compact::request(&crate::context::of_entries(&entries[..covered]));
     let mut turn = magi_core::Turn::new();
     let mut deltas = Vec::new();
-    // The same mind that answers a turn writes the summary of one. Collected rather than
-    // streamed: nobody watches a compaction, and the entry is written once at the end.
+    // Collected rather than streamed: nobody watches a compaction.
     let outcome = crate::broker::ask_through(
         &backend.mind,
         &backend.model,
@@ -92,9 +70,7 @@ pub(super) async fn compact(
         summary: turn.text().trim().to_owned(),
         replaces: covered,
     });
-    // **The one thing that happens to a session with no other way to observe it.** Compaction
-    // runs between turns and leaves a summary behind; what it took out is gone from the window
-    // and named nowhere. A watcher that wants to keep it has to be told at the moment.
+    // Compaction runs between turns; a watcher that wants what it took out has to be told now.
     if committed.is_ok() {
         registry.saw(&magi_tools::Event::Compacted {
             dropped: covered,
@@ -104,17 +80,11 @@ pub(super) async fn compact(
     committed.is_ok()
 }
 
-/// How long a recall may hold up a turn.
-///
-/// Generous for a local socket and short enough that nobody notices it. The point is not to bound
-/// balthasar — it bounds itself — but to make the turn independent of whether it does.
+/// How long a recall may hold up a turn, so the turn is independent of how quick balthasar is.
 const PATIENCE: std::time::Duration = std::time::Duration::from_millis(250);
 
-/// What balthasar said to do with the window.
-///
-/// Held as its own type rather than read out of the JSON at each use, because the plan is
-/// consulted three times — masks, summary, and the reason for the log — and a caller reaching into
-/// `serde_json::Value` three times is three chances to spell a key wrong and get `None`.
+/// What balthasar said to do with the window, held as its own type: the plan is consulted three
+/// times, and reaching into `serde_json::Value` is three chances to spell a key wrong.
 struct Plan {
     /// Tool results to send as a stub, by entry index, with what to send.
     masks: Vec<(usize, String)>,
@@ -129,22 +99,10 @@ impl Plan {
     }
 }
 
-/// What balthasar says to do, or nothing when it has nothing to say.
-///
-/// **The decision, taken where the memory layer is.** magi used to make this itself — a constant
-/// `KEEP = 8` and a character estimate — then ask balthasar what *it* would do, write the
-/// difference to a debug log, and go ahead with its own answer anyway. Two deciders disagreeing in
-/// a line nobody read.
-///
-/// Cursors count from one and magi's entry indices from zero, so a cursor `c` names entry `c - 1`
-/// — and `summarise.to`, being the *last* cursor covered, is exactly the *count* of entries
-/// covered. Both conversions happen here, once, so nothing downstream has to hold two spaces in
-/// mind at the same time.
-///
-/// Best effort, on the same clock as everything else here. A balthasar that has observed nothing
-/// refuses this, which is what a harness that has not streamed its turns gets; a session with no
-/// scribe at all is not planned for at all, which is correct rather than a gap — there is no
-/// second opinion to fall back to, and inventing one here is the thing being removed.
+/// What balthasar says to do, or nothing when it has nothing to say. Cursors count from one and
+/// entry indices from zero, so cursor `c` names entry `c - 1`, and `summarise.to` is exactly the
+/// count of entries covered — both conversions happen here, once. A balthasar that has observed
+/// nothing refuses, and a session with no scribe is not planned for at all.
 async fn planned(backend: &Backend, scribe: &crate::scribe::Held, entries: usize) -> Option<Plan> {
     let window = backend.context_window?;
     let plan = tokio::time::timeout(PATIENCE, async {
@@ -156,11 +114,8 @@ async fn planned(backend: &Backend, scribe: &crate::scribe::Held, entries: usize
     .ok()
     .flatten()?;
 
-    // **A plan that does not fit is said out loud rather than passed over.** balthasar reserves
-    // room for the answer and the injection, and a window smaller than that reserve leaves it
-    // nothing to plan with — it says so in `why` and offers no span. Silently doing nothing is
-    // then indistinguishable from having nothing to do, and the session fills up with nobody able
-    // to say which of the two happened.
+    // A plan that does not fit is said out loud: balthasar reserves room for the answer and the
+    // injection, and a window smaller than that reserve leaves it nothing to plan with.
     let why = plan
         .get("why")
         .and_then(serde_json::Value::as_str)
@@ -173,9 +128,8 @@ async fn planned(backend: &Backend, scribe: &crate::scribe::Held, entries: usize
         magi_model::noted!("compact: balthasar cannot plan for this window — {why}");
     }
 
-    // A mask names the cursor it applies to and carries the stub the *tool's own* handler wrote.
-    // One without text is skipped rather than sent empty: balthasar leaves a tool it cannot
-    // describe alone, so an entry here with nothing to say is a shape nobody meant.
+    // A mask with no text is skipped rather than sent empty: balthasar leaves alone a tool it
+    // cannot describe, so an entry here with nothing to say is a shape nobody meant.
     let masks: Vec<(usize, String)> = plan
         .get("mask")
         .and_then(serde_json::Value::as_array)
@@ -207,15 +161,9 @@ async fn planned(backend: &Backend, scribe: &crate::scribe::Held, entries: usize
     Some(Plan { masks, summarise })
 }
 
-/// Write down what the plan said to stub, so the next context is built with it.
-///
-/// **Recorded, not merely applied.** balthasar marks a turn masked as it hands the plan over and
-/// never offers it again; a magi that stubbed a result without writing it down would send the full
-/// text for the rest of the session while balthasar planned against a stub.
-///
-/// A mask naming an entry that is not a tool result is dropped. balthasar only ever masks tool
-/// output — that is where a coding session's tokens are — and a stub on anything else would be
-/// magi inventing a substitution nobody asked for.
+/// Write down what the plan said to stub, so the next context is built with it. balthasar never
+/// offers a mask twice, so one applied without being recorded means full text for the rest of the
+/// session. A mask naming an entry that is not a tool result is dropped.
 async fn masked(session: &tokio::sync::Mutex<Session>, plan: &Plan) {
     if plan.masks.is_empty() {
         return;
@@ -241,15 +189,8 @@ async fn masked(session: &tokio::sync::Mutex<Session>, plan: &Plan) {
     }
 }
 
-/// What this project remembers about the prompt in front of it, as a message.
-///
-/// The half of the memory layer that was never connected. The transcript has always flowed *to*
-/// balthasar through [`crate::scribe`], and it comes back three ways — a surface may ask, a model
-/// may call `recall` as a tool, and `magi doctor` will say the layer is there. All three need
-/// somebody to ask first, which a model that has forgotten something cannot do.
-///
-/// Keyed on the last thing the person said, because that is what the turn is about. Best effort
-/// throughout: a balthasar that is missing, wedged or refusing costs the turn nothing.
+/// What this project remembers about the prompt in front of it, as a message. Keyed on the last
+/// thing the person said. Best effort: a balthasar missing, wedged or refusing costs the turn nothing.
 pub(super) async fn remembered(
     session: &tokio::sync::Mutex<Session>,
     backend: &Backend,
@@ -266,11 +207,7 @@ pub(super) async fn remembered(
         }
     };
 
-    // **On a clock, because this is in front of the person's turn.** A memory layer that is
-    // slow, wedged, or busy compacting its own store must cost the conversation nothing — that
-    // is what makes recalling unconditional rather than a setting somebody has to find. A local
-    // socket answers this in single-digit milliseconds; anything that does not is not going to
-    // be worth waiting for.
+    // On a clock, because this sits in front of the person's turn.
     let asked = std::time::Instant::now();
     let found = tokio::time::timeout(PATIENCE, async {
         let mut open = scribe.lock().await;
@@ -290,14 +227,11 @@ pub(super) async fn remembered(
     let window = usize::try_from(window).unwrap_or(usize::MAX);
     let waited = asked.elapsed();
 
-    // **Every supplier that has something to say, packed together.** One entry today; the shape
-    // is what makes the second one an entry rather than a rewrite — see `crate::supplying`.
+    // Every supplier that has something to say, packed together — see `crate::supplying`.
     let offers = vec![crate::injecting::offered("balthasar", &found.memories)];
     let packed = crate::supplying::pack(&offers, window);
 
-    // **What did not fit is said out loud.** The renderer this replaces stopped writing when the
-    // budget ran out and told nobody, so a supplier whose answers were all slightly too long was
-    // indistinguishable from one that found nothing.
+    // What did not fit is said out loud rather than dropped in silence.
     for dropped in &packed.dropped {
         magi_model::noted!(
             "memory: {} offered something the budget would not take: {}",
@@ -306,12 +240,8 @@ pub(super) async fn remembered(
         );
     }
     let message = packed.message;
-    // The id travels with the message. It is what makes an outcome attributable later: balthasar
-    // decides for itself whether an action followed any of the memories it gave, and it can only
-    // do that against the injection it served them under.
-    // The price of asking, every turn, in the two units somebody would judge it by. balthasar
-    // measures whether memory earns its place and can only see its own side; this is the half
-    // the harness pays and the half nothing recorded.
+    // The id travels with the message: balthasar can only attribute an outcome against the
+    // injection it served the memories under. The cost is the half of the price nothing recorded.
     if let Some(message) = &message {
         let cost = crate::injecting::Cost::of(message);
         magi_model::noted!(
@@ -325,13 +255,9 @@ pub(super) async fn remembered(
     (message, found.injection)
 }
 
-/// Report one finished tool against the injection that preceded it.
-///
-/// The action is one string — a command, a path, a query — because that is what balthasar hashes
-/// and keeps a digest of. The arguments themselves do not leave this process.
-///
-/// `recall` and `remember` are skipped: a call *to* the memory layer is not an action taken on
-/// what it said, and counting it would have every injection look used.
+/// Report one finished tool against the injection that preceded it. The action is one string,
+/// because that is what balthasar hashes; the arguments do not leave this process. `recall` and
+/// `remember` are skipped, or every injection would look used.
 pub(super) async fn acted_on(
     scribe: &crate::scribe::Held,
     injection: &str,
@@ -354,8 +280,7 @@ pub(super) async fn acted_on(
         })
         .unwrap_or_default();
 
-    // On the same clock as the recall, and for the same reason: this is instrumentation, and a
-    // memory layer having a bad minute must not be something the conversation waits for.
+    // On the same clock as the recall: this is instrumentation.
     let reported = tokio::time::timeout(PATIENCE, async {
         let mut open = scribe.lock().await;
         if let Some(open) = open.as_mut() {

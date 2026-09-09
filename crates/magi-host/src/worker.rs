@@ -1,12 +1,6 @@
-//! The thread that owns the Lua VM.
-//!
-//! A protocol lives in a VM, and a VM is neither `Send` nor `Sync` — so a turn cannot run on
-//! the connection task that asked for it. It runs here instead: one thread, one VM, one turn at
-//! a time, fed by a channel.
-//!
-//! Serialising turns is not a limitation being worked around. A session has one conversation,
-//! and two turns appending to one journal at once is a corrupt transcript however the VM
-//! behaves.
+//! The thread that owns the Lua VM. A protocol lives in a VM, and a VM is neither `Send` nor
+//! `Sync`, so a turn cannot run on the connection task that asked for it: one thread, one VM, one
+//! turn at a time. Two turns appending to one journal at once is a corrupt transcript.
 
 use crate::session::Session;
 use crate::turn::{self, Backend};
@@ -20,53 +14,39 @@ struct Job {
     done: oneshot::Sender<()>,
 }
 
-/// What a job is.
 enum Work {
-    /// Run a turn.
     Turn,
-    /// Ask the model what the work ahead needs, then put each answer to the person.
-    ///
-    /// On this thread because it is a provider call against this session's context, and the
-    /// adapter and client live here. It queues behind any turn already running, which is right:
-    /// asking what a turn will need while one is in flight would describe the wrong work.
+    /// Ask the model what the work ahead needs, then put each answer to the person. On this thread
+    /// because it is a provider call against this session's context, and it queues behind any turn.
     Declare,
-    /// Take on grants the parent of this session already holds.
-    ///
-    /// On this thread because the ledger is inside the `Ops` this thread owns. It queues like
-    /// anything else, so a turn already running finishes under the permissions it started with
-    /// rather than gaining new ones halfway through a tool call.
+    /// Take on grants the parent of this session already holds. On this thread because the ledger
+    /// is inside the `Ops` it owns; it queues, so a running turn keeps the permissions it started with.
     TakeOn(Vec<magi_proto::permit::Grant>),
 }
 
-/// A handle to the thread running turns.
 pub struct Worker {
     jobs: mpsc::Sender<Job>,
 }
 
 impl Worker {
-    /// Start a worker owning `backend`.
-    ///
-    /// The thread lives as long as the daemon. It is not pooled: there is one VM because there
-    /// is one description of each protocol, and a second would be a second copy to keep in step.
+    /// Start a worker owning `backend`. The thread lives as long as the daemon, and is not pooled:
+    /// there is one VM because there is one description of each protocol.
     #[must_use]
     pub fn start(backend: Backend) -> Self {
-        // Nobody to ask, which is the same thing as nobody to gate: a worker with no UI behind
-        // it refuses a permission and answers no question, and a tool that wanted one is told so.
+        // Nobody to ask is the same as nobody to gate: this worker refuses a permission, answers no
+        // question, and tells a tool that wanted one so.
         Self::gated(
             backend,
             None,
             std::sync::Arc::new(magi_tools::question::Unanswered),
             std::sync::Arc::new(magi_tools::holding::Screenless),
-            // And no memory layer: this is the worker a test or a one-shot builds, which has
-            // nobody to ask and nothing to remember into.
+            // And no memory layer: the worker a test or a one-shot builds.
             std::sync::Arc::new(tokio::sync::Mutex::new(None)),
         )
     }
 
-    /// The same, with somebody to ask when a tool wants to do something new.
-    ///
-    /// `None` is a worker nothing gates — the print-mode and test paths, where there is nobody
-    /// to ask and refusing every action would make the tool set useless rather than safe.
+    /// The same, with somebody to ask when a tool wants to do something new. `None` is a worker
+    /// nothing gates — the print-mode and test paths.
     pub fn gated(
         backend: Backend,
         approver: Option<std::sync::Arc<dyn magi_tools::approve::Approver>>,
@@ -82,12 +62,8 @@ impl Worker {
             else {
                 return;
             };
-            // The VM is built here, not handed over: it cannot cross a thread boundary, and
-            // building it where it lives is also where a broken protocol description should
-            // surface.
             // One VM for the thread: the protocol reads it and every Lua tool runs in it. Built
-            // here because it cannot cross a thread boundary, and this is also where a broken
-            // description should surface.
+            // here because it cannot cross a thread boundary.
             let mut engine = magi_lua::Engine::new();
             engine.install_clients(&backend.clients);
             let mut broken = None;
@@ -102,9 +78,7 @@ impl Worker {
             }
 
             let engine = std::rc::Rc::new(std::cell::RefCell::new(engine));
-            // The same sequence `magi tools` lists, from the one place that knows it. This ran
-            // here and there and the two disagreed about the environment a process tool is
-            // built with, so the listing described tools as they would never actually run.
+            // The same sequence `magi tools` lists, from the one place that knows it.
             let (registry, _from_casper) = magi_lua::tool::assemble(
                 std::rc::Rc::clone(&engine),
                 std::sync::Arc::clone(&asks),
@@ -113,13 +87,10 @@ impl Worker {
                 backend.casper.as_deref(),
                 &backend.casper_configure,
             );
-            // Gated when there is somebody to ask. The ledger starts with whatever the
-            // configuration already granted, so a rule written down is not a question asked.
+            // Gated when there is somebody to ask; the ledger starts with what the config granted.
             let ops: std::rc::Rc<dyn magi_tools::Ops> = match (&approver, backend.confine) {
-                // `confine` is honoured here too. The arm used to be `(Some(approver), _)`,
-                // discarding it, so the setting applied only to sessions with nobody attached --
-                // exactly the runs where a wall matters least, and never the ones where somebody
-                // turned it on and watched it do nothing.
+                // `confine` is honoured here too. The arm used to be `(Some(approver), _)`, which
+                // discarded it, so the setting applied only to sessions with nobody attached.
                 (Some(approver), confine) => std::rc::Rc::new(
                     magi_tools::ops::Real::gated(
                         backend.cwd.clone(),
@@ -133,25 +104,15 @@ impl Worker {
                 }
                 (None, false) => std::rc::Rc::new(magi_tools::ops::Real::new(backend.cwd.clone())),
             };
-            // Lent to the VM so `magi.shell` has a seam to go through. The same `Ops` every
-            // other tool acts through, so a Lua tool that runs a command is gated exactly as the
-            // shell peer is.
+            // Lent to the VM so `magi.shell` goes through the same `Ops` every other tool acts through.
             engine.borrow_mut().attach_ops(std::rc::Rc::clone(&ops));
-            // Before the first turn, so the schema the model is given is the one the peers
-            // actually implement rather than the one a config file claimed for them.
+            // Before the first turn, so the schema the model is given is the one the peers implement.
             registry.probe(&*ops);
 
             runtime.block_on(async {
-                // Said once, when the worker first has a session in hand. This is the earliest
-                // point where both halves exist: the session is created before the registry and
-                // the registry is where the watchers live, so anything wanting to attach state
-                // to a session had nowhere to hear about it.
-                //
-                // **Resumed is read from the session rather than passed down.** A session that
-                // already has entries the first time the worker sees it was carried in from a
-                // journal or from balthasar; one that does not is new. The flag that says so
-                // lives four layers up in the command line and would be four signatures of
-                // plumbing to carry a boolean somebody can read off the thing itself.
+                // Said once, when the worker first has a session in hand: the earliest point where
+                // both the session and the registry the watchers live in exist. Resumed is read off
+                // the session — one that already has entries was carried in from a journal.
                 let mut announced = false;
                 while let Some(job) = queue.recv().await {
                     if !announced {
@@ -163,8 +124,7 @@ impl Worker {
                         });
                     }
                     match job.kind {
-                        // A failed turn is already journalled as an error entry by `turn::run`;
-                        // there is nothing further to report and nothing to abort the daemon for.
+                        // A failed turn is already journalled as an error entry by `turn::run`.
                         Work::Turn => {
                             let _ =
                                 turn::run(&job.session, &backend, &registry, &*ops, &scribe).await;
@@ -181,10 +141,8 @@ impl Worker {
         Self { jobs }
     }
 
-    /// Run a turn for this session, and wait for it.
-    ///
-    /// Waiting is what makes a second prompt queue behind the first rather than interleave. The
-    /// UI is not blocked by it: deltas are published as they arrive, from the worker.
+    /// Run a turn for this session, and wait for it. Waiting is what makes a second prompt queue
+    /// behind the first; deltas are published from the worker, so the UI is not blocked by it.
     pub async fn run(&self, session: Arc<Mutex<Session>>) {
         self.queue(session, Work::Turn).await;
     }
@@ -221,18 +179,11 @@ impl Worker {
     }
 }
 
-/// Ask what the work ahead needs, then put each need through the ordinary prompt.
-///
-/// The answer is a proposal. Every need becomes an [`Ops::allow`] call — the same one a tool
-/// makes — so the person sees the same prompt and the ledger is written by the same path. The
-/// model gains nothing it did not have; what changes is that the questions arrive together, in
-/// front of the work, described by the only party that knows the shape of it.
+/// Ask what the work ahead needs, then put each need through the ordinary prompt. Every need
+/// becomes an [`Ops::allow`] call, so the person sees the same prompt and the same ledger is written.
 async fn declare(session: &Arc<Mutex<Session>>, backend: &Backend, ops: &dyn magi_tools::Ops) {
-    // Said, not journalled. `Entry::Notice` is the UI's own device -- the protocol says the
-    // daemon never authors one -- and a transcript replayed later should hold the conversation
-    // rather than a proposal that was answered at the time. `Refused` is the existing path for
-    // "the daemon has something to say that is not the conversation", and the UI already turns
-    // one into a notice on screen.
+    // Said, not journalled: `Entry::Notice` is the UI's own device and the daemon never authors
+    // one. `Refused` is the path for something the daemon says that is not the conversation.
     let say = |session: &Arc<Mutex<Session>>, message: String| {
         let session = Arc::clone(session);
         async move {
@@ -247,9 +198,7 @@ async fn declare(session: &Arc<Mutex<Session>>, backend: &Backend, ops: &dyn mag
     let mut context = crate::context::of(&*session.lock().await);
     context.system.clone_from(&backend.system);
 
-    // Nothing to plan about. A provider handed a conversation with no messages does not answer
-    // -- it does not refuse either, which is how this presented: a spinner and then nothing,
-    // for as long as anybody was willing to watch.
+    // A provider handed a conversation with no messages does not answer, and does not refuse either.
     if context.messages.is_empty() {
         say(
             session,
@@ -258,8 +207,7 @@ async fn declare(session: &Arc<Mutex<Session>>, backend: &Backend, ops: &dyn mag
         .await;
         return;
     }
-    // The question, last, so the conversation ends on something addressed to the model. Without
-    // it the context ends on the model's own answer and the reply comes back empty.
+    // The question last, so the context does not end on the model's own answer and come back empty.
     context
         .messages
         .push(magi_model::Message::user(crate::declaring::question(
@@ -271,8 +219,7 @@ async fn declare(session: &Arc<Mutex<Session>>, backend: &Backend, ops: &dyn mag
         ..backend.wants.clone()
     };
 
-    // Bounded. A mind that never answers must not hold the worker thread for the life of the
-    // daemon, which is what a plain await here did.
+    // Bounded: a mind that never answers must not hold the worker thread for the life of the daemon.
     let asked = tokio::time::timeout(
         std::time::Duration::from_secs(120),
         crate::broker::value(&backend.model, &context, &wants),
@@ -307,8 +254,7 @@ async fn declare(session: &Arc<Mutex<Session>>, backend: &Backend, ops: &dyn mag
         say(session, format!("It says it needs: {}", lines.join("; "))).await;
     }
 
-    // Asked one at a time, through the ordinary gate, so each is answerable at any width and a
-    // refusal is just a refusal. Blocking, so they queue rather than racing onto one screen.
+    // One at a time, through the ordinary gate. Blocking, so they queue rather than race onto one screen.
     for need in needs {
         let Some(grant) = need.grant() else { continue };
         let action = match &grant.scope {
@@ -333,8 +279,7 @@ mod tests {
     use magi_model::scratch::Scratch;
     use magi_proto::{Entry, SessionId};
 
-    /// A worker with no backend cannot be built, so this checks the queue rather than a turn:
-    /// a dropped worker must not leave a caller waiting forever.
+    /// A dropped worker must not leave a caller waiting forever.
     #[tokio::test]
     async fn a_dropped_worker_does_not_strand_its_caller() {
         let (jobs, queue) = mpsc::channel::<Job>(1);

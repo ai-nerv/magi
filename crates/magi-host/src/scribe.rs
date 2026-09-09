@@ -1,44 +1,23 @@
-//! Handing the transcript to balthasar.
-//!
-//! Beside [`crate::session::Session`] rather than inside it. A session is held behind a mutex
-//! and a commit is a short lock; putting a socket round trip in there would hold that lock
-//! across balthasar's `fsync` and freeze every UI read for the length of it. So the session
-//! commits to memory, and the turn driver hands the settled entry over next, outside the lock.
-//!
-//! What travels is `raw` — the serialised [`Record`], byte for byte, which balthasar stores and
-//! never parses. The other fields are a projection for balthasar's own searching and quoting;
-//! losing one costs a nicer diagnostic rather than a session.
+//! Handing the transcript to balthasar, beside [`crate::session::Session`] rather than inside it:
+//! a socket round trip under the session lock would hold it across balthasar's `fsync` and freeze
+//! every UI read. What travels is `raw`, the serialised [`Record`]; the rest is a projection.
 
 use magi_ipc::family::{Family, Fault};
 use magi_journal::{JOURNAL_VERSION, Record};
 use magi_proto::{Cursor, Entry, SessionId};
 
-/// The one connection to balthasar, as the session shares it.
-///
-/// Here rather than beside either of its users. It is held by the turn loop, by the surface's
-/// question path and by the flush on the way out, and putting the name in any one of them made
-/// that one a dependency of the others — `worker` and `turn` in a circle, which the cycle gate
-/// said so about within the minute.
+/// The one connection to balthasar, as the session shares it. Named here rather than beside either
+/// of its users, which would put `worker` and `turn` in a cycle.
 pub type Held = std::sync::Arc<tokio::sync::Mutex<Option<Scribe>>>;
 
-/// A connection to balthasar, bound to one session.
 pub struct Scribe {
     family: Family,
-    /// Where to dial to get this connection back.
-    ///
-    /// A held connection is not a permanent one: balthasar can restart, and it drops a caller
-    /// that has been quiet — which, between one prompt and the next, magi always is. Without a
-    /// way back, the first such drop ended recording for the rest of the session and every turn
-    /// after it was written into the transcript as lost.
-    ///
-    /// `None` when the connection was found rather than named, which is the answer for a
-    /// balthasar magi did not start: the way back is to look again.
+    /// Where to dial to get this connection back. balthasar can restart, and it drops a caller that
+    /// has been quiet — which magi is between prompts — so without this the first drop ended
+    /// recording for the session. `None` when the connection was found rather than named.
     at: Option<std::path::PathBuf>,
     session: String,
     /// Cursors already sent, so a second write says `amend` rather than `observe`.
-    ///
-    /// The two land in the same place and the second wins either way, but which verb was meant
-    /// is not balthasar's to infer from whether a row happened to exist.
     sent: std::collections::BTreeSet<u64>,
 }
 
@@ -53,10 +32,8 @@ impl Scribe {
         })
     }
 
-    /// Bind to a session over an already-open connection.
-    ///
-    /// `at` is where that connection came from, so a dropped one can be dialled again. Pass
-    /// `None` only when there is no such path.
+    /// Bind to a session over an already-open connection. `at` is where it came from, so a dropped
+    /// one can be dialled again; pass `None` only when there is no such path.
     #[must_use]
     pub fn over(family: Family, at: Option<std::path::PathBuf>, session: &SessionId) -> Self {
         Self {
@@ -81,21 +58,11 @@ impl Scribe {
         self.write("observe", cursor, entry).await
     }
 
-    /// Record something that happened that is not a transcript entry.
-    ///
-    /// **The half of the trace the journal cannot carry.** Every [`Entry`] reaches balthasar
-    /// already — [`Scribe::settle`] does it for each one as the turn commits — so the
-    /// conversation and its tool calls are there without anybody asking. Permissions, provider
-    /// retries and compactions are not entries: they happen *around* the transcript rather than
-    /// in it, and until now they reached nothing that outlives the process.
-    ///
-    /// Written at the cursor the turn was at, with a role of `trace`, so a reader can tell an
-    /// observation about the session from something said in it. balthasar takes a free-form
-    /// turn, which is what makes this possible without a verb of its own.
+    /// Record something that happened that is not a transcript entry — a permission, a provider
+    /// retry, a compaction — at the cursor the turn was at, with a role of `trace`.
     ///
     /// # Errors
-    /// The same as any other write, and treated the same way by the caller: a balthasar that is
-    /// not there costs the trace and nothing else.
+    /// As any other write: a balthasar that is not there costs the trace and nothing else.
     pub async fn noticed(&mut self, cursor: Cursor, kind: &str, text: &str) -> Result<(), Fault> {
         let turn = serde_json::json!({
             "cursor": cursor.0,
@@ -107,15 +74,11 @@ impl Scribe {
         self.family.call("observe", args).await.map(|_| ())
     }
 
-    /// Call a verb for this session and hand back what came, undeserialised.
-    ///
-    /// For the rows [`Scribe::replay`] cannot represent: it reads into [`Entry`], and a trace row
-    /// is deliberately not one. A reader that wants to see what was actually recorded needs the
-    /// values rather than what they parse into.
+    /// Call a verb for this session and hand back what came, undeserialised. For the rows
+    /// [`Scribe::replay`] cannot represent: it reads into [`Entry`], and a trace row is not one.
     ///
     /// # Errors
-    /// The same as any other call, and treated the same way: a balthasar that is not there costs
-    /// the answer and nothing else.
+    /// As any other call: a balthasar that is not there costs the answer and nothing else.
     pub async fn raw(&mut self, verb: &str) -> Result<Vec<serde_json::Value>, Fault> {
         let args = vec![serde_json::Value::String(self.session.clone())];
         self.family.call(verb, args).await
@@ -140,14 +103,8 @@ impl Scribe {
         let args = vec![serde_json::Value::String(self.session.clone()), turn];
         match self.family.call(verb, args.clone()).await {
             Ok(_) => {}
-            // Dialled again and asked once more, and only for a connection that died: a
-            // refusal or a failed write is an answer, and asking twice would either repeat a
-            // refusal or record a turn twice. Once, because a second failure is an outage
-            // rather than a dropped handle, and a turn is not the place to sit retrying.
-            //
-            // Safe to repeat because the verb is addressed to a cursor: `observe` at a cursor
-            // that already has a row is what `amend` means, so the worst a retry can do is
-            // write what was already there.
+            // Dialled again and asked once more, and only for a connection that died: a refusal is
+            // an answer. Safe to repeat, since `observe` at a cursor that has a row is an `amend`.
             Err(Fault::Unavailable(why)) => {
                 self.redial()
                     .await
@@ -166,10 +123,7 @@ impl Scribe {
         self.replay_at(&session).await
     }
 
-    /// The same, for a session this scribe is not bound to.
-    ///
-    /// Resuming reads somebody else's run before becoming it, so the id is the argument rather
-    /// than the one this connection was opened with.
+    /// The same, for a session this scribe is not bound to, which is what resuming reads.
     pub async fn replay_of(&mut self, id: &str) -> Result<Vec<Entry>, Fault> {
         Ok(self
             .replay_at(id)
@@ -193,12 +147,8 @@ impl Scribe {
         Ok(values.iter().flat_map(rows).cloned().collect())
     }
 
-    /// What this memory holds about `query`, nearest first.
-    ///
-    /// An empty query is what balthasar takes to mean "whatever is nearest", which is the answer
-    /// to "what does this session remember" — so it is passed through rather than refused here.
-    /// This session's own id travels with it, or a run could not find what it was told a minute
-    /// ago: freshly written memories live in the run's own scratch until they are distilled.
+    /// What this memory holds about `query`, nearest first. An empty query means whatever is
+    /// nearest. This session's id travels with it: fresh memories live in the run's own scratch.
     pub async fn nearest(&mut self, query: &str, limit: u64) -> Result<Recalled, Fault> {
         let args = vec![
             serde_json::Value::String(query.to_owned()),
@@ -208,25 +158,12 @@ impl Scribe {
         Ok(Recalled::of(&values))
     }
 
-    /// Say that something was done after memories were handed over, and how it went.
-    ///
-    /// **The loop that decides whether a memory was any good.** Everything else here is one
-    /// direction: the transcript goes over, memories come back. This is the only call that says
-    /// what happened *next*, and without it balthasar can rank by recency and similarity and
-    /// never by whether anything it offered was worth offering.
-    ///
-    /// magi reports the action and nothing more. Whether it followed from any particular memory
-    /// is balthasar's to decide against the injection it served them under — a harness claiming
-    /// a match it did not verify would be asserting an analysis rather than reporting an event.
-    ///
-    /// Two calls because they are two facts, and the second is not known when the first is: a
-    /// tool that has been started has been used, and how it went is decided later.
-    ///
-    /// Answers the outcome row balthasar wrote, or `None` when it keeps no ledger.
+    /// Say that something was done after memories were handed over, and how it went — the only call
+    /// that says what happened next, without which balthasar ranks by recency and similarity
+    /// forever. Two calls, because how it went is not known when it starts.
     ///
     /// # Errors
-    /// Whatever balthasar answered. A ledger that is off refuses this, which is not a failure of
-    /// the turn.
+    /// Whatever balthasar answered. A ledger that is off refuses this, which is not a turn failure.
     pub async fn acted(
         &mut self,
         injection: &str,
@@ -262,8 +199,7 @@ impl Scribe {
             )
             .await?;
         // The row balthasar minted, answered back so a caller can tell "it recorded this" from
-        // "it accepted the call". They are the same reply otherwise, and the difference is the
-        // whole of whether this loop is closed.
+        // "it accepted the call".
         Ok(settled
             .first()
             .and_then(|v| v.get("outcome"))
@@ -272,12 +208,6 @@ impl Scribe {
     }
 
     /// What balthasar has attributed to one memory: outcomes, and how often it was returned.
-    ///
-    /// Read-only, and the only way to see from out here that [`Self::acted`] landed rather than
-    /// merely returned. Answers nothing useful when the ledger is off, which is the default.
-    ///
-    /// # Errors
-    /// Whatever balthasar answered.
     pub async fn utility(&mut self, memory: &str) -> Result<serde_json::Value, Fault> {
         let values = self
             .family
@@ -289,17 +219,11 @@ impl Scribe {
         Ok(values.first().cloned().unwrap_or(serde_json::Value::Null))
     }
 
-    /// The Lua library that speaks balthasar's surface, as balthasar itself ships it.
-    ///
-    /// **A consumer keeping its own copy is a consumer whose copy goes stale**, and this one did:
-    /// magi's copy predated a fix to the connect path, so every session on that machine silently
-    /// had no memory tools and nothing anywhere said why. The chicken and egg is real — a client
-    /// is needed to ask for the client — and the answer is the one melchior already uses: connect
-    /// with the copy you have, then take the one the server serves.
+    /// The Lua library that speaks balthasar's surface, as balthasar itself ships it. A consumer
+    /// keeping its own copy is one whose copy goes stale: take the one the server serves.
     ///
     /// # Errors
-    /// Whatever balthasar answered. An older balthasar does not know the verb, which is not a
-    /// failure: the bundled copy is then what runs, exactly as before.
+    /// Whatever balthasar answered. An older balthasar does not know the verb, and the copy runs.
     pub async fn library(&mut self) -> Result<String, Fault> {
         let values = self.family.call("client", Vec::new()).await?;
         values
@@ -309,17 +233,9 @@ impl Scribe {
             .ok_or_else(|| Fault::Malformed("client answered no source".to_owned()))
     }
 
-    /// Where balthasar thinks this session left off, and how much of it it holds.
-    ///
-    /// **A cross-check, not a source.** magi's journal is the copy of record — this whole module
-    /// exists to hand it *over* — so resuming from balthasar would mean rebuilding the
-    /// transcript from a projection of itself. What this is for is the disagreement: if
-    /// balthasar holds fewer turns than magi has, its scrollback is incomplete, and everything
-    /// computed from it (`plan`, `replay`, `scroll`) is answering about a different
-    /// conversation.
-    ///
-    /// # Errors
-    /// Whatever balthasar answered.
+    /// Where balthasar thinks this session left off, and how much of it it holds. A cross-check,
+    /// not a source: magi's journal is the copy of record, and a balthasar holding fewer turns has
+    /// an incomplete scrollback that `plan`, `replay` and `scroll` all answer from.
     pub async fn resumes(&mut self) -> Result<u64, Fault> {
         let values = self
             .family
@@ -335,39 +251,12 @@ impl Scribe {
             .unwrap_or(0))
     }
 
-    /// What balthasar would send, given a window.
-    ///
-    /// **Obeyed, not consulted.** This was consulted: magi computed its own cut from a constant
-    /// and a character estimate, asked balthasar what *it* would do, wrote the difference to a
-    /// debug log, and then did its own thing anyway. Two deciders, disagreeing in a line nobody
-    /// read.
-    ///
-    /// The argument for magi deciding was that a compaction depending on another process would
-    /// change shape when that process was upgraded. That is true and it is the point: balthasar
-    /// decides per turn with everything it knows about the run — what was masked already, what a
-    /// tool's output is worth, what has scrolled past — and magi decided with `KEEP = 8`. Which
-    /// of the two is a memory layer is not a close question.
-    ///
-    /// What comes back is `keep` / `mask` / `drop` / `summarise` in cursor space, plus `fits` and
-    /// a `why` worth logging. magi's remaining job is the one balthasar cannot do: it holds no
-    /// model, so the summary of a span is written here.
+    /// Say which model this session talks to, and how much it holds. balthasar does the compacting,
+    /// so it has to know what it is compacting for, and that cannot be guessed from the turns. Told
+    /// at startup and again whenever `:model` switches; without it every plan fell back to 200,000.
     ///
     /// # Errors
-    /// Whatever balthasar answered. "nothing has been observed for this session" is the ordinary
-    /// one on a harness that has not streamed its turns.
-    /// Say which model this session talks to, and how much it holds.
-    ///
-    /// **balthasar does the compacting, so balthasar has to know what it is compacting for.** It
-    /// cannot be guessed from the turns: a conversation that sits comfortably in a million tokens
-    /// overflowed an eight-thousand-token model twenty turns ago. Told once when the session comes
-    /// up and again whenever `:model` switches, because the answer changes with it.
-    ///
-    /// Without this every plan fell back to balthasar's shipped default of 200,000 — right for
-    /// one model and wrong for the rest, and silently so.
-    ///
-    /// # Errors
-    /// Whatever balthasar answered. A balthasar keeping no scrollback refuses this, which is the
-    /// ordinary answer for one configured without one.
+    /// Whatever balthasar answered. A balthasar keeping no scrollback refuses this.
     pub async fn note_model(&mut self, name: &str, window: u64) -> Result<(), Fault> {
         let args = vec![
             serde_json::Value::String(self.session.clone()),
@@ -390,19 +279,14 @@ impl Scribe {
         Ok(values.first().cloned().unwrap_or(serde_json::Value::Null))
     }
 
-    /// Keep something durably, and answer by the id it landed under.
-    ///
-    /// Deliberately separate from [`Self::observe`], which writes a run's *scratch* — that is
-    /// the run's own until something on balthasar's ladder carries it across, and a recall does
-    /// not return it. What a turn is shown unasked should be established rather than the last
-    /// thing anybody said.
+    /// Keep something durably, and answer by the id it landed under. Separate from
+    /// [`Self::observe`], which writes a run's scratch — the run's own until balthasar's ladder
+    /// carries it across, and a recall does not return it.
     ///
     /// # Errors
     /// Whatever balthasar answered.
     pub async fn keep(&mut self, text: &str) -> Result<String, Fault> {
-        // Under this session, so it is this session's to take back. A memory kept with no
-        // session belongs to the project, and balthasar rightly refuses to let a peer forget
-        // what it did not write.
+        // Under this session, so it is this session's to take back.
         let values = self
             .family
             .call(
@@ -422,9 +306,6 @@ impl Scribe {
     }
 
     /// Stop asserting one memory.
-    ///
-    /// # Errors
-    /// Whatever balthasar answered.
     pub async fn drop_memory(&mut self, id: &str) -> Result<(), Fault> {
         self.family
             .call("forget", vec![serde_json::Value::String(id.to_owned())])
@@ -433,16 +314,12 @@ impl Scribe {
     }
 }
 
-/// Hand everything a session has settled to balthasar.
-///
-/// The lock is taken to drain and released before a byte is written, so a UI reading the
-/// transcript is never queued behind balthasar's `fsync`. Draining first also means a failure
-/// does not re-send what already landed: the queue is empty either way, and the error says the
-/// turn may not continue.
+/// Hand everything a session has settled to balthasar. The lock is taken to drain and released
+/// before a byte is written, so a UI reading the transcript is never queued behind `fsync`.
+/// Draining first also means a failure does not re-send what already landed.
 ///
 /// # Errors
-/// Whatever balthasar answered. [`Fault::is_fatal`] says whether continuing would build on a
-/// hole.
+/// Whatever balthasar answered. [`Fault::is_fatal`] says whether continuing would build on a hole.
 pub async fn flush(
     session: &tokio::sync::Mutex<crate::session::Session>,
     scribe: &mut Option<Scribe>,
@@ -458,10 +335,8 @@ pub async fn flush(
         held.take_pending()
     };
     for (cursor, entry) in settled {
-        // **A mask is not news to the layer that ordered it.** balthasar marks a turn masked as
-        // it hands the plan over; magi writes the record so its own transcript agrees. Streaming
-        // it back would file balthasar's own decision as a fresh turn in the scrollback it plans
-        // over — a loop, and one that grows the window it was trying to shrink.
+        // A mask is not news to the layer that ordered it: balthasar marks a turn masked as it
+        // hands the plan over, and streaming it back would file its decision as a fresh turn.
         if matches!(entry, Entry::Masked { .. }) {
             continue;
         }
@@ -470,23 +345,12 @@ pub async fn flush(
     Ok(())
 }
 
-/// What a recall answered, and the ledger entry it belongs to.
-///
-/// **balthasar answers `recall` in two shapes**, and which one depends on a setting magi does not
-/// hold. With its ledger off it hands back a bare list of memories; with the ledger on it hands
-/// back `{ injection, memories }`, because handing memories to something that is about to put
-/// them in a model's context *is* an injection and the id is what makes an outcome attributable
-/// to it later.
-///
-/// Read here rather than at the call site so there is one place that knows both shapes. Reading
-/// only the first is how the automatic path came to carry no injection id at all, which left
-/// `used` and `outcome` — the loop that decides whether a memory was any good — with nothing to
-/// report against.
+/// What a recall answered, and the ledger entry it belongs to. balthasar answers `recall` in two
+/// shapes — a bare list with its ledger off, `{ injection, memories }` with it on — and reading
+/// only the first is how the automatic path came to carry no injection id at all.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Recalled {
-    /// The memories, in the order balthasar ranked them.
     pub memories: Vec<serde_json::Value>,
-    /// The ledger entry these were served under, when balthasar is keeping one.
     pub injection: Option<String>,
 }
 
@@ -519,18 +383,14 @@ fn rows(value: &serde_json::Value) -> Vec<&serde_json::Value> {
         .map_or_else(|| vec![value], |a| a.iter().collect())
 }
 
-/// Rebuild one entry from the `raw` balthasar handed back.
-///
-/// Read from `raw` and nothing else. The projection is balthasar's to search; the record is
-/// magi's, and reconstructing from a projection would quietly lose every field the projection
-/// does not carry.
+/// Rebuild one entry from the `raw` balthasar handed back, and nothing else: reconstructing from
+/// the projection would quietly lose every field the projection does not carry.
 fn rebuild(row: &serde_json::Value) -> Result<(Cursor, Entry), Fault> {
     let raw = row
         .get("raw")
         .ok_or_else(|| Fault::Malformed("a replayed row has no raw".into()))?;
 
-    // Either a JSON object or the string it was serialised to; balthasar accepts both, so both
-    // can come back.
+    // Either a JSON object or the string it was serialised to; balthasar accepts both.
     let record: Record = match raw {
         serde_json::Value::String(text) => serde_json::from_str(text),
         other => serde_json::from_value(other.clone()),
@@ -566,7 +426,6 @@ fn turn(cursor: Cursor, entry: &Entry) -> Result<serde_json::Value, Fault> {
     Ok(serde_json::Value::Object(turn))
 }
 
-/// Who is speaking.
 fn role(entry: &Entry) -> &'static str {
     match entry {
         Entry::User { .. } | Entry::From { .. } => "user",
@@ -576,11 +435,8 @@ fn role(entry: &Entry) -> &'static str {
     }
 }
 
-/// Which block this is.
-///
-/// `user`, `from` and `branch` are beyond the five `PLAN_SCROLLBACK.md` named. Without them a
-/// message from a sibling session is filed as ordinary prose and quoted back as though the
-/// person had typed it.
+/// Which block this is. `user`, `from` and `branch` are beyond the five `PLAN_SCROLLBACK.md` named;
+/// without them a sibling's message is quoted back as though the person had typed it.
 fn kind(entry: &Entry) -> &'static str {
     match entry {
         Entry::User { .. } => "user",
@@ -622,12 +478,8 @@ fn text(entry: &Entry) -> String {
 mod tests {
     use super::Recalled;
 
-    /// Both shapes balthasar answers `recall` in, and which is which.
-    ///
-    /// The setting that decides is balthasar's, not magi's, so this cannot be settled by
-    /// convention: a magi that read only the bare-list shape saw the ledger form as one
-    /// unparseable memory, and one that read only the wrapper saw nothing at all when the ledger
-    /// was off. Both are the ordinary case on somebody's machine.
+    /// Both shapes balthasar answers `recall` in. The setting that decides is balthasar's, and both
+    /// are the ordinary case on somebody's machine.
     #[test]
     fn a_recall_with_no_ledger_is_a_list_of_memories() {
         let answered = Recalled::of(&[serde_json::json!([
@@ -742,8 +594,7 @@ mod tests {
 
     #[test]
     fn the_projection_never_stands_in_for_the_record() {
-        // A signature is in `raw` and nowhere else; rebuilding from `text` would lose it and
-        // the next provider call would be a 400.
+        // A signature is in `raw` and nowhere else; rebuilding from `text` would be a 400.
         let entry = Entry::Tool {
             id: ToolCallId::new("t1"),
             name: "shell".into(),

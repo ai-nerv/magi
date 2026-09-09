@@ -1,24 +1,11 @@
-//! Telling the siblings what to be.
-//!
-//! magi coordinates. A sibling it started should not be reading a configuration of its own and
-//! hoping the two agree, so magi asks what each takes and says — once, on the way up, before
-//! either is used for anything.
-//!
-//! **Asked before told.** A coordinator that pushed settings from a list of its own would have
-//! to know every sibling's vocabulary by heart and would be wrong first: a renamed setting would
-//! fail silently on the far side and nothing here would notice. So [`needs`] is read, what magi
-//! has an answer for is sent, and anything the sibling would not take comes back named.
-//!
-//! A sibling nobody started this way reads its own files exactly as before. This is what happens
-//! when somebody is coordinating, not instead of it.
+//! Telling the siblings what to be. magi asks what each takes and says it once, on the way up:
+//! [`needs`] is read, what magi has an answer for is sent, and anything the sibling would not take
+//! comes back named. A sibling nobody started this way reads its own files exactly as before.
 
 use magi_proto::setup::{Applied, Need};
 
-/// What a sibling says it takes.
-///
-/// Empty when it is not installed or will not answer — not an error. A sibling that cannot be
-/// asked cannot be told either, and the session carries on without it exactly as it did before
-/// any of this existed.
+/// What a sibling says it takes. Empty when it is not installed or will not answer, which is not
+/// an error: a sibling that cannot be asked cannot be told either.
 pub async fn needs(program: &str) -> Vec<Need> {
     let Ok(out) = tokio::process::Command::new(program)
         .arg("needs")
@@ -40,8 +27,7 @@ pub async fn needs(program: &str) -> Vec<Need> {
 ///
 /// # Errors
 /// When the sibling could not be started, would not answer, or refused the chunk outright. A
-/// setting it declined is *not* an error: it comes back in [`Applied::refused`], because a
-/// coordinator wants to know which one rather than have the whole exchange fail.
+/// setting it declined is not an error: it comes back in [`Applied::refused`].
 pub async fn configure(program: &str, source: &str) -> Result<Applied, String> {
     let mut child = tokio::process::Command::new(program)
         .arg("configure")
@@ -57,14 +43,12 @@ pub async fn configure(program: &str, source: &str) -> Result<Applied, String> {
 
     if let Some(mut stdin) = child.stdin.take() {
         use tokio::io::AsyncWriteExt;
-        // Half of a Lua file is still a Lua file, and the sibling would apply it. The refusal
-        // that comes back names a syntax error somewhere in the middle of source that is correct
-        // on disk, which is a bad afternoon; the log at least says the pipe went.
+        // Half of a Lua file is still a Lua file, and the sibling would apply it; the log at least
+        // says the pipe went.
         if let Err(why) = stdin.write_all(source.as_bytes()).await {
             magi_model::noted!("driving: the configuration for {program} was cut short: {why}");
         }
-        // Closed, because the far side reads to end of file. A handle left open is a sibling
-        // waiting for a chunk that has already been written.
+        // Closed, because the far side reads to end of file.
         let _ = stdin.shutdown().await;
     }
     let out = child
@@ -93,10 +77,8 @@ pub async fn configure(program: &str, source: &str) -> Result<Applied, String> {
     .ok_or_else(|| format!("{program} answered something unreadable"))
 }
 
-/// Write the Lua that says what magi has decided, for the settings this sibling takes.
-///
-/// Only what it asked for. A coordinator that sent everything it knew would be relying on the
-/// far side to ignore the rest, and "ignored" is indistinguishable from "misspelled".
+/// Write the Lua that says what magi has decided, for the settings this sibling takes. Only what it
+/// asked for: "ignored" is indistinguishable from "misspelled".
 #[must_use]
 pub fn saying(module: &str, needs: &[Need], answers: &[(&str, serde_json::Value)]) -> String {
     let mut out = String::new();
@@ -109,18 +91,9 @@ pub fn saying(module: &str, needs: &[Need], answers: &[(&str, serde_json::Value)
     out
 }
 
-/// One JSON value as the Lua literal for it.
-///
-/// **Tables included, because the siblings declare them.** melchior declares `provider` as a
-/// table, balthasar declares `decay` and `witness`, and casper declares `tools` — and this wrote
-/// `nil` for every one of them. So the contract advertised a shape the coordinator could not
-/// deliver: a person writing `magi.casper = { tools = { dino = { off = true } } }` was answered
-/// with silence, and the sibling reported nothing set because nothing was.
-///
-/// A map becomes `{ ["key"] = value }` and a list becomes `{ value, value }`. Keys are written as
-/// bracketed strings rather than bare identifiers, so a key that is a Lua keyword — or has a dash
-/// in it, which several settings do — is not a syntax error in the chunk somebody else has to
-/// run.
+/// One JSON value as the Lua literal for it, tables included — melchior, balthasar and casper all
+/// declare table settings. A map becomes `{ ["key"] = value }` and a list `{ value, value }`; keys
+/// are bracketed strings, so a key that is a Lua keyword or has a dash in it is not a syntax error.
 fn lua(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::String(text) => format!("{text:?}"),
@@ -137,21 +110,14 @@ fn lua(value: &serde_json::Value) -> String {
                 .collect();
             format!("{{ {} }}", inner.join(", "))
         }
-        // `null` is the one thing left, and `nil` is its honest rendering: it sets nothing, and
-        // the sibling reports nothing set.
+        // `nil` sets nothing, and the sibling reports nothing set.
         serde_json::Value::Null => "nil".to_owned(),
     }
 }
 
-/// The rows a reply meant, when one of them turns out to be the rows.
-///
-/// The contract says `result` is a list of rows and a row is a value. casper sent its listings
-/// as one row that was itself a list, so a coordinator deserialising row by row found an array
-/// where a declaration belonged, took nothing from it, and concluded casper declared nothing.
-///
-/// casper sends them flat now. This stays because the four programs ship from four repositories
-/// and are installed one at a time: a coordinator that understands only the newer shape stops
-/// coordinating the older sibling entirely, and does it silently.
+/// The rows a reply meant, when one of them turns out to be the rows. casper once sent its listings
+/// as one row that was itself a list. It sends them flat now; this stays because the four programs
+/// ship from four repositories and are installed one at a time.
 fn flat(rows: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
     match rows.first() {
         Some(serde_json::Value::Array(inner)) if rows.len() == 1 => inner.clone(),
@@ -191,8 +157,6 @@ mod tests {
 
     #[test]
     fn only_what_the_sibling_asked_for_is_sent() {
-        // The whole point of asking first. Sending a setting it does not take would be relying
-        // on it to ignore the rest, and "ignored" reads the same as "misspelled".
         let needs = [need("thinking", Kind::Text)];
         let said = saying(
             "melchior",
@@ -229,8 +193,7 @@ mod tests {
 
     #[test]
     fn a_string_is_quoted_and_escaped_rather_than_pasted() {
-        // A value with a quote in it would otherwise end the literal and leave the rest of the
-        // line as Lua — which is a coordinator writing code it did not mean to.
+        // A value with a quote in it would otherwise end the literal and leave the rest as Lua.
         let needs = [need("model", Kind::Text)];
         let said = saying(
             "melchior",
@@ -283,9 +246,6 @@ mod table_tests {
 
     #[test]
     fn a_table_setting_is_rendered_rather_than_nilled() {
-        // **The contract advertised a shape the coordinator could not deliver.** Three siblings
-        // declare table settings and this wrote `nil` for all of them, so a person configuring
-        // one got silence and the sibling correctly reported that nothing had been set.
         let said = saying(
             "casper",
             &[need("tools")],
@@ -315,8 +275,8 @@ mod table_tests {
 
     #[test]
     fn a_key_that_is_not_an_identifier_is_still_written() {
-        // Bracketed strings rather than bare names: a key with a dash in it, or one that is a Lua
-        // keyword, would otherwise be a syntax error in a chunk somebody else has to run.
+        // Bracketed strings rather than bare names: a dash or a Lua keyword in a key would
+        // otherwise be a syntax error in a chunk somebody else has to run.
         let said = saying(
             "melchior",
             &[need("compat")],
@@ -330,8 +290,6 @@ mod table_tests {
     }
     #[test]
     fn a_listing_that_arrived_as_one_row_of_rows_is_still_read() {
-        // What casper used to send. A coordinator that only understood the flat shape would take
-        // no settings from it and say nothing about why.
         let nested = vec![serde_json::json!([{ "name": "tools" }, { "name": "load" }])];
         assert_eq!(flat(nested).len(), 2);
     }
@@ -340,8 +298,8 @@ mod table_tests {
     fn flat_rows_are_left_alone() {
         let rows = vec![serde_json::json!({ "name": "tools" })];
         assert_eq!(flat(rows.clone()), rows);
-        // Two rows, the first of which is genuinely a list, is not the wrapping — it is a reply
-        // whose first value happens to be an array, and unwrapping it would lose the second.
+        // Two rows whose first is genuinely a list is not the wrapping, and unwrapping it would
+        // lose the second.
         let mixed = vec![serde_json::json!([1, 2]), serde_json::json!(3)];
         assert_eq!(flat(mixed.clone()), mixed);
     }

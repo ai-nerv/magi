@@ -1,9 +1,6 @@
 //! What a project remembers, reaching the model, against a balthasar that is actually running.
-//!
-//! Skipped when there is no socket. What this proves cannot be proved against a mock: that a
-//! thing balthasar was told is a thing a later turn is shown without anybody asking for it.
-//! Every other path into the memory layer needs somebody to ask first — a surface, a tool call,
-//! a `doctor` — and a model that has forgotten something cannot ask about it.
+//! Skipped when there is no socket. What this proves cannot be proved against a mock: that a thing
+//! balthasar was told is shown to a later turn without anybody asking for it.
 
 use magi_host::scribe::Scribe;
 use magi_model::scratch::Scratch;
@@ -15,28 +12,13 @@ const ANSWERS_WITHIN: std::time::Duration = std::time::Duration::from_secs(3);
 /// A window big enough that the budget is not what is under test.
 const WINDOW: usize = 200_000;
 
-/// One live balthasar at a time.
-///
-/// **Each test here starts a server, and `cargo test` runs them at once.** Seven `balthasar serve`
-/// processes opening seven stores and answering their first call inside the scribe's two-second
-/// deadline is a race that the machine wins or loses depending on what else it is doing — which
-/// is a suite that passes alone and fails in the workspace run, for a reason that has nothing to
-/// do with what any of it asserts.
-///
-/// Serialising costs a few seconds of wall clock and removes the whole class. The lock is held
-/// for the body of the test, so the server is also gone before the next one starts and the
-/// runtime directory holds one socket rather than seven.
+/// One live balthasar at a time. Each test here starts a server and `cargo test` runs them at once;
+/// seven of them racing the scribe's deadline is a suite that passes alone and fails in a workspace run.
 static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// A balthasar of this test's own, and a scribe onto it.
-///
-/// **Not the one the developer is using.** This writes a durable memory and reads it back, and a
-/// test that put a sentence into somebody's own memory layer and walked away would make their
-/// sessions worse the longer it was run. Its own store in its own directory, taken away with the
-/// scratch when the test ends.
-///
-/// `None` when balthasar is not installed, which is the ordinary case on a machine that has not
-/// got one and not a failure: this file is about the seam, not about the layer.
+/// A balthasar of this test's own, and a scribe onto it — not the one the developer is using, since
+/// this writes a durable memory. `None` when balthasar is not installed, which is not a failure:
+/// this file is about the seam, not about the layer.
 async fn own_balthasar(
     name: &str,
     ledger: bool,
@@ -49,10 +31,7 @@ async fn own_balthasar(
     // Taken before anything is started, and handed back so it is held for the test's own body.
     let held = ONE_AT_A_TIME.lock().await;
     let dir = Scratch::new("mi", name);
-    // The ledger is off by default, and rightly: it costs writes on the recall path, and a
-    // memory layer that silently started recording what a person searches for because a new
-    // version shipped is not one anybody should install. It is what makes `used` and `outcome`
-    // answer, so the test that exercises them turns it on for its own balthasar only.
+    // The ledger is off by default and costs writes on the recall path; `used` and `outcome` need it.
     if ledger {
         std::fs::write(
             dir.join(".balthasar.lua"),
@@ -68,11 +47,8 @@ async fn own_balthasar(
         .arg("--scope")
         .arg("project")
         .current_dir(&*dir)
-        // **The runtime directory is the scratch's too.** The store was already private; the
-        // socket was not. balthasar binds `$XDG_RUNTIME_DIR/balthasar/api@<instance>.sock` and
-        // the `SIGKILL` in `Serving` gives it no chance to unlink one, so against the real
-        // directory every test of every run left a dead socket there for good — hundreds of them
-        // on this machine, which is a directory other tests read to find a living sibling.
+        // The runtime directory is the scratch's too. balthasar binds a socket under it and the
+        // `SIGKILL` in `Serving` gives it no chance to unlink one, so a real directory fills up.
         .env("XDG_RUNTIME_DIR", dir.join("r"))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -80,15 +56,13 @@ async fn own_balthasar(
         .spawn()
         .ok()?;
 
-    // Short names above, because the instance appears inside a socket path that may not exceed
-    // `SUN_LEN` and `gate-hermetic` already nests the run in a temporary directory of its own.
+    // Short names, because the instance appears inside a socket path bounded by `SUN_LEN`.
     let socket = dir
         .join("r")
         .join("balthasar")
         .join(format!("api@{instance}.sock"));
 
-    // Polled rather than slept on: binding is the first thing it does, and a fixed wait is
-    // either too short on a loaded machine or wasted on an idle one.
+    // Polled rather than slept on: a fixed wait is too short when loaded and wasted when idle.
     let id = SessionId::new(&instance);
     let deadline = std::time::Instant::now() + ANSWERS_WITHIN;
     while std::time::Instant::now() < deadline {
@@ -105,13 +79,8 @@ async fn own_balthasar(
     None
 }
 
-/// A `balthasar serve` this test started, killed when the test ends.
-///
-/// **A guard, not a line at the bottom.** The first version killed the child on the last line of
-/// each test, and a test that returned early — no balthasar installed — or failed an assertion
-/// left one running: a `verify` on this machine found nine of them, and the suite that started
-/// them took half an hour. It is the same failure the trailing `remove_dir_all` was, in a
-/// process instead of a directory.
+/// A `balthasar serve` this test started, killed when the test ends. A guard, not a line at the
+/// bottom: a test that returns early or fails an assertion would otherwise leave one running.
 struct Serving(std::process::Child);
 
 impl Drop for Serving {
@@ -124,31 +93,25 @@ impl Drop for Serving {
 #[tokio::test]
 async fn something_remembered_comes_back_without_being_asked_for() {
     let Some((mut scribe, _dir, _balthasar, _held)) = own_balthasar("recalled", false).await else {
-        // The ordinary case on a machine with no balthasar, and the session magi had before
-        // there was one. Not a failure: this file is about the seam, not about the layer.
+        // The ordinary case on a machine with no balthasar, and not a failure.
         eprintln!("no balthasar is answering; skipped");
         return;
     };
 
-    // Kept the way a durable memory is kept. Deliberately not `observe`: observing writes a
-    // run's *scratch*, which is that run's own until something on the ladder carries it across,
-    // and a recall does not return it. That is balthasar's design and it is the right one — what
-    // gets put in front of a model unasked should be established, not the last thing said.
+    // Kept the way a durable memory is kept. Deliberately not `observe`: observing writes a run's
+    // scratch, which is that run's own and which a recall does not return.
     let phrase = format!(
         "the deploy command here is `make ship-{}`",
         std::process::id()
     );
     scribe.keep(&phrase).await.expect("balthasar keeps it");
 
-    // Asked for by nobody: this is the query a later turn would build from the prompt in front
-    // of it, and the whole point is that the model never had to think of it.
+    // Asked for by nobody: the query a later turn would build from the prompt in front of it.
     let found = tokio::time::timeout(ANSWERS_WITHIN, scribe.nearest("deploy command", 12))
         .await
         .expect("balthasar answers")
         .expect("a recall");
 
-    // Through the packer, which is what a turn actually goes through: balthasar is one supplier
-    // among however many have something to say, and this is the path its answer takes.
     let offers = vec![magi_host::injecting::offered("balthasar", &found.memories)];
     let message = magi_host::supplying::pack(&offers, WINDOW)
         .message
@@ -166,8 +129,7 @@ async fn something_remembered_comes_back_without_being_asked_for() {
         said.contains("not part of the conversation"),
         "the block says what it is: {said}"
     );
-    // Cited, in whichever form the packer used: asserted blocks go under a supplier heading,
-    // hedged ones under a shared heading with the supplier named on the line. Both say who.
+    // Cited either way: asserted blocks under a supplier heading, hedged ones with the supplier named.
     assert!(
         said.contains("balthasar"),
         "and which supplier said it: {said}"
@@ -180,20 +142,13 @@ async fn something_remembered_comes_back_without_being_asked_for() {
 
 #[tokio::test]
 async fn a_session_with_no_balthasar_is_told_nothing_and_still_runs() {
-    // The property that lets this be unconditional. A machine without a memory layer gets the
-    // session magi had before there was one, rather than an error or a wait.
     assert!(magi_host::supplying::pack(&[], WINDOW).message.is_none());
 }
 
 #[tokio::test]
 async fn what_the_turn_did_next_goes_back_to_the_memory_layer() {
-    // **The loop that decides whether a memory was any good.** Everything else is one direction:
-    // the transcript goes over, memories come back. This is the only signal balthasar has for
-    // whether anything it offered was worth offering — without it, a memory layer ranks by
-    // recency and similarity forever.
-    //
-    // It is also the axis MemoryArena separates from LoCoMo, and the one neither pi nor deepseek
-    // has anything for.
+    // The only signal balthasar has for whether anything it offered was worth offering. Without it
+    // a memory layer ranks by recency and similarity forever.
     let Some((mut scribe, _dir, _balthasar, _held)) = own_balthasar("outcome", true).await else {
         eprintln!("no balthasar is installed; skipped");
         return;
@@ -209,8 +164,7 @@ async fn what_the_turn_did_next_goes_back_to_the_memory_layer() {
         .expect("balthasar answers")
         .expect("a recall");
 
-    // With the ledger on, a recall is an *injection*: memories handed to something about to put
-    // them in a model's context. The id is what makes an outcome attributable to them.
+    // With the ledger on a recall is an injection, and the id is what makes an outcome attributable.
     let injection = found
         .injection
         .expect("a balthasar keeping a ledger says which injection these came from");
@@ -219,17 +173,14 @@ async fn what_the_turn_did_next_goes_back_to_the_memory_layer() {
         "and hands the memories over too"
     );
 
-    // What the turn then did. balthasar decides for itself whether the action followed from any
-    // of the memories; magi reports the event and nothing more.
+    // balthasar decides whether the action followed from any of the memories; magi only reports it.
     let outcome = scribe
         .acted(&injection, "shell", "oslo make install", true)
         .await
         .expect("balthasar takes the report");
 
-    // **Recorded, not merely accepted.** balthasar answers the row it wrote, and the two replies
-    // are otherwise identical — a `used` against an injection it never served, or a ledger that
-    // is off, comes back just as `ok`. The id is the difference between a closed loop and a call
-    // that went nowhere.
+    // Recorded, not merely accepted: a `used` against an injection it never served comes back `ok`
+    // too, so the id is the difference between a closed loop and a call that went nowhere.
     assert!(
         outcome.is_some_and(|id| id.contains("outcome")),
         "the outcome was written down, not just acknowledged"
@@ -238,10 +189,8 @@ async fn what_the_turn_did_next_goes_back_to_the_memory_layer() {
 
 #[tokio::test]
 async fn balthasar_serves_the_library_that_speaks_it() {
-    // **A consumer keeping its own copy is a consumer whose copy goes stale**, and this one did:
-    // magi's copy of the client library predated a fix to the connect path, so every session on
-    // that machine silently had no memory tools and nothing anywhere said why. Connect with the
-    // copy you have, take the one the server serves.
+    // A consumer keeping its own copy is a consumer whose copy goes stale: magi's copy of the
+    // client library once predated a fix, so sessions silently had no memory tools. Take the served one.
     let Some((mut scribe, _dir, _balthasar, _held)) = own_balthasar("library", false).await else {
         eprintln!("no balthasar is installed; skipped");
         return;
@@ -256,8 +205,7 @@ async fn balthasar_serves_the_library_that_speaks_it() {
         served.contains("client library"),
         "it is the file balthasar ships: {served:.120}"
     );
-    // The property that matters: what it serves is what it is actually running, so a consumer
-    // taking this cannot be holding a copy older than the server.
+    // What it serves is what it is running, so a consumer cannot hold a copy older than the server.
     assert!(
         served.contains("FAMILY"),
         "and it is current — the wire version is in it"
@@ -266,11 +214,8 @@ async fn balthasar_serves_the_library_that_speaks_it() {
 
 #[tokio::test]
 async fn balthasar_says_where_it_thinks_the_session_left_off() {
-    // **A cross-check, not a source.** magi's journal is the copy of record, so resuming from
-    // balthasar would mean rebuilding the transcript from a projection of itself. What this is
-    // for is the disagreement: a balthasar that holds none of a session's turns is one whose
-    // `plan`, `replay` and `scroll` are all answering about a different conversation, and until
-    // now there was no way to notice.
+    // A cross-check, not a source: magi's journal is the copy of record. What this is for is the
+    // disagreement — a balthasar holding none of a session's turns is answering about another one.
     let Some((mut scribe, _dir, _balthasar, _held)) = own_balthasar("resume", false).await else {
         eprintln!("no balthasar is installed; skipped");
         return;
@@ -306,13 +251,8 @@ async fn balthasar_says_where_it_thinks_the_session_left_off() {
 
 #[tokio::test]
 async fn a_balthasar_that_never_answers_does_not_hold_up_a_session() {
-    // **The bug this exists to keep out.** Two cross-checks are asked while a session is
-    // starting — where balthasar thinks the session left off, and the library it serves — and
-    // both were written without a clock. A balthasar that accepts the connection and then thinks
-    // about it held up every session in the suite: sixty seconds a test, and nothing said why.
-    //
-    // Neither answer is needed for a session to run. A socket that accepts and never replies is
-    // the ordinary shape of a wedged process, and it is bound here on purpose.
+    // Two cross-checks are asked while a session starts, and both were written without a clock. A
+    // socket that accepts and never replies is the ordinary shape of a wedged process.
     let dir = Scratch::new("mi", "wedged");
     let path = dir.join("api@wedged.sock");
     let _listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
@@ -325,8 +265,7 @@ async fn a_balthasar_that_never_answers_does_not_hold_up_a_session() {
         &SessionId::new("wedged"),
     );
 
-    // Each call must give up rather than wait. The session's own budget is half a second; this
-    // allows several times that before calling it a hang, so a slow machine is not a failure.
+    // Each call must give up rather than wait; this allows several times the session's own budget.
     let started = std::time::Instant::now();
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), scribe.resumes()).await;
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), scribe.library()).await;
@@ -339,12 +278,8 @@ async fn a_balthasar_that_never_answers_does_not_hold_up_a_session() {
 
 #[tokio::test]
 async fn a_permission_reaches_the_memory_layer_as_a_trace_row() {
-    // **The half of the trace the journal cannot carry.** Every transcript entry reaches
-    // balthasar already — the scribe settles each one as the turn commits — so the conversation
-    // and its tool calls are there without anybody asking. A permission is not an entry: it
-    // happens *around* the transcript rather than in it, and before this it reached the watchers
-    // in the session's own VM and nothing that outlives the process. A session that wanted to
-    // know what it had been allowed to do yesterday had nowhere to look.
+    // A permission is not a transcript entry: it happens around the transcript rather than in it,
+    // and before this it reached only the session's own VM and nothing that outlives the process.
     let Some((mut scribe, _dir, _serving, _held)) = own_balthasar("trace", false).await else {
         eprintln!("skipping: no balthasar");
         return;
@@ -359,9 +294,7 @@ async fn a_permission_reaches_the_memory_layer_as_a_trace_row() {
         .await
         .expect("balthasar takes a trace row");
 
-    // Read back through the same door it went in. Not `Scribe::replay`, which deserialises into
-    // `Entry` — a trace row is deliberately not one, so the typed reader would drop exactly what
-    // is being checked here.
+    // Not `Scribe::replay`, which deserialises into `Entry`; a trace row is deliberately not one.
     let rows = scribe
         .raw("replay")
         .await

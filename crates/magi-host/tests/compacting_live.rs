@@ -1,13 +1,6 @@
-//! Compaction, decided by the balthasar that holds the session.
-//!
-//! **These two used to live in `turn.rs` against no memory layer at all**, because magi decided
-//! for itself when and how much to compact — a high-water mark over a character estimate and a
-//! constant `KEEP = 8`. It then asked balthasar what *it* would do, wrote the difference to a
-//! debug log, and went ahead with its own answer. There is one decider now, so the path can only
-//! be exercised against a real one.
-//!
-//! Skipped when balthasar is not installed. What is proved here cannot be proved against a mock:
-//! that magi asks, obeys the span it is given, and does not go round twice.
+//! Compaction, decided by the balthasar that holds the session. There is one decider now, so the
+//! path can only be exercised against a real one. Skipped when balthasar is not installed: what is
+//! proved here — that magi asks, obeys the span it is given, and does not go round twice — needs one.
 
 use magi_host::scribe::Scribe;
 use magi_host::session::Session;
@@ -23,10 +16,8 @@ const ANSWERS_WITHIN: std::time::Duration = std::time::Duration::from_secs(3);
 /// One live balthasar at a time — the same reason `injecting_live` takes a lock.
 static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// A `balthasar serve` this test started, killed when the test ends.
-///
-/// A guard rather than a line at the bottom: a test that returns early or fails an assertion
-/// would otherwise leave one running.
+/// A `balthasar serve` this test started, killed when the test ends. A guard rather than a line at
+/// the bottom: a test that returns early or fails an assertion would otherwise leave one running.
 struct Serving(std::process::Child);
 
 impl Drop for Serving {
@@ -36,10 +27,8 @@ impl Drop for Serving {
     }
 }
 
-/// A balthasar of this test's own, with its own store, and a scribe onto it.
-///
-/// `None` when balthasar is not installed, which is not a failure: this file is about what magi
-/// does with the answer, not about the layer.
+/// A balthasar of this test's own, with its own store, and a scribe onto it. `None` when balthasar
+/// is not installed, which is not a failure.
 async fn own_balthasar(
     name: &str,
 ) -> Option<(
@@ -58,13 +47,8 @@ async fn own_balthasar(
         .arg("--scope")
         .arg("project")
         .current_dir(&*dir)
-        // **The runtime directory is the scratch's too, not the machine's.** balthasar binds
-        // `$XDG_RUNTIME_DIR/balthasar/api@<instance>.sock`, and the `SIGKILL` in `Serving` gives
-        // it no chance to unlink one. Against the real directory that is a corpse per test per
-        // run, forever: `$XDG_RUNTIME_DIR/balthasar` here held hundreds, and the tests that scan
-        // it for a live sibling then had hundreds of dead sockets to dial before finding one.
-        // Under the scratch it is removed with everything else, on the unwind as well as the
-        // return.
+        // The runtime directory is the scratch's too. balthasar binds a socket under it and the
+        // `SIGKILL` in `Serving` gives it no chance to unlink one, so a real directory fills up.
         .env("XDG_RUNTIME_DIR", dir.join("r"))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -72,9 +56,7 @@ async fn own_balthasar(
         .spawn()
         .ok()?;
 
-    // Short names above for the same reason the workspaces in `forking_live` have them: a unix
-    // socket path may not exceed `SUN_LEN`, the instance appears inside the path, and under
-    // `gate-hermetic` the whole run already sits in a private temporary directory.
+    // Short names, because a unix socket path may not exceed `SUN_LEN` and the instance is in it.
     let socket = dir
         .join("r")
         .join("balthasar")
@@ -107,12 +89,8 @@ fn backend(mind: &Mind) -> Backend {
         model: "fake/one".to_owned(),
         mind: mind.program().display().to_string(),
         wants: magi_proto::ask::Wants::default(),
-        // **The room for a conversation is `size - reserve - inject`**, and balthasar's defaults
-        // reserve 50,000 and 10,000 of those. A 60,000-token window therefore leaves exactly
-        // nothing, and balthasar rightly answers `fits: false` with a `why` saying so rather
-        // than a plan the provider would refuse. The first version of this file asked for 2,000
-        // and got precisely that, twice over. So: a real window, and a conversation big enough to
-        // overflow the 140,000 tokens it actually leaves.
+        // The room for a conversation is `size - reserve - inject`, and balthasar's defaults take
+        // 60,000 of it. So: a real window, and a conversation over the 140,000 tokens it leaves.
         context_window: Some(200_000),
         system: None,
         confine: false,
@@ -121,19 +99,16 @@ fn backend(mind: &Mind) -> Backend {
     }
 }
 
-/// A session of `count` turns, streamed to balthasar as a real one would be.
-///
-/// The streaming is the part that matters: balthasar plans over what it has *observed*, and
-/// refuses to plan for a session it has never been told about.
+/// A session of `count` turns, streamed to balthasar as a real one would be. The streaming is what
+/// matters: balthasar refuses to plan for a session it has never been told about.
 async fn conversation(scribe: &mut Scribe, count: usize) -> tokio::sync::Mutex<Session> {
     let mut session = Session::recorded(SessionId::new("s"), Vec::new());
     for i in 0..count {
         session
             .commit(Entry::User {
                 id: magi_proto::MessageId::new(format!("u{i}")),
-                // Big on purpose. The test this replaces triggered on entry *count* — magi's
-                // old rule was a constant — and balthasar plans on size, as a memory layer
-                // should. Twelve short turns fit any window and are nothing to summarise.
+                // Big on purpose: balthasar plans on size, and twelve short turns are nothing to
+                // summarise.
                 text: format!(
                     "message number {i}: {}",
                     "a sentence worth counting. ".repeat(4_000)
@@ -160,14 +135,9 @@ async fn turn(session: &tokio::sync::Mutex<Session>, backend: &Backend, scribe: 
 
 #[tokio::test]
 async fn a_conversation_over_budget_is_compacted_before_the_turn() {
-    // **The proactive path, and the one that changed hands.** magi used to decide this itself and
-    // asked balthasar only for a second opinion it then ignored; balthasar decides now, and the
-    // twelve turns below are over the 140,000 tokens its plan leaves in a 200,000 window.
-    //
-    // Two arms, in the order a real run produces: the summary the compaction asks for, then the
-    // answer to the prompt. The first is easy to get backwards — the compaction's own request to
-    // the model comes *before* the turn's, and an arm list written as though it did not is how
-    // the first version of this test failed.
+    // The proactive path: balthasar decides, and the twelve turns below are over the 140,000 tokens
+    // its plan leaves in a 200,000 window. Two arms, in the order a real run produces — the
+    // compaction's own request to the model comes before the turn's.
     let Some((mut scribe, _dir, _serving, _alone)) = own_balthasar("overflow").await else {
         eprintln!("skipped: balthasar is not installed, and it decides the cut");
         return;
@@ -217,13 +187,8 @@ async fn a_conversation_over_budget_is_compacted_before_the_turn() {
 
 #[tokio::test]
 async fn one_prompt_is_never_compacted_twice() {
-    // A conversation that still will not fit after summarising is not one that is too long: it is
-    // one whose kept tail alone overflows, and compacting the summary would spend another request
-    // to fail the same way.
-    //
-    // The arms: the proactive compaction's summary, then a turn that overflows, then an arm that
-    // repeats — so a loop that kept compacting would keep being answered, and the count would run
-    // away rather than stop at a number this can assert.
+    // A conversation that still will not fit after summarising is one whose kept tail alone
+    // overflows. The third arm repeats, so a loop that kept compacting would run the count away.
     let Some((mut scribe, _dir, _serving, _alone)) = own_balthasar("twice").await else {
         eprintln!("skipped: balthasar is not installed, and it decides the cut");
         return;
@@ -263,11 +228,8 @@ async fn one_prompt_is_never_compacted_twice() {
     drop(held);
 }
 
-/// A round of tool calls, big enough that balthasar wants to mask them.
-///
-/// Tool output is where a coding session's tokens are, and masking is what balthasar tries first.
-/// `shell` because balthasar's shipped config has a mask handler for it — a tool with none is
-/// deliberately left alone, so a fixture using an unnamed tool would prove nothing.
+/// A round of tool calls, big enough that balthasar wants to mask them. `shell` because balthasar's
+/// shipped config has a mask handler for it; a tool with none is deliberately left alone.
 async fn tooling(scribe: &mut Scribe, count: usize) -> tokio::sync::Mutex<Session> {
     let mut session = Session::recorded(SessionId::new("s"), Vec::new());
     session
@@ -311,11 +273,8 @@ async fn tooling(scribe: &mut Scribe, count: usize) -> tokio::sync::Mutex<Sessio
 
 #[tokio::test]
 async fn tool_output_is_masked_before_anything_is_summarised() {
-    // **The rung magi was throwing away.** balthasar tries masking first, always: it is free, it
-    // is reversible, and tool output is most of a coding session's window. magi obeyed only the
-    // summary — which was worse than obeying nothing, because balthasar marks a turn masked as it
-    // hands the plan over and never offers it again, so magi sent the full text for the rest of
-    // the session while balthasar planned against a stub.
+    // balthasar tries masking first, and marks a turn masked as it hands the plan over, never
+    // offering it again — so magi obeying only the summary planned against a stub it never sent.
     let Some((mut scribe, _dir, _serving, _alone)) = own_balthasar("masking").await else {
         eprintln!("skipped: balthasar is not installed, and it decides what to mask");
         return;
@@ -336,8 +295,7 @@ async fn tool_output_is_masked_before_anything_is_summarised() {
         entries.len()
     );
 
-    // The stub is the *tool's* own words, from balthasar's `balthasar.mask["shell"]` handler —
-    // not something magi invented. An uninformative stub is worse than the output it replaced.
+    // The stub is the tool's own words, from balthasar's `balthasar.mask["shell"]` handler.
     let Some(Entry::Masked { shown, at, .. }) = masks.first().copied() else {
         panic!("a mask record");
     };
@@ -375,15 +333,9 @@ async fn tool_output_is_masked_before_anything_is_summarised() {
 
 #[tokio::test]
 async fn a_masked_session_can_still_be_read_back() {
-    // **What makes masking safe.** balthasar replaces a big tool result with a stub because the
-    // text is still in its scrollback — "reversible" is the whole argument for trying it before a
-    // summary. That is only true if something can fetch it back, and until now nothing in magi
-    // could: the shipped stub said "run it again", which for a half-hour test run is a poor answer
-    // when the output is sitting on disk.
-    //
-    // `scroll` is that read, and `config/tools.lua` offers it to the model as `history`. This
-    // checks the verb answers for a session magi streamed — the half a Lua tool cannot be tested
-    // for here, and the half that would silently not work.
+    // What makes masking safe is that the text is still in balthasar's scrollback and something can
+    // fetch it back. `scroll` is that read, and `config/tools.lua` offers it to the model as
+    // `history`; this checks the verb answers for a session magi streamed.
     let Some((mut scribe, _dir, _serving, _alone)) = own_balthasar("scrolling").await else {
         eprintln!("skipped: balthasar is not installed, and it holds the history");
         return;
