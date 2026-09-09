@@ -30,6 +30,18 @@ const REMOVED: &[(&str, &str)] = &[
 const REMOVED_TABLES: &[&str] = &["io", "package", "dofile", "loadfile", "require"];
 
 /// Take away what a config must not be able to do.
+///
+/// # Panics
+/// If a removal did not take.
+///
+/// **The write was the one discarded error in this workspace that is a hole rather than an
+/// inconvenience.** `Table::set` returns a `Result` and it went to `.ok()`: luna has
+/// `set_readonly`, so a standard-library table that is read-only in some later release declines
+/// every removal, `apply` returns having done nothing, and the VM keeps `os.execute` with no test
+/// anywhere going red — the tests below probe a VM this function claims to have trimmed.
+///
+/// Refusing to start is the answer. A magi that cannot sandbox its VM is about to run somebody
+/// else's `.magi.lua` with a full standard library.
 pub fn apply(lua: &mut Lua) {
     lua.enter(|ctx| {
         for (table, field) in REMOVED {
@@ -39,6 +51,21 @@ pub fn apply(lua: &mut Lua) {
         }
         for name in REMOVED_TABLES {
             ctx.set_global(name, Value::Nil);
+        }
+        // Read back, because every write above can decline in silence.
+        for (table, field) in REMOVED {
+            if let Value::Table(t) = ctx.get_global_value(table) {
+                assert!(
+                    t.get_value(ctx, *field).is_nil(),
+                    "the sandbox could not remove {table}.{field}"
+                );
+            }
+        }
+        for name in REMOVED_TABLES {
+            assert!(
+                ctx.get_global_value(name).is_nil(),
+                "the sandbox could not remove the global `{name}`"
+            );
         }
     });
 }
