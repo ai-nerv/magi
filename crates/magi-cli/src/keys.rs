@@ -83,6 +83,15 @@ pub enum Action {
     Command(String),
     /// Interrupt the running turn.
     Interrupt,
+    /// Point the screen at the next agent along, or the previous one.
+    ///
+    /// **The keys are the feature.** The two arrows in the footer are the sign that they exist;
+    /// the footer is a plain `Paragraph` with nothing recording where it landed, and a control
+    /// you can only click is one nobody finds twice.
+    Crew {
+        /// Along the ring rather than back down it.
+        forward: bool,
+    },
     /// Hand the prompt to `$EDITOR`.
     ExternalEdit,
     /// Move the transcript view.
@@ -251,6 +260,12 @@ pub fn handle(
         KeyCode::Char('d') if ctrl && editor.is_blank() => return Action::Ignore,
         KeyCode::Char('x') if ctrl => return Action::ExternalEdit,
         KeyCode::Char('o') if ctrl => return Action::ToggleDetail,
+        // **The unshifted `<` and `>` keys**, which is what the footer draws. Alt because the
+        // characters themselves are text a prompt has to be able to hold, and because both are
+        // free in every mode: a bare character reaches the editor, and every other modifier on
+        // these two is already spoken for by a word motion or a kill.
+        KeyCode::Char(',') if alt => return Action::Crew { forward: false },
+        KeyCode::Char('.') if alt => return Action::Crew { forward: true },
         _ => {}
     }
 

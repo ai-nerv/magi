@@ -12,7 +12,6 @@ use crate::ui;
 use anyhow::Result;
 use crossterm::event::{Event, EventStream};
 use magi_proto::{HarnessEvent, UiCommand};
-use magi_tui::footer::FooterData;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -130,13 +129,20 @@ pub async fn run(
         });
     }
 
+    // Where the connection loop is dialling, which the arrows change. A watch rather than a
+    // channel because only the latest value means anything: somebody who pressed the arrow four
+    // times wants the fourth agent, not four connections one after another.
+    let (target_tx, target_rx) = tokio::sync::watch::channel(socket.to_path_buf());
     tokio::spawn(connection_loop(
         socket.to_path_buf(),
+        target_rx,
         event_tx,
         command_rx,
         app.cursor(),
         Arc::clone(&attached),
     ));
+    // What melchior handed this session while the screen was somewhere else. See `crewing::ours`.
+    let mut held: Vec<UiCommand> = Vec::new();
 
     let list_paths = |query: &str| {
         std::env::current_dir()
@@ -209,13 +215,16 @@ pub async fn run(
             // eight and lay itself out for five nobody can see.
             if told_room != Some(room) {
                 told_room = Some(room);
-                let _ = command_tx
-                    .send(UiCommand::Sized {
+                direct(
+                    &mut app,
+                    &command_tx,
+                    UiCommand::Sized {
                         rows: Some(room),
                         cols: inner(),
                         holds: crate::terminal::reports_holds(),
-                    })
-                    .await;
+                    },
+                )
+                .await;
             }
             // Read out of the frame that was just drawn, which is what `draw` hands back.
             //
@@ -266,13 +275,16 @@ pub async fn run(
                                 | crossterm::event::KeyEventKind::Release
                         ) && crate::terminal::noticed_hold()
                         {
-                            let _ = command_tx
-                                .send(UiCommand::Sized {
+                            direct(
+                                &mut app,
+                                &command_tx,
+                                UiCommand::Sized {
                                     rows: None,
                                     cols: inner(),
                                     holds: true,
-                                })
-                                .await;
+                                },
+                            )
+                            .await;
                         }
                         // **A surface has the keyboard while it has the rows.** Forwarded by
                         // name and not interpreted: what `j` means is the tenant's business, and
@@ -307,13 +319,16 @@ pub async fn run(
                                     "surface key {named} {:?}",
                                     crate::keying::held(key)
                                 ));
-                                let _ = command_tx
-                                    .send(UiCommand::Keyed {
+                                direct(
+                                    &mut app,
+                                    &command_tx,
+                                    UiCommand::Keyed {
                                         id,
                                         key: named,
                                         state: crate::keying::held(key),
-                                    })
-                                    .await;
+                                    },
+                                )
+                                .await;
                             }
                             continue;
                         }
@@ -357,6 +372,15 @@ pub async fn run(
                         // handler cannot drift apart -- which is the bug it was written for.
                         let accepted = !keys::recomputes(&action);
                         match action {
+                            // **Given back, not swallowed.** `submit` empties the box, and the
+                            // gate below would then refuse what it took — so a paragraph typed
+                            // at a peer disappeared, and the lesson a person drew from it was
+                            // about their typing rather than about which screen they were on.
+                            Action::Submit(text) if app.attached.is_some() => {
+                                app.refuse_drive();
+                                app.editor.insert_str(&text);
+                                dirty = true;
+                            }
                             Action::Submit(text) => {
                                 crate::history::remember(&text);
                                 // A prompt that names another instance is still the model's to
@@ -373,16 +397,19 @@ pub async fn run(
                                 let aside = layer
                                     .as_ref()
                                     .map_or_else(String::new, |l| l.briefing(&text, project));
-                                let _ = command_tx
-                                    .send(UiCommand::SubmitPrompt { text, aside })
-                                    .await;
+                                direct(
+                                    &mut app,
+                                    &command_tx,
+                                    UiCommand::SubmitPrompt { text, aside },
+                                )
+                                .await;
                                 dirty = true;
                             }
                             Action::Command(text) => {
                                 match run_command(&text, &mut app) {
                                     Control::Quit => break,
                                     Control::Send(command) => {
-                                        let _ = command_tx.send(command).await;
+                                        direct(&mut app, &command_tx, command).await;
                                     }
                                     Control::Continue => {}
                                 }
@@ -392,8 +419,25 @@ pub async fn run(
                             // nothing and say nothing rather than pretending to.
                             Action::Search | Action::Match { .. } => {}
                             Action::Interrupt => {
-                                let _ = command_tx.send(UiCommand::Interrupt).await;
+                                direct(&mut app, &command_tx, UiCommand::Interrupt).await;
                                 dirty = true;
+                            }
+                            // **The keys are the feature; the arrows in the footer are the sign.**
+                            // Everything on screen belongs to whoever sent it, so this replaces
+                            // the lot — see `App::attach_to`, which is where the forgetting is.
+                            Action::Crew { forward } => {
+                                if walk(
+                                    &mut app,
+                                    forward,
+                                    socket,
+                                    &target_tx,
+                                    &command_tx,
+                                    &mut held,
+                                )
+                                .await
+                                {
+                                    dirty = true;
+                                }
                             }
                             Action::Chose(value) => {
                                 // Answered down the pipe, not over the socket, so it is taken
@@ -489,7 +533,7 @@ pub async fn run(
                                     // `UiCommand` and has nowhere to go from here.
                                     Some(crate::app::Picking::Adoption { .. }) | None => continue,
                                 };
-                                let _ = command_tx.send(command).await;
+                                direct(&mut app, &command_tx, command).await;
                                 dirty = true;
                             }
                             // Leaving a question is an answer to it. A permission prompt is the
@@ -499,12 +543,15 @@ pub async fn run(
                             Action::Dismissed => {
                                 match app.picking.take() {
                                     Some(crate::app::Picking::Permission { id, .. }) => {
-                                        let _ = command_tx
-                                            .send(UiCommand::Permit {
+                                        direct(
+                                            &mut app,
+                                            &command_tx,
+                                            UiCommand::Permit {
                                                 id,
                                                 decision: magi_proto::permit::Decision::Deny,
-                                            })
-                                            .await;
+                                            },
+                                        )
+                                        .await;
                                     }
                                     // Walking away is a no, and it has to be *said*. The asking
                                     // session has been waiting since its call came back with
@@ -568,7 +615,12 @@ pub async fn run(
                     Event::Mouse(mouse) => {
                         // A surface first, when the pointer landed on the rows one is holding.
                         // Everything else on the screen is magi's -- see `driver::pointing`.
-                        if pointing::to_surface(&app, mouse, &command_tx).await {
+                        //
+                        // Not on a peer's. Those rows are a tool's, in a session this screen is
+                        // only reading, and a pointer sent into them would be driving it — so the
+                        // click falls through to magi's own selection, which is what a person
+                        // wants over a transcript they are reading anyway.
+                        if app.attached.is_none() && pointing::to_surface(&app, mouse, &command_tx).await {
                             continue;
                         }
                         let view = terminal_size().1.saturating_sub(ui::chrome_rows());
@@ -591,9 +643,12 @@ pub async fn run(
                     Event::Resize(..) => {
                         // The width is the terminal's and changes under whatever is drawing in
                         // the rows a tool was given. Only the height is magi's to grant.
-                        let _ = command_tx
-                            .send(UiCommand::Sized { rows: None, cols: inner(), holds: crate::terminal::reports_holds() })
-                            .await;
+                        direct(
+                            &mut app,
+                            &command_tx,
+                            UiCommand::Sized { rows: None, cols: inner(), holds: crate::terminal::reports_holds() },
+                        )
+                        .await;
                         dirty = true;
                     }
                     _ => {}
@@ -619,8 +674,12 @@ pub async fn run(
                         // but the transcript and the turns are the session's — an entry the UI
                         // appended for itself is one the model never sees, and an instance
                         // could be asked a question and sit there until somebody typed at it.
+                        //
+                        // Kept rather than sent while the screen is on a peer: it is *this*
+                        // session's message, and the socket currently goes somewhere else.
                         crate::melchior::Heard::Message { who, sort, text } => {
-                            let _ = command_tx.send(app.received(&who, &sort, &text)).await;
+                            let arrived = app.received(&who, &sort, &text);
+                            ours(&app, &command_tx, &mut held, arrived).await;
                         }
                         // Either shape. An older melchior says `names` and nothing else, and a
                         // magi that read it strictly would offer nobody for the life of the
@@ -641,8 +700,7 @@ pub async fn run(
                                 .as_deref()
                                 .and_then(|said| serde_json::from_str(said).ok())
                                 .unwrap_or_default();
-                            let _ = command_tx
-                                .send(UiCommand::TakeGrants { grants })
+                            ours(&app, &command_tx, &mut held, UiCommand::TakeGrants { grants })
                                 .await;
                             app.notice_after_attach(format!(
                                 "`{by}` took this session on. It may now do what that session may."
@@ -684,46 +742,13 @@ fn terminal_size() -> (u16, u16) {
     crossterm::terminal::size().unwrap_or((80, 24))
 }
 
-/// The footer as of now.
-///
-/// Rebuilt each frame from what the session has reported rather than kept in step by hand: the
-/// numbers change on every delta, and a copy updated at each of the places that could change
-/// them is a copy that misses one.
-fn footer_data(app: &App) -> FooterData {
-    let window = app.model.as_ref().map_or(0, |m| m.context_window);
-    FooterData {
-        identity: app.named.clone(),
-        // **This session and whatever melchior says is reachable.** `reachable` is what the layer
-        // last named — it is melchior's answer, not a count magi keeps — and the one added is this
-        // session, which never appears in its own list of peers.
-        //
-        // `own` is unconditionally true until the UI can attach to somebody else. Wiring the
-        // control before the attach exists would draw a thing that does nothing; wiring the count
-        // now settles the geometry, which is the part that is width-critical and easy to get
-        // wrong.
-        crew: app.reachable.len() + 1,
-        own: true,
-        model: app.model.as_ref().map_or_else(
-            || magi_tui::glyph::no_model().to_owned(),
-            |model| model.name.clone(),
-        ),
-        input_tokens: app.usage().prompt_tokens(),
-        output_tokens: app.usage().output,
-        context_window: window,
-        // Against the last turn's prompt, not the running total: the window holds one
-        // conversation, and a session that has spent ten windows over an afternoon is not
-        // ten times full. `None` until a model says how big its window is, which is what the
-        // footer's question mark means.
-        context_percent: (window > 0).then(|| {
-            let used = app.last_prompt_tokens();
-            (used as f64 / window as f64) * 100.0
-        }),
-    }
-}
-
 /// The socket to the session, and redialling one that dropped.
 mod connecting;
 use connecting::connection_loop;
+
+/// Which agent the screen is pointed at, and what may be sent to one that is not ours.
+mod crewing;
+use crewing::{direct, footer_data, ours, walk};
 
 /// The pointer, and which of two readers it belongs to.
 mod pointing;

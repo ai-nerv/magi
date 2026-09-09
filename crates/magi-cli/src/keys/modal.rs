@@ -356,6 +356,14 @@ fn shared(key: KeyEvent, editor: &mut Editor, busy: bool, ctrl: bool) -> Option<
         }
         KeyCode::Char('x') if ctrl => Action::ExternalEdit,
         KeyCode::Char('o') if ctrl => Action::ToggleDetail,
+        // Here as well as in insert mode, and by the same two keys: which agent you are reading
+        // is not a thing that should depend on which mode the prompt happens to be in.
+        KeyCode::Char(',') if key.modifiers.contains(KeyModifiers::ALT) => {
+            Action::Crew { forward: false }
+        }
+        KeyCode::Char('.') if key.modifiers.contains(KeyModifiers::ALT) => {
+            Action::Crew { forward: true }
+        }
         KeyCode::Char('d') if ctrl => Action::Scroll(Scroll::PageDown),
         KeyCode::Char('u') if ctrl => Action::Scroll(Scroll::PageUp),
         KeyCode::Char('r') if ctrl => {

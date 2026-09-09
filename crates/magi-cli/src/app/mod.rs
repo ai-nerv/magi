@@ -144,6 +144,12 @@ pub struct App {
     /// Records rather than names since the layer learned to publish a screen. The popup still
     /// offers only the id; the rest is what a peer has to know before anything can be drawn.
     pub reachable: Vec<crate::melchior::Peer>,
+    /// Whose session is on screen, or `None` for this one's own.
+    ///
+    /// The whole of what "attached elsewhere" means. Everything that follows from it is asked of
+    /// it rather than kept beside it: what the footer is called, whether a command may be sent,
+    /// and which socket the connection loop is dialling — see [`crewing`].
+    pub attached: Option<crate::melchior::Peer>,
     /// How many messages from other sessions have arrived and not been answered.
     ///
     /// A count, not the messages. What was said goes into the transcript like anything else,
@@ -249,6 +255,7 @@ impl App {
             trace: magi_tui::beacon::Trace::default(),
             modal: crate::keys::Modal::default(),
             reachable: Vec::new(),
+            attached: None,
             waiting: 0,
             granted: Vec::new(),
             was_blank: true,
@@ -543,7 +550,10 @@ impl App {
     }
 }
 
+/// Which agent the screen is pointed at, and what may be done to one that is not ours.
+mod crewing;
 mod kin;
+pub use crewing::{Seat, drives, spoken};
 mod picking;
 pub use picking::Picking;
 /// Applying one harness event to the state.

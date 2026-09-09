@@ -28,7 +28,10 @@ const KEYS: &str = "\
 - `ctrl+x` edit the prompt in `$EDITOR`
 - `ctrl+c` clear the prompt — `:q` to leave, `:qa` to take everything with it
 - `ctrl+a/e` line start/end — `ctrl+k/u` kill — `ctrl+y` yank
-- `alt+←/→` word motion — `↑/↓` prompt history";
+- `alt+←/→` word motion — `↑/↓` prompt history
+- `alt+,`/`alt+.` move to the previous or next agent — the `< >` at the bottom left
+  says there is somewhere to go. A peer's screen is read-only: what you type goes
+  nowhere until you come back to your own.";
 
 /// What `:help` prints.
 ///

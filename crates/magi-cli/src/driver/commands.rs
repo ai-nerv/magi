@@ -37,7 +37,14 @@ pub(super) fn run_command(input: &str, app: &mut App) -> Control {
         // remembering everything while the footer reported an empty context -- the screen and
         // the token count both lying, in the same direction, at the same time. The branch is
         // journalled, so the record of what was said survives what the model is shown.
+        // Refused outright on a screen that is only reading. The gate in front of the socket
+        // would stop the branch, and the view would still have been emptied — a peer's transcript
+        // wiped off the screen with nothing to fetch it back but walking the ring twice.
         ":clear" => {
+            if app.attached.is_some() {
+                app.refuse_drive();
+                return Control::Continue;
+            }
             app.clear_view();
             Control::Send(UiCommand::Branch { keeps: Some(0) })
         }
