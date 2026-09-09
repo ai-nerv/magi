@@ -1,5 +1,5 @@
 //! Which agent the screen is pointed at: moving between them, and what may be sent to one. The
-//! decisions live in [`crate::app::crewing`]; this is the wiring to the driver's two channels.
+//! decisions live in `app::crewing`; this is the wiring to the driver's two channels.
 
 use crate::app::App;
 use magi_proto::UiCommand;

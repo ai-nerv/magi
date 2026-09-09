@@ -64,7 +64,7 @@ impl super::App {
         self.picking.as_ref().is_some_and(super::Picking::blocking)
     }
 
-    /// The surface holding the rows, and nothing while [`App::questioned`] — a surface owns the
+    /// The surface holding the rows, and nothing while [`Self::questioned`] — a surface owns the
     /// menu slot and the keyboard, which would leave the blocking question unreachable.
     #[must_use]
     pub fn holding(&self) -> Option<&Surfacing> {
