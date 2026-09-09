@@ -136,9 +136,16 @@ pub fn load() -> Result<Loaded, LuaError> {
 }
 
 /// Acknowledge every installed package, so it may run. Nothing installed is not an error.
-pub fn acknowledge() {
+pub fn acknowledge(how: crate::verbs::As) {
+    let refuse = |why: &str| {
+        if how.framed() {
+            crate::verbs::say(&magi_ipc::family::Reply::refused(why), how);
+        } else {
+            eprintln!("magi: {why}");
+        }
+    };
     let Some(dir) = config_dir() else {
-        eprintln!("magi: no configuration directory to write a manifest in");
+        refuse("no configuration directory to write a manifest in");
         return;
     };
     let cwd = std::env::current_dir().unwrap_or_default();
@@ -149,6 +156,14 @@ pub fn acknowledge() {
     // digest left behind would still acknowledge a package that was removed.
     match magi_lua::acknowledged::acknowledge(&manifest, &files) {
         Ok(taken) => {
+            if how.framed() {
+                let rows = files
+                    .iter()
+                    .map(|(path, _)| serde_json::json!({ "file": path.display().to_string() }))
+                    .collect();
+                crate::verbs::say(&magi_ipc::family::Reply::rows(rows), how);
+                return;
+            }
             for (path, _) in &files {
                 println!("  {}", path.display());
             }
@@ -157,7 +172,7 @@ pub fn acknowledge() {
                 n => println!("acknowledged {n} file(s) in {}", manifest.display()),
             }
         }
-        Err(why) => eprintln!("magi: {why}"),
+        Err(why) => refuse(&why.to_string()),
     }
 }
 /// Whether the working directory is one the machine's config vouched for. Inverted on purpose:

@@ -143,6 +143,59 @@ else
   say "advertised = dispatched" "every verb it lists, it answers"
 fi
 
+# ---- a verb it does not have is still a reply ------------------------------------------------
+# The first thing any caller does to a sibling it has not met. An argument parser rejects an
+# unknown subcommand before the program sees it — usage on stderr, exit 2, nothing on stdout —
+# which is indistinguishable from the binary being absent.
+unknown=$("$prog" definitely-not-a-verb-xyzzy 2>/dev/null </dev/null || true)
+unknown_status=0
+"$prog" definitely-not-a-verb-xyzzy >/dev/null 2>&1 </dev/null || unknown_status=$?
+case "$unknown" in
+  '{"ok":false'*)
+    if [ "$unknown_status" -eq 0 ]; then
+      say "an unknown verb" "refused in the reply shape, at exit 0"
+    else
+      bad "an unknown verb" "right shape, wrong exit ($unknown_status) — a refusal exits 0"
+    fi ;;
+  '') bad "an unknown verb" "nothing on stdout, exit $unknown_status — a caller cannot tell this from a missing binary" ;;
+  *) bad "an unknown verb" "not the reply shape — a refusal is a reply" ;;
+esac
+
+# ---- both encodings, on every verb ------------------------------------------------------------
+# Only the argument parser's own rejection counts. A verb may fail for want of an argument and
+# still have taken the flag.
+refused_flag=""
+for verb in $listed; do
+  case "$verb" in
+    serve|surface|ask|run|fork) continue ;;
+  esac
+  for how in --json --cbor; do
+    said=$("$prog" "$verb" "$how" 2>&1 </dev/null || true)
+    case "$said" in
+      *"unexpected argument"*|*"unrecognized option"*|*"unknown flag"*|*"invalid option"*)
+        refused_flag="$refused_flag $verb$how" ;;
+    esac
+  done
+done
+if [ -n "$refused_flag" ]; then
+  bad "--json and --cbor" "the flag was rejected outright:$refused_flag"
+else
+  say "--json and --cbor" "every verb takes both"
+fi
+
+# ---- a door it can open ------------------------------------------------------------------------
+# A socket verb on a program with no `serve` is advertised-and-refused wearing a label that hides
+# it: the command-line probe skips it as correctly-absent, and nothing can ever connect to check.
+if printf '%s' "$verbs" | grep -q '"door":"socket"'; then
+  if printf '%s' "$verbs" | sed 's/},{/}\n{/g' | grep -v '"door":"socket"' | grep -q '"verb":"serve"'; then
+    say "a door it can open" "it advertises a socket and answers serve"
+  else
+    bad "a door it can open" "socket verbs, but no serve on the command line to open one"
+  fi
+else
+  say "a door it can open" "no socket verbs, so no socket to account for"
+fi
+
 echo
 if [ "$fail" -gt 0 ]; then
   echo "gate-family: $name fails the contract in $fail place(s). See FAMILY.md."

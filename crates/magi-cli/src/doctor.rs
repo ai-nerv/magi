@@ -3,9 +3,12 @@
 //! there. The composition is built by the same [`magi_lua::tool::assemble`] a session uses, with
 //! nobody to ask, no screen to lend, and the working directory rather than a gated root.
 
-/// Print the composition of a session in this directory. Never fails: a configuration that will not
+use std::fmt::Write;
+
+/// The composition of a session in this directory. Never fails: a configuration that will not
 /// load is the loudest thing this can report, not a reason to stop.
-pub fn print() {
+fn report() -> String {
+    let mut out = String::new();
     // Everything below still holds when this fails: the builtins are compiled in and the siblings
     // are on `$PATH` or are not.
     let (loaded, refused) = match crate::config::load() {
@@ -13,23 +16,25 @@ pub fn print() {
         Err(why) => (nothing_loaded(), Some(why.to_string())),
     };
 
-    heading("configuration");
+    heading(&mut out, "configuration");
     match crate::config::config_dir() {
-        Some(dir) => row("directory", &dir.display().to_string()),
+        Some(dir) => row(&mut out, "directory", &dir.display().to_string()),
         None => row(
+            &mut out,
             "directory",
             "none: neither $XDG_CONFIG_HOME nor $HOME is set",
         ),
     }
     if let Some(why) = &refused {
-        row("state", &format!("will not load: {why}"));
+        row(&mut out, "state", &format!("will not load: {why}"));
     }
-    row("tool files", &named(&loaded.tools));
-    row("client libraries", &named(&loaded.clients));
+    row(&mut out, "tool files", &named(&loaded.tools));
+    row(&mut out, "client libraries", &named(&loaded.clients));
 
-    heading("settings");
+    heading(&mut out, "settings");
     let environ = crate::config::environ(&loaded);
     row(
+        &mut out,
         "model",
         loaded
             .config
@@ -37,6 +42,7 @@ pub fn print() {
             .unwrap_or("(melchior's default)"),
     );
     row(
+        &mut out,
         "confine",
         if loaded.config.boolean("confine").unwrap_or(false) {
             "on"
@@ -45,10 +51,12 @@ pub fn print() {
         },
     );
     row(
+        &mut out,
         "standing grants",
         &crate::config::granted(&loaded).len().to_string(),
     );
     row(
+        &mut out,
         "environment",
         &if environ.is_empty() {
             "(none)".to_owned()
@@ -60,18 +68,18 @@ pub fn print() {
     // What a config said that magi did not keep. Printed here as well as at load, because this
     // is the command a person runs when something they wrote did nothing.
     if !loaded.config.unkept.is_empty() {
-        heading("not kept");
+        heading(&mut out, "not kept");
         for said in &loaded.config.unkept {
-            println!("  {said}");
+            let _ = writeln!(out, "  {said}");
         }
     }
 
-    heading("tools");
+    heading(&mut out, "tools");
     let mut engine = magi_lua::Engine::new();
     engine.install_clients(&loaded.clients);
     for (name, source) in &loaded.tools {
         if let Err(why) = engine.run(source, name) {
-            row(name, &format!("will not run: {why}"));
+            row(&mut out, name, &format!("will not run: {why}"));
         }
     }
     let declared = engine.tools();
@@ -96,19 +104,31 @@ pub fn print() {
         } else {
             "builtin".to_owned()
         };
-        println!("  {:<10} {source}", tool.name);
+        let _ = writeln!(out, "  {:<10} {source}", tool.name);
         // Only a peer has anything more to say: a command line, and the environment it was built
         // with. That last one is where `magi tools` and a session used to disagree.
         if let Some(built) = registry.get(&tool.name) {
             for (what, said) in built.composition() {
-                println!("    {what:<10} {said}");
+                let _ = writeln!(out, "    {what:<10} {said}");
             }
         }
     }
 
-    heading("siblings");
+    heading(&mut out, "siblings");
     for (name, what) in SIBLINGS {
-        row(name, &sibling(name, what));
+        row(&mut out, name, &sibling(name, what));
+    }
+    out
+}
+
+/// Print the composition of a session in this directory. Framed, the whole report is the single
+/// value in `result`: it is a report rather than a listing, so its rows are not values.
+pub fn print(how: crate::verbs::As) {
+    let report = report();
+    if how.framed() {
+        crate::verbs::say(&magi_ipc::family::Reply::of(report.into()), how);
+    } else {
+        print!("{report}");
     }
 }
 
@@ -176,13 +196,13 @@ fn which(name: &str) -> Option<std::path::PathBuf> {
 }
 
 /// One `name: value` line, aligned.
-fn row(name: &str, value: &str) {
-    println!("  {name:<18} {value}");
+fn row(out: &mut String, name: &str, value: &str) {
+    let _ = writeln!(out, "  {name:<18} {value}");
 }
 
 /// A section title.
-fn heading(title: &str) {
-    println!("\n{title}");
+fn heading(out: &mut String, title: &str) {
+    let _ = writeln!(out, "\n{title}");
 }
 
 /// The names of a set of config files, or a note that there are none.

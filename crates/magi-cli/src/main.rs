@@ -64,6 +64,14 @@ struct Cli {
     #[arg(long, value_name = "TEXT")]
     role_description: Option<String>,
 
+    /// Answer in JSON. The default, and taken on every verb so a sibling may pass it blind.
+    #[arg(long, global = true)]
+    json: bool,
+
+    /// Answer in CBOR rather than JSON.
+    #[arg(long, global = true)]
+    cbor: bool,
+
     /// What to ask. Submitted on start; without it the UI opens empty.
     prompt: Option<String>,
 
@@ -80,14 +88,7 @@ enum Command {
     #[command(alias = "client")]
     LuaApi,
     /// Every verb this program answers, on each of its doors.
-    Verbs {
-        /// Answer in JSON. The default, and accepted so every sibling takes the same flags.
-        #[arg(long)]
-        json: bool,
-        /// Answer in CBOR rather than JSON.
-        #[arg(long)]
-        cbor: bool,
-    },
+    Verbs,
     /// Start a child session of this one, and print what it is called.
     ///
     /// melchior names it and mints the secret that makes it stoppable; magi starts the process.
@@ -130,6 +131,17 @@ enum Command {
 /// taken from that name, so it is settled before balthasar is spawned.
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    // A verb this program does not have is a refusal like any other: on stdout, in the reply
+    // shape, at exit 0, naming what was asked for. See FAMILY.md.
+    if let Some(word) = unknown_verb(&cli) {
+        verbs::say(
+            &magi_ipc::family::Reply::refused(format!(
+                "no such call: {word}; `magi -p {word}` sends it as a prompt instead"
+            )),
+            verbs::As::asked(cli.json, cli.cbor),
+        );
+        return Ok(());
+    }
     // Only a session has a prologue, so an argument error arrives without a layer being started.
     let opening = (cli.command.is_none() && !(cli.print && cli.prompt.is_none())).then(|| {
         opening::Opening::begin(
@@ -149,6 +161,7 @@ fn main() -> Result<()> {
 
 async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
     let cwd = std::env::current_dir()?;
+    let how = verbs::As::asked(cli.json, cli.cbor);
     // Only for the replay host and a socket named by hand; every real session names its own.
     let socket = cli
         .socket
@@ -159,16 +172,25 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
         Some(Command::Ext(Ext::Shell)) => shell::run(),
 
         Some(Command::Ext(Ext::Lua { file })) => ext_lua::run(&file),
+        // Bare, the library as source, because that is what a person redirecting it into a file
+        // wants; framed when an encoding is named, with the source as the single value.
         Some(Command::LuaApi) => {
-            print!("{}", magi_lua::client::CLIENT);
+            if how.framed() {
+                verbs::say(
+                    &magi_ipc::family::Reply::of(magi_lua::client::CLIENT.into()),
+                    how,
+                );
+            } else {
+                print!("{}", magi_lua::client::CLIENT);
+            }
             Ok(())
         }
-        Some(Command::Verbs { cbor, .. }) => {
-            verbs::print(cbor);
+        Some(Command::Verbs) => {
+            verbs::print(how);
             Ok(())
         }
         Some(Command::Acknowledge) => {
-            config::acknowledge();
+            config::acknowledge(how);
             Ok(())
         }
         Some(Command::Fork {
@@ -181,15 +203,15 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
             prompt.as_deref(),
         ),
         Some(Command::Tools) => {
-            tools::print()?;
+            tools::print(how)?;
             Ok(())
         }
         Some(Command::Doctor) => {
-            doctor::print();
+            doctor::print(how);
             Ok(())
         }
         Some(Command::Models { all }) => {
-            models::print(all);
+            models::print(all, how);
             Ok(())
         }
         Some(Command::FakeHost { replay, pace_ms }) => {
@@ -324,6 +346,36 @@ fn inherited(
     environ
 }
 
+/// The lone word magi was given when it can only have been meant as a verb: a bare token in the
+/// shape of one, with nothing else on the command line.
+///
+/// A probing sibling passes a verb and nothing else, and a verb-shaped word is already the one
+/// thing that cannot be sent as a bare prompt — clap spends that namespace on the subcommands. So
+/// every other case stays a prompt: `-p`, anything naming a session, and any word with a space, a
+/// capital or punctuation in it.
+fn unknown_verb(cli: &Cli) -> Option<&str> {
+    let word = cli.prompt.as_deref()?;
+    let bare = cli.command.is_none()
+        && !cli.print
+        && !cli.resume
+        && !cli.headless
+        && cli.tied.is_none()
+        && cli.role.is_none()
+        && cli.role_description.is_none()
+        && cli.socket.is_none();
+    (bare && verb_shaped(word)).then_some(word)
+}
+
+/// Whether a word is shaped like a verb: lowercase, digits, and single inner hyphens.
+fn verb_shaped(word: &str) -> bool {
+    word.starts_with(|c: char| c.is_ascii_lowercase())
+        && !word.ends_with('-')
+        && !word.contains("--")
+        && word
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
 /// Whether this session comes up without a terminal. `--tied` implies `--headless`.
 fn headless(cli: &Cli) -> bool {
     cli.headless || cli.tied.is_some()
@@ -344,6 +396,65 @@ enum Ext {
         /// The file to load. Nothing is discovered; the config names it.
         file: PathBuf,
     },
+}
+
+/// Which lone words are verbs and which are prompts.
+#[cfg(test)]
+mod naming {
+    use super::{Cli, unknown_verb, verb_shaped};
+    use clap::Parser;
+
+    fn asked(args: &[&str]) -> Option<String> {
+        let mut line = vec!["magi"];
+        line.extend_from_slice(args);
+        let cli = Cli::try_parse_from(line).expect("parses");
+        unknown_verb(&cli).map(str::to_owned)
+    }
+
+    #[test]
+    fn a_bare_verb_shaped_word_is_a_verb() {
+        assert_eq!(asked(&["no-such-verb"]).as_deref(), Some("no-such-verb"));
+    }
+
+    /// The probe a sibling makes must not start a session, and must not cost a turn.
+    #[test]
+    fn the_encoding_flags_do_not_make_it_a_prompt() {
+        assert_eq!(asked(&["nope", "--json"]).as_deref(), Some("nope"));
+        assert_eq!(asked(&["nope", "--cbor"]).as_deref(), Some("nope"));
+    }
+
+    #[test]
+    fn a_sentence_is_a_prompt() {
+        assert_eq!(asked(&["fix the bug"]), None);
+        assert_eq!(asked(&["Refactor"]), None, "a capital is prose");
+        assert_eq!(asked(&["why?"]), None, "punctuation is prose");
+    }
+
+    /// `-p` says outright that the word is a prompt, and is the way to send a verb-shaped one.
+    #[test]
+    fn naming_a_prompt_keeps_it_a_prompt() {
+        assert_eq!(asked(&["-p", "refactor"]), None);
+    }
+
+    /// Anything that shapes a session was typed by a person who meant a session.
+    #[test]
+    fn a_word_beside_a_session_flag_is_a_prompt() {
+        assert_eq!(asked(&["-r", "continue"]), None);
+        assert_eq!(asked(&["--role", "scout", "look"]), None);
+        assert_eq!(asked(&["--headless", "go"]), None);
+    }
+
+    #[test]
+    fn nothing_at_all_is_a_session_rather_than_a_verb() {
+        assert_eq!(asked(&[]), None);
+    }
+
+    #[test]
+    fn a_verb_is_lowercase_with_single_inner_hyphens() {
+        assert!(verb_shaped("verbs") && verb_shaped("fake-host") && verb_shaped("sha256"));
+        assert!(!verb_shaped("-lead") && !verb_shaped("trail-"));
+        assert!(!verb_shaped("two--hyphens") && !verb_shaped("has space"));
+    }
 }
 
 /// What a session hands its children, and what it must keep for itself.

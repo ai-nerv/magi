@@ -10,12 +10,41 @@ use magi_proto::ask::Card;
 /// Models that are not ready are listed too, with the variable that would enable them: somebody
 /// choosing a model wants to see what exists, not a list narrowed to whatever happens to be
 /// exported in this shell.
-pub fn print(all: bool) {
+pub fn print(all: bool, how: crate::verbs::As) {
     let default = crate::config::load()
         .ok()
         .and_then(|loaded| loaded.config.string("model").map(str::to_owned));
 
     let cards = melchior();
+    // Framed, the cards go back as they came: every one of them, since narrowing a listing is a
+    // courtesy to a reader and a caller that asked for bytes is not one.
+    if how.framed() {
+        if cards.is_empty() {
+            crate::verbs::say(
+                &magi_ipc::family::Reply::refused(
+                    "melchior is not answering, so magi has no models to list",
+                ),
+                how,
+            );
+            return;
+        }
+        let rows = cards
+            .iter()
+            .filter(|card| all || card.ready)
+            .map(|card| {
+                let mut row = serde_json::to_value(card).unwrap_or_default();
+                if let Some(row) = row.as_object_mut() {
+                    row.insert(
+                        "default".into(),
+                        (default.as_deref() == Some(&card.id)).into(),
+                    );
+                }
+                row
+            })
+            .collect();
+        crate::verbs::say(&magi_ipc::family::Reply::rows(rows), how);
+        return;
+    }
     if cards.is_empty() {
         eprintln!("magi: melchior is not answering, so there are no models to list.");
         eprintln!("      install it, or run `melchior models` to see what it says.");

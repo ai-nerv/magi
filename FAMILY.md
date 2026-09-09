@@ -32,6 +32,13 @@ Every answer, on every door, in either encoding:
 be told from the binary being missing, and the two need different responses: one is a bug to
 report, the other is a sibling to carry on without.
 
+**A verb this program does not have is a refusal like any other.** It is the first thing any
+caller does to a sibling it has not met, and it is where the rule above is broken most easily: an
+argument parser that rejects an unknown subcommand writes usage to stderr and exits 2 all by
+itself, and the program never sees the call. That is the "exited 1" case exactly — the caller
+cannot tell it from a binary that is not installed. The unknown verb comes back on **stdout**, in
+the reply shape, at exit 0, naming what was asked for.
+
 **A newer `family` is refused by name; an older one is not.** A reply with no `family` at all is
 from before the field existed and is accepted.
 
@@ -123,6 +130,12 @@ test and nowhere else.
 
 `--json` and `--cbor`, on every verb above. JSON is the default and is what a person reading a
 pipe gets. CBOR is the same shape as bytes, for a caller that is not going to read it.
+
+**Every verb takes both, including the ones whose bare output is not a reply.** `client` prints
+its library as source, because that is what a person redirecting it into a file wants; asked with
+`--json` or `--cbor` it comes back framed, with the source as the single value in `result`. A verb
+that rejects the family's own encoding flag is refusing the contract, and refusing it the worst
+way — with an argument parser's error, on stderr, at exit 2.
 
 On a socket nothing is negotiated: a body says which encoding it is in its first byte — JSON's
 top level is `{` or `[`, CBOR's map or array is `0x80`–`0xBF`, and the ranges do not overlap — so
@@ -218,10 +231,20 @@ A program may answer on its command line, on a socket, or both. **Where the two 
 difference is written down here**, so that a deliberate asymmetry is legible and an accidental one
 cannot hide among them.
 
+Every row `verbs` returns carries a `door`, and it is one of two words: `cli` for the command
+line, `socket` for a bound socket. A verb reachable on both is listed once per door. The field is
+what tells a caller where to knock, and it is checked rather than trusted:
+
+**A program must not name a door it cannot open.** A verb advertised on `socket` by a program with
+no way to start one is advertised-and-refused wearing a label that hides it — the probe that would
+catch it on the command line skips it as correctly-absent, and the one that would catch it on the
+socket can never connect. So a program with any `socket` verb answers `serve` on its command line,
+because that is the only thing that opens the door it is claiming.
+
 | program | command line | socket | deliberate differences |
 |---|---|---|---|
 | magi | the floor | one per session, its own CBOR protocol for a front end | Coordinates rather than being coordinated: no `needs`, no `configure`. |
-| casper | the floor, plus `tools`, `run`, `surface` | read-only verbs only | **`run` is never reachable over the socket.** casper's job is running programs, and a socket that runs commands is a remote shell wearing a friendly name. The spawn link carries the trust instead. |
+| casper | the floor, plus `tools`, `run`, `surface` | **none — it binds no socket** | **casper has no socket at all**, and that is the design rather than a gap: its job is running programs, and a socket that runs commands is a remote shell wearing a friendly name. It is spawned per call and the spawn link carries the trust. Every verb it advertises is on `cli`. |
 | melchior | the floor, plus `models`, `ask`, `serve`, `fork`, `auth` | the session surface | — |
 | balthasar | the floor, plus its own memory verbs | the same memory verbs | Some verbs are owner-only: a socket peer may propose but may not pin, write globally, or purge, and may not sign its report as the user's judgment. |
 

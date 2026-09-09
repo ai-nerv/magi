@@ -148,6 +148,103 @@ impl Family {
 /// The newest revision of the family wire this understands, duplicated in each sibling.
 pub const FAMILY: u16 = 1;
 
+/// [`FAMILY`], for serde's `default`.
+fn family() -> u16 {
+    FAMILY
+}
+
+/// Which kind of no a reply carries. Absent on the wire means [`Faulted::Refused`], the answer
+/// that costs a feature rather than a turn. Named apart from [`Fault`], which is what a *call*
+/// ended up as on this side rather than what a reply says about itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Faulted {
+    Refused,
+    Failed,
+}
+
+/// One reply, in the shape FAMILY.md fixes for every program in the family. Built here rather
+/// than assembled by hand at each site: a hand-built envelope agrees with the contract only for
+/// as long as nobody edits it.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Reply {
+    pub ok: bool,
+    /// Defaulted on the way in, so a reply from a build older than this field still parses.
+    #[serde(default = "family")]
+    pub family: u16,
+    /// Only ever on `verbs`: a fact about the program rather than about the reply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface: Option<u16>,
+    /// Always `result.len()`.
+    #[serde(default)]
+    pub n: usize,
+    /// The values, always a list: a listing is the rows, never one row that is the list.
+    #[serde(default)]
+    pub result: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fault: Option<Faulted>,
+}
+
+impl Reply {
+    /// An answer of one value.
+    #[must_use]
+    pub fn of(value: serde_json::Value) -> Self {
+        Self::rows(vec![value])
+    }
+
+    /// An answer of several.
+    #[must_use]
+    pub fn rows(values: Vec<serde_json::Value>) -> Self {
+        Self {
+            ok: true,
+            family: FAMILY,
+            surface: None,
+            n: values.len(),
+            result: values,
+            error: None,
+            fault: None,
+        }
+    }
+
+    /// An answer of none, for a verb that does something rather than reporting something.
+    #[must_use]
+    pub fn done() -> Self {
+        Self::rows(Vec::new())
+    }
+
+    /// A no that costs a feature rather than a turn: `fault` stays absent, which means refused.
+    #[must_use]
+    pub fn refused(why: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            family: FAMILY,
+            surface: None,
+            n: 0,
+            result: Vec::new(),
+            error: Some(why.into()),
+            fault: None,
+        }
+    }
+
+    /// What a third party writes against. Set on `verbs` and nowhere else.
+    #[must_use]
+    pub fn on_surface(mut self, surface: u16) -> Self {
+        self.surface = Some(surface);
+        self
+    }
+
+    /// This reply as bytes. A reply that will not encode as CBOR goes out as JSON rather than as
+    /// nothing, since the caller is owed an answer either way.
+    #[must_use]
+    pub fn encode(&self, wire: crate::Wire) -> Vec<u8> {
+        wire.write(self)
+            .or_else(|_| crate::Wire::Json.write(self))
+            .unwrap_or_else(|_| b"{\"ok\":false,\"family\":1,\"n\":0,\"result\":[]}".to_vec())
+    }
+}
+
 /// How long a call waits for its answer. The same number the blocking half uses.
 const PATIENCE: std::time::Duration = std::time::Duration::from_millis(2000);
 
@@ -340,6 +437,78 @@ mod tests {
             unwrap(&json!({ "ok": true, "result": "a" }), "replay"),
             Err(Fault::Malformed(_))
         ));
+    }
+
+    /// The shape FAMILY.md fixes, checked on the wire rather than on the struct.
+    #[test]
+    fn a_reply_carries_the_four_fields_every_answer_owes() {
+        let wire = serde_json::to_value(Reply::rows(vec![json!("a"), json!("b")])).expect("enc");
+        assert_eq!(wire["ok"], json!(true));
+        assert_eq!(wire["family"], json!(FAMILY));
+        assert_eq!(wire["n"], json!(2));
+        assert_eq!(wire["result"], json!(["a", "b"]));
+    }
+
+    /// `n` and `result` are owed even when there is nothing to report: a caller reading `result`
+    /// as a list must not have to tell absent from empty.
+    #[test]
+    fn an_answer_of_none_still_carries_an_empty_list() {
+        let wire = serde_json::to_value(Reply::done()).expect("enc");
+        assert_eq!(wire["n"], json!(0));
+        assert_eq!(wire["result"], json!([]));
+    }
+
+    /// A listing is the rows, not one row that is the list.
+    #[test]
+    fn a_listing_is_the_rows() {
+        let wire = serde_json::to_string(&Reply::rows(vec![json!({"verb": "verbs"})])).expect("e");
+        assert!(!wire.contains(r#""result":[["#), "{wire}");
+    }
+
+    #[test]
+    fn surface_is_on_verbs_and_nowhere_else() {
+        let plain = serde_json::to_value(Reply::of(json!("x"))).expect("enc");
+        assert!(plain.get("surface").is_none(), "{plain}");
+        let listing = serde_json::to_value(Reply::rows(Vec::new()).on_surface(7)).expect("enc");
+        assert_eq!(listing["surface"], json!(7));
+    }
+
+    /// A refusal names why, and says nothing about `fault`: absent means refused.
+    #[test]
+    fn a_refusal_names_why_and_leaves_fault_absent() {
+        let wire = serde_json::to_value(Reply::refused("no such call: nope")).expect("enc");
+        assert_eq!(wire["ok"], json!(false));
+        assert_eq!(wire["error"], json!("no such call: nope"));
+        assert!(wire.get("fault").is_none(), "{wire}");
+        assert_eq!(wire["result"], json!([]));
+    }
+
+    #[test]
+    fn a_reply_that_failed_says_so_by_name() {
+        let mut failed = Reply::refused("disk full");
+        failed.fault = Some(Faulted::Failed);
+        let wire = serde_json::to_value(&failed).expect("enc");
+        assert_eq!(wire["fault"], json!("failed"));
+        // And it reads back as the fault that costs a turn.
+        assert!(matches!(unwrap(&wire, "observe"), Err(Fault::Failed(_))));
+    }
+
+    /// A peer built before `family` existed still parses, and reads as revision 0.
+    #[test]
+    fn a_reply_from_before_the_field_parses_with_a_default() {
+        let old: Reply = serde_json::from_value(json!({ "ok": true })).expect("parse");
+        assert_eq!(old.family, FAMILY);
+        assert!(old.result.is_empty());
+    }
+
+    #[test]
+    fn one_shape_survives_both_encodings() {
+        let reply = Reply::rows(vec![json!({"verb": "verbs"})]).on_surface(1);
+        for wire in [crate::Wire::Json, crate::Wire::Cbor] {
+            let back: Reply = crate::Wire::read(&reply.encode(wire)).expect("read");
+            assert_eq!(back.surface, Some(1), "{wire:?}");
+            assert_eq!(back.n, 1, "{wire:?}");
+        }
     }
 
     #[test]

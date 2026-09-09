@@ -1,8 +1,47 @@
 //! `magi tools` — what the model can call, and how each one is reached.
 
-/// Print the registry, transport and all: a Lua tool runs in this process, a process tool is a peer
-/// with its own life, and which it is decides what happens when it misbehaves.
-pub fn print() -> Result<(), magi_lua::LuaError> {
+use crate::verbs::As;
+use magi_ipc::family::Reply;
+
+/// One entry: what the model calls it, the transport that carries it, and what it is for. A Lua
+/// tool runs in this process, a process tool is a peer with its own life, and which it is decides
+/// what happens when it misbehaves.
+struct Listed {
+    name: String,
+    transport: String,
+    description: String,
+}
+
+/// Print the registry, transport and all.
+pub fn print(how: As) -> Result<(), magi_lua::LuaError> {
+    let listed = registry()?;
+    if how.framed() {
+        let rows = listed
+            .iter()
+            .map(|tool| {
+                serde_json::json!({
+                    "name": tool.name,
+                    "transport": tool.transport,
+                    "description": tool.description,
+                })
+            })
+            .collect();
+        crate::verbs::say(&Reply::rows(rows), how);
+        return Ok(());
+    }
+    for tool in &listed {
+        println!(
+            "{:<10} {:<9} {}",
+            tool.name,
+            tool.transport,
+            first_line(&tool.description)
+        );
+    }
+    Ok(())
+}
+
+/// The registry a session would build, from the one place that knows how.
+fn registry() -> Result<Vec<Listed>, magi_lua::LuaError> {
     let loaded = crate::config::load()?;
     let mut engine = magi_lua::Engine::new();
     engine.install_clients(&loaded.clients);
@@ -12,9 +51,8 @@ pub fn print() -> Result<(), magi_lua::LuaError> {
     let declared = engine.tools();
 
     let engine = std::rc::Rc::new(std::cell::RefCell::new(engine));
-    // The same sequence a session builds, from the one place that knows it. Nobody to ask and
-    // no screen to lend: `magi tools` lists what exists and runs nothing, so a tool that would
-    // have stopped to ask never gets the chance to.
+    // Nobody to ask and no screen to lend: `magi tools` lists what exists and runs nothing, so a
+    // tool that would have stopped to ask never gets the chance to.
     let (registry, from_casper) = magi_lua::tool::assemble(
         std::rc::Rc::clone(&engine),
         std::sync::Arc::new(magi_tools::question::Unanswered),
@@ -23,33 +61,32 @@ pub fn print() -> Result<(), magi_lua::LuaError> {
         crate::config::casper_pin(&loaded).as_deref(),
         &crate::config::casper_configure(&loaded),
     );
-    // Asked rather than assumed. `magi tools` answers "what can the model call", and the only
-    // thing that knows what a peer offers is the peer. Through plain `Ops` at the working
-    // directory: a listing acts on nothing, so there is nothing to gate.
+    // Asked rather than assumed: the only thing that knows what a peer offers is the peer.
+    // Through plain `Ops` at the working directory, since a listing acts on nothing.
     registry.probe(&magi_tools::ops::Real::new(
         std::env::current_dir().unwrap_or_default(),
     ));
 
-    for tool in registry.declarations() {
-        let transport = if from_casper.contains(&tool.name) {
-            "casper"
-        } else {
-            declared
-                .iter()
-                .find(|(name, _)| *name == tool.name)
-                .and_then(|(_, spec)| spec.get("transport"))
-                .and_then(|t| t.get("kind"))
-                .and_then(|k| k.as_str())
-                .unwrap_or("builtin")
-        };
-        println!(
-            "{:<10} {:<9} {}",
-            tool.name,
-            transport,
-            first_line(&tool.description)
-        );
-    }
-    Ok(())
+    Ok(registry
+        .declarations()
+        .iter()
+        .map(|tool| Listed {
+            name: tool.name.clone(),
+            transport: if from_casper.contains(&tool.name) {
+                "casper".to_owned()
+            } else {
+                declared
+                    .iter()
+                    .find(|(name, _)| *name == tool.name)
+                    .and_then(|(_, spec)| spec.get("transport"))
+                    .and_then(|t| t.get("kind"))
+                    .and_then(|k| k.as_str())
+                    .unwrap_or("builtin")
+                    .to_owned()
+            },
+            description: tool.description.clone(),
+        })
+        .collect())
 }
 
 /// The first line of a description, for a listing.
