@@ -227,25 +227,32 @@ appear, which is the second-best thing to not copying them.
 
 ## Doors
 
-A program may answer on its command line, on a socket, or both. **Where the two differ, the
-difference is written down here**, so that a deliberate asymmetry is legible and an accidental one
-cannot hide among them.
+A program may answer on its command line, on a socket, on the door a harness calls for a model, or
+on any of them. **Where they differ, the difference is written down here**, so that a deliberate
+asymmetry is legible and an accidental one cannot hide among them.
 
-Every row `verbs` returns carries a `door`, and it is one of two words: `cli` for the command
-line, `socket` for a bound socket. A verb reachable on both is listed once per door. The field is
-what tells a caller where to knock, and it is checked rather than trusted:
+Every row `verbs` returns carries a `door`, and it is one of three words: `cli` for the command
+line, `socket` for a bound socket, and `tool` for the surface a harness calls on behalf of a model
+— reached in melchior as `melchior tool --verb X`, one exec per call. A verb reachable on more
+than one door is listed once per door. The field is what tells a caller where to knock, and it is
+checked rather than trusted:
 
 **A program must not name a door it cannot open.** A verb advertised on `socket` by a program with
 no way to start one is advertised-and-refused wearing a label that hides it — the probe that would
 catch it on the command line skips it as correctly-absent, and the one that would catch it on the
 socket can never connect. So a program with any `socket` verb answers `serve` on its command line,
-because that is the only thing that opens the door it is claiming.
+and a program with any `tool` verb answers `tool`, because that is the only thing that opens the
+door it is claiming.
+
+`tool` is the door a gate cannot probe: it answers for a live session and a gate has none. What is
+checked from outside is that the door exists; that every verb behind it is dispatched is held by
+the program's own tests.
 
 | program | command line | socket | deliberate differences |
 |---|---|---|---|
 | magi | the floor | one per session, its own CBOR protocol for a front end | Coordinates rather than being coordinated: no `needs`, no `configure`. |
 | casper | the floor, plus `tools`, `run`, `surface` | **none — it binds no socket** | **casper has no socket at all**, and that is the design rather than a gap: its job is running programs, and a socket that runs commands is a remote shell wearing a friendly name. It is spawned per call and the spawn link carries the trust. Every verb it advertises is on `cli`. |
-| melchior | the floor, plus `models`, `ask`, `serve`, `fork`, `auth` | the session surface | — |
+| melchior | the floor, plus `models`, `ask`, `serve`, `fork`, `auth` | the session surface | The only one with a `tool` door: the coordination vocabulary a model calls, reached as `melchior tool --verb X`. `identity` and `tell` on the socket are `whoami` and `send` there, and are not aliases — one answers a program with a record, the other a model with a paragraph. |
 | balthasar | the floor, plus its own memory verbs | the same memory verbs | Some verbs are owner-only: a socket peer may propose but may not pin, write globally, or purge, and may not sign its report as the user's judgment. |
 
 ---

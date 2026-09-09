@@ -112,14 +112,15 @@ fi
 # program's own no-such-call refusal: a verb that needs arguments may fail for that reason and
 # still exist.
 #
-# **A verb carries the door it is on.** Probing a socket verb against a command line reports it as
-# advertised-and-refused when it is neither — it is correctly absent from a door that never
-# claimed it. A program that does not say which door a verb is on has every verb probed here, and
-# that is the older, cruder reading.
+# **A verb carries the door it is on.** Probing a socket or tool verb against a command line
+# reports it as advertised-and-refused when it is neither — it is correctly absent from a door
+# that never claimed it. A program that does not say which door a verb is on has every verb
+# probed here, and that is the older, cruder reading.
 # Split on object boundaries, not on every brace: a description is prose and prose contains
 # brackets, which tore one verb's name away from its own door and reported six socket verbs as
 # missing from a command line that never claimed them.
-listed=$(printf '%s' "$verbs" | sed 's/},{/}\n{/g' | grep -v '"door":"socket"' |
+listed=$(printf '%s' "$verbs" | sed 's/},{/}\n{/g' |
+  grep -v '"door":"socket"' | grep -v '"door":"tool"' |
   sed -n 's/.*"verb":"\([a-z-]*\)".*/\1/p')
 [ -n "$listed" ] || listed=$(printf '%s' "$verbs" | tr ',{}[]' '\n' |
   sed -n 's/^"\([a-z][a-z-]*\)"$/\1/p')
@@ -194,6 +195,18 @@ if printf '%s' "$verbs" | grep -q '"door":"socket"'; then
   fi
 else
   say "a door it can open" "no socket verbs, so no socket to account for"
+fi
+
+# The same rule for the tool door, which is the one nothing here can probe: it answers for a live
+# session and the gate has none. What can be checked is that the way in exists.
+if printf '%s' "$verbs" | grep -q '"door":"tool"'; then
+  if printf '%s' "$verbs" | sed 's/},{/}\n{/g' | grep '"door":"cli"' | grep -q '"verb":"tool"'; then
+    say "a tool door it can open" "it advertises tool verbs and answers tool"
+  else
+    bad "a tool door it can open" "tool verbs, but no tool on the command line to reach them"
+  fi
+else
+  say "a tool door it can open" "no tool verbs, so no tool door to account for"
 fi
 
 echo
