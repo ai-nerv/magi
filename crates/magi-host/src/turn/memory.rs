@@ -15,12 +15,13 @@ pub(super) async fn compact(
     backend: &Backend,
     registry: &Registry,
     scribe: &crate::scribe::Held,
+    patience: std::time::Duration,
 ) -> bool {
     let entries = {
         let held = session.lock().await;
         held.entries().to_vec()
     };
-    let Some(plan) = planned(backend, scribe, entries.len()).await else {
+    let Some(plan) = planned(backend, scribe, entries.len(), patience).await else {
         return false;
     };
     masked(session, &plan).await;
@@ -80,8 +81,15 @@ pub(super) async fn compact(
     committed.is_ok()
 }
 
-/// How long a recall may hold up a turn, so the turn is independent of how quick balthasar is.
-const PATIENCE: std::time::Duration = std::time::Duration::from_millis(250);
+/// How long an enrichment may hold up a turn, so the turn is independent of how quick balthasar
+/// is. It covers the recall, the outcome report, and the plan asked for before anything has gone
+/// wrong — three asks the turn is complete without, all of them in front of the person.
+pub(super) const PATIENCE: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The same ask, made again after the provider has refused the window as too big. Nothing here is
+/// speculative any more: the round is already spent, the context is known not to fit, and giving
+/// up on the plan means sending it unchanged for the same refusal. Waiting is the cheaper end.
+pub(super) const INSISTENCE: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// What balthasar said to do with the window, held as its own type: the plan is consulted three
 /// times, and reaching into `serde_json::Value` is three chances to spell a key wrong.
@@ -103,16 +111,14 @@ impl Plan {
 /// entry indices from zero, so cursor `c` names entry `c - 1`, and `summarise.to` is exactly the
 /// count of entries covered — both conversions happen here, once. A balthasar that has observed
 /// nothing refuses, and a session with no scribe is not planned for at all.
-async fn planned(backend: &Backend, scribe: &crate::scribe::Held, entries: usize) -> Option<Plan> {
+async fn planned(
+    backend: &Backend,
+    scribe: &crate::scribe::Held,
+    entries: usize,
+    patience: std::time::Duration,
+) -> Option<Plan> {
     let window = backend.context_window?;
-    let plan = tokio::time::timeout(PATIENCE, async {
-        let mut open = scribe.lock().await;
-        open.as_mut()?.plan_for(window).await.ok()
-    })
-    .await
-    .inspect_err(|_| magi_model::noted!("compact: balthasar did not plan within {PATIENCE:?}"))
-    .ok()
-    .flatten()?;
+    let plan = plan_within(scribe, window, patience).await?;
 
     // A plan that does not fit is said out loud: balthasar reserves room for the answer and the
     // injection, and a window smaller than that reserve leaves it nothing to plan with.
@@ -159,6 +165,24 @@ async fn planned(backend: &Backend, scribe: &crate::scribe::Held, entries: usize
         );
     }
     Some(Plan { masks, summarise })
+}
+
+/// Ask balthasar for a plan, and stop waiting at `patience`. The wait covers taking the lock as
+/// well as the round trip: a scribe held by whatever is compacting is as unavailable as one that
+/// does not answer.
+async fn plan_within(
+    scribe: &crate::scribe::Held,
+    window: u64,
+    patience: std::time::Duration,
+) -> Option<serde_json::Value> {
+    tokio::time::timeout(patience, async {
+        let mut open = scribe.lock().await;
+        open.as_mut()?.plan_for(window).await.ok()
+    })
+    .await
+    .inspect_err(|_| magi_model::noted!("compact: balthasar did not plan within {patience:?}"))
+    .ok()
+    .flatten()
 }
 
 /// Write down what the plan said to stub, so the next context is built with it. balthasar never
@@ -293,5 +317,38 @@ pub(super) async fn acted_on(
     .await;
     if reported.is_err() {
         magi_model::noted!("turn: an outcome did not land within {PATIENCE:?}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A scribe nothing can take, standing in for a balthasar that will not answer.
+    fn wedged() -> crate::scribe::Held {
+        std::sync::Arc::new(tokio::sync::Mutex::new(None))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_plan_is_given_up_on_at_the_budget_it_was_asked_under() {
+        // One constant bounded the speculative plan, the recall and the outcome report together,
+        // so raising the one that decides what the provider is sent raised the two in front of
+        // the person as well.
+        let scribe = wedged();
+        let _taken = scribe.lock().await;
+
+        for patience in [PATIENCE, INSISTENCE] {
+            let began = tokio::time::Instant::now();
+            assert!(plan_within(&scribe, 100_000, patience).await.is_none());
+            assert_eq!(began.elapsed(), patience);
+        }
+    }
+
+    #[test]
+    fn the_window_the_provider_refused_is_worth_waiting_longer_for() {
+        assert!(
+            INSISTENCE > PATIENCE,
+            "the retry gives up as soon as the speculative ask, and sends the same window again"
+        );
     }
 }

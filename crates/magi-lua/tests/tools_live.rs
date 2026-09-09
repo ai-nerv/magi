@@ -213,6 +213,33 @@ fn agent_argv(call: serde_json::Value) -> Vec<String> {
 }
 
 #[test]
+fn every_argument_the_agent_declares_reaches_melchior() {
+    // `role` was declared by melchior and by nothing here, so `role` and `assign` -- the two verbs
+    // that say what an agent is for -- were refused for want of an argument the model had no way
+    // to send. The rule is the general one: an argument offered to the model and not passed on is
+    // an argument that does nothing.
+    let mut engine = Engine::new();
+    engine.run(&config("tools.lua"), "tools.lua").expect("runs");
+    let spec = engine
+        .tools()
+        .into_iter()
+        .find(|(name, _)| name == "agent")
+        .map(|(_, spec)| spec)
+        .expect("the agent tool is declared");
+    let args = spec["transport"]["args"].to_string();
+    for name in spec["parameters"]["properties"]
+        .as_object()
+        .expect("properties")
+        .keys()
+    {
+        assert!(
+            args.contains(&format!("{{{name}}}")),
+            "the model may send {name:?} and no argument carries it: {args}"
+        );
+    }
+}
+
+#[test]
 fn an_argument_the_model_left_out_takes_its_flag_with_it() {
     // An absent argument is dropped whole, but only when the flag and the placeholder are one
     // token: written as `"--about", "{about}"`, the bare flag stayed and swallowed the next one.

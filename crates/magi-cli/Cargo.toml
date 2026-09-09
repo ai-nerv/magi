@@ -33,6 +33,10 @@ tokio-stream.workspace = true
 [dev-dependencies]
 magi-journal.workspace = true
 serde_json.workspace = true
+# `start_paused` is behind it. Only magi-host asked for it, and feature unification lent it here
+# for as long as the two were built together -- so this crate checked green in the workspace and
+# red on its own.
+tokio = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

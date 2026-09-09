@@ -302,7 +302,7 @@ pub async fn run(
 
     // Whether to compact is balthasar's answer, not a threshold here. Before the first round, not
     // before every one: compacting between rounds summarises a conversation still in progress.
-    compact(session, backend, registry, scribe).await;
+    compact(session, backend, registry, scribe, PATIENCE).await;
 
     // Once per prompt, and after any compaction: the recall is about what the person asked, and
     // recalling first would spend the budget on a window that is about to change shape.
@@ -344,7 +344,7 @@ pub async fn run(
         // The estimate above is rough; this is the provider's own answer. The failed round stays.
         if round.failed == Some(magi_proto::ask::Refusal::Overflow) && !compacted {
             compacted = true;
-            if compact(session, backend, registry, scribe).await {
+            if compact(session, backend, registry, scribe, INSISTENCE).await {
                 continue;
             }
         }
@@ -488,4 +488,4 @@ fn turn_calls(turn: &Turn) -> Vec<magi_core::PendingCall> {
 /// Compaction, and what balthasar is asked and told.
 #[path = "turn/memory.rs"]
 mod memory;
-use memory::{acted_on, compact, remembered};
+use memory::{INSISTENCE, PATIENCE, acted_on, compact, remembered};

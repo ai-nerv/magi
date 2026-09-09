@@ -248,11 +248,17 @@ pub fn install(
                     Some(seconds) => tool.with_timeout(*seconds),
                     None => tool,
                 };
-                // A placeholder naming a property the schema does not declare can never be filled,
-                // so the argument silently vanishes at every call.
+                // Both halves of one rule: the schema and the argument vector name the same things.
+                // Either way round, the argument silently vanishes at every call.
                 if let Some(unknown) = undeclared(&tool, &declaration.parameters) {
                     eprintln!(
                         "magi: the tool {name:?} was not registered: its arguments name {unknown:?}, which it does not declare"
+                    );
+                    continue;
+                }
+                if let Some(dropped) = uncarried(&tool, &declaration.parameters) {
+                    eprintln!(
+                        "magi: the tool {name:?} was not registered: it declares {dropped:?}, which none of its arguments carry"
                     );
                     continue;
                 }
@@ -509,8 +515,25 @@ fn undeclared(
         .find(|name| !declared.is_some_and(|properties| properties.contains_key(name)))
 }
 
+/// A property the schema declares that no argument carries. The model is told it may send `role`,
+/// spends a call sending it, and the value never reaches the program — which then refuses for want
+/// of the thing that was in fact supplied.
+fn uncarried(
+    tool: &magi_tools::command::CommandTool,
+    parameters: &serde_json::Value,
+) -> Option<String> {
+    let carried = tool.placeholders();
+    parameters
+        .get("properties")
+        .and_then(|properties| properties.as_object())?
+        .keys()
+        .find(|name| !carried.contains(name))
+        .cloned()
+}
+
 #[cfg(test)]
 mod command_transport {
+    use super::tests::built;
     use super::*;
 
     fn transport(lua: &str) -> Result<Transport, String> {
@@ -613,6 +636,47 @@ mod command_transport {
             vec!["{pattern}".to_owned()],
         );
         assert_eq!(undeclared(&tool, &tool.parameters()), None);
+        assert_eq!(uncarried(&tool, &tool.parameters()), None);
+    }
+
+    #[test]
+    fn a_property_no_argument_carries_is_refused() {
+        // The other half of the same rule. The model is offered `limit`, fills it, and `rg` is run
+        // without it -- the schema promising something the argument vector cannot deliver.
+        let tool = magi_tools::command::CommandTool::new(
+            "grep",
+            "",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string" },
+                    "limit": { "type": "integer" }
+                }
+            }),
+            "rg",
+            vec!["{pattern}".to_owned()],
+        );
+        assert_eq!(
+            uncarried(&tool, &tool.parameters()),
+            Some("limit".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_command_promising_an_argument_it_drops_does_not_register() {
+        let (registry, _) = built(
+            r#"
+            magi.tool("half", {
+              description = "takes two and passes one",
+              parameters = {
+                type = "object",
+                properties = { one = { type = "string" }, two = { type = "string" } },
+              },
+              transport = { kind = "command", command = "echo", args = { "{one}" } },
+            })
+            "#,
+        );
+        assert!(registry.get("half").is_none());
     }
 }
 
