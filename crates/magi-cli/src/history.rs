@@ -66,22 +66,32 @@ pub fn remember(prompt: &str) {
     kept.push(prompt.to_owned());
 
     let path = path();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+    if let Some(parent) = path.parent()
+        && let Err(why) = std::fs::create_dir_all(parent)
+    {
+        magi_model::noted!("history: {} could not be made: {why}", parent.display());
+        return;
     }
     // Over the cap the file is rewritten, which is the one time anything is dropped. Under it,
     // appended — a prompt is one line and rewriting a thousand of them per prompt is not.
     if kept.len() > KEEP {
         let trimmed = kept.split_off(kept.len() - KEEP);
-        let _ = std::fs::write(&path, trimmed.join("\n") + "\n");
+        if let Err(why) = std::fs::write(&path, trimmed.join("\n") + "\n") {
+            magi_model::noted!("history: {} could not be rewritten: {why}", path.display());
+        }
         return;
     }
-    if let Ok(mut file) = std::fs::OpenOptions::new()
+    match std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
     {
-        let _ = writeln!(file, "{prompt}");
+        Ok(mut file) => {
+            if let Err(why) = writeln!(file, "{prompt}") {
+                magi_model::noted!("history: a prompt could not be appended: {why}");
+            }
+        }
+        Err(why) => magi_model::noted!("history: {} could not be opened: {why}", path.display()),
     }
 }
 
