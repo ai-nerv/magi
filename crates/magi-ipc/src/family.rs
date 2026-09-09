@@ -110,6 +110,17 @@ impl Family {
         verb: &str,
         args: Vec<serde_json::Value>,
     ) -> Result<Vec<serde_json::Value>, Fault> {
+        self.call_within(verb, args, PATIENCE).await
+    }
+
+    /// The same, waiting `patience` rather than the clock a feature keeps. For the calls whose
+    /// failure costs the conversation rather than a feature — see [`DURABLE`].
+    pub async fn call_within(
+        &mut self,
+        verb: &str,
+        args: Vec<serde_json::Value>,
+        patience: std::time::Duration,
+    ) -> Result<Vec<serde_json::Value>, Fault> {
         let mut body = serde_json::Map::new();
         body.insert("call".into(), serde_json::Value::String(verb.to_owned()));
         if !args.is_empty() {
@@ -138,9 +149,9 @@ impl Family {
 
         // A socket that accepts the connection and then never replies is the ordinary shape of a
         // wedged process, so every asynchronous call is on a clock here rather than at the caller.
-        tokio::time::timeout(PATIENCE, self.read_reply(verb))
+        tokio::time::timeout(patience, self.read_reply(verb))
             .await
-            .map_err(|_| Fault::Unavailable(format!("{verb}: no answer in {PATIENCE:?}")))?
+            .map_err(|_| Fault::Unavailable(format!("{verb}: no answer in {patience:?}")))?
     }
 
     /// Read one framed reply and unwrap the family's envelope.
@@ -274,6 +285,11 @@ impl Reply {
 
 /// How long a call waits for its answer. The same number the blocking half uses.
 const PATIENCE: std::time::Duration = std::time::Duration::from_millis(2000);
+
+/// How long a call carrying the transcript waits. balthasar opens a session's store on the first
+/// call it is asked for it, which has been measured at ten seconds on a busy machine — and giving
+/// up on a write costs the exchange, where giving up on a recall costs a feature.
+pub const DURABLE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Split a reply into its return values, or into the fault it names. No `fault` field means
 /// `refused`, the answer that costs a feature rather than a turn.

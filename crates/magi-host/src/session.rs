@@ -82,6 +82,14 @@ impl Session {
             .collect()
     }
 
+    /// Put back what a flush could not hand over. A cursor that has settled again since keeps the
+    /// newer entry: what is waiting to be written is the entry as it stands, not as it was taken.
+    pub fn keep_pending(&mut self, unsent: Vec<(Cursor, Entry)>) {
+        for (cursor, entry) in unsent {
+            self.pending.entry(cursor.0).or_insert(entry);
+        }
+    }
+
     /// Whether anything is waiting to be written out.
     #[must_use]
     pub fn has_pending(&self) -> bool {

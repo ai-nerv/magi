@@ -101,10 +101,17 @@ impl Scribe {
     async fn write(&mut self, verb: &str, cursor: Cursor, entry: &Entry) -> Result<(), Fault> {
         let turn = turn(cursor, entry)?;
         let args = vec![serde_json::Value::String(self.session.clone()), turn];
-        match self.family.call(verb, args.clone()).await {
+        // On the durable clock, not a feature's: the store a session writes to is opened by this
+        // very call the first time, and what is not handed over is not anywhere else either.
+        match self
+            .family
+            .call_within(verb, args.clone(), magi_ipc::family::DURABLE)
+            .await
+        {
             Ok(_) => {}
             // Dialled again and asked once more, and only for a connection that died: a refusal is
             // an answer. Safe to repeat, since `observe` at a cursor that has a row is an `amend`.
+            // The second attempt is on the ordinary clock: the first already gave it thirty seconds.
             Err(Fault::Unavailable(why)) => {
                 self.redial()
                     .await
@@ -327,20 +334,26 @@ pub async fn flush(
     let Some(scribe) = scribe.as_mut() else {
         return Ok(());
     };
-    let settled = {
+    let mut settled = {
         let mut held = session.lock().await;
         if !held.has_pending() {
             return Ok(());
         }
-        held.take_pending()
+        std::collections::VecDeque::from(held.take_pending())
     };
-    for (cursor, entry) in settled {
+    while let Some((cursor, entry)) = settled.pop_front() {
         // A mask is not news to the layer that ordered it: balthasar marks a turn masked as it
         // hands the plan over, and streaming it back would file its decision as a fresh turn.
         if matches!(entry, Entry::Masked { .. }) {
             continue;
         }
-        scribe.settle(cursor, &entry).await?;
+        if let Err(why) = scribe.settle(cursor, &entry).await {
+            // Back where it was taken from, rather than dropped: this is the only copy, and the
+            // next flush — the one [`crate::drain`] makes on the way out — is its second chance.
+            settled.push_front((cursor, entry));
+            session.lock().await.keep_pending(settled.into());
+            return Err(why);
+        }
     }
     Ok(())
 }
