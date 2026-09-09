@@ -402,8 +402,18 @@ async fn connection(
     // Commands are read in their own task because `FrameReader::read` is not cancel-safe: it
     // takes a length and then a body, and a `select!` that drops it between the two leaves the
     // next read parsing body bytes as a length. Publishing an event used to do exactly that.
+    //
+    // **The channel is what says the client has gone, and nothing else is allowed to.** The
+    // sender below is moved into this task and dropped when it returns, so a closed connection
+    // reaches the loop as the queue draining and *then* `None` — which the `None` arm already
+    // treats as the end. Watching the task itself as a third `select!` arm looked like the same
+    // fact said sooner, and was a race: a client that writes a prompt and hangs up leaves both
+    // arms ready at once, `select!` picks among ready arms at random, and about half the time the
+    // arm that wins is the one that throws the queue away. That is a prompt accepted, never run,
+    // and never reported — the shape of it was a forked child coming up with an empty transcript
+    // on some runs and not others.
     let (commands, mut incoming) = tokio::sync::mpsc::channel::<UiCommand>(32);
-    let mut reading = tokio::spawn(async move {
+    let reading = tokio::spawn(async move {
         while let Ok(command) = reader.read::<UiCommand>().await {
             if commands.send(command).await.is_err() {
                 return;
@@ -580,7 +590,6 @@ async fn connection(
                     Err(_) => break,
                 }
             }
-            _ = &mut reading => break,
         }
     }
 

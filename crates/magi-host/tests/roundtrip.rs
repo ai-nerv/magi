@@ -622,3 +622,46 @@ async fn the_model_is_told_what_it_is_before_the_conversation() {
     );
     assert!(ask.contains("hello"), "and the conversation with it: {ask}");
 }
+
+/// A prompt written by a client that then hangs up is still run.
+///
+/// **The one case where a client says all it has to say and leaves.** `magi fork` does exactly
+/// this: a child is handed its work over the socket and the connection goes, because a client
+/// that stayed attached would turn every refusal in that session into a five-minute wait for an
+/// answer nobody is there to give.
+///
+/// Repeated, because what this guards against was a `select!` choosing at random between two
+/// arms that were both ready — the queued prompt, and the news that the reader had finished. It
+/// came out right about half the time, which is indistinguishable from working if you try it
+/// once. Sixteen rounds is a one-in-sixty-five-thousand chance of passing against the bug.
+#[tokio::test]
+async fn a_prompt_written_by_a_client_that_hangs_up_is_still_run() {
+    for round in 0..16 {
+        let (_dir, socket) = start(&format!("hangup{round}")).await;
+        {
+            let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
+            client.submit("work handed over").await;
+            // Nothing drained and nothing waited for: the close goes out behind the prompt, so
+            // both reach the session together. That is the whole of the race.
+        }
+
+        // Asked of the session, not of a stream held open — the connection that sent it is gone,
+        // and the question is whether the session kept what it was given.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let kept = loop {
+            let (_client, entries) = Client::attach(&socket, Cursor(2)).await;
+            if !entries.is_empty() {
+                break entries;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "round {round}: the prompt was taken and then dropped on the way in"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        };
+        match &kept[0] {
+            Entry::User { text, .. } => assert_eq!(text, "work handed over", "round {round}"),
+            other => panic!("round {round}: expected a user entry, got {other:?}"),
+        }
+    }
+}
