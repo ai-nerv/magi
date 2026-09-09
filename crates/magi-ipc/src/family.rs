@@ -45,6 +45,10 @@ pub struct Family {
     /// Which encoding calls go out in; replies are read in whichever came back. JSON by default.
     wire: crate::Wire,
     path: PathBuf,
+    /// Whether a call went out whose reply was never read to the end. One reply per call, in
+    /// order, so an abandoned one is still in the stream: the next call would read it as its own
+    /// answer, and every answer after that belongs to the call before it.
+    adrift: bool,
 }
 
 impl Family {
@@ -59,7 +63,19 @@ impl Family {
             scratch: Vec::new(),
             wire: crate::Wire::default(),
             path,
+            adrift: false,
         })
+    }
+
+    /// Take the connection down and open another to the same socket, dropping whatever the old one
+    /// still owed. The only way back into step: a reply cannot be skipped without reading it, and
+    /// reading it means waiting for a call this side has already given up on.
+    async fn reopen(&mut self) -> Result<(), Fault> {
+        self.stream = UnixStream::connect(&self.path)
+            .await
+            .map_err(|e| Fault::Unavailable(format!("{}: {e}", self.path.display())))?;
+        self.adrift = false;
+        Ok(())
     }
 
     /// Connect to whichever socket [`candidates`] offers first, newest wins. Each is tried in turn:
@@ -107,6 +123,14 @@ impl Family {
         let mut frame = Vec::with_capacity(4 + body.len());
         frame.extend_from_slice(&(body.len() as u32).to_be_bytes());
         frame.extend_from_slice(&body);
+        // Whatever the abandoned call still owes arrives on this stream and nowhere else, so the
+        // stream goes rather than the answer being skipped.
+        if self.adrift {
+            self.reopen().await?;
+        }
+        // Set before the write, not after: a `call` dropped where it stands — a caller's own
+        // timeout around this one — leaves a request on the wire either way.
+        self.adrift = true;
         self.stream
             .write_all(&frame)
             .await
@@ -137,6 +161,9 @@ impl Family {
             .read_exact(&mut self.scratch)
             .await
             .map_err(|e| Fault::Unavailable(format!("reading {verb}: {e}")))?;
+        // The whole frame is off the wire, so the next call starts where a reply does. Before the
+        // envelope is read: a refusal is an answer, and answering leaves nothing owed.
+        self.adrift = false;
 
         // Read in whichever encoding came back rather than in the one we asked in.
         let reply: serde_json::Value = crate::Wire::read(&self.scratch)
