@@ -1,43 +1,28 @@
-//! The characters the UI is drawn out of.
-//!
-//! Every one of them is a choice somebody could reasonably disagree with — a rounded box or a
-//! square one, a chevron or an arrow, braille dots or a bar that fills — and none of them is worth
-//! a fork. So they are settings, by the names below, from `magi.ui` in Lua.
+//! The characters the UI is drawn out of, every one settable by name from `magi.ui` in Lua. Width
+//! is the caller's problem: a glyph two columns wide draws two columns wide, and nothing measures.
 //!
 //! ```lua
 //! magi.ui.corner_top_left = "┌"
 //! magi.ui.marker          = "▶ "
 //! magi.ui.spinner         = { "◐", "◓", "◑", "◒" }
 //! ```
-//!
-//! **Width is the caller's problem, not this module's.** A glyph two columns wide will draw two
-//! columns wide, and a box corner that does that will not line up. Nothing here measures.
 
 use std::sync::OnceLock;
 
-/// Declare the glyphs once: the struct, the defaults, the accessors, and the names a config may
-/// set, from one list so none of them can fall out of step.
+/// Declare the glyphs once — struct, defaults, accessors and the settable names — from one list.
 macro_rules! glyphs {
     ($($name:ident = $default:literal, $doc:literal;)*) => {
         /// Every character the UI is drawn out of.
         #[derive(Debug, Clone, PartialEq, Eq)]
         pub struct Glyphs {
             $(#[doc = $doc] pub $name: String,)*
-            /// The spinner, a frame at a time.
-            ///
-            /// A list rather than a fixed count: a spinner is however many frames its author drew.
-            /// An empty one is refused on the way in, because a spinner with no frames is a
-            /// division by zero at the one moment somebody is watching the screen.
+            /// The spinner, a frame at a time. An empty list is refused on the way in, because a
+            /// spinner with no frames is a division by zero while somebody is watching.
             pub spinner: Vec<String>,
-            /// What the empty prompt writes to itself once it has been left alone.
-            ///
-            /// `a ~~b~~ c` means "write `a b`, take the `b` back, write `c`" -- performed a
-            /// character at a time rather than drawn struck through. See [`crate::tease`].
+            /// What the empty prompt writes to itself once left alone. `a ~~b~~ c` means "write
+            /// `a b`, take the `b` back, write `c`", a character at a time. See [`crate::tease`].
             pub placeholders: Vec<String>,
-            /// What the empty prompt says before any of that.
-            ///
-            /// Plain, and nothing to read twice: this is the line somebody sees when they sit
-            /// down, and a joke in that position is a joke in the way.
+            /// What the empty prompt says before any of that. Plain, and nothing to read twice.
             pub openers: Vec<String>,
         }
 
@@ -53,10 +38,8 @@ macro_rules! glyphs {
         }
 
         impl Glyphs {
-            /// Every name `magi.ui` recognises as a glyph, beside `spinner`.
             pub const NAMES: &'static [&'static str] = &[$(stringify!($name),)*];
 
-            /// Take whatever `given` answers for, and keep the rest.
             pub fn overlay(&mut self, given: &dyn Fn(&str) -> Option<String>) {
                 $(if let Some(value) = given(stringify!($name)) { self.$name = value; })*
             }
@@ -66,7 +49,6 @@ macro_rules! glyphs {
     };
 }
 
-/// The braille spinner, which is what a terminal has drawn for twenty years.
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 glyphs! {
@@ -107,21 +89,16 @@ glyphs! {
 /// The glyphs in force, set once before anything is drawn.
 static IN_FORCE: OnceLock<Glyphs> = OnceLock::new();
 
-/// Use `glyphs` for the life of the process.
-///
-/// Only the first call counts, for the same reason the palette's does: a screen half drawn in one
-/// set and half in another is worse than a set nobody asked for.
+/// Use `glyphs` for the life of the process. Only the first call counts.
 pub fn adopt(glyphs: Glyphs) {
     let _ = IN_FORCE.set(glyphs);
 }
 
-/// The glyphs in force.
 #[must_use]
 pub fn glyphs() -> &'static Glyphs {
     IN_FORCE.get_or_init(Glyphs::default)
 }
 
-/// The spinner frame for `tick`.
 #[must_use]
 pub fn spinner(tick: usize) -> &'static str {
     let frames = &glyphs().spinner;
@@ -131,35 +108,26 @@ pub fn spinner(tick: usize) -> &'static str {
     &frames[tick % frames.len()]
 }
 
-/// Every line the empty prompt may perform once it is left alone.
 #[must_use]
 pub fn placeholders() -> &'static [String] {
     &glyphs().placeholders
 }
 
-/// Every line the empty prompt may open with.
 #[must_use]
 pub fn openers() -> &'static [String] {
     &glyphs().openers
 }
 
-/// How many frames the spinner has.
 #[must_use]
 pub fn spinner_frames() -> usize {
     glyphs().spinner.len()
 }
 
-/// What the empty prompt performs when no configuration says otherwise.
-///
-/// One line, not a list. **The list lives in `config/init.lua`**, which is the point: a line that
-/// stops being funny should be deletable without a compiler. This is the floor under a machine
-/// with no config at all, and it carries the `~~` marker so the performance has something to do.
+/// What the empty prompt performs with no configuration. One line: the list lives in
+/// `config/init.lua`, and this carries the `~~` marker so the performance has something to do.
 const PLACEHOLDERS: [&str; 1] = ["first we need to build a ~~tool~~ tool to build the tool"];
 
 /// What the empty prompt opens with when no configuration says otherwise.
-///
-/// Plain, and the list lives in the configuration too. This is what somebody reads when they sit
-/// down: it should say what the box is for and then get out of the way.
 const OPENERS: [&str; 1] = ["let's build something"];
 #[cfg(test)]
 mod tests {
@@ -183,8 +151,7 @@ mod tests {
 
     #[test]
     fn the_marker_and_its_absence_are_named_apart() {
-        // They have to be the same width or every name in the list shifts by a column when the
-        // cursor lands on it. Naming both is what lets somebody keep that true.
+        // They have to be the same width or every name shifts by a column when the cursor lands on it.
         assert!(Glyphs::NAMES.contains(&"marker"));
         assert!(Glyphs::NAMES.contains(&"no_marker"));
     }

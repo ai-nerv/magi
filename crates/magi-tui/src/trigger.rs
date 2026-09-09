@@ -1,26 +1,10 @@
-//! The sigils that mean something inside a prompt.
-//!
-//! `@src/main.rs` is a file, `$main/delta` is another instance, `/review` is a skill. Each is a
-//! character that opens a completion and a token that ends at whitespace, and the only thing
-//! that differs between them is where the candidates come from.
-//!
-//! A table rather than three branches in the resolver, because the third one was about to be
-//! written as a copy of the second and the fourth would have been a copy of the third. What a
-//! trigger *is* — its sigil, what it completes, whether it may appear mid-line — is data; how
-//! its candidates are found is one function per trigger, supplied by the caller that has the
-//! filesystem or the session list.
-//!
-//! # `/` means two things and they do not collide
-//!
-//! Pressed in normal mode, `/` starts a search of the transcript. Typed *inside prompt text* it
-//! names a skill. Those are different contexts — one is a key with an empty buffer, the other is
-//! a token in a sentence — in the same way `@` is a completion in the prompt and nothing at all
-//! at the keyboard. Neither reading has to give way.
+//! The sigils that mean something inside a prompt: `@src/main.rs` a file, `$main/delta` another
+//! instance, `/review` a skill. Each is a character that opens a completion and a token that ends
+//! at whitespace; what a trigger is, is data here, while how its candidates are found is one
+//! function per trigger supplied by the caller. `/` in normal mode searches the transcript instead.
 
-/// What a sigil opens.
-///
-/// The order is the order they are looked for, which matters only where one sigil could appear
-/// inside another's token — a path with a `$` in it, say. Longest-standing first.
+/// What a sigil opens, in the order they are looked for — which matters only where one sigil could
+/// appear inside another's token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trigger {
     /// `:` — a command. Only at the start, and only on the command line.
@@ -42,7 +26,6 @@ pub const EVERY: [Trigger; 4] = [
 ];
 
 impl Trigger {
-    /// The character that opens it.
     #[must_use]
     pub fn sigil(self) -> char {
         match self {
@@ -53,10 +36,8 @@ impl Trigger {
         }
     }
 
-    /// Whether it only means anything at the very start of the line.
-    ///
-    /// A command is a whole line and the others are words in one: `:model` is the line, while
-    /// `tell $gamma about @src/main.rs` has two triggers in the middle of a sentence.
+    /// Whether it only means anything at the very start of the line. A command is a whole line;
+    /// the others are words in one.
     #[must_use]
     pub fn anchored(self) -> bool {
         matches!(self, Self::Command)
@@ -73,20 +54,15 @@ impl Trigger {
         }
     }
 
-    /// Find this trigger's token in `before`, if the cursor is inside one.
-    ///
-    /// Answers where the sigil is and what has been typed after it. A token ends at whitespace,
-    /// so `@src/ma` is a token and `@src/ma ` is a finished word nobody is still completing.
+    /// Find this trigger's token in `before`, if the cursor is inside one. A token ends at
+    /// whitespace, so `@src/ma` is one and `@src/ma ` is a finished word.
     #[must_use]
     pub fn found(self, before: &str) -> Option<Token> {
         let at = if self.anchored() {
             before.starts_with(self.sigil()).then_some(0)?
         } else {
-            // A sigil only opens a trigger where a word does. Without this the `/` inside
-            // `@src/main.rs` is a skill -- and it is *nearer the cursor* than the `@`, so it
-            // wins, and every path completion turns into a skill completion halfway through
-            // being typed. The last such position, so a second `@` on a line completes the
-            // second and not the first.
+            // A sigil only opens a trigger where a word does, or the `/` inside `@src/main.rs` is
+            // a skill and is nearer the cursor than the `@`. The last such position.
             before
                 .char_indices()
                 .rev()
@@ -115,11 +91,9 @@ impl Trigger {
 /// A trigger's token, as it stands under the cursor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token {
-    /// Which sigil opened it.
     pub trigger: Trigger,
     /// Where the sigil is, in characters from the start of the line.
     pub at: usize,
-    /// What has been typed after it.
     pub query: String,
 }
 
@@ -131,11 +105,7 @@ impl Token {
     }
 }
 
-/// The trigger under the cursor, if any, preferring the one nearest to it.
-///
-/// Nearest rather than first: `tell $gamma about @src/ma` has two, and the one being typed is
-/// the one that ends at the cursor. Picking the first would complete a name the cursor left
-/// several words ago.
+/// The trigger under the cursor, if any, preferring the nearest — the one that ends at the cursor.
 #[must_use]
 pub fn under(before: &str, wanted: &[Trigger]) -> Option<Token> {
     wanted
@@ -151,8 +121,7 @@ mod tests {
 
     #[test]
     fn every_sigil_is_different() {
-        // Two triggers on one character is one of them never firing, and which one is decided
-        // by the order of a match arm rather than by anything a reader would expect.
+        // Two triggers on one character is one of them never firing.
         let mut sigils: Vec<char> = EVERY.iter().map(|t| t.sigil()).collect();
         sigils.sort_unstable();
         let held = sigils.len();
@@ -162,8 +131,7 @@ mod tests {
 
     #[test]
     fn a_token_ends_at_whitespace() {
-        // `@src/ma` is being typed; `@src/ma ` is a finished word and completing it would put
-        // the popup back over a line somebody has moved on from.
+        // `@src/ma` is being typed; `@src/ma ` is a finished word.
         assert!(Trigger::File.found("@src/ma").is_some());
         assert!(Trigger::File.found("@src/ma ").is_none());
     }
@@ -195,8 +163,7 @@ mod tests {
 
     #[test]
     fn the_nearest_trigger_to_the_cursor_is_the_one_being_typed() {
-        // The whole reason `under` sorts. Completing `$gamma` while the cursor is inside
-        // `@src/ma` offers instance names for a path.
+        // The whole reason `under` sorts: otherwise `$gamma` offers instance names for a path.
         let token = under("tell $gamma about @src/ma", &EVERY).expect("a token");
         assert_eq!(token.trigger, Trigger::File);
         assert_eq!(token.query, "src/ma");
@@ -220,9 +187,8 @@ mod tests {
 
     #[test]
     fn a_sigil_inside_a_word_is_not_a_trigger() {
-        // The one that bit. A path has slashes in it, and the `/` in `@src/main.rs` is nearer
-        // the cursor than the `@` -- so without a word boundary every path completion turns
-        // into a skill completion halfway through being typed.
+        // A path has slashes in it, and the `/` in `@src/main.rs` is nearer the cursor than the
+        // `@`, so without a word boundary every path completion turns into a skill completion.
         let token = under("@src/main", &EVERY).expect("a token");
         assert_eq!(token.trigger, Trigger::File);
         assert_eq!(token.query, "src/main");
@@ -242,13 +208,8 @@ mod tests {
     }
 }
 
-/// Every finished token of this trigger in a line.
-///
-/// Different from [`Trigger::found`], and both are needed. That one answers "is the cursor in a
-/// token", which is a question about something half-typed and ends at the first space. This one
-/// answers "what does this sentence name", which is a question about a line somebody has
-/// finished — and `tell $gamma to stop` names `$gamma` precisely because there is a space after
-/// it.
+/// Every finished token of this trigger in a line. Unlike [`Trigger::found`], which stops at the
+/// first space, this asks what a finished sentence names: `tell $gamma to stop` names `$gamma`.
 #[must_use]
 pub fn named(line: &str, trigger: Trigger) -> Vec<String> {
     line.split_whitespace()
@@ -265,9 +226,7 @@ mod naming_tests {
 
     #[test]
     fn a_finished_sentence_names_what_it_mentions() {
-        // The whole reason this exists beside `found`. That one stops at the first space,
-        // because it is asking about a token under the cursor; this one is asking what a line
-        // somebody has already sent is talking about.
+        // `found` stops at the first space; this asks what an already-sent line is talking about.
         assert_eq!(
             named("tell $main/delta to stop", Trigger::Instance),
             vec!["main/delta"]

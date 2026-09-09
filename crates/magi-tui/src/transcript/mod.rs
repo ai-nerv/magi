@@ -1,8 +1,6 @@
-//! Transcript entries to styled lines.
-//!
-//! The shape is Pi's, block for block: a user message is a full-width padded box on
-//! `userMessageBg`; an assistant message is bare markdown preceded by one blank line; a tool
-//! call is a padded box whose background carries its outcome.
+//! Transcript entries to styled lines, in Pi's shapes: a user message is a full-width padded box on
+//! `userMessageBg`, an assistant message is bare markdown after one blank line, a tool call is a
+//! padded box whose background carries its outcome.
 
 use crate::colour;
 use crate::glyph;
@@ -12,7 +10,6 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::collections::BTreeSet;
 
-/// Horizontal padding inside a block, in cells. Pi's `outputPad`.
 mod frame;
 mod hover;
 mod tool;
@@ -23,35 +20,23 @@ use tool::STEP;
 pub use hover::hovered;
 pub use tool::Detail;
 
-/// Render the whole transcript.
 #[must_use]
 pub fn render(entries: &[Entry], width: u16, detail: Detail) -> Vec<Line<'static>> {
     laid_out(entries, width, detail, &BTreeSet::new()).lines
 }
 
-/// A rendered transcript, and which tool call each line came from.
-///
-/// The second half is what makes a click mean something. A row on the screen is a line in this
-/// list, and a line only belongs to a block if that block drew it — so the mapping is produced by
-/// the same pass that produces the lines, rather than by a second one that could disagree with it.
+/// A rendered transcript, and which tool call each line came from. The mapping is produced by the
+/// same pass that produces the lines, so the two cannot disagree.
 pub struct Laid {
-    /// Every line, in transcript order.
     pub lines: Vec<Line<'static>>,
     /// For each line, the tool call it belongs to, if any.
     pub owners: Vec<Option<ToolCallId>>,
-    /// For each line, which entry drew it.
-    ///
-    /// Every block, not only the ones that fold: copying wants the rows of *this* answer, and an
-    /// assistant message has no id of its own to key that on. The gap rows between entries belong
-    /// to neither and are `None`.
+    /// For each line, which entry drew it. Gap rows between entries belong to neither and are `None`.
     pub blocks: Vec<Option<usize>>,
 }
 
-/// Render the whole transcript, recording which block owns each line.
-///
-/// `flipped` names the tool calls showing the opposite of `detail`: a click toggles membership
-/// rather than storing a state, so the global fold key still moves every block that has not been
-/// clicked, and one that has keeps the answer the person gave it.
+/// Render the whole transcript, recording which block owns each line. `flipped` names the tool calls
+/// showing the opposite of `detail`, so the global fold key still moves every block not clicked.
 #[must_use]
 pub fn laid_out(
     entries: &[Entry],
@@ -74,12 +59,8 @@ pub fn laid_out(
             _ => detail,
         };
         let lines = entry_lines(entry, width, shown);
-        // **One blank row before every entry, and never two.** Decided here rather than by each
-        // renderer, because the gap is a fact about two entries meeting and no single renderer
-        // can see both — which is how a user message ended up flush against the block after it
-        // while a tool call, which pushed its own, always had room.
-        //
-        // Nothing before the first: a gap at the very top separates a block from nothing.
+        // One blank row before every entry and never two, decided here because the gap is a fact
+        // about two entries meeting. Nothing before the first.
         if !laid.lines.is_empty() && !blank_row(laid.lines.last()) && !blank_row(lines.first()) {
             laid.lines.push(Line::default());
             laid.owners.push(None);
@@ -93,11 +74,8 @@ pub fn laid_out(
     laid
 }
 
-/// Whether a row carries nothing but space.
-///
-/// By what it *says*, not by how it is styled: the gap a tool block puts above itself is a run of
-/// spaces, the one an assistant message puts above its prose is an empty `Line`, and a rule that
-/// told those apart would add a second blank between the two.
+/// Whether a row carries nothing but space, by what it says rather than how it is styled: a tool
+/// block's gap is a run of spaces and an assistant message's is an empty `Line`.
 fn blank_row(line: Option<&Line<'static>>) -> bool {
     line.is_none_or(|line| {
         line.spans
@@ -106,7 +84,6 @@ fn blank_row(line: Option<&Line<'static>>) -> bool {
     })
 }
 
-/// Render one entry.
 #[must_use]
 pub fn entry_lines(entry: &Entry, width: u16, detail: Detail) -> Vec<Line<'static>> {
     match entry {
@@ -131,15 +108,11 @@ pub fn entry_lines(entry: &Entry, width: u16, detail: Detail) -> Vec<Line<'stati
         Entry::Compaction { replaces, .. } => {
             marker(&format!(" {replaces} earlier messages summarised "), width)
         }
-        // **Nothing on screen.** A mask changes what the *provider* is sent, and the transcript
-        // still holds what the tool actually said — a reader scrolling back wants the output, not
-        // a rule where it used to be. A compaction earns its marker because the text above it is
-        // genuinely no longer being sent as itself and there may be a great deal of it; one tool
-        // result quietly costing less is not news, and a rule per masked result would be a
-        // transcript mostly made of rules.
+        // Nothing on screen. A mask changes what the provider is sent; the transcript still
+        // holds what the tool said, and a rule per masked result would be a screen of rules.
         Entry::Masked { .. } => Vec::new(),
-        // `keeps` is a journal index, and printing it says nothing a reader can act on. What
-        // matters is that everything above the rule is still on the screen and no longer sent.
+        // `keeps` is a journal index. What matters is that everything above the rule is still
+        // on screen and no longer sent.
         Entry::Branch { keeps, .. } => marker(
             &if *keeps == 0 {
                 " rewound — nothing above is sent from here ".to_owned()
@@ -151,10 +124,8 @@ pub fn entry_lines(entry: &Entry, width: u16, detail: Detail) -> Vec<Line<'stati
     }
 }
 
-/// Something magi is saying, marked so it cannot be read as the model saying it.
-///
-/// A bar down the left and muted text: the same shape as a block quote, which is what this
-/// is — a voice that is not the conversation's.
+/// Something magi is saying, marked so it cannot be read as the model saying it: a bar down the left
+/// and muted text, the shape of a block quote.
 fn notice(text: &str, width: u16) -> Vec<Line<'static>> {
     let style = Style::default().fg(colour::dim());
     let inner = frame::held(width);
@@ -170,11 +141,8 @@ fn notice(text: &str, width: u16) -> Vec<Line<'static>> {
     out
 }
 
-/// A labelled rule across the transcript.
-///
-/// Shown rather than hidden. The transcript above one of these is still there and still true,
-/// but what the model can see of it has changed — and a reader wondering why it forgot
-/// something, or why an exchange seems to have been undone, needs this line to be the answer.
+/// A labelled rule across the transcript. Shown rather than hidden: what the model can see above one
+/// of these has changed, and this line is the answer to why it forgot something.
 fn marker(label: &str, width: u16) -> Vec<Line<'static>> {
     let label = label.to_owned();
     let rule = usize::from(width).saturating_sub(crate::wrap::columns(&label));
@@ -196,21 +164,13 @@ fn user(text: &str, width: u16) -> Vec<Line<'static>> {
     said("USER", colour::said_by_you(), text, width)
 }
 
-/// The same box, labelled with who sent it and how they stand to this session.
-///
-/// Deliberately the same shape as a user message. Both are somebody addressing this session and
-/// both are answered the same way; what separates them is the tag, which is why the tag is
-/// there. `PARENT::alpha-rho` says in one chip the two things worth knowing — who, and what
-/// they are to you — and a reader who takes that in has taken in whether it can be ignored.
+/// The same box, labelled with who sent it and how they stand to this session. `PARENT::alpha-rho`
+/// says who and what they are to you, which is what decides whether it can be ignored.
 fn from(who: &str, kin: &str, sort: &str, text: &str, width: u16) -> Vec<Line<'static>> {
-    // The id alone. The project is this session's own — nothing else can reach it — so printing
-    // it would be a column of the same word down the left of every message.
+    // The id alone: the project is this session's own, so printing it repeats a word every message.
     let id = who.rsplit('/').next().unwrap_or(who);
     let label = format!("{}::{id}", kin.to_uppercase());
-    // The sort only when it is not the ordinary one: `note` beside every message is noise, and
-    // `attention` beside one is the whole point of having sorts at all.
-    // Into the name rather than behind it: nothing follows a title but edge, and the sort is
-    // part of what the block *is* — not something it was given.
+    // The sort only when it is not the ordinary one, and into the name rather than behind it.
     let label = if sort != "note" && !sort.is_empty() {
         format!("{label} · {sort}")
     } else {
@@ -219,33 +179,20 @@ fn from(who: &str, kin: &str, sort: &str, text: &str, width: u16) -> Vec<Line<'s
     said(&label, colour::said_by_agent(), text, width)
 }
 
-/// A framed block with its tag set into the top edge.
-///
-/// The tag rides the edge rather than taking a row of its own: a block that grew a line
-/// every time it was labelled would cost a row per message to say something a glance takes
-/// in — and the edge has to be drawn anyway.
+/// A framed block with its tag set into the top edge rather than on a row of its own.
 fn said(label: &str, tag: ratatui::style::Color, text: &str, width: u16) -> Vec<Line<'static>> {
     let style = Style::default()
         .bg(colour::message_bg())
         .fg(colour::message_text());
-    // Dark chip, coloured text — the other way round from a tool block, whose name is dark on a
-    // loud background. That difference is the point: a tool block is the one that folds, and
-    // when all three wore the same bright chip on backgrounds three greys apart, half the screen
-    // looked like it had a handle on it. This sits *into* the block instead of on top of it.
-    // In the tag's own colour, on nothing. A filled chip on a frame that carries no fill was
-    // the one solid thing on the edge, reading as a sticker stuck to the box rather than as its
-    // name.
+    // Dark chip, coloured text — the other way round from a tool block, which is the one that folds.
+    // In the tag's own colour on nothing: a filled chip on an unfilled frame reads as a sticker.
     let chip = Style::default().fg(tag).add_modifier(Modifier::BOLD);
-    // **A step in from the fill, on both sides.** The text used to start at the column the fill
-    // starts at, so it was against the edge of its own box with nothing between the two — the
-    // box read as a highlight behind the words rather than as something holding them. A tool
-    // block already steps its rows in for the same reason.
+    // A step in from the fill on both sides, or the box reads as a highlight behind the words.
     let lead = MARGIN + STEP;
     let inner = frame::held(width).saturating_sub(u16::try_from(STEP * 2).unwrap_or(4));
     let body = markdown::render(text, inner, style);
 
-    // No handle: neither of these folds, and a handle on something that cannot be opened is an
-    // affordance that lies.
+    // No handle: neither of these folds.
     let mut out = vec![
         top(label, chip, None, None, true, width),
         frame::breath(width, style),
@@ -286,17 +233,10 @@ fn assistant(
         }
     }
 
-    // **Rails around the answer, and only the answer.** The model's prose is the one thing on the
-    // screen a person wants to take away whole, and a copy chip has to sit in an edge — so the
-    // answer gets edges. Thinking does not: it is how the answer was arrived at rather than the
-    // answer, and railing it would put two boxes on screen where one of them is not the point.
-    //
-    // No fill. A tool block is a box with something in it; this is prose with a line above and
-    // below, and a background here would make the whole transcript a stack of coloured slabs.
+    // Rails around the answer and only the answer, because a copy chip has to sit in an edge and
+    // thinking is not the answer. No fill, or the transcript is a stack of coloured slabs.
     if !text.trim().is_empty() {
-        // A step in from the rails, the same one a message box takes, so an answer and the
-        // question above it begin in the same column instead of one starting two cells inside
-        // the other.
+        // A step in from the rails, so an answer and the question above it begin in one column.
         let held = frame::held(width).saturating_sub(u16::try_from(STEP * 2).unwrap_or(4));
         out.push(frame::top("", base, None, None, true, width));
         for line in markdown::render(text.trim(), held, base) {
@@ -305,8 +245,8 @@ fn assistant(
         out.push(bottom(width));
     }
 
-    // A truncated response is surfaced here even when tool calls follow, because a length stop
-    // can land before a call's arguments are complete and the tool block would show nothing.
+    // Surfaced here even when tool calls follow: a length stop can land before a call's arguments
+    // are complete, and the tool block would show nothing.
     match stop_reason {
         // A limit, not a fault: the model did what it could within the budget it was given.
         Some(StopReason::Length) => {
@@ -316,8 +256,7 @@ fn assistant(
                 Style::default().fg(colour::warning()),
             ))));
         }
-        // Not an error. You pressed escape and it obeyed; saying so in red claims something
-        // went wrong, and "Operation aborted" is a machine's word for a key you just pressed.
+        // Not an error: you pressed escape and it obeyed.
         Some(StopReason::Aborted) => {
             out.push(Line::default());
             out.push(indent(Line::from(Span::styled(
@@ -344,10 +283,8 @@ fn clip(text: &str, width: usize) -> String {
     if crate::wrap::columns(&text) <= width {
         return text;
     }
-    // **Taken by column, not by character.** Cutting at `width - 1` characters and appending an
-    // ellipsis produced a run *wider* than it was asked for the moment any of those characters
-    // was two columns — which is exactly the case the cut is there to handle. A wide glyph that
-    // will not fit in the last column is dropped rather than half-drawn.
+    // Taken by column, not by character: cutting at `width - 1` characters is wider than asked the
+    // moment one is two columns. A wide glyph that will not fit the last column is dropped.
     let room = width.saturating_sub(crate::wrap::columns(glyph::ellipsis()));
     let mut out = String::with_capacity(text.len());
     let mut used = 0;
@@ -362,11 +299,7 @@ fn clip(text: &str, width: usize) -> String {
     out + glyph::ellipsis()
 }
 
-/// Put a line where a block's inside would be.
-///
-/// The same column a fill starts at, so prose and blocks share one text column down the left and
-/// one down the right. Before this they were laid out to different rules and a screen of mixed
-/// output had two ragged margins; now the only things reaching past the text are the frames.
+/// Put a line where a block's inside would be, so prose and blocks share one text column each side.
 fn indent(line: Line<'static>) -> Line<'static> {
     let mut spans = vec![Span::raw(" ".repeat(frame::MARGIN))];
     spans.extend(line.spans);
@@ -415,21 +348,18 @@ mod tests {
             5,
             "an edge, a row of fill, the body, a row of fill, an edge"
         );
-        // Inside the frame, not under the corner it shares a row with, and not pressed against
-        // the edge above it.
+        // Inside the frame, not under the corner, and not pressed against the edge above it.
         assert_eq!(rendered[2], "    hello           ");
         assert!(rendered[0].starts_with('┌') && rendered[0].ends_with('┐'));
         assert!(rendered[4].starts_with('└') && rendered[4].ends_with('┘'));
-        // No sides. Two columns of every row spent drawing a line nobody reads is two columns
-        // taken off the text on the terminal where they are least affordable.
+        // No sides: two columns of every row taken off the text where they are least affordable.
         assert!(!rendered[2].contains('│'), "{rendered:?}");
         assert!(rendered.iter().all(|l| l.chars().count() == 20));
     }
 
     #[test]
     fn a_user_message_is_tagged_and_costs_no_extra_row_for_it() {
-        // The tag rides the padding row. A block that grew a line every time it was labelled
-        // would cost a row per message to say what a glance takes in.
+        // The tag rides the padding row rather than growing a line per message.
         let entry = Entry::User {
             id: MessageId::new("m1"),
             text: "hello".into(),
@@ -437,8 +367,7 @@ mod tests {
         };
         let rendered = text_of(&entry_lines(&entry, 20, Detail::Preview));
         assert!(rendered[0].contains("[ USER ]"), "{rendered:?}");
-        // Five: the two edges, a row of fill inside each, and the text. The tag is not one of
-        // them — that is what this is checking.
+        // Five: the two edges, a row of fill inside each, and the text. The tag is not one of them.
         assert_eq!(rendered.len(), 5, "the tag grew a row: {rendered:?}");
         assert!(
             rendered[0].starts_with('┌'),
@@ -448,8 +377,7 @@ mod tests {
 
     #[test]
     fn a_message_from_another_magi_is_tagged_with_who_and_what_they_are() {
-        // The two things worth knowing, in one chip. A reader who takes that in has taken in
-        // whether it can be ignored.
+        // The two things worth knowing, in one chip.
         let rendered = text_of(&entry_lines(
             &from("magi/alpha-rho", "parent", "note"),
             40,
@@ -469,8 +397,7 @@ mod tests {
 
     #[test]
     fn the_project_is_not_repeated_down_the_left_of_every_message() {
-        // Nothing outside this session's own project can reach it, so printing the project
-        // would be a column of the same word beside every message.
+        // Nothing outside this session's own project can reach it, so the project is not printed.
         let rendered = text_of(&entry_lines(
             &from("magi/alpha-rho", "child", "note"),
             40,
@@ -498,8 +425,7 @@ mod tests {
 
     #[test]
     fn a_message_from_elsewhere_is_still_drawn_rather_than_dropped() {
-        // A relation that makes no sense is a bug in the sender or a stale note on disk, and
-        // neither is a reason to swallow something somebody sent.
+        // A relation that makes no sense is a bug in the sender, not a reason to swallow a message.
         let rendered = text_of(&entry_lines(
             &from("other/beta-nu", "elsewhere", ""),
             40,
@@ -525,8 +451,7 @@ mod tests {
             usage: magi_proto::Usage::default(),
         };
         let lines = entry_lines(&entry, 20, Detail::Preview);
-        // Rails, but no fill behind any of it. The answer is railed so it has an edge to carry a
-        // copy chip; a background here would make the transcript a stack of coloured slabs.
+        // Rails, but no fill: the edge is there to carry a copy chip.
         assert!(
             lines
                 .iter()
@@ -534,8 +459,7 @@ mod tests {
                 .all(|span| span.style.bg.is_none()),
             "{lines:#?}"
         );
-        // A step in from the rails, the same inset a message box takes, so an answer and the
-        // question above it begin in the same column.
+        // A step in from the rails, so an answer and the question above it begin in one column.
         assert!(
             text_of(&lines).contains(&"    sure".to_owned()),
             "{lines:#?}"
@@ -632,9 +556,8 @@ mod tab_tests {
 
     #[test]
     fn no_tab_reaches_the_buffer_from_tool_output() {
-        // Found against a real model, not in any test: `read` numbers lines with a tab, the
-        // buffer counted it as one column, the terminal moved the cursor to the next tab stop,
-        // and a character from the previous frame was left on screen at the gap.
+        // `read` numbers lines with a tab; the buffer counted it as one column and the terminal
+        // moved to the next tab stop, leaving a character from the previous frame in the gap.
         let entry = Entry::Tool {
             id: ToolCallId::new("t1"),
             name: "read".into(),
@@ -675,8 +598,7 @@ mod notice_tests {
 
     #[test]
     fn a_notice_is_marked_so_it_reads_as_magi_and_not_the_model() {
-        // It used to be pushed as an assistant message, so `/help` output was — to anyone
-        // reading — the model printing a keybinding reference at you.
+        // It used to be pushed as an assistant message, so `/help` read as the model printing it.
         let lines = entry_lines(
             &Entry::Notice {
                 text: "unknown command: /nope".to_owned(),

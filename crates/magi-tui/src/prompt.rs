@@ -1,9 +1,6 @@
-//! The prompt, as Pi draws it.
-//!
-//! A horizontal rule above and below the text, nothing at the sides, and no gutter — Pi's
-//! `editorPaddingX` defaults to `0`, so the text starts in column zero. The cursor is drawn
-//! into the line with inverse video rather than parked with the terminal's own cursor, which
-//! is what lets the block scroll and wrap without the cursor drifting off it.
+//! The prompt, as Pi draws it: a horizontal rule above and below, no gutter, text from column zero.
+//! The cursor is drawn into the line with inverse video rather than parked with the terminal's own,
+//! which is what lets the block scroll and wrap without the cursor drifting off it.
 
 #[cfg(test)]
 #[path = "prompt/says.rs"]
@@ -22,16 +19,13 @@ pub fn visible_rows(rows: u16) -> usize {
         .max(usize::from(crate::metric::prompt_min_lines()))
 }
 
-/// The blank prompt: the cursor, then whatever this session's placeholder is.
-///
-/// Dimmer than the text, deliberately. A placeholder in the same colour as what you type reads
-/// as something already in the box, and the first thing anybody does is try to delete it.
+/// The blank prompt: the cursor, then this session's placeholder, dimmer than the text so it does
+/// not read as something already in the box.
 pub(crate) fn placeholder_spans(
     width: u16,
     saying: &crate::tease::Saying<'_>,
 ) -> Vec<Span<'static>> {
-    // A narrow screen gets the short one, and a very narrow one gets nothing: a placeholder cut
-    // in half is not a shorter line, it is one that looks broken.
+    // A placeholder cut in half looks broken, so a very narrow screen gets nothing.
     let hint = if saying.text.chars().count() < usize::from(width) {
         saying.text
     } else if glyph::placeholder_short().chars().count() < usize::from(width) {
@@ -41,14 +35,8 @@ pub(crate) fn placeholder_spans(
     };
 
     let dim = Style::default().fg(colour::hint());
-    // Your own cursor, on the first letter rather than in front of it: typing lands on column
-    // zero whatever the box happens to be saying.
-    //
-    // Painted only in normal mode. In insert mode the terminal draws it as an underline, and a
-    // block painted into the same cell sits on top of that and says the other mode -- which is
-    // what an empty prompt did for every character you had not typed yet. `with_cursor` has
-    // followed this rule since the shapes were added; this is the same rule for the one path
-    // that has no text to draw it into.
+    // Your own cursor, on the first letter rather than in front of it. Painted only in normal mode:
+    // in insert mode the terminal draws an underline, and a block over it would say the other mode.
     let mine = if saying.mode.is_insert() {
         dim
     } else {
@@ -56,21 +44,15 @@ pub(crate) fn placeholder_spans(
             .fg(colour::text())
             .add_modifier(Modifier::REVERSED)
     };
-    // The ghost, where the box is editing itself. Dimmer than yours, because it is not yours:
-    // two cursors of equal weight is a screen with two places to type.
-    //
-    // Two shapes, and it is always one of them. A block over the character it is on, the way
-    // normal mode sits on what it acts on; an underline while it is typing, because a bar
-    // belongs *between* two cells and a cell grid has no between -- reversing the next character
-    // instead would draw a block and say the wrong mode. It used to draw nothing at all in that
-    // case, so the ghost disappeared for the whole of the typing, which is most of the show.
+    // The ghost, where the box is editing itself, dimmer than yours. Always one of two shapes: a
+    // block over the character it is on, an underline while it is typing — a bar belongs between
+    // two cells and a cell grid has no between.
     let ghost = if saying.block {
         dim.add_modifier(Modifier::REVERSED)
     } else {
         dim.add_modifier(Modifier::UNDERLINED)
     };
-    // What it is about to take out: the same inversion as the block, because that is what a
-    // block cursor over several characters is.
+    // What it is about to take out, in the same inversion as the block.
     let marked = dim.add_modifier(Modifier::REVERSED);
 
     let mut spans = Vec::new();
@@ -101,17 +83,14 @@ pub(crate) fn placeholder_spans(
     spans
 }
 
-/// How many text rows the prompt shows right now, on a terminal `rows` tall.
-///
-/// Worked out here rather than by drawing and counting, because the caller has to know how tall
-/// the box will be before it can say how much room is left in it for a menu.
+/// How many text rows the prompt shows right now, on a terminal `rows` tall. Worked out rather than
+/// drawn and counted: the caller sizes the box before it knows how much room a menu has.
 #[must_use]
 pub fn text_rows(editor: &Editor, rows: u16, width: u16, badge: &str) -> usize {
     if editor.lines().len() == 1 && editor.lines()[0].is_empty() {
         return 1;
     }
-    // Folded rows, not logical lines. A caller sizing the box from logical lines gives a
-    // three-line prompt one row and then draws three into it.
+    // Folded rows, not logical lines: a three-line prompt sized from logical lines gets one row.
     let (visual, caret, _) = crate::fold::fold_all(editor, crate::fold::text_room(width, badge));
     let total = visual.len().max(1);
     let max_visible = visible_rows(rows);
@@ -120,41 +99,24 @@ pub fn text_rows(editor: &Editor, rows: u16, width: u16, badge: &str) -> usize {
     (offset + max_visible).min(total) - offset
 }
 
-/// The prompt box, and where inside it the menu landed.
-///
-/// The rows are needed by anything that has to translate a click into the menu's own coordinates,
-/// and only the renderer knows where they are: the divider sits under however many text rows the
-/// prompt happens to have, which changes as somebody types.
+/// The prompt box, and where inside it the menu landed. The rows are needed to translate a click
+/// into the menu's coordinates, and only the renderer knows where the divider ended up.
 pub struct Boxed {
-    /// The box, row by row.
     pub lines: Vec<Line<'static>>,
     /// Which of those rows the menu occupies. Empty when nothing is open.
     pub menu: std::ops::Range<usize>,
-    /// Where the usage badge landed: the row within the box, and the columns it covers.
-    ///
-    /// `None` when there is no badge. Reported for the same reason `menu` is — the strip sits on
-    /// the middle *text* row, which moves as somebody types, and only the renderer knows which
-    /// row that turned out to be. A click on it opens the cost view.
+    /// Where the usage badge landed: the row within the box, and the columns it covers. `None` when
+    /// there is no badge. A click on it opens the cost view.
     pub badge: Option<(usize, std::ops::Range<u16>)>,
 }
 
 /// How far in from the left edge a menu row's text starts: the side, then a space.
 pub const INSET: u16 = 2;
 
-/// Render the prompt as a box, with `menu` inside it under a divider.
-///
-/// Was a rule above and a rule below, which is Pi's shape. A box says where the field is, and
-/// gives the scan somewhere to run: see [`crate::border`].
-///
-/// The menu goes *inside*. Drawn beneath the box it was a second object with a background of
-/// its own, sitting under the thing it belongs to; inside, the box is what says where it is and
-/// the rows need no colour behind them. `menu` is already `width - 3` wide — see
-/// [`crate::metric::gutter`] — and empty when nothing is open.
-///
-/// `rows` is the terminal height, which sets how much of a long prompt is shown before the top
-/// and bottom edges start reporting what is scrolled out of view. `tick` drives the scan and
-/// `scan` says what it should be doing. `placeholder` is which line the empty box shows, which
-/// the caller remembers because it changes when the prompt empties rather than per frame.
+/// Render the prompt as a box, with `menu` inside it under a divider. Inside rather than beneath,
+/// so the box is what says where the rows are; `menu` is already `width - 3` wide — see
+/// [`crate::metric::gutter`] — and empty when nothing is open. `rows` is the terminal height, which
+/// sets how much of a long prompt is shown; `tick` drives the scan and `scan` says what it is doing.
 #[must_use]
 pub fn render(
     editor: &Editor,
@@ -171,9 +133,8 @@ pub fn render(
     let room = crate::fold::text_room(width, badge);
     let blank = editor.lines().len() == 1 && editor.lines()[0].is_empty();
 
-    // Folded first, then scrolled over the *folded* rows. Scrolling over logical lines and
-    // drawing folded ones disagree about how far down the cursor is, which puts it off screen
-    // exactly when a line is long enough to need wrapping.
+    // Folded first, then scrolled over the folded rows: scrolling logical lines and drawing folded
+    // ones disagree about how far down the cursor is.
     let (visual, caret_row, caret_col) = crate::fold::fold_all(editor, room);
     let total_rows = visual.len().max(1);
     let max_visible = visible_rows(rows);
@@ -181,8 +142,7 @@ pub fn render(
     let offset = offset.min(total_rows.saturating_sub(max_visible.min(total_rows)));
     let end = (offset + max_visible).min(total_rows);
     let shown = if blank { 1 } else { end - offset };
-    // The divider is a content row like any other, so the sides stay on the ring and the scan
-    // runs past it rather than round a hole in the box.
+    // The divider is a content row, so the scan runs past it rather than round a hole in the box.
     let content = shown + if menu.is_empty() { 0 } else { 1 + menu.len() };
     let (top, bottom) = crate::border::edges(width, content, tick, scan);
 
@@ -212,9 +172,7 @@ pub fn render(
         ));
     }
 
-    // The strip is drawn on the middle text row, one row down for the top border. Computed from
-    // the same two numbers `fold::strip` uses, rather than measured off the rendered spans: a
-    // reader of either can check it against the other.
+    // The strip sits on the middle text row, one down for the top border, from `fold::strip`'s numbers.
     let worn = u16::try_from(badge.chars().count() + 3).unwrap_or(u16::MAX);
     let badge_at = (!badge.is_empty()).then(|| {
         let right = width.saturating_sub(1);
@@ -234,8 +192,7 @@ pub fn render(
                 at,
                 tick,
                 scan,
-                // No strip: the badge belongs to the box you type in, and a list opened under
-                // it is not that. Centred over the text rows alone for the same reason.
+                // No strip: the badge belongs to the box you type in, and a list under it is not that.
                 &[],
             ));
         }
@@ -274,10 +231,7 @@ fn framed(
     Line::from(spans)
 }
 
-/// The rule between the text and the menu.
-///
-/// Tees into the sides rather than floating between them, so the box reads as one frame with a
-/// shelf in it rather than as two boxes that happen to touch.
+/// The rule between the text and the menu, teed into the sides so the box reads as one frame.
 fn divider(
     width: u16,
     content: usize,
@@ -297,7 +251,7 @@ fn divider(
 /// Pad a row out so the right-hand bar lands at the edge.
 fn pad(mut spans: Vec<Span<'static>>, width: u16) -> Vec<Span<'static>> {
     // A folded row keeps the space it broke on, so it can stand one column past the width it was
-    // folded at. Invisible on its own, but it shoves whatever follows — the badge — off the end.
+    // folded at and shove the badge off the end.
     let mut used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
     while used > usize::from(width) {
         let Some(last) = spans.last_mut() else { break };
@@ -316,10 +270,7 @@ fn pad(mut spans: Vec<Span<'static>>, width: u16) -> Vec<Span<'static>> {
     spans
 }
 
-/// Write "N more" into an edge when the prompt is scrolled.
-///
-/// On the border rather than instead of it: the box stays a box, and the count sits in it the
-/// way a caption sits in a frame.
+/// Write "N more" into an edge when the prompt is scrolled, on the border rather than instead of it.
 fn hidden(edge: Line<'static>, direction: Direction, count: usize) -> Line<'static> {
     if count == 0 {
         return edge;
@@ -333,8 +284,7 @@ fn hidden(edge: Line<'static>, direction: Direction, count: usize) -> Line<'stat
     if label.chars().count() + 8 > width {
         return edge;
     }
-    // Right on the top edge, left on the bottom. The mode has the top-left corner and two
-    // captions in one place is one caption with something written over it.
+    // Right on the top edge, left on the bottom: the mode has the top-left corner.
     let at = match direction {
         Direction::Up => width - 2 - label.chars().count(),
         Direction::Down => 2,
@@ -342,20 +292,14 @@ fn hidden(edge: Line<'static>, direction: Direction, count: usize) -> Line<'stat
     caption(edge, &label, Style::default().fg(colour::dim()), at)
 }
 
-/// Write the mode onto the top edge of the box.
-///
-/// On the border, the way the scroll count is, and on the top-left because that is where the
-/// eye starts. It is not optional: the prompt opens in normal mode and refuses text until told
-/// otherwise, and a modal editor that does not say which mode it is in is a broken keyboard.
-///
-/// Three letters, always, so the frame does not move when the mode does.
+/// Write the mode onto the top edge of the box, top-left, in three letters always so the frame does
+/// not move when the mode does.
 fn tagged(edge: Line<'static>, mode: crate::vim::Mode) -> Line<'static> {
     let label = format!(" {} ", mode.tag());
     if label.chars().count() + 4 > columns_of(&edge) {
         return edge;
     }
-    // Insert mode is the one worth noticing, because it is the one where a keystroke changes
-    // something. Normal mode sits at the same level as the border it is written on.
+    // Insert mode is the one where a keystroke changes something.
     let style = Style::default().fg(if mode.is_insert() {
         colour::accent()
     } else {
@@ -369,12 +313,8 @@ fn columns_of(edge: &Line<'static>) -> usize {
     edge.spans.iter().map(|s| s.content.chars().count()).sum()
 }
 
-/// Write `label` over the edge, starting at column `at`.
-///
-/// Over the columns it covers rather than spliced between spans. An edge is a handful of spans
-/// whose boundaries move as the scan travels along it, so cutting at a span index cuts somewhere
-/// different every frame — which is how the first version of this ate a corner, and how the
-/// version before that rebuilt one by hand and got it wrong on the other edge.
+/// Write `label` over the columns it covers rather than spliced between spans: an edge's span
+/// boundaries move as the scan travels along it, so a span index cuts somewhere different a frame.
 fn caption(edge: Line<'static>, label: &str, style: Style, at: usize) -> Line<'static> {
     let mut columns: Vec<Span<'static>> = edge
         .spans
@@ -400,16 +340,10 @@ enum Direction {
     Down,
 }
 
-/// Draw one line, with the cursor cell inverted in normal mode.
-///
-/// Only in normal mode. There it is a block sitting *on* a character, which is what the mode
-/// is: every key acts on the thing under it. Insert mode puts the cursor *between* two
-/// characters, and a whole cell painted over one of them says the wrong thing about where the
-/// next letter will go -- so there the terminal's own bar is left to do it, and
-/// [`crate::vim::Mode`] is what the caller sets its shape from.
-///
-/// At the end of a line there is no character to invert, so a space is added and inverted --
-/// which is why the layout reserves a column for it.
+/// Draw one line, with the cursor cell inverted in normal mode only — insert mode puts the cursor
+/// between two characters, so there the terminal's own bar does it and [`crate::vim::Mode`] is what
+/// the caller sets its shape from. At the end of a line a space is added and inverted, which is why
+/// the layout reserves a column for it.
 fn with_cursor(text: &str, col: usize, style: Style, mode: crate::vim::Mode) -> Vec<Span<'static>> {
     if mode.is_insert() {
         return vec![Span::styled(text.to_owned(), style)];
@@ -457,9 +391,7 @@ mod tests {
 
     #[test]
     fn an_empty_prompt_says_what_to_do_with_it() {
-        // An empty box between two rules gives no way to tell a prompt waiting for input from
-        // a screen that has hung. What it says is the caller's -- see `crate::tease` -- and it
-        // is drawn where the cursor is not.
+        // An empty box between two rules gives no way to tell a waiting prompt from a hung screen.
         let rendered = rows_of(&render(
             &Editor::new(),
             40,
@@ -669,8 +601,7 @@ mod narrow_tests {
 
     #[test]
     fn a_narrow_prompt_shortens_the_hint_rather_than_cutting_it() {
-        // A line cut in half is not a shorter line, it is one that looks broken. What the box is
-        // writing can be any length, so a narrow screen falls back to the short hint.
+        // A line cut in half looks broken, so a narrow screen falls back to the short hint.
         let line = row(20, "a line far too long for twenty columns");
         assert!(line.chars().count() <= 20, "{line:?}");
         let said = line.trim().trim_matches('│').trim();
@@ -688,8 +619,7 @@ mod narrow_tests {
 
     #[test]
     fn a_wide_prompt_draws_what_it_was_handed() {
-        // The renderer chooses nothing now. What the box is saying is the caller's business --
-        // see `crate::tease` -- and this draws it.
+        // What the box is saying is the caller's business — see `crate::tease` — and this draws it.
         let line = row(80, "let's scan the project");
         let shown = line.trim().trim_matches('│').trim();
         assert_eq!(shown, "let's scan the project");

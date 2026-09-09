@@ -1,60 +1,35 @@
 //! What happened in this session, in the order it happened.
 //!
-//! **A timeline of things that were already crossing the wire.** Every row here comes from a
-//! [`HarnessEvent`] the client was already receiving and already folding into the transcript.
-//! The transcript is a *conversation* — it shows what was said and what a tool answered, and it
-//! deliberately hides the rest, because a person reading a reply does not want a permission
-//! ledger in the middle of it. This is that rest: the turns, the calls, the questions and their
-//! answers, the compactions, the retries.
-//!
-//! **It is kept whether or not anybody asks for it.** `:trace` opens a view of something the
-//! session has been recording since it started; a trace that only began when it was opened would
-//! be empty exactly when somebody went looking — which is always just after the thing they wanted
-//! to see. That costs one bounded ring buffer, and nothing when the view is never opened.
-//!
-//! **Bounded, because a session is not.** [`KEEP`] rows, oldest dropped first. A trace that grew
-//! without limit would be a memory leak with a nice name on it.
+//! Rows come from [`HarnessEvent`]s the client was already receiving: the turns, calls, questions,
+//! answers, compactions and retries the transcript deliberately hides. Recorded from startup
+//! whether or not `:trace` is ever opened, in a ring of [`KEEP`] rows, oldest dropped first.
 
 use magi_proto::HarnessEvent;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::collections::VecDeque;
 
-/// How many rows to keep.
-///
-/// Enough that a long session's interesting part is still in it, and small enough that the cost
-/// is a rounding error against a transcript. A person chasing something further back than this
-/// wants the journal, which keeps everything.
+/// How many rows to keep. Anything further back is the journal's job.
 pub const KEEP: usize = 1_000;
 
 /// One thing that happened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Row {
-    /// Which kind, for the chip and for filtering later.
     pub kind: Kind,
-    /// What happened, in one line.
     pub what: String,
     /// Anything worth showing beside it — a duration, a size, an outcome.
     pub detail: String,
 }
 
-/// What sort of thing a row is.
-///
-/// A closed set on purpose: the chip is two to four characters and a person learns them by
-/// reading the column, which stops being possible the moment anything can appear there.
+/// What sort of thing a row is. A closed set: the chip is two to four characters and is learnt by
+/// reading the column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
-    /// A turn began or ended.
     Turn,
-    /// A tool was called, or answered.
     Tool,
-    /// A permission was asked, granted or refused.
     Permit,
-    /// The context window was compacted.
     Context,
-    /// The model changed.
     Model,
-    /// Something went wrong.
     Error,
 }
 
@@ -80,19 +55,16 @@ pub struct Trace {
 }
 
 impl Trace {
-    /// Nothing yet.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// How many rows it holds.
     #[must_use]
     pub fn len(&self) -> usize {
         self.rows.len()
     }
 
-    /// Whether it holds nothing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.rows.is_empty()
@@ -106,11 +78,8 @@ impl Trace {
         self.rows.push_back(row);
     }
 
-    /// Note whatever this event was, if it is one the trace is about.
-    ///
-    /// **Not every event.** `AssistantDelta` arrives many times a second and says nothing a
-    /// timeline can use; a trace that recorded it would be a transcript with worse formatting and
-    /// would push everything else out of the ring within one reply.
+    /// Note whatever this event was, if it is one the trace is about. Not `AssistantDelta`, which
+    /// arrives many times a second and would flush the ring within one reply.
     pub fn note(&mut self, event: &HarnessEvent) {
         let row = match event {
             HarnessEvent::AssistantStarted { .. } => Row {
@@ -175,16 +144,12 @@ impl Trace {
                 what: format!("{class:?}").to_lowercase(),
                 detail: message.clone(),
             },
-            // Everything else is either the conversation itself or a redraw. See above.
             _ => return,
         };
         self.push(row);
     }
 
-    /// The rows, drawn.
-    ///
-    /// Fixed columns, because the chip is a thing you learn by reading down it and a column that
-    /// moves with its contents cannot be read that way.
+    /// The rows, drawn in fixed columns so the chip can be read down.
     #[must_use]
     pub fn lines(&self) -> Vec<Line<'static>> {
         self.rows
@@ -206,10 +171,7 @@ impl Trace {
     }
 }
 
-/// `text`, cut to `width` on a character boundary.
-///
-/// By characters rather than bytes: a path with an accent in it would otherwise be cut mid-scalar
-/// and the row would render as a replacement character.
+/// `text`, cut to `width` on a character boundary rather than a byte one.
 fn clipped(text: &str, width: usize) -> String {
     let flat = text.replace('\n', " ");
     if flat.chars().count() <= width {

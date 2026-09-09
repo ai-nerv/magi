@@ -6,10 +6,7 @@
 //! └───────────────────────────────────────────────┘
 //! ```
 //!
-//! **No sides.** A full box costs two columns of every row to draw a line nobody reads,
-//! and on a narrow terminal those two columns come out of the text. The top and bottom
-//! edges are what say where a block starts and stops; the left and right ones only say it
-//! again, forty times a screen.
+//! No sides: they would cost two columns of every row, taken out of the text on a narrow terminal.
 
 use super::clip;
 use crate::colour;
@@ -17,15 +14,8 @@ use crate::glyph;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-/// Columns between a block's frame and everything inside it, on each side.
-///
-/// Two, not one. The fill used to start against the corner, so the box read as being *drawn on*
-/// the text rather than around it — and the edge had nowhere to breathe.
-///
-/// It is also the left margin for everything that is **not** in a box: an assistant's prose, its
-/// thinking, a notice. They are laid out to exactly the span the fill covers, so a screen of
-/// mixed blocks and prose has one text column down the left and one down the right, and the only
-/// things reaching past them are the frames themselves.
+/// Columns between a block's frame and everything inside it, on each side. Also the left margin for
+/// everything not in a box — prose, thinking, notices — so a mixed screen has one text column.
 pub(super) const MARGIN: usize = 2;
 
 /// How wide the inside of a block is — and how wide everything outside one is set.
@@ -33,29 +23,10 @@ pub(super) fn held(width: u16) -> u16 {
     width.saturating_sub(u16::try_from(MARGIN * 2).unwrap_or(4))
 }
 
-/// The top edge of a block, with its name set into it and a handle on the right.
-///
-/// ```text
-/// ┌──[ TOOL ]───────────────────────────────[ v ]──┐
-///    …the block's own rows, one column further in…
-/// └───────────────────────────────────────────────┘
-/// ```
-///
-/// **No sides.** A full box costs two columns of every row to draw a line nobody reads, and on a
-/// narrow terminal those two columns come out of the text. The top and bottom edges are what say
-/// where a block starts and stops; the left and right ones only say it again, forty times a
-/// screen.
-///
-/// `handle` is the fold state — `>` shut, `v` open — and is left off entirely for a block that
-/// does not fold. A handle on something that cannot be opened is an affordance that lies.
-///
-/// `copy` puts a second chip in the edge, inboard of the handle, that puts what the block says on
-/// the clipboard. Inboard because the handle is the older affordance and moving it would move the
-/// thing people already aim at.
-///
-/// `mark` is a second chip set into the edge right after the name — `·` while the call is out,
-/// `✓` or `✗` when it lands. Beside the name because that is the one row a person looks at to see
-/// what this block *is*, and what became of it is the other half of that.
+/// The top edge of a block, with its name set into it and a handle on the right. `handle` is the
+/// fold state — `>` shut, `v` open — left off entirely for a block that does not fold. `copy` puts
+/// a second chip inboard of the handle. `mark` is a chip right after the name: `·` while the call
+/// is out, `✓` or `✗` when it lands.
 pub(super) fn top(
     label: &str,
     chip: Style,
@@ -64,19 +35,14 @@ pub(super) fn top(
     copy: bool,
     width: u16,
 ) -> Line<'static> {
-    // **A block's frame, which is not the prompt's border.** They were one colour, on the argument
-    // that every drawn line is one thing. They are not: the prompt is what you are typing into and
-    // a block is a record of what already happened, so the record sits further back.
+    // A block's frame is not the prompt's border: the record sits further back than what you type in.
     let edge = Style::default().fg(colour::block_frame());
-    // The brackets belong to the frame, not to the name. Only the name carries a colour of its
-    // own: what the block *is* is the one thing worth telling apart at a glance, and punctuation
-    // painted with it made the whole chip read as the signal.
+    // The brackets belong to the frame, not to the name; only the name carries a colour of its own.
     let mut spans = vec![
         Span::styled(glyph::block_top_left().to_owned(), edge),
         Span::styled(glyph::block_edge().repeat(2), edge),
     ];
-    // **No name, no chip.** An empty label drew `[  ]`: a bracket around nothing, which reads as
-    // a control somebody forgot to fill in. A block with nothing to be called is just an edge.
+    // No name, no chip. An empty label drew `[  ]`, a bracket around nothing.
     let mut used = if label.is_empty() {
         3
     } else {
@@ -85,11 +51,8 @@ pub(super) fn top(
         spans.push(Span::styled(" ]".to_owned(), edge));
         3 + crate::wrap::columns(&format!("[ {label} ]"))
     };
-    // The chips, in the order they are given up when the edge runs out. A narrow terminal cannot
-    // hold a name and three chips, and pushing them anyway made the row wider than the frame —
-    // the corner landed a column past the edge every other row is clipped to. The handle goes
-    // last because folding depends on it; the copy chip goes first because nothing is lost by
-    // scrolling to the text and selecting it.
+    // The chips, in the order they are given up when the edge runs out — the handle last, because
+    // folding depends on it. Pushing them anyway made the row wider than the frame.
     let held = handle.map_or(0, |handle| crate::wrap::columns(handle) + 6);
     let worn_mark = mark.map_or(0, |(mark, _)| crate::wrap::columns(mark) + 6);
     let worn_copy = crate::wrap::columns(glyph::copy()) + 6;
@@ -98,8 +61,7 @@ pub(super) fn top(
     let mark = mark.filter(|_| used + held + worn_mark < room);
 
     if let Some((glyph, ink)) = mark {
-        // Two edge cells between the two chips, the same gap the handle keeps from the corner, so
-        // the pair reads as two things set into one line rather than as one long tag.
+        // Two edge cells between the two chips, so the pair reads as two things, not one long tag.
         spans.push(Span::styled(glyph::block_edge().repeat(2), edge));
         spans.push(Span::styled("[ ".to_owned(), edge));
         spans.push(Span::styled(glyph.to_owned(), ink));
@@ -108,22 +70,16 @@ pub(super) fn top(
     }
 
     let worn = held + usize::from(copy) * worn_copy;
-    // **The name, and then edge.** What a call was *given* used to sit here too, and it made the
-    // one row that says what this block is into the row that also says what it was asked — a
-    // long path pushed against the handle, and a clipped one said neither thing properly. The
-    // arguments are the block's first row now, where they have the width to be read.
+    // The name, and then edge. What a call was given is the block's first row, not this one.
     let fill = usize::from(width).saturating_sub(used + worn + 1);
     spans.push(Span::styled(glyph::block_edge().repeat(fill), edge));
     if copy {
-        // The frame's, like the handle: it is the same affordance on every block that has one,
-        // so it belongs to the drawn line rather than standing out from it.
+        // The frame's, like the handle: the same affordance on every block that has one.
         spans.push(Span::styled(format!("[ {} ]", glyph::copy()), edge));
         spans.push(Span::styled(glyph::block_edge().repeat(2), edge));
     }
     if let Some(handle) = handle {
-        // The arrow is the frame's too. It is not *about* this block the way its name is — it is
-        // the same affordance on every block that has one, so it belongs to the drawn line rather
-        // than standing out from it.
+        // The arrow is the frame's too, not about this block the way its name is.
         spans.push(Span::styled(format!("[ {handle} ]"), edge));
         spans.push(Span::styled(glyph::block_edge().repeat(2), edge));
     }
@@ -131,11 +87,8 @@ pub(super) fn top(
     Line::from(spans)
 }
 
-/// The bottom edge, corner to corner.
-///
-/// Plain. What became of a call is drawn beside the call itself, at the top of the block, rather
-/// than down here: on a block with a hundred rows of output between the two, the end of the frame
-/// is a long way from the command it would have been reporting on.
+/// The bottom edge, corner to corner. Plain: what became of a call is drawn beside the call itself,
+/// at the top of the block.
 pub(super) fn bottom(width: u16) -> Line<'static> {
     let edge = Style::default().fg(colour::block_frame());
     Line::from(vec![
@@ -192,8 +145,7 @@ mod framing {
 
     #[test]
     fn nothing_is_drawn_down_the_sides() {
-        // A full box costs two columns of every row to draw a line nobody reads, and on a narrow
-        // terminal those two come out of the text.
+        // A full box costs two columns of every row, out of the text on a narrow terminal.
         for line in tool(Detail::Full, 60).iter().skip(1) {
             assert!(!line.contains('│'), "{line:?}");
         }
@@ -201,8 +153,7 @@ mod framing {
 
     #[test]
     fn every_row_is_exactly_the_width() {
-        // The edges and the body are laid out by different code, and a block whose frame is a
-        // column wider than its rows is a ragged right margin down the whole transcript.
+        // Edges and body are laid out by different code, and a mismatch is a ragged right margin.
         for width in [20u16, 33, 60, 120] {
             for line in tool(Detail::Full, width) {
                 assert_eq!(
@@ -259,15 +210,8 @@ mod framing {
     }
 }
 
-/// One of a block's own rows: the coloured box, shrunk to sit inside the frame.
-///
-/// The frame is the outer thing and the fill is the inner one. Painted to the full width the
-/// background ran out past the corners the edges had just drawn, so the block was a coloured band
-/// with a line across the top of it rather than a box with something in it — and on a dark
-/// terminal the two ends of every row bled into the margin.
-///
-/// So the fill spans `1..width-1`, and the two columns the corners stand in are left as the
-/// terminal's own. There are no sides drawn in them: the gap is what puts the fill inside.
+/// One of a block's own rows: the coloured box, shrunk to sit inside the frame. The fill spans
+/// `1..width-1`, leaving the corners' two columns as the terminal's own; the gap puts it inside.
 pub(super) fn inside(line: Line<'static>, width: u16, style: Style, lead: usize) -> Line<'static> {
     let room = usize::from(held(width));
     let used: usize = line
@@ -275,8 +219,7 @@ pub(super) fn inside(line: Line<'static>, width: u16, style: Style, lead: usize)
         .iter()
         .map(|s| crate::wrap::columns(&s.content))
         .sum();
-    // `lead` counts from the block's own left edge, and the first `MARGIN` of those columns are
-    // outside the fill — so what is left is the padding *within* it.
+    // `lead` counts from the block's left edge and the first `MARGIN` are outside the fill.
     let pad = lead.saturating_sub(MARGIN).min(room);
     let trailing = room.saturating_sub(used + pad);
 
@@ -290,23 +233,16 @@ pub(super) fn inside(line: Line<'static>, width: u16, style: Style, lead: usize)
     Line::from(spans)
 }
 
-/// A row of nothing but the block's own fill.
-///
-/// One under the top edge and one above the bottom, so the first and last lines of a block are
-/// not pressed against the frame. Filled rather than skipped: a bare blank row would show the
-/// screen through the box and read as a gap between two blocks rather than as room inside one.
+/// A row of nothing but the block's own fill, one under the top edge and one above the bottom.
+/// Filled rather than skipped: a bare blank row reads as a gap between two blocks.
 pub(super) fn breath(width: u16, style: Style) -> Line<'static> {
     inside(Line::default(), width, style, MARGIN)
 }
 
-/// The seam between what a call was asked and what it answered.
-///
-/// Inside the fill rather than across it: a column of block either side, so the rule reads as
-/// something within the box and not as a second edge cutting it in half.
+/// The seam between what a call was asked and what it answered, inside the fill rather than across it.
 pub(super) fn rule(width: u16, style: Style) -> Line<'static> {
     let room = usize::from(held(width));
-    // One column of fill at each end. A rule the full width of the inside met the frame at both
-    // sides and turned the block into two boxes.
+    // One column of fill at each end, or the rule meets the frame and makes two boxes.
     let span = room.saturating_sub(2);
     Line::from(vec![
         Span::raw(" ".repeat(MARGIN)),
@@ -351,10 +287,7 @@ mod nesting {
 
     #[test]
     fn the_fill_stops_short_of_the_frame() {
-        // The bug this is here for. Painted to the full width, the background ran out past the
-        // corners the edges had just drawn: the block read as a coloured band with a line across
-        // the top of it rather than as a box with something in it. It stops two columns short
-        // now, on both sides, and that margin is what everything outside a box is set to as well.
+        // Painted to the full width, the background ran out past the corners the edges had drawn.
         let rows = filled(30);
         let body = &rows[1];
         assert!(
@@ -370,8 +303,7 @@ mod nesting {
 
     #[test]
     fn the_edges_carry_no_fill_of_their_own() {
-        // Outside the box means outside: an edge painted with the block's own background is a
-        // border drawn *on* the thing it is supposed to contain.
+        // An edge painted with the block's own background is a border drawn on what it contains.
         let rows = filled(30);
         for (at, on) in rows[0].iter().enumerate() {
             // Except the label chip, which carries its own colour because it is a chip.
@@ -393,19 +325,11 @@ mod nesting {
     }
 }
 
-/// A call with nothing to show yet: one line, no box.
-///
-/// **A box only when there is something to put in it.** A call stopped on a permission prompt has
-/// produced nothing, and framing it drew two edges with a gap between them — an empty box sitting
-/// on the screen behind the very question that was holding it up.
-///
-/// No handle, because nothing is folded away and offering to open it would be offering something
-/// that is not there. It grows its box when it has a result.
+/// A call with nothing to show yet: one line, no box, because framing it drew two edges with a gap
+/// between them. No handle, since nothing is folded away. It grows its box when it has a result.
 pub(super) fn lone(label: &str, chip: Style, beside: &str, width: u16) -> Line<'static> {
     let named = format!("[ {label} ]");
-    // The dot the mark beside a finished call grows out of. A call with no result yet is exactly
-    // the one still out, so this row always wears it — and when the result lands the block turns
-    // into a box whose command row carries the same mark in the same place.
+    // A call with no result yet is the one still out, so this row always wears the running dot.
     let waiting = format!("{} ", glyph::running());
     let mut spans = vec![
         Span::raw(" ".repeat(MARGIN)),
@@ -452,9 +376,7 @@ mod emptiness {
 
     #[test]
     fn a_call_waiting_on_a_permission_is_not_a_box() {
-        // The one this is here for. A call stopped on a prompt has produced nothing, and framing
-        // it drew two edges with a gap between them — an empty box on the screen behind the very
-        // question holding it up.
+        // A call stopped on a prompt has produced nothing, and framing it drew an empty box.
         let shown = call(None);
         assert!(
             shown.iter().all(|l| !l.contains('┌') && !l.contains('└')),
@@ -481,8 +403,7 @@ mod emptiness {
 
     #[test]
     fn a_call_that_produced_nothing_is_not_a_box_either() {
-        // Same rule, reached a different way: a `write` that reports nothing has an outcome but
-        // no body, and an empty frame says less than a line does.
+        // A `write` that reports nothing has an outcome but no body.
         let shown = call(Some(ToolResult {
             output: String::new(),
             is_error: false,
@@ -529,8 +450,7 @@ mod alignment {
 
     #[test]
     fn prose_starts_where_a_block_starts() {
-        // They were laid out to different rules, so a screen of mixed output had two ragged
-        // margins. An answer and the box above it should begin in the same column.
+        // An answer and the box above it should begin in the same column.
         let block = text_of(&entry_lines(
             &Entry::User {
                 id: MessageId::new("m1"),
@@ -542,8 +462,7 @@ mod alignment {
         ));
         let prose = said("hello");
         let column = |line: &str| line.len() - line.trim_start().len();
-        // Found by the text, not by a row number: a block pads inside its frame and prose does
-        // not, so a fixed index compares a padding row against a line of words.
+        // Found by the text, not by a row number: a block pads inside its frame and prose does not.
         let saying = |rows: &[String]| {
             rows.iter()
                 .find(|row| row.contains("hello"))
@@ -559,8 +478,7 @@ mod alignment {
 
     #[test]
     fn prose_stops_where_a_block_stops() {
-        // The right margin too, or long prose runs out past the corner above it. The edges are
-        // exempt: a frame spans the whole width, which is what makes it a frame.
+        // The right margin too. The edges are exempt: a frame spans the whole width.
         let long = "word ".repeat(40);
         let framing = |line: &str| line.starts_with('┌') || line.starts_with('└');
         for line in said(&long)
@@ -576,8 +494,7 @@ mod alignment {
 
     #[test]
     fn only_the_frame_reaches_the_first_and_last_column() {
-        // The whole point of the margin: everything with content in it is inside, and the two
-        // outermost columns belong to the edges alone.
+        // Everything with content is inside, and the two outermost columns belong to the edges.
         let shown = text_of(&entry_lines(
             &Entry::Tool {
                 id: ToolCallId::new("t1"),
@@ -613,17 +530,14 @@ mod wide {
     /// Two columns each on a terminal, one `char` each in Rust — which is the whole problem.
     const WIDE: &str = "日本語のテキストがここにあります、これは長い行です";
 
-    /// Measured with the width table itself, never with the code under test — a test that
-    /// uses the same ruler as the thing it is checking agrees with it about everything,
-    /// including being wrong. These passed unchanged with `columns` counting characters.
+    /// Measured with the width table itself, never with the code under test.
     fn width_of(line: &str) -> usize {
         unicode_width::UnicodeWidthStr::width(line)
     }
 
     #[test]
     fn a_message_of_wide_glyphs_still_fills_the_width_exactly() {
-        // Everything laying out a row counted *characters*, so one wide glyph pushed it a column
-        // past the frame and a screen with any in it was ragged down the right.
+        // Everything counted characters, so one wide glyph pushed a row a column past the frame.
         for width in [24u16, 40, 56] {
             let shown = text_of(&entry_lines(
                 &Entry::User {
@@ -666,9 +580,7 @@ mod wide {
 
     #[test]
     fn a_cut_ends_no_wider_than_it_was_asked_for() {
-        // Cutting at `width - 1` *characters* and appending an ellipsis produced a run wider
-        // than the budget the moment any of those characters was two columns — which is exactly
-        // the case a cut exists to handle.
+        // Cutting at `width - 1` characters produced a run wider than the budget for a wide glyph.
         for room in 4..20 {
             let cut = super::super::clip(WIDE, room);
             assert!(

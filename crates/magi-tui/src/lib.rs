@@ -1,12 +1,6 @@
-//! Rendering for the magi UI.
-//!
-//! Consumes [`magi_proto`] types and produces styled lines. This crate knows nothing about
-//! sockets, sessions, or agents: everything here is a pure function of state, which is what
-//! makes it testable against a `vt100` screen rather than a live daemon.
-//!
-//! The block shapes and footer format are Pi's, from
-//! `xtra/pi/packages/coding-agent/src/modes/interactive`. The palette is not, and is not anybody
-//! else's either: see [`colour`].
+//! Rendering for the magi UI: [`magi_proto`] types in, styled lines out. Everything here is a pure
+//! function of state — no sockets, sessions or agents — which is what makes it testable against a
+//! `vt100` screen. Block shapes and footer format are Pi's; the palette is not, see [`colour`].
 
 pub mod beacon;
 pub mod border;

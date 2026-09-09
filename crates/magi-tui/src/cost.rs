@@ -1,14 +1,5 @@
-//! What this session has spent, and on what.
-//!
-//! **Four counters, because a provider bills four things.** Input, output, cache read and cache
-//! write are priced differently by every provider that offers caching, and a single "tokens"
-//! number hides the one decision a person can act on: a session whose prompt is mostly cache
-//! reads is cheap to keep going, and one whose prompt is mostly fresh input is not.
-//!
-//! **No money.** magi does not know what a token costs — melchior owns the catalog, and the
-//! per-million rates live in its `providers.lua` beside the endpoint they belong to. Guessing
-//! here would be a number that goes stale the day a provider changes its price, printed with the
-//! authority of one that did not. The view says what was spent and says where the rate lives.
+//! What this session has spent, and on what. Four counters because providers price input, output,
+//! cache read and cache write differently. No money: melchior's `providers.lua` owns the rates.
 
 use crate::footer::format_tokens;
 use magi_proto::Usage;
@@ -18,16 +9,11 @@ use ratatui::text::{Line, Span};
 /// One turn's spend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Turn {
-    /// Which turn, counting from one.
     pub at: usize,
-    /// What it used.
     pub usage: Usage,
 }
 
-/// The rows of a cost view, `width` columns wide.
-///
-/// Newest last, like the transcript: a session is read downwards and a spend table that ran the
-/// other way would be the one thing on screen that did.
+/// The rows of a cost view, newest last like the transcript.
 #[must_use]
 pub fn lines(turns: &[Turn], model: Option<&str>) -> Vec<Line<'static>> {
     if turns.is_empty() {
@@ -76,8 +62,6 @@ pub fn lines(turns: &[Turn], model: Option<&str>) -> Vec<Line<'static>> {
         Style::default().add_modifier(Modifier::BOLD),
     )));
 
-    // **The one derived number worth printing.** Everything else here is a tally; this is the
-    // ratio that says whether the conversation is getting cheaper or more expensive to continue.
     let prompt = total.prompt_tokens();
     if prompt > 0 {
         let served = total.cache_read * 100 / prompt;

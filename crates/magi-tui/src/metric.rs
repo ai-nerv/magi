@@ -1,23 +1,15 @@
-//! The numbers: how big things are, and how fast they move.
-//!
-//! Rows, budgets, fractions and rates, all of them settable by the names below from `magi.ui` in
-//! Lua. They were constants scattered across a dozen modules, which is fine right up until
-//! somebody wants a taller transcript or a shorter tool preview and has to fork to get one.
+//! The numbers: how big things are and how fast they move, all settable by the names below from
+//! `magi.ui` in Lua. A fraction is a percentage — Lua has one number type, so a config saying `0.3`
+//! and one saying `30` must not differ by accident; `scan_speed` is the exception, a multiplier.
 //!
 //! ```lua
-//! magi.ui.menu_rows     = 12
-//! magi.ui.preview_lines = 20
-//! magi.ui.scan_speed    = 2
+//! magi.ui.menu_rows  = 12
+//! magi.ui.scan_speed = 2
 //! ```
-//!
-//! **A fraction is a percentage**, because Lua has one number type and a config that says `0.3`
-//! and a config that says `30` should not mean different things by accident. `scan_speed` is the
-//! exception and is documented as a multiplier, because "twice as fast" is what somebody means.
 
 use std::sync::OnceLock;
 
-/// Declare the numbers once: the struct, the defaults, the accessors, and the names a config may
-/// set, from one list so none of them can fall out of step.
+/// Declare the numbers once — struct, defaults, accessors and the settable names — from one list.
 macro_rules! metrics {
     ($($name:ident: $kind:ty = $default:literal, $floor:literal, $doc:literal;)*) => {
         /// Every size and rate the UI draws by.
@@ -26,18 +18,13 @@ macro_rules! metrics {
             $(#[doc = $doc] pub $name: $kind,)*
         }
 
-        /// What the UI was built around, before any of it was settable.
         pub const BUILT_IN: Metrics = Metrics { $($name: $default,)* };
 
         impl Metrics {
-            /// Every name `magi.ui` recognises as a number.
             pub const NAMES: &'static [&'static str] = &[$(stringify!($name),)*];
 
-            /// Take whatever `given` answers for, and keep the rest.
-            ///
-            /// Each has a floor, and a value under it is raised rather than refused. Zero rows of
-            /// menu is not a preference, it is a menu that cannot be seen, and the person who
-            /// typed it is not at a debugger.
+            /// Take whatever `given` answers for. Each has a floor, and a value under it is raised
+            /// rather than refused: zero rows of menu is a menu that cannot be seen.
             pub fn overlay(&mut self, given: &dyn Fn(&str) -> Option<u64>) {
                 $(if let Some(value) = given(stringify!($name)) {
                     self.$name = <$kind>::try_from(value).unwrap_or(<$kind>::MAX).max($floor);
@@ -101,27 +88,20 @@ impl Default for Metrics {
 /// The metrics in force, set once before anything is drawn.
 static IN_FORCE: OnceLock<Metrics> = OnceLock::new();
 
-/// Use `metrics` for the life of the process.
 pub fn adopt(metrics: Metrics) {
     let _ = IN_FORCE.set(metrics);
 }
 
-/// The metrics in force.
 #[must_use]
 pub fn metrics() -> &'static Metrics {
     IN_FORCE.get_or_init(Metrics::default)
 }
 
-/// The value a percentage setting has when nobody has changed it.
-///
-/// Named because two things divide by it — the scan clock and every `share` — and a literal 100
-/// in either of them is a number whose meaning has to be worked out from context.
+/// The value a percentage setting has when nobody has changed it. Named because the scan clock and
+/// every `share` divide by it.
 pub const NORMAL: u16 = 100;
 
 /// `share` percent of `whole`, at least one.
-///
-/// Percentages rather than floats, so a config saying `30` and a config saying `0.3` cannot mean
-/// different things by accident — Lua has one number type and no way to tell them apart.
 #[must_use]
 pub fn share(whole: u16, share: u16) -> u16 {
     (whole.saturating_mul(share) / NORMAL).max(1)
@@ -148,7 +128,6 @@ mod tests {
 
     #[test]
     fn a_value_under_the_floor_is_raised_rather_than_drawn() {
-        // Zero rows of menu is not a preference, it is a menu that cannot be seen.
         let mut chosen = BUILT_IN;
         chosen.overlay(&|name| (name == "menu_rows").then_some(0));
         assert_eq!(chosen.menu_rows, 1);
@@ -170,8 +149,7 @@ mod tests {
 
     #[test]
     fn the_scan_can_be_stopped_but_not_the_frames() {
-        // Zero speed is a still border, which somebody may want. Zero milliseconds between
-        // frames is a busy loop, which nobody does.
+        // Zero speed is a still border, which somebody may want. Zero milliseconds is a busy loop.
         let mut chosen = BUILT_IN;
         chosen.overlay(&|_| Some(0));
         assert_eq!(chosen.scan_speed, 0);

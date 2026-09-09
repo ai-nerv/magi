@@ -1,8 +1,5 @@
-//! Prompt autocompletion.
-//!
-//! Two triggers, as in Pi: `/` at the start of the prompt opens the command palette, and `@`
-//! anywhere completes a path. Both render as an overlay above the prompt and are driven from
-//! the editor's current line, so nothing here holds state the editor already owns.
+//! Prompt autocompletion. Two triggers, as in Pi: `/` at the start of the prompt opens the command
+//! palette, `@` anywhere completes a path. Driven from the editor's line, holding no state it owns.
 
 use crate::fuzzy;
 use ratatui::text::Line;
@@ -10,58 +7,44 @@ use ratatui::text::Line;
 /// What is being completed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
-    /// A slash command at the start of the prompt.
     Command,
-    /// A file path after an `@`.
     Path,
-    /// Another instance after a `$`.
     Instance,
-    /// A skill after a `/`.
     Skill,
 }
 
 /// One offered completion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
-    /// Text inserted when accepted.
     pub value: String,
-    /// One-line explanation, shown muted beside the value.
     pub detail: String,
 }
 
 /// An open completion popup.
 #[derive(Debug, Clone)]
 pub struct Completion {
-    /// What is being completed.
     pub kind: Kind,
-    /// Ranked candidates, best first.
     pub candidates: Vec<Candidate>,
-    /// Which candidate is highlighted.
     pub selected: usize,
-    /// What the user typed, which is what the candidates were ranked against.
-    ///
-    /// Kept so the renderer can pick those characters out of each candidate; derived here so it
-    /// cannot drift from what was actually matched on.
+    /// What the user typed, derived here so it cannot drift from what the candidates were ranked
+    /// against. The renderer picks those characters out of each candidate.
     pub typed: String,
     /// Character index in the line where the replaced token starts.
     pub token_start: usize,
 }
 
 impl Completion {
-    /// The highlighted candidate.
     #[must_use]
     pub fn current(&self) -> Option<&Candidate> {
         self.candidates.get(self.selected)
     }
 
-    /// Move the highlight down, wrapping.
     pub fn next(&mut self) {
         if !self.candidates.is_empty() {
             self.selected = (self.selected + 1) % self.candidates.len();
         }
     }
 
-    /// Move the highlight up, wrapping.
     pub fn prev(&mut self) {
         if !self.candidates.is_empty() {
             self.selected = self
@@ -71,20 +54,14 @@ impl Completion {
         }
     }
 
-    /// Rows the overlay needs.
     #[must_use]
     pub fn height(&self) -> u16 {
         self.candidates.len().min(max_visible()) as u16
     }
 }
 
-/// The commands M0 can honour.
-///
-/// Colon, not slash. `/` is search -- of the transcript now and of balthasar's memory later -- and
-/// a prefix cannot mean both.
-///
-/// Deliberately short. Pi has 28 and a collision policy per surface; every command added here
-/// is a capability the daemon must eventually answer for.
+/// The commands M0 can honour. Colon, not slash: `/` is search, of the transcript now and of
+/// balthasar's memory later, and a prefix cannot mean both.
 #[must_use]
 pub fn commands() -> Vec<Candidate> {
     [
@@ -110,10 +87,8 @@ pub fn commands() -> Vec<Candidate> {
     .collect()
 }
 
-/// Work out what, if anything, should be completed for `line` with the cursor at `col`.
-///
-/// `list_paths` supplies path candidates for a prefix; it is a parameter so this stays a pure
-/// function and the filesystem lives in the caller.
+/// Work out what, if anything, should be completed for `line` with the cursor at `col`. `list_paths`
+/// is a parameter so this stays pure and the filesystem lives in the caller.
 pub fn resolve(
     line: &str,
     col: usize,
@@ -122,11 +97,8 @@ pub fn resolve(
     resolve_with(line, col, list_paths, &|_| Vec::new())
 }
 
-/// The same, told where instance names come from.
-///
-/// Two entry points rather than one with an extra argument everywhere, because the filesystem
-/// and the list of running siblings are found by different callers and most of them have only
-/// the first.
+/// The same, told where instance names come from. Two entry points because the filesystem and the
+/// list of running siblings are found by different callers.
 pub fn resolve_with(
     line: &str,
     col: usize,
@@ -136,12 +108,9 @@ pub fn resolve_with(
     let before: String = line.chars().take(col).collect();
     let token = crate::trigger::under(&before, &crate::trigger::EVERY)?;
 
-    // Which of the four it is decides where the candidates come from, and nothing else. That is
-    // the whole reason the triggers are a table: adding one is a `match` arm here and an entry
-    // there, not another copy of the block below.
-    // Some candidates carry their sigil and some do not -- `:help` is written with the colon and
-    // `src/main.rs` is not -- and the needle has to be the same shape as what it is matched
-    // against, or `@src` is searched for inside `src/main.rs` and finds nothing.
+    // Which of the four it is decides where the candidates come from, and nothing else. Some
+    // candidates carry their sigil and some do not -- `:help` is written with the colon and
+    // `src/main.rs` is not -- and the needle has to be the same shape as what it is matched against.
     let (kind, offered, sigil_in_value) = match token.trigger {
         crate::trigger::Trigger::Command => (Kind::Command, commands(), true),
         crate::trigger::Trigger::File => (
@@ -166,8 +135,7 @@ pub fn resolve_with(
                 .collect(),
             true,
         ),
-        // Skills are not built yet. An empty list means no popup, which is what somebody typing
-        // `/` into a sentence should see until there is something to offer them.
+        // Skills are not built yet; an empty list means no popup.
         crate::trigger::Trigger::Skill => (Kind::Skill, Vec::new(), true),
     };
 
@@ -193,19 +161,16 @@ pub fn resolve_with(
     })
 }
 
-/// Render the overlay.
 #[must_use]
 pub fn render(completion: &Completion, width: u16) -> Vec<Line<'static>> {
     let window = window(completion);
-    // Details line up in a column: a ragged left edge on the descriptions makes the list read
-    // as noise rather than as a table of choices.
+    // Details line up in a column: a ragged left edge reads as noise rather than as choices.
     let value_width = completion.candidates[window.clone()]
         .iter()
         .map(|c| c.value.chars().count())
         .max()
         .unwrap_or(0);
-    // What the popup is completing, so the part of each candidate you have already typed can be
-    // told apart from the part it adds.
+    // So the part of each candidate already typed can be told apart from the part it adds.
     let typed = completion.typed.clone();
 
     completion.candidates[window.clone()]
@@ -342,8 +307,7 @@ mod clip_tests {
 
     #[test]
     fn a_detail_longer_than_the_popup_is_cut_rather_than_overflowing() {
-        // A row wider than the popup does not wrap: it pushes the layout sideways, and every
-        // other row was drawn from a width they all agreed on.
+        // A row wider than the popup does not wrap: it pushes the layout sideways.
         let completion = Completion {
             kind: Kind::Command,
             typed: String::new(),
@@ -384,7 +348,6 @@ fn max_visible() -> usize {
     usize::from(crate::metric::menu_rows())
 }
 
-/// The same, for a caller outside this crate.
 #[must_use]
 pub fn rows() -> usize {
     max_visible()

@@ -1,11 +1,5 @@
-//! The one thing that opens under the prompt.
-//!
-//! A completion popup and a selection list were two fields, two heights, two draw calls and two
-//! sets of key handling, held apart by a comment saying they never open together. They are one
-//! slot: what varies is which rows it holds and what taking a row means.
-//!
-//! It is drawn *inside* the prompt box rather than beneath it — see [`crate::prompt`] — so the
-//! rows carry no background of their own. The box is what says where the menu is.
+//! The one slot that opens under the prompt: a picker or a completion popup, never both. Drawn
+//! *inside* the prompt box (see [`crate::prompt`]), so the rows carry no background of their own.
 
 use crate::complete::Completion;
 use crate::picker::Picker;
@@ -13,14 +7,11 @@ use ratatui::text::Line;
 
 /// What is open under the prompt.
 pub enum Overlay {
-    /// A list of choices: a model, a thinking level, a session, a permission.
     Picker(Picker),
-    /// The commands or paths that match what is typed.
     Completion(Completion),
 }
 
 impl Overlay {
-    /// How many rows it wants.
     #[must_use]
     pub fn height(&self) -> u16 {
         match self {
@@ -29,7 +20,6 @@ impl Overlay {
         }
     }
 
-    /// Its rows, `width` wide.
     #[must_use]
     pub fn render(&self, width: u16) -> Vec<Line<'static>> {
         match self {
@@ -38,7 +28,6 @@ impl Overlay {
         }
     }
 
-    /// The list, when that is what this is.
     pub fn picker(&mut self) -> Option<&mut Picker> {
         match self {
             Self::Picker(picker) => Some(picker),
@@ -46,7 +35,6 @@ impl Overlay {
         }
     }
 
-    /// The list, to read what it is offering.
     #[must_use]
     pub fn list(&self) -> Option<&Picker> {
         match self {
@@ -55,7 +43,6 @@ impl Overlay {
         }
     }
 
-    /// The popup, when that is what this is.
     pub fn completion(&mut self) -> Option<&mut Completion> {
         match self {
             Self::Completion(completion) => Some(completion),
@@ -63,12 +50,8 @@ impl Overlay {
         }
     }
 
-    /// What is open, as one string, for anything that has to notice when it changes.
-    ///
-    /// The title when there is one, so a permission ask following a model list reads as a second
-    /// opening. A popup has no title and answers with the character that opened it, because it
-    /// refilters on every keystroke: pressing `/` opens the menu once, and narrowing it to `/mo`
-    /// is still that one opening.
+    /// A stable identity for what is open: a picker's title, or the character that opened a popup.
+    /// A popup refilters on every keystroke and stays the same opening while it narrows.
     #[must_use]
     pub fn key(&self) -> &str {
         match self {
@@ -82,13 +65,11 @@ impl Overlay {
         }
     }
 
-    /// Whether this is a completion popup.
     #[must_use]
     pub fn is_completion(&self) -> bool {
         matches!(self, Self::Completion(_))
     }
 
-    /// Whether this is a selection list.
     #[must_use]
     pub fn is_picker(&self) -> bool {
         matches!(self, Self::Picker(_))
@@ -118,7 +99,6 @@ mod key_tests {
         assert_eq!(Overlay::Picker(picker).key(), "model");
     }
 
-    /// A popup, completing `kind`.
     fn popup(kind: crate::complete::Kind) -> Overlay {
         Overlay::Completion(Completion {
             kind,
@@ -131,7 +111,6 @@ mod key_tests {
 
     #[test]
     fn the_slash_menu_has_a_key_of_its_own() {
-        // It had none, so pressing `/` opened a menu that never landed.
         assert_eq!(popup(crate::complete::Kind::Command).key(), ":");
     }
 

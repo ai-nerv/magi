@@ -1,54 +1,27 @@
-//! The footer.
-//!
-//! Two dim lines, as Pi renders them: the working directory with the git branch, then usage
-//! stats on the left with the session name right-aligned.
+//! The footer: one dim line, the directory and branch left, usage in the middle, session name right.
 
 use crate::colour;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-/// The control for moving between agents, drawn at the bottom left.
-///
-/// **Two glyphs, no count.** Which agent you are looking at is the name immediately beside them,
-/// and a `2/5` here would be a third thing competing for a row that already drops whole columns
-/// on a narrow terminal.
-///
-/// Single-width ASCII rather than `‹ ›` or arrows: this row is measured in characters and laid
-/// out to the column, and a glyph a terminal renders double-width would push the middle into the
-/// model without anything here being able to tell.
+/// The control for moving between agents, drawn at the bottom left. Single-width ASCII rather than
+/// `‹ ›` or arrows: this row is laid out to the column and a double-width glyph would push the middle.
 const CREW: &str = "< >";
 
 /// What the footer displays. The UI owns none of this; the session reports it.
 #[derive(Debug, Clone, Default)]
 pub struct FooterData {
-    /// Cumulative input tokens.
     pub input_tokens: u64,
-    /// Cumulative output tokens.
     pub output_tokens: u64,
-    /// Percentage of the context window in use.
     pub context_percent: Option<f64>,
-    /// Size of the context window, in tokens.
     pub context_window: u64,
-    /// What the agent on screen is called. The left of the footer.
-    ///
-    /// This session's own `project/role/id`, or `role/id` for a peer it has moved to — whichever
-    /// one is being read. The project is dropped from a peer's because it cannot differ: a roster
-    /// is one project's, and this row loses whole columns to make room.
+    /// What the agent on screen is called: this session's own `project/role/id`, or `role/id` for a
+    /// peer, whose project cannot differ because a roster is one project's.
     pub identity: String,
-    /// Model id, as the provider names it. The right of the footer.
     pub model: String,
-    /// How many agents there are to move between, this one included.
-    ///
-    /// **Nothing is drawn for a crew of one**, which is every session that has started nothing.
-    /// The row is width-critical — three columns competing for one line, and `clip_spans` drops
-    /// whole spans rather than truncating them — so a control that would mean nothing must not
-    /// be charged for. One is the default and the common case.
+    /// How many agents there are to move between, this one included. Nothing is drawn for a crew of one.
     pub crew: usize,
-    /// Whether the agent on screen is this session rather than one it moved to.
-    ///
-    /// Only the identity's styling turns on it. Somebody looking at a peer needs to know at a
-    /// glance that what they are reading is not their own session, because everything else about
-    /// the screen — the transcript, the model, the counters — looks exactly the same.
+    /// Whether the agent on screen is this session. Only the identity's styling turns on it.
     pub own: bool,
 }
 
@@ -77,19 +50,14 @@ pub fn format_cwd(cwd: &str, home: Option<&str>) -> String {
         .map_or_else(|| cwd.to_owned(), |rest| format!("~/{rest}"))
 }
 
-/// Fit a path into `width`, dropping leading components rather than trailing ones.
-///
-/// The old `clip` took the head and cut the tail, which on a long path hides the only part
-/// that says where you are: `/home/you/work/deep/nested/thing` became `/home/you/work/dee…`.
-/// Leading components are the ones a reader can infer.
+/// Fit a path into `width`, dropping leading components rather than trailing ones: the tail is the
+/// part that says where you are, and the head is what a reader can infer.
 #[must_use]
 pub fn fit_path(path: &str, width: usize) -> String {
     if path.chars().count() <= width {
         return path.to_owned();
     }
-    // No room at all is not a licence to overflow: a caller with nothing left to give gets
-    // nothing back. Returning the original here is how the footer once printed a sixty-column
-    // model name onto a twenty-column terminal.
+    // No room at all is not a licence to overflow: a caller with nothing left to give gets nothing.
     if width == 0 {
         return String::new();
     }
@@ -108,41 +76,27 @@ pub fn fit_path(path: &str, width: usize) -> String {
     format!("…{}", last.chars().skip(start).collect::<String>())
 }
 
-/// Render the footer.
-///
-/// **One line.** It was two — the directory on its own row above the stats — and two rows of
-/// dim text under the prompt is a lot of screen for something you glance at. Everything that
-/// was on both is here: the directory and branch on the left, usage in the middle, the session name on
-/// the right, and each is dropped in that order when the terminal cannot hold it.
+/// Render the footer, on one line: the directory and branch on the left, usage in the middle, the
+/// session name on the right, each dropped in that order when the terminal cannot hold it.
 #[must_use]
 pub fn render(data: &FooterData, status: &[Span<'static>], width: u16) -> Vec<Line<'static>> {
     let dim = Style::default().fg(colour::dim());
     let muted = Style::default().fg(colour::muted());
-    // Held clear at both ends, and the same at both: the prompt box above draws a border in
-    // column zero and stops one short of the right, so a footer running edge to edge under it
-    // read as leaning left. Everything below measures against the inset width, not the screen.
+    // Held clear at both ends and the same at both, because the box above stops one short of the
+    // right. Everything below measures against the inset width, not the screen.
     let pad = usize::from(crate::metric::footer_pad());
     let width = usize::from(width).saturating_sub(pad * 2);
     let gap = usize::from(crate::metric::column_gap());
 
-    // **The crew control, left of the name.** Two arrows and nothing else: which agent you are
-    // looking at is the name beside them, and a count here would be a third thing on a row that
-    // already loses columns to `clip_spans` on a narrow terminal.
-    //
-    // Drawn only when there is somewhere to go. A session that has started nothing is the common
-    // case, and paying for a control that would move between one agent and itself is exactly the
-    // width this row does not have.
+    // The crew control, left of the name, and only when there is somewhere to go: a control that
+    // would move between one agent and itself is width this row does not have.
     let arrows = if data.crew > 1 { CREW } else { "" };
     let arrows_width = arrows.chars().count();
     // What the left-hand column costs in total, which is what the middle has to clear.
     let left = |name: usize| arrows_width + if arrows_width > 0 { gap } else { 0 } + name;
 
-    // Ends first, and the shorter of the two has priority: what the session calls itself is
-    // fixed for the whole run, and the model is what you check before sending something.
-    //
-    // The name's third is measured before the arrows and then reduced by them, so a crew of one
-    // gets exactly the budget it always had and the control cannot make the name shorter on a
-    // screen that is not showing it.
+    // Ends first, shorter of the two with priority. The name's third is measured before the arrows
+    // and then reduced by them, so a crew of one gets exactly the budget it always had.
     let name = fit_path(&data.identity, (width / 3).saturating_sub(left(0)));
     let model = fit_path(
         &data.model,
@@ -151,22 +105,14 @@ pub fn render(data: &FooterData, status: &[Span<'static>], width: u16) -> Vec<Li
     let name_width = name.chars().count();
     let model_at = width.saturating_sub(model.chars().count());
 
-    // Then the middle, which is the display and whatever it has to say. Centred on the row
-    // rather than laid after the name: each column is placed from the width alone, so one of
-    // them changing -- and the middle changes every time the agent starts or stops -- does not
-    // slide the other two sideways.
+    // The middle is centred on the row rather than laid after the name, so one column changing --
+    // and the middle changes every time the agent starts or stops -- does not slide the other two.
     let said: usize = status.iter().map(|s| s.content.chars().count()).sum();
     let middle_at = width.saturating_sub(said) / 2;
-    // Centred in the whole row is not the same as fitting between the other two. On a narrow
-    // screen the middle reached the right-hand column and the two printed into each other --
-    // `12.5%/200kaxum/main/al`. Pushed off centre rather than dropped: the display is the one
-    // thing here that says the session is alive.
-    //
-    // Measured from the *whole* left column, not from the name alone. Charging the arrows to the
-    // name's budget and not to this floor does not print over them — the guard below drops a
-    // middle that starts before `col` — it makes the middle *vanish* on every width where the
-    // floor lands between the two. Which is the worse failure: nothing looks broken, the display
-    // that says the session is alive is simply gone, and it comes back if you widen the terminal.
+    // Centred in the whole row is not the same as fitting between the other two: on a narrow screen
+    // the middle reached the right-hand column and the two printed into each other. Measured from
+    // the *whole* left column: charging the arrows to the name's budget and not to this floor makes
+    // the middle vanish on every width where the floor lands between the two.
     let middle_at = middle_at
         .max(left(name_width) + gap)
         .min(model_at.saturating_sub(said + gap));
@@ -176,8 +122,7 @@ pub fn render(data: &FooterData, status: &[Span<'static>], width: u16) -> Vec<Li
         spans.push(Span::styled(arrows.to_owned(), muted));
         spans.push(Span::styled(" ".repeat(gap), dim));
     }
-    // Brighter when it is somebody else's, because everything else on the screen looks the same
-    // whether you are reading your own session or one you moved to.
+    // Brighter when it is somebody else's: everything else on the screen looks the same either way.
     spans.push(Span::styled(name, if data.own { dim } else { muted }));
     let mut col = left(name_width);
     if middle_at >= col && middle_at + said + gap <= model_at {
@@ -196,11 +141,8 @@ pub fn render(data: &FooterData, status: &[Span<'static>], width: u16) -> Vec<Li
     vec![Line::from(row)]
 }
 
-/// Trim a styled line to `width`, dropping whole spans and then characters.
-///
-/// The last guard on the stats line. Every part of it is fitted on its own, but a terminal
-/// narrow enough that the token counts alone overflow leaves nothing to fit -- and a line that
-/// overflows wraps, which costs the footer a row it was not given.
+/// Trim a styled line to `width`, dropping whole spans and then characters. The last guard on the
+/// stats line: a line that overflows wraps, which costs the footer a row it was not given.
 fn clip_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
     let mut out = Vec::with_capacity(spans.len());
     let mut used = 0usize;
@@ -248,9 +190,7 @@ mod tests {
 
     #[test]
     fn the_three_columns_are_the_name_the_display_and_the_model() {
-        // The working directory, the branch and the mouse state had it. Two of them never change
-        // while the session runs, and the third has the whole terminal to announce itself. The
-        // status took the row above the box, which is a row of chrome for one word.
+        // The status took the row above the box, which is a row of chrome for one word.
         let data = FooterData {
             input_tokens: 1200,
             output_tokens: 340,
@@ -330,8 +270,7 @@ mod fit_tests {
 
     #[test]
     fn a_long_path_keeps_the_end_that_says_where_you_are() {
-        // The old clip took the head: `/home/you/work/deep/nested/thing` became
-        // `/home/you/work/dee…`, which names every directory except the one you are in.
+        // The old clip took the head, which names every directory except the one you are in.
         let fitted = fit_path("/home/you/work/deep/nested/thing", 20);
         assert!(fitted.ends_with("thing"), "{fitted}");
         assert!(fitted.chars().count() <= 20, "{fitted}");
@@ -391,8 +330,7 @@ mod name_fit_tests {
 
     #[test]
     fn a_long_name_keeps_the_part_that_names_it() {
-        // Right-aligned text is cut on the left by the terminal and on the right by us; either
-        // way `a-long-project/main/alpha` must not become `a-long-project/main`.
+        // Cut on the left by the terminal and on the right by us; either way the tail must survive.
         let data = FooterData {
             identity: "a-long-project/main/alpha".into(),
             context_window: 164_000,
@@ -450,12 +388,10 @@ mod anchored {
         }
     }
 
-    /// Which column `needle` starts at, counted in characters rather than bytes.
     fn column(row: &str, needle: &str) -> Option<usize> {
         row.find(needle).map(|byte| row[..byte].chars().count())
     }
 
-    /// The row rendered with `said` on the left.
     fn row(said: &str) -> String {
         let status = [Span::raw(said.to_owned())];
         render(&data(), &status, 70)[0]
@@ -467,9 +403,7 @@ mod anchored {
 
     #[test]
     fn what_the_agent_is_doing_does_not_move_the_ends() {
-        // The complaint this answers: the two ends slid sideways every time the middle changed,
-        // which is every time a turn starts or ends. The display is fixed-width now, which is
-        // most of the answer, but a middle that grows must still not push anything.
+        // The display is fixed-width, but a middle that grows must still not push the ends.
         let short = row("⣠⣾⠀⠀⠀");
         let long = row(&"⣿".repeat(20));
         for line in [&short, &long] {
@@ -512,7 +446,6 @@ mod inset_tests {
         crewed(width, identity, 1)
     }
 
-    /// The same, for a session that can move between `crew` agents.
     fn crewed(width: u16, identity: &str, crew: usize) -> String {
         let data = FooterData {
             input_tokens: 12_500,
@@ -544,8 +477,7 @@ mod inset_tests {
 
     #[test]
     fn the_middle_never_prints_into_the_name() {
-        // `12.5%/200kaxum/main/al`, which is what a centred middle does once the row is inset
-        // and nobody checks it against the column to its right.
+        // What a centred middle does once the row is inset and nobody checks the column to its right.
         for width in 30..90u16 {
             let line = row(width, "axum/main/alpha");
             assert!(
@@ -557,12 +489,8 @@ mod inset_tests {
     }
 }
 
-/// The usage, as one string: what went up, what came down, and how full the window is.
-///
-/// Public because it is no longer drawn here. It had the middle of the footer and the middle is
-/// now the display; it is worn by the prompt box instead, in the inverted strip down its right,
-/// which is where you are looking when the number matters. Empty when there is nothing to say --
-/// `?/0` is three characters of noise on exactly the screen a new person is trying to read.
+/// The usage as one string: what went up, what came down, how full the window is. Public because it
+/// is worn by the prompt box now, not drawn here. Empty when there is nothing to say.
 #[must_use]
 pub fn usage(data: &FooterData) -> String {
     let mut parts = Vec::new();
@@ -599,7 +527,6 @@ mod middle_tests {
     #[test]
     fn the_display_sits_on_the_screens_own_middle() {
         // The two ends are pinned to the edges, so anything off-centre between them is visible.
-        // Checked at both parities of terminal width, which is the case that needed the work.
         for screen in 60..160u16 {
             let cells = crate::beacon::fitted(screen);
             let data = FooterData {

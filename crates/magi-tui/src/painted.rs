@@ -1,18 +1,9 @@
-//! What a tool *meant*, drawn in magi's own colours.
+//! What a tool meant, drawn in magi's own colours.
 //!
-//! casper's tools never choose a colour. They name a role — `added`, `keyword`, `path` — and this
-//! is where that becomes a colour, out of the same `magi.ui` palette the prompt box and the footer
-//! use. It is the whole reason a `patch` and a syntax-highlighted `cat` agree on screen: both
-//! land here, and one palette paints them.
-//!
-//! Every role resolves to a colour that *already exists*. Nothing new was added for this: a diff's
-//! roles are the four `diff_*` colours a tool block has always drawn a patch with, so the same
-//! change looks the same whether it came from `edit` or from casper. Adding a colour per role
-//! would have made those two disagree the moment somebody set a theme.
-//!
-//! A role this build has no name for reads as [`Role::Text`] on the way in — see the contract —
-//! so there is no case here for "unknown", and a newer casper's vocabulary degrades to plain
-//! text rather than to a panic.
+//! casper's tools name a role — `added`, `keyword`, `path` — and this resolves it against the same
+//! `magi.ui` palette the prompt box and footer use, so a `patch` and a highlighted `cat` agree.
+//! Every role maps to a colour that already exists. A role this build has no name for arrives as
+//! [`Role::Text`], so there is no "unknown" case here.
 
 use crate::colour;
 use magi_proto::tooling::{Role, Span};
@@ -26,24 +17,17 @@ pub fn of(role: Role) -> Color {
         Role::Text => colour::text(),
         Role::Muted => colour::muted(),
         Role::Dim => colour::dim(),
-        // A heading is the one thing on a screen of output worth finding first, which is what
-        // the accent is for everywhere else.
         Role::Title => colour::accent(),
-        // A path is a thing you can go and look at, which is what inline code already
-        // means everywhere else on the screen.
         Role::Path => colour::md_code(),
         Role::Ok => colour::success(),
         Role::Warn => colour::warning(),
         Role::Error => colour::error(),
-        // The four a tool block already draws a patch with, so a diff from casper and a diff
-        // from `edit` are the same diff.
+        // The four a tool block already draws a patch with.
         Role::Added => colour::diff_added(),
         Role::Removed => colour::diff_removed(),
         Role::Marker => colour::diff_marker(),
         Role::Context => colour::diff_context(),
-        // Code. Borrowed from the markdown palette rather than given colours of their own: a
-        // highlighted `cat` and a fenced block in an answer are the same code on the same
-        // screen, and two sets of colours for that would read as two languages.
+        // Borrowed from the markdown palette so a highlighted `cat` and a fenced block agree.
         Role::Keyword => colour::md_heading(),
         Role::String => colour::md_code(),
         Role::Number => colour::md_code(),
@@ -55,20 +39,15 @@ pub fn of(role: Role) -> Color {
 
 /// One painted line, as the renderer draws it.
 ///
-/// `on` is the style of whatever is drawing it, and only the foreground is replaced. A role says
-/// what a span *means*, which is a colour of text and never a background: built from
-/// `Style::default()` instead, every painted row came out with no fill behind it and a
-/// highlighted `cat` punched holes in the block it sat in.
+/// `on` is the style of whatever is drawing it, and only the foreground is replaced: a role is a
+/// colour of text and never a background, or a painted row punches holes in the block it sits in.
 #[must_use]
 pub fn line(spans: &[Span], on: Style) -> Line<'static> {
     Line::from(
         spans
             .iter()
             .map(|span| {
-                // **A colour asked for outright wins over the role.** Only a surface does this —
-                // see the contract — and only because it is drawing a picture rather than saying
-                // something. Everything else names a role and gets the palette, which is what
-                // keeps a `patch` and a `cat` agreeing with the screen around them.
+                // A colour asked for outright wins over the role; only a surface does this.
                 let fg = span
                     .rgb
                     .map_or_else(|| of(span.role), |[r, g, b]| Color::Rgb(r, g, b));
@@ -94,8 +73,6 @@ mod tests {
 
     #[test]
     fn a_diff_from_a_tool_is_the_same_diff_a_block_already_drew() {
-        // The claim the whole design rests on. If these ever diverge, one change looks like two
-        // depending on which tool produced it — which is exactly what casper exists to end.
         assert_eq!(of(Role::Added), colour::diff_added());
         assert_eq!(of(Role::Removed), colour::diff_removed());
         assert_eq!(of(Role::Marker), colour::diff_marker());
@@ -104,8 +81,6 @@ mod tests {
 
     #[test]
     fn every_role_resolves_to_a_colour_the_palette_already_had() {
-        // Nothing new was added for casper. A colour per role would drift from the ones a tool
-        // block draws with, and the two would disagree on the first theme somebody set.
         let known = [
             colour::text(),
             colour::muted(),
@@ -149,8 +124,6 @@ mod tests {
 
     #[test]
     fn the_text_survives_whatever_the_roles_do() {
-        // A renderer that lost a character while colouring it would be worse than one that drew
-        // everything grey.
         let drawn = line(
             &[
                 Span::new(Role::Removed, "-was"),

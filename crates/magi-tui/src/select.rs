@@ -1,14 +1,7 @@
-//! Selecting text with the mouse.
-//!
-//! **Why magi does this itself.** Mouse reporting is one terminal-wide switch. An application
-//! that turns it on to receive a click stops the terminal running its own drag-selection, and no
-//! choice of tracking mode changes that: the terminal is not deciding per-region, it is deciding
-//! whether the application gets the mouse at all. So a program that wants both a clickable
-//! element and selectable text has exactly one option, which is to select the text itself. That
-//! is what neovim does, and tmux, and every full-screen program in the same position.
-//!
-//! What that buys beyond parity: the selection is over the transcript magi rendered, so it knows
-//! where a line ends and does not take the padding with it.
+//! Selecting text with the mouse. Mouse reporting is one terminal-wide switch, so an application
+//! that turns it on to receive a click stops the terminal running its own drag-selection and has to
+//! select the text itself. The selection is over the transcript magi rendered, so it knows where a
+//! line ends and does not take the padding with it.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -17,11 +10,8 @@ use ratatui::style::Modifier;
 /// A drag in progress, or a finished one, in screen coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Selection {
-    /// Where the press landed.
     anchor: (u16, u16),
-    /// Where the pointer is now.
     head: (u16, u16),
-    /// Whether the button is still down.
     dragging: bool,
 }
 
@@ -36,20 +26,16 @@ impl Selection {
         }
     }
 
-    /// Move the loose end.
     pub fn drag_to(&mut self, row: u16, column: u16) {
         self.head = (row, column);
     }
 
-    /// The button came up.
     pub fn finish(&mut self) {
         self.dragging = false;
     }
 
-    /// Whether anything is actually covered.
-    ///
-    /// A press with no drag is a click, not a selection, and highlighting the single cell under
-    /// a click makes every click leave a mark behind.
+    /// Whether anything is actually covered. A press with no drag is a click, and highlighting the
+    /// cell under it would leave a mark behind every click.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.anchor == self.head
@@ -64,10 +50,7 @@ impl Selection {
         }
     }
 
-    /// Whether this cell is inside the selection.
-    ///
-    /// Linewise between the ends rather than a rectangle: dragging down three lines of a
-    /// paragraph selects the paragraph, which is what a selection means everywhere else.
+    /// Whether this cell is inside the selection. Linewise between the ends, not a rectangle.
     #[must_use]
     pub fn covers(&self, row: u16, column: u16) -> bool {
         if self.is_empty() {
@@ -83,11 +66,8 @@ impl Selection {
     }
 }
 
-/// Paint the selection over the finished frame.
-///
-/// Reversed rather than recoloured: the transcript already spends its palette on what a line
-/// means, and a selection that repainted the foreground would erase the difference between a
-/// diff's additions and its removals exactly where somebody is looking hardest.
+/// Paint the selection over the finished frame. Reversed rather than recoloured: repainting the
+/// foreground would erase what the transcript's own colours mean.
 pub fn over(buffer: &mut Buffer, selection: Selection) {
     let area = buffer.area;
     for y in area.top()..area.bottom() {
@@ -100,14 +80,9 @@ pub fn over(buffer: &mut Buffer, selection: Selection) {
     }
 }
 
-/// The text the selection covers, read back out of the frame.
-///
-/// Read from the buffer rather than from the transcript it was rendered from, because what a
-/// person dragged over is what they saw: wrapped where it wrapped, and without the parts of a
-/// line that scrolled off the side.
-///
-/// Trailing blanks go. A block's background runs to the edge of the screen, so every line of one
-/// ends in padding nobody meant to copy.
+/// The text the selection covers, read back out of the frame rather than out of the transcript it
+/// was rendered from: what a person dragged over is what they saw, wrapped where it wrapped.
+/// Trailing blanks go, because a block's background runs to the edge of the screen.
 #[must_use]
 pub fn text(buffer: &Buffer, selection: Selection, area: Rect) -> String {
     let ((top, _), (bottom, _)) = selection.ordered();
@@ -132,10 +107,6 @@ mod tests {
     use super::*;
 
     /// Which buffer a finished frame's text has to be read out of.
-    ///
-    /// The copy was silently empty for as long as it existed, and nothing here could see it:
-    /// every other test in this file builds a `Buffer` by hand, so the text extraction was right
-    /// and the *source* was wrong. This is the missing half.
     mod out_of_the_frame_that_was_drawn {
         use super::*;
         use ratatui::Terminal;
@@ -166,11 +137,8 @@ mod tests {
 
         #[test]
         fn the_current_buffer_after_a_draw_is_blank() {
-            // The trap, written down. `draw` ends with `swap_buffers`, which *resets* the buffer
-            // it is about to make current -- so asking the terminal for its "current" buffer
-            // after drawing hands back an empty one. Reading the selection from there produced
-            // the empty string every time, and an empty string was taken for "nothing was
-            // selected" rather than for "we looked in the wrong place".
+            // `draw` ends with `swap_buffers`, which resets the buffer it is about to make current,
+            // so the terminal's "current" buffer after drawing is empty.
             let (mut terminal, _, sel) = drawn();
             let area = terminal.get_frame().area();
             let from_current = text(terminal.current_buffer_mut(), sel, area);
@@ -206,8 +174,7 @@ mod tests {
 
     #[test]
     fn a_drag_across_lines_is_linewise_not_rectangular() {
-        // Dragging down three lines of a paragraph selects the paragraph. A rectangle would
-        // take a column out of the middle of it, which is not what a selection means anywhere.
+        // Dragging down three lines of a paragraph selects the paragraph, not a column of it.
         let mut sel = Selection::begin(2, 40);
         sel.drag_to(4, 2);
         assert!(sel.covers(2, 40), "from the anchor to the end of its line");
@@ -275,8 +242,7 @@ mod tests {
 
     #[test]
     fn the_padding_a_block_draws_is_not_copied() {
-        // A tool block's background runs to the edge of the screen, so every line of one ends
-        // in spaces nobody dragged over on purpose.
+        // A tool block's background runs to the edge, so every line of one ends in spaces.
         let buffer = drawn(&["text      ", "more      "]);
         let mut sel = Selection::begin(0, 0);
         sel.drag_to(1, 10);
@@ -285,8 +251,7 @@ mod tests {
 
     #[test]
     fn the_selection_is_reversed_rather_than_recoloured() {
-        // The transcript spends its palette on what a line means -- a diff's additions against
-        // its removals -- and repainting the foreground would erase that where it is read most.
+        // Repainting the foreground would erase a diff's additions against its removals.
         let mut buffer = drawn(&["hello"]);
         let mut sel = Selection::begin(0, 0);
         sel.drag_to(0, 3);

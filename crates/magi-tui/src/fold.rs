@@ -1,20 +1,14 @@
-//! Where a line of prompt text breaks, and where the caret lands once it has.
-//!
-//! Folding lives apart from drawing because three things have to agree about it: the width the
-//! text is wrapped at, the row and column the hardware cursor is placed on, and the number of
-//! rows the box asks the layout for. When any one of them measured on its own, a wrapped prompt
-//! put the cursor on a row the box was not tall enough to show.
+//! Where a line of prompt text breaks, and where the caret lands once it has. Apart from drawing
+//! because the fold width, the hardware cursor's row and column, and the rows the box asks the
+//! layout for all have to agree, or the cursor lands on a row the box is not tall enough to show.
 
 use crate::colour;
 use crate::editor::Editor;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
-/// Columns a row of text has, once the box and the badge have taken theirs.
-///
-/// The sides and the padding are three; the badge's strip is the rest. Everything that measures
-/// the prompt asks this, so the width the text is folded at and the width it is drawn at cannot
-/// drift apart.
+/// Columns a row of text has once the box and the badge have taken theirs: three for the sides and
+/// padding, the rest for the badge's strip. Everything that measures the prompt asks this.
 #[must_use]
 pub fn text_room(width: u16, badge: &str) -> usize {
     let strip = if badge.is_empty() {
@@ -25,18 +19,9 @@ pub fn text_room(width: u16, badge: &str) -> usize {
     usize::from(width).saturating_sub(3 + strip)
 }
 
-/// Line `row` with anything typed a moment ago still on its way to being itself.
-///
-/// Here rather than in [`crate::prompt`], where it was and where nothing but the doc comment
-/// connected it: this is about the editor, the clock and the glyph table, and the prompt box is
-/// not in it. Folding was its only caller, and reaching across for it made these two modules
-/// depend on each other in a circle — the one shape that makes a module impossible to read on
-/// its own.
-///
-/// A character arrives as the first of [`crate::glyph::type_stages`], passes through the rest, and
-/// lands as what was typed. Off unless `magi.ui.type_reveal_ms` says otherwise, and the same
-/// width throughout: the box is around this, and text that changes width under a border is worse
-/// than no effect at all.
+/// Line `row` with anything typed a moment ago still on its way to being itself. A character arrives
+/// as the first of [`crate::glyph::type_stages`], passes through the rest and lands as what was
+/// typed. Off unless `magi.ui.type_reveal_ms` says otherwise, and the same width throughout.
 pub(crate) fn resolving(editor: &Editor, row: usize) -> String {
     let text = &editor.lines()[row];
     let over = crate::metric::type_reveal_ms();
@@ -74,24 +59,15 @@ pub(crate) fn fold_all(editor: &Editor, room: usize) -> (Vec<String>, usize, usi
     (visual, caret_row, caret_col)
 }
 
-/// Where the caret is, in folded rows and columns.
-///
-/// For the terminal's own cursor, which has to land on the cell the inverted block is drawn on.
+/// Where the caret is, in folded rows and columns, for the terminal's own cursor.
 #[must_use]
 pub fn caret(editor: &Editor, width: u16, badge: &str) -> (usize, usize) {
     let (_, row, col) = fold_all(editor, text_room(width, badge));
     (row, col)
 }
 
-/// Break one logical line into the visual rows it occupies, at `width`.
-///
-/// The prompt used to draw a logical line as one row however long it was, which ran the text
-/// straight through the right-hand border and off the screen. It has to wrap now that a badge
-/// sits in the box: text going under the badge would be worse than text running off the edge,
-/// because the badge is the thing that says which session you are typing into.
-///
-/// On a word boundary where there is one, and mid-word only for a word longer than the whole
-/// width -- a path or a URL, which is exactly the case where breaking anywhere is right.
+/// Break one logical line into the visual rows it occupies, at `width`. On a word boundary where
+/// there is one, and mid-word only for a word longer than the whole width.
 #[must_use]
 pub(crate) fn folded(text: &str, width: usize) -> Vec<String> {
     if width == 0 {
@@ -118,10 +94,7 @@ pub(crate) fn folded(text: &str, width: usize) -> Vec<String> {
     rows
 }
 
-/// Where the cursor lands once `text` is folded at `width`.
-///
-/// Returned as `(row, column)` among the folded rows, because a caret counted along a logical
-/// line means nothing once that line is three rows on the screen.
+/// Where the cursor lands once `text` is folded at `width`, as `(row, column)` among folded rows.
 #[must_use]
 pub(crate) fn folded_cursor(text: &str, width: usize, col: usize) -> (usize, usize) {
     let rows = folded(text, width);
@@ -140,7 +113,6 @@ pub(crate) fn folded_cursor(text: &str, width: usize, col: usize) -> (usize, usi
 mod cursor_tests {
     use super::*;
 
-    /// `(char, reversed)` for each cell of the placeholder row.
     fn cells(hint: &str, caret: Option<usize>) -> Vec<(String, bool)> {
         crate::prompt::placeholder_spans(
             60,
@@ -163,8 +135,7 @@ mod cursor_tests {
 
     #[test]
     fn the_real_cursor_sits_on_the_first_letter() {
-        // Not in front of it. It marks where typing would land, and typing lands on column
-        // zero whatever the box happens to be saying.
+        // Not in front of it: typing lands on column zero whatever the box happens to be saying.
         let row = cells("build", None);
         assert_eq!(row[0], ("b".to_owned(), true), "{row:?}");
         assert_eq!(row[1], ("u".to_owned(), false), "{row:?}");
@@ -172,8 +143,7 @@ mod cursor_tests {
 
     #[test]
     fn the_real_cursor_stays_put_wherever_the_other_one_is() {
-        // The white block is yours. A cursor that wandered off while the box amused itself
-        // would be telling you your text was going somewhere else.
+        // The white block is yours; a cursor wandering off would say your text goes elsewhere.
         for caret in [None, Some(1), Some(3), Some(5)] {
             let row = cells("build", caret);
             assert!(row[0].1, "the first cell lost its cursor at {caret:?}");
@@ -210,30 +180,19 @@ mod cursor_tests {
     }
 }
 
-/// The strip down the right of the box, and what sits in it on this row.
-///
-/// **Reserved on every row, not just the one it is on.** A badge that only shortened its own row
-/// would let the text above it run the full width, and the block would reflow every time the
-/// prompt grew past a line — the right-hand edge of what you are typing would move while you
-/// typed. A constant margin costs a few columns and never moves.
-///
-/// The badge sits on the middle row, rounding down for an even count, so a one-line prompt has it
-/// beside the text and a tall one has it level with the middle rather than stuck to a corner.
-/// `rows` is the *text* rows: a menu opened under the divider is not part of the box you type in.
+/// The strip down the right of the box, and what sits in it on this row. Reserved on every row, not
+/// just the badge's own: a margin that moved would reflow the right-hand edge as the prompt grew.
+/// The badge sits on the middle *text* row, rounding down — a menu under the divider is not part of it.
 pub(crate) fn strip(badge: &str, rows: usize, row: usize, open: bool) -> Vec<Span<'static>> {
     if badge.is_empty() {
         return Vec::new();
     }
-    // A padded space each side of the name, inverted along with it so it reads as one block, and
-    // a plain one after so the block does not sit against the border.
+    // A padded space each side, inverted with the name so it reads as one block, and a plain one after.
     let worn = badge.chars().count() + 3;
     if row != rows / 2 {
         return vec![Span::raw(" ".repeat(worn))];
     }
-    // **Harder while what it opens is on screen.** Reversed either way, so it is always a block
-    // rather than a run of text; the difference is the text colour inside it, which goes from a
-    // hint to the full foreground. A control that looks the same pressed and unpressed is one
-    // you have to remember the state of.
+    // Reversed either way, so it is always a block; open changes only the text colour inside it.
     let ink = if open { colour::text() } else { colour::hint() };
     let mut style = Style::default().fg(ink).add_modifier(Modifier::REVERSED);
     if open {
@@ -249,7 +208,6 @@ mod badge_tests {
 
     const NAME: &str = "axum/main/alpha";
 
-    /// The prompt drawn at `width` with `text` in it, as plain rows.
     fn rows_with(text: &str, width: u16) -> Vec<String> {
         let mut editor = Editor::new();
         editor.insert_str(text);
@@ -273,8 +231,7 @@ mod badge_tests {
 
     #[test]
     fn long_text_wraps_rather_than_running_under_the_badge() {
-        // The whole point. It used to draw a logical line as one row however long it was, which
-        // ran the text through the right-hand border and off the screen.
+        // A logical line drawn as one row ran the text through the right-hand border.
         let rows = rows_with(
             "this is a long prompt that certainly runs past the width of the box",
             50,
@@ -287,8 +244,7 @@ mod badge_tests {
 
     #[test]
     fn the_badge_is_on_the_middle_row_rounding_down() {
-        // One row has it beside the text; a tall one has it level with the middle rather than
-        // stuck to a corner.
+        // One row has it beside the text; a tall one has it level with the middle.
         for (text, want) in [
             ("short", 0usize),
             ("a line long enough to take exactly two rows here", 1),
@@ -310,8 +266,7 @@ mod badge_tests {
 
     #[test]
     fn every_row_reserves_the_strip_even_where_the_badge_is_not() {
-        // A margin only on the badge's own row would let the text above it run the full width,
-        // and the block would reflow every time the prompt grew past a line.
+        // A margin only on the badge's own row would reflow the block as the prompt grew past a line.
         let rows = rows_with("one\ntwo\nthree", 50);
         let wide = NAME.chars().count() + 3;
         let worn = format!(" {NAME}  ");
@@ -330,7 +285,6 @@ mod badge_tests {
 
     #[test]
     fn a_word_longer_than_the_row_is_broken_rather_than_lost() {
-        // A path or a URL, which is exactly the case where breaking anywhere is right.
         // `z`, because the badge has letters in it and this counts occurrences.
         let long = "z".repeat(90);
         let rows = rows_with(&long, 50);
@@ -349,8 +303,7 @@ mod badge_tests {
 
     #[test]
     fn the_caret_follows_the_text_around_a_fold() {
-        // The terminal's own cursor has to land on the cell the inverted block is drawn on, and
-        // a caret counted along a logical line is on the wrong row once that line wraps.
+        // A caret counted along a logical line is on the wrong row once that line wraps.
         let mut editor = Editor::new();
         editor.insert_str(&"b".repeat(60));
         let (row, col) = caret(&editor, 50, NAME);
@@ -364,7 +317,6 @@ mod badge_tests {
 mod resolving_tests {
     use super::*;
 
-    /// The prompt's first line, with `text` typed into it.
     fn line_of(text: &str) -> String {
         let mut editor = Editor::new();
         editor.insert_str(text);
@@ -380,8 +332,7 @@ mod resolving_tests {
 
     #[test]
     fn the_stages_are_symbols_and_end_in_the_letter() {
-        // What a character passes through on the way to being itself. A letter passing through
-        // another letter reads as a typo correcting itself.
+        // A letter passing through another letter reads as a typo correcting itself.
         let stages = crate::glyph::type_stages();
         assert!(!stages.is_empty());
         assert!(
@@ -392,8 +343,7 @@ mod resolving_tests {
 
     #[test]
     fn a_character_that_was_not_just_typed_is_left_alone() {
-        // The reveal is about arrival. Text recalled from history, or pasted and settled, is
-        // already there and must not flicker every time the screen redraws.
+        // Text recalled from history, or pasted and settled, must not flicker on every redraw.
         let mut editor = Editor::new();
         editor.insert_str("settled");
         // Nothing matches at a position holding a different character.
@@ -403,8 +353,7 @@ mod resolving_tests {
 
     #[test]
     fn the_width_never_changes() {
-        // The box is around this. Text that changes width under a border is worse than no
-        // effect at all.
+        // Text that changes width under a border is worse than no effect at all.
         for text in ["a", "hello world", "unicode: ✓ ✗"] {
             assert_eq!(
                 line_of(text).chars().count(),
