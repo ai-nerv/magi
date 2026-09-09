@@ -166,7 +166,14 @@ fn spawning(
     prompt: Option<&str>,
 ) -> Command {
     let mut starting = Command::new(harness);
-    starting.arg("--tied").arg(parent.to_string());
+    // Both, though `--tied` implies the first. Written out because argv is what a person reads off
+    // `/proc` when they are working out what a stray process is, and "no terminal" and "dies with
+    // 4242" are two facts: a reader who only saw the pid would have to know the flag implies a
+    // mode to know the child was never going to draw anything.
+    starting
+        .arg("--headless")
+        .arg("--tied")
+        .arg(parent.to_string());
     if let Some(prompt) = prompt {
         starting.arg(prompt);
     }
@@ -444,7 +451,7 @@ mod tests {
         let said = std::fs::read_to_string(&seen).expect("the child wrote its arguments");
         assert_eq!(
             said.lines().collect::<Vec<_>>(),
-            ["--tied", "4242", "read the diff"]
+            ["--headless", "--tied", "4242", "read the diff"]
         );
     }
 

@@ -54,8 +54,14 @@ impl Opening {
     /// session: `--socket` exists for the replay host and for pointing a UI at something by
     /// hand. Taken here rather than in `run` so that the path melchior publishes and the path
     /// this process binds cannot be two different answers.
+    ///
+    /// `role` is what the command line said this session is for, and it is settled here for the
+    /// same reason the socket is: melchior writes the role into the directory at announce time,
+    /// so one arriving later leaves a window in which the agent is on every peer's roster
+    /// described as `main`. A headless magi is the case that has no other source — nobody minted
+    /// it, so there is no inherited role to fall back on.
     #[must_use]
-    pub fn begin(socket: Option<std::path::PathBuf>) -> Self {
+    pub fn begin(socket: Option<std::path::PathBuf>, role: crate::melchior::Role<'_>) -> Self {
         // Loaded once, here. Every later reader is handed this one: a second `load` in the same
         // process runs every configuration file again and repeats every refusal it printed the
         // first time.
@@ -80,6 +86,7 @@ impl Opening {
             &project,
             crate::talk(loaded.as_ref()),
             &socket,
+            role,
         );
         let named = started
             .as_ref()

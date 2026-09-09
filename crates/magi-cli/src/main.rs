@@ -52,14 +52,41 @@ struct Cli {
     #[arg(short, long)]
     print: bool,
 
-    /// Serve this session with no terminal, and end when this process does.
+    /// Serve this session with no terminal, and stay reachable until something ends it.
     ///
-    /// Not for people: `magi fork` sets it on the child it starts. The two halves are one flag
-    /// because a session may not have either without the other — a child with no screen and no
-    /// lifetime of its own is a subagent, and one with no screen and no pid to watch is a name in
-    /// the directory that answers forever and that nobody holds the token to stop.
+    /// How an agent is started. It comes up bound, named and on every peer's roster with a screen
+    /// published, gets on with whatever prompt it was given, and waits. Nothing draws until
+    /// somebody moves a screen onto it with `alt+,` or `alt+.`, and it prints what it is called on
+    /// stdout so whoever started it has a name to address.
+    ///
+    /// Not a daemon and there is deliberately no way to make it one. It holds the melchior and the
+    /// balthasar it convened, and both go when it does — so ending it is `kill`, or a `stop` from a
+    /// session that holds the right to.
+    #[arg(long)]
+    headless: bool,
+
+    /// Which process this session must not outlive.
+    ///
+    /// Not for people: `magi fork` sets it on the child it starts, beside `--headless`. It implies
+    /// one — a session watching a parent while drawing its own screen is nothing anybody wants —
+    /// so what it adds is the lifetime, and only the lifetime. Without it a headless magi is a
+    /// root, which is what a `magi` in a terminal is too.
     #[arg(long, hide = true, value_name = "PID")]
     tied: Option<u32>,
+
+    /// What this session is for, in one word. `main` when nothing says.
+    ///
+    /// Written into the directory at birth rather than assigned once the session is up, because
+    /// otherwise there is a window in which an agent is on every peer's roster described as
+    /// something it is not — and a coordinator fanning work out during it routes by a description
+    /// nobody wrote. It is the whole of what a headless magi has to go on: nobody minted one, so
+    /// there is no role for it to inherit.
+    #[arg(long, value_name = "NAME")]
+    role: Option<String>,
+
+    /// What that role means, in a sentence a coordinator can route by.
+    #[arg(long, value_name = "TEXT")]
+    role_description: Option<String>,
 
     /// What to ask. Submitted on start; without it the UI opens empty.
     prompt: Option<String>,
@@ -168,8 +195,15 @@ fn main() -> Result<()> {
     // Only a session has a prologue. Skipped for the argument error a `-p` with no prompt is, so
     // the complaint arrives without a configuration having been read or a layer started for a
     // session that never opens.
-    let opening = (cli.command.is_none() && !(cli.print && cli.prompt.is_none()))
-        .then(|| opening::Opening::begin(cli.socket.clone()));
+    let opening = (cli.command.is_none() && !(cli.print && cli.prompt.is_none())).then(|| {
+        opening::Opening::begin(
+            cli.socket.clone(),
+            melchior::Role {
+                name: cli.role.as_deref(),
+                description: cli.role_description.as_deref(),
+            },
+        )
+    });
     // `fork` is not a session and must not open one. It asks *this* session's melchior for a name
     // and starts a process with it; a prologue here would name a second session, announce it, and
     // then throw it away — leaving the child's parent to be whichever of the two answered first.
@@ -334,10 +368,12 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
             // The same session either way, and the same everything above this line: it is bound,
             // announced, recorded and reachable before anything decides whether there is a
             // terminal. What differs is only who is looking — see [`child`], which is what a
-            // session another session forked runs instead of a screen.
-            let ran = match cli.tied {
-                Some(parent) => child::run(&socket, cli.prompt, started, parent).await,
-                None => driver::run(&socket, cli.prompt, loaded, &project, started).await,
+            // session with no screen of its own runs instead of a driver. Its socket was
+            // published to melchior in the prologue like anybody's, so a screen can arrive later.
+            let ran = if headless(&cli) {
+                child::run(&socket, cli.prompt, started, cli.tied).await
+            } else {
+                driver::run(&socket, cli.prompt, loaded, &project, started).await
             };
             // Not on a signal, and not by anybody else: the session is this process, so the
             // only thing that ends it is this process ending.
@@ -389,6 +425,17 @@ fn inherited(
         std::process::id().to_string(),
     );
     environ
+}
+
+/// Whether this session comes up without a terminal.
+///
+/// **One mode, and `--tied` is a modifier of it rather than a second door.** They were one flag
+/// while a fork was the only way to reach the path, and splitting them into two would have put the
+/// same park loop behind two names for the sake of a difference that is one `select!` arm. So
+/// `--tied` implies `--headless`: it adds a lifetime, and a session watching a parent while
+/// drawing its own screen is not a thing anybody wants.
+fn headless(cli: &Cli) -> bool {
+    cli.headless || cli.tied.is_some()
 }
 
 /// How far this session may reach, as the config said it.

@@ -1,10 +1,11 @@
-//! A session with no terminal: what `magi fork` starts, and how it ends.
+//! A session with no terminal: what `magi --headless` is, and how it ends.
 //!
 //! magi's host and its screen were always separable — [`crate::host::start`] binds the socket and
 //! serves it as a task, and the process then either draws ([`crate::driver`]) or prints one answer
 //! and exits ([`crate::print`]). This is the third front end, and it is the smallest: it does not
-//! draw and it does not exit. It submits whatever the fork was given to get on with, and then sits
-//! there being reachable.
+//! draw and it does not exit. It submits whatever it was given to get on with, and then sits there
+//! being reachable — which is how an agent is started, whether a person typed `--headless` or a
+//! coordinator forked it.
 //!
 //! **Not having a screen is not the same as not being watched.** A UI attaches with `draws: false`
 //! when it is looking at somebody else's session, so a session that has no UI of its own is not a
@@ -27,6 +28,19 @@
 //! refusal for everything else. The good half of that arrangement is the one worth saying out
 //! loud — **a child somebody is watching can ask them things**, because pressing `>` is what makes
 //! the session attached, and the question then goes to the screen that has arrived.
+//!
+//! # Why a parent is optional and a screen is not
+//!
+//! There is one mode here and it is "no terminal". What varies is whether anything above this
+//! session owns it — a fork has a parent whose pid arrives on `--tied`, and a `magi --headless`
+//! somebody started by hand is a root, the same root a `magi` in a terminal is. Making those two
+//! flags would have put the same park loop behind two names; making the parent a `None` puts the
+//! difference where it actually is, which is one `select!` arm.
+//!
+//! **What does not vary is the socket.** Both come up through the same prologue and both hand
+//! melchior a `--ui`, so both are on every peer's roster with a screen to attach to. That is the
+//! whole of what makes a headless agent worth starting: `alt+,` and `alt+.` reach one exactly as
+//! they reach a session somebody is sitting in front of.
 //!
 //! # Why it watches a pid
 //!
@@ -71,13 +85,15 @@ const FROM_END: Cursor = Cursor(u64::MAX);
 
 /// Serve this session until somebody stops it or the session that forked it goes.
 ///
-/// `parent` is the pid on `--tied`. `started` is the layer, taken whole because the pipe it
-/// carries is how a `stop` arrives — and dropping it is what tells melchior the session is over.
+/// `parent` is the pid on `--tied`, and `None` for a headless magi somebody started by hand —
+/// which has no parent to outlive because it is a root. `started` is the layer, taken whole
+/// because the pipe it carries is how a `stop` arrives — and dropping it is what tells melchior
+/// the session is over.
 pub async fn run(
     socket: &Path,
     prompt: Option<String>,
     started: Option<(crate::melchior::Melchior, std::path::PathBuf)>,
-    parent: u32,
+    parent: Option<u32>,
 ) -> Result<()> {
     let mut layer = started.map(|(layer, _at)| layer);
     // Said once, because a session with no terminal has no other way to say what it is called.
@@ -154,12 +170,16 @@ async fn ask(socket: &Path, prompt: String) -> Result<()> {
 /// The session that forked it has gone. Or a signal arrived, which is the only thing that can
 /// reach a process with no terminal — and it is handled rather than left to the default so that
 /// the transcript reaches balthasar on the way out instead of dying with the process.
-async fn park(layer: Option<&mut crate::melchior::Melchior>, parent: u32) {
+///
+/// A root headless magi has no second reason, and the arm is *absent* rather than watching
+/// nothing: [`still_running`] answers "gone" for a pid it cannot read, which is the right answer
+/// for a parent and would end a root the moment the first tick came round.
+async fn park(layer: Option<&mut crate::melchior::Melchior>, parent: Option<u32>) {
     let mut heard = layer
         .and_then(crate::melchior::Melchior::hearing)
         .map(listening);
-    let since = started_at(parent);
-    let mut looking = tokio::time::interval(LOOK);
+    let watching = parent.map(|pid| (pid, started_at(pid)));
+    let mut looking = watching.as_ref().map(|_| tokio::time::interval(LOOK));
     let mut ended = signal();
 
     loop {
@@ -171,11 +191,29 @@ async fn park(layer: Option<&mut crate::melchior::Melchior>, parent: u32) {
                 None => break,
                 Some(_) => {}
             },
-            _ = looking.tick() => if !still_running(parent, since.as_deref()) {
-                break;
-            },
+            () = tick(&mut looking) => {
+                if let Some((pid, since)) = &watching
+                    && !still_running(*pid, since.as_deref())
+                {
+                    break;
+                }
+            }
             () = &mut ended => break,
         }
+    }
+}
+
+/// The next look for a parent, or nothing ever for a session that has none.
+///
+/// `pending` rather than an interval nobody reads, for the reason [`next`] gives: an arm that is
+/// always ready turns the wait into a spin, and a session with no terminal spinning is a core
+/// nobody is watching.
+async fn tick(looking: &mut Option<tokio::time::Interval>) {
+    match looking {
+        Some(looking) => {
+            looking.tick().await;
+        }
+        None => std::future::pending().await,
     }
 }
 
@@ -319,6 +357,42 @@ mod tests {
         assert!(
             mine.parse::<u64>().is_ok(),
             "field 22 is a number of clock ticks: {mine}"
+        );
+    }
+
+    /// **The one that would take a headless magi down a second after it came up.**
+    ///
+    /// [`still_running`] answers "gone" for a pid it cannot read — right for a parent, and fatal
+    /// for a root, which has none. Given the interval unconditionally the arm fires on the first
+    /// tick and the process exits cleanly having done nothing, which is a failure with no
+    /// evidence anywhere: no error, no log, and a name that was in the directory for a moment.
+    ///
+    /// Paused time rather than a real second. The bug fires at tick zero, so the clock only has
+    /// to move at all — and the honest version of this test parks until the runtime says nothing
+    /// else could ever happen.
+    #[tokio::test(start_paused = true)]
+    async fn a_root_is_not_ended_by_the_parent_it_does_not_have() {
+        let waited = tokio::time::timeout(LOOK * 4, park(None, None)).await;
+        assert!(
+            waited.is_err(),
+            "a headless magi with nothing above it ended itself"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_child_whose_parent_has_gone_stops_parking() {
+        // The other half, so the arm above is not simply switched off. A child that went on
+        // parking is the orphan: a name in the directory answering, and the token to stop it
+        // gone with the session that minted it.
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("`true` runs");
+        let pid = child.id();
+        child.wait().expect("reaped");
+        let waited = tokio::time::timeout(LOOK * 4, park(None, Some(pid))).await;
+        assert!(
+            waited.is_ok(),
+            "the child outlived the session that forked it"
         );
     }
 
