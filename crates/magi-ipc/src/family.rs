@@ -584,6 +584,64 @@ mod tests {
             "newest first: {found:?}"
         );
     }
+
+    /// A caller that gives up on a call leaves its answer in the stream. Read as the next call's,
+    /// every answer after it belongs to the call before — a write is told it landed by somebody
+    /// else's reply, and the transcript goes missing without anything failing.
+    #[tokio::test]
+    async fn a_call_given_up_on_does_not_answer_the_next_one() {
+        let dir = magi_model::scratch::Scratch::new("magi-family-adrift", "one");
+        let path = dir.join("api@one.sock");
+        let served = echoing(&path);
+
+        let mut open = Family::dial(&path).await.expect("dial");
+        let abandoned = tokio::time::timeout(
+            std::time::Duration::from_millis(30),
+            open.call("plan", Vec::new()),
+        )
+        .await;
+        assert!(abandoned.is_err(), "the fixture answered too soon to test");
+
+        let answered = open.call("observe", Vec::new()).await.expect("observe");
+        assert_eq!(
+            answered,
+            vec![json!("observe")],
+            "the answer to the call before it came back as this one's"
+        );
+        drop(open);
+        let _ = served.join();
+    }
+
+    /// A peer answering with the name of the verb it was asked, slowly the first time.
+    fn echoing(path: &Path) -> std::thread::JoinHandle<()> {
+        use std::io::{Read, Write};
+
+        let listener = std::os::unix::net::UnixListener::bind(path).expect("bind");
+        std::thread::spawn(move || {
+            for nth in 0..2 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut head = [0_u8; 4];
+                if stream.read_exact(&mut head).is_err() {
+                    return;
+                }
+                let mut body = vec![0_u8; u32::from_be_bytes(head) as usize];
+                if stream.read_exact(&mut body).is_err() {
+                    return;
+                }
+                let asked: serde_json::Value = serde_json::from_slice(&body).expect("json");
+                let verb = asked["call"].as_str().unwrap_or_default().to_owned();
+                if nth == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                }
+                let reply = json!({ "ok": true, "n": 1, "result": [verb] }).to_string();
+                let mut framed = (reply.len() as u32).to_be_bytes().to_vec();
+                framed.extend_from_slice(reply.as_bytes());
+                let _ = stream.write_all(&framed);
+            }
+        })
+    }
 }
 
 /// The same protocol, without a runtime, for the synchronous paths such as the session picker.
