@@ -5,19 +5,28 @@
 //! driver uses, so the resume path is exercised end to end rather than asserted about.
 
 use magi_ipc::{FrameReader, FrameWriter};
+use magi_model::scratch::{Scratch, ScratchFile};
 use magi_proto::{Cursor, Entry, HarnessEvent, UiCommand};
 use magi_testkit::{FakeHarness, Recording};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
-/// Short enough to stay under `SUN_LEN`, which a scratch directory path is not.
-fn socket_path(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("magi-t-{}-{name}.sock", std::process::id()))
+/// A socket in a directory that removes itself.
+///
+/// Each of these tests used to unlink the socket on its last line, below several `assert!`s that
+/// unwind straight past it — so a failing one left a socket in the temporary directory for good,
+/// and it is a *failing* test that a developer runs over and over.
+///
+/// **Short names**, all of them: `at`, one letter for the file. A unix socket path may not exceed
+/// `SUN_LEN` — 108 bytes — and under `gate-hermetic` the run already sits in a private temporary
+/// directory, so every character of a descriptive name here is spent twice. The nesting a
+/// `Scratch` adds is what the first version of this file avoided by not using one.
+fn socket_path(name: &str) -> ScratchFile {
+    Scratch::file("at", name, "s.sock")
 }
 
-async fn serve(name: &str) -> PathBuf {
+async fn serve(name: &str) -> ScratchFile {
     let path = socket_path(name);
-    let _ = std::fs::remove_file(&path);
     let source = std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/hello.jsonl"
@@ -68,7 +77,6 @@ async fn a_cold_attach_replays_the_whole_session() {
     let (entries, events) = attach(&path, Cursor::ZERO, 21).await;
     assert!(entries.is_empty(), "nothing precedes cursor zero");
     assert_eq!(events.len(), 21, "every recorded event streams");
-    let _ = std::fs::remove_file(&path);
 }
 
 #[tokio::test]
@@ -96,8 +104,6 @@ async fn reattaching_mid_turn_resumes_without_replaying() {
         Some(Cursor(10)),
         "the stream continues at the next position"
     );
-
-    let _ = std::fs::remove_file(&path);
 }
 
 #[tokio::test]
@@ -118,7 +124,6 @@ async fn a_resumed_snapshot_carries_the_text_streamed_before_the_detach() {
         streamed, "I'll look at the ",
         "an in-flight message resumes with exactly what it had"
     );
-    let _ = std::fs::remove_file(&path);
 }
 
 #[tokio::test]
@@ -135,7 +140,6 @@ async fn the_two_paths_agree_on_the_final_transcript() {
         cold, warm,
         "replaying from zero and resuming from a cursor reach the same transcript"
     );
-    let _ = std::fs::remove_file(&path);
 }
 
 /// Apply events onto a starting transcript, the way the UI's `App` does.

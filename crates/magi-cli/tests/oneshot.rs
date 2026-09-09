@@ -65,6 +65,10 @@ fn unpinned(dir: &Path, mind: &Mind, args: &[&str]) -> std::process::Output {
 /// Shared with the crash test, which needs the child rather than its output.
 fn started(dir: &Path, mind: &Mind, args: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_magi"));
+    // The `XDG_` variables below do not settle which balthasar this reaches; `MAGI_API_SOCKET`
+    // outranks them, and every one of these tests is about a store. See
+    // [`magi_testkit::only_its_own_store`].
+    magi_testkit::only_its_own_store(&mut command);
     command
         .current_dir(dir)
         .env("XDG_RUNTIME_DIR", dir.join("run"))

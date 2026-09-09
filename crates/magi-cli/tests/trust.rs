@@ -44,7 +44,9 @@ fn project(dir: &Path, source: &str) {
 }
 
 fn magi(dir: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_magi"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_magi"));
+    magi_testkit::only_its_own_store(&mut command);
+    command
         .current_dir(dir.join("project"))
         .env("XDG_CONFIG_HOME", dir.join("config"))
         .env("XDG_RUNTIME_DIR", dir.join("run"))
@@ -61,7 +63,9 @@ fn magi(dir: &Path, args: &[&str]) -> std::process::Output {
 /// `oneshot.rs` does it: the run still needs an ordinary `PATH` for everything else.
 fn with_melchior(dir: &Path, mind: &Mind, args: &[&str]) -> std::process::Output {
     let inherited = std::env::var("PATH").unwrap_or_default();
-    Command::new(env!("CARGO_BIN_EXE_magi"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_magi"));
+    magi_testkit::only_its_own_store(&mut command);
+    command
         .current_dir(dir.join("project"))
         .env("XDG_CONFIG_HOME", dir.join("config"))
         .env("XDG_RUNTIME_DIR", dir.join("run"))

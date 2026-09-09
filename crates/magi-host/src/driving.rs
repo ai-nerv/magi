@@ -57,7 +57,12 @@ pub async fn configure(program: &str, source: &str) -> Result<Applied, String> {
 
     if let Some(mut stdin) = child.stdin.take() {
         use tokio::io::AsyncWriteExt;
-        let _ = stdin.write_all(source.as_bytes()).await;
+        // Half of a Lua file is still a Lua file, and the sibling would apply it. The refusal
+        // that comes back names a syntax error somewhere in the middle of source that is correct
+        // on disk, which is a bad afternoon; the log at least says the pipe went.
+        if let Err(why) = stdin.write_all(source.as_bytes()).await {
+            magi_model::noted!("driving: the configuration for {program} was cut short: {why}");
+        }
         // Closed, because the far side reads to end of file. A handle left open is a sibling
         // waiting for a chunk that has already been written.
         let _ = stdin.shutdown().await;

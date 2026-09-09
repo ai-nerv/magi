@@ -134,8 +134,12 @@ pub fn run_configured(program: &str, call: &Call, configured: &str) -> Result<Ra
 
     if let Some(mut stdin) = child.stdin.take() {
         // Written and closed. casper reads to end of file, so a handle left open is a call that
-        // never starts.
-        let _ = stdin.write_all(&body);
+        // never starts. A half-written body is worse than a failed spawn: casper answers
+        // something unreadable, and that is the message the caller is given for what was really
+        // a broken pipe.
+        if let Err(why) = stdin.write_all(&body) {
+            magi_model::noted!("casper: the call to {program} was not fully written: {why}");
+        }
     }
     let out = child
         .wait_with_output()

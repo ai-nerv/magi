@@ -6,21 +6,16 @@
 //! frame it writes.
 
 use super::*;
+use magi_model::scratch::Scratch;
 use magi_proto::UiCommand;
 use std::path::PathBuf;
 use std::sync::Mutex;
-
-/// Short enough to stay under `SUN_LEN`, which a scratch directory path is not.
-fn socket_path(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("magi-swap-{}-{name}.sock", std::process::id()))
-}
 
 /// Everything one side of a socket was sent, in order.
 type Heard = Arc<Mutex<Vec<UiCommand>>>;
 
 /// Answer on `path`, recording every frame and holding the connection open.
 async fn recorder(path: &std::path::Path) -> Heard {
-    let _ = std::fs::remove_file(path);
     let listener = magi_ipc::bind(path).await.expect("bind");
     let heard: Heard = Arc::new(Mutex::new(Vec::new()));
     let seen = Arc::clone(&heard);
@@ -62,22 +57,24 @@ struct Swapped {
     /// Held for the same reason: a watch with no sender answers `changed` immediately and for
     /// ever, which is the driver having gone rather than the screen having moved.
     _target: watch::Sender<PathBuf>,
-    at: [PathBuf; 2],
-}
-
-/// A test that leaves two sockets behind is a `/tmp` that fills up over a week of them.
-impl Drop for Swapped {
-    fn drop(&mut self) {
-        for path in &self.at {
-            let _ = std::fs::remove_file(path);
-        }
-    }
+    /// The directory both sockets are in, removed when this is dropped.
+    ///
+    /// It used to unlink the two paths by name here instead, which left them behind whenever
+    /// [`swap`] panicked between binding the first and returning this — and a week of that is a
+    /// temporary directory full of sockets. The guard also covers the unwind, which the two
+    /// `remove_file` calls did and a last line would not.
+    _at: Scratch,
 }
 
 /// Attach to our own session at `from`, then point the screen at a peer.
+///
+/// **Short names.** A unix socket path may not exceed `SUN_LEN` — 108 bytes — and under
+/// `gate-hermetic` the whole run already sits in a private temporary directory. One directory
+/// holding `own` and `peer` is shorter than two paths that each spell out both.
 async fn swap(name: &str, from: Cursor) -> Swapped {
-    let own_at = socket_path(&format!("{name}-own"));
-    let peer_at = socket_path(&format!("{name}-peer"));
+    let at = Scratch::new("sw", name);
+    let own_at = at.join("own.sock");
+    let peer_at = at.join("peer.sock");
     let own = recorder(&own_at).await;
     let peer = recorder(&peer_at).await;
 
@@ -103,7 +100,7 @@ async fn swap(name: &str, from: Cursor) -> Swapped {
         commands,
         _events: events_rx,
         _target: target,
-        at: [own_at, peer_at],
+        _at: at,
     }
 }
 

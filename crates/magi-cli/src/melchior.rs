@@ -401,8 +401,16 @@ impl Melchior {
             "accept": accept,
             "handover": lending.and_then(|grants| serde_json::to_string(grants).ok()),
         });
-        let _ = writeln!(told, "{line}");
-        let _ = told.flush();
+        // **Not the same "best effort" as `doing` above, and it used to be written as if it
+        // were.** That one repeats every few hundred milliseconds, so the next one carries the
+        // truth. This is sent once, and the paragraph above is the whole reason it exists: a
+        // decision that does not land leaves the asking session waiting for good and the person
+        // who made it certain they made it. Nothing here can retry — the answer is gone from the
+        // UI by now — so what a failure gets is a line in the log, which is one more than the
+        // nothing it got before.
+        if let Err(why) = writeln!(told, "{line}").and_then(|()| told.flush()) {
+            magi_model::noted!("melchior: the answer to {id} did not reach the layer: {why}");
+        }
     }
 }
 

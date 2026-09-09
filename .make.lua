@@ -494,20 +494,29 @@ make.recipe{ name = "fmt-check", desc = "fail if anything is unformatted",
 make.recipe{
   name = "gates",
   desc = "the architectural gates",
+  -- Globbed, the way CI does it, and for the reason CI's own comment gives: *"a gate added to
+  -- `scripts/` and forgotten there would be invisible; a glob cannot forget."* This recipe named
+  -- six by hand and `scripts/` held nine, so `gate-one-store` — magi keeps no store of its own,
+  -- which is the whole architecture — ran on the runner and never once on a developer's machine.
+  -- The two that are skipped are skipped by name because each has a recipe of its own: one needs
+  -- a built binary, the other re-runs the entire suite.
   run = function()
-    local names = { "gate-cycles", "gate-file-size", "gate-modules", "gate-proto-size", "gate-reachable", "gate-wire" }
+    local elsewhere = { ["gate-family"] = true, ["gate-hermetic"] = true }
     local failed = {}
-    for _, name in ipairs(names) do
-      -- Executed, not handed to `sh`. The shebang is the portability contract: these run on a
-      -- runner whose /bin/sh is dash, and `sh script` would silently use whatever shell is
-      -- lying around here instead of the one the script says it needs.
-      local result = oslo.run{ "scripts/" .. name .. ".sh", capture = true }
-      local mark = result.ok and oslo.ui.style("✓", { fg = "green" })
-                             or oslo.ui.style("✗", { fg = "red" })
-      print(("%s  %s"):format(mark, name))
-      if not result.ok then
-        failed[#failed + 1] = name
-        print(dim("   " .. ((result.out or "") .. (result.err or "")):gsub("\n", "\n   ")))
+    for _, path in ipairs(oslo.fs.glob("scripts/gate-*.sh")) do
+      local name = oslo.path.name(path):gsub("%.sh$", "")
+      if not elsewhere[name] then
+        -- Executed, not handed to `sh`. The shebang is the portability contract: these run on a
+        -- runner whose /bin/sh is dash, and `sh script` would silently use whatever shell is
+        -- lying around here instead of the one the script says it needs.
+        local result = oslo.run{ path, capture = true }
+        local mark = result.ok and oslo.ui.style("✓", { fg = "green" })
+                               or oslo.ui.style("✗", { fg = "red" })
+        print(("%s  %s"):format(mark, name))
+        if not result.ok then
+          failed[#failed + 1] = name
+          print(dim("   " .. ((result.out or "") .. (result.err or "")):gsub("\n", "\n   ")))
+        end
       end
     end
     assert(#failed == 0, ("%d gate(s) failed"):format(#failed))

@@ -26,7 +26,6 @@
 //! produce, so they are what is asked. The store *is* magi's own, and it is read off disk.
 
 use magi_model::scratch::Scratch;
-use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -36,6 +35,12 @@ use std::time::{Duration, Instant};
 /// Generous. Convening balthasar is allowed twenty seconds by itself, and a loaded machine
 /// running four of these at once is the case this must not fail on.
 const PATIENCE: Duration = Duration::from_secs(40);
+
+/// How long to wait for a session's first line before calling it stuck rather than slow.
+///
+/// Far above [`PATIENCE`] on purpose: this is not a claim about how quickly a session should come
+/// up, it is the difference between a suite that fails and a suite that never returns.
+const HANGING: Duration = Duration::from_secs(180);
 
 /// Held for the whole of each test here, so only one of them is running sessions at a time.
 ///
@@ -98,8 +103,12 @@ fn ready(name: &str) -> Option<Scratch> {
 /// **Short names.** A unix socket path may not exceed `SUN_LEN`, the project's name appears
 /// inside the socket path, and under `gate-hermetic` the whole run is nested in a private
 /// temporary directory. A descriptive name here is what pushes it over.
+///
+/// **Settling**, because the sessions started in here outlive the test by a moment: a balthasar
+/// tied to a magi notices that process die by looking, and its sqlite is still open while it
+/// does. See [`Scratch::settling`] for the leak that found.
 fn workspace(name: &str) -> Scratch {
-    let dir = Scratch::new("mf", name);
+    let dir = Scratch::new("mf", name).settling();
     for under in ["p", "r", "c", "d"] {
         std::fs::create_dir_all(dir.join(under)).expect("mkdir");
     }
@@ -108,8 +117,13 @@ fn workspace(name: &str) -> Scratch {
 }
 
 /// The binary under test, in this workspace, with nothing of the developer's machine in it.
+///
+/// Three `XDG_` variables did not make that true. `MAGI_API_SOCKET` outranks all of them —
+/// see [`magi_testkit::only_its_own_store`] — and the suite is developed from inside a session
+/// that sets it.
 fn magi(dir: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_magi"));
+    magi_testkit::only_its_own_store(&mut command);
     command
         .current_dir(dir.join("p"))
         .env("XDG_RUNTIME_DIR", dir.join("r"))
@@ -151,18 +165,17 @@ impl Session {
             .stderr(Stdio::piped())
             .spawn()
             .expect("magi runs");
-        let mut named = String::new();
-        let read = process
-            .stdout
-            .as_mut()
-            .map(|out| std::io::BufReader::new(out).read_line(&mut named))
-            .and_then(Result::ok)
-            .unwrap_or(0);
-        assert!(read > 0, "the session never said what it was called");
-        Self {
+        // Bounded, because the alternative is not a slow test but a stuck one. See
+        // [`magi_testkit::first_line_within`]; `HANGING` is a backstop, not the patience a
+        // healthy session is held to.
+        let named = magi_testkit::first_line_within(&mut process, HANGING);
+        let mut session = Self {
             process,
-            named: named.trim().to_owned(),
-        }
+            named: String::new(),
+        };
+        let named = named.expect("the session never said what it was called");
+        session.named = named.trim().to_owned();
+        session
     }
 
     /// Its id: the third part of `project/role/id`, which is what a sibling addresses.

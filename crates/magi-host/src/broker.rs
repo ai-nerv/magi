@@ -143,8 +143,12 @@ pub async fn ask_through(
 
     if let Some(mut stdin) = child.stdin.take() {
         // Written and closed. melchior reads to end of file, so a handle left open is a turn
-        // that never starts.
-        let _ = stdin.write_all(&body).await;
+        // that never starts. A half-written ask is reported below as a melchior that gave a
+        // reply this build cannot read, which sends the reader to the wire format for a fault
+        // that was in this pipe.
+        if let Err(why) = stdin.write_all(&body).await {
+            magi_model::noted!("broker: the ask to {program} was not fully written: {why}");
+        }
         let _ = stdin.shutdown().await;
     }
 

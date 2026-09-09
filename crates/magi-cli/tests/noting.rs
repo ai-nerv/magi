@@ -22,7 +22,9 @@ fn a_sibling_that_will_not_start_says_so_in_the_log() {
     let empty = dir.join("bin");
     std::fs::create_dir_all(&empty).expect("mkdir");
 
-    let out = Command::new(env!("CARGO_BIN_EXE_magi"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_magi"));
+    magi_testkit::only_its_own_store(&mut command);
+    let out = command
         .arg("models")
         .env("PATH", &empty)
         .env("MAGI_DEBUG_LOG", &log)
@@ -46,7 +48,9 @@ fn nothing_is_written_when_nobody_asked() {
     let empty = dir.join("bin");
     std::fs::create_dir_all(&empty).expect("mkdir");
 
-    let out = Command::new(env!("CARGO_BIN_EXE_magi"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_magi"));
+    magi_testkit::only_its_own_store(&mut command);
+    let out = command
         .arg("models")
         .env("PATH", &empty)
         .env_remove("MAGI_DEBUG_LOG")

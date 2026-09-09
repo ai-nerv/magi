@@ -535,12 +535,9 @@ fn stem(path: &str) -> String {
 /// shipped tree keeps one file per kind, and somebody who prefers a file per protocol should not
 /// have to tell the host about it.
 fn kind(path: &str) -> Option<&'static str> {
-    for name in ["apis", "tools", "clients"] {
-        if path == format!("{name}.lua") || path.starts_with(&format!("{name}/")) {
-            return Some(name);
-        }
-    }
-    None
+    ["apis", "tools", "clients"]
+        .into_iter()
+        .find(|name| path == format!("{name}.lua") || path.starts_with(&format!("{name}/")))
 }
 
 #[cfg(test)]

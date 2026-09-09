@@ -31,6 +31,9 @@ static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0)
 #[derive(Debug)]
 pub struct Scratch {
     path: PathBuf,
+    /// Whether to wait for the processes working in here before removing it. See
+    /// [`Scratch::settling`].
+    settles: bool,
 }
 
 impl Scratch {
@@ -46,7 +49,27 @@ impl Scratch {
         // unwound leaves its directory behind for the next process that happens to match.
         let _ = std::fs::remove_dir_all(&path);
         std::fs::create_dir_all(&path).expect("a scratch directory");
-        Self { path }
+        Self {
+            path,
+            settles: false,
+        }
+    }
+
+    /// Wait for whoever is working in here to leave before removing it.
+    ///
+    /// **For the tests that start processes in the directory, where `Drop` alone is not enough.**
+    /// A session's balthasar is tied to the magi that convened it and notices that process die by
+    /// looking, not by being told — so for a moment after the last session is gone its sqlite is
+    /// still open. A directory removed in that moment comes straight back, holding a `memory.db`
+    /// and its write-ahead log, and `gate-hermetic` then reports a leak against a test that
+    /// cleaned up perfectly. `mf-…-kin/p/balthasar/…/memory.db` is the one that was found.
+    ///
+    /// Not the default, because it costs a walk of `/proc` per drop and the two hundred scratches
+    /// that never start anything have nobody to wait for.
+    #[must_use]
+    pub fn settling(mut self) -> Self {
+        self.settles = true;
+        self
     }
 
     /// Keep the directory, and stop owning it.
@@ -59,6 +82,25 @@ impl Scratch {
         std::mem::forget(self);
         path
     }
+}
+
+/// Whether any process still has its working directory inside `dir`.
+///
+/// Asked of `/proc` rather than of the sockets a session leaves behind: one killed with `SIGKILL`
+/// never unlinks its socket, so an empty directory would never arrive and the wait would always
+/// run to its deadline. It also needs no pid from the caller, which matters because a forked
+/// child is not the test's to own — it is started by the parent session and named only by
+/// melchior.
+fn anybody_in(dir: &Path) -> bool {
+    std::fs::read_dir("/proc")
+        .into_iter()
+        .flatten()
+        .flatten()
+        // Unreadable is not ours: another user's process answers `EACCES`, and a pid that finished
+        // between the listing and the link answers `ENOENT`. Both mean "not in here".
+        .any(|entry| {
+            std::fs::read_link(entry.path().join("cwd")).is_ok_and(|at| at.starts_with(dir))
+        })
 }
 
 /// A path *inside* a scratch directory, where the directory is what is removed.
@@ -114,6 +156,15 @@ impl AsRef<Path> for Scratch {
 
 impl Drop for Scratch {
     fn drop(&mut self) {
+        if self.settles {
+            // Bounded, because a wait with no end turns a leak into a hang — and a leak at least
+            // announces itself. Short, because what is being waited for is another process's poll
+            // interval rather than any work.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while std::time::Instant::now() < deadline && anybody_in(&self.path) {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+        }
         // Ignored: the test has already said whether it passed, and a cleanup that panicked
         // during an unwind would abort the process and hide it.
         let _ = std::fs::remove_dir_all(&self.path);

@@ -49,8 +49,8 @@ async fn own_balthasar(
     tokio::sync::MutexGuard<'static, ()>,
 )> {
     let held = ONE_AT_A_TIME.lock().await;
-    let dir = Scratch::new("magi-compact", name);
-    let instance = format!("magi-compact-{}-{name}", std::process::id());
+    let dir = Scratch::new("mc", name);
+    let instance = format!("mc-{}-{name}", std::process::id());
     let child = std::process::Command::new("balthasar")
         .arg("serve")
         .arg("--instance")
@@ -58,16 +58,25 @@ async fn own_balthasar(
         .arg("--scope")
         .arg("project")
         .current_dir(&*dir)
+        // **The runtime directory is the scratch's too, not the machine's.** balthasar binds
+        // `$XDG_RUNTIME_DIR/balthasar/api@<instance>.sock`, and the `SIGKILL` in `Serving` gives
+        // it no chance to unlink one. Against the real directory that is a corpse per test per
+        // run, forever: `$XDG_RUNTIME_DIR/balthasar` here held hundreds, and the tests that scan
+        // it for a live sibling then had hundreds of dead sockets to dial before finding one.
+        // Under the scratch it is removed with everything else, on the unwind as well as the
+        // return.
+        .env("XDG_RUNTIME_DIR", dir.join("r"))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
         .ok()?;
 
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    let socket = runtime
+    // Short names above for the same reason the workspaces in `forking_live` have them: a unix
+    // socket path may not exceed `SUN_LEN`, the instance appears inside the path, and under
+    // `gate-hermetic` the whole run already sits in a private temporary directory.
+    let socket = dir
+        .join("r")
         .join("balthasar")
         .join(format!("api@{instance}.sock"));
 

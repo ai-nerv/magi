@@ -166,18 +166,60 @@ impl magi_tools::Cancel for After {
     }
 }
 
+/// A command nothing can wait out, which writes down the pid of what is actually running.
+///
+/// A minute is deliberate: the interrupt tests assert the call came back inside twenty seconds,
+/// so a command that could finish first would let them pass without the interrupt working. The
+/// `$!` half is what makes the sleep reapable — see [`Runaway`].
+const LONG: &str = "sleep 60 & echo $! > runaway; wait";
+
+/// The `sleep` an interrupt leaves behind, ended when the test ends.
+///
+/// **Interrupting kills the shell peer, and the peer is not the process running the command.**
+/// `magi_cli::shell` says so where it does it, and calls anything the command spawned outliving
+/// it the honest cost of interrupting something mid-flight. For a person that is a minute of a
+/// runaway build. For this suite it was two orphaned `sleep 60`s per run, holding a scratch
+/// directory open after it had been deleted — the same shape as `lifecycle`'s stand-in, which
+/// wrote down the shell's pid and forked the thing that mattered, and leaked ten minutes at a
+/// time for months because everything anybody looked at was the process that was named.
+///
+/// The pid is checked before it is signalled. It was read out of a file rather than handed over
+/// by a spawn, and a pid nobody owns is not one to send `SIGKILL` at.
+struct Runaway(std::path::PathBuf);
+
+impl Drop for Runaway {
+    fn drop(&mut self) {
+        let Ok(text) = std::fs::read_to_string(self.0.join("runaway")) else {
+            return;
+        };
+        let pid = text.trim();
+        let Ok(said) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+            return;
+        };
+        if !said.starts_with(b"sleep\0") {
+            return;
+        }
+        let _ = std::process::Command::new("kill")
+            .arg("-9")
+            .arg(pid)
+            .status();
+    }
+}
+
 #[test]
 fn a_running_command_is_interrupted_rather_than_waited_out() {
     // The point of the boundary. `sleep 60` is running in another process, and the message
     // asking it to stop has to reach a peer that is inside the command it is being asked to
     // abandon. Nothing here waits sixty seconds.
     let (registry, ops, _dir) = session("cancel");
+    // After the directory, so it drops before it: the pid it needs is in a file in there.
+    let _runaway = Runaway(_dir.to_path_buf());
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
 
     let started = std::time::Instant::now();
     let output = registry.call(
         "shell",
-        &serde_json::json!({ "command": "sleep 60" }),
+        &serde_json::json!({ "command": LONG }),
         &ops,
         &After(deadline),
     );
@@ -200,10 +242,11 @@ fn the_peer_is_usable_again_after_an_interrupt() {
     // The shell is killed to interrupt it, so the next call has to get a fresh one rather than
     // an error about a process that is no longer there.
     let (registry, ops, _dir) = session("after-cancel");
+    let _runaway = Runaway(_dir.to_path_buf());
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
     let _ = registry.call(
         "shell",
-        &serde_json::json!({ "command": "sleep 60" }),
+        &serde_json::json!({ "command": LONG }),
         &ops,
         &After(deadline),
     );
@@ -223,10 +266,13 @@ fn a_call_made_under_an_interrupt_does_not_run_forever() {
     // Cancelled before it began. The peer is told at the first opportunity rather than after
     // the poll interval decides the call is worth starting.
     let (registry, ops, _dir) = session("pre-cancel");
+    // Nothing should run at all here, so the file should not appear. The guard is kept anyway:
+    // "the command never started" is the claim, and a guard is how a broken claim gets tidied.
+    let _runaway = Runaway(_dir.to_path_buf());
     let started = std::time::Instant::now();
     let output = registry.call(
         "shell",
-        &serde_json::json!({ "command": "sleep 60" }),
+        &serde_json::json!({ "command": LONG }),
         &ops,
         &Stopped,
     );

@@ -64,11 +64,21 @@ static DRAINING: std::sync::OnceLock<Draining> = std::sync::OnceLock::new();
 ///
 /// Called on the way out, after the last turn and before the socket goes. Does nothing when no
 /// session is serving or no balthasar was found.
+///
+/// **The failure is still swallowed, and it is now written down.** There is nowhere left to
+/// report it: the socket is going, the terminal has been given back, and returning an error would
+/// only mean the caller ignoring it one frame later. But when this is what fails, the last
+/// exchange of the conversation is simply not in the store — and the next run's `--resume` comes
+/// back a turn short, which is indistinguishable from balthasar having lost it. That is precisely
+/// the shape `resume_live` spent a day being blamed for, so it goes in the log a person can turn
+/// on rather than nowhere at all.
 pub async fn drain() {
     let Some((session, scribe)) = DRAINING.get() else {
         return;
     };
-    let _ = crate::scribe::flush(session, &mut *scribe.lock().await).await;
+    if let Err(why) = crate::scribe::flush(session, &mut *scribe.lock().await).await {
+        magi_model::noted!("drain: the last turn did not reach balthasar: {why}");
+    }
 }
 
 /// Anything that stops the session.

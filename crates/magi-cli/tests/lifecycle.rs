@@ -64,6 +64,13 @@ enum Tie {
 /// before it starts one, so a stand-in that answered every subcommand the same way recorded
 /// `needs --json` as the argv under test and then slept for ten minutes holding up the run that
 /// was waiting to read it.
+///
+/// **`exec` on the wait, and that word is the whole of it.** The pid this writes down is the
+/// shell's, and the shell used to *fork* the sleep — so `end` killed the pid it was given, the
+/// pid went, `gone` said yes, and the ten-minute sleep one level below it carried on with init
+/// for a parent. Three of those per run of this file, every run, passing or failing, and nothing
+/// counted them because everything anybody looked at was the process that was named. `exec`
+/// makes the sleep *be* that process, so the pid on file is the pid that has to die.
 fn fake_balthasar(dir: &Path, tie: Tie) {
     let bin = dir.join("bin");
     let script = format!(
@@ -84,7 +91,7 @@ fn fake_balthasar(dir: &Path, tie: Tie) {
            prev=$word\n\
          done\n\
          {honour}\n\
-         sleep 600\n",
+         exec sleep 600\n",
         argv = dir.join("argv").display(),
         pid = dir.join("balthasar.pid").display(),
         honour = match tie {
@@ -123,9 +130,14 @@ fn install_config(into: &Path) {
 }
 
 /// The command a run is, before it is waited on.
+///
+/// The store variables go, or the stand-in below is never started at all: `MAGI_API_SOCKET` set
+/// means somebody else's balthasar, magi convenes none, and every test here then waits ten
+/// seconds for a pid file that nothing is ever going to write.
 fn started(dir: &Path, mind: &Mind, args: &[&str]) -> Command {
     let inherited = std::env::var("PATH").unwrap_or_default();
     let mut command = Command::new(env!("CARGO_BIN_EXE_magi"));
+    magi_testkit::only_its_own_store(&mut command);
     command
         .current_dir(dir)
         .env("XDG_RUNTIME_DIR", dir.join("run"))
@@ -196,20 +208,59 @@ fn end(pid: u32) {
         .status();
 }
 
+/// The magi under test, ended when the test ends rather than on its last line.
+///
+/// Dropping a [`std::process::Child`] does not kill it, so a run that outlived an assertion went
+/// on running. The `expect` in [`balthasar_pid`] is the one that fires in practice: it gives up
+/// exactly when the run under test went wrong, which is the case that most wants tidying.
+struct Ran(std::process::Child);
+
+impl std::ops::Deref for Ran {
+    type Target = std::process::Child;
+
+    fn deref(&self) -> &std::process::Child {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Ran {
+    fn deref_mut(&mut self) -> &mut std::process::Child {
+        &mut self.0
+    }
+}
+
+impl Drop for Ran {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// The stand-in balthasar, ended the same way.
+///
+/// [`end`] says it leaves nothing running "whatever the assertions did", and as a call at the
+/// bottom of each test it could not: `assert!` unwinds straight past it. The stand-in sleeps for
+/// ten minutes when nothing kills it, so each escaped one sits on the process table for that long.
+struct Ended(u32);
+
+impl Drop for Ended {
+    fn drop(&mut self) {
+        end(self.0);
+    }
+}
+
 #[test]
 fn balthasar_is_told_which_process_to_die_with() {
     // The asking, on its own. Everything else here depends on magi passing this, so when the
     // rest of the file fails together this is the one that says why.
     let dir = workspace("asks", Tie::Ignored);
     let mind = Mind::answering("life-asks", "bye");
-    let run = started(&dir, &mind, &["-p", "hello"])
+    let mut run = Ran(started(&dir, &mind, &["-p", "hello"])
         .spawn()
-        .expect("run magi");
+        .expect("run magi"));
     let recorded = argv_of(&dir);
-    let pid = balthasar_pid(&dir);
-    let mut run = run;
+    let _balthasar = Ended(balthasar_pid(&dir));
     let _ = run.wait();
-    end(pid);
 
     assert!(
         recorded.contains("--tied"),
@@ -232,14 +283,13 @@ fn the_process_named_is_the_magi_that_started_it() {
     // the sibling watches something, that something outlives it, and nothing ever fires.
     let dir = workspace("named", Tie::Ignored);
     let mind = Mind::answering("life-names", "bye");
-    let mut run = started(&dir, &mind, &["-p", "hello"])
+    let mut run = Ran(started(&dir, &mind, &["-p", "hello"])
         .spawn()
-        .expect("run magi");
+        .expect("run magi"));
     let ours = run.id();
     let recorded = argv_of(&dir);
-    let pid = balthasar_pid(&dir);
+    let _balthasar = Ended(balthasar_pid(&dir));
     let _ = run.wait();
-    end(pid);
 
     let named: Option<u32> = recorded
         .split_whitespace()
@@ -261,17 +311,17 @@ fn a_hard_killed_magi_leaves_no_balthasar() {
     // orphan holding that name is a live process which answers, so the sweep correctly keeps it.
     let dir = workspace("killed", Tie::Honoured);
     let mind = Mind::answering("life-killed", "bye");
-    let mut run = started(&dir, &mind, &["-p", "hello"])
+    let mut run = Ran(started(&dir, &mind, &["-p", "hello"])
         .spawn()
-        .expect("run magi");
-    let pid = balthasar_pid(&dir);
+        .expect("run magi"));
+    let balthasar = Ended(balthasar_pid(&dir));
+    let pid = balthasar.0;
     assert!(alive(pid), "the stand-in started");
 
     let _ = run.kill();
     let _ = run.wait();
 
     let went = gone(pid);
-    end(pid);
     assert!(
         went,
         "a balthasar must not outlive the magi that started it, however that magi ended"
@@ -285,10 +335,11 @@ fn a_clean_exit_ends_it_too() {
     // what is proved is magi's kill rather than the kernel's signal.
     let dir = workspace("clean", Tie::Ignored);
     let mind = Mind::answering("life-clean", "bye");
-    let mut run = started(&dir, &mind, &["-p", "hello"])
+    let mut run = Ran(started(&dir, &mind, &["-p", "hello"])
         .spawn()
-        .expect("run magi");
-    let pid = balthasar_pid(&dir);
+        .expect("run magi"));
+    let balthasar = Ended(balthasar_pid(&dir));
+    let pid = balthasar.0;
     let _ = run.wait().expect("wait");
 
     // **Whether the run succeeded is not this test's business, and now it cannot.** The stand-in
@@ -298,6 +349,5 @@ fn a_clean_exit_ends_it_too() {
     // of a run that *failed*, which is the path where a `?` would have skipped the cleanup, and
     // did.
     let went = gone(pid);
-    end(pid);
     assert!(went, "a magi that returns has already ended its balthasar");
 }

@@ -229,6 +229,59 @@ fn a_line_from_a_newer_melchior_is_not_read_as_something_it_is_not() {
     assert!(serde_json::from_str::<Heard>(r#"{"event":"whistling","tune":"…"}"#).is_err());
 }
 
+/// A project name nothing else will take, and the directory melchior files it under.
+///
+/// **melchior's runtime directory cannot be pointed at a scratch from here.** The three tests
+/// below spawn the real program, which keeps a project under `$XDG_RUNTIME_DIR/melchior/<name>`;
+/// [`Melchior::start`] builds the child's environment itself, and `set_var` is `unsafe`, which
+/// this workspace denies. So the directory is taken away afterwards instead — from a `Drop`, not
+/// a last line, because two of these tests return early when melchior is missing and all three
+/// can fail an assertion. Without it each run left three more behind for good: this machine had
+/// fifteen, and `tools_live` walks that same directory looking for a sibling that answers, so
+/// every corpse in it is a socket some other test dials and waits on.
+struct Project(String);
+
+impl Project {
+    /// Named for the test and this process, which is what keeps two runs apart.
+    fn named(what: &str) -> Self {
+        Self(format!("magi-{what}-{}", std::process::id()))
+    }
+}
+
+impl std::ops::Deref for Project {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Drop for Project {
+    fn drop(&mut self) {
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        // Safe to remove wholesale: the name carries this pid, so nothing outside this process
+        // has ever filed anything here. Both melchiors are already gone by now — the layer's
+        // `Drop` waits for it, and [`Sibling`] waits for the other — so nothing recreates it.
+        let _ = std::fs::remove_dir_all(runtime.join("melchior").join(&self.0));
+    }
+}
+
+/// The second session, killed when the test ends rather than on its last line.
+///
+/// The same failure as the trailing `remove_dir_all`: `let _ = them.kill()` at the bottom does
+/// not run on the unwind, so every failing assertion left a melchior on the process table — and
+/// a `kill` without a `wait` leaves a zombie even when it does run.
+struct Sibling(std::process::Child);
+
+impl Drop for Sibling {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 /// A second session in the same project, so there is somebody to be talked to.
 ///
 /// A bare child rather than another [`Melchior`], on purpose: if the thing under test is broken,
@@ -274,7 +327,9 @@ fn a_session_keeps_hearing_after_the_line_that_named_it() {
     // through a reader it then dropped, which closed the pipe. The name arrived, the session
     // looked healthy, and no message ever reached the transcript again -- one line heard,
     // then silence, with nothing anywhere saying so.
-    let project = format!("magi-hears-{}", std::process::id());
+    // Declared before the layer and the sibling, so it drops after both: locals go in reverse,
+    // and a directory removed while a melchior is still writing to it comes straight back.
+    let project = Project::named("hears");
     let Some((mut layer, _at)) = Melchior::start(
         "melchior",
         &project,
@@ -292,10 +347,11 @@ fn a_session_keeps_hearing_after_the_line_that_named_it() {
         .hearing()
         .expect("the pipe is gone after start: nothing could ever arrive");
 
-    let Some((mut them, theirs)) = a_sibling(&project) else {
+    let Some((them, theirs)) = a_sibling(&project) else {
         eprintln!("melchior is not installed; skipping");
         return;
     };
+    let _them = Sibling(them);
     let mut sending = Command::new("melchior");
     sending.args([
         "tool",
@@ -322,7 +378,6 @@ fn a_session_keeps_hearing_after_the_line_that_named_it() {
         }
         line.clear();
     }
-    let _ = them.kill();
     assert!(
         line.contains("second line") && line.contains(&theirs),
         "the session heard: {line:?}"
@@ -340,7 +395,7 @@ fn a_session_keeps_hearing_after_the_line_that_named_it() {
 fn a_session_hears_every_message_rather_than_the_first() {
     // A pipe read once is not a pipe read: the failure that started this looked exactly like
     // a working session until the second thing arrived.
-    let project = format!("magi-again-{}", std::process::id());
+    let project = Project::named("again");
     let Some((mut layer, _at)) = Melchior::start(
         "melchior",
         &project,
@@ -352,9 +407,10 @@ fn a_session_hears_every_message_rather_than_the_first() {
     };
     let me = layer.named.clone();
     let mut heard = layer.hearing().expect("the pipe");
-    let Some((mut them, theirs)) = a_sibling(&project) else {
+    let Some((them, theirs)) = a_sibling(&project) else {
         return;
     };
+    let _them = Sibling(them);
 
     for what in ["one", "two", "three"] {
         let mut sending = Command::new("melchior");
@@ -379,7 +435,6 @@ fn a_session_hears_every_message_rather_than_the_first() {
         }
         line.clear();
     }
-    let _ = them.kill();
     assert_eq!(seen, ["one", "two", "three"], "it stopped listening");
 }
 
@@ -388,7 +443,7 @@ fn what_the_session_is_doing_keeps_reaching_the_layer() {
     // The other direction, and the same failure mode: a channel that looks fine because the
     // first write succeeded. A sibling asking `status` is told whatever was last said, so
     // one that died after a message reads as a session frozen mid-turn forever.
-    let project = format!("magi-doing-{}", std::process::id());
+    let project = Project::named("doing");
     let Some((mut layer, _at)) = Melchior::start(
         "melchior",
         &project,
@@ -402,14 +457,14 @@ fn what_the_session_is_doing_keeps_reaching_the_layer() {
     layer.doing(false, 0, 0);
     layer.doing(true, 41, 2);
 
-    let Some((mut them, theirs)) = a_sibling(&project) else {
+    let Some((them, theirs)) = a_sibling(&project) else {
         return;
     };
+    let _them = Sibling(them);
     let mut asking = Command::new("melchior");
     asking.args(["tool", "--verb", "status", "--who", id_of(&me)]);
     as_session(&mut asking, &theirs);
     let asked = asking.output().expect("melchior tool runs");
-    let _ = them.kill();
     let said = String::from_utf8_lossy(&asked.stdout).into_owned();
     assert!(
         asked.status.success(),

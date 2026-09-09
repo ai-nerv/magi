@@ -35,6 +35,46 @@ type Session = (
     String,
 );
 
+/// One of those, killed when the test ends rather than on its last line.
+///
+/// `let _ = a.kill()` at the bottom does not run when an `assert!` unwinds past it, and this
+/// test has three of those after the kills it does perform. A `kill` with no `wait` also leaves
+/// a zombie, which is what the process table filled with.
+struct Running(std::process::Child);
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// The project melchior files these sessions under, and the directory it keeps for it.
+///
+/// **Nothing here can point melchior at a scratch.** It reads `$XDG_RUNTIME_DIR` from its own
+/// environment and this test spawns it without touching that, because `set_var` is `unsafe` and
+/// the workspace denies it. So the directory is removed afterwards, from a `Drop`: without one,
+/// every run left `magi-test-<pid>` behind for good, and this same file's `answers` walks that
+/// directory dialling each socket in it to find a sibling that is alive.
+struct Project(String);
+
+impl std::ops::Deref for Project {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Drop for Project {
+    fn drop(&mut self) {
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        let _ = std::fs::remove_dir_all(runtime.join("melchior").join(&self.0));
+    }
+}
+
 /// Start one, and wait until it is reachable.
 ///
 /// The child is handed back rather than dropped: melchior exits when its parent's pipe closes, which
@@ -68,16 +108,19 @@ fn the_agent_tool_reaches_another_session_through_melchior() {
     // melchior's own socket. It is the *join* that was wrong before -- the tool was a peer process
     // and became a command, and a command that inherited no environment would be a session that
     // cannot say who it is, refusing every verb with a plausible-sounding message.
-    let project = format!("magi-test-{}", std::process::id());
-    let Some((mut a, _hears_a, me)) = a_session(&project) else {
+    // Declared before the sessions so it drops after them: locals go in reverse order, and a
+    // directory removed while a melchior is still running comes straight back.
+    let project = Project(format!("magi-test-{}", std::process::id()));
+    let Some((a, _hears_a, me)) = a_session(&project) else {
         eprintln!("melchior is not installed; skipping");
         return;
     };
-    let Some((mut b, mut hears_b, them)) = a_session(&project) else {
-        let _ = a.kill();
+    let _a = Running(a);
+    let Some((b, mut hears_b, them)) = a_session(&project) else {
         eprintln!("melchior is not installed; skipping");
         return;
     };
+    let _b = Running(b);
 
     // What `magi_cli::host::stamp` puts on the backend every tool is spawned from. Spelled out
     // rather than imported: this crate cannot see the CLI, and a test that shared the code
@@ -144,8 +187,6 @@ fn the_agent_tool_reaches_another_session_through_melchior() {
         }
         line
     };
-    let _ = a.kill();
-    let _ = b.kill();
     assert!(
         heard.contains("does this reach you") && heard.contains(&me),
         "the receiving session heard: {heard}"

@@ -25,7 +25,6 @@
 use magi_ipc::{FrameReader, FrameWriter};
 use magi_model::scratch::Scratch;
 use magi_proto::{Cursor, HarnessEvent, UiCommand};
-use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -36,6 +35,10 @@ use std::time::{Duration, Instant};
 /// by itself, and a loaded machine running the rest of the suite alongside is the case this must
 /// not fail on.
 const PATIENCE: Duration = Duration::from_secs(40);
+
+/// How long to wait for a session's first line before calling it stuck rather than slow. A
+/// backstop against a suite that never returns, not a claim about how fast a session comes up.
+const HANGING: Duration = Duration::from_secs(180);
 
 /// Held for the whole of each test here, so only one of them is running sessions at a time.
 static ALONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -85,7 +88,7 @@ fn workspace(name: &str) -> Option<Scratch> {
         eprintln!("skipping: the melchior on PATH is older than roles — `oslo make install`");
         return None;
     }
-    let dir = Scratch::new("mh", name);
+    let dir = Scratch::new("mh", name).settling();
     for under in ["p", "r", "c", "d"] {
         std::fs::create_dir_all(dir.join(under)).expect("mkdir");
     }
@@ -117,7 +120,11 @@ impl Headless {
     /// No `--tied`. That is the difference from `forking_live`: this session is a root, with
     /// nothing above it to outlive.
     fn start(dir: &Path, role: &str, prompt: &str) -> Self {
-        let mut process = Command::new(env!("CARGO_BIN_EXE_magi"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_magi"));
+        // Or it records into the store of whichever session the suite was started from. See
+        // [`magi_testkit::only_its_own_store`].
+        magi_testkit::only_its_own_store(&mut command);
+        let mut process = command
             .current_dir(dir.join("p"))
             .env("XDG_RUNTIME_DIR", dir.join("r"))
             .env("XDG_CONFIG_HOME", dir.join("c"))
@@ -130,18 +137,17 @@ impl Headless {
             .stderr(Stdio::piped())
             .spawn()
             .expect("magi runs");
-        let mut named = String::new();
-        let read = process
-            .stdout
-            .as_mut()
-            .map(|out| std::io::BufReader::new(out).read_line(&mut named))
-            .and_then(Result::ok)
-            .unwrap_or(0);
-        assert!(read > 0, "the session never said what it was called");
-        Self {
+        // Bounded, for the reason `forking_live` gives: an unbounded read of a child's stdout
+        // turns a session that never announces itself into a suite that never returns. See
+        // [`magi_testkit::first_line_within`].
+        let named = magi_testkit::first_line_within(&mut process, HANGING);
+        let mut session = Self {
             process,
-            named: named.trim().to_owned(),
-        }
+            named: String::new(),
+        };
+        let named = named.expect("the session never said what it was called");
+        session.named = named.trim().to_owned();
+        session
     }
 
     /// Its id: the third part of `project/role/id`, which is what a sibling addresses.

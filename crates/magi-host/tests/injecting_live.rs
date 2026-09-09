@@ -48,7 +48,7 @@ async fn own_balthasar(
 )> {
     // Taken before anything is started, and handed back so it is held for the test's own body.
     let held = ONE_AT_A_TIME.lock().await;
-    let dir = Scratch::new("magi-inject", name);
+    let dir = Scratch::new("mi", name);
     // The ledger is off by default, and rightly: it costs writes on the recall path, and a
     // memory layer that silently started recording what a person searches for because a new
     // version shipped is not one anybody should install. It is what makes `used` and `outcome`
@@ -60,7 +60,7 @@ async fn own_balthasar(
         )
         .expect("write");
     }
-    let instance = format!("magi-inject-{}-{name}", std::process::id());
+    let instance = format!("mi-{}-{name}", std::process::id());
     let child = std::process::Command::new("balthasar")
         .arg("serve")
         .arg("--instance")
@@ -68,16 +68,22 @@ async fn own_balthasar(
         .arg("--scope")
         .arg("project")
         .current_dir(&*dir)
+        // **The runtime directory is the scratch's too.** The store was already private; the
+        // socket was not. balthasar binds `$XDG_RUNTIME_DIR/balthasar/api@<instance>.sock` and
+        // the `SIGKILL` in `Serving` gives it no chance to unlink one, so against the real
+        // directory every test of every run left a dead socket there for good — hundreds of them
+        // on this machine, which is a directory other tests read to find a living sibling.
+        .env("XDG_RUNTIME_DIR", dir.join("r"))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
         .ok()?;
 
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    let socket = runtime
+    // Short names above, because the instance appears inside a socket path that may not exceed
+    // `SUN_LEN` and `gate-hermetic` already nests the run in a temporary directory of its own.
+    let socket = dir
+        .join("r")
         .join("balthasar")
         .join(format!("api@{instance}.sock"));
 
@@ -307,7 +313,7 @@ async fn a_balthasar_that_never_answers_does_not_hold_up_a_session() {
     //
     // Neither answer is needed for a session to run. A socket that accepts and never replies is
     // the ordinary shape of a wedged process, and it is bound here on purpose.
-    let dir = Scratch::new("magi-inject", "wedged");
+    let dir = Scratch::new("mi", "wedged");
     let path = dir.join("api@wedged.sock");
     let _listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
 

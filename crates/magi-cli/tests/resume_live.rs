@@ -82,7 +82,9 @@ fn install_config(into: &Path) {
 /// Run the binary in `dir`, with the fake melchior in front of a real `PATH`.
 fn magi(dir: &Path, mind: &Mind, args: &[&str]) -> std::process::Output {
     let inherited = std::env::var("PATH").unwrap_or_default();
-    Command::new(env!("CARGO_BIN_EXE_magi"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_magi"));
+    magi_testkit::only_its_own_store(&mut command);
+    command
         .current_dir(dir)
         .env("XDG_RUNTIME_DIR", dir.join("run"))
         .env("XDG_CONFIG_HOME", dir.join("config"))
@@ -104,6 +106,74 @@ fn journals(dir: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Fail unless the balthasar this run talked to was the one this run started.
+///
+/// **This file has cried wolf for most of a day, and this is the line that stops it.** Everything
+/// below asserts about a transcript coming back out of a store; when it does not, the message the
+/// reader gets is "the earlier prompt came back out of balthasar" failing, which reads as magi
+/// having lost the conversation. It is almost never that. The store the run reached was somebody
+/// else's, or it reached none and kept a journal instead — both are facts about the machine, and
+/// both were investigated as code bugs three separate times before the real cause turned out to
+/// be a runtime directory with eighteen hundred stale entries in it.
+///
+/// Two things say so, and each is a different way for the environment to be wrong:
+///
+/// - **A journal on disk.** magi keeps one only when balthasar is not the store. Its presence is
+///   the run telling you outright that nothing here is about resume.
+/// - **No `balthasar/` under the run's own runtime directory.** That directory is made when magi
+///   convenes a balthasar of its own. Missing, the run answered `Started::Theirs` and recorded
+///   into whichever balthasar the *developer's* shell names — which is also how a test came to
+///   write its prompts into somebody's real memory.
+///
+/// The count of what is lying around in the family's shared directories goes into the message
+/// too. It is not a cause on its own, but it is the thing nobody thinks to look at, and a number
+/// in the failure is what turns "resume is broken" into "the machine needs sweeping".
+fn kept_by_its_own_balthasar(dir: &Path) {
+    let left = journals(dir);
+    assert!(
+        left.is_empty(),
+        "the environment is dirty, not the code: this run fell back to a journal on disk, so \
+         balthasar never held the transcript and nothing below is a statement about resume. \
+         journals: {left:?}. {}",
+        lying_around()
+    );
+    let own = dir.join("run/balthasar");
+    assert!(
+        own.is_dir(),
+        "the environment is dirty, not the code: this run convened no balthasar of its own, \
+         which is what `MAGI_API_SOCKET` in the shell that started the suite does — the run \
+         then records into that session's store rather than into {}. {}",
+        own.display(),
+        lying_around()
+    );
+}
+
+/// What the family has left lying about in the shared runtime directories.
+///
+/// Read only when something has already failed. The directories are shared with every other
+/// magi, melchior and balthasar on the machine, so a number here is context for a failure and
+/// never a verdict on one — which is why nothing asserts against it.
+fn lying_around() -> String {
+    let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").filter(|it| !it.is_empty()) else {
+        return "there is no XDG_RUNTIME_DIR to sweep".to_owned();
+    };
+    let runtime = PathBuf::from(runtime);
+    let counted = |program: &str| {
+        std::fs::read_dir(runtime.join(program))
+            .into_iter()
+            .flatten()
+            .count()
+    };
+    format!(
+        "for context, {} holds {} melchior and {} balthasar entries; a few hundred of those \
+         means every sibling probe in the suite dials a queue of corpses first, and sweeping \
+         them has fixed this before",
+        runtime.display(),
+        counted("melchior"),
+        counted("balthasar"),
+    )
+}
+
 #[test]
 fn a_second_run_picks_up_the_conversation_balthasar_kept() {
     if !installed() {
@@ -119,6 +189,11 @@ fn a_second_run_picks_up_the_conversation_balthasar_kept() {
         "stderr: {}",
         String::from_utf8_lossy(&first.stderr)
     );
+    // Before anything is asserted about what came back, that there was somewhere for it to come
+    // back *from*. Checked here rather than at the end because the whole cost of this test has
+    // been the order: an environment fault that surfaces as the last assertion is one a reader
+    // spends the afternoon reading the resume path over.
+    kept_by_its_own_balthasar(&dir);
 
     // A separate process, after the first is entirely gone — along with the balthasar it
     // started, which is the point. What survives is the store, not a running thing.
