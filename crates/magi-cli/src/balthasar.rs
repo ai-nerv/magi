@@ -122,10 +122,7 @@ pub async fn start(instance: &str, project: &Path, agent: Option<&str>) -> Start
     ))
 }
 
-/// Whether balthasar is answering here, rather than merely bound. It binds before it opens a store
-/// and opens one on the first call it is asked, which for a store that does not exist yet takes
-/// longer than the clock any turn keeps: a session that started at the bind spent the whole of its
-/// first exchange waiting, and dropped what it could not hand over.
+/// Whether balthasar answers, not merely binds: it opens its store on the first call, not at bind.
 async fn answering(path: &Path) -> bool {
     match magi_ipc::family::Family::dial(path).await {
         Ok(mut open) => open.call("verbs", Vec::new()).await.is_ok(),
