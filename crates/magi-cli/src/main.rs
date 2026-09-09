@@ -137,7 +137,7 @@ fn main() -> Result<()> {
     // the complaint arrives without a configuration having been read or a layer started for a
     // session that never opens.
     let opening = (cli.command.is_none() && !(cli.print && cli.prompt.is_none()))
-        .then(opening::Opening::begin);
+        .then(|| opening::Opening::begin(cli.socket.clone()));
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?
@@ -202,15 +202,13 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
             // Its own session like any other: journalled, and reachable by name while it runs.
             let opening = opening.expect("a session's prologue runs before the runtime");
             let loaded = opening.loaded;
-            let project = opening.project;
             // Held for the run, so its socket is up while the turn is: a `-p` that another
             // session wants to ask about is one that has to be answering.
             let _layer = opening.started;
             let environ = inherited(loaded.as_ref(), &opening.named);
-            let key = session::key();
-            let socket = cli
-                .socket
-                .unwrap_or_else(|| session::socket_for(&project, &key));
+            // Named in the prologue, because melchior publishes it there — see [`opening`].
+            let key = opening.key;
+            let socket = opening.socket;
             // **Reaped even when it will not serve.** `start` now refuses a session it cannot
             // record, and it refuses *after* convening balthasar — so returning the error here
             // would leave the child this process started running with nothing to talk to. It
@@ -263,10 +261,11 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
             // *directory*, a second `magi` started in the same place found the first already
             // answering and joined it — one session, one journal, one transcript, and whatever
             // either of them typed appearing in both.
-            let key = session::key();
-            let socket = cli
-                .socket
-                .unwrap_or_else(|| session::socket_for(&project, &key));
+            //
+            // Settled in the prologue rather than here: melchior publishes this path at announce
+            // time, and it has already been started — see [`opening`].
+            let key = opening.key;
+            let socket = opening.socket;
             // **Reaped even when it will not serve.** `start` now refuses a session it cannot
             // record, and it refuses *after* convening balthasar — so returning the error here
             // would leave the child this process started running with nothing to talk to. It

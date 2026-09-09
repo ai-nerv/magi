@@ -113,7 +113,15 @@ pub enum Heard {
     /// cannot spawn a process or open a socket to answer, and magi reading the directory itself
     /// would be a second place that knows where sockets live.
     Around {
-        /// Every session listening, by id, this one included.
+        /// Every session listening, this one included.
+        ///
+        /// Defaulted, because the melchior that said `names` here is still installed on
+        /// machines this build runs on and there is no reason it should not be — see [`peers`],
+        /// which is what magi does with either.
+        #[serde(default)]
+        agents: Vec<Peer>,
+        /// What a melchior too old to say `agents` sends instead: bare ids and nothing else.
+        #[serde(default)]
         names: Vec<String>,
     },
     /// Somebody with the right to stop this session did.
@@ -144,6 +152,53 @@ pub enum Heard {
         /// Why, in their words — the whole of what the person has to go on.
         why: String,
     },
+}
+
+/// One session melchior says is listening, and how to find the screen it draws on.
+///
+/// The id is what addresses it and what `$` completes to. The other two are what a bare name
+/// could never tell you: what that agent is *for*, which a person reads off a list, and where
+/// its harness draws it, which is the one fact this side of the family could not work out for
+/// itself — a host socket is named after a key its own process keeps private, so the project's
+/// socket directory is a heap of live sessions with nothing saying which is which.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct Peer {
+    /// Its id: the third part of `project/role/id`.
+    pub id: String,
+    /// What it says it is for, one word. Empty from a melchior too old to say.
+    #[serde(default)]
+    pub role: String,
+    /// The socket its harness draws over, or `None` for an agent that published none.
+    ///
+    /// A path, not a promise. Nothing has dialled it, and the session that published it may
+    /// have gone since — which is the same thing that is true of every name in this list, and
+    /// is found out the same way, on the first call.
+    #[serde(default)]
+    pub ui: Option<std::path::PathBuf>,
+}
+
+/// Everyone melchior named, whichever of the two ways it said it.
+///
+/// **A magi meeting an older melchior still has peers.** The two programs are released apart,
+/// so a build of each is going to meet a build of the other that predates it — and the whole of
+/// what the older one can say is a list of ids. Read strictly, that is a `$` popup that offers
+/// nobody for as long as the session runs, and nothing anywhere saying why.
+///
+/// A name with no role and no screen is exactly what magi had before this existed, so the
+/// fallback loses nothing that was ever there.
+#[must_use]
+pub fn peers(agents: Vec<Peer>, names: Vec<String>) -> Vec<Peer> {
+    if !agents.is_empty() {
+        return agents;
+    }
+    names
+        .into_iter()
+        .map(|id| Peer {
+            id,
+            role: String::new(),
+            ui: None,
+        })
+        .collect()
 }
 
 /// A running melchior, and the pipe back to it.
@@ -179,17 +234,27 @@ impl Melchior {
     /// reach is the layer's question, and magi knowing what the levels are called would be two
     /// programs holding one answer.
     ///
+    /// `ui` is the socket this session will bind its own UI on, published so a sibling can find
+    /// the screen rather than only the name. **Handed in, not looked up**: it is magi's own
+    /// path, made from a key nothing outside this process shares, and melchior has no way to
+    /// arrive at it. Passing it here rather than telling melchior later is what makes the note
+    /// and the roster agree from the first tick — a session announced without one is on every
+    /// peer's list as an agent with no screen until it says otherwise, and nothing would.
+    ///
     /// `None` when melchior is not installed or will not start, which is a session without siblings
     /// rather than a failure.
     pub fn start(
         program: &str,
         project: &str,
         talk: Option<&str>,
+        ui: &std::path::Path,
     ) -> Option<(Self, std::path::PathBuf)> {
         let mut child = Command::new(program)
             .arg("serve")
             .arg("--project")
             .arg(project)
+            .arg("--ui")
+            .arg(ui)
             .envs(talk.map(|talk| (TALK.to_owned(), talk.to_owned())))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -335,11 +400,28 @@ pub fn briefing(program: &str, text: &str, project: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Where a session in `project` would bind its own UI socket.
+    ///
+    /// Made the way a real one is rather than written out, because that is the whole of what is
+    /// being handed to melchior: a literal would prove the flag is accepted, not that what goes
+    /// through it is the path this process would bind.
+    fn a_screen(project: &str) -> std::path::PathBuf {
+        crate::session::socket_for(project, &crate::session::key())
+    }
+
     #[test]
     fn a_missing_melchior_is_a_session_without_siblings() {
         // The balthasar rule: a sibling not being installed is the ordinary case, not a failure.
         // This is the one that decides whether somebody with no melchior can use magi at all.
-        assert!(Melchior::start("melchior-that-is-not-installed", "magi", None).is_none());
+        assert!(
+            Melchior::start(
+                "melchior-that-is-not-installed",
+                "magi",
+                None,
+                &a_screen("magi")
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -418,6 +500,66 @@ mod tests {
     }
 
     #[test]
+    fn a_roster_names_each_peer_with_its_role_and_its_screen() {
+        // The other half of the wire, byte for byte as melchior writes it. Nothing fails when a
+        // field name drifts: the line parses, `agents` is empty, and the session simply has no
+        // peers — which reads as nobody else being up.
+        let said: Heard = serde_json::from_str(
+            r#"{"event":"around","agents":[{"id":"beta-nu","role":"reviewer","ui":"/run/user/1000/magi/magi/1f4a.host"},{"id":"psi-eta","role":"main","ui":null}]}"#,
+        )
+        .expect("reads");
+        let Heard::Around { agents, names } = said else {
+            panic!("not a roster");
+        };
+        let around = peers(agents, names);
+        assert_eq!(around[0].id, "beta-nu");
+        assert_eq!(around[0].role, "reviewer");
+        assert_eq!(
+            around[0].ui.as_deref(),
+            Some(std::path::Path::new("/run/user/1000/magi/magi/1f4a.host"))
+        );
+        // An agent whose harness published no screen is a peer with a name, not a line magi
+        // refuses to read.
+        assert_eq!(around[1].id, "psi-eta");
+        assert_eq!(around[1].ui, None);
+    }
+
+    #[test]
+    fn an_older_melchior_that_says_only_names_still_has_peers() {
+        // The two programs are released apart, so every build of one meets a build of the other
+        // that predates it. Read strictly, this is a `$` popup that offers nobody for the life
+        // of the session, with nothing anywhere saying why — and a name with no role and no
+        // screen is exactly what magi had before any of this existed.
+        let said: Heard =
+            serde_json::from_str(r#"{"event":"around","names":["beta-nu","psi-eta"]}"#)
+                .expect("an older melchior still reads");
+        let Heard::Around { agents, names } = said else {
+            panic!("not a roster");
+        };
+        let around = peers(agents, names);
+        assert_eq!(
+            around
+                .iter()
+                .map(|them| them.id.as_str())
+                .collect::<Vec<_>>(),
+            ["beta-nu", "psi-eta"]
+        );
+        assert!(around.iter().all(|them| them.ui.is_none()));
+
+        // And a melchior halfway between the two, which names its agents and says nothing about
+        // where they draw.
+        let said: Heard = serde_json::from_str(r#"{"event":"around","agents":[{"id":"beta-nu"}]}"#)
+            .expect("reads");
+        let Heard::Around { agents, names } = said else {
+            panic!("not a roster");
+        };
+        let around = peers(agents, names);
+        assert_eq!(around[0].id, "beta-nu");
+        assert_eq!(around[0].role, "");
+        assert_eq!(around[0].ui, None);
+    }
+
+    #[test]
     fn a_line_from_a_newer_melchior_is_not_read_as_something_it_is_not() {
         // Two repositories move apart. A `heard` this build has never seen should fail to parse
         // rather than land in the nearest arm — an unknown line read as a `message` would put
@@ -471,7 +613,9 @@ mod tests {
         // looked healthy, and no message ever reached the transcript again -- one line heard,
         // then silence, with nothing anywhere saying so.
         let project = format!("magi-hears-{}", std::process::id());
-        let Some((mut layer, _at)) = Melchior::start("melchior", &project, None) else {
+        let Some((mut layer, _at)) =
+            Melchior::start("melchior", &project, None, &a_screen(&project))
+        else {
             eprintln!("melchior is not installed; skipping");
             return;
         };
@@ -531,7 +675,9 @@ mod tests {
         // A pipe read once is not a pipe read: the failure that started this looked exactly like
         // a working session until the second thing arrived.
         let project = format!("magi-again-{}", std::process::id());
-        let Some((mut layer, _at)) = Melchior::start("melchior", &project, None) else {
+        let Some((mut layer, _at)) =
+            Melchior::start("melchior", &project, None, &a_screen(&project))
+        else {
             return;
         };
         let me = layer.named.clone();
@@ -573,7 +719,9 @@ mod tests {
         // first write succeeded. A sibling asking `status` is told whatever was last said, so
         // one that died after a message reads as a session frozen mid-turn forever.
         let project = format!("magi-doing-{}", std::process::id());
-        let Some((mut layer, _at)) = Melchior::start("melchior", &project, None) else {
+        let Some((mut layer, _at)) =
+            Melchior::start("melchior", &project, None, &a_screen(&project))
+        else {
             return;
         };
         let me = layer.named.clone();

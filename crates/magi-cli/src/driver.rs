@@ -622,7 +622,12 @@ pub async fn run(
                         crate::melchior::Heard::Message { who, sort, text } => {
                             let _ = command_tx.send(app.received(&who, &sort, &text)).await;
                         }
-                        crate::melchior::Heard::Around { names } => app.reachable = names,
+                        // Either shape. An older melchior says `names` and nothing else, and a
+                        // magi that read it strictly would offer nobody for the life of the
+                        // session with nothing anywhere saying why.
+                        crate::melchior::Heard::Around { agents, names } => {
+                            app.reachable = crate::melchior::peers(agents, names);
+                        }
                         // Straight to the screen, and it takes it. Nothing is blocked on this
                         // turn — the asking session is blocked on the *answer*, and it has been
                         // told to expect one.

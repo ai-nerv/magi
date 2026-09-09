@@ -140,7 +140,10 @@ pub struct App {
     ///
     /// Pushed by melchior rather than read here: a completion offered on a keystroke cannot go and
     /// look, and magi reading the directory would be a second place that knows the layout.
-    pub reachable: Vec<String>,
+    ///
+    /// Records rather than names since the layer learned to publish a screen. The popup still
+    /// offers only the id; the rest is what a peer has to know before anything can be drawn.
+    pub reachable: Vec<crate::melchior::Peer>,
     /// How many messages from other sessions have arrived and not been answered.
     ///
     /// A count, not the messages. What was said goes into the transcript like anything else,
@@ -515,8 +518,9 @@ impl App {
         // `$` offers whoever is listening. Read from the socket directory on the keystroke
         // rather than from a list kept up to date, because an instance that died did not get to
         // remove itself from one.
-        let resolved =
-            magi_tui::complete::resolve_with(&line, col, list_paths, &|_| self.reachable.clone());
+        let resolved = magi_tui::complete::resolve_with(&line, col, list_paths, &|_| {
+            self.reachable.iter().map(|them| them.id.clone()).collect()
+        });
         self.overlay = resolved
             .filter(|found| {
                 found.kind != magi_tui::complete::Kind::Command || self.modal.commanding()
