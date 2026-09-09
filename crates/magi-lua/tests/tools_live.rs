@@ -35,6 +35,32 @@ type Session = (
     String,
 );
 
+/// Do something on another thread, and give up on it after `patience`.
+///
+/// **Every read of a live child's pipe in this file needed one, and none of them had one.**
+/// `read_line` on a `melchior serve` that is up and says nothing has no other end: the child is
+/// held open for the whole test, so a line that goes astray does not fail a test here, it blocks
+/// it — and `cargo test`, `gate-hermetic` and CI all wait behind it with nothing on stdout to say
+/// which of forty binaries stopped. Twelve minutes went into one of those before anybody looked
+/// at `ps`; `magi_testkit::first_line_within` is the same fix, and it does not fit here because
+/// these tests keep reading the pipe afterwards.
+///
+/// The deadline is a backstop, not an assertion: it is set well above anything a healthy session
+/// takes, so it can only fire where the alternative was waiting for ever. The thread is left
+/// blocked when it does — a detached read on a pipe is not a process, and the binary is on its
+/// way out.
+fn within<T: Send + 'static>(
+    patience: std::time::Duration,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let (done, ready) = std::sync::mpsc::channel();
+    std::thread::spawn(move || done.send(work()));
+    ready.recv_timeout(patience).ok()
+}
+
+/// How long any of that may take.
+const READ_WITHIN: std::time::Duration = std::time::Duration::from_secs(20);
+
 /// One of those, killed when the test ends rather than on its last line.
 ///
 /// `let _ = a.kill()` at the bottom does not run when an `assert!` unwinds past it, and this
@@ -89,9 +115,16 @@ fn a_session(project: &str) -> Option<Session> {
         .stderr(std::process::Stdio::null())
         .spawn()
         .ok()?;
-    let mut said = String::new();
-    let mut out = std::io::BufReader::new(child.stdout.take()?);
-    out.read_line(&mut said).ok()?;
+    let child_out = child.stdout.take()?;
+    // The reader goes to the thread and comes back with the line, so the buffering survives the
+    // deadline: what is already read is what the next wait is looking for.
+    let (said, out) = within(READ_WITHIN, move || {
+        let mut said = String::new();
+        let mut out = std::io::BufReader::new(child_out);
+        let read = out.read_line(&mut said).is_ok();
+        (read.then_some(said), out)
+    })?;
+    let said = said?;
     let named = said
         .split("\"as\":\"")
         .nth(1)?
@@ -175,7 +208,7 @@ fn the_agent_tool_reaches_another_session_through_melchior() {
 
     // And it arrived where a harness reads it: up the receiving session's own pipe, which is
     // the line magi turns into an entry in its transcript.
-    let heard = {
+    let heard = within(READ_WITHIN, move || {
         use std::io::BufRead;
         let mut line = String::new();
         // Past the roster it publishes when the second session appeared.
@@ -186,7 +219,8 @@ fn the_agent_tool_reaches_another_session_through_melchior() {
             line.clear();
         }
         line
-    };
+    })
+    .unwrap_or_else(|| panic!("the receiving session said nothing within {READ_WITHIN:?}"));
     assert!(
         heard.contains("does this reach you") && heard.contains(&me),
         "the receiving session heard: {heard}"
