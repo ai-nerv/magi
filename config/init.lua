@@ -4,9 +4,10 @@
 -- assigned, descriptions go to a registrar, and the file returns nothing.
 
 -- What runs. Nothing is discovered by scanning: a file not named here does not load.
--- Clients first — a tool loads its sibling's client library as it declares itself.
-magi.load("clients/hexe.lua")
-magi.load("clients/oslo.lua")
+--
+-- No clients are named. A sibling's client library comes from the sibling — `client` serves it, so
+-- a copy on disk here is a copy that goes stale. `clients/<name>.lua` still loads if you name one,
+-- and loads before `tools.lua`, because a tool reads its sibling's library as it declares itself.
 magi.load("tools.lua")
 
 -- Which model to use, as `magi models` prints it.

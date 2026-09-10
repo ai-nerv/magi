@@ -165,18 +165,34 @@ mod entry_point {
                 checked += 1;
             }
         }
-        assert!(checked >= 3, "only {checked} files checked");
+        // That the walk saw anything at all, not a count of the tree: `config/` is down to
+        // `tools.lua` beside the entry point now that no client library ships as a file.
+        assert!(checked >= 1, "the walk checked nothing");
     }
 
     #[test]
-    fn a_client_is_named_before_the_tool_that_loads_it() {
-        // A tool declares itself by loading its sibling's client library; entry-point order matters.
+    fn a_client_named_at_all_is_named_before_the_tool_that_loads_it() {
+        // A tool declares itself by reading its sibling's client library, so a named one must load
+        // first. None ships — `client` serves them — so this holds whoever adds one back.
         let init = checkout("init.lua");
-        let client = init
-            .find("magi.load(\"clients/")
-            .expect("a client is loaded");
         let tools = init.find("magi.load(\"tools").expect("tools are loaded");
-        assert!(client < tools);
+        if let Some(client) = init.find("magi.load(\"clients/") {
+            assert!(
+                client < tools,
+                "a client loads after the tools that read it"
+            );
+        }
+    }
+
+    #[test]
+    fn no_client_library_is_shipped_as_a_file() {
+        // `client` serves each sibling's own library, so a copy here is one that goes stale. magi
+        // carried `hexe` and `oslo` long after both moved to casper, read by nothing.
+        let init = checkout("init.lua");
+        assert!(
+            !init.contains("magi.load(\"clients/"),
+            "a shipped client is a copy that goes stale: {init}"
+        );
     }
 
     #[test]

@@ -1,9 +1,8 @@
 //! A call keeps its own answer, driven against a socket the test owns.
 //!
-//! The family's wire carries no request id, so a reply is matched to a call by position alone. A
-//! caller that gives up on a read and keeps the connection reads the abandoned reply as the next
-//! call's answer. These drive the real client libraries, through the real socket primitive, against
-//! a listener that withholds the first reply until the caller has given up on it.
+//! The wire carries no request id, so a reply is matched to a call by position — see FAMILY.md.
+//! magi's client dials per call and is in step by construction; this measures that rather than
+//! reading it off the source, and fails if the client is ever changed to hold its handle.
 
 use magi_lua::Engine;
 use std::io::{Read, Write};
@@ -140,34 +139,6 @@ fn until_written(written: &std::sync::mpsc::Receiver<String>, verb: &str) {
         }
     }
     panic!("the listener never wrote {verb}");
-}
-
-#[test]
-fn a_held_connection_does_not_hand_the_next_call_the_last_answer() {
-    // oslo's client keeps its handle across calls, which is the shape the rule is about.
-    let path = socket_path("oslo");
-    let written = listen(&path);
-    let mut caller = Caller::new(&source("../../config/clients/oslo.lua"), "oslo.lua", &path);
-
-    let first = caller.call("alpha");
-    assert!(
-        first.starts_with("nil|"),
-        "the withheld first call must not answer: {first}"
-    );
-
-    // Only now is the abandoned reply on the wire, which is the state the next call inherits.
-    until_written(&written, "alpha");
-    let second = caller.call("beta");
-    std::fs::remove_file(&path).ok();
-
-    assert!(
-        !second.starts_with("alpha|"),
-        "the second call was handed the first call's answer: {second}"
-    );
-    assert!(
-        second.starts_with("nil|") && second.contains("closed"),
-        "a poisoned handle must refuse clearly rather than crash: {second}"
-    );
 }
 
 #[test]

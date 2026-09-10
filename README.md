@@ -282,7 +282,7 @@ Everything magi knows about the outside world is Lua, and it all lives in `confi
 | `config/apis/*.lua` | the wire protocols — how to talk to an endpoint |
 | `config/providers.lua` | the catalog — which endpoints exist and what they offer |
 | `config/tools.lua` | what the model may call, and how each tool is reached |
-| `config/clients/*.lua` | the stubs siblings ship, copied in — `hexe` and `oslo` so far |
+| `config/clients/*.lua` | a sibling's client library, if you name one — none ships, because `client` serves it |
 | `config/init.lua` | your settings, and anything you want to add |
 
 `make configs` copies them to `$XDG_CONFIG_HOME/magi/`, where magi reads them. The binary also
