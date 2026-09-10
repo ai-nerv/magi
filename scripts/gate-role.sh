@@ -24,8 +24,8 @@ command -v "$prog" >/dev/null 2>&1 || [ -x "$prog" ] || {
 # `gate-family.sh`, so they are not repeated here.
 case "$role" in
   memory)
-    core="observe replay"
-    extra="amend recall remember forget why scroll plan used outcome model resume sessions" ;;
+    core="observe replay sessions"
+    extra="amend recall remember forget why scroll plan used outcome model resume" ;;
   tools)
     core="tools run"
     extra="surface acknowledge" ;;

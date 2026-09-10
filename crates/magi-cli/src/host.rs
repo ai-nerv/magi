@@ -341,8 +341,17 @@ fn unreachable(memory: &str, what: &str, why: &str) -> String {
 
 /// The newest run balthasar holds for this project, for `--resume`. Empty is a fresh session.
 async fn resumable(scribe: &mut magi_host::scribe::Scribe) -> Vec<magi_proto::Entry> {
-    let Ok(rows) = scribe.sessions().await else {
-        return Vec::new();
+    // Both failures below used to return an empty conversation and say nothing, so `--resume`
+    // against a memory layer that could not answer looked exactly like a session with nothing to
+    // resume — a fresh start, at exit 0, having quietly dropped everything.
+    let rows = match scribe.sessions().await {
+        Ok(rows) => rows,
+        Err(why) => {
+            eprintln!(
+                "magi: --resume found nothing: the memory layer would not list its runs: {why}"
+            );
+            return Vec::new();
+        }
     };
     let newest = rows
         .iter()
@@ -357,7 +366,13 @@ async fn resumable(scribe: &mut magi_host::scribe::Scribe) -> Vec<magi_proto::En
         })
         .next();
     match newest {
-        Some(id) => scribe.replay_of(&id).await.unwrap_or_default(),
+        Some(id) => match scribe.replay_of(&id).await {
+            Ok(entries) => entries,
+            Err(why) => {
+                eprintln!("magi: --resume found `{id}` but could not read it back: {why}");
+                Vec::new()
+            }
+        },
         None => Vec::new(),
     }
 }

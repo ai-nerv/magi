@@ -47,13 +47,24 @@ send next.
 | verb | shape | what magi does with it |
 |---|---|---|
 | `observe` | `(session, turn) -> ok` | Streams every turn as it settles. Without this nothing is recorded and the session has no history at all. |
-| `replay` | `(session) -> [turn]` | Everything a run said, in order. This is what `--resume` restores from; without it a session cannot be continued. |
+| `replay` | `(session) -> [turn]` | Everything a run said, in order. This is what `--resume` reads back. |
+| `sessions` | `-> [session]` | The runs this project has had. `--resume` with no id asks this **first**, to find which run was newest, and only then replays it. |
 
 Plus the family floor from `FAMILY.md` — `verbs` and `client` — which every program owes whatever
 its role.
 
-Two verbs, because two is what "a store" means: it takes the conversation and it gives it back.
-Everything else makes it a *good* memory layer rather than a memory layer.
+Three verbs, because three is what "a store" means: it takes the conversation, it says which
+conversations it has, and it gives one back. Everything else makes it a *good* memory layer rather
+than a memory layer.
+
+**`sessions` is core because it was measured to be, not because it looked important.** It was an
+extension in this document's first draft, on the reading that losing it only cost the ability to
+list earlier runs. A shim written against that draft — `examples/remembrance/`, which answers the
+core and refuses everything else — was pointed at magi with `sessions` refused, and `--resume`
+returned an empty conversation **at exit 0, saying nothing**. `host.rs`'s `resumable()` calls
+`sessions()` to find the newest id before it can call `replay`, so a memory layer without it is
+silently unresumable. That is the whole reason a role contract is worth writing: the boundary was
+drawn wrong, and only running a program against it found out.
 
 ### Extensions
 
@@ -70,7 +81,6 @@ Everything else makes it a *good* memory layer rather than a memory layer.
 | `outcome` | `(action, opts) -> { outcome, kind }` | The outcome loop records nothing. |
 | `model` | `(session, opts) -> { model, context }` | The store does not know which model produced a run. |
 | `resume` | `(session) -> { next, turns }` | magi cannot cross-check that the store holds what this session thinks it does. |
-| `sessions` | `-> [session]` | Earlier runs of this project cannot be listed. |
 
 **The four model-facing verbs — `recall`, `remember`, `forget`, `why` — are declared
 independently.** magi declares a tool for each verb the role answers and omits the rest, so a
