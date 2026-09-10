@@ -282,17 +282,15 @@ fn what_the_model_sends_arrives_as_what_it_meant() {
 
 #[test]
 fn the_memory_tools_register_and_answer_when_balthasar_is_running() {
-    // The client library is borrowed from balthasar rather than vendored: a copy that had fallen
-    // behind silently removed every memory tool from every session on a machine. The declarations
-    // are magi's own, so that a balthasar which cannot be asked at this instant costs the session
-    // nothing but the calls themselves.
+    // The client library is borrowed rather than vendored: a copy that had fallen behind silently
+    // removed every memory tool from every session on a machine. The declarations are magi's own.
     let Some(client) = borrowed("balthasar") else {
         eprintln!("skipping: balthasar is not installed");
         return;
     };
     // Where to dial, told before the VM is built, the way a session tells it. Without a named
-    // socket the client cannot find one in here: `magi.fs` lends no lister to a VM with no `Ops`,
-    // and the sandbox took `io` away, so its own discovery has nothing to walk the directory with.
+    // socket the client finds none in here: `magi.fs` lends no lister to a VM with no `Ops`, and
+    // the sandbox took `io` away, so its own discovery has nothing to list a directory with.
     let serving = serving("balthasar");
     if let Some(at) = serving.as_deref() {
         magi_lua::name_session("tools-live", Some(at));

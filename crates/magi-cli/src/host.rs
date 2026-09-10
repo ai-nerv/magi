@@ -269,15 +269,30 @@ mod leftovers {
     use super::*;
     use magi_model::scratch::Scratch;
 
+    /// A socket file with nothing behind it, the way a session's corpse is left.
+    ///
+    /// `mknod` rather than a bind that is dropped: a `fork` on any other thread between the two
+    /// copies the listening descriptor into the child, and until it `exec`s the kernel still
+    /// accepts on the path. `mknod` opens no descriptor, so there is nothing to inherit.
+    fn corpse(path: &Path) {
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            path,
+            rustix::fs::FileType::Socket,
+            rustix::fs::Mode::from_bits_truncate(0o600),
+            0,
+        )
+        .expect("mknod a socket");
+    }
+
     #[test]
     fn a_socket_nothing_answers_is_cleared_and_a_live_one_is_not() {
         // The directory is how a session is found, so litter in it is not cosmetic.
         let dir = Scratch::new("magi-sweep", "one");
 
         let live = std::os::unix::net::UnixListener::bind(dir.join("alive.host")).expect("bind");
-        // A socket with nothing behind it: bound, then the listener dropped.
         let dead = dir.join("dead.host");
-        drop(std::os::unix::net::UnixListener::bind(&dead).expect("bind"));
+        corpse(&dead);
         // And something that is not a socket at all, which must be left alone.
         std::fs::write(dir.join("keep.me"), b"not mine").expect("write");
 
