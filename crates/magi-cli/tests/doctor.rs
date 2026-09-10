@@ -28,19 +28,29 @@ fn doctor(path: &std::path::Path) -> String {
 }
 
 #[test]
-fn a_machine_with_no_siblings_says_so_for_each_of_them() {
+fn a_machine_with_no_siblings_says_so_for_each_role() {
     // With none of them installed a session still starts, and silently has no tools or model.
     let empty = Scratch::new("magi-doctor", "empty-path");
-    let said = doctor(&empty);
+    let whole = doctor(&empty);
+    // The section, not the report: `model` and `tools` are also a setting and a heading.
+    let said = whole
+        .split_once("\nroles\n")
+        .map(|(_, rest)| rest.to_owned())
+        .unwrap_or_else(|| panic!("no roles section:\n{whole}"));
 
-    for name in ["casper", "melchior", "balthasar"] {
+    for (role, program) in [
+        ("memory", "balthasar"),
+        ("tools", "casper"),
+        ("model", "melchior"),
+    ] {
+        // The role names the program, so the row is findable by both — `tools` is also a heading.
         let line = said
             .lines()
-            .find(|line| line.trim_start().starts_with(name))
-            .unwrap_or_else(|| panic!("{name} is not mentioned at all:\n{said}"));
+            .find(|line| line.trim_start().starts_with(role) && line.contains(program))
+            .unwrap_or_else(|| panic!("{role} is not reported as filled by {program}:\n{said}"));
         assert!(
             line.contains("not installed"),
-            "{name} is absent and not reported as absent: {line}"
+            "{role} is unfilled and not reported as unfilled: {line}"
         );
     }
 }
@@ -67,7 +77,7 @@ fn a_machine_with_no_configuration_still_gets_an_answer() {
     let empty = Scratch::new("magi-doctor", "no-config");
     let said = doctor(&empty);
     assert!(said.contains("will not load"), "it says so: {said}");
-    assert!(said.contains("siblings"), "and carries on: {said}");
+    assert!(said.contains("roles"), "and carries on: {said}");
     assert!(
         said.lines()
             .any(|line| line.trim_start().starts_with("read")),
@@ -82,5 +92,5 @@ fn it_answers_without_starting_a_session() {
     assert!(said.contains("configuration"), "{said}");
     assert!(said.contains("settings"), "{said}");
     assert!(said.contains("tools"), "{said}");
-    assert!(said.contains("siblings"), "{said}");
+    assert!(said.contains("roles"), "{said}");
 }
