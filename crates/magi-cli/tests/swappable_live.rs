@@ -14,7 +14,8 @@ use std::process::Command;
 /// The shim, compiled where the test can put it on `PATH`. `None` when there is no `rustc` to
 /// compile it with, which is a machine this cannot run on rather than a failure.
 fn shim(into: &Path) -> Option<PathBuf> {
-    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/remembrance/remembrance.rs");
+    let source =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/remembrance/remembrance.rs");
     let dir = into.join("bin");
     std::fs::create_dir_all(&dir).expect("mkdir");
     let out = dir.join("remembrance");
@@ -88,6 +89,18 @@ fn magi(dir: &Path, mind: &Mind, bin: &Path, args: &[&str]) -> std::process::Out
         .expect("run magi")
 }
 
+/// Fail unless the shim is what held the conversation. Everything here asserts about a transcript
+/// coming back out of a store, and a magi that convened balthasar instead reads the same.
+fn kept_by_the_shim(dir: &Path) -> Vec<PathBuf> {
+    let kept: Vec<PathBuf> = std::fs::read_dir(dir.join(".remembrance"))
+        .expect("the shim kept nothing: this session's memory was not the shim")
+        .flatten()
+        .map(|entry| entry.path())
+        .collect();
+    assert!(!kept.is_empty(), "the shim's store is empty");
+    kept
+}
+
 #[test]
 fn a_session_runs_against_a_memory_layer_that_is_not_balthasar() {
     let dir = workspace("run");
@@ -106,11 +119,7 @@ fn a_session_runs_against_a_memory_layer_that_is_not_balthasar() {
 
     // Recorded by the shim and by nothing else: a journal on disk would mean magi fell back, and
     // there is no fallback to fall back to.
-    let kept: Vec<PathBuf> = std::fs::read_dir(dir.join(".remembrance"))
-        .expect("the shim's store")
-        .flatten()
-        .map(|entry| entry.path())
-        .collect();
+    let kept = kept_by_the_shim(&dir);
     assert_eq!(kept.len(), 1, "one session's turns: {kept:?}");
     let held = std::fs::read_to_string(&kept[0]).expect("read the store");
     assert!(held.contains("remember gerbil"), "{held}");
@@ -141,6 +150,10 @@ fn a_second_run_picks_up_the_conversation_the_shim_kept() {
         String::from_utf8_lossy(&second.stderr)
     );
 
+    // Before anything is asserted about what came back, that the shim is where it came from: a
+    // magi that spawned balthasar instead would resume from balthasar and read exactly the same.
+    kept_by_the_shim(&dir);
+
     let asks = mind.asks();
     assert_eq!(asks.len(), 2, "one ask per run: {asks:?}");
     assert!(
@@ -157,6 +170,39 @@ fn a_second_run_picks_up_the_conversation_the_shim_kept() {
         "and so did the answer to it: {}",
         asks[1]
     );
+}
+
+#[test]
+fn a_memory_layer_that_lends_no_library_declares_no_memory_tools() {
+    // The four model-facing verbs are extensions, declared from the client library the role's
+    // program serves. The shim serves none, so the model is offered none — and, more to the point,
+    // the VM must look the library up under the name the role gave it. Reading `magi.clients`
+    // under `balthasar` here would find whatever balthasar this machine has installed and hand the
+    // model tools aimed at a program this session never convened.
+    let dir = workspace("tls");
+    let Some(bin) = shim(&dir) else {
+        eprintln!("skipping: no rustc to build the shim with");
+        return;
+    };
+    let mind = Mind::answering("swap-tools", "noted");
+
+    let run = magi(&dir, &mind, &bin, &["-p", "hello"]);
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let ask = mind.heard();
+    for tool in [
+        "\"name\":\"recall\"",
+        "\"name\":\"remember\"",
+        "\"name\":\"why\"",
+    ] {
+        assert!(
+            !ask.contains(tool),
+            "the model was offered {tool} by a memory layer that lends no client: {ask}"
+        );
+    }
 }
 
 #[test]
