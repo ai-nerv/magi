@@ -15,18 +15,18 @@ pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 #[derive(Debug, thiserror::Error)]
 pub enum Fault {
     /// Nothing answered: no socket, a dead socket, or the connection died mid-call.
-    #[error("balthasar is not reachable: {0}")]
+    #[error("the memory layer is not reachable: {0}")]
     Unavailable(String),
 
     /// The verb was declined. Costs a feature; the caller carries on.
-    #[error("balthasar refused: {0}")]
+    #[error("the memory layer refused: {0}")]
     Refused(String),
 
     /// The write did not land. What was handed over is not recorded.
-    #[error("balthasar did not record it: {0}")]
+    #[error("the memory layer did not record it: {0}")]
     Failed(String),
 
-    #[error("balthasar answered something unreadable: {0}")]
+    #[error("the memory layer answered something unreadable: {0}")]
     Malformed(String),
 }
 
