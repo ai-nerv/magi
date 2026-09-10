@@ -197,13 +197,35 @@ local function be32(s)
   return s:byte(1) * 16777216 + s:byte(2) * 65536 + s:byte(3) * 256 + s:byte(4)
 end
 
--- Read exactly `n` bytes, however many reads that takes.
-local function exactly(handle, n)
+--- Drop a connection that can no longer be trusted to be in step, and hand back why.
+---
+--- The handle goes to `nil` as well as closed, so the next call meets `Session:call`'s own guard
+--- and says "this connection is closed" rather than indexing nothing.
+local function adrift(session, why)
+  local handle = session.handle
+  session.handle = nil
+  if handle then pcall(handle.close, handle) end
+  return why or "the shell went away mid-reply"
+end
+
+--- Read exactly `n` bytes, however many reads that takes.
+---
+--- **A stream delivers what it likes.** One `recv` answering fewer bytes than asked for is
+--- ordinary, not an error, and a client that treated it as the whole message would desynchronise
+--- on the first reply large enough to be split.
+---
+--- **A read that fails takes the connection with it.** A reply says nothing about which call it
+--- answers: one per call, in the order they were made. So a call given up on -- a timeout, a peer
+--- that went quiet -- leaves its reply on the wire for the NEXT call to read as its own, and every
+--- answer after that belongs to the call before it. Worse from the second read, where a frame
+--- header is already spent and what is left is a partial frame. Dropping the handle here rather
+--- than at each call site is what makes a read added later inherit the rule.
+local function exactly(session, n)
   local parts, have = {}, 0
   while have < n do
-    local chunk, why = handle:recv(n - have)
-    if not chunk then return nil, why end
-    if #chunk == 0 then return nil, "the shell closed the connection" end
+    local chunk, why = session.handle:recv(n - have)
+    if not chunk then return nil, adrift(session, why) end
+    if #chunk == 0 then return nil, adrift(session, "the shell closed the connection") end
     parts[#parts + 1] = chunk
     have = have + #chunk
   end
@@ -219,12 +241,14 @@ Session.__index = Session
 function Session:call(name, ...)
   if not self.handle then return nil, "this connection is closed" end
   local request = encode({ call = name, args = { ... } })
+  -- A send that failed may still have put part of a frame on the wire, which the far end reads as
+  -- the head of a call this side will never finish.
   local sent, why = self.handle:send(frame(request))
-  if not sent then return nil, why end
+  if not sent then return nil, adrift(self, why) end
 
-  local head, gone = exactly(self.handle, 4)
+  local head, gone = exactly(self, 4)
   if not head then return nil, gone end
-  local body, cut = exactly(self.handle, be32(head))
+  local body, cut = exactly(self, be32(head))
   if not body then return nil, cut end
 
   local reply = decode(body)
