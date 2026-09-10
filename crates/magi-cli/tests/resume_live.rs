@@ -251,3 +251,42 @@ fn a_finished_run_leaves_no_socket_behind() {
         .collect();
     assert!(left.is_empty(), "a socket outlived its session: {left:?}");
 }
+
+#[test]
+fn the_memory_verbs_reach_the_model_when_balthasar_is_there() {
+    // balthasar publishes `remember`, `recall` and `forget`; `config/tools.lua` declares them from
+    // whatever its `verbs` returns, reading the library out of `magi.clients.balthasar`. Nothing
+    // ever put one there — the catalog was searched for a name to replace and no build ships a
+    // `clients/balthasar.lua` — so the served library was fetched and dropped, the block registered
+    // nothing, and a session recording into balthasar offered the model no way to ask it anything.
+    //
+    // Asserted against what actually reached the model, because that is the only place it shows.
+    if !installed() {
+        eprintln!("skipping: no balthasar on PATH");
+        return;
+    }
+    let dir = workspace("verbs");
+    let mind = Mind::answering("memory-verbs", "noted");
+
+    let run = magi(&dir, &mind, &["-p", "hello"]);
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    kept_by_its_own_balthasar(&dir);
+
+    let asked = mind.asks();
+    let first = asked.first().expect("the model was asked something");
+    for verb in ["recall", "remember", "forget"] {
+        assert!(
+            first.contains(&format!("\"name\":\"{verb}\"")),
+            "`{verb}` never reached the model; it offers: {}",
+            first
+                .match_indices("\"name\":\"")
+                .map(|(at, _)| first[at + 8..].split('"').next().unwrap_or_default())
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+    }
+}

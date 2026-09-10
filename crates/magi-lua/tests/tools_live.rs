@@ -282,12 +282,21 @@ fn what_the_model_sends_arrives_as_what_it_meant() {
 
 #[test]
 fn the_memory_tools_register_and_answer_when_balthasar_is_running() {
-    // From balthasar, not from a copy here: a vendored copy that had fallen behind silently
-    // removed every memory tool from every session on a machine.
+    // The client library is borrowed from balthasar rather than vendored: a copy that had fallen
+    // behind silently removed every memory tool from every session on a machine. The declarations
+    // are magi's own, so that a balthasar which cannot be asked at this instant costs the session
+    // nothing but the calls themselves.
     let Some(client) = borrowed("balthasar") else {
         eprintln!("skipping: balthasar is not installed");
         return;
     };
+    // Where to dial, told before the VM is built, the way a session tells it. Without a named
+    // socket the client cannot find one in here: `magi.fs` lends no lister to a VM with no `Ops`,
+    // and the sandbox took `io` away, so its own discovery has nothing to walk the directory with.
+    let serving = serving("balthasar");
+    if let Some(at) = serving.as_deref() {
+        magi_lua::name_session("tools-live", Some(at));
+    }
     let mut engine = Engine::new();
     engine.install_clients(&[("balthasar".to_owned(), client)]);
     engine
@@ -298,17 +307,13 @@ fn the_memory_tools_register_and_answer_when_balthasar_is_running() {
     let mut registry = Registry::new();
     magi_lua::tool::install(Rc::clone(&engine), &mut registry, &Default::default());
 
-    if !answers("balthasar") {
-        // The vocabulary is balthasar's, so with balthasar absent there are no memory tools.
-        assert!(
-            registry.get("recall").is_none(),
-            "declared without a source"
-        );
-        return;
-    }
-
+    // Declared from the library in hand, so nothing here depends on a round trip landing.
     for verb in ["recall", "remember", "forget", "why"] {
         assert!(registry.get(verb).is_some(), "{verb} did not register");
+    }
+    if serving.is_none() {
+        eprintln!("skipping the wire: no balthasar is serving");
+        return;
     }
 
     let ops = magi_tools::ops::Real::new(std::env::temp_dir());
@@ -335,21 +340,24 @@ fn the_memory_tools_register_and_answer_when_balthasar_is_running() {
     );
 }
 
-/// Whether a sibling is actually serving, rather than merely having left a socket behind.
+/// A sibling's socket that is actually serving, rather than one merely left behind.
 ///
 /// A socket file outlives the process that bound it, and connecting is not enough either: the
 /// kernel's backlog accepts for a listener whose owner has stopped reading. So it asks — one
 /// `verbs` call, framed the way the family frames everything, answered within a moment.
-fn answers(name: &str) -> bool {
+fn serving(name: &str) -> Option<std::path::PathBuf> {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    let Ok(dir) = std::fs::read_dir(runtime.join(name)) else {
-        return false;
-    };
-    dir.flatten()
-        .filter(|e| e.file_name().to_string_lossy().starts_with("api@"))
-        .any(|e| replies(&e.path()))
+    std::fs::read_dir(runtime.join(name))
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("api@"))
+        })
+        .find(|path| replies(path))
 }
 
 fn replies(socket: &std::path::Path) -> bool {

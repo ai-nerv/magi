@@ -9,18 +9,19 @@
 -- lost, and registration is keyed, so the loser sits here doing nothing and still looking
 -- maintained.
 --
--- What is left is what is not a tool in casper's sense. `balthasar` is this session's own memory,
--- registered from whatever verbs that instance answers; `agent` reaches the other magi through
--- melchior. Both are about *this harness's* relationships rather than about doing something to
--- the machine, which is the line casper is on the other side of.
+-- What is left is what is not a tool in casper's sense. `balthasar` is this session's own memory;
+-- `agent` reaches the other magi through melchior. Both are about *this harness's* relationships
+-- rather than about doing something to the machine, which is the line casper is on the other
+-- side of.
 --
 -- `read`, `write` and `edit` are not here at all — they are compiled in, as the floor a session
 -- can never be without. See `magi-tools`.
 
 do -- balthasar
-  -- The memory layer, if it is installed and running. balthasar publishes its own tool descriptors --
-  -- `remember`, `recall`, `forget` -- so the vocabulary is written once, in balthasar, rather than
-  -- copied here to drift.
+  -- The memory layer, if it is installed. Whether it is, is answered by the client library in
+  -- hand: magi asks each sibling for one by running it, so a library here means a balthasar
+  -- binary ran on this machine a moment ago. Nothing else at config time knows as much -- a
+  -- socket file outlives its process, and a live one may still be too busy to answer.
   local function client()
     local source = magi.clients and magi.clients.balthasar
     if not source then return nil, "balthasar's client library is not installed" end
@@ -29,7 +30,7 @@ do -- balthasar
     return chunk(magi.stream)
   end
 
-  -- Asked at load, because a tool has to exist before the model is told what it may call. balthasar
+  -- Read at load, because a tool has to exist before the model is told what it may call. balthasar
   -- being absent is the ordinary case, not an error: nothing is registered and the session runs
   -- without memory, which is what every session did before balthasar existed.
   local balthasar = select(1, client())
@@ -50,13 +51,26 @@ do -- balthasar
   -- there is no balthasar at all, and then this is `{ tool = "balthasar" }` exactly as before.
   local OURS = { tool = "balthasar", path = magi.balthasar_at }
 
-  -- Which verbs the model gets. The rest are the harness's -- `observe`, `replay` and the
-  -- transcript plumbing magi drives in Rust, not through here.
-  -- The prose comes from balthasar's own `verbs()`; the schemas do not, because balthasar
-  -- publishes no argument shapes and a tool cannot be declared without them.
+  -- Which verbs the model gets, and their whole declaration. The rest are the harness's --
+  -- `observe`, `replay` and the transcript plumbing magi drives in Rust, not through here.
+  --
+  -- **Local, because a declaration cannot wait on a round trip.** These were registered from
+  -- whatever `verbs()` answered, which made the model's memory depend on balthasar replying at
+  -- the instant this VM is built. It does not always: a balthasar that serves one caller at a
+  -- time is busy with the connection magi records the transcript over, and one still opening its
+  -- store answers nothing either. The ask came back empty, nothing registered, and a session
+  -- recording into a live balthasar offered the model no way to ask it anything.
+  --
+  -- Nothing was lost by writing them here. The schemas were always local -- balthasar publishes
+  -- no argument shapes -- and what `verbs()` supplied was its own one-line signature, written for
+  -- `balthasar verbs` to print and not for a model to read. A verb balthasar drops is now refused
+  -- per call in balthasar's own words rather than silently absent, which is what the `agent`
+  -- block below does about melchior for the same reason.
   local MEMORY = {
     recall = {
       args = { "query" },
+      about = "Search the memory layer for what earlier sessions in this project learned: " ..
+        "decisions, conventions, and things that cost somebody time to find out.",
       parameters = {
         type = "object",
         properties = {
@@ -67,6 +81,8 @@ do -- balthasar
     },
     remember = {
       args = { "text" },
+      about = "Keep something for later sessions: a decision, a convention, or a fact about " ..
+        "this project that was not obvious.",
       parameters = {
         type = "object",
         properties = {
@@ -77,6 +93,7 @@ do -- balthasar
     },
     forget = {
       args = { "id" },
+      about = "Archive a memory that is wrong or no longer true, by the id `recall` gave it.",
       parameters = {
         type = "object",
         properties = { id = { type = "string", description = "Which memory." } },
@@ -85,6 +102,7 @@ do -- balthasar
     },
     why = {
       args = { "id" },
+      about = "Say what a memory rests on: how confident it is, and which sessions asserted it.",
       parameters = {
         type = "object",
         properties = { id = { type = "string", description = "Which memory." } },
@@ -93,35 +111,29 @@ do -- balthasar
     },
   }
 
-  local asked, offered = pcall(function()
-    return balthasar and balthasar.fetch(OURS, "verbs")
-  end)
-  if asked and type(offered) == "table" then
-    for _, v in ipairs(offered) do
-      local shape = MEMORY[v.name]
-      if shape then
-        magi.tool(v.name, {
-          description = v.about or v.name,
-          parameters = shape.parameters,
-          transport = { kind = "lua" },
-          run = function(args)
-            args = args or {}
-            local positional = {}
-            for i, name in ipairs(shape.args) do positional[i] = args[name] end
-            local answer, why =
-              balthasar.fetch(OURS, v.name, table.unpack(positional, 1, #shape.args))
-            if not answer then return { content = tostring(why), is_error = true } end
-            -- Kept, and stripped from what the model sees. The id is bookkeeping between magi
-            -- and balthasar; putting it in the context would spend tokens on a handle the model
-            -- can do nothing with, and invite it to make one up.
-            if type(answer) == "table" and answer.injection then
-              injection = answer.injection
-              answer = answer.memories or answer
-            end
-            return { content = magi.json.encode(answer) }
-          end,
-        })
-      end
+  if balthasar then
+    for name, shape in pairs(MEMORY) do
+      magi.tool(name, {
+        description = shape.about,
+        parameters = shape.parameters,
+        transport = { kind = "lua" },
+        run = function(args)
+          args = args or {}
+          local positional = {}
+          for i, key in ipairs(shape.args) do positional[i] = args[key] end
+          local answer, why =
+            balthasar.fetch(OURS, name, table.unpack(positional, 1, #shape.args))
+          if not answer then return { content = tostring(why), is_error = true } end
+          -- Kept, and stripped from what the model sees. The id is bookkeeping between magi
+          -- and balthasar; putting it in the context would spend tokens on a handle the model
+          -- can do nothing with, and invite it to make one up.
+          if type(answer) == "table" and answer.injection then
+            injection = answer.injection
+            answer = answer.memories or answer
+          end
+          return { content = magi.json.encode(answer) }
+        end,
+      })
     end
   end
   -- The counterpart to masking, and the reason masking is safe.
@@ -139,7 +151,7 @@ do -- balthasar
   -- Declared here rather than in MEMORY above because it takes this session's id first, which the
   -- model has no business supplying and no way to know. `magi.session` is absent in a VM nobody
   -- named a session for -- `magi tools` has one -- and then this tool is simply not offered.
-  if magi.session then
+  if balthasar and magi.session then
     magi.tool("history", {
       description =
         "Read earlier parts of this conversation back out of the memory layer. " ..
