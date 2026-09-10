@@ -13,6 +13,20 @@ magi.load("tools.lua")
 -- Which model to use, as `magi models` prints it.
 magi.model = "anthropic/claude-sonnet-4-5"
 
+-- Which program fills each role -- what a program is *for*, as `ROLES.md` sets it out. Named
+-- rather than assumed: magi does not know its memory is called balthasar, only that whatever
+-- `magi.memory` names answers the memory role's verbs. `scripts/gate-role.sh memory ./yours`
+-- says whether a candidate does, and `magi doctor` reports each role and who is filling it.
+--
+-- These are the defaults, and every one of them is a program on `$PATH`.
+--
+-- magi.memory   = "balthasar"   -- records the conversation and gives it back
+-- magi.tools    = "casper"      -- offers the tools a model may run
+-- magi.melchior = "melchior"    -- owns which models exist and how to speak to one
+--
+-- `magi.model` above is the *model*, not the program that serves models; the one that names the
+-- program is `magi.melchior`, which has meant that since before roles were written down.
+
 -- An endpoint of your own goes in melchior's config, not here. melchior owns the model: which
 -- protocol one speaks, where it lives and what credential it takes are all its, and magi holds
 -- only the name you chose above. See `melchior needs` for what it takes.

@@ -9,10 +9,10 @@
 -- lost, and registration is keyed, so the loser sits here doing nothing and still looking
 -- maintained.
 --
--- What is left is what is not a tool in casper's sense. `balthasar` is this session's own memory;
--- `agent` reaches the other magi through melchior. Both are about *this harness's* relationships
--- rather than about doing something to the machine, which is the line casper is on the other
--- side of.
+-- What is left is what is not a tool in casper's sense. The memory role's tools are this session's
+-- own memory; `agent` reaches the other magi through melchior. Both are about *this harness's*
+-- relationships rather than about doing something to the machine, which is the line casper is on
+-- the other side of.
 --
 -- `read`, `write` and `edit` are not here at all — they are compiled in, as the floor a session
 -- can never be without. See `magi-tools`.
@@ -36,21 +36,21 @@ do -- the memory role
     return chunk(magi.stream)
   end
 
-  -- Read at load, because a tool has to exist before the model is told what it may call. balthasar
-  -- being absent is the ordinary case, not an error: nothing is registered and the session runs
-  -- without memory, which is what every session did before balthasar existed.
+  -- Read at load, because a tool has to exist before the model is told what it may call. A memory
+  -- layer that lends nothing is the ordinary case, not an error: nothing is registered and the
+  -- session runs without memory tools, which is what every session did before there was one.
   local memory = select(1, client())
 
-  -- The last context balthasar handed over. A recall that comes back with an injection id is balthasar
-  -- saying "these went into your model's context, tell me what you did with them" -- and this
+  -- The last context the memory layer handed over. A recall that comes back with an injection id
+  -- is it saying "these went into your model's context, tell me what you did with them" -- and this
   -- is the only place that id is held, because nothing else in magi needs to know it exists.
   local injection = nil
 
-  -- Which balthasar to ask.
+  -- Which memory layer to ask.
   --
-  -- **Named, never guessed.** balthasar's client falls back to the newest socket in the runtime
-  -- directory when nobody says which -- right for the common case of one session, and a coin flip
-  -- the moment somebody opens a second window in the same project. magi starts its own balthasar
+  -- **Named, never guessed.** A memory layer's client falls back to the newest socket in the
+  -- runtime directory when nobody says which -- right for the common case of one session, and a
+  -- coin flip the moment somebody opens a second window in the same project. magi starts its own
   -- and knows exactly where it put it, so it says.
   --
   -- Absent outside a session (`magi tools` builds a VM to list what is declared) and absent when
