@@ -24,6 +24,9 @@ pub struct Catalog {
     pub casper_configure: String,
     /// Which program owns the model, as `magi.melchior` named it. One name for the whole session.
     pub mind: String,
+    /// Which program holds the history — the `memory` role, as `magi.memory` named it. Kept beside
+    /// [`Self::mind`] because the client library it serves is filed under its own name.
+    pub memory: String,
     pub environ: std::collections::BTreeMap<String, String>,
     /// What the configuration asked for, kept so a refusal can name it rather than the fallback.
     pub chosen: Option<String>,
@@ -39,6 +42,7 @@ impl Catalog {
             casper: None,
             casper_configure: String::new(),
             mind: crate::broker::MELCHIOR.to_owned(),
+            memory: crate::scribe::BALTHASAR.to_owned(),
             environ: std::collections::BTreeMap::new(),
             cwd: std::env::temp_dir(),
             cards: Vec::new(),

@@ -76,6 +76,23 @@ pub fn balthasar_at() -> Option<&'static str> {
     SESSION.get().and_then(|(_, at)| at.as_deref())
 }
 
+/// Which program fills each role here, as `ROLES.md` names them. Process-global for the reason
+/// [`SESSION`] is: a magi fills each role once, for as long as it runs.
+static ROLES: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+
+/// Say which program fills each role, so a VM built later can ask a sibling by the job rather than
+/// by name. Called once; later calls are ignored rather than refused.
+pub fn name_roles(roles: &[(String, String)]) {
+    let _ = ROLES.set(roles.to_vec());
+}
+
+/// Every role and the program filling it, or nothing when nobody has said — a config test and a
+/// worker a test built have no configuration to have said it.
+#[must_use]
+pub fn roles() -> &'static [(String, String)] {
+    ROLES.get().map_or(&[], Vec::as_slice)
+}
+
 impl Default for Engine {
     fn default() -> Self {
         Self::new()
@@ -259,6 +276,15 @@ impl Engine {
                 let at = luna::String::from_slice(&ctx, at.as_bytes());
                 magi.set(ctx, "balthasar_at", at).ok();
             }
+            // And which program fills each role, so a tool description names the job.
+            if !roles().is_empty() {
+                let table = Table::new(&ctx);
+                for (role, program) in roles() {
+                    let program = luna::String::from_slice(&ctx, program.as_bytes());
+                    table.set(ctx, role.as_str(), program).ok();
+                }
+                magi.set(ctx, "roles", table).ok();
+            }
 
             for (key, _) in magi.iter(ctx) {
                 if let Value::String(name) = key {
@@ -418,6 +444,38 @@ impl Engine {
                 magi.set(ctx, "clients", table).ok();
             }
         });
+    }
+
+    /// Hand the VM which program fills each role. Separate from [`name_roles`], which reaches only
+    /// the VMs built after it: the VM that reads the configuration is the one that learns the roles,
+    /// so it is already running when they are known.
+    pub fn install_roles(&mut self, roles: &[(String, String)]) {
+        self.lua.enter(|ctx| {
+            let table = Table::new(&ctx);
+            for (role, program) in roles {
+                let program = luna::String::from_slice(&ctx, program.as_bytes());
+                table.set(ctx, role.as_str(), program).ok();
+            }
+            if let Value::Table(magi) = ctx.get_global_value("magi") {
+                magi.set(ctx, "roles", table).ok();
+            }
+        });
+    }
+
+    /// One string setting as the config has left it, without harvesting. For the settings that
+    /// decide what is loaded next: which program fills a role is needed before the tool
+    /// descriptions that ask that program anything are run.
+    #[must_use]
+    pub fn setting(&mut self, name: &str) -> Option<String> {
+        let mut out = None;
+        self.lua.enter(|ctx| {
+            if let Value::Table(magi) = ctx.get_global_value("magi")
+                && let Value::String(text) = magi.get_value(ctx, name)
+            {
+                out = Some(String::from_utf8_lossy(text.as_bytes()).into_owned());
+            }
+        });
+        out
     }
 }
 

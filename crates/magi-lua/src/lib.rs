@@ -18,7 +18,7 @@ mod stream;
 pub mod tool;
 
 pub use convert::{FromLua, json_from_lua};
-pub use engine::{Config, Engine, balthasar_at, name_session, session};
+pub use engine::{Config, Engine, balthasar_at, name_roles, name_session, roles, session};
 
 #[derive(Debug, thiserror::Error)]
 pub enum LuaError {

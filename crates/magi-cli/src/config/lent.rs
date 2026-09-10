@@ -1,14 +1,13 @@
 //! Client libraries, asked from the siblings that implement them rather than vendored: a vendored
 //! copy goes stale and silently drops tools the surface it talks to still declares.
 
-const SIBLINGS: &[&str] = &["casper", "melchior", "balthasar"];
-
-/// Ask each sibling for its client library. Absent, unrunnable, or lending nothing is not an error.
+/// Ask each of these for its client library — the programs filling this session's roles, from
+/// [`super::roles`]. Absent, unrunnable, or lending nothing is not an error.
 #[must_use]
-pub fn borrowed() -> Vec<(String, String)> {
-    SIBLINGS
+pub fn borrowed(siblings: &[String]) -> Vec<(String, String)> {
+    siblings
         .iter()
-        .filter_map(|name| lends(name).map(|source| ((*name).to_owned(), source)))
+        .filter_map(|name| lends(name).map(|source| (name.clone(), source)))
         .collect()
 }
 

@@ -17,15 +17,21 @@
 -- `read`, `write` and `edit` are not here at all — they are compiled in, as the floor a session
 -- can never be without. See `magi-tools`.
 
-do -- balthasar
+do -- the memory role
+  -- Which program fills the `memory` role -- see ROLES.md. `magi.roles` is what the configuration
+  -- said, and `balthasar` is who has always filled it when nothing says otherwise. The name is
+  -- read here and used everywhere below, so pointing `magi.memory` at another program moves this
+  -- whole block to it without a word changing.
+  local PROGRAM = (magi.roles and magi.roles.memory) or "balthasar"
+
   -- The memory layer, if it is installed. Whether it is, is answered by the client library in
-  -- hand: magi asks each sibling for one by running it, so a library here means a balthasar
-  -- binary ran on this machine a moment ago. Nothing else at config time knows as much -- a
+  -- hand: magi asks each sibling for one by running it, so a library here means that program
+  -- ran on this machine a moment ago. Nothing else at config time knows as much -- a
   -- socket file outlives its process, and a live one may still be too busy to answer.
   local function client()
-    local source = magi.clients and magi.clients.balthasar
-    if not source then return nil, "balthasar's client library is not installed" end
-    local chunk, why = load(source, "balthasar.lua")
+    local source = magi.clients and magi.clients[PROGRAM]
+    if not source then return nil, PROGRAM .. "'s client library is not installed" end
+    local chunk, why = load(source, PROGRAM .. ".lua")
     if not chunk then return nil, why end
     return chunk(magi.stream)
   end
@@ -33,7 +39,7 @@ do -- balthasar
   -- Read at load, because a tool has to exist before the model is told what it may call. balthasar
   -- being absent is the ordinary case, not an error: nothing is registered and the session runs
   -- without memory, which is what every session did before balthasar existed.
-  local balthasar = select(1, client())
+  local memory = select(1, client())
 
   -- The last context balthasar handed over. A recall that comes back with an injection id is balthasar
   -- saying "these went into your model's context, tell me what you did with them" -- and this
@@ -48,8 +54,8 @@ do -- balthasar
   -- and knows exactly where it put it, so it says.
   --
   -- Absent outside a session (`magi tools` builds a VM to list what is declared) and absent when
-  -- there is no balthasar at all, and then this is `{ tool = "balthasar" }` exactly as before.
-  local OURS = { tool = "balthasar", path = magi.balthasar_at }
+  -- there is no memory layer at all, and then this is `{ tool = PROGRAM }` exactly as before.
+  local OURS = { tool = PROGRAM, path = magi.balthasar_at }
 
   -- Which verbs the model gets, and their whole declaration. The rest are the harness's --
   -- `observe`, `replay` and the transcript plumbing magi drives in Rust, not through here.
@@ -111,7 +117,7 @@ do -- balthasar
     },
   }
 
-  if balthasar then
+  if memory then
     for name, shape in pairs(MEMORY) do
       magi.tool(name, {
         description = shape.about,
@@ -122,7 +128,7 @@ do -- balthasar
           local positional = {}
           for i, key in ipairs(shape.args) do positional[i] = args[key] end
           local answer, why =
-            balthasar.fetch(OURS, name, table.unpack(positional, 1, #shape.args))
+            memory.fetch(OURS, name, table.unpack(positional, 1, #shape.args))
           if not answer then return { content = tostring(why), is_error = true } end
           -- Kept, and stripped from what the model sees. The id is bookkeeping between magi
           -- and balthasar; putting it in the context would spend tokens on a handle the model
@@ -151,7 +157,7 @@ do -- balthasar
   -- Declared here rather than in MEMORY above because it takes this session's id first, which the
   -- model has no business supplying and no way to know. `magi.session` is absent in a VM nobody
   -- named a session for -- `magi tools` has one -- and then this tool is simply not offered.
-  if balthasar and magi.session then
+  if memory and magi.session then
     magi.tool("history", {
       description =
         "Read earlier parts of this conversation back out of the memory layer. " ..
@@ -192,7 +198,7 @@ do -- balthasar
         -- Capped here as well as by balthasar. Its own default is generous for a plugin reading a
         -- history; this is a model spending its own context to get one back.
         local tokens = math.min(tonumber(args.tokens) or 2000, 8000)
-        local answer, why = balthasar.fetch(OURS, "scroll", magi.session, {
+        local answer, why = memory.fetch(OURS, "scroll", magi.session, {
           want = want,
           cursor = args.cursor,
           terms = args.terms,
@@ -214,7 +220,7 @@ do -- balthasar
   -- this never fires; the session runs exactly as it did before.
   magi.watch("balthasar-outcome", {
     run = function(event)
-      if not balthasar or not injection then return end
+      if not memory or not injection then return end
       -- Only tool events. magi tells watchers about turns, permissions, compaction and the
       -- session too, and every one of those arrives here with no `tool` field at all.
       if event.kind ~= "tool.finished" then return end
@@ -225,13 +231,13 @@ do -- balthasar
       local args = event.arguments or {}
       local action = args.command or args.path or args.query or ""
 
-      local used = balthasar.fetch(OURS, "used", injection, {
+      local used = memory.fetch(OURS, "used", injection, {
         tool = event.tool,
         action = action,
       })
       if not used or not used.action then return end
 
-      balthasar.fetch(OURS, "outcome", used.action, {
+      memory.fetch(OURS, "outcome", used.action, {
         kind = event.is_error and "failed" or "succeeded",
       })
     end,

@@ -46,9 +46,10 @@ pub enum Started {
     Refused(String),
 }
 
-/// Start a balthasar for this session and return the socket it bound. The reason is carried out
-/// rather than logged, because the caller refuses the session and has to say the actual cause.
-pub async fn start(instance: &str, project: &Path, agent: Option<&str>) -> Started {
+/// Start this session's memory layer and return the socket it bound. `program` is whatever fills
+/// the `memory` role — see `ROLES.md`. The reason is carried out rather than logged, because the
+/// caller refuses the session and has to say the actual cause.
+pub async fn start(program: &str, instance: &str, project: &Path, agent: Option<&str>) -> Started {
     // Somebody else already said which one to talk to. Theirs, not ours to start.
     if std::env::var_os("MAGI_API_SOCKET").is_some_and(|v| !v.is_empty()) {
         return Started::Theirs;
@@ -60,7 +61,7 @@ pub async fn start(instance: &str, project: &Path, agent: Option<&str>) -> Start
     // sweeping one path only ever cleared a corpse this same session had left, which is none.
     sweep_stale(&dir);
 
-    let mut spawning = Command::new("balthasar");
+    let mut spawning = Command::new(program);
     // In the child's initial environment, which is the only place balthasar can read it from.
     if let Some(agent) = agent {
         spawning.env(AGENT, agent);
@@ -85,7 +86,7 @@ pub async fn start(instance: &str, project: &Path, agent: Option<&str>) -> Start
     let child = match child {
         Ok(child) => child,
         Err(why) => {
-            return Started::Refused(format!("`balthasar serve` could not be started: {why}"));
+            return Started::Refused(format!("`{program} serve` could not be started: {why}"));
         }
     };
     if let Ok(mut held) = STARTED.lock() {
@@ -110,10 +111,10 @@ pub async fn start(instance: &str, project: &Path, agent: Option<&str>) -> Start
             stop();
             return Started::Refused(match said.is_empty() {
                 true => format!(
-                    "`balthasar serve` exited ({status}) without binding {}",
+                    "`{program} serve` exited ({status}) without binding {}",
                     socket.display()
                 ),
-                false => format!("`balthasar serve` exited ({status}): {said}"),
+                false => format!("`{program} serve` exited ({status}): {said}"),
             });
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
@@ -125,7 +126,7 @@ pub async fn start(instance: &str, project: &Path, agent: Option<&str>) -> Start
     }
     stop();
     Started::Refused(format!(
-        "balthasar did not bind {} within {PATIENCE:?}",
+        "{program} did not bind {} within {PATIENCE:?}",
         socket.display()
     ))
 }
@@ -403,7 +404,11 @@ mod tests {
         // Set for the length of this test only, and read before anything is spawned.
         let saved = std::env::var_os("MAGI_API_SOCKET");
         assert!(
-            saved.is_none() || matches!(start("x", Path::new("/tmp"), None).await, Started::Theirs),
+            saved.is_none()
+                || matches!(
+                    start("balthasar", "x", Path::new("/tmp"), None).await,
+                    Started::Theirs
+                ),
             "an explicit socket means somebody else's balthasar — not ours to start, and not a \
              refusal either"
         );

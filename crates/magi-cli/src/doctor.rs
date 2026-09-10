@@ -114,9 +114,9 @@ fn report() -> String {
         }
     }
 
-    heading(&mut out, "siblings");
-    for (name, what) in SIBLINGS {
-        row(&mut out, name, &sibling(name, what));
+    heading(&mut out, "roles");
+    for (role, program) in crate::config::roles::filled(&loaded) {
+        row(&mut out, &role, &sibling(&role, &program));
     }
     out
 }
@@ -141,35 +141,28 @@ fn nothing_loaded() -> crate::config::Loaded {
     }
 }
 
-/// The programs a session reaches for, and what each is for. Named rather than discovered, so the
-/// report answers "what is missing" instead of "what is installed".
-const SIBLINGS: &[(&str, &str)] = &[
-    ("casper", "tools"),
-    ("melchior", "the model"),
-    ("balthasar", "memory"),
-];
-
-/// Whether `name` is installed, and whether it actually answers: a program on `$PATH` is not a
-/// running one, and a socket that accepts is not one that answers.
-fn sibling(name: &str, what: &str) -> String {
+/// Which program fills `role`, and whether it can do the job: a program on `$PATH` is not a running
+/// one, and a socket that accepts is not one that answers. Probed by role rather than by name —
+/// dialling a socket is how you check a memory layer, whatever the memory layer is called.
+fn sibling(role: &str, name: &str) -> String {
     let Some(path) = which(name) else {
-        return format!("not installed — no {what}");
+        return format!("{name} — not installed, so this session has no {role}");
     };
     let at = path.display().to_string();
-    match name {
+    match role {
         // Served on a socket, and the socket is the thing that lies.
-        "balthasar" => match magi_ipc::family::blocking::Family::find() {
-            Ok(_) => format!("{at} — answering"),
-            Err(why) => format!("{at} — installed, but {why}"),
+        "memory" => match magi_ipc::family::blocking::Family::find() {
+            Ok(_) => format!("{name} — {at} — answering"),
+            Err(why) => format!("{name} — {at} — installed, but {why}"),
         },
         // Asked the way magi asks them: one listing verb, whose emptiness is itself the answer.
-        "casper" => match magi_tools::casper::cards_from(name).len() {
-            0 => format!("{at} — installed, but offers no tools"),
-            n => format!("{at} — {n} tools"),
+        "tools" => match magi_tools::casper::cards_from(name).len() {
+            0 => format!("{name} — {at} — installed, but offers no tools"),
+            n => format!("{name} — {at} — {n} tools"),
         },
         _ => match answers_models(name) {
-            Some(n) => format!("{at} — {n} models"),
-            None => format!("{at} — installed, but would not answer `models`"),
+            Some(n) => format!("{name} — {at} — {n} models"),
+            None => format!("{name} — {at} — installed, but would not answer `models`"),
         },
     }
 }
@@ -234,5 +227,17 @@ mod tests {
         ];
         assert_eq!(named(&files), "oslo.lua tools.lua");
         assert_eq!(named(&[]), "(none)");
+    }
+
+    #[test]
+    fn a_role_naming_a_program_that_is_not_there_says_which_program() {
+        // The failure this is for: `magi.memory` pointed at something that was never installed.
+        // "not installed" without the name sends a person looking for balthasar.
+        let said = super::sibling("memory", "magi-no-such-memory-anywhere");
+        assert!(
+            said.starts_with("magi-no-such-memory-anywhere — not installed"),
+            "{said}"
+        );
+        assert!(said.contains("no memory"), "{said}");
     }
 }

@@ -215,13 +215,16 @@ pub async fn serve_on(
     .ok()
     .flatten();
     if let Some(served) = served {
-        match installed(&mut catalog.clients, "balthasar", served) {
+        // Filed under the program's own name, because that is the key a tool description looks it
+        // up by — see `magi.roles` and `config/tools.lua`.
+        let memory = catalog.memory.clone();
+        match installed(&mut catalog.clients, &memory, served) {
             Put::Kept => {}
             Put::Replaced => {
-                magi_model::noted!("clients: balthasar's own library replaced this build's copy");
+                magi_model::noted!("clients: {memory}'s own library replaced this build's copy");
             }
             Put::Added => {
-                magi_model::noted!("clients: balthasar's own library is this session's only copy");
+                magi_model::noted!("clients: {memory}'s own library is this session's only copy");
             }
         }
     }

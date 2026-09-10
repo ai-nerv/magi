@@ -35,36 +35,32 @@ pub async fn start(
         crate::driving::settle(loaded).await;
     }
 
-    // Started here, not found: magi convenes its siblings. Named after the key, not the run — a run
-    // is shared by every agent in it, so a socket named after one would refuse the second agent.
-    let ours = crate::balthasar::start(key, Path::new(&cwd), agent).await;
+    // Started here, not found: magi convenes its siblings. Whichever program fills the `memory`
+    // role, named after the key rather than the run — a run is shared by every agent in it, so a
+    // socket named after one would refuse the second agent.
+    let memory = loaded.map_or_else(
+        || crate::config::roles::BALTHASAR.to_owned(),
+        crate::config::memory,
+    );
+    let ours = crate::balthasar::start(&memory, key, Path::new(&cwd), agent).await;
 
-    // balthasar is the store, and there is no other. A JSONL fallback made two stores, one of them
-    // going stale and silently — a session resumed from it resumes into something that half
+    // The memory layer is the store, and there is no other. A JSONL fallback made two stores, one
+    // of them going stale and silently — a session resumed from it resumes into something that half
     // happened. A session that cannot record is refused instead.
     let ours = match ours {
         crate::balthasar::Started::Ours(socket) => Some(socket),
         crate::balthasar::Started::Theirs => None,
         // Said in the words the attempt produced: refusing a session means naming what went wrong.
         crate::balthasar::Started::Refused(why) => {
-            anyhow::bail!(
-                "magi could not convene balthasar, which holds this session's history: {why}\n\
-                 balthasar is the store — there is no local journal to fall back to. \
-                 Install it and put it on PATH, or check `balthasar status`."
-            )
+            anyhow::bail!("{}", unreachable(&memory, "convene", &why))
         }
     };
     let dialled = match &ours {
         Some(socket) => magi_ipc::family::Family::dial(socket).await,
         None => magi_ipc::family::Family::find(None).await,
     };
-    let family = dialled.map_err(|why| {
-        anyhow::anyhow!(
-            "magi could not reach balthasar, which holds this session's history: {why}\n\
-             balthasar is the store — there is no local journal to fall back to. \
-             Install it and put it on PATH, or check `balthasar status`."
-        )
-    })?;
+    let family = dialled
+        .map_err(|why| anyhow::anyhow!("{}", unreachable(&memory, "reach", &why.to_string())))?;
     let mut scribe = magi_host::scribe::Scribe::over(family, ours.clone(), &id);
     let carried = match resume.then(|| resumable(&mut scribe)) {
         Some(fut) => fut.await,
@@ -331,6 +327,16 @@ mod leftovers {
         );
         assert!(dir.join("theirs.host").exists());
     }
+}
+
+/// Why a session is refused when the `memory` role's program will not answer. The program is named
+/// rather than balthasar: a person who pointed `magi.memory` elsewhere is owed the name they chose.
+fn unreachable(memory: &str, what: &str, why: &str) -> String {
+    format!(
+        "magi could not {what} {memory}, which holds this session's history: {why}\n\
+         {memory} fills the `memory` role and is the store — there is no local journal to fall \
+         back to. Install it and put it on PATH, or check `{memory} status`."
+    )
 }
 
 /// The newest run balthasar holds for this project, for `--resume`. Empty is a fresh session.

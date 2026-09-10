@@ -2,15 +2,21 @@
 //! magi answers only that, so a setting one of them renames comes back refused by name instead of
 //! failing silently. What magi has no answer for is not sent, and the sibling keeps its own default.
 
+use crate::config::roles;
 use magi_host::driving;
 
-/// Every sibling magi drives, and what it is called on `PATH`.
-const SIBLINGS: &[&str] = &["casper", "melchior", "balthasar"];
+/// Every sibling magi drives: one per role, and each named once.
+fn siblings(loaded: &crate::config::Loaded) -> Vec<String> {
+    roles::programs(&roles::filled(loaded))
+}
 
 /// Tell each sibling what this configuration implies for it. Quiet when a sibling is not installed;
 /// a refusal is said out loud, being a coordinator and a sibling disagreeing about what a name means.
+///
+/// Which siblings those are comes from the role table and nowhere else: a program named as this
+/// session's memory is the one to drive, whatever it is called.
 pub async fn settle(loaded: &crate::config::Loaded) {
-    for program in SIBLINGS {
+    for program in &siblings(loaded) {
         let needs = driving::needs(program).await;
         if needs.is_empty() {
             continue;
@@ -137,7 +143,22 @@ mod blocks {
         let said = answers(&held, "casper");
         assert!(said.iter().any(|(n, _)| n == "tools"), "{said:?}");
         assert!(!answers(&held, "melchior").iter().any(|(n, _)| n == "tools"));
-        assert!(SIBLINGS.contains(&"casper"), "and it is actually driven");
+        assert!(
+            siblings(&held).iter().any(|name| name == "casper"),
+            "and it is actually driven"
+        );
+    }
+
+    #[test]
+    fn the_sibling_a_role_names_is_the_one_driven() {
+        // Not the one this build grew up with: naming a memory layer must aim its settings at it.
+        let held = loaded(r#"magi.memory = "remembrance""#);
+        let driven = siblings(&held);
+        assert!(
+            driven.iter().any(|name| name == "remembrance"),
+            "{driven:?}"
+        );
+        assert!(!driven.iter().any(|name| name == "balthasar"), "{driven:?}");
     }
 
     #[test]

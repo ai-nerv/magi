@@ -18,9 +18,6 @@ pub struct Loaded {
 pub fn load() -> Result<Loaded, LuaError> {
     let mut engine = Engine::new();
     let mut tools: Vec<(String, String)> = Vec::new();
-    // Every sibling serves its own client library, so magi asks rather than vendoring — a stale
-    // copy silently removed every memory tool from every session. See `lent`.
-    let mut clients: Vec<(String, String)> = lent::borrowed();
 
     let entry = config_dir()
         .map(|dir| dir.join("init.lua"))
@@ -34,8 +31,19 @@ pub fn load() -> Result<Loaded, LuaError> {
                 "no configuration; run `make configs` to install it",
             ),
         })?;
-    engine.install_clients(&clients);
     engine.run_file(&entry)?;
+
+    // Read before anything is borrowed and before any tool description runs: a role names the
+    // program magi asks for a client library, and a tool description opens that library as it
+    // loads. Said to the VM as well as to this process, since the VM reading the configuration is
+    // the one that learned the roles and is already running by the time they are known.
+    let filled = roles::said(&mut engine);
+    magi_lua::name_roles(&filled);
+    engine.install_roles(&filled);
+    // Every sibling serves its own client library, so magi asks rather than vendoring — a stale
+    // copy silently removed every memory tool from every session. See `lent`.
+    let mut clients: Vec<(String, String)> = lent::borrowed(&roles::programs(&filled));
+    engine.install_clients(&clients);
 
     // Drained in rounds so a loaded file may load more; a round's clients are installed before its
     // tools run, since a tool description opens its sibling's client as it loads.
@@ -219,11 +227,13 @@ fn collect(
 /// sibling's own name otherwise. One function, so the layer and the model list cannot disagree.
 #[must_use]
 pub fn mind(loaded: &Loaded) -> String {
-    loaded
-        .config
-        .string("melchior")
-        .unwrap_or(magi_host::broker::MELCHIOR)
-        .to_owned()
+    roles::fills(loaded, "model")
+}
+
+/// Which program holds this session's history — the `memory` role, as `magi.memory` named it.
+#[must_use]
+pub fn memory(loaded: &Loaded) -> String {
+    roles::fills(loaded, "memory")
 }
 
 /// Everything the daemon could talk to, so `:model` has something to pick among. Built once at start
@@ -232,6 +242,7 @@ pub fn mind(loaded: &Loaded) -> String {
 pub fn catalog(loaded: &Loaded, cards: Vec<magi_proto::ask::Card>) -> magi_host::catalog::Catalog {
     let mut catalog = magi_host::catalog::Catalog {
         mind: mind(loaded),
+        memory: memory(loaded),
         casper: casper_pin(loaded),
         casper_configure: settings::casper_configure(loaded),
         tools: loaded.tools.clone(),
@@ -253,6 +264,7 @@ pub fn catalog(loaded: &Loaded, cards: Vec<magi_proto::ask::Card>) -> magi_host:
 pub(crate) mod chosen;
 mod discovered;
 mod lent;
+pub mod roles;
 use chosen::asked;
 mod settings;
 

@@ -10,6 +10,10 @@ use magi_proto::{Cursor, Entry, SessionId};
 /// of its users, which would put `worker` and `turn` in a cycle.
 pub type Held = std::sync::Arc<tokio::sync::Mutex<Option<Scribe>>>;
 
+/// The program that filled the `memory` role before it was a role, and the default when nothing
+/// names another.
+pub const BALTHASAR: &str = "balthasar";
+
 /// Every verb the memory role names, from `ROLES.md`. Here so [`Scribe::raw`] cannot reach past the
 /// contract: an escape hatch taking any verb makes the contract advisory.
 const ROLE: &[&str] = &[
