@@ -73,6 +73,9 @@ jobs:
               */gate-no-llm.sh|*/gate-hermetic.sh) continue ;;
               # Needs a built binary rather than a grep over the source; its own step, below.
               */gate-family.sh) continue ;;
+              # Takes a role and a binary. magi fills no role — it coordinates — so nothing runs it
+              # here; the three that do fill one run it from their own `make verify`. See ROLES.md.
+              */gate-role.sh) continue ;;
             esac
             printf '\n== %s\n' "$g"
             nix develop --command "$g"

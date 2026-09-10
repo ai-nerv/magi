@@ -501,7 +501,7 @@ make.recipe{
   -- The two that are skipped are skipped by name because each has a recipe of its own: one needs
   -- a built binary, the other re-runs the entire suite.
   run = function()
-    local elsewhere = { ["gate-family"] = true, ["gate-hermetic"] = true }
+    local elsewhere = { ["gate-family"] = true, ["gate-hermetic"] = true, ["gate-role"] = true }
     local failed = {}
     for _, path in ipairs(oslo.fs.glob("scripts/gate-*.sh")) do
       local name = oslo.path.name(path):gsub("%.sh$", "")

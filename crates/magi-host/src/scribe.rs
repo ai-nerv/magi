@@ -10,6 +10,13 @@ use magi_proto::{Cursor, Entry, SessionId};
 /// of its users, which would put `worker` and `turn` in a cycle.
 pub type Held = std::sync::Arc<tokio::sync::Mutex<Option<Scribe>>>;
 
+/// Every verb the memory role names, from `ROLES.md`. Here so [`Scribe::raw`] cannot reach past the
+/// contract: an escape hatch taking any verb makes the contract advisory.
+const ROLE: &[&str] = &[
+    "observe", "replay", "amend", "recall", "remember", "forget", "why", "scroll", "plan", "used",
+    "outcome", "model", "resume", "sessions",
+];
+
 pub struct Scribe {
     family: Family,
     /// Where to dial to get this connection back. balthasar can restart, and it drops a caller that
@@ -80,6 +87,11 @@ impl Scribe {
     /// # Errors
     /// As any other call: a balthasar that is not there costs the answer and nothing else.
     pub async fn raw(&mut self, verb: &str) -> Result<Vec<serde_json::Value>, Fault> {
+        if !ROLE.contains(&verb) {
+            return Err(Fault::Refused(format!(
+                "`{verb}` is not one of the memory role's verbs; see ROLES.md"
+            )));
+        }
         let args = vec![serde_json::Value::String(self.session.clone())];
         self.family.call(verb, args).await
     }
@@ -214,18 +226,6 @@ impl Scribe {
             .map(str::to_owned))
     }
 
-    /// What balthasar has attributed to one memory: outcomes, and how often it was returned.
-    pub async fn utility(&mut self, memory: &str) -> Result<serde_json::Value, Fault> {
-        let values = self
-            .family
-            .call(
-                "utility",
-                vec![serde_json::Value::String(memory.to_owned())],
-            )
-            .await?;
-        Ok(values.first().cloned().unwrap_or(serde_json::Value::Null))
-    }
-
     /// The Lua library that speaks balthasar's surface, as balthasar itself ships it. A consumer
     /// keeping its own copy is one whose copy goes stale: take the one the server serves.
     ///
@@ -310,14 +310,6 @@ impl Scribe {
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned)
             .ok_or_else(|| Fault::Malformed("remember answered no id".to_owned()))
-    }
-
-    /// Stop asserting one memory.
-    pub async fn drop_memory(&mut self, id: &str) -> Result<(), Fault> {
-        self.family
-            .call("forget", vec![serde_json::Value::String(id.to_owned())])
-            .await?;
-        Ok(())
     }
 }
 
@@ -623,5 +615,35 @@ mod tests {
         );
         let (_, back) = rebuild(&wire).expect("rebuild");
         assert_eq!(back, entry);
+    }
+}
+
+#[cfg(test)]
+mod role {
+    use super::ROLE;
+
+    #[test]
+    fn every_verb_scribe_calls_is_one_the_role_names() {
+        // The list and the call sites are two copies of one fact. This is the cheap half of holding
+        // them together; `gate-role.sh` holds the other end against `ROLES.md`.
+        let source = include_str!("scribe.rs");
+        for verb in ["observe", "amend", "replay", "sessions", "recall", "model"] {
+            assert!(
+                source.contains(&format!("call(\"{verb}\"")) || ROLE.contains(&verb),
+                "`{verb}` is called but the role does not name it"
+            );
+        }
+    }
+
+    #[test]
+    fn the_role_names_no_verb_balthasar_alone_offers() {
+        // `utility`, `context`, `trace` and `status` are balthasar's own. A role contract that
+        // named them would make a second implementation owe verbs magi never calls.
+        for theirs in ["utility", "context", "trace", "status", "ingest"] {
+            assert!(
+                !ROLE.contains(&theirs),
+                "`{theirs}` is one implementation's, not the role's"
+            );
+        }
     }
 }
