@@ -3,19 +3,20 @@
 //! The family's wire carries no request id, so a reply is matched to a call by position alone. A
 //! caller that gives up on a read and keeps the connection reads the abandoned reply as the next
 //! call's answer. These drive the real client libraries, through the real socket primitive, against
-//! a listener that answers the first call too slowly on purpose.
+//! a listener that withholds the first reply until the caller has given up on it.
 
 use magi_lua::Engine;
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{Sender, channel};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// How long the client waits for a reply, and how long the first reply is withheld. Far enough
-/// apart that a loaded machine cannot make the first call succeed.
+/// How long the client waits for a reply, how long the first reply is withheld past that, and how
+/// long the test waits for the listener to say it wrote one.
 const PATIENCE: Duration = Duration::from_millis(150);
-const WITHHELD: Duration = Duration::from_millis(900);
+const WITHHELD: Duration = Duration::from_millis(400);
+const DEADLINE: Duration = Duration::from_secs(10);
 
 /// A client library, read from the tree at run time the way the product reads it.
 fn source(relative: &str) -> String {
@@ -24,11 +25,9 @@ fn source(relative: &str) -> String {
 }
 
 /// A socket path this VM is allowed to dial: `magi.stream` refuses anything outside the runtime
-/// directories, and keeps it short enough for `SUN_LEN`.
+/// directories, and it stays short enough for `SUN_LEN`.
 fn socket_path(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir();
-    std::fs::create_dir_all(&dir).ok();
-    dir.join(format!("mg-ds-{tag}-{}.sock", std::process::id()))
+    std::env::temp_dir().join(format!("mg-ds-{tag}-{}.sock", std::process::id()))
 }
 
 /// The verb a request frame names, without a JSON parser.
@@ -41,9 +40,9 @@ fn verb_of(body: &[u8]) -> String {
 }
 
 /// Answer every call with the name of the verb that asked, so a reply read by the wrong call names
-/// the call it really belongs to. The first answer of the whole run is withheld past the client's
-/// patience; the rest are immediate.
-fn answer(mut stream: UnixStream, served: &AtomicUsize) {
+/// the call it really belongs to. The first answer of the run is withheld past the caller's
+/// patience; each one written is announced, so the test never has to guess when it landed.
+fn answer(mut stream: UnixStream, first: &Mutex<bool>, wrote: &Sender<String>) {
     loop {
         let mut head = [0_u8; 4];
         if stream.read_exact(&mut head).is_err() {
@@ -53,122 +52,144 @@ fn answer(mut stream: UnixStream, served: &AtomicUsize) {
         if stream.read_exact(&mut body).is_err() {
             return;
         }
-        if served.fetch_add(1, Ordering::SeqCst) == 0 {
-            std::thread::sleep(WITHHELD);
+        let verb = verb_of(&body);
+        {
+            let mut pending = first.lock().expect("the flag");
+            if *pending {
+                *pending = false;
+                std::thread::sleep(WITHHELD);
+            }
         }
-        let reply = format!(
-            "{{\"ok\":true,\"n\":1,\"result\":[\"{}\"]}}",
-            verb_of(&body)
-        );
+        let reply = format!("{{\"ok\":true,\"n\":1,\"result\":[\"{verb}\"]}}");
         let mut frame = (reply.len() as u32).to_be_bytes().to_vec();
         frame.extend_from_slice(reply.as_bytes());
-        if stream.write_all(&frame).is_err() || stream.flush().is_err() {
+        // Announced whether or not it landed: a caller that dials per call has already dropped the
+        // connection this reply was owed to, and the test still has to know the moment passed.
+        let landed = stream.write_all(&frame).and_then(|()| stream.flush());
+        if wrote.send(verb).is_err() || landed.is_err() {
             return;
         }
     }
 }
 
-/// A listener serving each connection on its own thread, for as long as the test holds it. A
-/// connection per thread because a client that dials per call has its second connection waiting
-/// while the first is still being withheld.
-fn listen(path: &std::path::Path) -> (std::thread::JoinHandle<()>, Arc<AtomicUsize>) {
+/// A listener serving each connection on its own thread, for as long as the test holds it, and a
+/// channel naming every reply it has put on the wire.
+fn listen(path: &std::path::Path) -> std::sync::mpsc::Receiver<String> {
     std::fs::remove_file(path).ok();
     let listener = UnixListener::bind(path).expect("bind");
-    let served = Arc::new(AtomicUsize::new(0));
-    let counted = Arc::clone(&served);
-    let handle = std::thread::spawn(move || {
+    let (wrote, written) = channel();
+    let first = Arc::new(Mutex::new(true));
+    std::thread::spawn(move || {
         while let Ok((stream, _)) = listener.accept() {
-            let counted = Arc::clone(&counted);
-            std::thread::spawn(move || answer(stream, &counted));
+            let (first, wrote) = (Arc::clone(&first), wrote.clone());
+            std::thread::spawn(move || answer(stream, &first, &wrote));
         }
     });
-    (handle, served)
+    written
 }
 
-/// Two calls on one client: the first times out, the second must not be handed the first's answer.
-///
-/// The answer is a single string so the harvest can carry it: what each call returned, and why it
-/// did not.
-fn two_calls(client: &str, chunk: &str, path: &std::path::Path) -> String {
-    let path = path.to_string_lossy().into_owned();
-    let script = format!(
-        r#"
-        local chunk = assert(load({client:?}, {chunk:?}))
-        local lib = chunk(magi.stream)
-        local session, why = lib.connect({{ path = {path:?}, timeout_ms = {ms} }})
-        if not session then
-          magi.answer = "no connection: " .. tostring(why)
-          return
-        end
-        local first, first_why = session:call("alpha")
-        local second, second_why = session:call("beta")
-        magi.answer = table.concat({{
-          tostring(first), tostring(first_why), tostring(second), tostring(second_why),
-        }}, "|")
-        "#,
-        ms = PATIENCE.as_millis(),
-    );
+/// One VM holding a live client, so the test can put the two calls either side of an event.
+struct Caller {
+    engine: Engine,
+}
 
-    let mut engine = Engine::new();
-    engine.run(&script, "desync.lua").expect("the client runs");
-    engine.harvest();
-    engine
-        .config()
-        .string("answer")
-        .expect("an answer")
-        .to_owned()
+impl Caller {
+    /// Load the library and open the connection, in the VM the calls will be made from.
+    fn new(client: &str, chunk: &str, path: &std::path::Path) -> Self {
+        let path = path.to_string_lossy().into_owned();
+        let script = format!(
+            r#"
+            local chunk = assert(load({client:?}, {chunk:?}))
+            local lib = chunk(magi.stream)
+            __session = assert(lib.connect({{ path = {path:?}, timeout_ms = {ms} }}))
+            "#,
+            ms = PATIENCE.as_millis(),
+        );
+        let mut engine = Engine::new();
+        engine.run(&script, "connect.lua").expect("a connection");
+        Self { engine }
+    }
+
+    /// One call, as `value|why`. Both stringified: what a caller was handed matters here, not its
+    /// type.
+    fn call(&mut self, verb: &str) -> String {
+        let script = format!(
+            r#"
+            local value, why = __session:call({verb:?})
+            magi.answer = tostring(value) .. "|" .. tostring(why)
+            "#
+        );
+        self.engine.run(&script, "call.lua").expect("a call runs");
+        self.engine.harvest();
+        self.engine
+            .config()
+            .string("answer")
+            .expect("an answer")
+            .to_owned()
+    }
+}
+
+/// Wait for the listener to say it has written the reply to `verb`.
+fn until_written(written: &std::sync::mpsc::Receiver<String>, verb: &str) {
+    let deadline = std::time::Instant::now() + DEADLINE;
+    while std::time::Instant::now() < deadline {
+        match written.recv_timeout(DEADLINE) {
+            Ok(seen) if seen == verb => return,
+            Ok(_) => continue,
+            Err(e) => panic!("the listener never wrote {verb}: {e}"),
+        }
+    }
+    panic!("the listener never wrote {verb}");
 }
 
 #[test]
 fn a_held_connection_does_not_hand_the_next_call_the_last_answer() {
     // oslo's client keeps its handle across calls, which is the shape the rule is about.
     let path = socket_path("oslo");
-    let (_serving, served) = listen(&path);
+    let written = listen(&path);
+    let mut caller = Caller::new(&source("../../config/clients/oslo.lua"), "oslo.lua", &path);
 
-    let answer = two_calls(&source("../../config/clients/oslo.lua"), "oslo.lua", &path);
+    let first = caller.call("alpha");
+    assert!(
+        first.starts_with("nil|"),
+        "the withheld first call must not answer: {first}"
+    );
+
+    // Only now is the abandoned reply on the wire, which is the state the next call inherits.
+    until_written(&written, "alpha");
+    let second = caller.call("beta");
     std::fs::remove_file(&path).ok();
 
-    let parts: Vec<&str> = answer.split('|').collect();
-    assert_eq!(
-        parts[0], "nil",
-        "the withheld first call must not answer: {answer}"
-    );
-    assert_ne!(
-        parts[2], "alpha",
-        "the second call was handed the first call's answer: {answer}"
-    );
-    assert_eq!(
-        parts[2], "nil",
-        "a poisoned handle answers with a refusal, not a value: {answer}"
+    assert!(
+        !second.starts_with("alpha|"),
+        "the second call was handed the first call's answer: {second}"
     );
     assert!(
-        parts[3].contains("closed"),
-        "a closed handle must say so rather than crash: {answer}"
+        second.starts_with("nil|") && second.contains("closed"),
+        "a poisoned handle must refuse clearly rather than crash: {second}"
     );
-    assert!(served.load(Ordering::SeqCst) >= 1, "the listener was asked");
 }
 
 #[test]
 fn a_reconnecting_client_is_in_step_on_the_next_call() {
-    // magi's own client dials per call, so the abandoned reply dies with its connection. Driven the
+    // magi's own client dials per call, so an abandoned reply dies with its connection. Driven the
     // same way, so the claim is measured rather than read off the source.
     let path = socket_path("magi");
-    let (_serving, _served) = listen(&path);
+    let written = listen(&path);
+    let mut caller = Caller::new(&source("lua/magi.lua"), "magi.lua", &path);
 
-    let answer = two_calls(&source("lua/magi.lua"), "magi.lua", &path);
+    let first = caller.call("alpha");
+    assert!(
+        first.starts_with("nil|"),
+        "the withheld first call must not answer: {first}"
+    );
+
+    until_written(&written, "alpha");
+    let second = caller.call("beta");
     std::fs::remove_file(&path).ok();
 
-    let parts: Vec<&str> = answer.split('|').collect();
-    assert_eq!(
-        parts[0], "nil",
-        "the withheld first call must not answer: {answer}"
-    );
-    assert_ne!(
-        parts[2], "alpha",
-        "the second call was handed the first call's answer: {answer}"
-    );
-    assert_eq!(
-        parts[2], "beta",
-        "the second call gets its own answer: {answer}"
+    assert!(
+        second.starts_with("beta|"),
+        "the second call must get its own answer: {second}"
     );
 }
