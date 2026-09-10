@@ -121,9 +121,11 @@ fn spawning(
     if let Some(prompt) = prompt {
         starting.arg(prompt);
     }
+    starting.envs(&minted.environment);
+    for named in crate::balthasar::AGENT {
+        starting.env(named, &minted.id);
+    }
     starting
-        .envs(&minted.environment)
-        .env(crate::balthasar::AGENT, &minted.id)
         .env_remove("MAGI_API_SOCKET")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -212,15 +214,19 @@ mod tests {
         // The trap: set to the parent's agent, both sessions would open one `memory.db`.
         let minted = minted();
         let environ = spawn_environment(&minted);
-        assert_eq!(
-            environ.get(crate::balthasar::AGENT).and_then(Clone::clone),
-            Some("iota-mu".to_owned()),
-            "the child came up as somebody else"
-        );
-        assert_ne!(
-            environ.get(crate::balthasar::AGENT).and_then(Clone::clone),
-            Some("alpha-rho".to_owned())
-        );
+        // Under both names, because which one the memory layer reads is its own business and a
+        // child that named itself under only the one it does not read is nameless to it.
+        for named in crate::balthasar::AGENT {
+            assert_eq!(
+                environ.get(named).and_then(Clone::clone),
+                Some("iota-mu".to_owned()),
+                "the child came up as somebody else under {named}"
+            );
+            assert_ne!(
+                environ.get(named).and_then(Clone::clone),
+                Some("alpha-rho".to_owned())
+            );
+        }
     }
 
     #[test]

@@ -369,12 +369,12 @@ fn safe(id: &str) -> String {
         .collect()
 }
 
-/// Where magi looks for this session's socket. `balthasar` is in the path because the family wire
-/// still names the program rather than the role — see PLAN-SWAPPABLE.md's M3.
+/// Where magi looks for this session's socket: the role's name, not any program's. Which is the
+/// point — a memory layer called `remembrance` binds `memory`, and nothing here impersonates.
 fn socket_dir() -> PathBuf {
     match std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
-        Some(runtime) => PathBuf::from(runtime).join("balthasar"),
-        None => std::env::temp_dir().join("balthasar"),
+        Some(runtime) => PathBuf::from(runtime).join("memory"),
+        None => std::env::temp_dir().join("memory"),
     }
 }
 

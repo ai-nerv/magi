@@ -321,8 +321,8 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
 
 /// Everything this session starts inherits this, under melchior's own names for the variables.
 /// Empty when there is no name, because a tool that invented one would sign as a session that does
-/// not exist. `BALTHASAR_AGENT` is deliberately absent: balthasar reads the agent out of the
-/// *connecting* process's environment, and the memory tools run in this process's own Lua VM.
+/// not exist. The agent variables are deliberately absent: the memory layer reads the agent out of
+/// the *connecting* process's environment, and the memory tools run in this process's own Lua VM.
 fn inherited(
     loaded: Option<&crate::config::Loaded>,
     named: &str,
@@ -484,7 +484,9 @@ mod inheriting {
     fn the_agent_is_not_something_a_session_hands_its_children() {
         let environ = inherited(None, "magi/main/alpha-rho");
         assert!(
-            !environ.contains_key(crate::balthasar::AGENT),
+            !crate::balthasar::AGENT
+                .iter()
+                .any(|named| environ.contains_key(*named)),
             "a child inherited its parent's agent and would file scratch in its directory"
         );
     }
@@ -505,6 +507,10 @@ mod inheriting {
         // A tool that invented a name would sign messages as a session that does not exist.
         let environ = inherited(None, "");
         assert!(!environ.contains_key("MAGI_MELCHIOR_ID"));
-        assert!(!environ.contains_key(crate::balthasar::AGENT));
+        assert!(
+            !crate::balthasar::AGENT
+                .iter()
+                .any(|named| environ.contains_key(*named))
+        );
     }
 }

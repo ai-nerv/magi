@@ -11,11 +11,13 @@ pub use mind::Mind;
 pub use magi_model::scratch::Scratch;
 pub use replay::{FakeHarness, Recording};
 
-/// Take away the two variables that would point a spawned magi at somebody else's balthasar:
+/// Take away the variables that would point a spawned magi at somebody else's memory layer:
 /// `MAGI_API_SOCKET` makes `balthasar::start` answer `Theirs`, so a test records into the
-/// developer's own memory, and `MAGI_BALTHASAR_INSTANCE` moves the socket directory.
+/// developer's own memory, and the instance variables move the socket directory. Both names of
+/// that one: a developer's shell may still be setting either.
 pub fn only_its_own_store(command: &mut std::process::Command) {
     command.env_remove("MAGI_API_SOCKET");
+    command.env_remove("MAGI_MEMORY_INSTANCE");
     command.env_remove("MAGI_BALTHASAR_INSTANCE");
 }
 

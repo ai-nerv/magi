@@ -97,13 +97,15 @@ fn kept_by_its_own_balthasar(dir: &Path) {
          journals: {left:?}. {}",
         lying_around()
     );
-    let own = dir.join("run/balthasar");
+    // Either name: a memory layer bound under the role's own binds `run/memory`, one that has not
+    // been rebuilt binds `run/balthasar`, and both are this run's own.
+    let own = [dir.join("run/memory"), dir.join("run/balthasar")];
     assert!(
-        own.is_dir(),
-        "the environment is dirty, not the code: this run convened no balthasar of its own, \
+        own.iter().any(|at| at.is_dir()),
+        "the environment is dirty, not the code: this run convened no memory layer of its own, \
          which is what `MAGI_API_SOCKET` in the shell that started the suite does — the run \
          then records into that session's store rather than into {}. {}",
-        own.display(),
+        own[0].display(),
         lying_around()
     );
 }

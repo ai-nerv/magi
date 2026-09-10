@@ -424,11 +424,13 @@ fn magi_refuses_to_run_without_the_store() {
     teardown(&dir);
 }
 
-/// Sockets magi is responsible for, which is every one under `run` but balthasar's own. That
-/// balthasar does not outlive the magi that started it is held to in `lifecycle.rs`.
+/// Sockets magi is responsible for, which is every one under `run` but the memory layer's own.
+/// Both of its names, because it binds the role's and the one that was the program's. That it does
+/// not outlive the magi that started it is held to in `lifecycle.rs`.
 fn magis_own_sockets(dir: &Path) -> Vec<PathBuf> {
+    let theirs = [dir.join("run").join("memory"), dir.join("run/balthasar")];
     sockets(&dir.join("run"))
         .into_iter()
-        .filter(|path| !path.starts_with(dir.join("run").join("balthasar")))
+        .filter(|path| !theirs.iter().any(|at| path.starts_with(at)))
         .collect()
 }

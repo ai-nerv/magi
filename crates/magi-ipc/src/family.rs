@@ -337,66 +337,8 @@ fn unwrap(reply: &serde_json::Value, verb: &str) -> Result<Vec<serde_json::Value
     Ok(values.iter().take(n).cloned().collect())
 }
 
-/// The directory balthasar binds its sockets in: `$XDG_RUNTIME_DIR/balthasar`, else a uid-suffixed
-/// temp directory, with `$MAGI_BALTHASAR_INSTANCE` selecting one when several are running.
-#[must_use]
-pub fn socket_dir() -> PathBuf {
-    let base = match std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
-        Some(runtime) => PathBuf::from(runtime).join("balthasar"),
-        None => {
-            std::env::temp_dir().join(format!("balthasar-{}", rustix::process::getuid().as_raw()))
-        }
-    };
-    match std::env::var("MAGI_BALTHASAR_INSTANCE") {
-        Ok(instance) if !instance.is_empty() => base.join(instance),
-        _ => base,
-    }
-}
-
-/// Every socket worth trying, newest first. `$MAGI_API_SOCKET` alone when it is set: a program
-/// balthasar started inherits it and means *that* session.
-#[must_use]
-pub fn candidates(dir: Option<&Path>) -> Vec<PathBuf> {
-    if let Some(named) = std::env::var_os("MAGI_API_SOCKET").filter(|v| !v.is_empty()) {
-        return vec![PathBuf::from(named)];
-    }
-    listing(&dir.map_or_else(socket_dir, Path::to_path_buf))
-}
-
-/// Every `api@*.sock` in one directory, newest first. The directory and nothing else — no
-/// `$MAGI_API_SOCKET` and no default location, unlike [`candidates`].
-#[must_use]
-pub fn sockets_in(dir: &Path) -> Vec<PathBuf> {
-    listing(dir)
-}
-
-/// Every `api@*.sock` in one directory, newest first.
-#[must_use]
-fn listing(dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-
-    let mut found: Vec<(std::time::SystemTime, PathBuf)> = entries
-        .flatten()
-        .filter(|e| {
-            let name = e.file_name();
-            let name = name.to_string_lossy();
-            name.starts_with("api@") && name.ends_with(".sock")
-        })
-        .map(|e| {
-            let when = e
-                .metadata()
-                .and_then(|m| m.modified())
-                .unwrap_or(std::time::UNIX_EPOCH);
-            (when, e.path())
-        })
-        .collect();
-
-    // Newest first, so the key is reversed rather than the ordering.
-    found.sort_by_key(|(when, _)| std::cmp::Reverse(*when));
-    found.into_iter().map(|(_, path)| path).collect()
-}
+mod looking;
+pub use looking::{candidates, legacy_socket_dir, socket_dir, socket_dirs, sockets_in};
 
 #[cfg(test)]
 mod tests {
@@ -552,37 +494,6 @@ mod tests {
             assert_eq!(back.surface, Some(1), "{wire:?}");
             assert_eq!(back.n, 1, "{wire:?}");
         }
-    }
-
-    #[test]
-    fn a_directory_that_is_not_there_offers_nothing() {
-        assert!(listing(Path::new("/nonexistent/magi-family")).is_empty());
-    }
-
-    #[test]
-    fn only_api_sockets_are_offered_and_the_newest_comes_first() {
-        // Named after this process: a fixed path under a shared directory is one collision away
-        // from two test binaries deleting each other's fixture.
-        let dir = magi_model::scratch::Scratch::new("magi-family-listing", "one");
-        for name in ["api@old.sock", "api@new.sock", "notes.txt", "api@x.other"] {
-            std::fs::write(dir.join(name), b"").expect("write");
-        }
-        // The gap is *set*, not hoped for: two files written back to back can land in the same
-        // filesystem tick, and the sort is stable, so equal times leave arbitrary `read_dir` order.
-        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
-        std::fs::File::options()
-            .write(true)
-            .open(dir.join("api@old.sock"))
-            .expect("open")
-            .set_modified(old)
-            .expect("set mtime");
-
-        let found = listing(&dir);
-        assert_eq!(found.len(), 2, "only api@*.sock: {found:?}");
-        assert!(
-            found[0].ends_with("api@new.sock"),
-            "newest first: {found:?}"
-        );
     }
 
     /// A caller that gives up on a call leaves its answer in the stream. Read as the next call's,

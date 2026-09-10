@@ -12,9 +12,10 @@ use std::sync::Mutex;
 /// The balthasar this process started, so it can be ended and its path cleared.
 static STARTED: Mutex<Option<Ours>> = Mutex::new(None);
 
-/// What balthasar reads a connection's agent out of — its name for it, spelled here because magi is
-/// what sets it. The two programs do not link, so the coupling is a variable name and nothing else.
-pub const AGENT: &str = "BALTHASAR_AGENT";
+/// What the memory role reads a connection's agent out of, spelled here because magi is what sets
+/// it: the coupling is a variable name and nothing else. Both, for one release — a memory layer
+/// that has not been rebuilt reads only the second, and would file this session under `main`.
+pub const AGENT: [&str; 2] = ["MAGI_MEMORY_AGENT", "BALTHASAR_AGENT"];
 
 /// The id out of `project/role/id`. Told to the balthasar magi spawns, not set on this process:
 /// balthasar reads it out of the peer's `/proc/<pid>/environ`, which `setenv` never touches.
@@ -26,11 +27,11 @@ pub fn agent_of(named: &str) -> Option<&str> {
         .filter(|id| !id.is_empty())
 }
 
-/// A balthasar this magi started, and the path it was told to bind. The path is kept beside the
-/// child, which is killed with a signal it cannot handle and so never unlinks its own socket.
+/// A balthasar this magi started, and every path it may have bound. The paths are kept beside the
+/// child, which is killed with a signal it cannot handle and so never unlinks its own sockets.
 struct Ours {
     child: Child,
-    socket: PathBuf,
+    sockets: Vec<PathBuf>,
 }
 
 /// How long to wait for a freshly started balthasar to bind. Generous: there is no fallback,
@@ -55,16 +56,25 @@ pub async fn start(program: &str, instance: &str, project: &Path, agent: Option<
         return Started::Theirs;
     }
 
-    let dir = magi_ipc::family::socket_dir();
-    let socket = dir.join(format!("api@{instance}.sock"));
+    // Both of the role's directories, the new name first: one that has not been rebuilt binds only
+    // the old, and waiting on the new alone times out against a program that came up perfectly.
+    let dirs = magi_ipc::family::socket_dirs();
+    let sockets: Vec<PathBuf> = dirs
+        .iter()
+        .map(|dir| dir.join(format!("api@{instance}.sock")))
+        .collect();
     // The whole directory, not only the path about to be taken: a session id is unique per magi, so
     // sweeping one path only ever cleared a corpse this same session had left, which is none.
-    sweep_stale(&dir);
+    for dir in &dirs {
+        sweep_stale(dir);
+    }
 
     let mut spawning = Command::new(program);
     // In the child's initial environment, which is the only place balthasar can read it from.
     if let Some(agent) = agent {
-        spawning.env(AGENT, agent);
+        for named in AGENT {
+            spawning.env(named, agent);
+        }
     }
     let child = spawning
         .arg("serve")
@@ -92,19 +102,21 @@ pub async fn start(program: &str, instance: &str, project: &Path, agent: Option<
     if let Ok(mut held) = STARTED.lock() {
         *held = Some(Ours {
             child,
-            socket: socket.clone(),
+            sockets: sockets.clone(),
         });
     }
 
     // Polled rather than assumed: a socket appears when balthasar binds it. The child is watched as
     // well, so an install that exits at once is not reported twenty seconds later as a timeout.
     let deadline = std::time::Instant::now() + PATIENCE;
-    let mut bound = false;
+    let mut bound: Option<PathBuf> = None;
     while std::time::Instant::now() < deadline {
-        match reached(&socket).await {
-            Reached::Answering => return Started::Ours(socket),
-            Reached::Bound => bound = true,
-            Reached::Nothing => {}
+        for socket in &sockets {
+            match reached(socket).await {
+                Reached::Answering => return Started::Ours(socket.clone()),
+                Reached::Bound => bound = bound.or_else(|| Some(socket.clone())),
+                Reached::Nothing => {}
+            }
         }
         if let Some(status) = exited() {
             let said = last_words();
@@ -112,7 +124,7 @@ pub async fn start(program: &str, instance: &str, project: &Path, agent: Option<
             return Started::Refused(match said.is_empty() {
                 true => format!(
                     "`{program} serve` exited ({status}) without binding {}",
-                    socket.display()
+                    named(&sockets)
                 ),
                 false => format!("`{program} serve` exited ({status}): {said}"),
             });
@@ -121,14 +133,23 @@ pub async fn start(program: &str, instance: &str, project: &Path, agent: Option<
     }
     // Bound and still busy opening its store. The session may have it: a write is on a clock of its
     // own, long enough to outlast the rest of that, where refusing here loses the session outright.
-    if bound {
+    if let Some(socket) = bound {
         return Started::Ours(socket);
     }
     stop();
     Started::Refused(format!(
         "{program} did not bind {} within {PATIENCE:?}",
-        socket.display()
+        named(&sockets)
     ))
+}
+
+/// The paths waited on, for a refusal that has to say what was looked for.
+fn named(sockets: &[PathBuf]) -> String {
+    sockets
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(" or ")
 }
 
 /// How far a poll got: balthasar opens its store on the first call, so it answers after it binds.
@@ -188,11 +209,13 @@ pub fn stop() {
 }
 
 /// Split from [`stop`] so the order can be tested without the process-wide static.
-fn ended(Ours { mut child, socket }: Ours) {
+fn ended(Ours { mut child, sockets }: Ours) {
     let _ = child.kill();
     let _ = child.wait();
-    // Absent when it never got as far as binding, which is the timeout path into here.
-    let _ = std::fs::remove_file(&socket);
+    // Every name it may have answered under; absent when it never got as far as binding.
+    for socket in &sockets {
+        let _ = std::fs::remove_file(socket);
+    }
 }
 
 /// Clear every socket in `dir` that nothing is serving — a pass over the directory, because what
@@ -326,12 +349,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_session_takes_its_socket_with_it() {
+    async fn a_session_takes_every_socket_it_answered_under_with_it() {
         let _alone = alone();
-        // Left behind, it was cleared by the next magi rather than by this one.
+        // Left behind, they were cleared by the next magi rather than by this one. Both names,
+        // because a memory layer this magi killed outright unlinks neither of its own.
         let dir = Scratch::new("magi-ended", "one");
         let socket = dir.join("api@00000000000000000003-gamma.sock");
+        let older = dir.join("api@00000000000000000003-gamma-old.sock");
         let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+        let elder = std::os::unix::net::UnixListener::bind(&older).expect("bind");
         // A stand-in for balthasar: running and holding the socket open, so this is a kill.
         let child = Command::new("sleep")
             .arg("30")
@@ -342,11 +368,16 @@ mod tests {
 
         ended(Ours {
             child,
-            socket: socket.clone(),
+            sockets: vec![socket.clone(), older.clone()],
         });
         drop(listener);
+        drop(elder);
 
         assert!(!socket.exists(), "the socket outlived the session");
+        assert!(
+            !older.exists(),
+            "the name it also answered under outlived the session"
+        );
         assert!(
             !Path::new(&format!("/proc/{id}")).exists(),
             "the child outlived the session"
@@ -365,7 +396,7 @@ mod tests {
         let id = child.id();
         ended(Ours {
             child,
-            socket: std::env::temp_dir().join("magi-never-bound-anything.sock"),
+            sockets: vec![std::env::temp_dir().join("magi-never-bound-anything.sock")],
         });
         assert!(
             !Path::new(&format!("/proc/{id}")).exists(),
