@@ -347,3 +347,73 @@ mod tests {
         assert!(!path.exists(), "a fake melchior outlived its test");
     }
 }
+
+/// The fixture speaks the wire, not a dialect of it.
+#[cfg(test)]
+mod spelling {
+    /// Every `"event": "…"` the fake melchior emits. They are ordinary `json!` literals, so the
+    /// name follows the tag with one `": "` between them.
+    fn emitted() -> Vec<String> {
+        const TAG: &str = "\"event\": \"";
+        let source = include_str!("mind.rs");
+        source
+            .match_indices(TAG)
+            .map(|(at, _)| {
+                source[at + TAG.len()..]
+                    .split('"')
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            // An identifier, so the `"event": "…"` in the line above this one — this function's own
+            // doc comment — is not read as an event the fixture emits.
+            .filter(|name| {
+                !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+            })
+            .collect()
+    }
+
+    /// The snake_case name each `Said` variant goes on the wire as. Read from the source because
+    /// `Said` is `#[serde(rename_all = "snake_case", tag = "event")]` and there is no way to
+    /// enumerate variants at run time without constructing each one.
+    fn spoken() -> Vec<String> {
+        let source = include_str!("../../magi-proto/src/ask.rs");
+        let body = source
+            .split_once("pub enum Said {")
+            .map(|(_, rest)| rest.split("\n}").next().unwrap_or_default())
+            .unwrap_or_default();
+        body.lines()
+            .filter_map(|line| line.strip_prefix("    "))
+            .filter(|line| line.starts_with(|c: char| c.is_ascii_uppercase()))
+            .map(|line| {
+                let name = line.trim_end_matches(&[' ', '{', ','][..]);
+                let mut out = String::new();
+                for (n, c) in name.chars().enumerate() {
+                    if c.is_ascii_uppercase() && n > 0 {
+                        out.push('_');
+                    }
+                    out.push(c.to_ascii_lowercase());
+                }
+                out
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_fake_emits_only_events_magi_can_read() {
+        // The anti-gate this closes: the fixture is a `/bin/sh` melchior encoding magi's *belief*
+        // about the ask stream, and nearly every turn test runs against it. A name it gets wrong is
+        // a suite that passes against a protocol nobody speaks. `gate-twins.sh` holds magi's `Said`
+        // against melchior's; this holds the fixture against magi's.
+        let known = spoken();
+        assert!(known.len() >= 5, "the variants did not parse: {known:?}");
+        let said = emitted();
+        assert!(!said.is_empty(), "no events were found in the fixture");
+        for event in &said {
+            assert!(
+                known.contains(event),
+                "the fake emits `{event}`, which is not a Said variant: {known:?}"
+            );
+        }
+    }
+}
