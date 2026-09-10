@@ -143,6 +143,46 @@ a reply goes back in whichever the call arrived in.
 
 ---
 
+## A caller that abandons a call abandons the connection
+
+**A reply says nothing about which call it answers.** There is no request id in the shape above,
+and adding one would move `family` for every program at once. What holds the two ends in step is
+position: one reply per call, in the order the calls were made.
+
+So a caller that gives up on a call — a timeout, a cancelled future, a `recv` that returned an
+error — has left a request on the wire whose reply is still coming. **It may not make another call
+on that connection.** The abandoned reply arrives first and is read as the next call's answer, and
+every answer after that belongs to the call before it. A write is told it landed by somebody else's
+reply; a verb is refused with an error it cannot produce.
+
+That is not hypothetical and it is not cheap to find. magi timed out a first call against a
+balthasar that was still opening its store, kept the connection, and then read the `plan` verb's
+refusal as the answer to `observe` — in 96 microseconds, from a call it had never made. The
+transcript it believed it had written was dropped, and `--resume` came back empty. It read as a
+flaky test for weeks.
+
+The rule is one line to obey: **on any failure to send a whole call or read a whole reply, close
+the connection.** Dial again for the next call; a connect is cheaper than a conversation that is
+quietly one behind.
+
+The rule binds a client that **holds its handle across calls**, which is what a program asked
+several times a turn will want to do. Such a client must close at *every* point a read can fail,
+including the one that has already consumed a frame header and would otherwise desynchronise on a
+partial frame. A client that dials per call is already in step by construction — the connection
+dies with the call it was made for — and needs nothing. Both shapes exist in this family and both
+are correct; what is not correct is holding a handle and keeping it through a failure.
+
+**The send half is the same fault seen from the other end.** A write that fails partway has put
+the head of a call on the wire that this side will never finish, and the far end reads whatever
+comes next as the rest of it. The reply to that half-call, if one comes, answers nothing that was
+asked. Both directions close.
+
+**Closing means the handle is gone, not merely shut.** The next call must meet "this connection is
+closed" and not a nil handle, a reused file descriptor, or a second error from the transport — a
+caller that cannot tell a closed line from a broken one will retry on the wrong one.
+
+---
+
 ## Extending one — the same directories everywhere
 
 All four are Lua at the edges, and all four discover what is installed the same way. It is

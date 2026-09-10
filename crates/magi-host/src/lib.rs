@@ -81,6 +81,38 @@ pub async fn serve(
     serve_catalog(listener, session, backend, crate::catalog::Catalog::empty()).await
 }
 
+/// What became of a served client library.
+#[derive(Debug, PartialEq, Eq)]
+enum Put {
+    /// The catalog already had exactly this.
+    Kept,
+    /// The catalog had an older copy under that name.
+    Replaced,
+    /// The catalog had no copy at all.
+    Added,
+}
+
+/// Put the library a sibling serves into the catalog under `name`.
+///
+/// **Added when absent, not only replaced when present.** `clients` holds what `clients/*.lua` put
+/// on disk, and no build has ever shipped a `clients/balthasar.lua` — so replace-only found nothing
+/// to replace and dropped the served library. `config/tools.lua` reads `magi.clients.balthasar` to
+/// declare `remember`, `recall` and `forget`, so with it nil that block registered nothing and the
+/// model had no memory verbs, in sessions that had convened a balthasar and were recording to it.
+fn installed(clients: &mut Vec<(String, String)>, name: &str, served: String) -> Put {
+    match clients.iter_mut().find(|(held, _)| held == name) {
+        Some((_, source)) if *source == served => Put::Kept,
+        Some((_, source)) => {
+            *source = served;
+            Put::Replaced
+        }
+        None => {
+            clients.push((name.to_owned(), served));
+            Put::Added
+        }
+    }
+}
+
 /// The same, able to change model without restarting. The catalog is everything this session
 /// started with, held so a switch cannot silently pick up an edit made since.
 pub async fn serve_catalog(
@@ -183,10 +215,13 @@ pub async fn serve_on(
     .ok()
     .flatten();
     if let Some(served) = served {
-        for (name, source) in &mut catalog.clients {
-            if name == "balthasar" && *source != served {
+        match installed(&mut catalog.clients, "balthasar", served) {
+            Put::Kept => {}
+            Put::Replaced => {
                 magi_model::noted!("clients: balthasar's own library replaced this build's copy");
-                source.clone_from(&served);
+            }
+            Put::Added => {
+                magi_model::noted!("clients: balthasar's own library is this session's only copy");
             }
         }
     }
@@ -567,5 +602,59 @@ mod no_model_tests {
     #[test]
     fn nothing_chosen_is_still_nothing_configured() {
         assert!(super::no_model(&Catalog::empty()).contains("No model is configured"));
+    }
+}
+
+#[cfg(test)]
+mod installing {
+    use super::{Put, installed};
+
+    #[test]
+    fn a_library_no_client_file_declares_is_added_rather_than_dropped() {
+        // The bug: `clients/*.lua` never declared a balthasar, so a replace-only pass found
+        // nothing, discarded what balthasar served, and `config/tools.lua` registered no memory
+        // verbs at all.
+        let mut clients = vec![("oslo".to_owned(), "-- oslo".to_owned())];
+        assert_eq!(
+            installed(&mut clients, "balthasar", "-- served".to_owned()),
+            Put::Added
+        );
+        assert_eq!(
+            clients.iter().find(|(name, _)| name == "balthasar"),
+            Some(&("balthasar".to_owned(), "-- served".to_owned()))
+        );
+    }
+
+    #[test]
+    fn a_stale_copy_on_disk_is_replaced_by_what_the_sibling_serves() {
+        let mut clients = vec![("balthasar".to_owned(), "-- stale".to_owned())];
+        assert_eq!(
+            installed(&mut clients, "balthasar", "-- served".to_owned()),
+            Put::Replaced
+        );
+        assert_eq!(clients[0].1, "-- served");
+        assert_eq!(clients.len(), 1, "replacing does not also add");
+    }
+
+    #[test]
+    fn a_copy_that_already_matches_is_left_alone() {
+        // So the log line about replacing means a replacement happened.
+        let mut clients = vec![("balthasar".to_owned(), "-- served".to_owned())];
+        assert_eq!(
+            installed(&mut clients, "balthasar", "-- served".to_owned()),
+            Put::Kept
+        );
+        assert_eq!(clients.len(), 1);
+    }
+
+    #[test]
+    fn nothing_else_in_the_catalog_moves() {
+        let mut clients = vec![
+            ("hexe".to_owned(), "-- hexe".to_owned()),
+            ("oslo".to_owned(), "-- oslo".to_owned()),
+        ];
+        installed(&mut clients, "balthasar", "-- served".to_owned());
+        assert_eq!(clients[0], ("hexe".to_owned(), "-- hexe".to_owned()));
+        assert_eq!(clients[1], ("oslo".to_owned(), "-- oslo".to_owned()));
     }
 }
