@@ -40,7 +40,54 @@ pub fn shell(command: &str, cwd: &Path, write: &[PathBuf], reach: bool) -> Comma
     ]);
     let mut jailed = Command::new(bwrap);
     jailed.args(&argv).current_dir(cwd);
+    confine(&mut jailed);
     jailed
+}
+
+/// Deny the syscalls no shell command needs and a hostile one wants — reading another process's
+/// memory, `io_uring` — as a `pre_exec` on `command`. Inherited across `exec`, so it holds for the
+/// program bubblewrap runs and where there is none. The same list casper's jail forbids.
+fn confine(command: &mut Command) {
+    let filter = deny(FORBIDDEN);
+    // SAFETY: the closure calls `apply_filter` and nothing else — one `prctl` pair between fork and
+    // exec, built here and moved in so nothing is allocated in the child.
+    #[allow(unsafe_code)]
+    unsafe {
+        use std::os::unix::process::CommandExt as _;
+        command.pre_exec(move || {
+            seccompiler::apply_filter(&filter)
+                .map_err(|why| std::io::Error::other(format!("seccomp: {why}")))
+        });
+    }
+}
+
+/// The syscalls a jailed command may never make.
+const FORBIDDEN: &[i64] = &[
+    libc::SYS_ptrace,
+    libc::SYS_process_vm_readv,
+    libc::SYS_process_vm_writev,
+    libc::SYS_io_uring_setup,
+    libc::SYS_io_uring_enter,
+    libc::SYS_io_uring_register,
+];
+
+/// A seccomp program allowing everything but `forbid`, each answered with `EPERM`.
+fn deny(forbid: &[i64]) -> seccompiler::BpfProgram {
+    use seccompiler::{SeccompAction, SeccompFilter, TargetArch};
+    let rules = forbid.iter().map(|nr| (*nr, Vec::new())).collect();
+    let arch = if cfg!(target_arch = "aarch64") {
+        TargetArch::aarch64
+    } else {
+        TargetArch::x86_64
+    };
+    SeccompFilter::new(
+        rules,
+        SeccompAction::Allow,
+        SeccompAction::Errno(libc::EPERM as u32),
+        arch,
+    )
+    .and_then(std::convert::TryInto::try_into)
+    .unwrap_or_default()
 }
 
 /// The bubblewrap arguments: a read-only machine, writable at `cwd` and each `write` directory,
@@ -115,6 +162,30 @@ mod tests {
         .join(" ");
         assert!(a.contains("--bind /b /b"), "{a}");
         assert!(!a.contains("--unshare-net"), "{a}");
+    }
+
+    #[test]
+    fn the_seccomp_filter_denies_a_syscall() {
+        // The mechanism, on a syscall a shell reaches easily: a filter denying `mkdir` blocks it,
+        // applied the way `confine` applies it.
+        use std::os::unix::process::CommandExt as _;
+        let filter = deny(&[libc::SYS_mkdir, libc::SYS_mkdirat]);
+        let dir = Scratch::new("magi-jail", "seccomp");
+        let target = dir.join("nope");
+        let mut command = Command::new("mkdir");
+        command.arg(&target);
+        // SAFETY: as in `confine` — one `apply_filter` between fork and exec.
+        #[allow(unsafe_code)]
+        unsafe {
+            command.pre_exec(move || {
+                seccompiler::apply_filter(&filter).map_err(|_| std::io::Error::other("seccomp"))
+            });
+        }
+        assert!(
+            !command.status().expect("mkdir runs").success(),
+            "the filter did not block mkdir"
+        );
+        assert!(!target.exists());
     }
 
     #[test]

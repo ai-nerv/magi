@@ -114,7 +114,10 @@ mod tests {
         );
         assert_eq!(denied(v4(100, 100, 100, 200)), Some("cloud metadata"));
         assert_eq!(denied("::1".parse().expect("an address")), Some("loopback"));
-        assert_eq!(denied("fe80::1".parse().expect("an address")), Some("link-local"));
+        assert_eq!(
+            denied("fe80::1".parse().expect("an address")),
+            Some("link-local")
+        );
         assert_eq!(
             denied("::ffff:127.0.0.1".parse().expect("an address")),
             Some("loopback"),
