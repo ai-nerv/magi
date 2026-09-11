@@ -259,6 +259,14 @@ impl Ops for Real {
     /// Consult the ledger, and ask if it has nothing to say. The answer is recorded before it is
     /// acted on, so a person asked once about a directory is not asked again about the next file.
     fn allow(&self, tool: &str, action: &magi_proto::permit::Action) -> Result<(), String> {
+        // A wall before the ledger, for a sandboxed session only: a reach grant, however wide,
+        // does not cover this machine's own insides — see [`crate::reaching`]. Off without
+        // isolation, so an ordinary session may still reach a local dev server.
+        if self.isolate
+            && let magi_proto::permit::Action::Network { host } = action
+        {
+            crate::reaching::guard(host)?;
+        }
         let Some(gate) = &self.gate else {
             return Ok(());
         };
