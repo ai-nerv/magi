@@ -6,8 +6,9 @@ use magi_host::scribe::Scribe;
 use magi_model::scratch::Scratch;
 use magi_proto::SessionId;
 
-/// How long balthasar has to answer before this gives up on it.
-const ANSWERS_WITHIN: std::time::Duration = std::time::Duration::from_secs(3);
+/// How long balthasar has to answer before this gives up on it: the scribe's own durable clock, so
+/// this never cuts short a call the scribe would still be waiting on.
+const ANSWERS_WITHIN: std::time::Duration = magi_ipc::family::DURABLE;
 
 /// A window big enough that the budget is not what is under test.
 const WINDOW: usize = 200_000;
@@ -75,8 +76,10 @@ async fn own_balthasar(
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
-    let _ = Serving(child);
-    None
+    // Installed and started, and never answered. Not a skip: reporting "not installed" here let a
+    // slow machine pass this file without it having tested anything.
+    drop(Serving(child));
+    panic!("balthasar started and did not answer within {ANSWERS_WITHIN:?}");
 }
 
 /// A `balthasar serve` this test started, killed when the test ends. A guard, not a line at the
