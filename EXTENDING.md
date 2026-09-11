@@ -69,14 +69,15 @@ What you use instead:
 
 | program | to run something | to touch a file |
 |---|---|---|
-| magi | `magi.shell(command)` — gated, and only inside a tool's `run` | `magi.fs.write(path, text)`, `magi.fs.ls(dir)` |
+| magi | — it runs nothing; a tool that runs a command belongs in casper | `magi.fs.write(path, text)`, `magi.fs.ls(dir)` |
 | casper | `casper.exec(program, { args })` — a list, so there is no shell in between | its declared tools |
 | melchior | — | `melchior.fs` |
 | balthasar | — | `balthasar.fs` |
 
-`magi.shell` and `magi.fs.write` go through the same permission gate the built-in tools do: the
-person is asked, the answer is remembered, and `magi.confine` applies. Both answer `nil, why`
-rather than raising, so a refusal is something to handle rather than something that breaks a turn.
+**magi runs no commands.** Reading, writing, editing and running are the tools program's — casper's
+— so a tool that does something to the machine is declared there, not in magi (see `ROLES.md`). magi
+keeps `magi.fs.write`/`magi.fs.ls` only so a config can find a sibling's socket and record a small
+file; `magi.fs.write` goes through the permission gate and answers `nil, why` rather than raising.
 
 A file that raises costs itself and nothing else. Your package failing is reported on stderr and
 skipped; the program's own configuration failing is fatal, because a config that will not parse
@@ -251,7 +252,7 @@ Stable at surface 1:
 
 | | |
 |---|---|
-| magi | `magi.tool`, `magi.watch`, `magi.load`, `magi.shell`, `magi.fs`, `magi.json`, `magi.stream`, and the eight event kinds |
+| magi | `magi.tool`, `magi.watch`, `magi.load`, `magi.fs`, `magi.json`, `magi.stream`, and the eight event kinds |
 | casper | `casper.tool`, `casper.exec`, `casper.paint`, `casper.theme`, and `said` / `shown` / `failed` |
 | melchior | `melchior.provider`, `melchior.api`, `melchior.apis`, `melchior.json`, `melchior.fs`, and the four functions a protocol owes |
 | balthasar | `balthasar.source`, `balthasar.section`, `balthasar.json`, `balthasar.fs`, `balthasar.load`, and the three functions a source owes |

@@ -82,7 +82,7 @@ same person for the same permission, and is capped and masked on the way back.
 
 | Kind | What it is |
 |---|---|
-| `builtin` | compiled in: `read`, `write`, `edit` |
+| `builtin` | compiled in: `spawn` — magi's only tool, and coordination, not machine work |
 | `lua` | a function in the config's own VM |
 | `command` | one exec per call, arguments built from the call |
 | `process` | a peer with its own life, spoken to over a pipe |
@@ -188,7 +188,7 @@ harness spawns, because a layer that started harnesses would have to know what o
 | `magi-model` | the provider-neutral message model |
 | `magi-provider` | the HTTP side: streaming, SSE, retries, what each error means |
 | `magi-core` | the turn loop, as an explicit state machine |
-| `magi-tools` | what a tool is, and the three the floor is made of |
+| `magi-tools` | what a tool is, and how one is dispatched to the tools program |
 | `magi-lua` | the Lua VM, and the config API it offers `init.lua` |
 | `magi-journal` | the transcript this process holds; balthasar is what stores it |
 | `magi-host` | the session: the transcript, the socket, and the turns |

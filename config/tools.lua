@@ -1,21 +1,14 @@
 -- The tools magi ships.
 --
--- `shell` runs in a peer process because running commands is the thing most worth isolating;
--- the other two ask a sibling that is already running, over the socket the family shares, so
--- they are functions in this VM. A tool of your own goes in either camp.
-
--- `shell`, `hexe`, `oslo`, `ls`, `find` and `grep` were declared here and are casper's now.
--- Moved, not copied: two declarations of one name is the state where somebody edits the one that
--- lost, and registration is keyed, so the loser sits here doing nothing and still looking
--- maintained.
+-- magi ships no tool that does anything to the machine. Every one of those — `read`, `write`,
+-- `edit`, `shell`, `ls`, `find`, `grep`, `hexe`, `oslo` — is the tools program's (casper's), run in
+-- a process spawned per call. `read`, `write` and `edit` were magi's own for a while and are casper's
+-- now, like the rest: moved, not copied, so there is never a second declaration of one name.
 --
--- What is left is what is not a tool in casper's sense. The memory role's tools are this session's
--- own memory; `agent` reaches the other magi through melchior. Both are about *this harness's*
--- relationships rather than about doing something to the machine, which is the line casper is on
--- the other side of.
---
--- `read`, `write` and `edit` are not here at all — they are compiled in, as the floor a session
--- can never be without. See `magi-tools`.
+-- What is left here is what is not a tool in casper's sense. The memory role's tools are this
+-- session's own memory; `agent` reaches the other magi through melchior. Both are about *this
+-- harness's* relationships rather than about doing something to the machine, which is the line
+-- casper is on the other side of.
 
 do -- the memory role
   -- Which program fills the `memory` role -- see ROLES.md. `magi.roles` is what the configuration
