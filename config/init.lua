@@ -321,6 +321,6 @@ make the ordinary judgement call, say which one you made, and carry on.
 --
 -- Unpinned is the ordinary case and starts anything. `magi doctor` prints what casper actually
 -- hashed to, which is where the value below comes from; a mismatch takes no tools from it and
--- says so.
+-- says so. With `magi.tools` naming another program, pin that one: `magi.<program>_sha256`.
 --
 -- magi.casper_sha256 = "…"

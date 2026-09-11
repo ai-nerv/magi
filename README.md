@@ -92,6 +92,10 @@ Most of them arrive from **casper**, which is another program and supplies the w
 makes it the largest trust assumption magi makes, and `magi.casper_sha256` pins it to the bytes
 you set it up against. An MCP server pins the same way, on its declaration.
 
+casper is the default for the `tools` role, not a requirement: `magi.tools = "workbench"` hands the
+role to any program that answers `ROLES.md`'s core, and `magi.workbench_sha256` pins that one
+instead. Only your own configuration can name it — a project file that tries is refused.
+
 ```sh
 magi tools        # what the model can call, and how each is reached
 magi doctor       # what a session here would be made of, without starting one

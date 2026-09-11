@@ -52,6 +52,10 @@ magi.casper = { tools = { dino = { off = true }, birdy = { hidden = true } } }
 `off` removes it entirely; `hidden` keeps it runnable and takes it out of what the model is shown.
 magi passes this on every casper spawn, because casper is one process per call — see `FAMILY.md`.
 
+The table is keyed by the name of whatever fills the `tools` role, so with `magi.tools =
+"workbench"` it is `magi.workbench = { … }`. It arrives in `MAGI_TOOLS_CONFIGURE`, and in
+`CASPER_CONFIGURE` as well for the casper that predates the role.
+
 ---
 
 ## 2. What you may do in one

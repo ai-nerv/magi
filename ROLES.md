@@ -113,6 +113,12 @@ see `FAMILY.md`'s Doors table on why a socket that runs commands is a remote she
 friendly name. A program filling this role that binds a socket is not refused, but nothing will
 dial it.
 
+**Its settings arrive in `MAGI_TOOLS_CONFIGURE`**, as a JSON object, on every spawn — `tools` and
+`run` alike, since there is no process alive between calls to send them to once. magi reads them
+from the configuration table named after the program itself, so `magi.tools = "workbench"` is told
+what `magi.workbench = { … }` says. Empty means nothing was said. `CASPER_CONFIGURE` carries the
+same value for the program that filled this role before it had a name; read either.
+
 ---
 
 ## The `model` role
