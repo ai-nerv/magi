@@ -148,6 +148,36 @@ impl Grant {
             },
         }
     }
+
+    /// Whether this grant is at least as wide as `other`: same verb, and a scope that contains the
+    /// other's. What a parent handing a grant down asks of each one a child requested — a child may
+    /// hold no more than its parent. Conservative on the scopes that carry no subject of their own
+    /// (`Once`, `Exact`): a parent cannot be shown to cover them, so they are not handed down.
+    #[must_use]
+    pub fn allows(&self, other: &Grant) -> bool {
+        if self.verb != other.verb {
+            return false;
+        }
+        match (&self.scope, &other.scope) {
+            (Scope::Anything, _) => true,
+            (Scope::Directory { path }, Scope::Directory { path: inner }) => under(inner, path),
+            (Scope::Program { program }, Scope::Program { program: inner }) => program == inner,
+            _ => false,
+        }
+    }
+}
+
+/// The grants a child may hold: every one it requested that its parent is at least as wide as, and
+/// no others. A request the parent cannot cover is dropped rather than refused, so a parent handing
+/// down a broad set does not fail on one item that exceeds it — but nothing a child gets is wider
+/// than what the parent held. This is what keeps a tree of agents narrowing as it deepens.
+#[must_use]
+pub fn narrow(held: &[Grant], requested: &[Grant]) -> Vec<Grant> {
+    requested
+        .iter()
+        .filter(|want| held.iter().any(|have| have.allows(want)))
+        .cloned()
+        .collect()
 }
 
 /// Whether a command line does more than run the program it starts with.
@@ -171,6 +201,85 @@ pub fn under(path: &str, root: &str) -> bool {
         return true;
     }
     path == root || path.starts_with(&format!("{root}/"))
+}
+
+#[cfg(test)]
+mod handover {
+    use super::*;
+
+    fn dir(verb: &str, path: &str) -> Grant {
+        Grant {
+            verb: verb.to_owned(),
+            scope: Scope::Directory {
+                path: path.to_owned(),
+            },
+        }
+    }
+    fn anything(verb: &str) -> Grant {
+        Grant {
+            verb: verb.to_owned(),
+            scope: Scope::Anything,
+        }
+    }
+    fn program(name: &str) -> Grant {
+        Grant {
+            verb: "run".to_owned(),
+            scope: Scope::Program {
+                program: name.to_owned(),
+            },
+        }
+    }
+
+    #[test]
+    fn a_wider_grant_allows_a_narrower_one_of_the_same_verb() {
+        assert!(dir("write", "/w").allows(&dir("write", "/w/sub")));
+        assert!(anything("read").allows(&dir("read", "/anywhere")));
+        assert!(program("git").allows(&program("git")));
+    }
+
+    #[test]
+    fn a_narrower_or_different_grant_allows_nothing_wider() {
+        assert!(
+            !dir("write", "/w/sub").allows(&dir("write", "/w")),
+            "narrower cannot cover wider"
+        );
+        assert!(
+            !dir("read", "/w").allows(&dir("write", "/w")),
+            "a different verb never covers"
+        );
+        assert!(
+            !program("git").allows(&program("rm")),
+            "a different program never covers"
+        );
+    }
+
+    #[test]
+    fn narrow_keeps_only_what_the_parent_covers() {
+        let parent = vec![dir("write", "/w"), program("git")];
+        let requested = vec![
+            dir("write", "/w/sub"), // under the parent's /w — kept
+            dir("write", "/etc"),   // outside — dropped
+            program("git"),         // held — kept
+            program("rm"),          // not held — dropped
+            anything("reach"),      // parent has no reach at all — dropped
+        ];
+        let child = narrow(&parent, &requested);
+        assert_eq!(child.len(), 2, "only the two the parent covers: {child:?}");
+        assert!(child.contains(&dir("write", "/w/sub")));
+        assert!(child.contains(&program("git")));
+    }
+
+    #[test]
+    fn a_child_can_never_widen_past_its_parent() {
+        // The property the tree rests on: whatever a child asks for, every grant it ends with is
+        // one its parent already held at least as wide.
+        let parent = vec![dir("write", "/w")];
+        let child = narrow(&parent, &[anything("write"), dir("write", "/")]);
+        assert!(
+            child.is_empty(),
+            "asking for everything gets nothing the parent lacked: {child:?}"
+        );
+    }
 }
 
 #[cfg(test)]
