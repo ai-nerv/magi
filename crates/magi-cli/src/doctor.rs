@@ -149,6 +149,12 @@ fn sibling(role: &str, name: &str) -> String {
         return format!("{name} — not installed, so this session has no {role}");
     };
     let at = path.display().to_string();
+    // Before anything about whether it is answering: whether it is the right kind of program at
+    // all. A role pointed at something that cannot fill it otherwise finds out at the first call
+    // of a turn, which is the worst moment and the least legible message.
+    if let Some(missing) = cannot_fill(role, name) {
+        return format!("{name} — {at} — cannot fill {role}: it answers no {missing}");
+    }
     match role {
         // Served on a socket, and the socket is the thing that lies.
         "memory" => match magi_ipc::family::blocking::Family::find() {
@@ -239,5 +245,71 @@ mod tests {
             "{said}"
         );
         assert!(said.contains("no memory"), "{said}");
+    }
+}
+
+/// The core verbs of `role` that `name` does not advertise, or nothing when it fills the role.
+///
+/// The same question `scripts/gate-role.sh` asks, asked from here so `magi doctor` can answer it
+/// without a shell. Advertised rather than probed, for the reason that gate gives: a role verb
+/// takes arguments this has no business inventing, and `gate-family.sh` already holds a program to
+/// answering what it advertises.
+fn cannot_fill(role: &str, name: &str) -> Option<String> {
+    let core = crate::config::roles::of(role)?.core;
+    let out = std::process::Command::new(name)
+        .arg("verbs")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let said = String::from_utf8_lossy(&out.stdout);
+    // Nothing said is not a verdict: that is a program that would not answer at all, which the
+    // probes below report in their own words.
+    if said.trim().is_empty() {
+        return None;
+    }
+    let missing: Vec<&str> = core
+        .iter()
+        .filter(|verb| !said.contains(&format!("\"verb\":\"{verb}\"")))
+        .copied()
+        .collect();
+    (!missing.is_empty()).then(|| missing.join(", "))
+}
+
+/// A role names a program that cannot fill it.
+#[cfg(test)]
+mod filling {
+    use super::cannot_fill;
+
+    #[test]
+    fn a_program_that_answers_none_of_the_core_is_named_as_unable() {
+        // The failure this replaces: `magi.memory = "casper"` reported "installed, but not
+        // reachable", which reads as a daemon that is down rather than a program that was never
+        // a memory layer. `casper` is on PATH in this checkout and answers `verbs`.
+        let Some(missing) = cannot_fill("memory", "casper") else {
+            eprintln!("skipping: no casper on PATH to ask");
+            return;
+        };
+        for verb in ["observe", "replay", "sessions"] {
+            assert!(missing.contains(verb), "{verb} is core: {missing}");
+        }
+    }
+
+    #[test]
+    fn the_program_that_does_fill_it_is_not_accused() {
+        // The control. Without it the test above passes against a `cannot_fill` that always
+        // complains, which would report every role as unfillable.
+        assert_eq!(cannot_fill("memory", "balthasar"), None);
+        assert_eq!(cannot_fill("tools", "casper"), None);
+    }
+
+    #[test]
+    fn a_program_that_says_nothing_is_not_judged_here() {
+        // Silence is a program that would not answer at all, which the probes report in their own
+        // words. Reading it as "fills no role" would replace a precise message with a vague one.
+        assert_eq!(
+            cannot_fill("memory", "definitely-not-a-program-xyzzy"),
+            None
+        );
     }
 }

@@ -14,6 +14,10 @@ pub struct Role {
     /// Filled by this when no setting names one, so a configuration that says nothing behaves as
     /// it always has.
     pub fallback: &'static str,
+    /// The verbs `ROLES.md` calls core: refuse one and the program cannot fill the role. The same
+    /// list `scripts/gate-role.sh` holds a candidate to, so `magi doctor` can say a program does
+    /// not fill the role it was named for rather than letting the first call of a turn find out.
+    pub core: &'static [&'static str],
 }
 
 /// The memory layer this build grew up against, and the default for the `memory` role.
@@ -25,11 +29,13 @@ pub const ROLES: &[Role] = &[
         name: "memory",
         named: &["memory"],
         fallback: BALTHASAR,
+        core: &["observe", "replay", "sessions"],
     },
     Role {
         name: "tools",
         named: &["tools"],
         fallback: magi_tools::casper::CASPER,
+        core: &["tools", "run"],
     },
     // `magi.model` is taken: it names the *model*, not the program that serves models, and has
     // since before roles existed. `magi.melchior` is the name that has always meant this one.
@@ -37,6 +43,7 @@ pub const ROLES: &[Role] = &[
         name: "model",
         named: &["melchior"],
         fallback: magi_host::broker::MELCHIOR,
+        core: &["models", "ask"],
     },
 ];
 
