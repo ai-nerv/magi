@@ -1,6 +1,6 @@
 //! Tools supplied by the program filling the `tools` role — casper, unless `magi.tools` names
-//! another. magi keeps `read`, `write` and `edit`, the floor it can never be without; everything
-//! else is reached by asking what exists, handing over a call and reading back what it produced.
+//! another. magi has no tools of its own; every one is reached by asking this program what exists,
+//! handing over a call and reading back what it produced.
 //! A socket that runs commands is remote code execution, so a call goes over the spawn link, one
 //! exec per call. [`magi_proto::tooling::Ran`] carries `said` for the model and `shown` for the
 //! screen; this module keeps `said`, because a [`Tool`] returns text.
@@ -202,7 +202,7 @@ impl SuppliedTool {
     ) -> Vec<Self> {
         let program = tooling.program.as_str();
         if let Some(pinned) = &tooling.pin {
-            match crate::mcp::fingerprint(program) {
+            match fingerprint(program) {
                 Some(actual) if &actual == pinned => {}
                 Some(actual) => {
                     eprintln!(
@@ -253,7 +253,7 @@ impl Tool for SuppliedTool {
         ];
         // Printed so it can be pinned: this program supplies the whole tool set and is found on
         // `$PATH`.
-        if let Some(fingerprint) = crate::mcp::fingerprint(&self.program) {
+        if let Some(fingerprint) = fingerprint(&self.program) {
             out.push(("sha256", fingerprint));
         }
         out
@@ -347,7 +347,7 @@ mod tests {
         assert!(wrong.is_empty(), "a substituted casper supplied tools");
 
         // Skipped when casper is not installed, which is a session with no tools from it either way.
-        if let Some(actual) = crate::mcp::fingerprint(CASPER) {
+        if let Some(actual) = fingerprint(CASPER) {
             let right = SuppliedTool::pinned(
                 &Tooling {
                     pin: Some(actual),
@@ -464,7 +464,7 @@ fn wants(card: &Card, arguments: &serde_json::Value) -> Option<magi_proto::permi
             // The same reading the process transport uses. Taking the first word outright made
             // `FOO=1 git status` offer "any `FOO=1` command", whose grant then covered every
             // command line starting `FOO=1`. A permission subject that differs by transport is a bug.
-            let program = crate::process::first_word(&command);
+            let program = first_word(&command);
             let program = if program.is_empty() {
                 card.name.clone()
             } else {
@@ -473,6 +473,35 @@ fn wants(card: &Card, arguments: &serde_json::Value) -> Option<magi_proto::permi
             Action::Run { command, program }
         }
     })
+}
+
+/// The command's program name, for the permission subject, stepping over any leading `VAR=value`.
+fn first_word(command: &str) -> String {
+    command
+        .split_whitespace()
+        .find(|word| !word.contains('=') || word.starts_with('/'))
+        .unwrap_or("")
+        .to_owned()
+}
+
+/// The SHA-256 of the tools program on disk, for pinning: a coordinator records it and a mismatch
+/// on the next run is a different binary answering. `None` when the program cannot be found or read.
+fn fingerprint(command: &str) -> Option<String> {
+    use sha2::Digest;
+    let path = resolve(command)?;
+    let bytes = std::fs::read(path).ok()?;
+    Some(format!("{:x}", sha2::Sha256::digest(&bytes)))
+}
+
+/// Where a command name resolves, the way `execvp` would.
+fn resolve(command: &str) -> Option<std::path::PathBuf> {
+    if command.contains(std::path::MAIN_SEPARATOR) {
+        let path = std::path::PathBuf::from(command);
+        return path.is_file().then_some(path);
+    }
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| dir.join(command))
+        .find(|candidate| candidate.is_file())
 }
 
 /// What a card asks magi to decide before it runs.

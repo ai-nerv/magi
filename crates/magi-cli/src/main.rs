@@ -8,7 +8,6 @@ mod config;
 mod doctor;
 mod driver;
 mod driving;
-mod ext_lua;
 mod external_editor;
 mod forking;
 mod help;
@@ -22,7 +21,6 @@ mod opening;
 mod paths;
 mod print;
 mod session;
-mod shell;
 mod terminal;
 mod tools;
 mod ui;
@@ -81,9 +79,6 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Run a tool peer. Not for people: magi spawns these itself.
-    #[command(subcommand)]
-    Ext(Ext),
     /// Print the Lua client library for magi's own surface, as one plain-Lua file to `require`.
     #[command(alias = "client")]
     LuaApi,
@@ -169,9 +164,6 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
         .unwrap_or_else(|| magi_ipc::socket_for(&cwd));
 
     match cli.command {
-        Some(Command::Ext(Ext::Shell)) => shell::run(),
-
-        Some(Command::Ext(Ext::Lua { file })) => ext_lua::run(&file),
         // Bare, the library as source, because that is what a person redirecting it into a file
         // wants; framed when an encoding is named, with the source as the single value.
         Some(Command::LuaApi) => {
@@ -384,18 +376,6 @@ fn headless(cli: &Cli) -> bool {
 /// How far this session may reach: passed through unparsed, since the levels are the layer's.
 fn talk(loaded: Option<&crate::config::Loaded>) -> Option<&str> {
     loaded.and_then(|l| l.config.string("agent_talk"))
-}
-
-/// The peers magi ships.
-#[derive(Subcommand)]
-enum Ext {
-    /// A persistent shell, spoken to over the tool protocol.
-    Shell,
-    /// Tools written in Lua, served from their own process; the peer that cannot answer a `Cancel`.
-    Lua {
-        /// The file to load. Nothing is discovered; the config names it.
-        file: PathBuf,
-    },
 }
 
 /// Which lone words are verbs and which are prompts.

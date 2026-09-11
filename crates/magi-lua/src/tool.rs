@@ -10,9 +10,9 @@
 //!   run = function(args, ops) … end,
 //! })
 //!
-//! magi.tool("bash", {
+//! magi.tool("ask-melchior", {
 //!   description = "…", parameters = { … },
-//!   transport = { kind = "process", command = "magi", args = { "ext", "shell" } },
+//!   transport = { kind = "command", command = "melchior", args = { "who" } },
 //! })
 //! ```
 //!
@@ -31,37 +31,14 @@ use std::rc::Rc;
 #[serde(rename_all = "kebab-case", tag = "kind")]
 pub enum Transport {
     /// A Lua function in the worker's VM. No process, no serialisation: it gets [`Ops`] and the
-    /// VM's own natives. Deliberately not a shell; a tool that runs commands is a process.
+    /// VM's own natives. Deliberately not a shell; running a command is casper's, not magi's. This
+    /// is what the memory tools use to reach balthasar.
     Lua,
-    /// A peer in its own process, spoken to over the wire. Any language, crash-isolated, and what
-    /// a tool that must outlive one call or be untrusted should be.
-    Process {
-        command: String,
-        #[serde(default, deserialize_with = "lua_list")]
-        args: Vec<String>,
-        /// Environment for this peer, beside what every process magi starts already gets.
-        #[serde(default)]
-        env: std::collections::BTreeMap<String, String>,
-    },
-    /// An MCP server: a program that publishes several tools, spoken to in JSON-RPC. The one
-    /// declaration that registers more than one tool, so the name a config gives it is the
-    /// server's and the names the model sees are the server's own.
-    Mcp {
-        command: String,
-        #[serde(default, deserialize_with = "lua_list")]
-        args: Vec<String>,
-        #[serde(default)]
-        env: std::collections::BTreeMap<String, String>,
-        /// The SHA-256 this server's program must hash to, if it is pinned. An MCP server is
-        /// somebody else's code running as you, and `command` resolves to whatever is on `$PATH`
-        /// today; a mismatch refuses to start and says both hashes. `magi doctor` prints what each
-        /// server actually hashed to.
-        #[serde(default)]
-        sha256: Option<String>,
-    },
-    /// An ordinary program magi runs, with arguments built from the call. Not a peer: magi reads
-    /// what the child printed. There is no shell — see [`magi_tools::command::render`] for what an
-    /// argument is and is not.
+    /// An ordinary program magi runs, with arguments built from the call, and reads what the child
+    /// printed — how the `agent` tool reaches melchior. There is no shell — see
+    /// [`magi_tools::command::render`] for what an argument is and is not. It is the one way magi
+    /// starts a program, and only to reach a sibling role: a tool that does work on the machine is
+    /// the tools program's (casper's), never magi's.
     Command {
         command: String,
         /// Its arguments, each a literal or `{name}` naming a declared property.
@@ -259,49 +236,6 @@ pub fn install(
                 }
                 registry.register(Box::new(tool));
             }
-            Transport::Process { command, args, env } => {
-                registry.register(Box::new(
-                    magi_tools::process::ProcessTool::new(
-                        &name,
-                        &declaration.description,
-                        declaration.parameters.clone(),
-                        command,
-                        args.clone(),
-                    )
-                    .with_env(
-                        environ
-                            .iter()
-                            .chain(env)
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect(),
-                    ),
-                ));
-            }
-            Transport::Mcp {
-                command,
-                args,
-                env,
-                sha256,
-            } => {
-                // The server is asked what it offers, at load, because that is the only thing that
-                // knows. The name this declaration was given is the server's, and is not a tool.
-                let environ: std::collections::BTreeMap<String, String> = environ
-                    .iter()
-                    .chain(env)
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect();
-                match magi_tools::mcp::McpTool::all(command, args, &environ, sha256.as_deref()) {
-                    Ok(tools) => {
-                        for tool in tools {
-                            registry.register(Box::new(tool));
-                        }
-                    }
-                    // Reported and skipped, like every other tool that will not register.
-                    Err(why) => {
-                        eprintln!("magi: the MCP server {name:?} offered nothing: {why}");
-                    }
-                }
-            }
         }
     }
 }
@@ -326,11 +260,6 @@ where
         ))),
     }
 }
-
-/// An MCP server, declared in a config and reached through the registry. Split under THE RULE.
-#[cfg(test)]
-#[path = "tool/mcp.rs"]
-mod mcp_tests;
 
 #[cfg(test)]
 mod tests {
@@ -437,15 +366,15 @@ mod tests {
         let (registry, _) = built(
             r#"
             magi.tool("a-lua", { transport = { kind = "lua" }, run = function() return "x" end })
-            magi.tool("a-process", {
-              transport = { kind = "process", command = "true", args = {} },
+            magi.tool("a-command", {
+              transport = { kind = "command", command = "true", args = {} },
             })
             "#,
         );
         // Both declarations, and nothing distinguishes them from outside. magi registers no tools
         // of its own — the floor is casper's, absent from this bare `built` registry.
         assert_eq!(registry.len(), 2);
-        for name in ["a-lua", "a-process"] {
+        for name in ["a-lua", "a-command"] {
             assert!(registry.get(name).is_some(), "{name} is missing");
         }
     }
@@ -586,20 +515,23 @@ mod command_transport {
     }
 
     #[test]
-    fn the_three_transports_are_told_apart_by_kind() {
-        // One registry, three ways in, and the turn loop cannot tell them apart afterwards.
+    fn the_two_transports_are_told_apart_by_kind() {
+        // Two ways in — Lua for a sibling role (memory reaches balthasar), command for another
+        // program (agent reaches melchior) — and the turn loop cannot tell them apart afterwards.
         assert!(matches!(
             transport(r#"magi.tool("a", { transport = { kind = "lua" } })"#),
             Ok(Transport::Lua)
         ));
         assert!(matches!(
-            transport(r#"magi.tool("a", { transport = { kind = "process", command = "x" } })"#),
-            Ok(Transport::Process { .. })
-        ));
-        assert!(matches!(
             transport(r#"magi.tool("a", { transport = { kind = "command", command = "x" } })"#),
             Ok(Transport::Command { .. })
         ));
+        // `process` and `mcp` are gone: running a tool is casper's, so an old config naming one is
+        // refused rather than resurrecting an in-magi executor.
+        assert!(
+            transport(r#"magi.tool("a", { transport = { kind = "process", command = "x" } })"#)
+                .is_err()
+        );
     }
 
     #[test]

@@ -592,7 +592,6 @@ dependencies = [
 name = "magi-tools"
 version = "0.1.0"
 dependencies = [
- "magi-ipc",
  "magi-model",
  "magi-proto",
  "rustix",

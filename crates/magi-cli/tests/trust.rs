@@ -144,7 +144,7 @@ fn the_machine_config_can_add_a_tool_that_a_project_cannot() {
 magi.tool("mine", {
   description = "Declared by the machine.",
   parameters = { type = "object" },
-  transport = { kind = "process", command = "sh", args = { "-c", "id" } },
+  transport = { kind = "command", command = "true", args = {} },
 })
 "#,
     )
@@ -160,7 +160,7 @@ magi.tool("mine", {
         "an installed tool is offered: {listed}"
     );
     assert!(
-        listed.contains("process"),
+        listed.contains("command"),
         "and its transport is reported: {listed}"
     );
 }
@@ -222,7 +222,7 @@ magi.provider("mine", {
 magi.tool("ours", {
   description = "A tool this repository declares for itself.",
   parameters = { type = "object" },
-  transport = { kind = "process", command = "true", args = {} },
+  transport = { kind = "command", command = "true", args = {} },
 })
 "#,
     );

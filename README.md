@@ -82,15 +82,15 @@ same person for the same permission, and is capped and masked on the way back.
 
 | Kind | What it is |
 |---|---|
-| `builtin` | compiled in: `spawn` — magi's only tool, and coordination, not machine work |
-| `lua` | a function in the config's own VM |
-| `command` | one exec per call, arguments built from the call |
-| `process` | a peer with its own life, spoken to over a pipe |
-| `mcp` | an MCP server — the one declaration that registers *several* tools |
+| `supplied` | from the tools program (casper) — one exec per call. Every tool that does anything to the machine |
+| `builtin` | compiled in: `spawn` — magi's only one, and coordination, not machine work |
+| `lua` | a function in the config's own VM — how the memory tools reach balthasar |
+| `command` | one exec per call, arguments built from the call — how `agent` reaches melchior |
 
-Most of them arrive from **casper**, which is another program and supplies the whole set. That
-makes it the largest trust assumption magi makes, and `magi.casper_sha256` pins it to the bytes
-you set it up against. An MCP server pins the same way, on its declaration.
+The machine tools all arrive from **casper**, which is another program and supplies the whole set.
+That makes it the largest trust assumption magi makes, and `magi.casper_sha256` pins it to the bytes
+you set it up against. magi runs no tool of its own beyond `spawn`; there is no in-magi shell, no
+process peer, no MCP — running a tool is casper's.
 
 casper is the default for the `tools` role, not a requirement: `magi.tools = "workbench"` hands the
 role to any program that answers `ROLES.md`'s core, and `magi.workbench_sha256` pins that one
