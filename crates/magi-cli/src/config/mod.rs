@@ -251,7 +251,10 @@ pub fn catalog(loaded: &Loaded, cards: Vec<magi_proto::ask::Card>) -> magi_host:
         environ: environ(loaded),
         chosen: None,
         confine: loaded.config.boolean("confine").unwrap_or(false),
-        isolate: loaded.config.boolean("isolation").unwrap_or(false),
+        // On by default: every session's tool commands run in the kernel jail, the network kept
+        // open (it is essential) and the filesystem contained. A privileged setting, so a project
+        // cannot turn it off; the machine config can with `magi.isolation = false`.
+        isolate: loaded.config.boolean("isolation").unwrap_or(true),
     };
     // After the cards: resolving what was asked for needs something to resolve it against.
     catalog.chosen = asked(loaded, &catalog);

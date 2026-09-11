@@ -181,21 +181,19 @@ impl Real {
         self
     }
 
-    /// What the jail may write, and whether it may reach the network, from this session's grants: a
-    /// write grant on a directory makes it writable, any reach grant keeps the network. The one
-    /// reading of the ledger both the tools-program profile and `magi.shell` are built from.
+    /// What the jail may write, from this session's grants — a write grant on a directory makes it
+    /// writable — and that it keeps the network: the jail contains the filesystem, not the network,
+    /// which is essential and stays open. The one reading of the ledger both the tools-program
+    /// profile and `magi.shell` are built from.
     fn jail_reach(&self) -> (Vec<PathBuf>, bool) {
         use magi_proto::permit::Scope;
         let mut write = Vec::new();
-        let mut reach = false;
         for grant in self.grants() {
-            match (grant.verb.as_str(), &grant.scope) {
-                ("write", Scope::Directory { path }) => write.push(PathBuf::from(path)),
-                ("reach", _) => reach = true,
-                _ => {}
+            if let ("write", Scope::Directory { path }) = (grant.verb.as_str(), &grant.scope) {
+                write.push(PathBuf::from(path));
             }
         }
-        (write, reach)
+        (write, true)
     }
 
     /// Resolve a path against the root, refusing anything that escapes it when confined. Checked
@@ -259,14 +257,9 @@ impl Ops for Real {
     /// Consult the ledger, and ask if it has nothing to say. The answer is recorded before it is
     /// acted on, so a person asked once about a directory is not asked again about the next file.
     fn allow(&self, tool: &str, action: &magi_proto::permit::Action) -> Result<(), String> {
-        // A wall before the ledger, for a sandboxed session only: a reach grant, however wide,
-        // does not cover this machine's own insides — see [`crate::reaching`]. Off without
-        // isolation, so an ordinary session may still reach a local dev server.
-        if self.isolate
-            && let magi_proto::permit::Action::Network { host } = action
-        {
-            crate::reaching::guard(host)?;
-        }
+        // The network is left unrestricted: it is essential, and a local dev server on the loopback
+        // is reached the same as any host. The internal-address guard ([`crate::reaching`]) is the
+        // ledger's to call when a session opts into confining its network, not the default.
         let Some(gate) = &self.gate else {
             return Ok(());
         };
