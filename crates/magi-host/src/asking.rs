@@ -506,7 +506,6 @@ mod every_verb {
     use super::permitting::{Fixed, asking};
     use magi_model::scratch::Scratch;
     use magi_proto::permit::Decision;
-    use magi_tools::registry::Tool;
 
     /// A gated session rooted at `dir`, whose prompt is answered with `chosen`.
     fn gated(
@@ -529,14 +528,18 @@ mod every_verb {
 
     #[test]
     fn reading_a_file_puts_the_question_on_a_surface() {
+        // The subject is the permission surface, exercised through `ops.allow` — the seam every
+        // tool goes through, magi's own and the tools program's alike, now that magi runs none.
+        use magi_tools::ops::Ops as _;
         let dir = Scratch::new("magi-asking", "one");
         std::fs::write(dir.join("note.txt"), "hello").expect("a file");
         // "no", so nothing is granted and the test leaves no standing permission behind.
         let (ops, holder) = gated(&dir, Some("no".to_owned()));
-        let out = magi_tools::builtin::Read.run(
-            &serde_json::json!({"path": "note.txt"}),
-            &ops,
-            &magi_tools::cancel::Uncancelled,
+        let out = ops.allow(
+            "read",
+            &magi_proto::permit::Action::Read {
+                path: dir.join("note.txt").display().to_string(),
+            },
         );
         let args = shown(&holder).expect("the prompt was never drawn");
         assert_eq!(args["tool"], "read");
@@ -548,46 +551,46 @@ mod every_verb {
                 .ends_with("note.txt"),
             "{args}"
         );
-        assert!(out.is_error, "denied, so the read must not have happened");
+        assert!(out.is_err(), "denied, so the read must not be allowed");
     }
 
     #[test]
     fn writing_a_file_puts_the_question_on_a_surface_too() {
+        use magi_tools::ops::Ops as _;
         let dir = Scratch::new("magi-asking-w", "one");
         let (ops, holder) = gated(&dir, Some("no".to_owned()));
-        let out = magi_tools::builtin::Write.run(
-            &serde_json::json!({"path": "new.txt", "contents": "x"}),
-            &ops,
-            &magi_tools::cancel::Uncancelled,
+        let out = ops.allow(
+            "write",
+            &magi_proto::permit::Action::Write {
+                path: dir.join("new.txt").display().to_string(),
+            },
         );
         let args = shown(&holder).expect("the prompt was never drawn");
         assert_eq!(args["verb"], "write");
-        assert!(out.is_error);
-        assert!(
-            !dir.join("new.txt").exists(),
-            "a refused write happened anyway"
-        );
+        assert!(out.is_err(), "a refused write must not be allowed");
     }
 
     #[test]
     fn a_yes_on_the_surface_lets_the_read_through() {
-        // The other half: "the surface said allow" has to reach the file.
+        // The other half: "the surface said allow" has to come back allowed.
+        use magi_tools::ops::Ops as _;
         let dir = Scratch::new("magi-asking-y", "one");
         std::fs::write(dir.join("note.txt"), "hello").expect("a file");
         // Row zero, which is `Once` for every action: allowed, and nothing left standing.
         let (ops, _) = gated(&dir, Some("0".to_owned()));
-        let out = magi_tools::builtin::Read.run(
-            &serde_json::json!({"path": "note.txt"}),
-            &ops,
-            &magi_tools::cancel::Uncancelled,
+        let out = ops.allow(
+            "read",
+            &magi_proto::permit::Action::Read {
+                path: dir.join("note.txt").display().to_string(),
+            },
         );
-        assert!(!out.is_error, "{}", out.content);
-        assert!(out.content.contains("hello"), "{}", out.content);
+        assert!(out.is_ok(), "{out:?}");
     }
 
     #[test]
     fn the_ledger_still_answers_the_second_time() {
         // The surface is asked once: moving the prompt out of magi must not move the remembering.
+        use magi_tools::ops::Ops as _;
         let dir = Scratch::new("magi-asking-l", "one");
         std::fs::write(dir.join("a.txt"), "one").expect("a file");
         std::fs::write(dir.join("b.txt"), "two").expect("a file");
@@ -603,12 +606,13 @@ mod every_verb {
             .expect("the containing directory is on offer");
         let (ops, holder) = gated(&dir, Some(nth.to_string()));
         for file in ["a.txt", "b.txt"] {
-            let out = magi_tools::builtin::Read.run(
-                &serde_json::json!({"path": file}),
-                &ops,
-                &magi_tools::cancel::Uncancelled,
+            let out = ops.allow(
+                "read",
+                &magi_proto::permit::Action::Read {
+                    path: dir.join(file).display().to_string(),
+                },
             );
-            assert!(!out.is_error, "{file}: {}", out.content);
+            assert!(out.is_ok(), "{file}: {out:?}");
         }
         assert_eq!(
             holder.shown.lock().expect("held").len(),

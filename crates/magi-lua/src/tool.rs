@@ -164,16 +164,17 @@ pub fn assemble(
 ) -> (magi_tools::Registry, std::collections::BTreeSet<String>) {
     let mut registry = magi_tools::Registry::new();
 
-    // The role's program first, so anything nearer wins: registration is keyed, the compiled-in
-    // floor is next, and a person's own `tools.lua` is nearest and beats both. Nothing when it is
-    // not installed, so a session then has exactly the tools it had before casper existed.
+    // The role's program is where the tools come from — magi has none of its own. Registration is
+    // keyed and a person's own `tools.lua` is nearest, so a declared name beats the supplied one.
+    // Nothing when the program is not installed, so a session then has no tools at all, which
+    // `ROLES.md` says is legal.
     let mut supplied = std::collections::BTreeSet::new();
     for tool in magi_tools::supplier::SuppliedTool::pinned(tooling, asker, holder) {
         supplied.insert(tool.name().to_owned());
         registry.register(Box::new(tool));
     }
-    magi_tools::builtin::install(&mut registry);
-    // The one builtin that reaches the harness, given the environment it starts a child with.
+    // The one builtin that reaches the harness — not a tool in casper's sense but magi coordinating
+    // its own agent tree — given the environment it starts a child with.
     magi_tools::builtin::install_spawn(&mut registry, environ);
 
     // A name a config declared for itself is that config's, however far it also travelled.
@@ -344,7 +345,6 @@ mod tests {
             .expect("the config must run");
         let engine = Rc::new(RefCell::new(engine));
         let mut registry = Registry::new();
-        magi_tools::builtin::install(&mut registry);
         install(Rc::clone(&engine), &mut registry, &Default::default());
         (registry, engine)
     }
@@ -442,15 +442,18 @@ mod tests {
             })
             "#,
         );
-        // The floor plus both declarations, and nothing distinguishes them from outside.
-        assert_eq!(registry.len(), 5);
-        for name in ["read", "write", "edit", "a-lua", "a-process"] {
+        // Both declarations, and nothing distinguishes them from outside. magi registers no tools
+        // of its own — the floor is casper's, absent from this bare `built` registry.
+        assert_eq!(registry.len(), 2);
+        for name in ["a-lua", "a-process"] {
             assert!(registry.get(name).is_some(), "{name} is missing");
         }
     }
 
     #[test]
-    fn a_declaration_can_replace_a_builtin() {
+    fn a_declaration_registers_under_its_name() {
+        // A config can declare any name — including one casper also supplies, which a keyed
+        // registration then replaces (that override is exercised in `assemble`, with a supplier).
         let (registry, _) = built(
             r#"
             magi.tool("read", {
@@ -460,7 +463,7 @@ mod tests {
             })
             "#,
         );
-        assert_eq!(registry.len(), 3, "replaced, not added");
+        assert_eq!(registry.len(), 1);
         assert_eq!(
             registry
                 .call(

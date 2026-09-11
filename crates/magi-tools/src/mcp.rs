@@ -545,7 +545,7 @@ for line in sys.stdin:
         // The whole design claim: a transport is a property of a declaration, not a second registry.
         let (_dir, command, args) = serving("registry");
         let mut registry = Registry::new();
-        crate::builtin::install(&mut registry);
+        crate::builtin::install_spawn(&mut registry, &Default::default());
         for tool in McpTool::all(&command, &args, &Default::default(), None).expect("it starts") {
             registry.register(Box::new(tool));
         }

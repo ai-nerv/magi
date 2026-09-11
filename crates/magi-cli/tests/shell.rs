@@ -24,7 +24,7 @@ fn shell_tool() -> ProcessTool {
 fn session(name: &str) -> (Registry, Real, Scratch) {
     let dir = Scratch::new("magi-bash", name);
     let mut registry = Registry::new();
-    magi_tools::builtin::install(&mut registry);
+    magi_tools::builtin::install_spawn(&mut registry, &Default::default());
     registry.register(Box::new(shell_tool()));
     (registry, Real::new(dir.to_path_buf()), dir)
 }
@@ -87,12 +87,12 @@ fn a_failing_command_is_a_result_the_model_can_read() {
 }
 
 #[test]
-fn the_builtins_and_the_peer_share_one_directory() {
-    // The seam holding: a file written by a Rust tool is visible to a command run by a peer.
+fn the_peer_shares_one_directory_across_calls() {
+    // The seam holding: a file a command writes is there for the next command the peer runs.
     let (registry, ops, _dir) = session("shared");
     let written = registry.call(
-        "write",
-        &serde_json::json!({ "path": "note.txt", "contents": "from a builtin\n" }),
+        "shell",
+        &serde_json::json!({ "command": "echo from a command > note.txt" }),
         &ops,
         &magi_tools::Uncancelled,
     );
@@ -104,7 +104,7 @@ fn the_builtins_and_the_peer_share_one_directory() {
         &ops,
         &magi_tools::Uncancelled,
     );
-    assert_eq!(output.content.trim(), "from a builtin");
+    assert_eq!(output.content.trim(), "from a command");
 }
 
 #[test]
@@ -128,27 +128,9 @@ fn a_peer_that_dies_is_restarted_on_the_next_call() {
     assert_eq!(output.content.trim(), "alive");
 }
 
-#[test]
-fn nothing_downstream_knows_which_transport_it_used() {
-    // read is Rust, bash is a process, and the registry answers both the same way.
-    let (registry, ops, _dir) = session("uniform");
-    let _ = registry.call(
-        "write",
-        &serde_json::json!({ "path": "a", "contents": "x" }),
-        &ops,
-        &magi_tools::Uncancelled,
-    );
-    for name in ["read", "shell"] {
-        let args = if name == "read" {
-            serde_json::json!({ "path": "a" })
-        } else {
-            serde_json::json!({ "command": "cat a" })
-        };
-        let output = registry.call(name, &args, &ops, &magi_tools::Uncancelled);
-        assert!(!output.is_error, "{name}: {}", output.content);
-        assert!(output.content.contains('x'), "{name}: {}", output.content);
-    }
-}
+// That a process peer and another transport answer the same way — nothing downstream knowing which
+// it used — is tested against two live peers in `peers.rs`; magi has no Rust file tool to compare a
+// peer against any more.
 
 /// An interrupt the host has already decided on.
 struct Stopped;

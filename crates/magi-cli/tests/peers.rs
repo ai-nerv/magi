@@ -49,11 +49,11 @@ fn session(name: &str, lua: &str) -> (Registry, magi_tools::ops::Real, Scratch) 
     (registry, ops, dir)
 }
 
-/// The directory and the builtins, with no peers registered yet.
+/// The directory and the one builtin (spawn), with no peers registered yet.
 fn session_raw(name: &str) -> (Registry, magi_tools::ops::Real, Scratch) {
     let dir = Scratch::new("magi-peers", name);
     let mut registry = Registry::new();
-    magi_tools::builtin::install(&mut registry);
+    magi_tools::builtin::install_spawn(&mut registry, &Default::default());
     (registry, magi_tools::ops::Real::new(dir.to_path_buf()), dir)
 }
 
@@ -69,19 +69,19 @@ magi.tool("greet", {
 "#;
 
 #[test]
-fn two_peers_answer_the_same_way_a_builtin_does() {
-    // The registry holds a Rust function, a shell in another process, and a Lua VM in a third.
-    // Nothing at this level can tell which is which, and that is the whole design.
+fn two_peers_answer_the_same_way() {
+    // The registry holds a shell in another process and a Lua VM in a third. Nothing at this level
+    // can tell which is which, and that is the whole design. magi has no file builtin of its own to
+    // compare against — reading and writing are the tools program's — so the shell peer does both.
     let (registry, ops, _dir) = session("uniform", GREETER);
     let _ = registry.call(
-        "write",
-        &serde_json::json!({ "path": "a", "contents": "x" }),
+        "bash",
+        &serde_json::json!({ "command": "echo x > a" }),
         &ops,
         &Uncancelled,
     );
 
     let cases = [
-        ("read", serde_json::json!({ "path": "a" }), "x"),
         ("bash", serde_json::json!({ "command": "cat a" }), "x"),
         ("greet", serde_json::json!({ "who": "x" }), "x"),
     ];

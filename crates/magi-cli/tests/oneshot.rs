@@ -366,16 +366,16 @@ fn a_permission_question_nobody_can_answer_ends_the_run_rather_than_hanging() {
     }
     // A `-p` run attaches, so the daemon has somebody to ask and stops the turn on the question.
     // Answered `Deny`, not `Allow`: a run nobody is watching is the wrong place to widen what a tool
-    // may do, and `magi.allow` is how a person says in advance. A builtin deliberately — a test for
-    // magi's own behaviour must not need a sibling installed.
+    // may do, and `magi.allow` is how a person says in advance. `spawn` deliberately — it is magi's
+    // one builtin, so a test for magi's own behaviour needs no tools program installed.
     let dir = workspace("dq");
     let mind = calling(
         "one-declined",
-        "write",
-        "{\"path\":\"note.txt\",\"contents\":\"hi\"}",
-        "I could not write it.",
+        "spawn",
+        "{\"role\":\"helper\",\"prompt\":\"do a thing\"}",
+        "I could not start it.",
     );
-    let output = magi(&dir, &mind, &["-p", "write a note"]);
+    let output = magi(&dir, &mind, &["-p", "start a helper"]);
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -388,7 +388,7 @@ fn a_permission_question_nobody_can_answer_ends_the_run_rather_than_hanging() {
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
-        "I could not write it.",
+        "I could not start it.",
         "the model was told, and said so"
     );
     teardown(&dir);

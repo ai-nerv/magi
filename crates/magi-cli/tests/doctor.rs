@@ -56,17 +56,26 @@ fn a_machine_with_no_siblings_says_so_for_each_role() {
 }
 
 #[test]
-fn the_builtins_are_listed_with_where_they_came_from() {
-    // The three compiled-in tools are there whatever else is missing.
+fn the_one_builtin_is_spawn_and_the_file_tools_are_not() {
+    // magi's only builtin is `spawn` — coordinating its own agent tree, not a tool in casper's
+    // sense. read/write/edit are the tools program's now, never magi's, so they are not listed as
+    // a magi builtin whether or not a tools program is installed here.
     let empty = Scratch::new("magi-doctor", "builtins");
     let said = doctor(&empty);
 
+    let line = said
+        .lines()
+        .find(|line| line.trim_start().starts_with("spawn"))
+        .unwrap_or_else(|| panic!("spawn is missing:\n{said}"));
+    assert!(line.contains("builtin"), "{line}");
+
     for name in ["read", "write", "edit"] {
-        let line = said
-            .lines()
-            .find(|line| line.trim_start().starts_with(name))
-            .unwrap_or_else(|| panic!("{name} is missing:\n{said}"));
-        assert!(line.contains("builtin"), "{line}");
+        assert!(
+            !said
+                .lines()
+                .any(|line| line.trim_start().starts_with(name) && line.contains("builtin")),
+            "{name} is still listed as a magi builtin:\n{said}"
+        );
     }
 }
 
@@ -80,8 +89,8 @@ fn a_machine_with_no_configuration_still_gets_an_answer() {
     assert!(said.contains("roles"), "and carries on: {said}");
     assert!(
         said.lines()
-            .any(|line| line.trim_start().starts_with("read")),
-        "the builtins are still listed: {said}"
+            .any(|line| line.trim_start().starts_with("spawn")),
+        "the one builtin is still listed: {said}"
     );
 }
 
