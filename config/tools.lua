@@ -9,6 +9,23 @@
 -- session's own memory; `agent` reaches the other magi through melchior. Both are about *this
 -- harness's* relationships rather than about doing something to the machine, which is the line
 -- casper is on the other side of.
+--
+-- Each reaches its sibling through **either door**, chosen by `magi.memory.door` / `magi.agent.door`:
+--   library -- the sibling's own client library in this VM, over its socket (`sibling` below).
+--   command -- the sibling's command line, one exec per call (the `command` transport).
+-- Both are wired for both tools. The defaults differ only because one door costs something on each:
+-- `agent` defaults to `command`, because melchior takes who is calling from the kernel and a root
+-- session's own process cannot present that over the socket (a child can); `memory` defaults to
+-- `library`, because balthasar's library carries the injection/outcome loop the command line drops.
+
+-- Load a sibling's client library and run it against the socket primitive -- the library door.
+local function sibling(name)
+  local source = magi.clients and magi.clients[name]
+  if not source then return nil, name .. "'s client library is not installed" end
+  local chunk, why = load(source, name .. ".lua")
+  if not chunk then return nil, why end
+  return chunk(magi.stream)
+end
 
 do -- the memory role
   -- Which program fills the `memory` role -- see ROLES.md. `magi.roles` is what the configuration
@@ -17,22 +34,17 @@ do -- the memory role
   -- whole block to it without a word changing.
   local PROGRAM = (magi.roles and magi.roles.memory) or "balthasar"
 
-  -- The memory layer, if it is installed. Whether it is, is answered by the client library in
-  -- hand: magi asks each sibling for one by running it, so a library here means that program
-  -- ran on this machine a moment ago. Nothing else at config time knows as much -- a
-  -- socket file outlives its process, and a live one may still be too busy to answer.
-  local function client()
-    local source = magi.clients and magi.clients[PROGRAM]
-    if not source then return nil, PROGRAM .. "'s client library is not installed" end
-    local chunk, why = load(source, PROGRAM .. ".lua")
-    if not chunk then return nil, why end
-    return chunk(magi.stream)
-  end
+  -- Which door reaches it, from `$MAGI_MEMORY_DOOR` (a config global cannot: `magi tools` and the
+  -- session rebuild a fresh VM that re-runs only the declared tools, not `init.lua`, and `os.getenv`
+  -- is what reaches that VM). `library` (default) keeps balthasar's injection/outcome loop and the
+  -- `history` read; `command` runs balthasar's own CLI per call and is the plainer of the two.
+  local DOOR = os.getenv("MAGI_MEMORY_DOOR") or "library"
 
-  -- Read at load, because a tool has to exist before the model is told what it may call. A memory
-  -- layer that lends nothing is the ordinary case, not an error: nothing is registered and the
-  -- session runs without memory tools, which is what every session did before there was one.
-  local memory = select(1, client())
+  -- The memory layer's client, when the library door is asked for and the library is in hand: a
+  -- library here means that program ran on this machine a moment ago. Read at load, because a tool
+  -- has to exist before the model is told what it may call. A memory layer that lends nothing is the
+  -- ordinary case, not an error: the session runs without memory tools, as every one did before.
+  local memory = select(1, sibling(PROGRAM))
 
   -- The last context the memory layer handed over. A recall that comes back with an injection id
   -- is it saying "these went into your model's context, tell me what you did with them" -- and this
@@ -110,7 +122,22 @@ do -- the memory role
     },
   }
 
-  if memory then
+  if DOOR == "command" then
+    -- The core verbs through balthasar's command line, one exec per call. `{arg}` is filled from
+    -- the call, its own token dropped when absent. `history` and the injection/outcome loop below
+    -- are the library door's, and are not offered here.
+    for name, shape in pairs(MEMORY) do
+      local argv = { name }
+      for _, key in ipairs(shape.args) do
+        argv[#argv + 1] = "{" .. key .. "}"
+      end
+      magi.tool(name, {
+        description = shape.about,
+        parameters = shape.parameters,
+        transport = { kind = "command", command = PROGRAM, args = argv },
+      })
+    end
+  elseif memory then
     for name, shape in pairs(MEMORY) do
       magi.tool(name, {
         description = shape.about,
@@ -150,7 +177,7 @@ do -- the memory role
   -- Declared here rather than in MEMORY above because it takes this session's id first, which the
   -- model has no business supplying and no way to know. `magi.session` is absent in a VM nobody
   -- named a session for -- `magi tools` has one -- and then this tool is simply not offered.
-  if memory and magi.session then
+  if DOOR ~= "command" and memory and magi.session then
     magi.tool("history", {
       description =
         "Read earlier parts of this conversation back out of the memory layer. " ..
@@ -238,18 +265,26 @@ do -- the memory role
 end
 
 do -- agent
-  -- Talking to the other magi sessions in this project, through melchior -- a separate program that owns
-  -- naming, the sockets sessions reach each other on, and the walls between them.
+  -- Talking to the other magi sessions in this project, through melchior -- a separate program that
+  -- owns naming, the sockets sessions reach each other on, and the walls between them.
   --
-  -- `melchior` rather than `magi ext agent`, and a `command` rather than a `process`: this ran as
-  -- magi's own peer until the layer left, and neither half of that is a rename. A command
-  -- transport is one exec per call with the arguments in argv, which is the whole protocol melchior
-  -- offers -- deliberately, so a harness that can run a program can use it without copying
-  -- anybody's message types.
-  --
-  -- Delete this block if melchior is not installed. The tool then fails per call rather than at
-  -- load, which is the honest outcome: a session with no melchior has no siblings to talk to.
-  magi.tool("agent", {
+  -- Reached through either door (`magi.agent.door`), the same `tool` vocabulary either way:
+  --   command (default) -- `melchior tool --verb=…`, one exec per call. Works in every session,
+  --                        because the fresh child carries this session's identity in its environment.
+  --   library           -- melchior's client library over the socket, like the memory block. Works
+  --                        in a *child* session; a root session's own process cannot present its
+  --                        identity to melchior's socket, so `command` is the honest default.
+  local COORD = (magi.roles and (magi.roles.coordination or magi.roles.model)) or "melchior"
+  -- From `$MAGI_AGENT_DOOR`, for the reason the memory block gives. `command` (default) works in
+  -- every session; `library` works in a child but not a root (melchior cannot verify a root's own
+  -- process over the socket).
+  local DOOR = os.getenv("MAGI_AGENT_DOOR") or "command"
+  local mel = DOOR == "library" and select(1, sibling(COORD)) or nil
+
+  -- Command always declares (it fails per call if melchior is absent, which is the honest outcome);
+  -- library declares only when the client is in hand.
+  if DOOR ~= "library" or mel then
+    local spec = {
     description = [[
   Talk to the other magi instances running in this project.
 
@@ -328,30 +363,47 @@ do -- agent
       },
       required = { "verb" },
     },
+    }
 
-    transport = {
-      kind = "command",
-      command = "melchior",
-      -- `--name={value}`, one token, and never `"--name", "{value}"` as two.
-      --
-      -- An argument the model left out is dropped *whole*, flag and all -- but only when the
-      -- flag and the placeholder are the same token. Written as two, the placeholder vanishes
-      -- and the bare flag stays, so `reply` with no `about` sent `--about --sort` and melchior read
-      -- the next flag as the value: `about` came out as the string "--sort". The verb was then
-      -- refused for want of a real one, the model fell back to `send`, and the answer arrived as
-      -- a note -- which wakes nobody. One exchange, then silence, from a missing `=`.
-      args = {
-        "tool",
-        "--verb={verb}",
-        "--who={who}",
-        "--message={message}",
-        "--about={about}",
-        "--role={role}",
-        "--sort={sort}",
-      },
-      timeout = 30,
-    },
-  })
+    if DOOR == "library" then
+      -- The client library, over the socket melchior's `serve` bound, calling the `tool` verb --
+      -- `nil` is this session's own melchior. A refusal comes back as `nil, why`, handled here.
+      spec.transport = { kind = "lua" }
+      spec.run = function(args)
+        args = args or {}
+        if not args.verb or args.verb == "" then
+          return { content = 'agent needs a `verb`; `verb: "help"` lists them', is_error = true }
+        end
+        local map = { verb = args.verb }
+        for _, key in ipairs({ "who", "message", "about", "role", "sort" }) do
+          if args[key] ~= nil and args[key] ~= "" then map[key] = args[key] end
+        end
+        local said, why = mel.fetch(nil, "tool", map)
+        if not said then return { content = tostring(why), is_error = true } end
+        return { content = said }
+      end
+    else
+      -- One exec of `melchior tool --verb=…`. `--name={value}`, one token, never `"--name",
+      -- "{value}"` as two: an argument the model left out is dropped whole only when the flag and
+      -- the placeholder are the same token, or the bare flag swallows the next argument's value.
+      spec.transport = {
+        kind = "command",
+        command = COORD,
+        args = {
+          "tool",
+          "--verb={verb}",
+          "--who={who}",
+          "--message={message}",
+          "--about={about}",
+          "--role={role}",
+          "--sort={sort}",
+        },
+        timeout = 30,
+      }
+    end
+
+    magi.tool("agent", spec)
+  end
 end
 
 -- There is no `process` or `mcp` transport, and no in-magi shell: running a tool is casper's, and
