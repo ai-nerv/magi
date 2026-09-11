@@ -127,13 +127,10 @@ pub fn load() -> Result<Loaded, LuaError> {
     if let Some(machine) = &machine {
         // A changed privileged setting is fatal: a project file has already changed how the rest of
         // the session is governed, and the value it wanted is the value the config now holds.
-        if let Some(name) = machine.altered(&mut engine) {
+        if let Some(message) = machine.altered(&mut engine) {
             return Err(LuaError::Runtime {
                 file: ".magi.lua".to_owned(),
-                message: format!(
-                    "a project file set `magi.{name}`, which decides what this session may do \
-                     without asking; only your own configuration can set it"
-                ),
+                message,
             });
         }
         for refused in machine.refusals(&mut engine) {
@@ -243,8 +240,7 @@ pub fn catalog(loaded: &Loaded, cards: Vec<magi_proto::ask::Card>) -> magi_host:
     let mut catalog = magi_host::catalog::Catalog {
         mind: mind(loaded),
         memory: memory(loaded),
-        casper: casper_pin(loaded),
-        casper_configure: settings::casper_configure(loaded),
+        tooling: tooling(loaded),
         tools: loaded.tools.clone(),
         clients: loaded.clients.clone(),
         cwd: std::env::current_dir().unwrap_or_default(),
@@ -270,7 +266,7 @@ mod settings;
 
 use settings::{grants, options, system};
 
-pub use settings::{adopt_ui, casper_configure, casper_pin, environ, grants as granted};
+pub use settings::{adopt_ui, environ, grants as granted, tooling};
 
 /// What this directory chose last time it was used.
 #[must_use]
@@ -377,6 +373,10 @@ pub struct Trusted {
     tools: BTreeSet<String>,
     /// What [`PRIVILEGED_SETTINGS`] were before a project file ran.
     settings: Vec<Option<serde_json::Value>>,
+    /// Which program filled each role before a project file ran. Held apart from the settings
+    /// because what is privileged is the *name*: `magi.melchior = { … }` is a settings table a
+    /// project may write, and `magi.melchior = "./x"` is a program it may not.
+    roles: Vec<(String, String)>,
 }
 
 /// Settings a project's own file may not assign: `confine` is the wall, `allow` is what may happen
@@ -389,6 +389,7 @@ impl Trusted {
         Self {
             tools: engine.tools().into_iter().map(|(name, _)| name).collect(),
             settings: Self::privileged(engine),
+            roles: roles::said(engine),
         }
     }
 
@@ -401,15 +402,30 @@ impl Trusted {
             .collect()
     }
 
-    /// Which privileged setting a project file changed, if it changed one. Compared by value, so a
-    /// project file that reads `magi.confine` and assigns it back has changed nothing.
-    fn altered(&self, engine: &mut Engine) -> Option<&'static str> {
+    /// Why the session may not start, if a project file changed something privileged. Compared by
+    /// value, so a project file that reads `magi.confine` and assigns it back has changed nothing.
+    fn altered(&self, engine: &mut Engine) -> Option<String> {
         let now = Self::privileged(engine);
-        PRIVILEGED_SETTINGS
+        if let Some((_, name)) = PRIVILEGED_SETTINGS
             .iter()
             .enumerate()
             .find(|(index, _)| now.get(*index) != self.settings.get(*index))
-            .map(|(_, name)| *name)
+        {
+            return Some(format!(
+                "a project file set `magi.{name}`, which decides what this session may do \
+                 without asking; only your own configuration can set it"
+            ));
+        }
+        // A role's program is spawned on every turn with the session's authority, so naming one is
+        // more than declaring a tool — which a project file is already refused.
+        let now = roles::said(engine);
+        let (role, program) = now.iter().find(|held| !self.roles.contains(held))?;
+        let setting = roles::of(role).map_or(role.as_str(), |known| known.named[0]);
+        Some(format!(
+            "a project file named `{program}` to fill the {role} role with `magi.{setting}`; \
+             that program would run with this session's authority, so only your own \
+             configuration can name it"
+        ))
     }
 
     /// One message per declaration a project file made that will not be honoured, rather than a silent drop.
@@ -472,9 +488,9 @@ mod pinning_tests {
     fn a_configuration_may_pin_the_program_that_supplies_every_tool() {
         // casper is found on `$PATH` and owns `shell`, `read` and everything else the model calls.
         let loaded = from(r#"magi.casper_sha256 = "abc123""#);
-        assert_eq!(casper_pin(&loaded).as_deref(), Some("abc123"));
+        assert_eq!(tooling(&loaded).pin.as_deref(), Some("abc123"));
         assert_eq!(
-            catalog(&loaded, Vec::new()).casper.as_deref(),
+            catalog(&loaded, Vec::new()).tooling.pin.as_deref(),
             Some("abc123")
         );
     }
@@ -482,8 +498,34 @@ mod pinning_tests {
     #[test]
     fn saying_nothing_pins_nothing() {
         // A pin is opt-in: `magi doctor` prints what casper actually hashed to.
-        assert_eq!(casper_pin(&from("")), None);
-        assert_eq!(casper_pin(&from(r#"magi.casper_sha256 = "  ""#)), None);
+        assert_eq!(tooling(&from("")).pin, None);
+        assert_eq!(tooling(&from(r#"magi.casper_sha256 = "  ""#)).pin, None);
+    }
+
+    #[test]
+    fn the_pin_and_the_settings_follow_whichever_program_fills_the_role() {
+        // Keyed by the program's own name. A pin on casper is not a pin on the program that
+        // replaced it — it would either bind the wrong bytes or, worse, look satisfied.
+        let loaded = from(
+            r#"magi.tools = "workbench"
+               magi.casper_sha256 = "abc123"
+               magi.casper = { off = true }
+               magi.workbench_sha256 = "def456"
+               magi.workbench = { quiet = true }"#,
+        );
+        let tooling = tooling(&loaded);
+        assert_eq!(tooling.program, "workbench");
+        assert_eq!(tooling.pin.as_deref(), Some("def456"));
+        assert_eq!(tooling.configure, r#"{"quiet":true}"#);
+    }
+
+    #[test]
+    fn the_default_program_reads_the_settings_it_always_read() {
+        // The same rule, for the configuration everybody already has: `magi.casper` is the tools
+        // program's table because casper is the tools program, not because it is spelled casper.
+        let tooling = tooling(&from(r#"magi.casper = { off = true }"#));
+        assert_eq!(tooling.program, "casper");
+        assert_eq!(tooling.configure, r#"{"off":true}"#);
     }
 }
 

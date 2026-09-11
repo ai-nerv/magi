@@ -254,7 +254,9 @@ pub async fn serve_on(
                     let _ = events.send(event);
                 }),
                 Box::new(move || watched.receiver_count() > 0),
-                magi_tools::casper::CASPER,
+                // The program the `tools` role named, because a surface is held by whatever
+                // supplied the tool that asked for one.
+                &catalog.tooling.program,
             )
             .knowing(Arc::clone(&knows) as Arc<dyn magi_tools::holding::Answers>),
         )

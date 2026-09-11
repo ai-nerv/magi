@@ -235,27 +235,44 @@ pub fn environ(loaded: &Loaded) -> std::collections::BTreeMap<String, String> {
         .collect()
 }
 
-/// The SHA-256 casper's program must hash to, if this configuration pinned one. casper is found on
-/// `$PATH` and supplies the whole tool set, so pinning binds the session to the bytes it was set up
-/// against. `None` is the ordinary case and starts anything.
+/// The program filling the `tools` role, with what this configuration pinned and told it.
+///
+/// The pin and the settings are keyed by the program's **own** name rather than by the role's:
+/// `magi.casper_sha256` and `magi.casper` when casper fills it, `magi.<program>_sha256` and
+/// `magi.<program>` when something else does. One rule, and it needs no compatibility shim — for
+/// the default program the two spellings are the same string. `magi.tools` stays the name and
+/// nothing else, the way `magi.melchior` does.
 /// ```lua
-/// magi.casper_sha256 = "…"   -- from `magi doctor`
+/// magi.tools = "workbench"           -- who fills the role
+/// magi.workbench_sha256 = "…"        -- from `magi doctor`
+/// magi.workbench = { … }             -- what it is told to be
 /// ```
 #[must_use]
-pub fn casper_pin(loaded: &Loaded) -> Option<String> {
+pub fn tooling(loaded: &Loaded) -> magi_tools::casper::Tooling {
+    let program = super::roles::fills(loaded, "tools");
+    magi_tools::casper::Tooling {
+        pin: pinned(loaded, &program),
+        configure: configured(loaded, &program),
+        program,
+    }
+}
+
+/// The SHA-256 the tools program must hash to, if this configuration pinned one. It is found on
+/// `$PATH` and supplies the whole tool set, so pinning binds the session to the bytes it was set up
+/// against. `None` is the ordinary case and starts anything.
+fn pinned(loaded: &Loaded, program: &str) -> Option<String> {
     loaded
         .config
-        .string("casper_sha256")
+        .string(&format!("{program}_sha256"))
         .map(str::to_owned)
         .filter(|pin| !pin.trim().is_empty())
 }
 
-/// What this configuration tells casper to be, as the JSON it goes over. casper is one process per
-/// call, so a `configure` would reach only the process that answered it and the settings ride on
-/// every spawn instead. Empty when `magi.casper` says nothing.
-#[must_use]
-pub fn casper_configure(loaded: &Loaded) -> String {
-    let Some(table) = loaded.config.get("casper").and_then(|v| v.as_object()) else {
+/// What this configuration tells the tools program to be, as the JSON it goes over. It is one
+/// process per call, so a `configure` would reach only the process that answered it and the
+/// settings ride on every spawn instead. Empty when the table says nothing.
+fn configured(loaded: &Loaded, program: &str) -> String {
+    let Some(table) = loaded.config.get(program).and_then(|v| v.as_object()) else {
         return String::new();
     };
     serde_json::to_string(table).unwrap_or_default()

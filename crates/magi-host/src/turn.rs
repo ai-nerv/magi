@@ -13,10 +13,8 @@ use magi_tools::{Ops, Registry};
 pub struct Backend {
     pub tools: Vec<(String, String)>,
     pub clients: Vec<(String, String)>,
-    /// The SHA-256 casper's program must hash to, if this configuration pinned one.
-    pub casper: Option<String>,
-    /// What this session tells casper to be, on every spawn, since casper is one process per call.
-    pub casper_configure: String,
+    /// Which program fills the `tools` role, and what this session tells it.
+    pub tooling: magi_tools::casper::Tooling,
     pub cwd: std::path::PathBuf,
     /// Permissions a configuration granted in advance; they go into the ledger at startup.
     pub grants: Vec<magi_proto::permit::Grant>,

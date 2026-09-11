@@ -53,13 +53,13 @@ fn registry() -> Result<Vec<Listed>, magi_lua::LuaError> {
     let engine = std::rc::Rc::new(std::cell::RefCell::new(engine));
     // Nobody to ask and no screen to lend: `magi tools` lists what exists and runs nothing, so a
     // tool that would have stopped to ask never gets the chance to.
+    let tooling = crate::config::tooling(&loaded);
     let (registry, from_casper) = magi_lua::tool::assemble(
         std::rc::Rc::clone(&engine),
         std::sync::Arc::new(magi_tools::question::Unanswered),
         std::sync::Arc::new(magi_tools::holding::Screenless),
         &crate::config::environ(&loaded),
-        crate::config::casper_pin(&loaded).as_deref(),
-        &crate::config::casper_configure(&loaded),
+        &tooling,
     );
     // Asked rather than assumed: the only thing that knows what a peer offers is the peer.
     // Through plain `Ops` at the working directory, since a listing acts on nothing.
@@ -73,7 +73,7 @@ fn registry() -> Result<Vec<Listed>, magi_lua::LuaError> {
         .map(|tool| Listed {
             name: tool.name.clone(),
             transport: if from_casper.contains(&tool.name) {
-                "casper".to_owned()
+                tooling.program.clone()
             } else {
                 declared
                     .iter()

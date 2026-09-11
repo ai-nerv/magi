@@ -21,8 +21,7 @@ fn backend(mind: &Mind) -> Backend {
     Backend {
         tools: Vec::new(),
         clients: Vec::new(),
-        casper: None,
-        casper_configure: String::new(),
+        tooling: Default::default(),
         cwd: std::env::temp_dir(),
         model: "fake/one".to_owned(),
         mind: mind.program().display().to_string(),

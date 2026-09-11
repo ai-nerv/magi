@@ -154,29 +154,21 @@ impl Tool for LuaTool {
 ///
 /// Two differences between a listing and a session are principled and are parameters here: a
 /// listing must not stop to ask a permission question, and it has no screen to lend a tool.
-/// Answers the registry and the names casper supplied. `casper` is the SHA-256 that program must
-/// hash to, if a configuration pinned one. Probing is the caller's.
+/// Answers the registry and the names the `tools` role's program supplied. Probing is the caller's.
 pub fn assemble(
     engine: Rc<RefCell<Engine>>,
     asker: std::sync::Arc<dyn magi_tools::question::Asks>,
     holder: std::sync::Arc<dyn magi_tools::holding::Holds>,
     environ: &std::collections::BTreeMap<String, String>,
-    casper: Option<&str>,
-    configured: &str,
+    tooling: &magi_tools::casper::Tooling,
 ) -> (magi_tools::Registry, std::collections::BTreeSet<String>) {
     let mut registry = magi_tools::Registry::new();
 
-    // casper first, so anything nearer wins: registration is keyed, the compiled-in floor is next,
-    // and a person's own `tools.lua` is nearest and beats both. Nothing when casper is not
-    // installed, so a session then has exactly the tools it had before casper existed.
+    // The role's program first, so anything nearer wins: registration is keyed, the compiled-in
+    // floor is next, and a person's own `tools.lua` is nearest and beats both. Nothing when it is
+    // not installed, so a session then has exactly the tools it had before casper existed.
     let mut from_casper = std::collections::BTreeSet::new();
-    for tool in magi_tools::casper::CasperTool::pinned(
-        magi_tools::casper::CASPER,
-        asker,
-        holder,
-        casper,
-        configured,
-    ) {
+    for tool in magi_tools::casper::CasperTool::pinned(tooling, asker, holder) {
         from_casper.insert(tool.name().to_owned());
         registry.register(Box::new(tool));
     }

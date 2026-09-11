@@ -84,13 +84,13 @@ fn report() -> String {
     }
     let declared = engine.tools();
     let engine = std::rc::Rc::new(std::cell::RefCell::new(engine));
+    let tooling = crate::config::tooling(&loaded);
     let (registry, from_casper) = magi_lua::tool::assemble(
         std::rc::Rc::clone(&engine),
         std::sync::Arc::new(magi_tools::question::Unanswered),
         std::sync::Arc::new(magi_tools::holding::Screenless),
         &environ,
-        crate::config::casper_pin(&loaded).as_deref(),
-        &crate::config::casper_configure(&loaded),
+        &tooling,
     );
     registry.probe(&magi_tools::ops::Real::new(
         std::env::current_dir().unwrap_or_default(),
@@ -98,7 +98,7 @@ fn report() -> String {
 
     for tool in registry.declarations() {
         let source = if from_casper.contains(&tool.name) {
-            "casper".to_owned()
+            tooling.program.clone()
         } else if declared.iter().any(|(name, _)| *name == tool.name) {
             "config".to_owned()
         } else {

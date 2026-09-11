@@ -84,8 +84,7 @@ impl Worker {
                 std::sync::Arc::clone(&asks),
                 std::sync::Arc::clone(&holds),
                 &backend.environ,
-                backend.casper.as_deref(),
-                &backend.casper_configure,
+                &backend.tooling,
             );
             // Gated when there is somebody to ask; the ledger starts with what the config granted.
             let ops: std::rc::Rc<dyn magi_tools::Ops> = match (&approver, backend.confine) {

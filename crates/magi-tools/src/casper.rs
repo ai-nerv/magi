@@ -14,9 +14,48 @@ use std::sync::Arc;
 /// put something else in its place: `PATH` is process-wide, and tests fighting over it flake.
 pub const CASPER: &str = "casper";
 
-/// The variable casper reads its configuration out of. Named here as well as there because it is a
-/// wire between two repositories that cannot depend on each other.
-pub const CONFIGURE: &str = "CASPER_CONFIGURE";
+/// The variable a tools program reads its settings out of. Named here as well as there because it
+/// is a wire between two repositories that cannot depend on each other.
+pub const CONFIGURE: &str = "MAGI_TOOLS_CONFIGURE";
+
+/// The same variable under casper's own name, which is the one casper reads.
+pub const CONFIGURE_WAS: &str = "CASPER_CONFIGURE";
+
+/// The program filling the `tools` role, and what this session tells it.
+///
+/// One value, so the program name reaches every spawn the pin and the settings reach.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tooling {
+    /// As `magi.tools` named it, or [`CASPER`] when a configuration named nobody.
+    pub program: String,
+    /// The SHA-256 that program must hash to, if this configuration pinned one.
+    pub pin: Option<String>,
+    /// What this session tells it to be, as the JSON it goes over. One process per call, so the
+    /// settings ride on every spawn rather than being sent once. Empty means "whatever it is".
+    pub configure: String,
+}
+
+impl Default for Tooling {
+    /// casper, unpinned, unconfigured: what a session had before any of this was nameable.
+    fn default() -> Self {
+        Self {
+            program: CASPER.to_owned(),
+            pin: None,
+            configure: String::new(),
+        }
+    }
+}
+
+impl Tooling {
+    /// The role filled by a named program, with nothing else said about it.
+    #[must_use]
+    pub fn of(program: &str) -> Self {
+        Self {
+            program: program.to_owned(),
+            ..Self::default()
+        }
+    }
+}
 
 /// What casper says it offers. Empty when casper is not installed or would not answer, which is not
 /// an error: the session keeps the tools magi declares itself.
@@ -38,6 +77,7 @@ pub fn cards_configured(program: &str, configured: &str) -> Vec<Card> {
     let Ok(out) = std::process::Command::new(program)
         .arg("tools")
         .env(CONFIGURE, configured)
+        .env(CONFIGURE_WAS, configured)
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .output()
@@ -92,6 +132,7 @@ pub fn run_configured(program: &str, call: &Call, configured: &str) -> Result<Ra
     let mut child = std::process::Command::new(program)
         .arg("run")
         .env(CONFIGURE, configured)
+        .env(CONFIGURE_WAS, configured)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -140,15 +181,14 @@ impl CasperTool {
     /// the ordinary case; `magi doctor` prints what the program actually hashed to.
     #[must_use]
     pub fn pinned(
-        program: &str,
+        tooling: &Tooling,
         asks: Arc<dyn Asks>,
         holds: Arc<dyn crate::holding::Holds>,
-        pinned: Option<&str>,
-        configured: &str,
     ) -> Vec<Self> {
-        if let Some(pinned) = pinned {
+        let program = tooling.program.as_str();
+        if let Some(pinned) = &tooling.pin {
             match crate::mcp::fingerprint(program) {
-                Some(actual) if actual == pinned => {}
+                Some(actual) if &actual == pinned => {}
                 Some(actual) => {
                     eprintln!(
                         "magi: {program} is not the program this configuration pinned: it is \
@@ -162,26 +202,25 @@ impl CasperTool {
                 }
             }
         }
-        Self::all(program, asks, holds, configured)
+        Self::all(tooling, asks, holds)
     }
 
-    /// Every tool casper offers, ready to register. `asks` is how a question reaches the person,
-    /// taken here rather than looked up when the question arrives.
+    /// Every tool the role's program offers, ready to register. `asks` is how a question reaches
+    /// the person, taken here rather than looked up when the question arrives.
     #[must_use]
     pub fn all(
-        program: &str,
+        tooling: &Tooling,
         asks: Arc<dyn Asks>,
         holds: Arc<dyn crate::holding::Holds>,
-        configured: &str,
     ) -> Vec<Self> {
-        cards_configured(program, configured)
+        cards_configured(&tooling.program, &tooling.configure)
             .into_iter()
             .map(|card| Self {
                 card,
-                program: program.to_owned(),
+                program: tooling.program.clone(),
                 asks: Arc::clone(&asks),
                 holds: Arc::clone(&holds),
-                configured: configured.to_owned(),
+                configured: tooling.configure.clone(),
             })
             .collect()
     }
@@ -189,8 +228,9 @@ impl CasperTool {
 
 impl Tool for CasperTool {
     fn composition(&self) -> Vec<(&'static str, String)> {
+        // The program's own name, not the role's default.
         let mut out = vec![
-            ("transport", "casper".to_owned()),
+            ("transport", self.program.clone()),
             (
                 "command",
                 format!("{} run {}", self.program, self.card.name),
@@ -279,24 +319,33 @@ mod tests {
         let holds: Arc<dyn crate::holding::Holds> = Arc::new(crate::holding::Screenless);
 
         let wrong = CasperTool::pinned(
-            CASPER,
+            &Tooling {
+                pin: Some(
+                    "0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
+                ),
+                ..Tooling::default()
+            },
             Arc::clone(&asks),
             Arc::clone(&holds),
-            Some("0000000000000000000000000000000000000000000000000000000000000000"),
-            "",
         );
         assert!(wrong.is_empty(), "a substituted casper supplied tools");
 
         // Skipped when casper is not installed, which is a session with no tools from it either way.
         if let Some(actual) = crate::mcp::fingerprint(CASPER) {
-            let right = CasperTool::pinned(CASPER, asks, holds, Some(&actual), "");
+            let right = CasperTool::pinned(
+                &Tooling {
+                    pin: Some(actual),
+                    ..Tooling::default()
+                },
+                asks,
+                holds,
+            );
             assert_eq!(
                 right.len(),
                 CasperTool::all(
-                    CASPER,
+                    &Tooling::default(),
                     Arc::new(crate::question::Unanswered),
                     Arc::new(crate::holding::Screenless),
-                    "",
                 )
                 .len(),
                 "pinning the right program changed what it offers"

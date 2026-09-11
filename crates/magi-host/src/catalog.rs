@@ -18,10 +18,9 @@ pub struct Catalog {
     /// Whether the file tools refuse paths outside `cwd`.
     pub confine: bool,
     pub grants: Vec<magi_proto::permit::Grant>,
-    /// The SHA-256 casper's program must hash to, if this configuration pinned one.
-    pub casper: Option<String>,
-    /// What this session tells casper to be, on every spawn. See [`crate::turn::Backend`].
-    pub casper_configure: String,
+    /// Which program fills the `tools` role, and what this session tells it. Beside [`Self::mind`]
+    /// and [`Self::memory`] because it is the third of the same thing: a role, and who is doing it.
+    pub tooling: magi_tools::casper::Tooling,
     /// Which program owns the model, as `magi.melchior` named it. One name for the whole session.
     pub mind: String,
     /// Which program holds the history — the `memory` role, as `magi.memory` named it. Kept beside
@@ -39,8 +38,7 @@ impl Catalog {
         Self {
             tools: Vec::new(),
             clients: Vec::new(),
-            casper: None,
-            casper_configure: String::new(),
+            tooling: magi_tools::casper::Tooling::default(),
             mind: crate::broker::MELCHIOR.to_owned(),
             memory: crate::scribe::BALTHASAR.to_owned(),
             environ: std::collections::BTreeMap::new(),
@@ -66,8 +64,7 @@ impl Catalog {
             cwd: self.cwd.clone(),
             model: card.id.clone(),
             mind: self.mind.clone(),
-            casper: self.casper.clone(),
-            casper_configure: self.casper_configure.clone(),
+            tooling: self.tooling.clone(),
             wants: self.wants.clone(),
             context_window: card.context_window,
             system: self.system.clone(),

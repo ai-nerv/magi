@@ -324,3 +324,42 @@ fn a_project_cannot_turn_off_the_wall_or_grant_itself_anything() {
         );
     }
 }
+
+#[test]
+fn a_project_cannot_name_the_program_that_fills_a_role() {
+    // A role's program is spawned every turn with the session's authority. A checkout that could
+    // name one would run whatever it shipped beside itself, which is more than a declared tool.
+    for (setting, role) in [
+        ("magi.tools = \"./toolkit\"\n", "tools"),
+        ("magi.memory = \"./recorder\"\n", "memory"),
+        ("magi.melchior = \"./broker\"\n", "model"),
+    ] {
+        let dir = workspace("roles");
+        project(&dir, setting);
+        let output = magi(&dir, &["tools"]);
+        let said = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success(),
+            "a project file naming a program with `{setting}` must not be honoured: {said}"
+        );
+        assert!(said.contains(role), "and it must name the role: {said}");
+        assert!(
+            said.contains("only your own configuration"),
+            "and it must say why: {said}"
+        );
+    }
+}
+
+#[test]
+fn a_project_may_still_write_a_siblings_settings_table() {
+    // The control: what is privileged is the name. A table under the same key is what that
+    // sibling is told, and refusing it would refuse every project that tunes its model.
+    let dir = workspace("tuned");
+    project(&dir, "magi.melchior = { max_tokens = 4000 }\n");
+    let output = magi(&dir, &["tools"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
