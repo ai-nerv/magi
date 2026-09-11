@@ -173,6 +173,8 @@ pub fn assemble(
         registry.register(Box::new(tool));
     }
     magi_tools::builtin::install(&mut registry);
+    // The one builtin that reaches the harness, given the environment it starts a child with.
+    magi_tools::builtin::install_spawn(&mut registry, environ);
 
     // A name a config declared for itself is that config's, however far it also travelled.
     let declared: Vec<String> = engine

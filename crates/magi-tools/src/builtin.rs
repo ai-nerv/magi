@@ -25,6 +25,20 @@ pub fn install(registry: &mut crate::Registry) {
     registry.register(Box::new(Edit));
 }
 
+/// Register the one builtin that reaches the harness: `spawn`, which starts a child session. Kept
+/// out of [`install`] because it is not pure — it runs the binary this session is, with the
+/// environment that names it — so a test's bare floor does not carry it. `environ` is what a child
+/// process is told (`MAGI_MELCHIOR_*`, `MAGI_SESSION_PID`); without it a root could not name itself
+/// to melchior.
+pub fn install_spawn(
+    registry: &mut crate::Registry,
+    environ: &std::collections::BTreeMap<String, String>,
+) {
+    registry.register(Box::new(Spawn {
+        environ: environ.clone(),
+    }));
+}
+
 /// A required string argument, or a message saying which one is missing.
 fn arg<'a>(arguments: &'a Value, name: &str) -> Result<&'a str, Output> {
     arguments[name]
@@ -263,6 +277,80 @@ fn diff(old: &str, new: &str) -> String {
         }
     }
     out
+}
+
+/// Start a child agent of this session. The one builtin that reaches the harness: it runs the very
+/// binary this session is — [`std::env::current_exe`], never `magi` off `$PATH`, which could be a
+/// stale install — with `fork`, so melchior names the child and caps the tree and magi spawns it.
+pub struct Spawn {
+    /// What the child is told: the `MAGI_MELCHIOR_*` names and `MAGI_SESSION_PID`, so it can name
+    /// itself to melchior and watch the session it belongs to.
+    environ: std::collections::BTreeMap<String, String>,
+}
+
+impl Tool for Spawn {
+    fn name(&self) -> &str {
+        "spawn"
+    }
+
+    fn description(&self) -> &str {
+        "Start a child agent of this session in the same project. `role` is one word for what it \
+         is for; `prompt` is what it should get on with, omitted for one that waits. Returns the \
+         child's id; reach it afterwards with the `agent` tool. The tree has a depth and a breadth \
+         limit, and starting one past either is refused."
+    }
+
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "role": { "type": "string", "description": "One word for what the child is for." },
+                "prompt": { "type": "string", "description": "What it should get on with." }
+            }
+        })
+    }
+
+    fn run(&self, arguments: &Value, ops: &dyn Ops, _cancel: &dyn Cancel) -> Output {
+        let Ok(exe) = std::env::current_exe() else {
+            return Output::error(
+                "magi cannot find its own binary to start a child with".to_owned(),
+            );
+        };
+        let role = arguments["role"].as_str();
+        let prompt = arguments["prompt"].as_str();
+        let mut shown = vec!["fork".to_owned()];
+        if let Some(role) = role {
+            shown.push(format!("--role={role}"));
+        }
+        if let Some(prompt) = prompt {
+            shown.push(prompt.to_owned());
+        }
+        // Gated as a `run`, in the words the person sees: "run magi fork …" is a decision, and a
+        // grant on it lets an agent start children without asking again.
+        if let Err(why) = ops.allow(
+            "spawn",
+            &magi_proto::permit::Action::Run {
+                command: format!("{} {}", exe.display(), shown.join(" ")),
+                program: exe.display().to_string(),
+            },
+        ) {
+            return Output::error(why);
+        }
+        let mut command = std::process::Command::new(&exe);
+        command.args(&shown).envs(&self.environ);
+        match command.output() {
+            Ok(out) if out.status.success() => Output {
+                content: String::from_utf8_lossy(&out.stdout).trim().to_owned(),
+                is_error: false,
+                shown: None,
+            },
+            Ok(out) => Output::error(format!(
+                "the child could not be started: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )),
+            Err(why) => Output::error(format!("magi fork could not be run: {why}")),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -538,5 +626,46 @@ mod paging_tests {
         std::fs::write(dir.join("a.txt"), "a\nb\n").expect("write");
         let out = read_with(&dir, json!({ "path": "a.txt" }));
         assert!(!out.content.contains("Continue"), "{}", out.content);
+    }
+
+    #[test]
+    fn spawn_is_not_in_the_bare_floor_but_install_spawn_adds_it() {
+        // The floor stays the three pure tools; spawn is the one that reaches the harness.
+        let mut floor = crate::Registry::new();
+        install(&mut floor);
+        assert!(
+            floor.get("spawn").is_none(),
+            "spawn leaked into the pure floor"
+        );
+        install_spawn(&mut floor, &std::collections::BTreeMap::new());
+        assert!(
+            floor.get("spawn").is_some(),
+            "install_spawn did not register spawn"
+        );
+    }
+
+    #[test]
+    fn spawn_asks_before_it_starts_a_child_and_starts_none_when_refused() {
+        // A denying gate refuses the run before any process is started: the result is an error and
+        // no child was forked.
+        let dir = scratch("denied");
+        let ops = crate::ops::Real::gated(
+            dir.to_path_buf(),
+            crate::permit::Ledger::new(),
+            std::sync::Arc::new(crate::approve::DenyAll),
+        );
+        let out = Spawn {
+            environ: std::collections::BTreeMap::new(),
+        }
+        .run(
+            &json!({ "prompt": "do a thing" }),
+            &ops,
+            &crate::Uncancelled,
+        );
+        assert!(
+            out.is_error,
+            "a refused spawn must be an error: {}",
+            out.content
+        );
     }
 }

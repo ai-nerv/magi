@@ -363,29 +363,3 @@ fn a_project_may_still_write_a_siblings_settings_table() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
-
-#[test]
-fn the_spawn_tool_starts_a_child_through_magi_fork() {
-    // The model-facing way to start a sub-agent: `magi doctor` shows it in the registry, routed to
-    // `magi fork` rather than the melchior socket, so it is the harness that spawns. Gated as a
-    // `run`, so starting one is asked and granted like any other command.
-    let dir = workspace("spawn");
-    let out = magi(&dir, &["doctor"]);
-    let said = String::from_utf8_lossy(&out.stdout);
-    let block = said
-        .lines()
-        .skip_while(|line| {
-            line.trim_start() != "spawn      config" && !line.trim_start().starts_with("spawn ")
-        })
-        .take(4)
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(
-        block.contains("spawn"),
-        "the spawn tool is not in the registry: {said}"
-    );
-    assert!(
-        block.contains("magi fork"),
-        "the spawn tool does not route to `magi fork`: {block}"
-    );
-}

@@ -181,6 +181,23 @@ impl Real {
         self
     }
 
+    /// What the jail may write, and whether it may reach the network, from this session's grants: a
+    /// write grant on a directory makes it writable, any reach grant keeps the network. The one
+    /// reading of the ledger both the tools-program profile and `magi.shell` are built from.
+    fn jail_reach(&self) -> (Vec<PathBuf>, bool) {
+        use magi_proto::permit::Scope;
+        let mut write = Vec::new();
+        let mut reach = false;
+        for grant in self.grants() {
+            match (grant.verb.as_str(), &grant.scope) {
+                ("write", Scope::Directory { path }) => write.push(PathBuf::from(path)),
+                ("reach", _) => reach = true,
+                _ => {}
+            }
+        }
+        (write, reach)
+    }
+
     /// Resolve a path against the root, refusing anything that escapes it when confined. Checked
     /// after normalising rather than on the text: `a/../../etc` has no leading `..` and a symlink
     /// has none at all.
@@ -271,22 +288,13 @@ impl Ops for Real {
         self.noticed.drain()
     }
 
-    /// The jail profile from the grants this session holds: a write grant on a directory makes it
-    /// writable, any reach grant keeps the network. Conservative on an empty ledger, not open.
+    /// The jail profile from the grants this session holds. `None` when isolation is off; otherwise
+    /// the write directories and network toggle, conservative on an empty ledger, not open.
     fn jail(&self) -> Option<String> {
-        use magi_proto::permit::Scope;
         if !self.isolate {
             return None;
         }
-        let mut write: Vec<String> = Vec::new();
-        let mut reach = false;
-        for grant in self.grants() {
-            match (grant.verb.as_str(), &grant.scope) {
-                ("write", Scope::Directory { path }) => write.push(path.clone()),
-                ("reach", _) => reach = true,
-                _ => {}
-            }
-        }
+        let (write, reach) = self.jail_reach();
         serde_json::to_string(&serde_json::json!({ "write": write, "reach": reach })).ok()
     }
 
@@ -299,10 +307,17 @@ impl Ops for Real {
     }
 
     fn shell(&self, command: &str) -> Result<Shell, String> {
-        let output = Command::new("sh")
-            .arg("-c")
-            .arg(command)
-            .current_dir(&self.root)
+        // Jailed when this session runs sandboxed, from the same grants the profile is built from,
+        // so `magi.shell` is contained exactly as a tool command is. `sh -c` directly otherwise.
+        let mut spawning = if self.isolate {
+            let (write, reach) = self.jail_reach();
+            crate::jail::shell(command, &self.root, &write, reach)
+        } else {
+            let mut sh = Command::new("sh");
+            sh.arg("-c").arg(command).current_dir(&self.root);
+            sh
+        };
+        let output = spawning
             .output()
             .map_err(|e| format!("could not run a shell: {e}"))?;
         Ok(Shell {

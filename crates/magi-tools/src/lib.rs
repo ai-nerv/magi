@@ -9,6 +9,7 @@ pub mod cancel;
 pub mod command;
 pub mod environ;
 pub mod holding;
+pub mod jail;
 pub mod masking;
 pub mod mcp;
 pub mod ops;

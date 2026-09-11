@@ -359,34 +359,6 @@ do -- agent
       timeout = 30,
     },
   })
-
-  -- Start a child agent of this session. `magi fork` names it through melchior — which refuses
-  -- once the tree is too deep — and runs the child headless; the id it prints is what `agent stop`
-  -- and `agent send` then name. `needs = "run"` because starting one runs the harness, so it is
-  -- asked and granted like any other command; a child is handed no more than this session holds.
-  magi.tool("spawn", {
-    description = [[
-  Start a child agent of this session, working in the same project.
-
-  `role` is one word for what it is for (`reviewer`, `builder`), which others route by; `prompt` is
-  what it should get on with, and without it the child comes up idle and waits to be told. The child
-  runs on its own; reach it afterwards with the `agent` tool by the id this returns. A tree of agents
-  has a limit on how deep it may go, and starting one past it is refused.]],
-    parameters = {
-      type = "object",
-      properties = {
-        role = { type = "string", description = "One word for what the child is for, like `reviewer`." },
-        prompt = { type = "string", description = "What the child should get on with. Omit for one that waits." },
-      },
-    },
-    needs = "run",
-    transport = {
-      kind = "command",
-      command = "magi",
-      args = { "fork", "--role={role}", "{prompt}" },
-      timeout = 30,
-    },
-  })
 end
 
 -- An MCP server, if you have one you want here.
