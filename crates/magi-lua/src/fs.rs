@@ -1,14 +1,20 @@
 //! The directory lister the family's clients use to find each other.
 //!
 //! A sibling's client prefers `host.fs.ls(dir)` over shelling out to `io.popen`, which a sandboxed
-//! host may refuse. `fs.write` runs through the same `Ops` the file tools do, and answers only
-//! while the session's ops are lent, so a config cannot write while it is being read. `fs.dir` is
-//! deliberately not offered: a client believes whatever host answers "the directory my sockets
-//! live in", so magi answering would send hexe's client to magi's directory.
+//! host may refuse. `fs.write` runs through the session's `Ops`, and answers only while those ops
+//! are lent, so a config cannot write while it is being read. `fs.dir` is deliberately not offered:
+//! a client believes whatever host answers "the directory my sockets live in", so magi answering
+//! would send hexe's client to magi's directory.
 
 use luna::{Callback, CallbackReturn, Context, Table, Value};
+use std::cell::RefCell;
+use std::rc::Rc;
 
-pub fn table<'gc>(ctx: Context<'gc>, lent: crate::shell::Lent) -> Table<'gc> {
+/// The session's `Ops`, lent to the VM for as long as the worker lives. Empty in every path but a
+/// real session; `magi.fs.write` answers only while it holds one.
+pub type Lent = Rc<RefCell<Option<Rc<dyn magi_tools::Ops>>>>;
+
+pub fn table<'gc>(ctx: Context<'gc>, lent: Lent) -> Table<'gc> {
     let fs = Table::new(&ctx);
     let ls = Callback::from_fn(&ctx, |ctx, _exec, mut stack| {
         let path: Value = stack.consume(ctx)?;

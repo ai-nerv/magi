@@ -13,7 +13,6 @@ mod json;
 pub mod peer;
 pub mod plugins;
 mod sandbox;
-mod shell;
 mod stream;
 pub mod tool;
 

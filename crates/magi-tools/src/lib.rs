@@ -1,6 +1,6 @@
-//! What a tool is, and the three the floor is made of. A tool is a name, a schema, and something
-//! that runs; whether that is Rust, a Lua function or a process on the other end of a socket is a
-//! property of its declaration, not a different registry. Only `read`, `write` and `edit` live here.
+//! What a tool is, and how one is dispatched. magi runs no tool of its own: the tools come from the
+//! `tools` role's program (casper), spawned per call — see [`supplier`] and `ROLES.md`. The one
+//! builtin, `spawn`, coordinates the agent tree rather than doing work on the machine.
 
 pub mod approve;
 pub mod bound;
@@ -9,7 +9,6 @@ pub mod cancel;
 pub mod command;
 pub mod environ;
 pub mod holding;
-pub mod jail;
 pub mod masking;
 pub mod mcp;
 pub mod ops;
@@ -24,7 +23,7 @@ pub mod supplier;
 pub mod watching;
 
 pub use cancel::{Cancel, Uncancelled};
-pub use ops::{Ops, Shell};
+pub use ops::Ops;
 pub use registry::{Prepared, Registry, Sending, Tool};
 pub use watching::{Event, Watch, Watchers};
 

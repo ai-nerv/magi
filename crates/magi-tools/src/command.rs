@@ -493,9 +493,6 @@ mod running_tests {
         fn write(&self, _path: &std::path::Path, _contents: &str) -> Result<(), String> {
             Err("no".to_owned())
         }
-        fn shell(&self, _command: &str) -> Result<crate::ops::Shell, String> {
-            Err("no".to_owned())
-        }
         fn allow(&self, _tool: &str, _action: &magi_proto::permit::Action) -> Result<(), String> {
             Err("the person said no".to_owned())
         }

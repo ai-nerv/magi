@@ -47,9 +47,6 @@ mod watching_tests {
         fn write(&self, _path: &std::path::Path, _contents: &str) -> Result<(), String> {
             Err("no".to_owned())
         }
-        fn shell(&self, _command: &str) -> Result<crate::ops::Shell, String> {
-            Err("no".to_owned())
-        }
     }
 
     /// Remembers what it was told, which is the whole point of a watcher.

@@ -48,10 +48,8 @@ pub struct Engine {
     /// What [`Engine::install`] itself put on the `magi` table, captured rather than listed. It is
     /// what lets [`Engine::harvest`] tell an unkeepable setting from a primitive magi installed.
     installed: std::collections::HashSet<String>,
-    /// The session's `Ops`, for [`crate::shell`]. Empty in every path but a real session.
-    lent: crate::shell::Lent,
-    /// Whether a tool's `run` is on the stack, which is the only time `magi.shell` answers.
-    inside: crate::shell::Inside,
+    /// The session's `Ops`, for `magi.fs.write`. Empty in every path but a real session.
+    lent: crate::fs::Lent,
 }
 
 /// Which session this process is, and which balthasar holds it. Process-global because a magi is
@@ -106,7 +104,6 @@ impl Engine {
             lua: Lua::full(),
             config: Rc::new(RefCell::new(Config::default())),
             lent: Rc::new(RefCell::new(None)),
-            inside: Rc::new(std::cell::Cell::new(false)),
             installed: std::collections::HashSet::new(),
         };
         engine.install();
@@ -156,7 +153,6 @@ impl Engine {
         let config = Rc::clone(&self.config);
         let mut mine = std::collections::HashSet::new();
         let lent = Rc::clone(&self.lent);
-        let inside = Rc::clone(&self.inside);
         self.lua.enter(|ctx| {
             let magi = Table::new(&ctx);
 
@@ -213,10 +209,8 @@ impl Engine {
             // The lister a sibling's client prefers over shelling out.
             let fs = crate::fs::table(ctx, Rc::clone(&lent));
             magi.set(ctx, "fs", fs).ok();
-            // Running a command through the same gate the shell peer goes through, and only while
-            // a tool's `run` is on the stack.
-            let shell = crate::shell::callback(ctx, Rc::clone(&lent), Rc::clone(&inside));
-            magi.set(ctx, "shell", shell).ok();
+            // magi runs no commands of its own — `magi.shell` is gone, and `MOVED` answers a config
+            // that still calls it with "running a command is casper's". See `ROLES.md`.
             // Every protocol description reads JSON payloads; one lent parser beats each carrying one.
             let json = crate::json::table(ctx);
             magi.set(ctx, "json", json).ok();
@@ -417,9 +411,7 @@ impl Engine {
                __magi_tool_result = answer\n\
              end"
         );
-        self.inside_a_tool().set(true);
         let ran = self.run(&source, "tool.lua");
-        self.inside_a_tool().set(false);
         ran.ok()?;
 
         let mut out = None;
@@ -506,16 +498,10 @@ impl Engine {
 }
 
 impl Engine {
-    /// Lend this VM the session's `Ops`, so `magi.shell` has a seam. Once, by the daemon; every
-    /// other path lends nothing and `magi.shell` says so rather than running.
+    /// Lend this VM the session's `Ops`, so `magi.fs.write` has a seam. Once, by the daemon; every
+    /// other path lends nothing and `magi.fs.write` says so rather than writing.
     pub fn attach_ops(&mut self, ops: Rc<dyn magi_tools::Ops>) {
         *self.lent.borrow_mut() = Some(ops);
-    }
-
-    /// Whether a tool's `run` is on the stack, which is the only time `magi.shell` answers. A
-    /// config file is read by the same VM, and one that could spawn while read would be a hole.
-    fn inside_a_tool(&self) -> &crate::shell::Inside {
-        &self.inside
     }
 }
 

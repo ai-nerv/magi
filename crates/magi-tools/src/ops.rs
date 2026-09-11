@@ -4,23 +4,6 @@
 //! decided here rather than by what the VM happens to expose.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
-
-/// What a shell command produced.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Shell {
-    /// Exit status, or `None` if a signal ended it.
-    pub code: Option<i32>,
-    pub stdout: String,
-    pub stderr: String,
-}
-
-impl Shell {
-    #[must_use]
-    pub fn ok(&self) -> bool {
-        self.code == Some(0)
-    }
-}
 
 /// Everything a tool is allowed to do to the outside world.
 pub trait Ops: Send + Sync {
@@ -51,13 +34,6 @@ pub trait Ops: Send + Sync {
     /// # Errors
     /// When the path is outside the session or the write fails.
     fn write(&self, path: &Path, contents: &str) -> Result<(), String>;
-
-    /// Run a shell command.
-    ///
-    /// # Errors
-    /// When the command could not be started at all. A command that ran and failed is a [`Shell`]
-    /// with a non-zero code, not an error.
-    fn shell(&self, command: &str) -> Result<Shell, String>;
 
     /// Ask whether `action` may happen, blocking until it is answered. Called by a tool before it
     /// acts, not by the registry, because only the tool knows what it is about to do; `tool` is its
@@ -183,8 +159,7 @@ impl Real {
 
     /// What the jail may write, from this session's grants — a write grant on a directory makes it
     /// writable — and that it keeps the network: the jail contains the filesystem, not the network,
-    /// which is essential and stays open. The one reading of the ledger both the tools-program
-    /// profile and `magi.shell` are built from.
+    /// which is essential and stays open. Read into the tools-program profile [`Self::jail`] sends.
     fn jail_reach(&self) -> (Vec<PathBuf>, bool) {
         use magi_proto::permit::Scope;
         let mut write = Vec::new();
@@ -306,27 +281,6 @@ impl Ops for Real {
             ledger.take_on(grants);
         }
     }
-
-    fn shell(&self, command: &str) -> Result<Shell, String> {
-        // Jailed when this session runs sandboxed, from the same grants the profile is built from,
-        // so `magi.shell` is contained exactly as a tool command is. `sh -c` directly otherwise.
-        let mut spawning = if self.isolate {
-            let (write, reach) = self.jail_reach();
-            crate::jail::shell(command, &self.root, &write, reach)
-        } else {
-            let mut sh = Command::new("sh");
-            sh.arg("-c").arg(command).current_dir(&self.root);
-            sh
-        };
-        let output = spawning
-            .output()
-            .map_err(|e| format!("could not run a shell: {e}"))?;
-        Ok(Shell {
-            code: output.status.code(),
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        })
-    }
 }
 
 #[cfg(test)]
@@ -422,24 +376,6 @@ mod tests {
     fn a_confined_absolute_path_outside_the_root_is_refused() {
         let (ops, _dir) = walled("absolute");
         assert!(ops.read(Path::new("/etc/passwd")).is_err());
-    }
-
-    #[test]
-    fn a_command_that_fails_is_output_not_an_error() {
-        // The model needs to see what it said; a non-zero exit is information, not a fault.
-        let (ops, _dir) = rooted("failing");
-        let result = ops.shell("echo out; echo err >&2; exit 3").expect("it ran");
-        assert_eq!(result.code, Some(3));
-        assert!(!result.ok());
-        assert_eq!(result.stdout.trim(), "out");
-        assert_eq!(result.stderr.trim(), "err");
-    }
-
-    #[test]
-    fn a_command_runs_in_the_session_directory() {
-        let (ops, _dir) = rooted("cwd");
-        let result = ops.shell("pwd").expect("it ran");
-        assert!(result.stdout.contains("magi-ops-"), "{}", result.stdout);
     }
 
     #[test]

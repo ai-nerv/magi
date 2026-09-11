@@ -14,9 +14,6 @@ rustix = { workspace = true }
 serde.workspace = true
 similar.workspace = true
 serde_json.workspace = true
-seccompiler = "0.5"
-libc = "0.2.189"
-landlock = "0.4.4"
 
 
 [lints]
