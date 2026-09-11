@@ -157,16 +157,24 @@ impl Scribe {
     }
 
     async fn replay_at(&mut self, id: &str) -> Result<Vec<(Cursor, Entry)>, Fault> {
+        // Durable: resuming is the first call a fresh store gets, and that call opens it.
         let values = self
             .family
-            .call("replay", vec![serde_json::Value::String(id.to_owned())])
+            .call_within(
+                "replay",
+                vec![serde_json::Value::String(id.to_owned())],
+                magi_ipc::family::DURABLE,
+            )
             .await?;
         values.iter().flat_map(rows).map(rebuild).collect()
     }
 
-    /// The runs this project has had.
+    /// The runs this project has had. Durable, for the reason `replay` is.
     pub async fn sessions(&mut self) -> Result<Vec<serde_json::Value>, Fault> {
-        let values = self.family.call("sessions", Vec::new()).await?;
+        let values = self
+            .family
+            .call_within("sessions", Vec::new(), magi_ipc::family::DURABLE)
+            .await?;
         Ok(values.iter().flat_map(rows).cloned().collect())
     }
 
@@ -297,15 +305,16 @@ impl Scribe {
     /// # Errors
     /// Whatever balthasar answered.
     pub async fn keep(&mut self, text: &str) -> Result<String, Fault> {
-        // Under this session, so it is this session's to take back.
+        // Under this session, so it is this session's to take back. A write, so durable.
         let values = self
             .family
-            .call(
+            .call_within(
                 "remember",
                 vec![
                     serde_json::Value::String(text.to_owned()),
                     serde_json::json!({ "session": self.session }),
                 ],
+                magi_ipc::family::DURABLE,
             )
             .await?;
         values
