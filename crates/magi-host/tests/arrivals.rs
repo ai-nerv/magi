@@ -23,6 +23,7 @@ fn backend(mind: &Mind) -> Backend {
         context_window: Some(200_000),
         system: None,
         confine: false,
+        isolate: false,
         grants: Vec::new(),
         environ: std::collections::BTreeMap::new(),
     }

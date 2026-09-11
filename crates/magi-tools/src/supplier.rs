@@ -20,6 +20,10 @@ pub const CONFIGURE: &str = "MAGI_TOOLS_CONFIGURE";
 /// The same variable under casper's own name, which is the one casper reads.
 pub const CONFIGURE_WAS: &str = "CASPER_CONFIGURE";
 
+/// What the tools program reads its jail profile out of — casper's `CASPER_JAIL`, set only when
+/// `magi.isolation` is on.
+pub const JAIL: &str = "CASPER_JAIL";
+
 /// The program filling the `tools` role, and what this session tells it.
 ///
 /// One value, so the program name reaches every spawn the pin and the settings reach.
@@ -118,14 +122,32 @@ pub fn run(program: &str, call: &Call) -> Result<Ran, String> {
 /// # Errors
 /// A refusal — the program could not be started, or would not take the call.
 pub fn run_configured(program: &str, call: &Call, configured: &str) -> Result<Ran, String> {
+    run_jailed(program, call, configured, None)
+}
+
+/// The same, inside the jail `jail` describes when `Some`, carried in the [`JAIL`] env.
+///
+/// # Errors
+/// A refusal — the program could not be started, or would not take the call.
+pub fn run_jailed(
+    program: &str,
+    call: &Call,
+    configured: &str,
+    jail: Option<&str>,
+) -> Result<Ran, String> {
     use std::io::Write;
     let body =
         serde_json::to_vec(call).map_err(|why| format!("this call will not encode: {why}"))?;
 
-    let mut child = std::process::Command::new(program)
+    let mut spawning = std::process::Command::new(program);
+    spawning
         .arg("run")
         .env(CONFIGURE, configured)
-        .env(CONFIGURE_WAS, configured)
+        .env(CONFIGURE_WAS, configured);
+    if let Some(jail) = jail {
+        spawning.env(JAIL, jail);
+    }
+    let mut child = spawning
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -263,10 +285,11 @@ impl Tool for SuppliedTool {
         {
             return Output::error(why);
         }
+        let jail = ops.jail();
         // A call may stop and ask, and then go on. Bounded, because a tool that asked forever would
         // hold the turn open forever; two questions is as far as anything has needed to go.
         for _ in 0..3 {
-            let ran = match run_configured(&self.program, &call, &self.configured) {
+            let ran = match run_jailed(&self.program, &call, &self.configured, jail.as_deref()) {
                 // A refusal is still something the model reads, and it can try another way round.
                 Err(why) => return Output::error(why),
                 Ok(ran) => ran,

@@ -21,6 +21,8 @@ pub struct Backend {
     pub environ: std::collections::BTreeMap<String, String>,
     /// Whether the file tools refuse paths outside `cwd`. See [`magi_tools::ops::Real`].
     pub confine: bool,
+    /// Whether a tool command runs inside a kernel jail — `magi.isolation`.
+    pub isolate: bool,
     /// Which model to ask for, as melchior names it: `provider/model`. A name and nothing else.
     pub model: String,
     /// The program that owns the model, found on `PATH`. Named per backend, not compiled in.

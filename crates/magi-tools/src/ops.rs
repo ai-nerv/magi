@@ -82,6 +82,11 @@ pub trait Ops: Send + Sync {
     fn noticed(&self) -> Vec<crate::watching::Noted> {
         Vec::new()
     }
+
+    /// The jail profile a tools program is spawned with, as JSON; `None` when isolation is off.
+    fn jail(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Ops against the real machine, rooted at one directory. The root is where *relative* paths
@@ -91,6 +96,9 @@ pub trait Ops: Send + Sync {
 pub struct Real {
     root: PathBuf,
     confined: bool,
+    /// Whether a tool command runs inside a kernel jail — `magi.isolation`. Independent of
+    /// [`Self::confined`], the pre-flight path check: this contains a command that ignores it.
+    isolate: bool,
     /// What has already been allowed, and who to ask when it has not.
     gate: Option<Gate>,
     /// Questions and answers, written down for whoever can be told; see [`crate::watching::Pending`].
@@ -111,6 +119,7 @@ impl Real {
             root,
             confined: false,
             gate: None,
+            isolate: false,
             noticed: crate::watching::Pending::new(),
         }
     }
@@ -129,6 +138,7 @@ impl Real {
                 ledger: std::sync::Mutex::new(ledger),
                 approver,
             }),
+            isolate: false,
             noticed: crate::watching::Pending::new(),
         }
     }
@@ -151,6 +161,7 @@ impl Real {
             root,
             confined: true,
             gate: None,
+            isolate: false,
             noticed: crate::watching::Pending::new(),
         }
     }
@@ -160,6 +171,13 @@ impl Real {
     #[must_use]
     pub fn confining(mut self, confined: bool) -> Self {
         self.confined = confined;
+        self
+    }
+
+    /// Run tool commands inside a kernel jail, or do not.
+    #[must_use]
+    pub fn isolating(mut self, isolate: bool) -> Self {
+        self.isolate = isolate;
         self
     }
 
@@ -253,6 +271,25 @@ impl Ops for Real {
         self.noticed.drain()
     }
 
+    /// The jail profile from the grants this session holds: a write grant on a directory makes it
+    /// writable, any reach grant keeps the network. Conservative on an empty ledger, not open.
+    fn jail(&self) -> Option<String> {
+        use magi_proto::permit::Scope;
+        if !self.isolate {
+            return None;
+        }
+        let mut write: Vec<String> = Vec::new();
+        let mut reach = false;
+        for grant in self.grants() {
+            match (grant.verb.as_str(), &grant.scope) {
+                ("write", Scope::Directory { path }) => write.push(path.clone()),
+                ("reach", _) => reach = true,
+                _ => {}
+            }
+        }
+        serde_json::to_string(&serde_json::json!({ "write": write, "reach": reach })).ok()
+    }
+
     fn take_on(&self, grants: Vec<magi_proto::permit::Grant>) {
         if let Some(gate) = &self.gate
             && let Ok(mut ledger) = gate.ledger.lock()
@@ -284,6 +321,48 @@ mod tests {
     fn rooted(name: &str) -> (Real, Scratch) {
         let dir = Scratch::new("magi-ops", name);
         (Real::new(dir.to_path_buf()), dir)
+    }
+
+    #[test]
+    fn isolation_off_is_no_jail_profile_at_all() {
+        let (ops, _dir) = rooted("no-jail");
+        assert_eq!(
+            ops.jail(),
+            None,
+            "a session that did not ask for a jail gets none"
+        );
+    }
+
+    #[test]
+    fn the_jail_profile_is_built_from_the_grants() {
+        use magi_proto::permit::{Grant, Scope};
+        let ledger = crate::permit::Ledger::with(vec![
+            Grant {
+                verb: "write".to_owned(),
+                scope: Scope::Directory {
+                    path: "/w/build".to_owned(),
+                },
+            },
+            Grant {
+                verb: "reach".to_owned(),
+                scope: Scope::Anything,
+            },
+        ]);
+        let ops = Real::gated(
+            std::path::PathBuf::from("/w"),
+            ledger,
+            std::sync::Arc::new(crate::approve::AllowAll),
+        )
+        .isolating(true);
+        let json = ops.jail().expect("a profile when isolation is on");
+        assert!(
+            json.contains("/w/build"),
+            "the write grant is in the profile: {json}"
+        );
+        assert!(
+            json.contains("\"reach\":true"),
+            "the reach grant opens the network: {json}"
+        );
     }
 
     /// The same, with the wall on: `magi.confine` is where that rule lives now.

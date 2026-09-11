@@ -215,6 +215,7 @@ async fn start_with_mind(name: &str, mind: &Mind) -> (Scratch, PathBuf) {
         context_window: Some(200_000),
         system: Some("You are magi.".to_owned()),
         confine: false,
+        isolate: false,
         grants: Vec::new(),
         environ: std::collections::BTreeMap::new(),
     };

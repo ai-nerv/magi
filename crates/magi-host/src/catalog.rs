@@ -17,6 +17,8 @@ pub struct Catalog {
     pub system: Option<String>,
     /// Whether the file tools refuse paths outside `cwd`.
     pub confine: bool,
+    /// Whether a tool command runs inside a kernel jail — `magi.isolation`.
+    pub isolate: bool,
     pub grants: Vec<magi_proto::permit::Grant>,
     /// Which program fills the `tools` role, and what this session tells it. Beside [`Self::mind`]
     /// and [`Self::memory`] because it is the third of the same thing: a role, and who is doing it.
@@ -48,6 +50,7 @@ impl Catalog {
             system: None,
             chosen: None,
             confine: false,
+            isolate: false,
             grants: Vec::new(),
         }
     }
@@ -69,6 +72,7 @@ impl Catalog {
             context_window: card.context_window,
             system: self.system.clone(),
             confine: self.confine,
+            isolate: self.isolate,
             grants: self.grants.clone(),
         })
     }

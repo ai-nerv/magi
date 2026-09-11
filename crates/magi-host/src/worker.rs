@@ -96,12 +96,15 @@ impl Worker {
                         magi_tools::permit::Ledger::with(backend.grants.clone()),
                         std::sync::Arc::clone(approver),
                     )
-                    .confining(confine),
+                    .confining(confine)
+                    .isolating(backend.isolate),
                 ),
-                (None, true) => {
-                    std::rc::Rc::new(magi_tools::ops::Real::confined(backend.cwd.clone()))
-                }
-                (None, false) => std::rc::Rc::new(magi_tools::ops::Real::new(backend.cwd.clone())),
+                (None, true) => std::rc::Rc::new(
+                    magi_tools::ops::Real::confined(backend.cwd.clone()).isolating(backend.isolate),
+                ),
+                (None, false) => std::rc::Rc::new(
+                    magi_tools::ops::Real::new(backend.cwd.clone()).isolating(backend.isolate),
+                ),
             };
             // Lent to the VM so `magi.shell` goes through the same `Ops` every other tool acts through.
             engine.borrow_mut().attach_ops(std::rc::Rc::clone(&ops));

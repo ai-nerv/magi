@@ -251,6 +251,7 @@ pub fn catalog(loaded: &Loaded, cards: Vec<magi_proto::ask::Card>) -> magi_host:
         environ: environ(loaded),
         chosen: None,
         confine: loaded.config.boolean("confine").unwrap_or(false),
+        isolate: loaded.config.boolean("isolation").unwrap_or(false),
     };
     // After the cards: resolving what was asked for needs something to resolve it against.
     catalog.chosen = asked(loaded, &catalog);
@@ -381,7 +382,7 @@ pub struct Trusted {
 
 /// Settings a project's own file may not assign: `confine` is the wall, `allow` is what may happen
 /// without asking, and a file that could set `trusted` could exempt itself.
-const PRIVILEGED_SETTINGS: &[&str] = &["confine", "allow", "trusted"];
+const PRIVILEGED_SETTINGS: &[&str] = &["confine", "allow", "trusted", "isolation"];
 
 impl Trusted {
     /// Record what has been declared so far.
