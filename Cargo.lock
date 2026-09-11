@@ -528,6 +528,7 @@ dependencies = [
  "ciborium",
  "magi-model",
  "magi-proto",
+ "magi-testkit",
  "rustix",
  "serde",
  "serde_json",
