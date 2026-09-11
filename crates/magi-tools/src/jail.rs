@@ -2,9 +2,11 @@
 //! command becomes a process inside magi itself rather than in the tools program.
 //!
 //! Duplicated rather than shared: a library between magi and casper is the dependency `FAMILY.md`
-//! exists to prevent, and this is ~40 lines. bubblewrap builds the world — a read-only machine,
-//! writable where the grants say, credential stores masked, no network unless a reach grant asked.
-//! When bubblewrap is not installed the command runs unwrapped and says so.
+//! exists to prevent. bubblewrap builds the world — a read-only machine, writable where the grants
+//! say, credential stores masked, no network unless a reach grant asked. Beside it a seccomp filter
+//! removes the syscalls no command needs, and where bubblewrap is absent Landlock adds the
+//! filesystem, network and signal walls in-process — the containment that stands without a
+//! namespace.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -13,15 +15,25 @@ use std::process::Command;
 /// bubblewrap is not installed — a loud downgrade, not a silent one.
 #[must_use]
 pub fn shell(command: &str, cwd: &Path, write: &[PathBuf], reach: bool) -> Command {
-    let plain = || {
-        let mut sh = Command::new("sh");
-        sh.arg("-c").arg(command).current_dir(cwd);
-        sh
+    let mut spawning = match which("bwrap") {
+        Some(bwrap) => bwrapped(&bwrap, command, cwd, write, reach),
+        None => {
+            magi_model::noted!(
+                "jail: bwrap is not installed; a shell command runs under seccomp and Landlock only"
+            );
+            let mut sh = Command::new("sh");
+            sh.arg("-c").arg(command).current_dir(cwd);
+            sh
+        }
     };
-    let Some(bwrap) = which("bwrap") else {
-        magi_model::noted!("jail: bwrap is not installed; a shell command runs unsandboxed");
-        return plain();
-    };
+    confine(&mut spawning);
+    restrict(&mut spawning, cwd, write, reach);
+    spawning
+}
+
+/// The `bwrap … -- sh -c command` invocation: the profile, a cleared environment kept down to the
+/// few a command needs, then the command.
+fn bwrapped(bwrap: &str, command: &str, cwd: &Path, write: &[PathBuf], reach: bool) -> Command {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_default();
@@ -40,7 +52,6 @@ pub fn shell(command: &str, cwd: &Path, write: &[PathBuf], reach: bool) -> Comma
     ]);
     let mut jailed = Command::new(bwrap);
     jailed.args(&argv).current_dir(cwd);
-    confine(&mut jailed);
     jailed
 }
 
@@ -88,6 +99,79 @@ fn deny(forbid: &[i64]) -> seccompiler::BpfProgram {
     )
     .and_then(std::convert::TryInto::try_into)
     .unwrap_or_default()
+}
+
+/// Restrict `command` with Landlock when bubblewrap will not build the world — the one path where
+/// the filesystem, network and signal walls must stand without a mount namespace. A no-op when
+/// bwrap is present (it contains the command instead) or on a kernel without Landlock.
+fn restrict(command: &mut Command, cwd: &Path, write: &[PathBuf], reach: bool) {
+    if which("bwrap").is_some() {
+        return;
+    }
+    let Some(ruleset) = ruleset(cwd, write, reach) else {
+        return;
+    };
+    // SAFETY: like `confine` — the ruleset is built and populated here; the closure only clones its
+    // descriptor and calls `restrict_self`, which is `prctl` and one Landlock syscall, no allocation.
+    #[allow(unsafe_code)]
+    unsafe {
+        use std::os::unix::process::CommandExt as _;
+        command.pre_exec(move || {
+            let status = ruleset
+                .try_clone()
+                .map_err(|why| std::io::Error::other(format!("landlock: {why}")))?
+                .restrict_self()
+                .map_err(|why| std::io::Error::other(format!("landlock: {why}")))?;
+            if status.ruleset == landlock::RulesetStatus::NotEnforced {
+                return Err(std::io::Error::other("landlock: not enforced"));
+            }
+            Ok(())
+        });
+    }
+}
+
+/// The system directories a command reads to run at all — never `$HOME`, so the credential stores
+/// under it stay unreadable the way bubblewrap's mask makes them.
+const SYSTEM_READ: &[&str] = &[
+    "/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc", "/opt", "/proc", "/sys", "/run",
+];
+
+/// A Landlock ruleset: read across the system directories, write at `cwd`, each `write` and the
+/// scratch devices, TCP denied unless `reach`, and signals scoped to this domain. Best-effort, so an
+/// older kernel keeps the walls it can and drops the rest rather than failing.
+fn ruleset(cwd: &Path, write: &[PathBuf], reach: bool) -> Option<landlock::RulesetCreated> {
+    use landlock::{
+        ABI, Access, AccessFs, AccessNet, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset,
+        RulesetAttr, RulesetCreatedAttr, Scope,
+    };
+    let abi = ABI::V5;
+    let mut ruleset = Ruleset::default()
+        .set_compatibility(CompatLevel::BestEffort)
+        .handle_access(AccessFs::from_all(abi))
+        .ok()?
+        .scope(Scope::Signal | Scope::AbstractUnixSocket)
+        .ok()?;
+    if !reach {
+        ruleset = ruleset
+            .handle_access(AccessNet::ConnectTcp | AccessNet::BindTcp)
+            .ok()?;
+    }
+    let mut created = ruleset.create().ok()?;
+    let (read, all) = (AccessFs::from_read(abi), AccessFs::from_all(abi));
+    for dir in SYSTEM_READ {
+        if let Ok(fd) = PathFd::new(dir) {
+            created = created.add_rule(PathBeneath::new(fd, read)).ok()?;
+        }
+    }
+    let writable = std::iter::once(cwd.to_path_buf())
+        .chain(write.iter().cloned())
+        .chain([PathBuf::from("/tmp"), PathBuf::from("/dev")]);
+    for dir in writable {
+        if let Ok(fd) = PathFd::new(&dir) {
+            created = created.add_rule(PathBeneath::new(fd, all)).ok()?;
+        }
+    }
+    Some(created)
 }
 
 /// The bubblewrap arguments: a read-only machine, writable at `cwd` and each `write` directory,
@@ -186,6 +270,49 @@ mod tests {
             "the filter did not block mkdir"
         );
         assert!(!target.exists());
+    }
+
+    #[test]
+    fn landlock_alone_denies_a_read_outside_the_set_and_keeps_the_cwd_writable() {
+        // The degraded path: no bwrap, so Landlock is the only wall. A ruleset reading the system
+        // and writing one directory, applied the way `restrict` applies it; a child then proves a
+        // credential-shaped path outside the set is unreadable and the granted dir writable.
+        use std::os::unix::process::CommandExt as _;
+        let dir = Scratch::new("magi-jail", "landlock");
+        let work = dir.join("work");
+        let secret = dir.join("secret");
+        std::fs::create_dir_all(&work).expect("mkdir");
+        std::fs::write(&secret, "THE-SECRET-KEY").expect("write");
+        let Some(ruleset) = ruleset(&work, &[], false) else {
+            eprintln!("skipping: no Landlock here");
+            return;
+        };
+        let script = format!(
+            "cat {} 2>&1; echo --sep--; echo ok > {}/w 2>&1 && echo WROTE || echo NOWRITE",
+            secret.display(),
+            work.display()
+        );
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(&script);
+        // SAFETY: as in `restrict` — clone the descriptor and `restrict_self`, syscalls only.
+        #[allow(unsafe_code)]
+        unsafe {
+            command.pre_exec(move || {
+                ruleset
+                    .try_clone()
+                    .map_err(|why| std::io::Error::other(format!("landlock: {why}")))?
+                    .restrict_self()
+                    .map_err(|why| std::io::Error::other(format!("landlock: {why}")))?;
+                Ok(())
+            });
+        }
+        let out = command.output().expect("sh runs");
+        let said = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !said.contains("THE-SECRET-KEY"),
+            "the secret was readable under Landlock: {said}"
+        );
+        assert!(said.contains("WROTE"), "the cwd was not writable: {said}");
     }
 
     #[test]
