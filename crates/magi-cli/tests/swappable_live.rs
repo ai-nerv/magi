@@ -1,9 +1,9 @@
-//! The `memory` role, filled by something that is not balthasar.
+//! The `memory` and `tools` roles, filled by programs that are not balthasar and casper.
 //!
 //! `examples/remembrance` answers the family floor and the memory core from `ROLES.md` and nothing
-//! else. This points `magi.memory` at it and runs two real sessions against it: the first records,
-//! the second resumes. Nothing here is faked — a separate program, written against the document
-//! rather than against magi, holds the conversation.
+//! else; `examples/workbench` does the same for the tools core. These point `magi.memory` and
+//! `magi.tools` at them and run real sessions. Nothing here is faked — separate programs, written
+//! against the document rather than against magi, hold the conversation and run the calls.
 
 use magi_model::scratch::Scratch;
 use magi_testkit::Mind;
@@ -11,14 +11,21 @@ use magi_testkit::mind::MODEL;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The shim, compiled where the test can put it on `PATH`. `None` when there is no `rustc` to
-/// compile it with, which is a machine this cannot run on rather than a failure.
+/// The memory shim, compiled where the test can put it on `PATH`. `None` when there is no `rustc`
+/// to compile it with, which is a machine this cannot run on rather than a failure.
 fn shim(into: &Path) -> Option<PathBuf> {
-    let source =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/remembrance/remembrance.rs");
+    example(into, "remembrance")
+}
+
+/// One of `examples/`, compiled into `bin/` under `into`, and that directory.
+fn example(into: &Path, name: &str) -> Option<PathBuf> {
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples")
+        .join(name)
+        .join(format!("{name}.rs"));
     let dir = into.join("bin");
     std::fs::create_dir_all(&dir).expect("mkdir");
-    let out = dir.join("remembrance");
+    let out = dir.join(name);
     let built = Command::new("rustc")
         .arg(&source)
         .arg("-O")
@@ -217,6 +224,103 @@ fn the_shim_fills_the_role_by_the_gate_that_says_so() {
         .arg(&gate)
         .arg("memory")
         .arg(bin.join("remembrance"))
+        .output()
+        .expect("run the gate");
+    assert!(
+        out.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A workspace whose configuration names the tools shim as well, and tells it something.
+fn tooled(name: &str) -> Option<(Scratch, PathBuf)> {
+    let dir = workspace(name);
+    let bin = shim(&dir)?;
+    example(&dir, "workbench")?;
+    let init = dir.join("config/magi/init.lua");
+    let mut source = std::fs::read_to_string(&init).expect("the installed entry point");
+    source.push_str("magi.tools = \"workbench\"\nmagi.workbench = { quiet = true }\n");
+    std::fs::write(&init, source).expect("write init");
+    Some((dir, bin))
+}
+
+#[test]
+fn a_turn_runs_the_tool_a_tools_program_that_is_not_casper_offered() {
+    let Some((dir, bin)) = tooled("tcall") else {
+        eprintln!("skipping: no rustc to build the shims with");
+        return;
+    };
+    let call = magi_testkit::mind::call_lines("c1", "backwards", r#"{"text":"gerbil"}"#);
+    let call: Vec<&str> = call.iter().map(String::as_str).collect();
+    let answer = [
+        magi_testkit::mind::text_line("done"),
+        magi_testkit::mind::stop_line(),
+    ];
+    let answer: Vec<&str> = answer.iter().map(String::as_str).collect();
+    let mind = Mind::turns("swap-call", &[&call, &answer]);
+
+    let run = magi(&dir, &mind, &bin, &["-p", "reverse gerbil"]);
+    assert!(
+        run.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let asks = mind.asks();
+    assert_eq!(asks.len(), 2, "the call and the answer after it: {asks:?}");
+    assert!(
+        asks[0].contains("\"name\":\"backwards\""),
+        "the model was offered the shim's tool: {}",
+        asks[0]
+    );
+    // Ran by the shim, with the settings keyed by its own name. A session that spawned casper
+    // for the call would leave this file unwritten whatever the model was told.
+    let calls = std::fs::read_to_string(dir.join(".workbench/calls"))
+        .expect("the shim ran nothing: this session's tools were not the shim's");
+    assert_eq!(calls.trim(), "gerbil\t{\"quiet\":true}");
+    assert!(
+        asks[1].contains("workbench ran: libreg"),
+        "and what it said came back to the model: {}",
+        asks[1]
+    );
+}
+
+#[test]
+fn the_listing_names_the_program_that_supplies_each_tool() {
+    // The failure this is for: `magi tools` and `magi doctor` labelled every peer tool `casper`,
+    // and the session behind them spawned casper whatever `magi.tools` said.
+    let Some((dir, bin)) = tooled("tlist") else {
+        eprintln!("skipping: no rustc to build the shims with");
+        return;
+    };
+    let mind = Mind::answering("swap-list", "noted");
+    for verb in ["tools", "doctor"] {
+        let out = magi(&dir, &mind, &bin, &[verb]);
+        let said = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{verb}: {said}");
+        let row = said
+            .lines()
+            .find(|line| line.trim_start().starts_with("backwards"))
+            .unwrap_or_else(|| panic!("{verb} does not list the shim's tool: {said}"));
+        assert!(row.contains("workbench"), "{verb}: {row}");
+        assert!(!row.contains("casper"), "{verb}: {row}");
+    }
+}
+
+#[test]
+fn the_tools_shim_fills_the_role_by_the_gate_that_says_so() {
+    let dir = Scratch::new("ms", "tgate");
+    let Some(bin) = example(&dir, "workbench") else {
+        eprintln!("skipping: no rustc to build the shim with");
+        return;
+    };
+    let gate = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/gate-role.sh");
+    let out = Command::new("sh")
+        .arg(&gate)
+        .arg("tools")
+        .arg(bin.join("workbench"))
         .output()
         .expect("run the gate");
     assert!(
