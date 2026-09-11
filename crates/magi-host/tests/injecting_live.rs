@@ -5,6 +5,7 @@
 use magi_host::scribe::Scribe;
 use magi_model::scratch::Scratch;
 use magi_proto::SessionId;
+use magi_testkit::memory::Serving;
 
 /// How long balthasar has to answer before this gives up on it: the scribe's own durable clock, so
 /// this never cuts short a call the scribe would still be waiting on.
@@ -40,57 +41,15 @@ async fn own_balthasar(
         )
         .expect("write");
     }
-    let instance = format!("mi-{}-{name}", std::process::id());
-    let child = std::process::Command::new("balthasar")
-        .arg("serve")
-        .arg("--instance")
-        .arg(&instance)
-        .arg("--scope")
-        .arg("project")
-        .current_dir(&*dir)
-        // The runtime directory is the scratch's too. balthasar binds a socket under it and the
-        // `SIGKILL` in `Serving` gives it no chance to unlink one, so a real directory fills up.
-        .env("XDG_RUNTIME_DIR", dir.join("r"))
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .ok()?;
-
     // Short names, because the instance appears inside a socket path bounded by `SUN_LEN`.
-    let socket = dir
-        .join("r")
-        .join("balthasar")
-        .join(format!("api@{instance}.sock"));
-
-    // Polled rather than slept on: a fixed wait is too short when loaded and wasted when idle.
-    let id = SessionId::new(&instance);
-    let deadline = std::time::Instant::now() + ANSWERS_WITHIN;
-    while std::time::Instant::now() < deadline {
-        if let Ok(family) = magi_ipc::family::Family::dial(&socket).await {
-            let mut scribe = Scribe::over(family, Some(socket.clone()), &id);
-            // Answering, not merely bound: a socket file outlives the process that made it.
-            if let Ok(Ok(_)) = tokio::time::timeout(ANSWERS_WITHIN, scribe.replay()).await {
-                return Some((scribe, dir, Serving(child), held));
-            }
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
-    // Installed and started, and never answered. Not a skip: reporting "not installed" here let a
-    // slow machine pass this file without it having tested anything.
-    drop(Serving(child));
-    panic!("balthasar started and did not answer within {ANSWERS_WITHIN:?}");
-}
-
-/// A `balthasar serve` this test started, killed when the test ends. A guard, not a line at the
-/// bottom: a test that returns early or fails an assertion would otherwise leave one running.
-struct Serving(std::process::Child);
-
-impl Drop for Serving {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
+    let instance = format!("mi-{}-{name}", std::process::id());
+    let serving = Serving::start(&dir, &instance).await?;
+    let family = magi_ipc::family::Family::dial(serving.socket())
+        .await
+        .expect("dial the balthasar that just answered");
+    let socket = serving.socket().to_owned();
+    let scribe = Scribe::over(family, Some(socket), &SessionId::new(&instance));
+    Some((scribe, dir, serving, held))
 }
 
 #[tokio::test]

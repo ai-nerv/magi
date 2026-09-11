@@ -1,54 +1,38 @@
-//! The scrollback contract, against a balthasar that is actually running.
+//! The scrollback contract, against a balthasar of each test's own.
 //!
-//! Skipped when there is no socket. What these prove cannot be proved against a mock: that an
-//! `Entry` handed to balthasar comes back the same `Entry`, including the fields no projection
-//! carries.
+//! Skipped when balthasar is not installed. What these prove cannot be proved against a mock: that
+//! an `Entry` handed to balthasar comes back the same `Entry`, including the fields no projection
+//! carries. Never against the balthasar of whoever runs the suite, whose store these would fill.
 
 use magi_model::scratch::Scratch;
 
 use magi_host::scribe::Scribe;
 use magi_ipc::family::Family;
 use magi_proto::{Cursor, Entry, MessageId, SessionId, StopReason, ToolCallId, ToolResult, Usage};
+use magi_testkit::memory::Serving;
 
-/// How long a balthasar has to prove it is answering before this gives up on it.
-///
-/// **Dialling is not liveness.** A socket accepts as long as its listener exists, so one belonging
-/// to a balthasar that is shutting down — or that has wedged — connects instantly and then never
-/// answers. Under a workspace test run there are several: every test that spawns `magi` starts one
-/// in the same user-wide directory, and this picks the newest, which is as likely to be one that
-/// is about to be killed as one that is ready. Six tests each waiting out a read timeout on such a
-/// socket is how a suite that skips in milliseconds turned into fifty-two minutes of failure.
-const ANSWERS_WITHIN: std::time::Duration = std::time::Duration::from_secs(3);
+/// What a test holds while it runs: the balthasar it started, then the directory it started in.
+type Held = (Serving, Scratch);
 
-async fn scribe(name: &str) -> Option<Scribe> {
-    let path = magi_ipc::family::candidates(None).into_iter().next()?;
-    let family = match Family::dial(&path).await {
-        Ok(open) => open,
-        Err(e) => {
-            eprintln!("skipping: {e}");
-            return None;
-        }
+/// A scribe onto a balthasar of this test's own, bound to a session named after the test.
+async fn scribe(name: &str) -> Option<(Scribe, Held)> {
+    let dir = Scratch::new("sl", name);
+    let instance = format!("s{}-{name}", std::process::id());
+    let Some(serving) = Serving::start(&dir, &instance).await else {
+        eprintln!("skipping: no balthasar is installed");
+        return None;
     };
+    let family = Family::dial(serving.socket())
+        .await
+        .expect("dial the balthasar that just answered");
     let id = SessionId::new(format!("magi-scribe-{}-{name}", std::process::id()));
-    let mut scribe = Scribe::over(family, None, &id);
-    // One cheap round trip against a session nothing has written to, which comes back empty. What
-    // is being asked is not "what is in it" but "does it answer at all".
-    match tokio::time::timeout(ANSWERS_WITHIN, scribe.replay()).await {
-        Ok(Ok(_)) => Some(scribe),
-        Ok(Err(e)) => {
-            eprintln!("skipping: {} refused: {e}", path.display());
-            None
-        }
-        Err(_) => {
-            eprintln!("skipping: {} accepted and did not answer", path.display());
-            None
-        }
-    }
+    let scribe = Scribe::over(family, Some(serving.socket().to_owned()), &id);
+    Some((scribe, (serving, dir)))
 }
 
 #[tokio::test]
 async fn an_entry_survives_the_round_trip_unaltered() {
-    let Some(mut scribe) = scribe("plain").await else {
+    let Some((mut scribe, _held)) = scribe("plain").await else {
         return;
     };
     let entry = Entry::User {
@@ -66,7 +50,7 @@ async fn an_entry_survives_the_round_trip_unaltered() {
 
 #[tokio::test]
 async fn the_fields_no_projection_carries_come_back() {
-    let Some(mut scribe) = scribe("opaque").await else {
+    let Some((mut scribe, _held)) = scribe("opaque").await else {
         return;
     };
     // Every field that cannot be recomputed: a provider signature, a usage count, an error and
@@ -92,7 +76,7 @@ async fn the_fields_no_projection_carries_come_back() {
 
 #[tokio::test]
 async fn a_tool_signature_is_not_flattened_into_the_projection() {
-    let Some(mut scribe) = scribe("signature").await else {
+    let Some((mut scribe, _held)) = scribe("signature").await else {
         return;
     };
     let entry = Entry::Tool {
@@ -113,7 +97,7 @@ async fn a_tool_signature_is_not_flattened_into_the_projection() {
 
 #[tokio::test]
 async fn amending_replaces_the_turn_rather_than_appending_one() {
-    let Some(mut scribe) = scribe("amend").await else {
+    let Some((mut scribe, _held)) = scribe("amend").await else {
         return;
     };
     let growing = |text: &str| Entry::Assistant {
@@ -150,7 +134,7 @@ async fn amending_replaces_the_turn_rather_than_appending_one() {
 
 #[tokio::test]
 async fn cursor_order_is_what_comes_back_not_arrival_order() {
-    let Some(mut scribe) = scribe("order").await else {
+    let Some((mut scribe, _held)) = scribe("order").await else {
         return;
     };
     let at = |n: u64| Entry::User {
@@ -172,7 +156,7 @@ async fn cursor_order_is_what_comes_back_not_arrival_order() {
 /// The path a turn actually takes: commit into a session, then flush it out.
 #[tokio::test]
 async fn what_a_session_commits_reaches_balthasar_when_it_is_flushed() {
-    let Some(scribe) = scribe("flush").await else {
+    let Some((scribe, _held)) = scribe("flush").await else {
         return;
     };
     let _dir = Scratch::new("magi-flush", "one");

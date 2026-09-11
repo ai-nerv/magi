@@ -2,6 +2,7 @@
 //! is production code; only the source of events is fake.
 
 pub mod conformance;
+pub mod memory;
 pub mod mind;
 pub mod replay;
 
