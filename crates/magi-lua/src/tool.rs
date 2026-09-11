@@ -160,16 +160,16 @@ pub fn assemble(
     asker: std::sync::Arc<dyn magi_tools::question::Asks>,
     holder: std::sync::Arc<dyn magi_tools::holding::Holds>,
     environ: &std::collections::BTreeMap<String, String>,
-    tooling: &magi_tools::casper::Tooling,
+    tooling: &magi_tools::supplier::Tooling,
 ) -> (magi_tools::Registry, std::collections::BTreeSet<String>) {
     let mut registry = magi_tools::Registry::new();
 
     // The role's program first, so anything nearer wins: registration is keyed, the compiled-in
     // floor is next, and a person's own `tools.lua` is nearest and beats both. Nothing when it is
     // not installed, so a session then has exactly the tools it had before casper existed.
-    let mut from_casper = std::collections::BTreeSet::new();
-    for tool in magi_tools::casper::CasperTool::pinned(tooling, asker, holder) {
-        from_casper.insert(tool.name().to_owned());
+    let mut supplied = std::collections::BTreeSet::new();
+    for tool in magi_tools::supplier::SuppliedTool::pinned(tooling, asker, holder) {
+        supplied.insert(tool.name().to_owned());
         registry.register(Box::new(tool));
     }
     magi_tools::builtin::install(&mut registry);
@@ -181,10 +181,10 @@ pub fn assemble(
         .into_iter()
         .map(|(name, _)| name)
         .collect();
-    from_casper.retain(|name| !declared.contains(name));
+    supplied.retain(|name| !declared.contains(name));
 
     install(engine, &mut registry, environ);
-    (registry, from_casper)
+    (registry, supplied)
 }
 
 /// Build every declared tool into one registry, on top of the floor. Both transports land here and

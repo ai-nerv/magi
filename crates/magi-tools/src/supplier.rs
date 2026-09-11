@@ -1,7 +1,7 @@
-//! Tools that live in casper. magi keeps `read`, `write` and `edit` — the floor it can never be
-//! without; everything else is casper's, reached by asking what exists, handing over a call and
-//! reading back what it produced. casper runs programs, and a socket that runs commands is remote
-//! code execution, so its socket answers only what exists and a call goes over the spawn link, one
+//! Tools supplied by the program filling the `tools` role — casper, unless `magi.tools` names
+//! another. magi keeps `read`, `write` and `edit`, the floor it can never be without; everything
+//! else is reached by asking what exists, handing over a call and reading back what it produced.
+//! A socket that runs commands is remote code execution, so a call goes over the spawn link, one
 //! exec per call. [`magi_proto::tooling::Ran`] carries `said` for the model and `shown` for the
 //! screen; this module keeps `said`, because a [`Tool`] returns text.
 
@@ -10,8 +10,7 @@ use crate::{Cancel, Ops, Output, Tool};
 use magi_proto::tooling::{Call, Card, Ran, Shown};
 use std::sync::Arc;
 
-/// The program that owns the tools, found on `PATH`. Named here rather than inline so a test can
-/// put something else in its place: `PATH` is process-wide, and tests fighting over it flake.
+/// The program that fills the `tools` role when no configuration names one, found on `PATH`.
 pub const CASPER: &str = "casper";
 
 /// The variable a tools program reads its settings out of. Named here as well as there because it
@@ -57,21 +56,15 @@ impl Tooling {
     }
 }
 
-/// What casper says it offers. Empty when casper is not installed or would not answer, which is not
+/// What `program` says it offers. Empty when it is not installed or would not answer, which is not
 /// an error: the session keeps the tools magi declares itself.
-#[must_use]
-pub fn cards() -> Vec<Card> {
-    cards_from(CASPER)
-}
-
-/// The same, against a named program.
 #[must_use]
 pub fn cards_from(program: &str) -> Vec<Card> {
     cards_configured(program, "")
 }
 
-/// The same, saying what this session has configured casper to be. casper is one process per call,
-/// so the configuration goes on every spawn. Empty means "whatever casper is by default".
+/// The same, saying what this session has configured the program to be. It is one process per
+/// call, so the configuration goes on every spawn. Empty means "whatever it is by default".
 #[must_use]
 pub fn cards_configured(program: &str, configured: &str) -> Vec<Card> {
     let Ok(out) = std::process::Command::new(program)
@@ -82,7 +75,7 @@ pub fn cards_configured(program: &str, configured: &str) -> Vec<Card> {
         .stderr(std::process::Stdio::null())
         .output()
     else {
-        magi_model::noted!("casper: {program} tools could not be started");
+        magi_model::noted!("tools: {program} tools could not be started");
         return Vec::new();
     };
     listed(rows(&out.stdout).unwrap_or_default())
@@ -111,19 +104,19 @@ fn rows(body: &[u8]) -> Option<Vec<serde_json::Value>> {
         .cloned()
 }
 
-/// Hand one call to casper and read back what it produced.
+/// Hand one call to `program` and read back what it produced.
 ///
 /// # Errors
-/// A refusal — casper could not be started, or would not take the call. Distinct from a tool that
-/// *ran* and reported a problem, which comes back as [`Ran::failed`].
+/// A refusal — the program could not be started, or would not take the call. Distinct from a tool
+/// that *ran* and reported a problem, which comes back as [`Ran::failed`].
 pub fn run(program: &str, call: &Call) -> Result<Ran, String> {
     run_configured(program, call, "")
 }
 
-/// The same, saying what this session has configured casper to be. See [`cards_configured`].
+/// The same, saying what this session has configured the program to be. See [`cards_configured`].
 ///
 /// # Errors
-/// A refusal — casper could not be started, or would not take the call.
+/// A refusal — the program could not be started, or would not take the call.
 pub fn run_configured(program: &str, call: &Call, configured: &str) -> Result<Ran, String> {
     use std::io::Write;
     let body =
@@ -138,15 +131,15 @@ pub fn run_configured(program: &str, call: &Call, configured: &str) -> Result<Ra
         .stderr(std::process::Stdio::null())
         .spawn()
         .map_err(|why| {
-            magi_model::noted!("casper: {program} run could not be started: {why}");
+            magi_model::noted!("tools: {program} run could not be started: {why}");
             format!("{program} could not be started: {why}")
         })?;
 
     if let Some(mut stdin) = child.stdin.take() {
-        // Written and closed. casper reads to end of file, so a handle left open is a call that
-        // never starts, and a half-written body reads back as an unreadable answer.
+        // Written and closed. The program reads to end of file, so a handle left open is a call
+        // that never starts, and a half-written body reads back as an unreadable answer.
         if let Err(why) = stdin.write_all(&body) {
-            magi_model::noted!("casper: the call to {program} was not fully written: {why}");
+            magi_model::noted!("tools: the call to {program} was not fully written: {why}");
         }
     }
     let out = child
@@ -154,7 +147,7 @@ pub fn run_configured(program: &str, call: &Call, configured: &str) -> Result<Ra
         .map_err(|why| format!("{program} did not finish: {why}"))?;
 
     let rows = rows(&out.stdout).ok_or_else(|| {
-        // Anything else is a casper that answered something this build cannot read.
+        // Anything else is a program that answered something this build cannot read.
         format!("{program} answered something unreadable")
     })?;
     let first = rows
@@ -164,21 +157,21 @@ pub fn run_configured(program: &str, call: &Call, configured: &str) -> Result<Ra
     serde_json::from_value(first).map_err(|why| format!("{program}: {why}"))
 }
 
-/// One of casper's tools, as magi's registry sees it.
-pub struct CasperTool {
+/// One tool the role's program supplied, as magi's registry sees it.
+pub struct SuppliedTool {
     card: Card,
     program: String,
     asks: Arc<dyn Asks>,
     holds: Arc<dyn crate::holding::Holds>,
-    /// What this session told casper to be, carried on every spawn. See [`cards_configured`].
+    /// What this session told the program to be, carried on every spawn. See [`cards_configured`].
     configured: String,
 }
 
-impl CasperTool {
-    /// Every tool `program` offers, if it is the program that was pinned. casper supplies magi's
-    /// entire tool set and is resolved off `$PATH`, so a `casper` earlier on the path owns `shell`,
-    /// `read` and everything else the model calls. `None` for `pinned` starts anything, which is
-    /// the ordinary case; `magi doctor` prints what the program actually hashed to.
+impl SuppliedTool {
+    /// Every tool the role's program offers, if it is the program that was pinned. It supplies
+    /// magi's tool set and is resolved off `$PATH`, so one earlier on the path owns `shell`, `read`
+    /// and everything else the model calls. No pin starts anything, which is the ordinary case;
+    /// `magi doctor` prints what the program actually hashed to.
     #[must_use]
     pub fn pinned(
         tooling: &Tooling,
@@ -226,7 +219,7 @@ impl CasperTool {
     }
 }
 
-impl Tool for CasperTool {
+impl Tool for SuppliedTool {
     fn composition(&self) -> Vec<(&'static str, String)> {
         // The program's own name, not the role's default.
         let mut out = vec![
@@ -263,8 +256,8 @@ impl Tool for CasperTool {
             cwd: ops.cwd().display().to_string(),
             answered: None,
         };
-        // magi decides, casper describes: the card says which verb this tool acts under and the
-        // ledger answers, so a tool moved out of magi's config cannot leave the gate behind it.
+        // magi decides, the program describes: the card says which verb this tool acts under and
+        // the ledger answers, so a tool moved out of magi's config cannot leave the gate behind it.
         if let Some(action) = wants(&self.card, arguments)
             && let Err(why) = ops.allow(&self.card.name, &action)
         {
@@ -318,7 +311,7 @@ mod tests {
         let asks: Arc<dyn Asks> = Arc::new(crate::question::Unanswered);
         let holds: Arc<dyn crate::holding::Holds> = Arc::new(crate::holding::Screenless);
 
-        let wrong = CasperTool::pinned(
+        let wrong = SuppliedTool::pinned(
             &Tooling {
                 pin: Some(
                     "0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
@@ -332,7 +325,7 @@ mod tests {
 
         // Skipped when casper is not installed, which is a session with no tools from it either way.
         if let Some(actual) = crate::mcp::fingerprint(CASPER) {
-            let right = CasperTool::pinned(
+            let right = SuppliedTool::pinned(
                 &Tooling {
                     pin: Some(actual),
                     ..Tooling::default()
@@ -342,7 +335,7 @@ mod tests {
             );
             assert_eq!(
                 right.len(),
-                CasperTool::all(
+                SuppliedTool::all(
                     &Tooling::default(),
                     Arc::new(crate::question::Unanswered),
                     Arc::new(crate::holding::Screenless),

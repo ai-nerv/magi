@@ -54,7 +54,7 @@ fn registry() -> Result<Vec<Listed>, magi_lua::LuaError> {
     // Nobody to ask and no screen to lend: `magi tools` lists what exists and runs nothing, so a
     // tool that would have stopped to ask never gets the chance to.
     let tooling = crate::config::tooling(&loaded);
-    let (registry, from_casper) = magi_lua::tool::assemble(
+    let (registry, supplied) = magi_lua::tool::assemble(
         std::rc::Rc::clone(&engine),
         std::sync::Arc::new(magi_tools::question::Unanswered),
         std::sync::Arc::new(magi_tools::holding::Screenless),
@@ -72,7 +72,7 @@ fn registry() -> Result<Vec<Listed>, magi_lua::LuaError> {
         .iter()
         .map(|tool| Listed {
             name: tool.name.clone(),
-            transport: if from_casper.contains(&tool.name) {
+            transport: if supplied.contains(&tool.name) {
                 tooling.program.clone()
             } else {
                 declared

@@ -6,7 +6,6 @@ pub mod approve;
 pub mod bound;
 pub mod builtin;
 pub mod cancel;
-pub mod casper;
 pub mod command;
 pub mod environ;
 pub mod holding;
@@ -19,6 +18,7 @@ pub mod question;
 pub mod registry;
 pub mod repair;
 pub mod schema;
+pub mod supplier;
 pub mod watching;
 
 pub use cancel::{Cancel, Uncancelled};

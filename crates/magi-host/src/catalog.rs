@@ -20,7 +20,7 @@ pub struct Catalog {
     pub grants: Vec<magi_proto::permit::Grant>,
     /// Which program fills the `tools` role, and what this session tells it. Beside [`Self::mind`]
     /// and [`Self::memory`] because it is the third of the same thing: a role, and who is doing it.
-    pub tooling: magi_tools::casper::Tooling,
+    pub tooling: magi_tools::supplier::Tooling,
     /// Which program owns the model, as `magi.melchior` named it. One name for the whole session.
     pub mind: String,
     /// Which program holds the history — the `memory` role, as `magi.memory` named it. Kept beside
@@ -38,7 +38,7 @@ impl Catalog {
         Self {
             tools: Vec::new(),
             clients: Vec::new(),
-            tooling: magi_tools::casper::Tooling::default(),
+            tooling: magi_tools::supplier::Tooling::default(),
             mind: crate::broker::MELCHIOR.to_owned(),
             memory: crate::scribe::BALTHASAR.to_owned(),
             environ: std::collections::BTreeMap::new(),

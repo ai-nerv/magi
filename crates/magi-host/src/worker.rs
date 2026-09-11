@@ -79,7 +79,7 @@ impl Worker {
 
             let engine = std::rc::Rc::new(std::cell::RefCell::new(engine));
             // The same sequence `magi tools` lists, from the one place that knows it.
-            let (registry, _from_casper) = magi_lua::tool::assemble(
+            let (registry, _supplied) = magi_lua::tool::assemble(
                 std::rc::Rc::clone(&engine),
                 std::sync::Arc::clone(&asks),
                 std::sync::Arc::clone(&holds),

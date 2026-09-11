@@ -14,7 +14,7 @@ pub struct Backend {
     pub tools: Vec<(String, String)>,
     pub clients: Vec<(String, String)>,
     /// Which program fills the `tools` role, and what this session tells it.
-    pub tooling: magi_tools::casper::Tooling,
+    pub tooling: magi_tools::supplier::Tooling,
     pub cwd: std::path::PathBuf,
     /// Permissions a configuration granted in advance; they go into the ledger at startup.
     pub grants: Vec<magi_proto::permit::Grant>,

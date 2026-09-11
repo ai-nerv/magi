@@ -34,7 +34,7 @@ pub const ROLES: &[Role] = &[
     Role {
         name: "tools",
         named: &["tools"],
-        fallback: magi_tools::casper::CASPER,
+        fallback: magi_tools::supplier::CASPER,
         core: &["tools", "run"],
     },
     // `magi.model` is taken: it names the *model*, not the program that serves models, and has

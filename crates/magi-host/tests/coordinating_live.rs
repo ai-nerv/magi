@@ -107,10 +107,11 @@ async fn what_a_coordinator_says_reaches_a_sibling_it_spawns_per_call() {
     if absent("casper") {
         return;
     }
-    let all = magi_tools::casper::cards_from("casper");
+    let all = magi_tools::supplier::cards_from("casper");
     assert!(!all.is_empty(), "casper offers nothing at all");
 
-    let off = magi_tools::casper::cards_configured("casper", r#"{"tools":{"dino":{"off":true}}}"#);
+    let off =
+        magi_tools::supplier::cards_configured("casper", r#"{"tools":{"dino":{"off":true}}}"#);
     assert!(
         all.iter().any(|card| card.name == "dino"),
         "dino is there by default: {:?}",

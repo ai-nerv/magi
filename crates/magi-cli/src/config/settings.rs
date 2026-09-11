@@ -248,9 +248,9 @@ pub fn environ(loaded: &Loaded) -> std::collections::BTreeMap<String, String> {
 /// magi.workbench = { … }             -- what it is told to be
 /// ```
 #[must_use]
-pub fn tooling(loaded: &Loaded) -> magi_tools::casper::Tooling {
+pub fn tooling(loaded: &Loaded) -> magi_tools::supplier::Tooling {
     let program = super::roles::fills(loaded, "tools");
-    magi_tools::casper::Tooling {
+    magi_tools::supplier::Tooling {
         pin: pinned(loaded, &program),
         configure: configured(loaded, &program),
         program,

@@ -85,7 +85,7 @@ fn report() -> String {
     let declared = engine.tools();
     let engine = std::rc::Rc::new(std::cell::RefCell::new(engine));
     let tooling = crate::config::tooling(&loaded);
-    let (registry, from_casper) = magi_lua::tool::assemble(
+    let (registry, supplied) = magi_lua::tool::assemble(
         std::rc::Rc::clone(&engine),
         std::sync::Arc::new(magi_tools::question::Unanswered),
         std::sync::Arc::new(magi_tools::holding::Screenless),
@@ -97,7 +97,7 @@ fn report() -> String {
     ));
 
     for tool in registry.declarations() {
-        let source = if from_casper.contains(&tool.name) {
+        let source = if supplied.contains(&tool.name) {
             tooling.program.clone()
         } else if declared.iter().any(|(name, _)| *name == tool.name) {
             "config".to_owned()
@@ -162,7 +162,7 @@ fn sibling(role: &str, name: &str) -> String {
             Err(why) => format!("{name} — {at} — installed, but {why}"),
         },
         // Asked the way magi asks them: one listing verb, whose emptiness is itself the answer.
-        "tools" => match magi_tools::casper::cards_from(name).len() {
+        "tools" => match magi_tools::supplier::cards_from(name).len() {
             0 => format!("{name} — {at} — installed, but offers no tools"),
             n => format!("{name} — {at} — {n} tools"),
         },
