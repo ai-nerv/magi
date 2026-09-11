@@ -36,8 +36,15 @@ pub fn install_spawn(
 ) {
     registry.register(Box::new(Spawn {
         environ: environ.clone(),
+        // Whether this session may start children at all: a parent that spawned it without leave
+        // set [`NO_SPAWN`] in its environment, and the flag can only be taken away going down.
+        may_spawn: std::env::var(NO_SPAWN).is_err(),
     }));
 }
+
+/// Set on a child started without leave to spawn its own; the child's `spawn` refuses while it is
+/// there. Inherited, and only ever added going down the tree, so `delegate` narrows like a grant.
+pub const NO_SPAWN: &str = "MAGI_NO_SPAWN";
 
 /// A required string argument, or a message saying which one is missing.
 fn arg<'a>(arguments: &'a Value, name: &str) -> Result<&'a str, Output> {
@@ -286,6 +293,8 @@ pub struct Spawn {
     /// What the child is told: the `MAGI_MELCHIOR_*` names and `MAGI_SESSION_PID`, so it can name
     /// itself to melchior and watch the session it belongs to.
     environ: std::collections::BTreeMap<String, String>,
+    /// Whether this session was given leave to start children — see [`NO_SPAWN`].
+    may_spawn: bool,
 }
 
 impl Tool for Spawn {
@@ -305,12 +314,22 @@ impl Tool for Spawn {
             "type": "object",
             "properties": {
                 "role": { "type": "string", "description": "One word for what the child is for." },
-                "prompt": { "type": "string", "description": "What it should get on with." }
+                "prompt": { "type": "string", "description": "What it should get on with." },
+                "delegate": {
+                    "type": "boolean",
+                    "description": "Whether the child may start children of its own. Default true.",
+                }
             }
         })
     }
 
     fn run(&self, arguments: &Value, ops: &dyn Ops, _cancel: &dyn Cancel) -> Output {
+        // A session started without leave to spawn may not, however it was granted `run`.
+        if !self.may_spawn {
+            return Output::error(
+                "this agent was started without leave to start its own children".to_owned(),
+            );
+        }
         let Ok(exe) = std::env::current_exe() else {
             return Output::error(
                 "magi cannot find its own binary to start a child with".to_owned(),
@@ -318,6 +337,8 @@ impl Tool for Spawn {
         };
         let role = arguments["role"].as_str();
         let prompt = arguments["prompt"].as_str();
+        // A child started with `delegate: false` is one that may not spawn in turn.
+        let delegate = arguments["delegate"].as_bool().unwrap_or(true);
         let mut shown = vec!["fork".to_owned()];
         if let Some(role) = role {
             shown.push(format!("--role={role}"));
@@ -338,6 +359,9 @@ impl Tool for Spawn {
         }
         let mut command = std::process::Command::new(&exe);
         command.args(&shown).envs(&self.environ);
+        if !delegate {
+            command.env(NO_SPAWN, "1");
+        }
         match command.output() {
             Ok(out) if out.status.success() => Output {
                 content: String::from_utf8_lossy(&out.stdout).trim().to_owned(),
@@ -656,6 +680,7 @@ mod paging_tests {
         );
         let out = Spawn {
             environ: std::collections::BTreeMap::new(),
+            may_spawn: true,
         }
         .run(
             &json!({ "prompt": "do a thing" }),
@@ -667,5 +692,24 @@ mod paging_tests {
             "a refused spawn must be an error: {}",
             out.content
         );
+    }
+
+    #[test]
+    fn a_child_without_leave_may_not_spawn() {
+        // Started with `delegate: false` upstream, this session cannot start children whatever it
+        // was granted — the refusal is before the gate is even consulted.
+        let dir = scratch("no-leave");
+        let ops = crate::ops::Real::new(dir.to_path_buf());
+        let out = Spawn {
+            environ: std::collections::BTreeMap::new(),
+            may_spawn: false,
+        }
+        .run(&json!({ "prompt": "x" }), &ops, &crate::Uncancelled);
+        assert!(
+            out.is_error,
+            "a child without leave spawned anyway: {}",
+            out.content
+        );
+        assert!(out.content.contains("without leave"), "{}", out.content);
     }
 }
