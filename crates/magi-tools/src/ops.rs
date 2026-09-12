@@ -157,6 +157,22 @@ impl Real {
         self
     }
 
+    /// A directory to be the jail's shared `/tmp`, one per project so a project's commands and
+    /// agents see each other's temp files. Under `$XDG_RUNTIME_DIR` (per-user, `0700`) rather than a
+    /// world-writable `/tmp/<name>` a stranger could pre-make; keyed by the session's directory.
+    /// `None` when there is no runtime directory, and casper falls back to a private tmpfs.
+    fn shared_tmp(&self) -> Option<PathBuf> {
+        use sha2::Digest;
+        let base = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?);
+        let key = format!(
+            "{:x}",
+            sha2::Sha256::digest(self.root.to_string_lossy().as_bytes())
+        );
+        let dir = base.join("casper").join("tmp").join(&key[..16]);
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(dir)
+    }
+
     /// What the jail may write, from this session's grants — a write grant on a directory makes it
     /// writable — and that it keeps the network: the jail contains the filesystem, not the network,
     /// which is essential and stays open. Read into the tools-program profile [`Self::jail`] sends.
@@ -265,13 +281,18 @@ impl Ops for Real {
     }
 
     /// The jail profile from the grants this session holds. `None` when isolation is off; otherwise
-    /// the write directories and network toggle, conservative on an empty ledger, not open.
+    /// the write directories, network toggle, and a `/tmp` shared across this project's commands,
+    /// conservative on an empty ledger, not open.
     fn jail(&self) -> Option<String> {
         if !self.isolate {
             return None;
         }
         let (write, reach) = self.jail_reach();
-        serde_json::to_string(&serde_json::json!({ "write": write, "reach": reach })).ok()
+        let mut profile = serde_json::json!({ "write": write, "reach": reach });
+        if let Some(tmp) = self.shared_tmp() {
+            profile["tmp"] = serde_json::json!(tmp);
+        }
+        serde_json::to_string(&profile).ok()
     }
 
     fn take_on(&self, grants: Vec<magi_proto::permit::Grant>) {
@@ -333,6 +354,11 @@ mod tests {
             json.contains("\"reach\":true"),
             "the reach grant opens the network: {json}"
         );
+        assert!(json.contains("\"tmp\":"), "a shared /tmp is named: {json}");
+        // The profile made a runtime directory; remove the one this test created.
+        if let Some(tmp) = ops.shared_tmp() {
+            let _ = std::fs::remove_dir_all(&tmp);
+        }
     }
 
     /// The same, with the wall on: `magi.confine` is where that rule lives now.
