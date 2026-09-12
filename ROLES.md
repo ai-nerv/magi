@@ -108,10 +108,12 @@ Plus the family floor.
 | `surface` | No tool of this program's can hold rows on the screen; the drawing tools are not declared. |
 | `acknowledge` | Installed packages cannot be cleared for running, so a fetched package's declarations never run. |
 
-**A tools program has no socket.** It is spawned per call and the spawn link carries the trust —
-see `FAMILY.md`'s Doors table on why a socket that runs commands is a remote shell wearing a
-friendly name. A program filling this role that binds a socket is not refused, but nothing will
-dial it.
+**A tools program may keep a socket, but the trust is never the caller's.** casper binds one with
+`serve` and answers `tools` and `run` on it, kept open across a session so a call need not spawn a
+process each time. What makes that safe is that the jail is set on `serve`'s spawn — in the
+program's environment, by the coordinator — never by the call: a socket peer runs inside the same
+walls a spawned call would, and a peer of another user is turned away. See `FAMILY.md`'s Doors
+table. The command line stays the spawn-per-call door and is always available.
 
 **Its settings arrive in `MAGI_TOOLS_CONFIGURE`**, as a JSON object, on every spawn — `tools` and
 `run` alike, since there is no process alive between calls to send them to once. magi reads them
