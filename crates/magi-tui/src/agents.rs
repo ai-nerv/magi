@@ -14,6 +14,12 @@ pub struct Agent {
     pub here: bool,
     /// The session currently drawn on screen.
     pub attached: bool,
+    /// In a turn right now, for this many seconds, with this many messages waiting.
+    pub busy: bool,
+    pub working_for: u64,
+    pub waiting: usize,
+    /// The work it has claimed, if any.
+    pub claim: Option<String>,
 }
 
 /// The rows of the agents view: the run's tree, roots first, each child under its parent.
@@ -45,27 +51,51 @@ fn counted(n: usize) -> String {
     }
 }
 
-/// One agent's line: indented to its depth, `role/id`, and a tag for the viewer's own and the one
-/// on screen.
+/// One agent's line: indent to depth, a busy/idle dot, `role/id`, then dim live meta — how long it
+/// has worked, what waits, what it holds — and a tag for the viewer's own and the one on screen.
 fn row(agent: &Agent, depth: usize) -> Line<'static> {
-    let stem = if depth == 0 {
-        String::new()
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let bold = Style::default().add_modifier(Modifier::BOLD);
+    let mut spans = Vec::new();
+    if depth > 0 {
+        spans.push(Span::styled(format!("{}└ ", "  ".repeat(depth - 1)), dim));
+    }
+    let (dot, lit) = if agent.busy {
+        ("● ", bold)
     } else {
-        format!("{}└ ", "  ".repeat(depth - 1))
+        ("○ ", dim)
     };
-    let mut spans = vec![Span::raw(format!("{stem}{}/{}", agent.role, agent.id))];
+    spans.push(Span::styled(dot.to_owned(), lit));
+    spans.push(Span::raw(format!("{}/{}", agent.role, agent.id)));
+
+    let mut meta = String::new();
+    if agent.busy && agent.working_for > 0 {
+        meta.push_str(&format!("  {}", elapsed(agent.working_for)));
+    }
+    if agent.waiting > 0 {
+        meta.push_str(&format!("  ✉{}", agent.waiting));
+    }
+    if let Some(claim) = &agent.claim {
+        meta.push_str(&format!("  · {claim}"));
+    }
+    if !meta.is_empty() {
+        spans.push(Span::styled(meta, dim));
+    }
     if agent.here {
-        spans.push(Span::styled(
-            "  (you)".to_owned(),
-            Style::default().add_modifier(Modifier::BOLD),
-        ));
+        spans.push(Span::styled("  (you)".to_owned(), bold));
     } else if agent.attached {
-        spans.push(Span::styled(
-            "  • viewing".to_owned(),
-            Style::default().add_modifier(Modifier::DIM),
-        ));
+        spans.push(Span::styled("  • viewing".to_owned(), dim));
     }
     Line::from(spans)
+}
+
+/// A working-for span: `m:ss` once past a minute, else `Ns`.
+fn elapsed(secs: u64) -> String {
+    if secs >= 60 {
+        format!("{}:{:02}", secs / 60, secs % 60)
+    } else {
+        format!("{secs}s")
+    }
 }
 
 /// The agents as a tree, depth-first and id-ordered, depth found by walking the parent links within
@@ -129,6 +159,10 @@ mod tests {
             parent: parent.map(ToOwned::to_owned),
             here: false,
             attached: false,
+            busy: false,
+            working_for: 0,
+            waiting: 0,
+            claim: None,
         }
     }
 

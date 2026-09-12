@@ -54,6 +54,10 @@ impl App {
                 parent: them.parent.clone(),
                 here: Some(them.id.as_str()) == mine,
                 attached: Some(them.id.as_str()) == attached,
+                busy: them.busy,
+                working_for: them.working_for,
+                waiting: them.waiting,
+                claim: them.claim.clone(),
             })
             .collect();
         self.pane = Some(

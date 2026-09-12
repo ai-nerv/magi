@@ -77,7 +77,7 @@ pub enum Heard {
 }
 
 // The message id melchior also sends is not taken; a model wanting the thread asks inbox.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct Peer {
     pub id: String,
     #[serde(default)]
@@ -89,6 +89,15 @@ pub struct Peer {
     /// the run's tree from. Defaulted, so an older melchior that does not say it reads as a main.
     #[serde(default)]
     pub parent: Option<String>,
+    /// Live status melchior asked of its socket and pushed here. Defaulted for an older melchior.
+    #[serde(default)]
+    pub busy: bool,
+    #[serde(default)]
+    pub working_for: u64,
+    #[serde(default)]
+    pub waiting: usize,
+    #[serde(default)]
+    pub claim: Option<String>,
 }
 
 /// Everyone melchior named, either way it said it: an older melchior can only say a list of ids.
@@ -101,9 +110,7 @@ pub fn peers(agents: Vec<Peer>, names: Vec<String>) -> Vec<Peer> {
         .into_iter()
         .map(|id| Peer {
             id,
-            role: String::new(),
-            ui: None,
-            parent: None,
+            ..Default::default()
         })
         .collect()
 }
