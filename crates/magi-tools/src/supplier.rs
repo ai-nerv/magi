@@ -1,14 +1,20 @@
 //! Tools supplied by the program filling the `tools` role — casper, unless `magi.tools` names
 //! another. magi has no tools of its own; every one is reached by asking this program what exists,
 //! handing over a call and reading back what it produced.
-//! A socket that runs commands is remote code execution, so a call goes over the spawn link, one
-//! exec per call. [`magi_proto::tooling::Ran`] carries `said` for the model and `shown` for the
-//! screen; this module keeps `said`, because a [`Tool`] returns text.
+//!
+//! Two doors, chosen by `MAGI_TOOLS_DOOR` and mirroring the agent and memory switches. `command`,
+//! the default, spawns the program once per call. `library` connects to one `serve` the program
+//! keeps running for the session: the jail is the same either way, because it is the one magi gave
+//! `serve` at spawn, not one the call named. [`magi_proto::tooling::Ran`] carries `said` for the
+//! model and `shown` for the screen; this module keeps `said`, because a [`Tool`] returns text.
 
 use crate::question::Asks;
 use crate::{Cancel, Ops, Output, Tool};
 use magi_proto::tooling::{Call, Card, Ran, Shown};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// The program that fills the `tools` role when no configuration names one, found on `PATH`.
 pub const CASPER: &str = "casper";
@@ -23,6 +29,11 @@ pub const CONFIGURE_WAS: &str = "CASPER_CONFIGURE";
 /// What the tools program reads its jail profile out of — casper's `CASPER_JAIL`, set only when
 /// `magi.isolation` is on.
 pub const JAIL: &str = "CASPER_JAIL";
+
+/// Which door magi reaches the tools program on: `command` (the default) spawns one process per
+/// call; `library` connects to one `serve` it keeps running for the session. Mirrors the agent and
+/// memory door switches.
+pub const DOOR: &str = "MAGI_TOOLS_DOOR";
 
 /// The program filling the `tools` role, and what this session tells it.
 ///
@@ -136,6 +147,18 @@ pub fn run_jailed(
     jail: Option<&str>,
 ) -> Result<Ran, String> {
     use std::io::Write;
+    // The library door, when it is asked for and a session daemon can be reached. A socket that
+    // fails falls through to a spawn rather than failing the call.
+    if library_door()
+        && let Some(path) = serving(program, configured, jail)
+    {
+        match over_socket(&path, call) {
+            Ok(ran) => return Ok(ran),
+            Err(why) => {
+                magi_model::noted!("tools: {program} socket call fell back to a spawn: {why}");
+            }
+        }
+    }
     let body =
         serde_json::to_vec(call).map_err(|why| format!("this call will not encode: {why}"))?;
 
@@ -177,6 +200,100 @@ pub fn run_jailed(
         .cloned()
         .ok_or_else(|| format!("{program} answered nothing"))?;
     serde_json::from_value(first).map_err(|why| format!("{program}: {why}"))
+}
+
+/// Whether this session was told to reach the tools program on its socket.
+fn library_door() -> bool {
+    std::env::var(DOOR).is_ok_and(|value| value.trim() == "library")
+}
+
+/// The sockets of the `serve` daemons this session has started, by (program, settings, jail).
+fn daemons() -> &'static Mutex<HashMap<String, PathBuf>> {
+    static DAEMONS: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
+    DAEMONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The socket of a running `program serve` for this session's settings and jail, spawned the first
+/// time and reused after. The daemon ties itself to magi and dies with it; magi keeps only its
+/// path. `None` when it cannot start, and the caller falls back to a spawn.
+fn serving(program: &str, configured: &str, jail: Option<&str>) -> Option<PathBuf> {
+    // casper binds only under `$XDG_RUNTIME_DIR/casper`; with none, the library door is unavailable.
+    let dir = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?).join("casper");
+    let key = format!("{program}\u{0}{configured}\u{0}{}", jail.unwrap_or(""));
+    let mut running = daemons().lock().ok()?;
+    if let Some(path) = running.get(&key) {
+        if UnixStream::connect(path).is_ok() {
+            return Some(path.clone());
+        }
+        running.remove(&key);
+    }
+    let path = dir.join(format!(
+        "magi-{}-{}.sock",
+        std::process::id(),
+        running.len()
+    ));
+    let mut spawning = std::process::Command::new(program);
+    spawning
+        .arg("serve")
+        .arg("--at")
+        .arg(&path)
+        .env(CONFIGURE, configured)
+        .env(CONFIGURE_WAS, configured)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    if let Some(jail) = jail {
+        spawning.env(JAIL, jail);
+    }
+    let mut child = spawning.spawn().ok()?;
+    // The bind is announced on stdout; connecting before it would race the socket into existence.
+    let announced = child.stdout.take().is_some_and(|out| {
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(out), &mut line).is_ok()
+            && line.contains("listening")
+    });
+    if !announced {
+        return None;
+    }
+    running.insert(key, path.clone());
+    Some(path)
+}
+
+/// Hand one call to a running daemon over its socket, wrapped as the `run` verb, and read the reply.
+fn over_socket(path: &Path, call: &Call) -> Result<Ran, String> {
+    let framed = serde_json::to_vec(&serde_json::json!({ "call": "run", "args": [call] }))
+        .map_err(|why| format!("this call will not encode: {why}"))?;
+    let mut stream =
+        UnixStream::connect(path).map_err(|why| format!("connect {}: {why}", path.display()))?;
+    write_frame(&mut stream, &framed).map_err(|why| why.to_string())?;
+    let body = read_frame(&mut stream).map_err(|why| why.to_string())?;
+    let rows = rows(&body).ok_or_else(|| "the socket answered something unreadable".to_owned())?;
+    let first = rows
+        .first()
+        .cloned()
+        .ok_or_else(|| "the socket answered nothing".to_owned())?;
+    serde_json::from_value(first).map_err(|why| why.to_string())
+}
+
+/// Write one length-prefixed frame: a 4-byte big-endian length, then the body (duplicated framing).
+fn write_frame(to: &mut impl std::io::Write, body: &[u8]) -> std::io::Result<()> {
+    let len = u32::try_from(body.len()).map_err(|_| std::io::Error::other("frame too long"))?;
+    to.write_all(&len.to_be_bytes())?;
+    to.write_all(body)?;
+    to.flush()
+}
+
+/// Read one length-prefixed frame's body.
+fn read_frame(from: &mut impl std::io::Read) -> std::io::Result<Vec<u8>> {
+    let mut header = [0_u8; 4];
+    from.read_exact(&mut header)?;
+    let want = u32::from_be_bytes(header) as usize;
+    if want > (1 << 20) {
+        return Err(std::io::Error::other("that is too much to read at once"));
+    }
+    let mut body = vec![0_u8; want];
+    from.read_exact(&mut body)?;
+    Ok(body)
 }
 
 /// One tool the role's program supplied, as magi's registry sees it.
