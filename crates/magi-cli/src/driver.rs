@@ -27,6 +27,7 @@ pub async fn run(
     loaded: Option<crate::config::Loaded>,
     project: &str,
     started: Option<(crate::melchior::Melchior, std::path::PathBuf)>,
+    attach: Option<String>,
 ) -> Result<()> {
     // Before anything reads a setting: `colour`, `glyph` and `metric` each hold their table in a
     // `OnceLock` the first read fills with defaults, and `adopt` after that is a no-op.
@@ -34,6 +35,8 @@ pub async fn run(
         crate::config::adopt_ui(loaded);
     }
     let mut app = App::new();
+    // A `--attach <id>` waits for that agent to show up in the roster, then points the screen at it.
+    app.attach_wanted = attach;
     // What the configuration already allows, so a session taking a child on can lend it at once.
     if let Some(loaded) = &loaded {
         app.granted = crate::config::granted(loaded);
@@ -538,6 +541,21 @@ pub async fn run(
                         // Either shape. An older melchior says `names` and nothing else.
                         crate::melchior::Heard::Around { agents, names } => {
                             app.reachable = crate::melchior::peers(agents, names);
+                            // A `--attach <id>` points the screen at its target once that agent
+                            // appears on the roster with a screen to draw over, read-only, as a
+                            // manual `alt+.` onto it would.
+                            if let Some(id) = app.attach_wanted.clone()
+                                && let Some(them) = app
+                                    .reachable
+                                    .iter()
+                                    .find(|them| them.id == id && them.ui.is_some())
+                                    .cloned()
+                                && let Some(at) = them.ui.clone()
+                            {
+                                app.attach_to(Some(them));
+                                let _ = target_tx.send(at);
+                                app.attach_wanted = None;
+                            }
                         }
                         // The asking session is blocked on the answer, not on this turn.
                         crate::melchior::Heard::Asked { id, who, why } => {

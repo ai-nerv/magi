@@ -87,6 +87,9 @@ pub struct App {
     /// The footer's `< >` crew control, when there is more than one agent: a press on it opens the
     /// agents tree. `None` when the run is just this session.
     pub agents_rect: Option<ratatui::layout::Rect>,
+    /// An id `--attach` named to watch: held until that agent appears on the roster, then the screen
+    /// points at it and this clears. `None` for an ordinary session.
+    pub attach_wanted: Option<String>,
     pub corner: magi_tui::corner::Corner,
 }
 
@@ -137,6 +140,7 @@ impl App {
             corner_rect: None,
             pane_rect: None,
             agents_rect: None,
+            attach_wanted: None,
             corner: magi_tui::corner::Corner::default(),
             pending_notice: None,
             no_model: None,

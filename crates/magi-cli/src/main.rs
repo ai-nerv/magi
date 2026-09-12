@@ -42,6 +42,12 @@ struct Cli {
     #[arg(short, long, global = true)]
     resume: bool,
 
+    /// Open watching another agent in this project, by its id — the run's other sessions, e.g. a
+    /// `--headless` one. Read-only: use `alt+.` / the agents panel to move on. Same as starting
+    /// here and stepping onto it.
+    #[arg(long, value_name = "ID")]
+    attach: Option<String>,
+
     /// Print the answer and exit, instead of opening the UI.
     #[arg(short, long)]
     print: bool,
@@ -300,7 +306,7 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
             let ran = if headless(&cli) {
                 child::run(&socket, cli.prompt, started, cli.tied).await
             } else {
-                driver::run(&socket, cli.prompt, loaded, &project, started).await
+                driver::run(&socket, cli.prompt, loaded, &project, started, cli.attach).await
             };
             // Not on a signal: the session is this process, so only this process ending ends it.
             magi_host::drain().await;
