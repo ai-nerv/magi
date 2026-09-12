@@ -66,6 +66,20 @@ impl App {
         );
     }
 
+    /// Open the agents tree, or close it if it is what is showing — the toggle a press on the
+    /// footer's `< >` control expects.
+    pub fn press_agents(&mut self) {
+        if self
+            .pane
+            .as_ref()
+            .is_some_and(|open| open.title == "agents")
+        {
+            self.pane = None;
+        } else {
+            self.show_agents();
+        }
+    }
+
     /// Open what the corner is about; a second press closes it. Closes only when the corner's own
     /// view is showing, so pressing it over some other pane opens the corner's.
     pub fn press_corner(&mut self) {

@@ -84,6 +84,9 @@ pub struct App {
     pub corner_rect: Option<ratatui::layout::Rect>,
     /// So a press outside the pane can close it. `None` when none is open.
     pub pane_rect: Option<ratatui::layout::Rect>,
+    /// The footer's `< >` crew control, when there is more than one agent: a press on it opens the
+    /// agents tree. `None` when the run is just this session.
+    pub agents_rect: Option<ratatui::layout::Rect>,
     pub corner: magi_tui::corner::Corner,
 }
 
@@ -133,6 +136,7 @@ impl App {
             surface_rect: None,
             corner_rect: None,
             pane_rect: None,
+            agents_rect: None,
             corner: magi_tui::corner::Corner::default(),
             pending_notice: None,
             no_model: None,

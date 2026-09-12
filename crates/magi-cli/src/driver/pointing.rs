@@ -86,6 +86,14 @@ pub(crate) fn on_the_screen(
                 app.press_corner();
                 return Pointing::Redraw;
             }
+            // The footer's `< >` crew control opens the agents tree.
+            if app
+                .agents_rect
+                .is_some_and(|at| within(at, mouse.row, mouse.column))
+            {
+                app.press_agents();
+                return Pointing::Redraw;
+            }
             // A float is dismissed by clicking off it — after the corner, because that badge has its
             // own toggle. A press inside the float goes nowhere: it is drawn over the transcript, so
             // a click falling through would select in a conversation nobody can see. Rect and pane
