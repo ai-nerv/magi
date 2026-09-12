@@ -36,6 +36,32 @@ impl App {
         );
     }
 
+    /// Open the run as a tree of agents, this session marked and whichever one is on screen too.
+    /// The roster melchior pushes carries each agent's parent, which is what the tree is drawn from.
+    pub fn show_agents(&mut self) {
+        let mine = self.named.split('/').nth(2);
+        let attached = self.attached.as_ref().map(|them| them.id.as_str());
+        let agents: Vec<magi_tui::agents::Agent> = self
+            .reachable
+            .iter()
+            .map(|them| magi_tui::agents::Agent {
+                id: them.id.clone(),
+                role: if them.role.is_empty() {
+                    "main".to_owned()
+                } else {
+                    them.role.clone()
+                },
+                parent: them.parent.clone(),
+                here: Some(them.id.as_str()) == mine,
+                attached: Some(them.id.as_str()) == attached,
+            })
+            .collect();
+        self.pane = Some(
+            magi_tui::pane::Pane::new("agents", magi_tui::agents::lines(&agents))
+                .saying(magi_tui::agents::empty()),
+        );
+    }
+
     /// Open what the corner is about; a second press closes it. Closes only when the corner's own
     /// view is showing, so pressing it over some other pane opens the corner's.
     pub fn press_corner(&mut self) {

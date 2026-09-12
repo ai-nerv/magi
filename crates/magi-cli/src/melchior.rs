@@ -85,6 +85,10 @@ pub struct Peer {
     /// The socket its harness draws over. A path, not a promise: that session may have gone.
     #[serde(default)]
     pub ui: Option<std::path::PathBuf>,
+    /// Who started it — the id of its parent — or `None` for a main. What the agents panel draws
+    /// the run's tree from. Defaulted, so an older melchior that does not say it reads as a main.
+    #[serde(default)]
+    pub parent: Option<String>,
 }
 
 /// Everyone melchior named, either way it said it: an older melchior can only say a list of ids.
@@ -99,6 +103,7 @@ pub fn peers(agents: Vec<Peer>, names: Vec<String>) -> Vec<Peer> {
             id,
             role: String::new(),
             ui: None,
+            parent: None,
         })
         .collect()
 }

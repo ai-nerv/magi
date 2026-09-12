@@ -9,6 +9,7 @@ fn peer(id: &str) -> Peer {
         id: id.to_owned(),
         role: "reviewer".to_owned(),
         ui: Some(std::path::PathBuf::from(format!("/run/magi/{id}.host"))),
+        parent: None,
     }
 }
 

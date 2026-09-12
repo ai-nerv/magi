@@ -10,6 +10,7 @@ fn peer(id: &str, role: &str) -> Peer {
         id: id.to_owned(),
         role: role.to_owned(),
         ui: Some(std::path::PathBuf::from(format!("/run/magi/{id}.host"))),
+        parent: None,
     }
 }
 
@@ -126,11 +127,13 @@ fn a_peer_with_no_screen_and_our_own_name_are_not_places_to_go() {
             id: "alpha-rho".to_owned(),
             role: "main".to_owned(),
             ui: Some("/run/magi/alpha-rho.host".into()),
+            parent: None,
         },
         Peer {
             id: "iota-mu".to_owned(),
             role: "worker".to_owned(),
             ui: None,
+            parent: None,
         },
     ]);
     assert_eq!(app.crew_size(), 1, "nowhere to go");
@@ -161,6 +164,7 @@ fn a_peer_is_named_by_its_role_and_id() {
         id: "tau-mu".to_owned(),
         role: String::new(),
         ui: Some("/run/magi/tau-mu.host".into()),
+        parent: None,
     }));
     assert_eq!(app.viewing(), "tau-mu", "an older melchior says no role");
 }

@@ -2,6 +2,7 @@
 //! function of state — no sockets, sessions or agents — which is what makes it testable against a
 //! `vt100` screen. Block shapes and footer format are Pi's; the palette is not, see [`colour`].
 
+pub mod agents;
 pub mod beacon;
 pub mod border;
 pub mod colour;

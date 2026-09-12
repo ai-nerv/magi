@@ -39,6 +39,10 @@ pub(super) fn run_command(input: &str, app: &mut App) -> Control {
             app.show_cost();
             Control::Continue
         }
+        ":agents" => {
+            app.show_agents();
+            Control::Continue
+        }
         ":help" => {
             app.show_help();
             Control::Continue
