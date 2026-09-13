@@ -210,11 +210,14 @@ fn wake_prompt(kin: &str, kind: &str, from: &str, cause: Option<&str>) -> Option
     };
     match kind {
         "finished" => Some(format!(
-            "{whose}, `{from}`, has finished. Use the agent tool to see your crew and gather what \
-             it did; if everything you were waiting on is done, wrap up, otherwise carry on."
+            "{whose}, `{from}`, has finished. Check your crew with the `agent` tool — `crew` for who \
+             is still going, `inbox` for anything they sent. If everyone you were waiting on is done, \
+             write a short summary and stop; otherwise keep waiting. Do not spawn new agents, change \
+             any roles, or look for files — only read `crew`/`inbox` and report."
         )),
         "blocked" => Some(format!(
-            "{whose}, `{from}`, is blocked{}. Decide what to do about it.",
+            "{whose}, `{from}`, is blocked{}. Say in one line what should happen next. Do not spawn \
+             new agents or change roles.",
             cause.map(|why| format!(": {why}")).unwrap_or_default()
         )),
         _ => None,
