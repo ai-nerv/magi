@@ -12,7 +12,7 @@ use magi_proto::{HarnessEvent, UiCommand};
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 
@@ -113,6 +113,10 @@ pub async fn run(
     ));
     // What melchior handed this session while the screen was somewhere else. See `crewing::ours`.
     let mut held: Vec<UiCommand> = Vec::new();
+    // The latest child/watched edge worth a turn, held until this session is idle and its own
+    // screen is up — then run as a turn so the coordinator reacts, the wake a headless `park` runs.
+    let mut pending_wake: Option<String> = None;
+    let mut last_wake: Option<Instant> = None;
 
     let list_paths = |query: &str| {
         std::env::current_dir()
@@ -581,16 +585,25 @@ pub async fn run(
                                 app.attach_wanted = None;
                             }
                         }
-                        // A watched agent changed phase. Observed for now, not acted on: a dim line
-                        // so a coordinator sees a child finish or hit trouble. Only the edges worth
-                        // an eye; the rest updates the panel silently. Reaction comes later.
+                        // A watched agent changed phase. A dim line so a coordinator sees a child
+                        // finish or hit trouble, and — for the edges that end a wait — an occasion
+                        // queued to wake this session once it is idle, the same turn a headless
+                        // `park` would run. The rest updates the panel silently.
                         crate::melchior::Heard::Signal {
-                            from, kind, cause, ..
+                            from,
+                            kind,
+                            kin,
+                            cause,
                         } => {
                             if app.attached.is_none()
                                 && let Some(note) = signal_notice(&from, &kind, cause.as_deref())
                             {
                                 app.show_notice(note);
+                            }
+                            if let Some(occasion) =
+                                crate::child::wake_prompt(&kin, &kind, &from, cause.as_deref())
+                            {
+                                pending_wake = Some(occasion);
                             }
                         }
                         // The asking session is blocked on the answer, not on this turn.
@@ -632,6 +645,29 @@ pub async fn run(
                         phase,
                         cause.as_deref(),
                     );
+                }
+                // Take it up only into an idle session on its own screen, with no half-typed prompt
+                // and no question waiting, no faster than the cooldown — so a burst lands as one
+                // turn and never steps on the person at the keyboard.
+                let cooled = last_wake.is_none_or(|at| at.elapsed() >= crate::child::WAKE_COOLDOWN);
+                if pending_wake.is_some()
+                    && app.attached.is_none()
+                    && !app.is_busy()
+                    && !app.questioned()
+                    && app.editor.is_blank()
+                    && cooled
+                    && let Some(occasion) = pending_wake.take()
+                {
+                    last_wake = Some(Instant::now());
+                    let aside = layer
+                        .as_ref()
+                        .map_or_else(String::new, |l| l.briefing(&occasion, project));
+                    direct(
+                        &mut app,
+                        &command_tx,
+                        UiCommand::SubmitPrompt { text: occasion, aside },
+                    )
+                    .await;
                 }
                 dirty = true;
             }

@@ -199,7 +199,7 @@ async fn park(
 /// The occasion to wake this session on, or `None` for a signal it should only observe. A child or
 /// a watched agent finishing or hitting trouble is what a coordinator resumes for; a parent's edge,
 /// and a mere start or working tick, are not.
-fn wake_prompt(kin: &str, kind: &str, from: &str, cause: Option<&str>) -> Option<String> {
+pub(crate) fn wake_prompt(kin: &str, kind: &str, from: &str, cause: Option<&str>) -> Option<String> {
     if kin != "child" && kin != "watched" {
         return None;
     }
@@ -226,7 +226,7 @@ fn wake_prompt(kin: &str, kind: &str, from: &str, cause: Option<&str>) -> Option
 
 /// The least time between wakes: a burst of finishes coalesces into one turn, and two agents that
 /// watch each other cannot spin faster than this.
-const WAKE_COOLDOWN: Duration = Duration::from_secs(2);
+pub(crate) const WAKE_COOLDOWN: Duration = Duration::from_secs(2);
 
 /// Take up the queued occasion, if there is one and it is time: only while idle (one turn at a
 /// time) and not within [`WAKE_COOLDOWN`] of the last wake. Called from every arm that could make
