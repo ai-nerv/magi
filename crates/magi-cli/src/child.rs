@@ -118,9 +118,11 @@ async fn park(
     let mut working_since: Option<Instant> = None;
     // A slow beat so `working` shows a climbing timer between the rare status changes.
     let mut beat = tokio::time::interval(Duration::from_secs(2));
-    // A child's edge that arrived while this session was mid-turn: acted on when the turn ends, so
-    // one turn runs at a time and children that finished during it are not missed.
+    // The latest edge worth a turn, held until this session is idle and off the wake cooldown, so
+    // a burst of finishes coalesces into one turn and a mutual watch cannot spin. The turn reads
+    // the whole crew, so holding only the latest occasion loses nothing.
     let mut pending_wake: Option<String> = None;
+    let mut last_wake: Option<Instant> = None;
     // Each watched child's last phase, so a coordinator gone quiet knows whether it still waits.
     let mut children: std::collections::BTreeMap<String, String> =
         std::collections::BTreeMap::new();
@@ -135,39 +137,34 @@ async fn park(
                 Some(crate::melchior::Heard::Stopped) => break,
                 // The pipe closed: melchior is gone, so nothing can reach this session or end it.
                 None => break,
-                // A watched agent moved. A child that finished or blocked is this session's to act
-                // on: wake it with a turn now if it is idle, or queue it if it is mid-turn. Either
-                // way its phase is tracked, so this session can say what it is still waiting on.
+                // A watched agent moved. A child finishing or blocking is this session's to act on;
+                // its phase is tracked either way, so this session can say what it still waits on.
                 Some(crate::melchior::Heard::Signal { from, kind, kin, cause }) => {
                     if kin == "child" {
                         children.insert(from.clone(), kind.clone());
                         announce(layer, phase_now, working_since.map_or(0, |t| t.elapsed().as_secs()), &children);
                     }
                     if let Some(occasion) = wake_prompt(&kin, &kind, &from, cause.as_deref()) {
-                        if phase_now == Phase::Working {
-                            pending_wake = Some(occasion);
-                        } else {
-                            wake(socket, &occasion).await;
-                        }
+                        pending_wake = Some(occasion);
+                        flush_wake(socket, phase_now, &mut pending_wake, &mut last_wake).await;
                     }
                 }
                 // The one message allowed to reach a session mid-turn. Working: stop the turn so it
-                // attends sooner, then take it up when the turn ends. Idle: take it up now.
+                // attends sooner; the queued occasion then wakes it when the turn ends.
                 Some(crate::melchior::Heard::Message { who, sort, text })
                     if crate::melchior::interrupts(&sort) =>
                 {
-                    let occasion = urgent(&who, &sort, &text);
+                    pending_wake = Some(urgent(&who, &sort, &text));
                     if phase_now == Phase::Working {
                         interrupt(socket).await;
-                        pending_wake = Some(occasion);
                     } else {
-                        wake(socket, &occasion).await;
+                        flush_wake(socket, phase_now, &mut pending_wake, &mut last_wake).await;
                     }
                 }
                 Some(_) => {}
             },
-            // The host's status changed. Derive the phase, report it, and when a turn has just
-            // ended act on anything a child signalled while it ran.
+            // The host's status changed. Report it, and when a turn has just ended take up anything
+            // that came in while it ran.
             changed = phase.changed() => {
                 if changed.is_err() {
                     break;
@@ -175,18 +172,16 @@ async fn park(
                 let status = phase.borrow_and_update().clone();
                 let (next, working_for) =
                     derive(&status, had_prompt, &mut has_worked, &mut working_since);
-                let turn_ended = phase_now == Phase::Working && next != Phase::Working;
                 phase_now = next;
                 announce(layer, next, working_for, &children);
-                if turn_ended && let Some(occasion) = pending_wake.take() {
-                    wake(socket, &occasion).await;
-                }
+                flush_wake(socket, phase_now, &mut pending_wake, &mut last_wake).await;
             }
-            // While working, keep the timer moving even though the status has not changed.
+            // Keeps the working timer moving, and catches a wake deferred by the cooldown.
             _ = beat.tick() => {
                 if let Some(since) = working_since {
                     announce(layer, Phase::Working, since.elapsed().as_secs(), &children);
                 }
+                flush_wake(socket, phase_now, &mut pending_wake, &mut last_wake).await;
             }
             () = tick(&mut looking) => {
                 if let Some((pid, since)) = &watching
@@ -226,6 +221,31 @@ fn wake_prompt(kin: &str, kind: &str, from: &str, cause: Option<&str>) -> Option
     }
 }
 
+/// The least time between wakes: a burst of finishes coalesces into one turn, and two agents that
+/// watch each other cannot spin faster than this.
+const WAKE_COOLDOWN: Duration = Duration::from_secs(2);
+
+/// Take up the queued occasion, if there is one and it is time: only while idle (one turn at a
+/// time) and not within [`WAKE_COOLDOWN`] of the last wake. Called from every arm that could make
+/// a wake due, so a deferred one lands on the next beat rather than being lost.
+async fn flush_wake(
+    socket: &Path,
+    phase_now: Phase,
+    pending_wake: &mut Option<String>,
+    last_wake: &mut Option<Instant>,
+) {
+    if phase_now == Phase::Working || pending_wake.is_none() {
+        return;
+    }
+    if last_wake.is_some_and(|at| at.elapsed() < WAKE_COOLDOWN) {
+        return;
+    }
+    if let Some(occasion) = pending_wake.take() {
+        *last_wake = Some(Instant::now());
+        wake(socket, &occasion).await;
+    }
+}
+
 /// Give this session a turn, on its own socket, without staying attached — the same brief connection
 /// [`ask`] makes. Best effort: a wake that cannot land is a coordinator that stays parked, not a crash.
 async fn wake(socket: &Path, occasion: &str) {
@@ -237,7 +257,9 @@ async fn wake(socket: &Path, occasion: &str) {
 /// The occasion to take up an urgent message on.
 fn urgent(who: &str, sort: &str, text: &str) -> String {
     let text: String = text.chars().take(200).collect();
-    format!("An urgent `{sort}` from `{who}`: {text}. Read your inbox with the agent tool and attend to it.")
+    format!(
+        "An urgent `{sort}` from `{who}`: {text}. Read your inbox with the agent tool and attend to it."
+    )
 }
 
 /// Stop this session's running turn, over its own socket, without staying attached. Best effort: a
