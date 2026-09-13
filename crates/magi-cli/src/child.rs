@@ -210,10 +210,12 @@ pub(crate) fn wake_prompt(kin: &str, kind: &str, from: &str, cause: Option<&str>
     };
     match kind {
         "finished" => Some(format!(
-            "{whose}, `{from}`, has finished. Check your crew with the `agent` tool — `crew` for who \
-             is still going, `inbox` for anything they sent. If everyone you were waiting on is done, \
-             write a short summary and stop; otherwise keep waiting. Do not spawn new agents, change \
-             any roles, or look for files — only read `crew`/`inbox` and report."
+            "{whose}, `{from}`, has finished. Read your crew and inbox with the `agent` tool — \
+             `crew` for who is still going, `inbox` for what they sent. Your summary must come only \
+             from what `inbox` actually holds: if a child sent nothing, say it reported nothing — do \
+             not invent, recall, or guess its findings. If everyone you were waiting on is done, \
+             write that short summary and stop; otherwise keep waiting. Do not spawn new agents, \
+             change roles, or look for files."
         )),
         "blocked" => Some(format!(
             "{whose}, `{from}`, is blocked{}. Say in one line what should happen next. Do not spawn \
