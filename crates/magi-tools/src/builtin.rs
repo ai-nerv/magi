@@ -84,15 +84,16 @@ impl Tool for Spawn {
         if let Some(role) = role {
             shown.push(format!("--role={role}"));
         }
+        // What the `run` grant sees: binary and role, not the free-text `prompt` — whose `(` would
+        // trip the chain guard and defeat a standing grant, and which is the child's task anyway.
+        let asked = format!("{} {}", exe.display(), shown.join(" "));
         if let Some(prompt) = prompt {
             shown.push(prompt.to_owned());
         }
-        // Gated as a `run`, in the words the person sees: "run magi fork …" is a decision, and a
-        // grant on it lets an agent start children without asking again.
         if let Err(why) = ops.allow(
             "spawn",
             &magi_proto::permit::Action::Run {
-                command: format!("{} {}", exe.display(), shown.join(" ")),
+                command: asked,
                 program: exe.display().to_string(),
             },
         ) {
@@ -164,6 +165,51 @@ mod tests {
             out.is_error,
             "a refused spawn must be an error: {}",
             out.content
+        );
+    }
+
+    #[test]
+    fn a_standing_run_grant_covers_a_spawn_whose_prompt_has_metacharacters() {
+        // The gate is asked about the binary and role, not the child's prompt, so a `(` in the
+        // prompt does not trip the chain guard and defeat a `run` grant that should stop the asking.
+        use magi_proto::permit::{Decision, Grant, Scope};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct Records(std::sync::Arc<AtomicBool>);
+        impl crate::approve::Approver for Records {
+            fn ask(&self, _tool: &str, _action: &magi_proto::permit::Action) -> Decision {
+                self.0.store(true, Ordering::SeqCst);
+                Decision::Deny
+            }
+        }
+
+        let exe = std::env::current_exe().expect("a test binary path");
+        let mut ledger = crate::permit::Ledger::new();
+        ledger.take_on(vec![Grant {
+            verb: "run".to_owned(),
+            scope: Scope::Program {
+                program: exe.display().to_string(),
+            },
+        }]);
+        let asked = std::sync::Arc::new(AtomicBool::new(false));
+        let dir = scratch("standing-grant");
+        let ops = crate::ops::Real::gated(
+            dir.to_path_buf(),
+            ledger,
+            std::sync::Arc::new(Records(std::sync::Arc::clone(&asked))),
+        );
+        Spawn {
+            environ: std::collections::BTreeMap::new(),
+            may_spawn: true,
+        }
+        .run(
+            &json!({ "role": "scanner", "prompt": "look at the magi crate (the nerv repo)" }),
+            &ops,
+            &crate::Uncancelled,
+        );
+        assert!(
+            !asked.load(Ordering::SeqCst),
+            "a standing run grant should have covered the spawn without asking"
         );
     }
 
