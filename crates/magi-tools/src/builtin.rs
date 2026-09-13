@@ -38,6 +38,22 @@ pub struct Spawn {
     may_spawn: bool,
 }
 
+/// A child's task with a closing line to report back. The coordinator's own reaction is to read
+/// its inbox when a child finishes, so the child is told to `send` its findings there. Named to the
+/// parent when its id is known, and to "the one that started you" (which `whoami` gives) otherwise.
+fn report_back(prompt: &str, parent: Option<&str>) -> String {
+    let tail = match parent {
+        Some(who) => format!(
+            "When you have finished, use the agent tool to send your findings to `{who}` \
+             (verb `send`) so the session that started you has your report."
+        ),
+        None => "When you have finished, use the agent tool to send your findings to the session \
+                 that started you — `whoami` names it — so it has your report."
+            .to_owned(),
+    };
+    format!("{prompt}\n\n{tail}")
+}
+
 impl Tool for Spawn {
     fn name(&self) -> &str {
         "spawn"
@@ -87,8 +103,11 @@ impl Tool for Spawn {
         // What the `run` grant sees: binary and role, not the free-text `prompt` — whose `(` would
         // trip the chain guard and defeat a standing grant, and which is the child's task anyway.
         let asked = format!("{} {}", exe.display(), shown.join(" "));
+        // A coordinator wakes when a child finishes and reads its inbox; a child that never sends
+        // leaves it empty. So a task carries a closing line telling the child to report back to the
+        // session that started it — this one, named by its own melchior id.
         if let Some(prompt) = prompt {
-            shown.push(prompt.to_owned());
+            shown.push(report_back(prompt, self.environ.get("MAGI_MELCHIOR_ID").map(String::as_str)));
         }
         if let Err(why) = ops.allow(
             "spawn",
@@ -211,6 +230,17 @@ mod tests {
             !asked.load(Ordering::SeqCst),
             "a standing run grant should have covered the spawn without asking"
         );
+    }
+
+    #[test]
+    fn a_task_tells_the_child_to_report_back_to_the_session_that_started_it() {
+        let told = report_back("scan the magi crate", Some("alpha-mu"));
+        assert!(told.starts_with("scan the magi crate"), "the task is kept: {told}");
+        assert!(told.contains("send"), "no reporting instruction: {told}");
+        assert!(told.contains("`alpha-mu`"), "the parent is not named: {told}");
+        // Without a known parent it still says to report, by way of `whoami`.
+        let rootless = report_back("do a thing", None);
+        assert!(rootless.contains("whoami"), "no fallback recipient: {rootless}");
     }
 
     #[test]
