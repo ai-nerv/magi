@@ -269,32 +269,42 @@ fn cell(glyph: &str, at: usize, heads: &[Head], ring: usize) -> Span<'static> {
     paint(glyph, from_heads(at, heads, ring))
 }
 
+/// How wide the working sweep is, in cells: the leading segment plus the ones trailing it, spacing
+/// and all. The lit region never spans more than this, which is how a reader tells it from the ring.
+const SWEEP_SPAN: usize = (SEGMENTS - 1) * SPACING + SEG_LEN;
+const SEGMENTS: usize = 4;
+/// Cells per bright segment, and cells from one segment's start to the next — the gap between them
+/// is `SPACING - SEG_LEN`, so the segments read as separate lines rather than one streak.
+const SEG_LEN: usize = 3;
+const SPACING: usize = 6;
+/// Dark ticks after the last segment leaves the right edge, before a fresh set enters from the left.
+const SWEEP_GAP: usize = 8;
+
 /// The working sweep: how brightly the top/bottom cell at screen `column` (0 at the left) is lit by
-/// a short comet running left to right. Unlike the ring scan it does not wrap — the comet crosses,
-/// runs off the right edge and is gone, then a gap, then a fresh one from the left. The sides never
-/// light, so the box reads as a scanner over its two long edges rather than a circuit round it.
+/// a train of [`SEGMENTS`] short bright segments running left to right, one behind the other. Unlike
+/// the ring scan it does not wrap — the train crosses, runs off the right edge and is gone, then a
+/// gap, then a fresh set from the left. The sides never light, so the box reads as a scanner over its
+/// two long edges rather than a circuit round it.
 fn sweeping(tick: usize, inner: usize, column: usize) -> f32 {
     if inner == 0 {
         return 0.0;
     }
-    // A short bright streak — a nose a cell ahead, a few cells of tail behind — so it reads as three
-    // or four lines travelling, not one dot.
-    const NOSE: usize = 1;
-    const TAIL: usize = 4;
-    const GAP: usize = 6;
     let (num, den) = pace(Scan::Working);
     let step = tick * num / den;
-    // The head runs from 0 past the right edge; once it and its tail are off, GAP ticks of dark.
-    let period = inner + TAIL + GAP;
-    let head = (step % period) as isize;
+    // The lead segment runs from 0 until the whole train is off the right; then a dark gap.
+    let period = inner + SWEEP_SPAN + SWEEP_GAP;
+    let lead = (step % period) as isize;
     let c = column as isize;
-    if c <= head && head - c <= TAIL as isize {
-        return fade(u16::try_from(head - c).unwrap_or(u16::MAX), TAIL as u16);
+    let mut best = 0.0_f32;
+    for nth in 0..SEGMENTS {
+        // Each segment trails the lead by `SPACING`; brightest at its leading cell, fading back.
+        let start = lead - (nth * SPACING) as isize;
+        if c >= start && c < start + SEG_LEN as isize {
+            let back = u16::try_from(start + SEG_LEN as isize - 1 - c).unwrap_or(u16::MAX);
+            best = best.max(fade(back, SEG_LEN as u16));
+        }
     }
-    if c > head && c - head <= NOSE as isize {
-        return fade(u16::try_from(c - head).unwrap_or(u16::MAX), NOSE as u16 + 1);
-    }
-    0.0
+    best
 }
 
 #[cfg(test)]
@@ -345,9 +355,9 @@ mod tests {
                     !lit.contains(&0) && !lit.contains(&(usize::from(width) - 1)),
                     "a corner lit at {tick}: {lit:?}"
                 );
-                // Contiguous when anything is lit — one streak, not a wrap split across both ends.
+                // The lit cells sit within one sweep window — a wrap would put them at both ends.
                 if let (Some(&first), Some(&last)) = (lit.first(), lit.last()) {
-                    assert_eq!(last - first, lit.len() - 1, "streak split at {tick}: {lit:?}");
+                    assert!(last - first < SWEEP_SPAN, "wrapped at {tick}: {lit:?}");
                 }
             }
         }
