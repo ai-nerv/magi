@@ -65,44 +65,34 @@ pub fn edges(width: u16, rows: usize, tick: usize, scan: Scan) -> (Line<'static>
     let inner = width - 2;
     let ring = walk_length(inner, rows);
     let heads = heads(scan, tick, inner, rows, ring);
-    // Every cell is addressed by how far round the border it *looks*, not by its index.
     let walk = |at: usize| walk_of(at, inner, rows);
+    let working = matches!(scan, Scan::Working);
+    // The horizontal cell at screen `column`: the working sweep runs along the edges and leaves the
+    // corners dark; every other mode is the ring, addressed by how far round it looks.
+    let bright = |column: usize, at: usize| {
+        if working {
+            sweeping(tick, inner, column)
+        } else {
+            from_heads(walk(at), &heads, ring)
+        }
+    };
+    let corner = |at: usize| if working { 0.0 } else { from_heads(walk(at), &heads, ring) };
 
     let mut top = Vec::with_capacity(width);
-    top.push(cell(glyph::corner_top_left(), walk(0), &heads, ring));
+    top.push(paint(glyph::corner_top_left(), corner(0)));
     for i in 0..inner {
-        top.push(cell(glyph::edge_horizontal(), walk(1 + i), &heads, ring));
+        top.push(paint(glyph::edge_horizontal(), bright(i, 1 + i)));
     }
-    top.push(cell(
-        glyph::corner_top_right(),
-        walk(1 + inner),
-        &heads,
-        ring,
-    ));
+    top.push(paint(glyph::corner_top_right(), corner(1 + inner)));
 
     // Anticlockwise along the bottom: the ring runs clockwise, so bottom-right comes before bottom-left.
     let bottom_right = 1 + inner + 1 + rows;
     let mut bottom = Vec::with_capacity(width);
-    bottom.push(cell(
-        glyph::corner_bottom_left(),
-        walk(bottom_right + inner + 1),
-        &heads,
-        ring,
-    ));
+    bottom.push(paint(glyph::corner_bottom_left(), corner(bottom_right + inner + 1)));
     for i in 0..inner {
-        bottom.push(cell(
-            glyph::edge_horizontal(),
-            walk(bottom_right + inner - i),
-            &heads,
-            ring,
-        ));
+        bottom.push(paint(glyph::edge_horizontal(), bright(i, bottom_right + inner - i)));
     }
-    bottom.push(cell(
-        glyph::corner_bottom_right(),
-        walk(bottom_right),
-        &heads,
-        ring,
-    ));
+    bottom.push(paint(glyph::corner_bottom_right(), corner(bottom_right)));
 
     (Line::from(top), Line::from(bottom))
 }
@@ -117,6 +107,14 @@ pub fn side(
     scan: Scan,
 ) -> (Span<'static>, Span<'static>) {
     let inner = usize::from(width).max(2) - 2;
+    // The working sweep is a scanner over the two long edges only: the sides stay dark, so it does
+    // not read as light rolling round the box.
+    if matches!(scan, Scan::Working) {
+        return (
+            paint(glyph::edge_vertical(), 0.0),
+            paint(glyph::edge_vertical(), 0.0),
+        );
+    }
     let ring = walk_length(inner, rows);
     let heads = heads(scan, tick, inner, rows, ring);
     // Right edge runs down after the top-right corner; left edge runs up before the top-left.
@@ -182,9 +180,11 @@ fn heads(scan: Scan, tick: usize, inner: usize, rows: usize, ring: usize) -> Vec
     let step = tick * num / den;
     let forward = |at: usize| Head { at, forward: true };
     match scan {
-        Scan::Off => Vec::new(),
+        // Working does not walk the ring at all — it sweeps the top and bottom edges and is drawn
+        // by [`sweeping`], not by heads. Off is dark. Both light nothing here.
+        Scan::Off | Scan::Working => Vec::new(),
         // Opposite points of the ring, so the box always has light on two sides of it.
-        Scan::Resting | Scan::Working => {
+        Scan::Resting => {
             vec![forward(step % ring), forward((step + ring / 2) % ring)]
         }
         // Evenly spaced, so the gaps between them are equal however long the border is.
@@ -254,16 +254,47 @@ fn lit(at: usize, head: Head, ring: usize) -> f32 {
     ahead.max(behind)
 }
 
+/// How brightly the heads light the cell at ring position `at`.
+fn from_heads(at: usize, heads: &[Head], ring: usize) -> f32 {
+    heads.iter().fold(0.0_f32, |best, &head| best.max(lit(at, head, ring)))
+}
+
+/// A glyph painted a fraction of the way from border colour to scan colour.
+fn paint(glyph: &str, best: f32) -> Span<'static> {
+    Span::styled(glyph.to_string(), Style::default().fg(colour::scan_at(best)))
+}
+
 /// One border cell, lit by whichever head is nearest.
 fn cell(glyph: &str, at: usize, heads: &[Head], ring: usize) -> Span<'static> {
-    let mut best = 0.0_f32;
-    for &head in heads {
-        best = best.max(lit(at, head, ring));
+    paint(glyph, from_heads(at, heads, ring))
+}
+
+/// The working sweep: how brightly the top/bottom cell at screen `column` (0 at the left) is lit by
+/// a short comet running left to right. Unlike the ring scan it does not wrap — the comet crosses,
+/// runs off the right edge and is gone, then a gap, then a fresh one from the left. The sides never
+/// light, so the box reads as a scanner over its two long edges rather than a circuit round it.
+fn sweeping(tick: usize, inner: usize, column: usize) -> f32 {
+    if inner == 0 {
+        return 0.0;
     }
-    Span::styled(
-        glyph.to_string(),
-        Style::default().fg(colour::scan_at(best)),
-    )
+    // A short bright streak — a nose a cell ahead, a few cells of tail behind — so it reads as three
+    // or four lines travelling, not one dot.
+    const NOSE: usize = 1;
+    const TAIL: usize = 4;
+    const GAP: usize = 6;
+    let (num, den) = pace(Scan::Working);
+    let step = tick * num / den;
+    // The head runs from 0 past the right edge; once it and its tail are off, GAP ticks of dark.
+    let period = inner + TAIL + GAP;
+    let head = (step % period) as isize;
+    let c = column as isize;
+    if c <= head && head - c <= TAIL as isize {
+        return fade(u16::try_from(head - c).unwrap_or(u16::MAX), TAIL as u16);
+    }
+    if c > head && c - head <= NOSE as isize {
+        return fade(u16::try_from(c - head).unwrap_or(u16::MAX), NOSE as u16 + 1);
+    }
+    0.0
 }
 
 #[cfg(test)]
@@ -286,6 +317,52 @@ mod tests {
         let (l, r) = side(20, 1, 0, 0, Scan::Off);
         assert_eq!(l.content.as_ref(), "│");
         assert_eq!(r.content.as_ref(), "│");
+    }
+
+    /// The columns of a top/bottom edge line that are lit (not the plain border colour).
+    fn lit_columns(line: &Line<'_>) -> Vec<usize> {
+        line.spans
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.style.fg != Some(colour::border()))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    #[test]
+    fn working_sweeps_the_edges_and_leaves_the_sides_and_corners_dark() {
+        let width = 24u16;
+        let inner = usize::from(width) - 2;
+        for tick in 0..(inner + 12) {
+            let (l, r) = side(width, 1, 0, tick, Scan::Working);
+            assert_eq!(l.style.fg, Some(colour::border()), "left side lit at {tick}");
+            assert_eq!(r.style.fg, Some(colour::border()), "right side lit at {tick}");
+            let (top, bottom) = edges(width, 1, tick, Scan::Working);
+            for line in [&top, &bottom] {
+                let lit = lit_columns(line);
+                // Never the corners (column 0 or the last), so it does not round the box.
+                assert!(
+                    !lit.contains(&0) && !lit.contains(&(usize::from(width) - 1)),
+                    "a corner lit at {tick}: {lit:?}"
+                );
+                // Contiguous when anything is lit — one streak, not a wrap split across both ends.
+                if let (Some(&first), Some(&last)) = (lit.first(), lit.last()) {
+                    assert_eq!(last - first, lit.len() - 1, "streak split at {tick}: {lit:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_working_streak_travels_left_to_right() {
+        let width = 40u16;
+        let head = |tick| {
+            lit_columns(&edges(width, 1, tick, Scan::Working).0)
+                .into_iter()
+                .max()
+        };
+        // Its leading edge is further right a few ticks on, before it runs off and resets.
+        assert!(head(1) < head(6), "the streak did not move right: {:?} -> {:?}", head(1), head(6));
     }
 
     #[test]
@@ -314,16 +391,14 @@ mod tests {
     }
 
     #[test]
-    fn resting_and_working_are_the_same_figure_at_different_speeds() {
-        // The figure is asserted rather than a tick, because the two paces are settings.
+    fn resting_is_two_comets_opposite_on_the_ring() {
+        // The figure is asserted rather than a tick, because the pace is a setting. Working is no
+        // longer this figure — it sweeps the edges (see the working tests), so only rest is checked.
         let ring = 44;
-        for scan in [Scan::Resting, Scan::Working] {
-            let heads = heads(scan, 30, 20, 1, ring);
-            assert_eq!(heads.len(), 2, "{scan:?}");
-            let apart = heads[1].at.abs_diff(heads[0].at);
-            assert_eq!(apart, ring / 2, "{scan:?}: opposite each other");
-            assert!(heads.iter().all(|h| h.forward), "{scan:?}: both travelling");
-        }
+        let heads = heads(Scan::Resting, 30, 20, 1, ring);
+        assert_eq!(heads.len(), 2);
+        assert_eq!(heads[1].at.abs_diff(heads[0].at), ring / 2, "opposite each other");
+        assert!(heads.iter().all(|h| h.forward), "both travelling");
     }
 
     #[test]
@@ -437,11 +512,12 @@ mod tests {
 
     #[test]
     fn a_tall_box_lights_its_sides_too() {
-        // Swept across ticks rather than pinned: which cell is lit is a function of the pace.
+        // The ring modes go round, not just along the top — checked on `Resting`; `Working` is a
+        // deliberate exception, a scanner over the long edges that leaves the sides dark.
         let lit = (0..120)
             .flat_map(|tick| (0..6).map(move |row| (tick, row)))
             .filter(|&(tick, row)| {
-                let (l, r) = side(30, 6, row, tick, Scan::Working);
+                let (l, r) = side(30, 6, row, tick, Scan::Resting);
                 l.style.fg != Some(colour::border()) || r.style.fg != Some(colour::border())
             })
             .count();
@@ -577,8 +653,9 @@ mod walking {
     fn the_prompt_still_wears_two() {
         let ring = walk_length(20, 3);
         assert_eq!(heads(Scan::Resting, 0, 20, 3, ring).len(), 2);
-        assert_eq!(heads(Scan::Working, 0, 20, 3, ring).len(), 2);
         assert_eq!(heads(Scan::Holding, 0, 20, 3, ring).len(), 2);
+        // Working rides no heads now — it sweeps the edges, drawn by `sweeping`, not the ring.
+        assert!(heads(Scan::Working, 0, 20, 3, ring).is_empty());
         assert!(heads(Scan::Off, 0, 20, 3, ring).is_empty());
     }
 }
