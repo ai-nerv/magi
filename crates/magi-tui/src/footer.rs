@@ -1,12 +1,8 @@
 //! The footer: one dim line, the directory and branch left, usage in the middle, session name right.
 
 use crate::colour;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-
-/// The control for moving between agents, drawn at the bottom left. Single-width ASCII rather than
-/// `‹ ›` or arrows: this row is laid out to the column and a double-width glyph would push the middle.
-const CREW: &str = "< >";
 
 /// What the footer displays. The UI owns none of this; the session reports it.
 #[derive(Debug, Clone, Default)]
@@ -19,10 +15,14 @@ pub struct FooterData {
     /// peer, whose project cannot differ because a roster is one project's.
     pub identity: String,
     pub model: String,
-    /// How many agents there are to move between, this one included. Nothing is drawn for a crew of one.
+    /// How many agents there are, this one included. No longer drawn — the agents view has taken
+    /// over moving between them — but still the count the roster reports.
     pub crew: usize,
     /// Whether the agent on screen is this session. Only the identity's styling turns on it.
     pub own: bool,
+    /// The pointer is over the name, which opens the agents view: drawn inverted while it is, the
+    /// same block the usage badge always wears, so the name reads as the button it is.
+    pub name_hover: bool,
 }
 
 /// Abbreviate a token count the way Pi's `formatTokens` does.
@@ -76,8 +76,25 @@ pub fn fit_path(path: &str, width: usize) -> String {
     format!("…{}", last.chars().skip(start).collect::<String>())
 }
 
-/// Render the footer, on one line: the directory and branch on the left, usage in the middle, the
-/// session name on the right, each dropped in that order when the terminal cannot hold it.
+/// The name's slot: against the left edge, a third of the inset wide. Both the draw below and the
+/// layout that records where a click lands measure it here, so the button and its cells agree.
+fn fit_name(identity: &str, inset: usize) -> String {
+    fit_path(identity, inset / 3)
+}
+
+/// Where the name lands, as columns from the left edge (the pad included), for the click target the
+/// layout records. An empty range when there is no name to aim at.
+#[must_use]
+pub fn name_columns(data: &FooterData, width: u16) -> std::ops::Range<u16> {
+    let pad = crate::metric::footer_pad();
+    let inset = usize::from(width).saturating_sub(usize::from(pad) * 2);
+    let name_width = fit_name(&data.identity, inset).chars().count();
+    pad..pad + u16::try_from(name_width).unwrap_or(0)
+}
+
+/// Render the footer, on one line: the session name on the left, usage in the middle, the model on
+/// the right, each dropped in that order when the terminal cannot hold it. The name is the button
+/// that opens the agents view, and inverts while the pointer is on it.
 #[must_use]
 pub fn render(data: &FooterData, status: &[Span<'static>], width: u16) -> Vec<Line<'static>> {
     let dim = Style::default().fg(colour::dim());
@@ -88,19 +105,12 @@ pub fn render(data: &FooterData, status: &[Span<'static>], width: u16) -> Vec<Li
     let width = usize::from(width).saturating_sub(pad * 2);
     let gap = usize::from(crate::metric::column_gap());
 
-    // The crew control, left of the name, and only when there is somewhere to go: a control that
-    // would move between one agent and itself is width this row does not have.
-    let arrows = if data.crew > 1 { CREW } else { "" };
-    let arrows_width = arrows.chars().count();
-    // What the left-hand column costs in total, which is what the middle has to clear.
-    let left = |name: usize| arrows_width + if arrows_width > 0 { gap } else { 0 } + name;
-
-    // Ends first, shorter of the two with priority. The name's third is measured before the arrows
-    // and then reduced by them, so a crew of one gets exactly the budget it always had.
-    let name = fit_path(&data.identity, (width / 3).saturating_sub(left(0)));
+    // Ends first, shorter of the two with priority: the name takes its third of the inset, the model
+    // whatever is left once the name and the gaps around the middle are out.
+    let name = fit_name(&data.identity, width);
     let model = fit_path(
         &data.model,
-        width.saturating_sub(left(name.chars().count()) + gap * 2),
+        width.saturating_sub(name.chars().count() + gap * 2),
     );
     let name_width = name.chars().count();
     let model_at = width.saturating_sub(model.chars().count());
@@ -110,21 +120,20 @@ pub fn render(data: &FooterData, status: &[Span<'static>], width: u16) -> Vec<Li
     let said: usize = status.iter().map(|s| s.content.chars().count()).sum();
     let middle_at = width.saturating_sub(said) / 2;
     // Centred in the whole row is not the same as fitting between the other two: on a narrow screen
-    // the middle reached the right-hand column and the two printed into each other. Measured from
-    // the *whole* left column: charging the arrows to the name's budget and not to this floor makes
-    // the middle vanish on every width where the floor lands between the two.
+    // the middle reached the right-hand column and the two printed into each other.
     let middle_at = middle_at
-        .max(left(name_width) + gap)
+        .max(name_width + gap)
         .min(model_at.saturating_sub(said + gap));
 
-    let mut spans = vec![Span::styled(" ".repeat(pad), dim)];
-    if arrows_width > 0 {
-        spans.push(Span::styled(arrows.to_owned(), muted));
-        spans.push(Span::styled(" ".repeat(gap), dim));
+    // Brighter when it is somebody else's, inverted while the pointer is on it: everything else on
+    // the screen looks the same either way, and the invert is how the name says it is a button.
+    let mut name_style = if data.own { dim } else { muted };
+    if data.name_hover {
+        name_style = name_style.add_modifier(Modifier::REVERSED);
     }
-    // Brighter when it is somebody else's: everything else on the screen looks the same either way.
-    spans.push(Span::styled(name, if data.own { dim } else { muted }));
-    let mut col = left(name_width);
+    let mut spans = vec![Span::styled(" ".repeat(pad), dim)];
+    spans.push(Span::styled(name, name_style));
+    let mut col = name_width;
     if middle_at >= col && middle_at + said + gap <= model_at {
         spans.push(Span::styled(" ".repeat(middle_at - col), dim));
         spans.extend(status.iter().cloned());
@@ -385,6 +394,7 @@ mod anchored {
             model: "claude-opus-5".into(),
             crew: 1,
             own: true,
+            name_hover: false,
         }
     }
 
@@ -456,6 +466,7 @@ mod inset_tests {
             model: "claude-opus-5".into(),
             crew,
             own: true,
+            name_hover: false,
         };
         render(&data, &[Span::raw("waiting")], width)[0]
             .spans

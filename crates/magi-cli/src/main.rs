@@ -238,7 +238,7 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
             let key = opening.key;
             let socket = opening.socket;
             // Reaped even when it will not serve: `start` refuses after convening balthasar.
-            if let Err(why) = host::start(
+            let _phase = match host::start(
                 &socket,
                 cli.resume,
                 &cwd,
@@ -252,9 +252,12 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
             )
             .await
             {
-                balthasar::stop();
-                return Err(why);
-            }
+                Ok(phase) => phase,
+                Err(why) => {
+                    balthasar::stop();
+                    return Err(why);
+                }
+            };
             let outcome = print::run(&socket, prompt).await;
             // Before the socket goes: the turn's own flush runs on a task this exit can outrun.
             magi_host::drain().await;
@@ -285,7 +288,7 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
             let key = opening.key;
             let socket = opening.socket;
             // Reaped even when it will not serve: `start` refuses after convening balthasar.
-            if let Err(why) = host::start(
+            let phase_watch = match host::start(
                 &socket,
                 cli.resume,
                 &cwd,
@@ -299,12 +302,15 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
             )
             .await
             {
-                balthasar::stop();
-                return Err(why);
-            }
+                Ok(phase) => phase,
+                Err(why) => {
+                    balthasar::stop();
+                    return Err(why);
+                }
+            };
             // The same session either way: bound, announced and recorded before anything looks.
             let ran = if headless(&cli) {
-                child::run(&socket, cli.prompt, started, cli.tied).await
+                child::run(&socket, cli.prompt, started, cli.tied, phase_watch).await
             } else {
                 driver::run(&socket, cli.prompt, loaded, &project, started, cli.attach).await
             };

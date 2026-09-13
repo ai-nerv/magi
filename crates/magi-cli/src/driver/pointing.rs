@@ -11,6 +11,8 @@ use magi_proto::UiCommand;
 pub(crate) enum Pointing {
     Redraw,
     Nothing,
+    /// A row in the agents view was clicked: point the screen at that agent by dialling this seat.
+    Steer(crate::app::Seat),
 }
 
 /// Hand the pointer to a surface, if it landed on the rows one is holding. The cell is translated
@@ -67,9 +69,28 @@ pub(crate) fn on_the_screen(
             Some(open) => open.down(3, page),
             None => app.scrollback.scroll_down(3, view),
         },
-        // Every cell the pointer crosses arrives here; `hover_at` says which change anything.
+        // Every cell the pointer crosses arrives here; each `hover_at` says which change anything,
+        // and only a change is worth a redraw — the pointer reports a message per cell it crosses.
         MouseEventKind::Moved => {
-            if !app.hover_at(mouse.row, mouse.column) {
+            let over_name = app
+                .name_rect
+                .is_some_and(|at| within(at, mouse.row, mouse.column));
+            let mut changed = over_name != app.name_hover;
+            app.name_hover = over_name;
+            // A selectable row in an open float lights up under the pointer, off it goes dark.
+            if let Some(at) = app.pane_rect.filter(|_| app.pane.is_some()) {
+                let inside = within(at, mouse.row, mouse.column);
+                if let Some(open) = app.pane.as_mut() {
+                    let row = if inside {
+                        mouse.row.saturating_sub(at.y)
+                    } else {
+                        u16::MAX
+                    };
+                    changed |= open.hover_at(row);
+                }
+            }
+            changed |= app.hover_at(mouse.row, mouse.column);
+            if !changed {
                 return Pointing::Nothing;
             }
         }
@@ -86,22 +107,27 @@ pub(crate) fn on_the_screen(
                 app.press_corner();
                 return Pointing::Redraw;
             }
-            // The footer's `< >` crew control opens the agents tree.
+            // The footer name opens the agents view — the `< >` control that used to do it is gone.
             if app
-                .agents_rect
+                .name_rect
                 .is_some_and(|at| within(at, mouse.row, mouse.column))
             {
                 app.press_agents();
                 return Pointing::Redraw;
             }
-            // A float is dismissed by clicking off it — after the corner, because that badge has its
-            // own toggle. A press inside the float goes nowhere: it is drawn over the transcript, so
-            // a click falling through would select in a conversation nobody can see. Rect and pane
-            // both, because a view closed by a key leaves its rect behind until the next frame.
+            // A float: a click on a selectable row attaches the screen to that agent; a click
+            // elsewhere inside keeps it open; a click off it dismisses it. After the corner, because
+            // that badge has its own toggle. It is drawn over the transcript, so a press inside that
+            // fell through would select in a conversation nobody can see. Rect and pane both, because
+            // a view closed by a key leaves its rect behind until the next frame.
             if let Some(at) = app.pane_rect.filter(|_| app.pane.is_some()) {
-                if !within(at, mouse.row, mouse.column) {
-                    app.pane = None;
+                if within(at, mouse.row, mouse.column) {
+                    if let Some(seat) = app.press_pane_row(mouse.row, mouse.column) {
+                        return Pointing::Steer(seat);
+                    }
+                    return Pointing::Redraw;
                 }
+                app.pane = None;
                 return Pointing::Redraw;
             }
             // Copy first: both chips sit in the same edge, and a press that fell through to the fold

@@ -41,9 +41,26 @@ impl App {
     pub fn show_agents(&mut self) {
         let mine = self.named.split('/').nth(2);
         let attached = self.attached.as_ref().map(|them| them.id.as_str());
+        // One run's tree, not every session that shares the project. The run to show is that of
+        // whoever is on screen — the attached peer, or this session found in the roster. `None`
+        // (an older melchior that does not report the run) falls back to showing the lot.
+        let focus = self
+            .attached
+            .as_ref()
+            .and_then(|them| them.session.clone())
+            .or_else(|| {
+                self.reachable
+                    .iter()
+                    .find(|them| Some(them.id.as_str()) == mine)
+                    .and_then(|me| me.session.clone())
+            });
         let agents: Vec<magi_tui::agents::Agent> = self
             .reachable
             .iter()
+            .filter(|them| match &focus {
+                Some(run) => them.session.as_deref() == Some(run.as_str()),
+                None => true,
+            })
             .map(|them| magi_tui::agents::Agent {
                 id: them.id.clone(),
                 role: if them.role.is_empty() {
@@ -54,20 +71,33 @@ impl App {
                 parent: them.parent.clone(),
                 here: Some(them.id.as_str()) == mine,
                 attached: Some(them.id.as_str()) == attached,
-                busy: them.busy,
+                phase: them
+                    .phase
+                    .as_deref()
+                    .and_then(magi_proto::Phase::read)
+                    // An older melchior sends no phase but does send `busy`: read that so the
+                    // panel is never wrong, only less precise.
+                    .unwrap_or(if them.busy {
+                        magi_proto::Phase::Working
+                    } else {
+                        magi_proto::Phase::Idle
+                    }),
+                cause: them.cause.clone(),
                 working_for: them.working_for,
                 waiting: them.waiting,
                 claim: them.claim.clone(),
             })
             .collect();
+        let rendered = magi_tui::agents::view(&agents);
         self.pane = Some(
-            magi_tui::pane::Pane::new("agents", magi_tui::agents::lines(&agents))
+            magi_tui::pane::Pane::new("agents", rendered.rows)
+                .selectable(rendered.picks)
                 .saying(magi_tui::agents::empty()),
         );
     }
 
     /// Open the agents tree, or close it if it is what is showing — the toggle a press on the
-    /// footer's `< >` control expects.
+    /// footer name expects.
     pub fn press_agents(&mut self) {
         if self
             .pane

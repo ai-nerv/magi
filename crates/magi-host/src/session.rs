@@ -2,7 +2,7 @@
 
 use magi_journal::{Journal, JournalError};
 use magi_proto::{AgentStatus, Cursor, Entry, HarnessEvent, SessionId};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
 /// Events buffered for a consumer that has fallen behind. A slow UI is dropped and reconnects with
 /// its cursor rather than being spooled for indefinitely; a reattach costs a replay and loses nothing.
@@ -18,6 +18,10 @@ pub struct Session {
     journal: Journal,
     status: AgentStatus,
     events: broadcast::Sender<HarnessEvent>,
+    /// The current status, as a last-value channel: an observer that must not count as an attached
+    /// UI (a headless child reporting its own phase) reads this rather than subscribing to `events`,
+    /// which is what "is anybody here to approve" counts.
+    phase: watch::Sender<AgentStatus>,
     /// Messages from other instances that arrived while a turn was running. Nothing another
     /// instance says interrupts a turn. Held rather than journalled on arrival: committing one
     /// between an assistant's tool call and its result is a conversation no provider accepts.
@@ -34,6 +38,7 @@ impl Session {
     #[must_use]
     pub fn recorded(id: SessionId, entries: Vec<Entry>) -> Self {
         let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
+        let (phase, _) = watch::channel(AgentStatus::Idle);
         Self {
             journal: Journal::recorded(id, entries),
             status: AgentStatus::Idle,
@@ -42,9 +47,17 @@ impl Session {
             choices: Vec::new(),
             thinking: "off".to_owned(),
             events,
+            phase,
             waiting: Vec::new(),
             pending: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// A last-value view of this session's status, for an observer that must not be counted as an
+    /// attached UI — subscribing to `events` would make a gated tool wait on it to approve.
+    #[must_use]
+    pub fn phase_watch(&self) -> watch::Receiver<AgentStatus> {
+        self.phase.subscribe()
     }
 
     /// Take up what balthasar holds for another session, keeping everyone attached. The journal is
@@ -284,6 +297,8 @@ impl Session {
     /// restored tomorrow is idle whatever it was doing when the process died.
     pub fn set_status(&mut self, status: AgentStatus) {
         self.status = status.clone();
+        // The last-value view first, so a headless observer sees the change even with no UI here.
+        self.phase.send_replace(status.clone());
         let _ = self.events.send(HarnessEvent::StatusChanged {
             cursor: self.cursor(),
             status,

@@ -1,8 +1,11 @@
-//! The control for moving between agents, and the width it is allowed to cost.
+//! The footer name: the button that opens the agents view, and how it is drawn. The `< >` control
+//! that used to move between agents is gone — the agents view took that over — so the name sits
+//! against the left edge whatever the crew, and inverts while the pointer is on it.
 
 use super::*;
+use ratatui::style::Modifier;
 
-fn row(width: u16, crew: usize, own: bool) -> String {
+fn row(width: u16, crew: usize) -> String {
     let data = FooterData {
         input_tokens: 12_500,
         output_tokens: 900,
@@ -11,7 +14,8 @@ fn row(width: u16, crew: usize, own: bool) -> String {
         identity: "axum/main/alpha".into(),
         model: "claude-opus-5".into(),
         crew,
-        own,
+        own: true,
+        name_hover: false,
     };
     render(&data, &[Span::raw("waiting")], width)[0]
         .spans
@@ -21,71 +25,26 @@ fn row(width: u16, crew: usize, own: bool) -> String {
 }
 
 #[test]
-fn a_crew_of_one_draws_no_control() {
-    let line = row(80, 1, true);
-    assert!(!line.contains(CREW), "{line:?}");
-    assert!(line.trim_start().starts_with("axum/main/alpha"), "{line:?}");
-}
-
-#[test]
-fn a_crew_of_more_than_one_draws_it_left_of_the_name() {
-    let line = row(80, 3, true);
-    let trimmed = line.trim_start();
-    assert!(trimmed.starts_with(CREW), "{line:?}");
-    assert!(
-        trimmed.find(CREW) < trimmed.find("axum/main/alpha"),
-        "the control must come before the name: {line:?}"
-    );
-}
-
-/// Charging the arrows to the name's budget but not to the middle's floor makes the middle
-/// disappear at widths where the floor falls in the gap, with nothing looking broken. It shows
-/// only with a middle long enough that its natural centre falls left of the control: forty
-/// characters and a crew, at width 82.
-#[test]
-fn the_control_does_not_cost_the_middle_its_place() {
-    let long = "x".repeat(40);
-    let data = FooterData {
-        input_tokens: 0,
-        output_tokens: 0,
-        context_percent: None,
-        context_window: 0,
-        identity: "axum/main/alpha".into(),
-        model: "claude-opus-5".into(),
-        crew: 4,
-        own: true,
-    };
-    let line: String = render(&data, &[Span::raw(long.clone())], 82)[0]
-        .spans
-        .iter()
-        .map(|s| s.content.as_ref())
-        .collect();
-    assert!(
-        line.contains(&long),
-        "the middle was dropped where it fits: {line:?}"
-    );
-}
-
-#[test]
-fn the_middle_never_prints_into_the_control() {
-    for width in 30..90u16 {
-        let line = row(width, 4, true);
-        let Some(at) = line.find(CREW) else {
-            continue;
-        };
-        let after: String = line.chars().skip(at + CREW.chars().count()).collect();
+fn the_name_is_against_the_left_edge_whatever_the_crew() {
+    for crew in [1usize, 2, 9] {
         assert!(
-            after.starts_with(' '),
-            "width {width}: something is against the control: {line:?}"
+            row(80, crew).trim_start().starts_with("axum/main/alpha"),
+            "crew {crew}"
         );
     }
+}
+
+#[test]
+fn there_is_no_crew_control_any_more() {
+    // It used to draw `< >` at the left when there was somewhere to go; the agents view replaced it.
+    assert!(!row(80, 3).contains("< >"), "{}", row(80, 3));
 }
 
 #[test]
 fn the_row_is_still_the_width_it_was_given() {
     for width in 30..90u16 {
         for crew in [1usize, 2, 9] {
-            let line = row(width, crew, true);
+            let line = row(width, crew);
             assert_eq!(
                 line.chars().count(),
                 usize::from(width),
@@ -96,27 +55,37 @@ fn the_row_is_still_the_width_it_was_given() {
 }
 
 #[test]
-fn the_control_stays_inside_the_inset() {
+fn the_name_stays_inside_the_inset() {
     let pad = usize::from(crate::metric::footer_pad());
-    let line = row(80, 3, true);
-    let head: String = line.chars().take(pad).collect();
-    assert!(head.trim().is_empty(), "the left end: {line:?}");
+    let head: String = row(80, 3).chars().take(pad).collect();
+    assert!(head.trim().is_empty(), "the left end: {}", row(80, 3));
+}
+
+fn name_style(width: u16, hover: bool) -> Style {
+    let data = FooterData {
+        identity: "axum/main/alpha".into(),
+        model: "claude-opus-5".into(),
+        name_hover: hover,
+        ..FooterData::default()
+    };
+    render(&data, &[], width)[0]
+        .spans
+        .iter()
+        .find(|s| s.content.contains("alpha"))
+        .expect("the name")
+        .style
 }
 
 #[test]
 fn a_peers_name_is_styled_apart_from_your_own() {
-    let data = |own: bool| FooterData {
-        input_tokens: 0,
-        output_tokens: 0,
-        context_percent: None,
-        context_window: 0,
-        identity: "axum/main/alpha".into(),
-        model: "claude-opus-5".into(),
-        crew: 2,
-        own,
-    };
     let styled = |own: bool| {
-        render(&data(own), &[], 80)[0]
+        let data = FooterData {
+            identity: "axum/main/alpha".into(),
+            model: "claude-opus-5".into(),
+            own,
+            ..FooterData::default()
+        };
+        render(&data, &[], 80)[0]
             .spans
             .iter()
             .find(|s| s.content.contains("alpha"))
@@ -124,4 +93,41 @@ fn a_peers_name_is_styled_apart_from_your_own() {
             .style
     };
     assert_ne!(styled(true), styled(false), "a peer reads as your own");
+}
+
+#[test]
+fn the_name_inverts_under_the_pointer_and_not_otherwise() {
+    // The invert is how the name says it is a button, the same block the usage badge always wears.
+    assert!(
+        !name_style(80, false)
+            .add_modifier
+            .contains(Modifier::REVERSED),
+        "the name should not be inverted at rest"
+    );
+    assert!(
+        name_style(80, true)
+            .add_modifier
+            .contains(Modifier::REVERSED),
+        "the name should invert while hovered"
+    );
+}
+
+#[test]
+fn where_the_name_lands_is_where_it_is_drawn() {
+    // The recorded click target must cover the drawn name, or a click misses the button it is on.
+    let data = FooterData {
+        identity: "axum/main/alpha".into(),
+        model: "claude-opus-5".into(),
+        ..FooterData::default()
+    };
+    let columns = name_columns(&data, 80);
+    let line: String = render(&data, &[], 80)[0]
+        .spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect();
+    let at = line.find("axum").expect("the name is drawn");
+    let start = usize::from(columns.start);
+    assert_eq!(line[..at].chars().count(), start, "start column: {line:?}");
+    assert!(columns.end > columns.start, "a real span: {columns:?}");
 }

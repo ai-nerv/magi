@@ -17,8 +17,7 @@ pub struct Named<'a> {
     pub agent: Option<&'a str>,
 }
 
-/// Open this session and start serving it without waiting for it to finish. Bound before returning,
-/// so the UI's first dial cannot race the bind. `resume` is balthasar's — see [`resumable`].
+/// Open this session and serve it, bound before returning so the UI's first dial cannot race it.
 pub async fn start(
     socket: &Path,
     resume: bool,
@@ -26,7 +25,7 @@ pub async fn start(
     loaded: Option<&crate::config::Loaded>,
     environ: &std::collections::BTreeMap<String, String>,
     named: Named<'_>,
-) -> Result<()> {
+) -> Result<tokio::sync::watch::Receiver<magi_proto::AgentStatus>> {
     let Named { key, run, agent } = named;
     let cwd = cwd.display().to_string();
     let id = magi_proto::SessionId::new(recorded_as(run, key));
@@ -86,10 +85,12 @@ pub async fn start(
     };
     let mut backend = crate::config::backend(&catalog);
     stamp(&mut backend, &mut catalog, environ);
+    // A last-value view of status for a headless child to report its phase without attaching.
+    let phase_watch = session.phase_watch();
     tokio::spawn(async move {
         let _ = magi_host::serve_on(listener, session, backend, catalog, ours).await;
     });
-    Ok(())
+    Ok(phase_watch)
 }
 
 /// Take the socket back down: a path nothing answers would meet the next `magi` as a name taken.

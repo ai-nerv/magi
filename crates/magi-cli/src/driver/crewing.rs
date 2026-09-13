@@ -66,9 +66,10 @@ pub(super) fn footer_data(app: &App) -> FooterData {
     let window = app.model.as_ref().map_or(0, |m| m.context_window);
     FooterData {
         identity: app.viewing(),
-        // What the arrows can reach, not what melchior can name.
+        // The count melchior reports; no longer drawn, but the roster still carries it.
         crew: app.crew_size(),
         own: app.attached.is_none(),
+        name_hover: app.name_hover,
         model: app.model.as_ref().map_or_else(
             || magi_tui::glyph::no_model().to_owned(),
             |model| model.name.clone(),

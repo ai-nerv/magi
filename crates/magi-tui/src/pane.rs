@@ -13,6 +13,9 @@ use ratatui::text::{Line, Span};
 const WIDTH: u16 = 80;
 const HEIGHT: u16 = 70;
 
+/// Rows the frame draws above the content (border, heading, blank) — taken off a click's row first.
+const HEAD: u16 = 3;
+
 /// A view drawn in the middle of the screen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pane {
@@ -24,6 +27,10 @@ pub struct Pane {
     pub follow: bool,
     /// What to say when there is nothing to show.
     pub empty: String,
+    /// Parallel to `rows`: what a click on each row selects; empty for a view with no targets.
+    pub picks: Vec<Option<String>>,
+    /// The row the pointer is over, as an index into `rows`, lit while it is a selectable one.
+    pub hover: Option<usize>,
 }
 
 impl Pane {
@@ -36,6 +43,8 @@ impl Pane {
             top: 0,
             follow: false,
             empty: "nothing yet".to_owned(),
+            picks: Vec::new(),
+            hover: None,
         }
     }
 
@@ -43,6 +52,31 @@ impl Pane {
     pub fn saying(mut self, empty: impl Into<String>) -> Self {
         self.empty = empty.into();
         self
+    }
+
+    /// Make rows selectable: `picks` runs parallel to `rows`, naming what each click attaches to.
+    #[must_use]
+    pub fn selectable(mut self, picks: Vec<Option<String>>) -> Self {
+        self.picks = picks;
+        self
+    }
+
+    /// What a click `row` cells below the panel's top edge selects, through `HEAD` and the scroll.
+    #[must_use]
+    pub fn selected(&self, row_in_panel: u16) -> Option<&str> {
+        let content = usize::from(row_in_panel.checked_sub(HEAD)?);
+        self.picks.get(self.top + content)?.as_deref()
+    }
+
+    /// Light the row `row_in_panel` cells below the top edge, if it is a selectable one, and say
+    /// whether that changed anything — so a move within the same row skips a redraw.
+    pub fn hover_at(&mut self, row_in_panel: u16) -> bool {
+        let was = self.hover;
+        self.hover = row_in_panel
+            .checked_sub(HEAD)
+            .map(|content| self.top + usize::from(content))
+            .filter(|at| self.picks.get(*at).is_some_and(Option::is_some));
+        was != self.hover
     }
 
     #[must_use]
@@ -109,7 +143,8 @@ impl Pane {
         self.top = self.rows.len().saturating_sub(page);
     }
 
-    /// The rows to draw, for a viewport `page` tall.
+    /// The rows to draw, for a viewport `page` tall. The row under the pointer is drawn inverted,
+    /// the way the fold handles and the usage badge invert, so a selectable row shows it is one.
     #[must_use]
     pub fn showing(&self, page: usize) -> Vec<Line<'static>> {
         if self.rows.is_empty() {
@@ -117,9 +152,16 @@ impl Pane {
         }
         self.rows
             .iter()
+            .enumerate()
             .skip(self.top)
             .take(page)
-            .cloned()
+            .map(|(at, line)| {
+                if Some(at) == self.hover {
+                    lit(line)
+                } else {
+                    line.clone()
+                }
+            })
             .collect()
     }
 
@@ -176,6 +218,21 @@ impl Pane {
         let last = (self.top + page).min(self.rows.len());
         Some(format!("{}–{} of {}", self.top + 1, last, self.rows.len()))
     }
+}
+
+/// A copy of `line` with every span inverted: the whole row reads as one highlighted block.
+fn lit(line: &Line<'static>) -> Line<'static> {
+    let spans = line
+        .spans
+        .iter()
+        .map(|span| {
+            Span::styled(
+                span.content.clone(),
+                span.style.add_modifier(Modifier::REVERSED),
+            )
+        })
+        .collect::<Vec<_>>();
+    Line::from(spans)
 }
 
 #[cfg(test)]

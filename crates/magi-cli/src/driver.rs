@@ -503,6 +503,21 @@ pub async fn run(
                         ) {
                             pointing::Pointing::Redraw => dirty = true,
                             pointing::Pointing::Nothing => continue,
+                            // A row in the agents view was clicked. `press_pane_row` already pointed
+                            // the app at it; this dials the socket, the way `walk` does for the keys.
+                            pointing::Pointing::Steer(seat) => {
+                                let at = match seat {
+                                    crate::app::Seat::Own => socket.to_path_buf(),
+                                    crate::app::Seat::Peer(at) => at,
+                                };
+                                let _ = target_tx.send(at);
+                                if app.attached.is_none() {
+                                    for command in held.drain(..) {
+                                        let _ = command_tx.send(command).await;
+                                    }
+                                }
+                                dirty = true;
+                            }
                         }
                     }
                     Event::Paste(text) => {
@@ -537,6 +552,15 @@ pub async fn run(
                         crate::melchior::Heard::Message { who, sort, text } => {
                             let arrived = app.received(&who, &sort, &text);
                             ours(&app, &command_tx, &mut held, arrived).await;
+                            // An `attention` or `trouble` message is the one kind meant to reach a
+                            // session mid-turn: interrupt this one's own turn so it attends sooner.
+                            // Only its own — a peer on screen is read-only, and `direct` drops it.
+                            if app.attached.is_none()
+                                && app.is_busy()
+                                && crate::melchior::interrupts(&sort)
+                            {
+                                direct(&mut app, &command_tx, UiCommand::Interrupt).await;
+                            }
                         }
                         // Either shape. An older melchior says `names` and nothing else.
                         crate::melchior::Heard::Around { agents, names } => {
@@ -555,6 +579,18 @@ pub async fn run(
                                 app.attach_to(Some(them));
                                 let _ = target_tx.send(at);
                                 app.attach_wanted = None;
+                            }
+                        }
+                        // A watched agent changed phase. Observed for now, not acted on: a dim line
+                        // so a coordinator sees a child finish or hit trouble. Only the edges worth
+                        // an eye; the rest updates the panel silently. Reaction comes later.
+                        crate::melchior::Heard::Signal {
+                            from, kind, cause, ..
+                        } => {
+                            if app.attached.is_none()
+                                && let Some(note) = signal_notice(&from, &kind, cause.as_deref())
+                            {
+                                app.show_notice(note);
                             }
                         }
                         // The asking session is blocked on the answer, not on this turn.
@@ -588,10 +624,13 @@ pub async fn run(
                 }
                 was_busy = app.is_busy();
                 if let Some(layer) = layer.as_mut() {
+                    let (phase, cause) = app.phase();
                     layer.doing(
                         app.is_busy(),
                         app.elapsed().map_or(0, |since| since.as_secs()),
-                        app.unanswered(),
+                        Some(app.unanswered()),
+                        phase,
+                        cause.as_deref(),
                     );
                 }
                 dirty = true;
@@ -604,6 +643,19 @@ pub async fn run(
 
 fn terminal_size() -> (u16, u16) {
     crossterm::terminal::size().unwrap_or((80, 24))
+}
+
+/// The line, if any, a watched agent's phase change is worth putting in front of a person. Only the
+/// edges that end a wait — `finished` and `blocked` — the rest is left to the panel to show quietly.
+fn signal_notice(from: &str, kind: &str, cause: Option<&str>) -> Option<String> {
+    match kind {
+        "finished" => Some(format!("`{from}` finished.")),
+        "blocked" => Some(match cause {
+            Some(why) => format!("`{from}` is blocked: {why}"),
+            None => format!("`{from}` is blocked."),
+        }),
+        _ => None,
+    }
 }
 
 /// The socket to the session, and redialling one that dropped.

@@ -8,9 +8,10 @@
 
 use anyhow::Result;
 use magi_ipc::{FrameReader, FrameWriter};
-use magi_proto::{Cursor, HarnessEvent, UiCommand};
+use magi_proto::{AgentStatus, Cursor, HarnessEvent, Phase, UiCommand};
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tokio::sync::watch;
 
 /// How often the parent is looked for — a corpse check rather than a heartbeat.
 const LOOK: Duration = Duration::from_secs(1);
@@ -28,6 +29,7 @@ pub async fn run(
     prompt: Option<String>,
     started: Option<(crate::melchior::Melchior, std::path::PathBuf)>,
     parent: Option<u32>,
+    phase: watch::Receiver<AgentStatus>,
 ) -> Result<()> {
     let mut layer = started.map(|(layer, _at)| layer);
     // Said once, because a session with no terminal has no other way to say what it is called.
@@ -36,13 +38,20 @@ pub async fn run(
     {
         println!("{named}");
     }
+    // Whether it was given work at birth: what tells `idle` (waiting to be told) from `finished`
+    // (the work it was given is done) once its turn ends.
+    let had_prompt = prompt.is_some();
+    // Coming up, before the prompt lands: the one moment `starting` is true.
+    if let Some(layer) = layer.as_mut() {
+        layer.doing(false, 0, None, Phase::Starting, None);
+    }
     if let Some(prompt) = prompt {
         // Not fatal: a child whose prompt did not land is still a session somebody can attach to.
         if let Err(why) = ask(socket, prompt).await {
             eprintln!("magi: this session could not be given its prompt: {why}");
         }
     }
-    park(layer.as_mut(), parent).await;
+    park(socket, &mut layer, parent, phase, had_prompt).await;
     Ok(())
 }
 
@@ -87,13 +96,38 @@ async fn ask(socket: &Path, prompt: String) -> Result<()> {
 /// Stay up until somebody stops this session, the session that forked it goes, or a signal comes —
 /// handled rather than defaulted so the transcript reaches balthasar. A root has no parent, so that
 /// arm is absent rather than watching nothing: [`still_running`] would end it on the first tick.
-async fn park(layer: Option<&mut crate::melchior::Melchior>, parent: Option<u32>) {
+async fn park(
+    socket: &Path,
+    layer: &mut Option<crate::melchior::Melchior>,
+    parent: Option<u32>,
+    mut phase: watch::Receiver<AgentStatus>,
+    had_prompt: bool,
+) {
     let mut heard = layer
+        .as_mut()
         .and_then(crate::melchior::Melchior::hearing)
         .map(listening);
     let watching = parent.map(|pid| (pid, started_at(pid)));
     let mut looking = watching.as_ref().map(|_| tokio::time::interval(LOOK));
     let mut ended = signal();
+
+    // Its own phase, reported mechanically so a coordinator knows what it is doing without the
+    // model choosing to say. `working_since` makes the timer live; `has_worked` is what turns the
+    // first idle after a turn into `finished` rather than `idle`.
+    let mut has_worked = false;
+    let mut working_since: Option<Instant> = None;
+    // A slow beat so `working` shows a climbing timer between the rare status changes.
+    let mut beat = tokio::time::interval(Duration::from_secs(2));
+    // A child's edge that arrived while this session was mid-turn: acted on when the turn ends, so
+    // one turn runs at a time and children that finished during it are not missed.
+    let mut pending_wake: Option<String> = None;
+    // Each watched child's last phase, so a coordinator gone quiet knows whether it still waits.
+    let mut children: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    let status = phase.borrow().clone();
+    let (mut phase_now, working_for) =
+        derive(&status, had_prompt, &mut has_worked, &mut working_since);
+    announce(layer, phase_now, working_for, &children);
 
     loop {
         tokio::select! {
@@ -101,8 +135,46 @@ async fn park(layer: Option<&mut crate::melchior::Melchior>, parent: Option<u32>
                 Some(crate::melchior::Heard::Stopped) => break,
                 // The pipe closed: melchior is gone, so nothing can reach this session or end it.
                 None => break,
+                // A watched agent moved. A child that finished or blocked is this session's to act
+                // on: wake it with a turn now if it is idle, or queue it if it is mid-turn. Either
+                // way its phase is tracked, so this session can say what it is still waiting on.
+                Some(crate::melchior::Heard::Signal { from, kind, kin, cause }) => {
+                    if kin == "child" {
+                        children.insert(from.clone(), kind.clone());
+                        announce(layer, phase_now, working_since.map_or(0, |t| t.elapsed().as_secs()), &children);
+                    }
+                    if let Some(occasion) = wake_prompt(&kin, &kind, &from, cause.as_deref()) {
+                        if phase_now == Phase::Working {
+                            pending_wake = Some(occasion);
+                        } else {
+                            wake(socket, &occasion).await;
+                        }
+                    }
+                }
                 Some(_) => {}
             },
+            // The host's status changed. Derive the phase, report it, and when a turn has just
+            // ended act on anything a child signalled while it ran.
+            changed = phase.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let status = phase.borrow_and_update().clone();
+                let (next, working_for) =
+                    derive(&status, had_prompt, &mut has_worked, &mut working_since);
+                let turn_ended = phase_now == Phase::Working && next != Phase::Working;
+                phase_now = next;
+                announce(layer, next, working_for, &children);
+                if turn_ended && let Some(occasion) = pending_wake.take() {
+                    wake(socket, &occasion).await;
+                }
+            }
+            // While working, keep the timer moving even though the status has not changed.
+            _ = beat.tick() => {
+                if let Some(since) = working_since {
+                    announce(layer, Phase::Working, since.elapsed().as_secs(), &children);
+                }
+            }
             () = tick(&mut looking) => {
                 if let Some((pid, since)) = &watching
                     && !still_running(*pid, since.as_deref())
@@ -112,6 +184,107 @@ async fn park(layer: Option<&mut crate::melchior::Melchior>, parent: Option<u32>
             }
             () = &mut ended => break,
         }
+    }
+    report(layer, Phase::Gone, None, 0);
+}
+
+/// The occasion to wake this session on, or `None` for a signal it should only observe. A child
+/// finishing or hitting trouble is what a coordinator resumes for; a parent's edge, and a child
+/// merely starting or working, are not.
+fn wake_prompt(kin: &str, kind: &str, from: &str, cause: Option<&str>) -> Option<String> {
+    if kin != "child" {
+        return None;
+    }
+    match kind {
+        "finished" => Some(format!(
+            "A subagent you started, `{from}`, has finished. Use the agent tool to see your crew \
+             and gather what it did; if everything you delegated is done, wrap up, otherwise carry on."
+        )),
+        "blocked" => Some(format!(
+            "A subagent you started, `{from}`, is blocked{}. Decide what to do about it.",
+            cause.map(|why| format!(": {why}")).unwrap_or_default()
+        )),
+        _ => None,
+    }
+}
+
+/// Give this session a turn, on its own socket, without staying attached — the same brief connection
+/// [`ask`] makes. Best effort: a wake that cannot land is a coordinator that stays parked, not a crash.
+async fn wake(socket: &Path, occasion: &str) {
+    if let Err(why) = ask(socket, occasion.to_owned()).await {
+        eprintln!("magi: a signal could not wake this session: {why}");
+    }
+}
+
+/// The phase a headless session is in, from its host's status and whether it was given work: a turn
+/// running is `working`; the first quiet after one is `finished` for a session that had a task,
+/// `idle` for one still waiting to be told.
+fn derive(
+    status: &AgentStatus,
+    had_prompt: bool,
+    has_worked: &mut bool,
+    working_since: &mut Option<Instant>,
+) -> (Phase, u64) {
+    match status {
+        AgentStatus::Working { .. } | AgentStatus::Retrying { .. } => {
+            *has_worked = true;
+            let since = working_since.get_or_insert_with(Instant::now);
+            (Phase::Working, since.elapsed().as_secs())
+        }
+        AgentStatus::Idle => {
+            *working_since = None;
+            if had_prompt && *has_worked {
+                (Phase::Finished, 0)
+            } else {
+                (Phase::Idle, 0)
+            }
+        }
+    }
+}
+
+/// Report a phase, but a session gone quiet while children are still going reads as `waiting on`
+/// them, not `finished` — the state a coordinator sits in between delegating and gathering.
+fn announce(
+    layer: &mut Option<crate::melchior::Melchior>,
+    base: Phase,
+    working_for: u64,
+    children: &std::collections::BTreeMap<String, String>,
+) {
+    let (phase, cause) = match base {
+        Phase::Idle | Phase::Finished => match waiting_on(children) {
+            Some(on) => (Phase::Waiting, Some(on)),
+            None => (base, None),
+        },
+        _ => (base, None),
+    };
+    report(layer, phase, cause.as_deref(), working_for);
+}
+
+/// How many watched children have not reached an end, as a cause line, or `None` when all are done.
+fn waiting_on(children: &std::collections::BTreeMap<String, String>) -> Option<String> {
+    let live = children
+        .values()
+        .filter(|phase| !matches!(phase.as_str(), "finished" | "gone" | "blocked"))
+        .count();
+    (live > 0).then(|| format!("{live} subagent{}", if live == 1 { "" } else { "s" }))
+}
+
+/// Tell melchior what this session is doing. `waiting` is `None`: a parked child does not track its
+/// own inbox, and must not wipe it to zero.
+fn report(
+    layer: &mut Option<crate::melchior::Melchior>,
+    phase: Phase,
+    cause: Option<&str>,
+    working_for: u64,
+) {
+    if let Some(layer) = layer.as_mut() {
+        layer.doing(
+            matches!(phase, Phase::Working),
+            working_for,
+            None,
+            phase,
+            cause,
+        );
     }
 }
 
@@ -243,7 +416,17 @@ mod tests {
     /// [`still_running`] says "gone" for a pid it cannot read — fatal for a root, which has none.
     #[tokio::test(start_paused = true)]
     async fn a_root_is_not_ended_by_the_parent_it_does_not_have() {
-        let waited = tokio::time::timeout(LOOK * 4, park(None, None)).await;
+        let waited = tokio::time::timeout(
+            LOOK * 4,
+            park(
+                Path::new("/nonexistent.sock"),
+                &mut None,
+                None,
+                watch::channel(AgentStatus::Idle).1,
+                false,
+            ),
+        )
+        .await;
         assert!(
             waited.is_err(),
             "a headless magi with nothing above it ended itself"
@@ -258,7 +441,17 @@ mod tests {
             .expect("`true` runs");
         let pid = child.id();
         child.wait().expect("reaped");
-        let waited = tokio::time::timeout(LOOK * 4, park(None, Some(pid))).await;
+        let waited = tokio::time::timeout(
+            LOOK * 4,
+            park(
+                Path::new("/nonexistent.sock"),
+                &mut None,
+                Some(pid),
+                watch::channel(AgentStatus::Idle).1,
+                false,
+            ),
+        )
+        .await;
         assert!(
             waited.is_ok(),
             "the child outlived the session that forked it"
@@ -270,5 +463,36 @@ mod tests {
         // Pid 0 cannot be stat'd, and "cannot tell" treated as "carry on" never ends.
         assert!(started_at(0).is_none());
         assert!(!still_running(0, None));
+    }
+
+    #[test]
+    fn a_coordinator_waits_while_children_are_still_going() {
+        let mut kids = std::collections::BTreeMap::new();
+        assert_eq!(waiting_on(&kids), None, "no children, nothing to wait on");
+        kids.insert("a".to_owned(), "working".to_owned());
+        kids.insert("b".to_owned(), "finished".to_owned());
+        assert_eq!(
+            waiting_on(&kids).as_deref(),
+            Some("1 subagent"),
+            "one still going"
+        );
+        kids.insert("a".to_owned(), "finished".to_owned());
+        assert_eq!(waiting_on(&kids), None, "all done, no longer waiting");
+    }
+
+    #[test]
+    fn only_a_child_finishing_or_blocking_is_a_reason_to_wake() {
+        // A coordinator resumes for its own children reaching an end — not for a parent's edge,
+        // and not for a child merely starting or working.
+        assert!(wake_prompt("child", "finished", "psi", None).is_some());
+        assert!(wake_prompt("child", "blocked", "psi", Some("declined")).is_some());
+        assert!(wake_prompt("child", "working", "psi", None).is_none());
+        assert!(wake_prompt("child", "idle", "psi", None).is_none());
+        assert!(wake_prompt("parent", "finished", "lead", None).is_none());
+        assert!(
+            wake_prompt("child", "blocked", "psi", Some("run declined"))
+                .unwrap()
+                .contains("run declined")
+        );
     }
 }

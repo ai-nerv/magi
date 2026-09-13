@@ -61,6 +61,15 @@ pub enum Heard {
         names: Vec<String>,
     },
     Stopped,
+    /// A watched agent's phase changed — a mechanical edge (children and parent), not a message.
+    Signal {
+        from: String,
+        kind: String,
+        #[serde(default)]
+        kin: String,
+        #[serde(default)]
+        cause: Option<String>,
+    },
     /// A session this one asked to be taken on by has accepted; carries what that session lent.
     Adopted {
         by: String,
@@ -89,6 +98,10 @@ pub struct Peer {
     /// the run's tree from. Defaulted, so an older melchior that does not say it reads as a main.
     #[serde(default)]
     pub parent: Option<String>,
+    /// Which run it belongs to. The agents panel shows one run's tree alone, so a peer from another
+    /// run in the same project is filtered out. Defaulted for an older melchior that does not say it.
+    #[serde(default)]
+    pub session: Option<String>,
     /// Live status melchior asked of its socket and pushed here. Defaulted for an older melchior.
     #[serde(default)]
     pub busy: bool,
@@ -96,8 +109,19 @@ pub struct Peer {
     pub working_for: u64,
     #[serde(default)]
     pub waiting: usize,
+    /// The coarse phase melchior reports; parsed to [`magi_proto::Phase`], unknown reads as idle.
+    #[serde(default)]
+    pub phase: Option<String>,
+    #[serde(default)]
+    pub cause: Option<String>,
     #[serde(default)]
     pub claim: Option<String>,
+}
+
+/// Whether a message of this sort reaches a session mid-turn — mirrors melchior's `Sort::interrupts`.
+#[must_use]
+pub fn interrupts(sort: &str) -> bool {
+    matches!(sort, "attention" | "trouble")
 }
 
 /// Everyone melchior named, either way it said it: an older melchior can only say a list of ids.
@@ -220,7 +244,14 @@ impl Melchior {
     }
 
     /// Tell melchior what this session is doing, so `status` answers truthfully: it cannot see a turn.
-    pub fn doing(&mut self, busy: bool, working_for: u64, waiting: usize) {
+    pub fn doing(
+        &mut self,
+        busy: bool,
+        working_for: u64,
+        waiting: Option<usize>,
+        phase: magi_proto::Phase,
+        cause: Option<&str>,
+    ) {
         let Some(told) = self.told.as_mut() else {
             return;
         };
@@ -229,6 +260,8 @@ impl Melchior {
             "busy": busy,
             "working_for": working_for,
             "waiting": waiting,
+            "phase": phase.as_str(),
+            "cause": cause,
         });
         // Best effort: melchior having gone away is a session without siblings.
         let _ = writeln!(told, "{line}");

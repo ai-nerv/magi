@@ -87,6 +87,56 @@ pub enum AgentStatus {
     },
 }
 
+/// What an agent is doing, as a *level* other agents read off the roster. The coarse, mechanical,
+/// cross-agent report the harness keeps current — distinct from [`AgentStatus`]'s finer turn state.
+/// `finished` is deliberately not `idle`: idle is "ready for more", finished is "the work it was
+/// given is done" — the distinction a coordinator needs and cannot get from `busy`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Phase {
+    Starting,
+    #[default]
+    Idle,
+    Working,
+    /// Cannot go on until something else happens; `waiting`/`blocked` carry a cause.
+    Waiting,
+    Blocked,
+    Finished,
+    Gone,
+}
+
+impl Phase {
+    /// The wire word: the lowercase name the roster carries and every harness parses.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Idle => "idle",
+            Self::Working => "working",
+            Self::Waiting => "waiting",
+            Self::Blocked => "blocked",
+            Self::Finished => "finished",
+            Self::Gone => "gone",
+        }
+    }
+
+    /// Parse the wire word back, `None` for one this build does not know — a newer peer's phase is
+    /// not a reason to misread it as something else.
+    #[must_use]
+    pub fn read(word: &str) -> Option<Self> {
+        Some(match word {
+            "starting" => Self::Starting,
+            "idle" => Self::Idle,
+            "working" => Self::Working,
+            "waiting" => Self::Waiting,
+            "blocked" => Self::Blocked,
+            "finished" => Self::Finished,
+            "gone" => Self::Gone,
+            _ => return None,
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorClass {
@@ -389,3 +439,33 @@ mod encoding;
 
 mod peering;
 pub use peering::{ToolReport, ToolRequest};
+
+#[cfg(test)]
+mod phase_tests {
+    use super::Phase;
+
+    #[test]
+    fn every_phase_round_trips_through_its_wire_word() {
+        for phase in [
+            Phase::Starting,
+            Phase::Idle,
+            Phase::Working,
+            Phase::Waiting,
+            Phase::Blocked,
+            Phase::Finished,
+            Phase::Gone,
+        ] {
+            assert_eq!(
+                Phase::read(phase.as_str()),
+                Some(phase),
+                "{}",
+                phase.as_str()
+            );
+        }
+        assert_eq!(
+            Phase::read("something-newer"),
+            None,
+            "an unknown phase is not guessed"
+        );
+    }
+}

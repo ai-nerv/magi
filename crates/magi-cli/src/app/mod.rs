@@ -84,9 +84,11 @@ pub struct App {
     pub corner_rect: Option<ratatui::layout::Rect>,
     /// So a press outside the pane can close it. `None` when none is open.
     pub pane_rect: Option<ratatui::layout::Rect>,
-    /// The footer's `< >` crew control, when there is more than one agent: a press on it opens the
-    /// agents tree. `None` when the run is just this session.
-    pub agents_rect: Option<ratatui::layout::Rect>,
+    /// Where the footer name landed: a press on it opens the agents view. `None` before the first
+    /// draw records it.
+    pub name_rect: Option<ratatui::layout::Rect>,
+    /// Whether the pointer is over that name, so the footer can draw it inverted like the usage badge.
+    pub name_hover: bool,
     /// An id `--attach` named to watch: held until that agent appears on the roster, then the screen
     /// points at it and this clears. `None` for an ordinary session.
     pub attach_wanted: Option<String>,
@@ -139,7 +141,8 @@ impl App {
             surface_rect: None,
             corner_rect: None,
             pane_rect: None,
-            agents_rect: None,
+            name_rect: None,
+            name_hover: false,
             attach_wanted: None,
             corner: magi_tui::corner::Corner::default(),
             pending_notice: None,
@@ -250,6 +253,27 @@ impl App {
     #[must_use]
     pub fn is_busy(&self) -> bool {
         !matches!(self.status, AgentStatus::Idle)
+    }
+
+    /// The coarse phase this session reports to the roster — what a coordinator reads off the tree.
+    /// Working while a turn runs; blocked (with a one-line cause) when the last turn errored; idle
+    /// otherwise. Mechanical: derived from turn state, never from anything the model chose to say.
+    /// `finished` belongs to the headless path, which knows its assigned work is done — not here,
+    /// where an interactive session going quiet only means "ready for more".
+    #[must_use]
+    pub fn phase(&self) -> (magi_proto::Phase, Option<String>) {
+        use magi_proto::Phase;
+        if self.is_busy() {
+            return (Phase::Working, None);
+        }
+        if let Some(Entry::Assistant {
+            error: Some(why), ..
+        }) = self.entries.last()
+        {
+            let cause = why.lines().next().unwrap_or(why).chars().take(80).collect();
+            return (Phase::Blocked, Some(cause));
+        }
+        (Phase::Idle, None)
     }
 
     /// Drop the transcript without touching the daemon: the journal is append-only and `/clear` only hides it.

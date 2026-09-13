@@ -71,6 +71,29 @@ impl App {
         self.waiting = 0;
     }
 
+    /// Attach the screen to the agent whose row a click landed on, and say what to dial. `None` when
+    /// the click was not on a selectable row, or on one with no screen to draw over — a session that
+    /// published no `.ui` note. Clicking your own row goes back to your own session.
+    pub fn press_pane_row(&mut self, row: u16, column: u16) -> Option<Seat> {
+        let at = self.pane_rect?;
+        if column < at.x || column >= at.x + at.width {
+            return None;
+        }
+        let id = self
+            .pane
+            .as_ref()?
+            .selected(row.checked_sub(at.y)?)?
+            .to_owned();
+        if Some(id.as_str()) == self.my_id() {
+            self.attach_to(None);
+            return Some(Seat::Own);
+        }
+        let them = self.reachable.iter().find(|them| them.id == id)?.clone();
+        let ui = them.ui.clone()?;
+        self.attach_to(Some(them));
+        Some(Seat::Peer(ui))
+    }
+
     /// Step one place along the crew, and say what to dial. `None` when there is nowhere to go.
     pub fn step(&mut self, forward: bool) -> Option<Seat> {
         let crew = self.crew();

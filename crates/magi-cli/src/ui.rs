@@ -222,13 +222,17 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
         Paragraph::new(footer::render(footer_data, &status_line.spans, area.width)),
         footer_area,
     );
-    // The `< >` crew control the footer draws at its left when there is more than one agent: a press
-    // on it opens the agents tree. Three columns after the footer's own padding.
-    app.agents_rect = (footer_data.crew > 1).then(|| Rect {
-        x: footer_area.x + magi_tui::metric::footer_pad(),
-        y: footer_area.y,
-        width: 3,
-        height: 1,
+    // Where the footer name landed, which is what a press on it — opening the agents view — is
+    // measured against, and where the hover-invert is drawn. The footer names the columns; only the
+    // layout knows the row.
+    app.name_rect = (!footer_data.identity.is_empty()).then(|| {
+        let columns = footer::name_columns(footer_data, area.width);
+        Rect {
+            x: footer_area.x + columns.start,
+            y: footer_area.y,
+            width: columns.end - columns.start,
+            height: 1,
+        }
     });
 
     // A float, over the finished screen and under nothing: it covers what it lands on rather than
