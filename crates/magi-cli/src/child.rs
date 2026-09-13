@@ -151,6 +151,19 @@ async fn park(
                         }
                     }
                 }
+                // The one message allowed to reach a session mid-turn. Working: stop the turn so it
+                // attends sooner, then take it up when the turn ends. Idle: take it up now.
+                Some(crate::melchior::Heard::Message { who, sort, text })
+                    if crate::melchior::interrupts(&sort) =>
+                {
+                    let occasion = urgent(&who, &sort, &text);
+                    if phase_now == Phase::Working {
+                        interrupt(socket).await;
+                        pending_wake = Some(occasion);
+                    } else {
+                        wake(socket, &occasion).await;
+                    }
+                }
                 Some(_) => {}
             },
             // The host's status changed. Derive the phase, report it, and when a turn has just
@@ -188,20 +201,25 @@ async fn park(
     report(layer, Phase::Gone, None, 0);
 }
 
-/// The occasion to wake this session on, or `None` for a signal it should only observe. A child
-/// finishing or hitting trouble is what a coordinator resumes for; a parent's edge, and a child
-/// merely starting or working, are not.
+/// The occasion to wake this session on, or `None` for a signal it should only observe. A child or
+/// a watched agent finishing or hitting trouble is what a coordinator resumes for; a parent's edge,
+/// and a mere start or working tick, are not.
 fn wake_prompt(kin: &str, kind: &str, from: &str, cause: Option<&str>) -> Option<String> {
-    if kin != "child" {
+    if kin != "child" && kin != "watched" {
         return None;
     }
+    let whose = if kin == "child" {
+        "A subagent you started"
+    } else {
+        "An agent you are watching"
+    };
     match kind {
         "finished" => Some(format!(
-            "A subagent you started, `{from}`, has finished. Use the agent tool to see your crew \
-             and gather what it did; if everything you delegated is done, wrap up, otherwise carry on."
+            "{whose}, `{from}`, has finished. Use the agent tool to see your crew and gather what \
+             it did; if everything you were waiting on is done, wrap up, otherwise carry on."
         )),
         "blocked" => Some(format!(
-            "A subagent you started, `{from}`, is blocked{}. Decide what to do about it.",
+            "{whose}, `{from}`, is blocked{}. Decide what to do about it.",
             cause.map(|why| format!(": {why}")).unwrap_or_default()
         )),
         _ => None,
@@ -214,6 +232,34 @@ async fn wake(socket: &Path, occasion: &str) {
     if let Err(why) = ask(socket, occasion.to_owned()).await {
         eprintln!("magi: a signal could not wake this session: {why}");
     }
+}
+
+/// The occasion to take up an urgent message on.
+fn urgent(who: &str, sort: &str, text: &str) -> String {
+    let text: String = text.chars().take(200).collect();
+    format!("An urgent `{sort}` from `{who}`: {text}. Read your inbox with the agent tool and attend to it.")
+}
+
+/// Stop this session's running turn, over its own socket, without staying attached. Best effort: a
+/// turn that cannot be reached ends on its own soon enough.
+async fn interrupt(socket: &Path) {
+    let Ok(stream) = magi_ipc::connect(socket).await else {
+        return;
+    };
+    let (read_half, write_half) = stream.into_split();
+    let mut reader = FrameReader::new(read_half);
+    let mut writer = FrameWriter::new(write_half);
+    let attach = UiCommand::Attach {
+        session: None,
+        from_cursor: FROM_END,
+        draws: false,
+    };
+    if writer.write(&attach).await.is_err() {
+        return;
+    }
+    let _ = reader.read::<HarnessEvent>().await;
+    let _ = writer.write(&UiCommand::Interrupt).await;
+    let _ = writer.write(&UiCommand::Detach).await;
 }
 
 /// The phase a headless session is in, from its host's status and whether it was given work: a turn
@@ -486,6 +532,7 @@ mod tests {
         // and not for a child merely starting or working.
         assert!(wake_prompt("child", "finished", "psi", None).is_some());
         assert!(wake_prompt("child", "blocked", "psi", Some("declined")).is_some());
+        assert!(wake_prompt("watched", "finished", "far", None).is_some());
         assert!(wake_prompt("child", "working", "psi", None).is_none());
         assert!(wake_prompt("child", "idle", "psi", None).is_none());
         assert!(wake_prompt("parent", "finished", "lead", None).is_none());
