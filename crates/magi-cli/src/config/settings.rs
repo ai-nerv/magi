@@ -14,30 +14,50 @@ use super::Loaded;
 #[must_use]
 pub fn grants(loaded: &Loaded) -> Vec<magi_proto::permit::Grant> {
     use magi_proto::permit::{Grant, Scope};
-    let Some(rules) = loaded.config.get("allow").and_then(|v| v.as_array()) else {
-        return Vec::new();
-    };
-    rules
-        .iter()
-        .filter_map(|rule| {
-            let verb = rule.get("verb")?.as_str()?.to_owned();
-            let scope = if rule.get("anything").and_then(serde_json::Value::as_bool) == Some(true) {
-                Scope::Anything
-            } else if let Some(program) = rule.get("program").and_then(|v| v.as_str()) {
-                Scope::Program {
-                    program: program.to_owned(),
-                }
-            } else if let Some(path) = rule.get("directory").and_then(|v| v.as_str()) {
-                Scope::Directory {
-                    path: path.to_owned(),
-                }
-            } else {
-                // A rule naming no width grants nothing; widening a typo to `Anything` would not.
-                return None;
-            };
-            Some(Grant { verb, scope })
+    let mut out: Vec<Grant> = loaded
+        .config
+        .get("allow")
+        .and_then(|v| v.as_array())
+        .map(|rules| {
+            rules
+                .iter()
+                .filter_map(|rule| {
+                    let verb = rule.get("verb")?.as_str()?.to_owned();
+                    let scope = if rule.get("anything").and_then(serde_json::Value::as_bool)
+                        == Some(true)
+                    {
+                        Scope::Anything
+                    } else if let Some(program) = rule.get("program").and_then(|v| v.as_str()) {
+                        Scope::Program {
+                            program: program.to_owned(),
+                        }
+                    } else if let Some(path) = rule.get("directory").and_then(|v| v.as_str()) {
+                        Scope::Directory {
+                            path: path.to_owned(),
+                        }
+                    } else {
+                        // A rule naming no width grants nothing; a typo widened to `Anything` would.
+                        return None;
+                    };
+                    Some(Grant { verb, scope })
+                })
+                .collect()
         })
-        .collect()
+        .unwrap_or_default();
+    // `magi.may_spawn` pre-authorises starting children: `spawn` runs this very binary with `fork`,
+    // gated as a `run` of its own path. Granted by the path the process runs from, so it needs no
+    // machine-specific rule and survives a config reinstall — which a hand-written path does not.
+    if loaded.config.boolean("may_spawn").unwrap_or(false)
+        && let Ok(exe) = std::env::current_exe()
+    {
+        out.push(Grant {
+            verb: "run".to_owned(),
+            scope: Scope::Program {
+                program: exe.display().to_string(),
+            },
+        });
+    }
+    out
 }
 
 /// What the model is told it is, for this session: assembled where the configuration and the
@@ -173,6 +193,24 @@ mod ui_tests {
     #[test]
     fn a_config_that_says_nothing_gets_the_ordinary_terminal() {
         assert_eq!(palette_of(""), magi_tui::colour::STOCK);
+    }
+
+    #[test]
+    fn may_spawn_grants_a_run_of_this_binary_by_its_own_path() {
+        use magi_proto::permit::Scope;
+        let exe = std::env::current_exe()
+            .expect("a test binary path")
+            .display()
+            .to_string();
+        // Off: nothing extra is granted.
+        assert!(grants(&from_lua("")).is_empty());
+        // On: a `run` of exactly this process's own binary, so `spawn`'s `magi fork` is pre-approved.
+        let granted = grants(&from_lua("magi.may_spawn = true"));
+        assert!(
+            granted.iter().any(|g| g.verb == "run"
+                && matches!(&g.scope, Scope::Program { program } if *program == exe)),
+            "may_spawn should grant run of `{exe}`, got {granted:?}"
+        );
     }
 
     #[test]

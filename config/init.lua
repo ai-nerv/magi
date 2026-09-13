@@ -80,6 +80,13 @@ magi.allow = {
   { verb = "run", program = "melchior" },
 }
 
+-- May a session start children with `spawn` without asking each time? `spawn` runs this very binary
+-- with `fork`, and granting that by hand means naming its install path -- which differs per machine
+-- and is wiped by a config reinstall. This flag grants it by the path the process is running from,
+-- so headless agents (no one at a keyboard to approve) can spawn their crews. The tree stays capped
+-- by melchior's depth and breadth limits. Privileged: a project's own file cannot turn it on.
+magi.may_spawn = true
+
 -- Environment every process magi starts is given, on top of what it inherits. `OSLO_PROFILE`
 -- is set to "magi" whether or not this says so, and naming it here overrides that.
 --

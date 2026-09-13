@@ -385,7 +385,7 @@ pub struct Trusted {
 
 /// Settings a project's own file may not assign: `confine` is the wall, `allow` is what may happen
 /// without asking, and a file that could set `trusted` could exempt itself.
-const PRIVILEGED_SETTINGS: &[&str] = &["confine", "allow", "trusted", "isolation"];
+const PRIVILEGED_SETTINGS: &[&str] = &["confine", "allow", "trusted", "isolation", "may_spawn"];
 
 impl Trusted {
     /// Record what has been declared so far.
