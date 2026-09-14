@@ -37,7 +37,7 @@ pub enum Scan {
     Resting,
     /// Something is in the prompt: two comets shuttling the long edges in step.
     Holding,
-    /// A turn is running: a dim band sweeps the box left to right, both edges in step.
+    /// A turn is running: two dim bands bounce across the box, both edges in step.
     Working,
     /// A floating pane has the keyboard: four comets, evenly spaced. Four because it is a bigger box
     /// and two heads on a border twice the length leave most of it unlit.
