@@ -148,10 +148,10 @@ pub const SIBLINGS: [(&str, &str); 3] =
 pub const SIBLING_WIDTH: u16 = 7;
 pub const SIBLING_STEP: u16 = 8;
 
-/// `[● MEL] [● BAL] [● CAS]`: a dot each, green when that sibling is up and red when it is not; the
-/// one whose menu is open drawn inverted, the way the name shows it is a button.
-/// `stirred` is how lit each one still is from just having done something, 1 to 0: the dot and its
-/// name flash towards that sibling's own hue and fade back.
+/// `[● MEL] [● BAL] [● CAS]`: a dot each, in the footer's own colour at rest and red for a sibling
+/// that is down; the one whose menu is open drawn inverted, the way the name shows it is a button.
+/// `stirred` is how lit each one still is from just having done something, 1 to 0: only its dot
+/// flashes, towards that sibling's own hue, and fades back.
 #[must_use]
 pub fn siblings(up: [bool; 3], open: Option<usize>, stirred: [f32; 3]) -> Vec<Span<'static>> {
     let dim = Style::default().fg(colour::dim());
@@ -165,25 +165,21 @@ pub fn siblings(up: [bool; 3], open: Option<usize>, stirred: [f32; 3]) -> Vec<Sp
         } else {
             Modifier::empty()
         };
-        let dot = if up[nth] {
-            colour::success()
+        let rest = if up[nth] {
+            colour::dim()
         } else {
             colour::error()
         };
-        let tint = |from| match stirred[nth] {
-            by if by > 0.0 => colour::blend(from, stir_hue(nth), by),
-            _ => from,
+        let dot = match stirred[nth] {
+            by if by > 0.0 => colour::blend(rest, stir_hue(nth), by),
+            _ => rest,
         };
-        let label = Style::default().fg(tint(colour::dim()));
-        spans.push(Span::styled("[", label.add_modifier(lit)));
-        // Not reversed: that would swap the dot's green or red into the background. The segment's
-        // own background instead, with the dot still in its colour.
-        let mut ink = Style::default().fg(tint(dot));
-        if open == Some(nth) {
-            ink = ink.bg(colour::dim());
-        }
-        spans.push(Span::styled("●", ink));
-        spans.push(Span::styled(format!(" {short}]"), label.add_modifier(lit)));
+        spans.push(Span::styled("[", dim.add_modifier(lit)));
+        spans.push(Span::styled(
+            "●",
+            Style::default().fg(dot).add_modifier(lit),
+        ));
+        spans.push(Span::styled(format!(" {short}]"), dim.add_modifier(lit)));
     }
     spans
 }
@@ -207,15 +203,12 @@ mod siblings_tests {
 
     #[test]
     fn a_lit_segment_is_one_background_dot_included() {
-        // The rest is dim reversed, whose background is dim; the dot has to match it.
+        // The whole segment is dim reversed, the dot with it, so its ground matches the rest.
         let lit = siblings([true; 3], Some(0), [0.0; 3]);
-        let dot = lit.iter().find(|s| s.content == "●").expect("a dot");
-        assert_eq!(dot.style.bg, Some(colour::dim()));
-        assert_eq!(dot.style.fg, Some(colour::success()), "still green");
-        assert!(!dot.style.add_modifier.contains(Modifier::REVERSED));
-        let label = lit.iter().find(|s| s.content.contains("MEL")).expect("MEL");
-        assert_eq!(label.style.fg, Some(colour::dim()));
-        assert!(label.style.add_modifier.contains(Modifier::REVERSED));
+        for piece in lit.iter().take(3) {
+            assert_eq!(piece.style.fg, Some(colour::dim()), "{piece:?}");
+            assert!(piece.style.add_modifier.contains(Modifier::REVERSED));
+        }
     }
 
     #[test]
@@ -234,7 +227,7 @@ mod siblings_tests {
     }
 
     #[test]
-    fn a_dot_is_green_when_up_and_red_when_not() {
+    fn a_dot_rests_in_the_footer_colour_and_is_red_only_when_down() {
         let dots: Vec<_> = siblings([true, false, true], None, [0.0; 3])
             .into_iter()
             .filter(|s| s.content == "●")
@@ -243,17 +236,18 @@ mod siblings_tests {
         assert_eq!(
             dots,
             vec![
-                Some(colour::success()),
+                Some(colour::dim()),
                 Some(colour::error()),
-                Some(colour::success())
+                Some(colour::dim())
             ]
         );
     }
 
     #[test]
-    fn a_stirred_sibling_flashes_its_own_hue_and_rests_as_it_was() {
-        let dot = |stirred: [f32; 3]| {
-            siblings([true; 3], None, stirred)
+    fn only_the_dot_of_a_stirred_sibling_flashes_its_own_hue() {
+        let drawn = |stirred: [f32; 3]| siblings([true; 3], None, stirred);
+        let dot = |stirred| {
+            drawn(stirred)
                 .into_iter()
                 .filter(|s| s.content == "●")
                 .nth(2)
@@ -261,12 +255,15 @@ mod siblings_tests {
         };
         assert_eq!(
             dot([0.0, 0.0, 1.0]),
-            Some(colour::blend(colour::success(), colour::warning(), 1.0))
+            Some(colour::blend(colour::dim(), colour::warning(), 1.0))
         );
-        assert_eq!(
-            dot([1.0, 1.0, 0.0]),
-            Some(colour::success()),
-            "only its own"
+        assert_eq!(dot([1.0, 1.0, 0.0]), Some(colour::dim()), "only its own");
+        assert!(
+            drawn([1.0; 3])
+                .iter()
+                .filter(|s| s.content != "●")
+                .all(|s| s.style.fg == Some(colour::dim())),
+            "the brackets and the name stay as they are"
         );
     }
 
