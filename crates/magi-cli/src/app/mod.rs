@@ -254,15 +254,38 @@ impl App {
         }
     }
 
-    /// How lit each dot still is: 1 the moment it was stirred, down to 0 once the flash is over.
+    /// Each dot's light this frame, like a drive's activity lamp: lit the moment its sibling works,
+    /// then blinking at random while it stays busy, more often the more recently it worked, and dark
+    /// once it has stopped.
     #[must_use]
     pub fn stirring(&self) -> [f32; 3] {
-        const FLASH_SECS: f32 = 0.6;
-        self.stirred.map(|at| {
-            at.map_or(0.0, |at| {
-                1.0 - (at.elapsed().as_secs_f32() / FLASH_SECS).min(1.0)
-            })
-        })
+        const BUSY_SECS: f32 = 1.2;
+        let mut lit = [0.0; 3];
+        for (nth, at) in self.stirred.iter().enumerate() {
+            let Some(at) = at else { continue };
+            let since = at.elapsed().as_secs_f32();
+            if since >= BUSY_SECS {
+                continue;
+            }
+            let busy = 1.0 - since / BUSY_SECS;
+            if since < 0.08 || Self::roll(self.scan_phase, nth) < 0.3 + 0.5 * busy {
+                lit[nth] = 1.0;
+            }
+        }
+        lit
+    }
+
+    /// A fresh number in `0..1` for each frame and dot: the flicker's dice, the same on a redraw.
+    fn roll(frame: usize, nth: usize) -> f32 {
+        let seed = u64::try_from(frame)
+            .unwrap_or(0)
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ u64::try_from(nth + 1)
+                .unwrap_or(1)
+                .wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        let mixed = (seed ^ (seed >> 31)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        let mixed = mixed ^ (mixed >> 29);
+        f32::from(u16::try_from(mixed % 1000).unwrap_or(0)) / 1000.0
     }
 
     #[must_use]
