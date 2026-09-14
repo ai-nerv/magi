@@ -168,6 +168,7 @@ pub async fn run(
     let mut was_busy = false;
     // Compared rather than sent every frame, so a redraw per keystroke is not a command per keystroke.
     let mut told_room = None;
+    let mut told_float: Option<(u16, u16)> = None;
     loop {
         // Read each pass rather than tracked here: the connection lives in another task.
         let attached_now = attached.load(Ordering::Relaxed);
@@ -203,6 +204,12 @@ pub async fn run(
                     },
                 )
                 .await;
+            }
+            // And the float's inside, which a surface asking for the float is given whole.
+            let (rows, cols) = float_room();
+            if told_float != Some((rows, cols)) {
+                told_float = Some((rows, cols));
+                direct(&mut app, &command_tx, UiCommand::FloatSized { rows, cols }).await;
             }
             // Read out of the frame that was just drawn, which is what `draw` hands back. Not
             // `current_buffer_mut`: ratatui ends every draw with `swap_buffers`, which resets the
@@ -256,10 +263,31 @@ pub async fn run(
                         // forwarded, because a tenant can hold a pty where `esc` is the program's.
                         if let Some(held) = app.holding() {
                             let id = held.id.clone();
+                            // magi's own, never the tenant's: ctrl+c ends it, ctrl+d goes nowhere.
+                            let ctrl = key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL);
+                            if ctrl && matches!(key.code, crossterm::event::KeyCode::Char('c' | 'd'))
+                            {
+                                if key.code == crossterm::event::KeyCode::Char('c')
+                                    && key.kind == crossterm::event::KeyEventKind::Press
+                                {
+                                    app.surface = None;
+                                    escaped = false;
+                                    direct(&mut app, &command_tx, UiCommand::Unsurface { id })
+                                        .await;
+                                }
+                                continue;
+                            }
                             if key.kind != crossterm::event::KeyEventKind::Release {
                                 if key.code == crossterm::event::KeyCode::Esc {
+                                    // Ended at the session too, or its program runs on unseen.
                                     if escaped {
                                         app.surface = None;
+                                        escaped = false;
+                                        direct(&mut app, &command_tx, UiCommand::Unsurface { id })
+                                            .await;
+                                        continue;
                                     }
                                     escaped = true;
                                 } else {
@@ -728,6 +756,15 @@ pub async fn run(
 
 fn terminal_size() -> (u16, u16) {
     crossterm::terminal::size().unwrap_or((80, 24))
+}
+
+/// The float's inside at this terminal size, as `(rows, cols)`: all a float surface is given.
+pub(super) fn float_room() -> (u16, u16) {
+    let (width, height) = terminal_size();
+    let inside = magi_tui::pane::Pane::surface_inside(magi_tui::pane::Pane::area(
+        ratatui::layout::Rect::new(0, 0, width, height),
+    ));
+    (inside.height, inside.width)
 }
 
 /// The line, if any, a watched agent's phase change is worth putting in front of a person. Only the

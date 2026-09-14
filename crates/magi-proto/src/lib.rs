@@ -339,6 +339,9 @@ pub enum HarnessEvent {
         rows: u16,
         /// What it is for, for a UI that cannot draw it.
         about: String,
+        /// Rows in the prompt box, or the whole float.
+        #[serde(default)]
+        place: crate::tooling::Place,
     },
     Drew {
         id: ToolCallId,

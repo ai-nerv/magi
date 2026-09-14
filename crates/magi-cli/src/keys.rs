@@ -113,6 +113,10 @@ pub fn handle(
                 *pane = None;
                 return Action::Dismissed;
             }
+            KeyCode::Char('c') if ctrl => {
+                *pane = None;
+                return Action::Dismissed;
+            }
             KeyCode::Enter if listed => {
                 return open
                     .chosen()
@@ -215,6 +219,10 @@ pub fn handle(
             {
                 *overlay = None;
                 return Action::Redraw;
+            }
+            // Any other list is walked away from as escape does, so a question in it is answered no.
+            if overlay.take().is_some() {
+                return Action::Dismissed;
             }
             editor.clear();
             return Action::Redraw;

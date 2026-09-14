@@ -39,6 +39,10 @@ pub struct Holding {
     /// Whether the screen can report a key being held — the Kitty keyboard protocol. A tenant is
     /// told at open, so one that would wait for a release knows there is never going to be one.
     holds: std::sync::atomic::AtomicBool,
+    /// The float's inside, as the client last reported it: what a surface asking for the float is
+    /// given whole. Zero until one says.
+    float_rows: std::sync::atomic::AtomicU16,
+    float_cols: std::sync::atomic::AtomicU16,
 }
 
 /// One attached client's ability to draw, for as long as it is attached. A guard, because the
@@ -111,7 +115,7 @@ impl Holding {
     }
 
     /// Forget one, so its rows are not held for a session that has moved on.
-    pub(super) fn close(&self, id: &ToolCallId) {
+    pub fn close(&self, id: &ToolCallId) {
         if let Ok(mut typing) = self.typing.lock() {
             typing.remove(id);
         }
@@ -181,6 +185,47 @@ impl Holding {
             None => Some(wanted),
             Some(0) => None,
             Some(room) => Some(wanted.min(room)),
+        }
+    }
+
+    /// Note the float's inside, and tell anything drawing on the screen.
+    pub fn floated(&self, rows: u16, cols: u16) {
+        let taller = self
+            .float_rows
+            .swap(rows, std::sync::atomic::Ordering::Relaxed)
+            != rows;
+        let wider = self
+            .float_cols
+            .swap(cols, std::sync::atomic::Ordering::Relaxed)
+            != cols;
+        if !taller && !wider {
+            return;
+        }
+        if let Ok(typing) = self.typing.lock() {
+            for sender in typing.values() {
+                let _ = sender.send(Nudge::Room(self.across(), self.reports_holds()));
+            }
+        }
+    }
+
+    /// The rows a surface gets where it asked to be drawn: the float whole, once the client has
+    /// said how big it is, or what it asked for of the prompt's room.
+    #[must_use]
+    pub fn grant(&self, wanted: u16, place: magi_proto::tooling::Place) -> Option<u16> {
+        let float = self.float_rows.load(std::sync::atomic::Ordering::Relaxed);
+        match place {
+            magi_proto::tooling::Place::Float if float > 0 => Some(float),
+            _ => self.granting(wanted),
+        }
+    }
+
+    /// How wide a surface drawn at `place` may be.
+    #[must_use]
+    pub fn width(&self, place: magi_proto::tooling::Place) -> u16 {
+        let float = self.float_cols.load(std::sync::atomic::Ordering::Relaxed);
+        match place {
+            magi_proto::tooling::Place::Float if float > 0 => float,
+            _ => self.across(),
         }
     }
 }
@@ -347,6 +392,8 @@ mod screens {
             rows: 8,
             about: "a game".to_owned(),
             tick: Some(60),
+            place: magi_proto::tooling::Place::Prompt,
+            tenant: None,
         };
         assert_eq!(
             holder.hold("dino", &surface, &serde_json::Value::Null),

@@ -157,7 +157,10 @@ impl App {
 pub fn for_screen(command: &UiCommand) -> bool {
     matches!(
         command,
-        UiCommand::Sized { .. } | UiCommand::Keyed { .. } | UiCommand::Moused { .. }
+        UiCommand::Sized { .. }
+            | UiCommand::FloatSized { .. }
+            | UiCommand::Keyed { .. }
+            | UiCommand::Moused { .. }
     )
 }
 

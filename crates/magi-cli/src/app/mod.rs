@@ -94,6 +94,8 @@ pub struct App {
     pub model_hover: bool,
     /// Whether melchior, balthasar and casper are up, in that order, for the footer's three dots.
     pub siblings: [bool; 3],
+    /// When each of those three last did something, for the flash on its dot.
+    pub stirred: [Option<std::time::Instant>; 3],
     /// Where each of those three landed on the footer, for the pointer.
     pub sibling_rects: [Option<ratatui::layout::Rect>; 3],
     /// Which sibling's dot the pointer is on: drawn inverted, the way the name shows it is a button.
@@ -166,6 +168,7 @@ impl App {
             model_rect: None,
             model_hover: false,
             siblings: [false; 3],
+            stirred: [None; 3],
             sibling_rects: [None; 3],
             sibling_hover: None,
             folded: std::collections::BTreeSet::new(),
@@ -211,6 +214,55 @@ impl App {
     #[must_use]
     pub fn scan_tick(&self) -> usize {
         self.scan_phase / usize::from(magi_tui::metric::NORMAL)
+    }
+
+    /// Flash a sibling's dot: 0 melchior, 1 balthasar, 2 casper.
+    pub fn stir(&mut self, nth: usize) {
+        if let Some(at) = self.stirred.get_mut(nth) {
+            *at = Some(std::time::Instant::now());
+        }
+    }
+
+    /// Flash whichever siblings an event says just worked: the model turns through melchior, the
+    /// scribe files every entry with balthasar, and every tool but memory's is casper's.
+    pub(super) fn stir_for(&mut self, event: &HarnessEvent) {
+        let memory = |name: &str| matches!(name, "recall" | "remember" | "forget" | "why");
+        let (mel, bal, cas) = match event {
+            HarnessEvent::AssistantStarted { .. } | HarnessEvent::AssistantDelta { .. } => {
+                (true, false, false)
+            }
+            HarnessEvent::MessageArrived { .. } => (true, true, false),
+            HarnessEvent::UserMessage { .. }
+            | HarnessEvent::AssistantEnded { .. }
+            | HarnessEvent::Compacted { .. } => (false, true, false),
+            HarnessEvent::ToolCallStarted { name, .. } => (false, memory(name), !memory(name)),
+            HarnessEvent::ToolCallEnded { id, .. } => {
+                let remembered = self
+                    .tool_mut(id)
+                    .is_some_and(|entry| matches!(entry, Entry::Tool { name, .. } if memory(name)));
+                (false, true, !remembered)
+            }
+            HarnessEvent::Surfaced { .. } | HarnessEvent::PermissionAsked { .. } => {
+                (false, false, true)
+            }
+            _ => (false, false, false),
+        };
+        for (nth, stirred) in [mel, bal, cas].into_iter().enumerate() {
+            if stirred {
+                self.stir(nth);
+            }
+        }
+    }
+
+    /// How lit each dot still is: 1 the moment it was stirred, down to 0 once the flash is over.
+    #[must_use]
+    pub fn stirring(&self) -> [f32; 3] {
+        const FLASH_SECS: f32 = 0.6;
+        self.stirred.map(|at| {
+            at.map_or(0.0, |at| {
+                1.0 - (at.elapsed().as_secs_f32() / FLASH_SECS).min(1.0)
+            })
+        })
     }
 
     #[must_use]

@@ -144,6 +144,8 @@ mod frames {
             rows: 5,
             about: "a permission for `rm -rf build`".to_owned(),
             tick: None,
+            place: crate::tooling::Place::Prompt,
+            tenant: None,
         });
         let wire = serde_json::to_string(&asked).expect("encodes");
         assert!(wire.contains(r#""shown":"surface""#), "{wire}");

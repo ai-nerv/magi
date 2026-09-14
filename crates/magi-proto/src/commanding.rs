@@ -15,13 +15,17 @@ pub enum UiCommand {
     },
     /// How big the screen is, and what its keyboard can say. Sent at attach and on resize.
     Sized {
-        /// Rows a surface could be drawn in: the room left once the transcript, footer and prompt
-        /// have taken theirs, not the window height. `None` where the sender has not measured.
+        /// Rows a surface could be drawn in once the chrome has its share; `None` where unmeasured.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rows: Option<u16>,
         cols: u16,
         #[serde(default)]
         holds: bool,
+    },
+    /// The float's inside, all a surface that asked for the float is given.
+    FloatSized {
+        rows: u16,
+        cols: u16,
     },
     SubmitPrompt {
         text: String,
@@ -67,6 +71,10 @@ pub enum UiCommand {
         button: Option<crate::surfacing::Button>,
         row: u16,
         col: u16,
+    },
+    /// The person took the screen back: the surface ends and its program with it.
+    Unsurface {
+        id: ToolCallId,
     },
     DeclareNeeds,
     /// Take on the permissions a parent session holds, when it accepts this one as its child.

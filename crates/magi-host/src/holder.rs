@@ -67,7 +67,7 @@ impl magi_tools::holding::Holds for Holder {
             return None;
         }
         // A window too short for any of it is the same case as nobody looking.
-        let granted = self.held.granting(surface.rows)?;
+        let granted = self.held.grant(surface.rows, surface.place)?;
         let n = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let id = ToolCallId::new(format!("s{n}"));
         let keys = self.held.opening(id.clone())?;
@@ -79,6 +79,7 @@ impl magi_tools::holding::Holds for Holder {
             tool: tool.to_owned(),
             rows: granted,
             about: surface.about.clone(),
+            place: surface.place,
         });
 
         let answered = self.pump(&id, tool, surface, granted, args, &keys);
@@ -105,7 +106,8 @@ impl Holder {
     ) -> Option<String> {
         let mut child = std::process::Command::new(&self.program)
             .arg("surface")
-            .arg(tool)
+            // The tenant, where the one that asked handed the screen on to another tool.
+            .arg(surface.tenant.as_deref().unwrap_or(tool))
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
@@ -121,7 +123,7 @@ impl Holder {
         // and the width is whatever the window happens to be, measured by the client.
         let opened = ToSurface::Open {
             rows: granted,
-            cols: self.held.across(),
+            cols: self.held.width(surface.place),
             holds: self.held.reports_holds(),
             args: args.clone(),
         };
@@ -154,8 +156,14 @@ impl Holder {
                 // never grows past what the tool asked for, and it shrinks to nothing, because rows
                 // below the fold can be neither seen nor aimed at.
                 Ok(Nudge::Room(cols, holds)) => ToSurface::Resize {
-                    rows: self.held.granting(surface.rows).unwrap_or_default(),
-                    cols,
+                    rows: self
+                        .held
+                        .grant(surface.rows, surface.place)
+                        .unwrap_or_default(),
+                    cols: match surface.place {
+                        magi_proto::tooling::Place::Float => self.held.width(surface.place),
+                        magi_proto::tooling::Place::Prompt => cols,
+                    },
                     holds,
                 },
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) if surface.tick.is_some() => {
@@ -256,6 +264,8 @@ mod tests {
             rows: 8,
             about: "a game".to_owned(),
             tick: Some(60),
+            place: magi_proto::tooling::Place::Prompt,
+            tenant: None,
         };
         assert_eq!(
             holder.hold("dino", &surface, &serde_json::Value::Null),
@@ -290,6 +300,8 @@ mod tests {
             rows: 8,
             about: "a game".to_owned(),
             tick: None,
+            place: magi_proto::tooling::Place::Prompt,
+            tenant: None,
         };
         let _ = holder.hold("dino", &surface, &serde_json::Value::Null);
         let granted = seen
@@ -311,6 +323,8 @@ mod tests {
             rows: 8,
             about: "a game".to_owned(),
             tick: None,
+            place: magi_proto::tooling::Place::Prompt,
+            tenant: None,
         };
         assert_eq!(
             holder.hold("dino", &surface, &serde_json::Value::Null),

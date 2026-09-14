@@ -63,7 +63,12 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
         .showing(app.overlay.as_ref().map(magi_tui::overlay::Overlay::key));
     // Rows a tool is holding go inside the box, where a picker, a permission and a completion
     // already go. It wins over an overlay, because a surface has the keyboard while it is up.
-    let mut menu = match app.holding() {
+    // Only a surface drawn in the prompt takes the menu's slot; one that asked for the float is
+    // drawn there instead, further down.
+    let in_prompt = app
+        .holding()
+        .filter(|held| held.place == magi_proto::tooling::Place::Prompt);
+    let mut menu = match in_prompt {
         Some(held) if !held.drawn.is_empty() => {
             magi_tui::painted::lines(&held.drawn, ratatui::style::Style::default())
         }
@@ -181,9 +186,13 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
         );
     }
 
-    // The middle of the footer says whether the three siblings are up: a dot each, green or red.
-    let mut status_line =
-        ratatui::text::Line::from(footer::siblings(app.siblings, app.sibling_hover));
+    // The middle of the footer says whether the three siblings are up, a dot each, green or red,
+    // and flashes the one that just did something.
+    let mut status_line = ratatui::text::Line::from(footer::siblings(
+        app.siblings,
+        app.sibling_hover,
+        app.stirring(),
+    ));
     if !app.connected {
         status_line.spans.extend(status::queued(app.queued));
     }
@@ -195,11 +204,16 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
         width: columns.end - columns.start,
         height: 1,
     });
-    app.surface_rect = app.holding().map(|_| Rect {
-        x: prompt_area.x + prompt::INSET,
-        y: prompt_area.y + u16::try_from(prompt_lines.menu.start).unwrap_or(u16::MAX),
-        width: area.width.saturating_sub(prompt::INSET + 1),
-        height: u16::try_from(prompt_lines.menu.len()).unwrap_or(u16::MAX),
+    app.surface_rect = app.holding().map(|held| match held.place {
+        magi_proto::tooling::Place::Float => {
+            magi_tui::pane::Pane::surface_inside(magi_tui::pane::Pane::area(area))
+        }
+        magi_proto::tooling::Place::Prompt => Rect {
+            x: prompt_area.x + prompt::INSET,
+            y: prompt_area.y + u16::try_from(prompt_lines.menu.start).unwrap_or(u16::MAX),
+            width: area.width.saturating_sub(prompt::INSET + 1),
+            height: u16::try_from(prompt_lines.menu.len()).unwrap_or(u16::MAX),
+        },
     });
     frame.render_widget(Paragraph::new(prompt_lines.lines), prompt_area);
     frame.render_widget(
@@ -261,6 +275,32 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
         frame.render_widget(
             Paragraph::new(open.framed(panel.width, page, app.tick, pane_scan)),
             panel,
+        );
+    }
+
+    // A surface that asked for the float draws there: framed, titled with its tool, filled with
+    // whatever it drew. Over any view, because while it is up it has the keyboard.
+    if let Some(held) = app
+        .holding()
+        .filter(|held| held.place == magi_proto::tooling::Place::Float)
+    {
+        let panel = magi_tui::pane::Pane::area(area);
+        frame.render_widget(ratatui::widgets::Clear, panel);
+        frame.render_widget(
+            ratatui::widgets::Block::bordered()
+                .border_type(ratatui::widgets::BorderType::Rounded)
+                .border_style(ratatui::style::Style::default().fg(magi_tui::colour::accent()))
+                .title(format!(" {} ", held.tool)),
+            panel,
+        );
+        let lines = if held.drawn.is_empty() {
+            vec![ratatui::text::Line::from(held.about.clone())]
+        } else {
+            magi_tui::painted::lines(&held.drawn, ratatui::style::Style::default())
+        };
+        frame.render_widget(
+            Paragraph::new(lines),
+            magi_tui::pane::Pane::surface_inside(panel),
         );
     }
 
@@ -522,6 +562,13 @@ mod where_the_rows_landed {
     const MARK: &str = "second-row";
 
     fn played(cursor: Option<At>) -> (App, Terminal<TestBackend>) {
+        played_in(cursor, magi_proto::tooling::Place::Prompt)
+    }
+
+    fn played_in(
+        cursor: Option<At>,
+        place: magi_proto::tooling::Place,
+    ) -> (App, Terminal<TestBackend>) {
         let mut app = App::new();
         app.apply(HarnessEvent::Surfaced {
             cursor: Cursor(1),
@@ -529,6 +576,7 @@ mod where_the_rows_landed {
             tool: "dino".to_owned(),
             rows: 2,
             about: "a game".to_owned(),
+            place,
         });
         app.apply(HarnessEvent::Drew {
             id: ToolCallId::new("s0"),
@@ -578,6 +626,22 @@ mod where_the_rows_landed {
             drawn[mark],
             rect.x
         );
+    }
+
+    #[test]
+    fn a_float_surface_is_drawn_in_the_float_and_the_rect_follows_it() {
+        let (app, terminal) = played_in(None, magi_proto::tooling::Place::Float);
+        let drawn = rows(&terminal);
+        let rect = app.surface_rect.expect("the rows were recorded");
+        let inside = magi_tui::pane::Pane::surface_inside(magi_tui::pane::Pane::area(
+            ratatui::layout::Rect::new(0, 0, 60, 16),
+        ));
+        assert_eq!(rect, inside, "the whole of the float's inside");
+        let mark = drawn
+            .iter()
+            .position(|row| row.contains(MARK))
+            .expect("the tenant's second row is on screen");
+        assert_eq!(usize::from(rect.y) + 1, mark, "{drawn:#?}");
     }
 
     #[test]

@@ -66,6 +66,8 @@ pub(super) async fn connection_loop(
                     holds: crate::terminal::reports_holds(),
                 })
                 .await;
+            let (rows, cols) = super::float_room();
+            let _ = writer.write(&UiCommand::FloatSized { rows, cols }).await;
         }
 
         // Reads run in their own task because `FrameReader::read` is not cancel-safe: it takes a

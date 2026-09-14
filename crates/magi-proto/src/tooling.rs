@@ -84,6 +84,31 @@ pub struct Surface {
     /// answers input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tick: Option<u16>,
+    /// Where it is drawn: rows in the prompt box, or the whole float over the conversation.
+    #[serde(default, skip_serializing_if = "Place::is_prompt")]
+    pub place: Place,
+    /// The tool whose surface fills it, when not the one that asked: a picker handing the screen
+    /// over to what was picked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
+}
+
+/// Where a surface is drawn.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Place {
+    /// Rows in the prompt box: as many as it asked for, of what fits.
+    #[default]
+    Prompt,
+    /// The whole float, as big as the terminal allows; what it asked for is not consulted.
+    Float,
+}
+
+impl Place {
+    #[must_use]
+    pub fn is_prompt(&self) -> bool {
+        *self == Self::Prompt
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

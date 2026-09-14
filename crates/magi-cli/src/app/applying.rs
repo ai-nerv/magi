@@ -15,6 +15,7 @@ impl App {
         // arms that happen to be interesting -- an arm added later would otherwise be missing
         // from the timeline and nothing would say so.
         self.timeline.note(&event);
+        self.stir_for(&event);
         match event {
             HarnessEvent::SessionSnapshot {
                 cursor: _,
@@ -195,8 +196,14 @@ impl App {
                 tool,
                 rows,
                 about,
+                place,
                 ..
-            } => self.surfaced(id, tool, rows, about),
+            } => {
+                self.surfaced(id, tool, rows, about);
+                if let Some(held) = self.surface.as_mut() {
+                    held.place = place;
+                }
+            }
             HarnessEvent::Drew { id, lines, cursor } => self.drew(&id, lines, cursor),
             HarnessEvent::Unsurfaced { id, .. } => self.unsurfaced(&id),
             // A permission answered on a surface. Remembered here because a session lends what it

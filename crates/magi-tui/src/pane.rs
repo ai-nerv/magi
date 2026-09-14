@@ -237,6 +237,17 @@ impl Pane {
         area.height.saturating_sub(4) as usize
     }
 
+    /// Where a surface that asked for the float draws: inside the border, a column in from each side.
+    #[must_use]
+    pub fn surface_inside(area: Rect) -> Rect {
+        Rect {
+            x: area.x + 2,
+            y: area.y + 1,
+            width: area.width.saturating_sub(4),
+            height: area.height.saturating_sub(2),
+        }
+    }
+
     /// The heading drawn inside the panel: what this is, and where in it you are.
     #[must_use]
     pub fn heading(&self, page: usize) -> String {

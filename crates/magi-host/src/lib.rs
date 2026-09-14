@@ -492,6 +492,10 @@ async fn connection(
                     Some(UiCommand::Sized { rows, cols, holds }) => {
                         person.surfaces.sized(rows, cols, holds);
                     }
+                    // And the float's inside, which a surface asking for the float is given whole.
+                    Some(UiCommand::FloatSized { rows, cols }) => {
+                        person.surfaces.floated(rows, cols);
+                    }
                     // A key aimed at rows a tool is holding, not interpreted on the way through.
                     Some(UiCommand::Keyed { id, key, state }) => {
                         person.surfaces.keyed(&id, key, state);
@@ -500,6 +504,7 @@ async fn connection(
                     Some(UiCommand::Moused { id, kind, button, row, col }) => {
                         person.surfaces.moused(&id, kind, button, row, col);
                     }
+                    Some(UiCommand::Unsurface { id }) => person.surfaces.close(&id),
                     Some(UiCommand::Interrupt) => {
                         // Set here as well as by the turn, so a stop shows at once rather than
                         // once the provider notices.

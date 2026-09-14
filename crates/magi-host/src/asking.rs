@@ -186,6 +186,8 @@ impl Asker {
             about: format!("{tool} wants to {} {}", action.verb(), action.subject()),
             // No tick: a prompt redraws when a key arrives and at no other time.
             tick: None,
+            place: magi_proto::tooling::Place::Prompt,
+            tenant: None,
         };
         let chosen = holds.hold(
             PROMPT,

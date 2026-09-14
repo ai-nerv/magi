@@ -150,8 +150,10 @@ pub const SIBLING_STEP: u16 = 8;
 
 /// `[● MEL] [● BAL] [● CAS]`: a dot each, green when that sibling is up and red when it is not; the
 /// one whose menu is open drawn inverted, the way the name shows it is a button.
+/// `stirred` is how lit each one still is from just having done something, 1 to 0: the dot and its
+/// name flash towards that sibling's own hue and fade back.
 #[must_use]
-pub fn siblings(up: [bool; 3], open: Option<usize>) -> Vec<Span<'static>> {
+pub fn siblings(up: [bool; 3], open: Option<usize>, stirred: [f32; 3]) -> Vec<Span<'static>> {
     let dim = Style::default().fg(colour::dim());
     let mut spans = Vec::new();
     for (nth, (short, _)) in SIBLINGS.iter().enumerate() {
@@ -168,17 +170,31 @@ pub fn siblings(up: [bool; 3], open: Option<usize>) -> Vec<Span<'static>> {
         } else {
             colour::error()
         };
-        spans.push(Span::styled("[", dim.add_modifier(lit)));
+        let tint = |from| match stirred[nth] {
+            by if by > 0.0 => colour::blend(from, stir_hue(nth), by),
+            _ => from,
+        };
+        let label = Style::default().fg(tint(colour::dim()));
+        spans.push(Span::styled("[", label.add_modifier(lit)));
         // Not reversed: that would swap the dot's green or red into the background. The segment's
         // own background instead, with the dot still in its colour.
-        let mut ink = Style::default().fg(dot);
+        let mut ink = Style::default().fg(tint(dot));
         if open == Some(nth) {
             ink = ink.bg(colour::dim());
         }
         spans.push(Span::styled("●", ink));
-        spans.push(Span::styled(format!(" {short}]"), dim.add_modifier(lit)));
+        spans.push(Span::styled(format!(" {short}]"), label.add_modifier(lit)));
     }
     spans
+}
+
+/// What each sibling flashes: melchior violet, balthasar cyan, casper orange.
+fn stir_hue(nth: usize) -> ratatui::style::Color {
+    match nth {
+        0 => colour::accent(),
+        1 => colour::code_type(),
+        _ => colour::warning(),
+    }
 }
 
 #[cfg(test)]
@@ -192,7 +208,7 @@ mod siblings_tests {
     #[test]
     fn a_lit_segment_is_one_background_dot_included() {
         // The rest is dim reversed, whose background is dim; the dot has to match it.
-        let lit = siblings([true; 3], Some(0));
+        let lit = siblings([true; 3], Some(0), [0.0; 3]);
         let dot = lit.iter().find(|s| s.content == "●").expect("a dot");
         assert_eq!(dot.style.bg, Some(colour::dim()));
         assert_eq!(dot.style.fg, Some(colour::success()), "still green");
@@ -204,7 +220,7 @@ mod siblings_tests {
 
     #[test]
     fn three_segments_one_dot_each_at_fixed_columns() {
-        let drawn = text(&siblings([true, false, true], None));
+        let drawn = text(&siblings([true, false, true], None, [0.0; 3]));
         assert_eq!(drawn, "[● MEL] [● BAL] [● CAS]");
         for (nth, (short, _)) in SIBLINGS.iter().enumerate() {
             let at = usize::from(SIBLING_STEP) * nth;
@@ -219,7 +235,7 @@ mod siblings_tests {
 
     #[test]
     fn a_dot_is_green_when_up_and_red_when_not() {
-        let dots: Vec<_> = siblings([true, false, true], None)
+        let dots: Vec<_> = siblings([true, false, true], None, [0.0; 3])
             .into_iter()
             .filter(|s| s.content == "●")
             .map(|s| s.style.fg)
@@ -235,13 +251,33 @@ mod siblings_tests {
     }
 
     #[test]
+    fn a_stirred_sibling_flashes_its_own_hue_and_rests_as_it_was() {
+        let dot = |stirred: [f32; 3]| {
+            siblings([true; 3], None, stirred)
+                .into_iter()
+                .filter(|s| s.content == "●")
+                .nth(2)
+                .and_then(|s| s.style.fg)
+        };
+        assert_eq!(
+            dot([0.0, 0.0, 1.0]),
+            Some(colour::blend(colour::success(), colour::warning(), 1.0))
+        );
+        assert_eq!(
+            dot([1.0, 1.0, 0.0]),
+            Some(colour::success()),
+            "only its own"
+        );
+    }
+
+    #[test]
     fn the_middle_lands_where_the_pointer_is_told() {
         let data = FooterData {
             identity: "p/lead/xi".into(),
             model: "some/model".into(),
             ..Default::default()
         };
-        let middle = siblings([true; 3], None);
+        let middle = siblings([true; 3], None, [0.0; 3]);
         let said = middle.iter().map(|s| s.content.chars().count()).sum();
         let at = middle_column(&data, said, 120).expect("fits on a wide screen");
         let row: String = render(&data, &middle, 120)[0]

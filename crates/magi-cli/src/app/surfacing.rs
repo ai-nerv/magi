@@ -18,6 +18,8 @@ pub struct Surfacing {
     /// Where it asked for the terminal's own cursor, in its own coordinates. `None` unless the
     /// tenant draws a field somebody types into.
     pub cursor: Option<magi_proto::surfacing::At>,
+    /// Rows in the prompt box, or the whole float.
+    pub place: magi_proto::tooling::Place,
 }
 
 impl super::App {
@@ -30,6 +32,7 @@ impl super::App {
             about,
             drawn: Vec::new(),
             cursor: None,
+            place: magi_proto::tooling::Place::Prompt,
         });
     }
 

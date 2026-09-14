@@ -45,6 +45,8 @@ mod tests {
             rows: 8,
             about: "the dinosaur game".to_owned(),
             tick: Some(60),
+            place: magi_proto::tooling::Place::Prompt,
+            tenant: None,
         };
         assert_eq!(
             Screenless.hold("dino", &surface, &serde_json::Value::Null),
