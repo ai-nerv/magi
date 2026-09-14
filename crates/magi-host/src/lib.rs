@@ -432,6 +432,19 @@ async fn connection(
                                 .await?;
                         }
                     }
+                    Some(UiCommand::SetProvider { provider }) => {
+                        if let Some(refusal) =
+                            switch_provider(&session, worker, catalog, person, scribe, provider)
+                                .await
+                        {
+                            writer
+                                .write(&HarnessEvent::Refused {
+                                    cursor: session.lock().await.cursor(),
+                                    message: refusal,
+                                })
+                                .await?;
+                        }
+                    }
                     Some(UiCommand::SetThinking { level }) => {
                         if let Some(refusal) =
                             switch_thinking(&session, worker, catalog, person, scribe, &level).await
@@ -534,7 +547,7 @@ async fn connection(
 }
 #[path = "switching.rs"]
 mod switching;
-use switching::{switch_model, switch_thinking};
+use switching::{switch_model, switch_provider, switch_thinking};
 // Re-exported: it answers "why is nothing configured", which the UI asks at attach.
 pub use switching::no_model;
 #[path = "turning.rs"]

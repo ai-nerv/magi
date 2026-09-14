@@ -12,6 +12,8 @@ pub struct Session {
     cancel: crate::cancel::Cancel,
     choices: Vec<magi_proto::ModelChoice>,
     thinking: String,
+    /// Which of the model's providers serves it, by routing tag; `None` leaves it to the router.
+    provider: Option<String>,
     /// Which model answers here, when one is configured. Held by the session rather than looked up
     /// by the UI, which would report what is configured now rather than what the daemon is using.
     model: Option<magi_proto::ModelInfo>,
@@ -46,6 +48,7 @@ impl Session {
             model: None,
             choices: Vec::new(),
             thinking: "off".to_owned(),
+            provider: None,
             events,
             phase,
             waiting: Vec::new(),
@@ -141,6 +144,15 @@ impl Session {
     #[must_use]
     pub fn thinking(&self) -> &str {
         &self.thinking
+    }
+
+    pub fn set_provider(&mut self, provider: Option<String>) {
+        self.provider = provider;
+    }
+
+    #[must_use]
+    pub fn provider(&self) -> Option<&str> {
+        self.provider.as_deref()
     }
 
     /// Every token this session has spent, summed from the journal so a resumed session reports

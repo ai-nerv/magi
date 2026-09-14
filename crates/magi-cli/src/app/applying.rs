@@ -213,6 +213,10 @@ impl App {
             HarnessEvent::ModelChanged { model, .. } => {
                 let before = self.model.as_ref().map(|m| m.name.clone());
                 let after = model.as_ref().map(|m| m.name.clone());
+                // Another model has other providers, and the session let go of the choice too.
+                if before != after {
+                    self.provider = None;
+                }
                 if self.started()
                     && before != after
                     && let Some(name) = after

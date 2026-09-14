@@ -264,9 +264,7 @@ pub async fn run(
                         if let Some(held) = app.holding() {
                             let id = held.id.clone();
                             // magi's own, never the tenant's: ctrl+c ends it, ctrl+d goes nowhere.
-                            let ctrl = key
-                                .modifiers
-                                .contains(crossterm::event::KeyModifiers::CONTROL);
+                            let ctrl = key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL);
                             if ctrl && matches!(key.code, crossterm::event::KeyCode::Char('c' | 'd'))
                             {
                                 if key.code == crossterm::event::KeyCode::Char('c')

@@ -43,6 +43,8 @@ pub struct App {
     /// As the daemon reported it, not read from the config here — after an edit the two differ.
     pub model: Option<magi_proto::ModelInfo>,
     pub thinking: String,
+    /// Which provider serves the model, by routing tag, as chosen on its card; `None` is the router's.
+    pub provider: Option<String>,
     model_reasons: bool,
     pub choices: Vec<magi_proto::ModelChoice>,
     /// A list or a completion popup. One slot: running a command closes the popup that offered it.
@@ -138,6 +140,7 @@ impl App {
             connected: false,
             model: None,
             thinking: "off".to_owned(),
+            provider: None,
             model_reasons: false,
             choices: Vec::new(),
             overlay: None,

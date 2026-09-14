@@ -23,9 +23,20 @@ fn card<'a>(reasons: bool, turns: &'a [Usage], details: Known<'a>) -> Card<'a> {
         context_window: 128_000,
         reasons,
         thinking: "medium",
+        provider: None,
         turns,
         details,
         width: 70,
+    }
+}
+
+fn serving(provider: &str, tag: &str, price: [f64; 4]) -> Endpoint {
+    Endpoint {
+        provider: provider.to_owned(),
+        tag: Some(tag.to_owned()),
+        price,
+        context: Some(128_000),
+        ..Endpoint::default()
     }
 }
 
@@ -38,17 +49,19 @@ fn published() -> Details {
         price: [0.3, 1.2, 0.03, 0.0],
         benchmarks: vec![("coding".to_owned(), 50.0)],
         endpoints: vec![
+            serving("Slow", "slow", [0.5, 2.0, 0.0, 0.0]),
             Endpoint {
-                provider: "Slow".to_owned(),
-                quantization: None,
-                uptime: Some(90.0),
-            },
-            Endpoint {
-                provider: "DeepInfra".to_owned(),
                 quantization: Some("fp4".to_owned()),
-                uptime: Some(99.5),
+                throughput: Some(85.0),
+                ..serving("DeepInfra", "deepinfra/fp4", [0.3, 1.2, 0.0, 0.0])
             },
         ],
+        tokenizer: Some("DeepSeek".to_owned()),
+        inputs: vec!["text".to_owned()],
+        outputs: vec!["text".to_owned()],
+        features: vec!["tools".to_owned(), "reasoning".to_owned()],
+        created: Some(1_700_000_000),
+        moderated: Some(false),
     }
 }
 
@@ -68,13 +81,52 @@ fn it_says_which_model_and_where_it_comes_from() {
 }
 
 #[test]
-fn only_the_settings_can_be_taken() {
+fn every_section_is_set_off_by_a_dashed_rule() {
+    let details = published();
+    let shown = text(&view(&card(
+        true,
+        &[turn(1_000, 100, 0)],
+        Known::Found(&details),
+    )));
+    let rules = shown.iter().filter(|row| row.starts_with("- - - ")).count();
+    assert!(rules >= 6, "{rules} rules in {shown:?}");
+}
+
+#[test]
+fn only_the_settings_and_the_providers_can_be_taken() {
     let details = published();
     let turns = [turn(1_000, 100, 10)];
     let drawn = view(&card(true, &turns, Known::Found(&details)));
     let picked: Vec<&str> = drawn.picks.iter().flatten().map(String::as_str).collect();
-    assert_eq!(picked, ["thinking", "switch"]);
+    assert_eq!(
+        picked,
+        [
+            "thinking",
+            "switch",
+            "provider:",
+            "provider:deepinfra/fp4",
+            "provider:slow"
+        ],
+        "the router first, then the cheapest"
+    );
     assert_eq!(drawn.rows.len(), drawn.picks.len());
+}
+
+#[test]
+fn the_provider_serving_it_is_the_one_marked() {
+    let details = published();
+    let mut chosen = card(true, &[], Known::Found(&details));
+    chosen.provider = Some("slow");
+    let shown = text(&view(&chosen));
+    let row = |name: &str| shown.iter().find(|row| row.contains(name)).cloned();
+    assert!(
+        row("Slow").is_some_and(|row| row.starts_with('◉')),
+        "{shown:?}"
+    );
+    assert!(
+        row("auto").is_some_and(|row| row.starts_with('○')),
+        "{shown:?}"
+    );
 }
 
 #[test]
@@ -106,20 +158,32 @@ fn it_says_while_it_is_asking_and_why_when_it_cannot() {
 }
 
 #[test]
-fn what_the_provider_publishes_is_charted() {
+fn what_is_published_is_shown_and_charted() {
     let details = published();
     let shown = text(&view(&card(true, &[], Known::Found(&details))));
     let has = |needle: &str| shown.iter().any(|row| row.contains(needle));
     assert!(has("A fast model for code."), "{shown:?}");
-    assert!(has("Pricing") && has("$0.30") && has("$1.20"), "{shown:?}");
+    assert!(has("Price") && has("$0.30") && has("$1.20"), "{shown:?}");
     assert!(has("up to 32k"), "{shown:?}");
-    assert!(has("2025-06"), "{shown:?}");
+    assert!(
+        has("2025-06") && has("text → text") && has("DeepSeek"),
+        "{shown:?}"
+    );
+    assert!(has("2023-11-14"), "released: {shown:?}");
+    assert!(has("tools · reasoning"), "{shown:?}");
     assert!(has("Benchmarks") && has("coding"), "{shown:?}");
     assert!(has("█"), "the bars are drawn: {shown:?}");
-    assert!(has("99.50%"), "{shown:?}");
+    assert!(has("85 t/s"), "{shown:?}");
     let first = shown.iter().position(|row| row.contains("DeepInfra"));
     let second = shown.iter().position(|row| row.contains("Slow"));
-    assert!(first < second, "most reliable first: {shown:?}");
+    assert!(first < second, "cheapest first: {shown:?}");
+}
+
+#[test]
+fn a_date_is_read_off_the_epoch() {
+    assert_eq!(published::date(0), "1970-01-01");
+    assert_eq!(published::date(1_700_000_000), "2023-11-14");
+    assert_eq!(published::date(951_782_400), "2000-02-29");
 }
 
 #[test]
@@ -141,12 +205,13 @@ fn a_session_is_drawn_as_columns_a_gauge_and_a_line() {
     ];
     let shown = text(&view(&card(true, &turns, Known::Asking)));
     let has = |needle: &str| shown.iter().any(|row| row.contains(needle));
-    assert!(has("3 turns"), "{shown:?}");
+    assert!(has("Turns") && has("3"), "{shown:?}");
     assert!(
         has("context 16% of 128k"),
         "the gauge, off the last turn: {shown:?}"
     );
-    assert!(has("tokens per turn") && has("█"), "the columns: {shown:?}");
+    assert!(has("Tokens per turn") && has("█"), "the columns: {shown:?}");
+    assert!(has("turn 1") && has("turn 3"), "{shown:?}");
     assert!(charted(&shown), "the window's line: {shown:?}");
     assert!(!has("spent"), "no money unsaid");
 }
@@ -156,15 +221,12 @@ fn money_is_shown_and_charted_where_the_provider_said_it() {
     let turns = [turn(1_000, 100, 1_500), turn(1_000, 100, 2_500)];
     let shown = text(&view(&card(true, &turns, Known::Asking)));
     assert!(
-        shown.iter().any(|row| row.contains("$0.0040 spent")),
-        "{shown:?}"
-    );
-    assert!(
         shown
             .iter()
-            .any(|row| row.contains("money, as it added up")),
+            .any(|row| row.starts_with("Spent") && row.contains("$0.0040")),
         "{shown:?}"
     );
+    assert!(shown.iter().any(|row| row.contains("Spend")), "{shown:?}");
 }
 
 /// Not a check: prints a whole card, to look at. `cargo test -p magi-tui a_card_to_look_at -- --ignored --nocapture`.
@@ -172,27 +234,23 @@ fn money_is_shown_and_charted_where_the_provider_said_it() {
 #[ignore = "prints a card to look at"]
 fn a_card_to_look_at() {
     let details = Details {
-        description: Some("DeepSeek V4 Flash is a sparse mixture-of-experts model, 13B active out of 284B, suited to coding, reasoning and agent workflows.".to_owned()),
-        knowledge_cutoff: Some("2025-12-01".to_owned()),
-        modality: Some("text->text".to_owned()),
-        max_output: Some(943_718),
-        price: [0.06, 0.12, 0.012, 0.0],
         benchmarks: vec![
             ("intelligence".to_owned(), 34.5),
             ("coding".to_owned(), 69.1),
             ("agentic".to_owned(), 41.7),
         ],
-        endpoints: ["BaseTen:fp8:99.95", "Morph:bf16:99.93", "DeepInfra:fp8:99.92", "Reka:fp4:99.34", "StreamLake:fp8:95.18", "Makora::97.64"]
-            .iter()
-            .map(|spec| {
-                let parts: Vec<&str> = spec.split(':').collect();
-                Endpoint {
-                    provider: parts[0].to_owned(),
-                    quantization: (!parts[1].is_empty()).then(|| parts[1].to_owned()),
-                    uptime: parts[2].parse().ok(),
-                }
-            })
-            .collect(),
+        features: [
+            "tools",
+            "reasoning",
+            "structured_outputs",
+            "response_format",
+            "tool_choice",
+            "parallel_tool_calls",
+            "seed",
+        ]
+        .map(ToOwned::to_owned)
+        .to_vec(),
+        ..published()
     };
     let turns: Vec<Usage> = (1..=14u64)
         .map(|n| {

@@ -116,8 +116,7 @@ impl App {
         let rendered = magi_tui::agents::view(&agents, &self.folded);
         let mut pane = magi_tui::pane::Pane::new("agents", rendered.rows)
             .selectable(rendered.picks)
-            .saying(magi_tui::agents::empty())
-            .hinting("↑↓ jk move • ←→ hl fold • ⏎ attach • esc close");
+            .saying(magi_tui::agents::empty());
         if !on.is_some_and(|id| pane.point_at(&id)) {
             pane.first();
         }
@@ -200,13 +199,12 @@ impl App {
             context_window: self.model.as_ref().map_or(0, |model| model.context_window),
             reasons: self.model_reasons,
             thinking: &self.thinking,
+            provider: self.provider.as_deref(),
             turns: &turns,
             details,
             width: card_width(),
         });
-        let mut pane = magi_tui::pane::Pane::new("model", drawn.rows)
-            .selectable(drawn.picks)
-            .hinting("↑↓ move • ←→ change • ⏎ choose • esc close");
+        let mut pane = magi_tui::pane::Pane::new("model", drawn.rows).selectable(drawn.picks);
         if !on.is_some_and(|id| pane.point_at(&id)) {
             pane.first();
         }
@@ -286,6 +284,14 @@ impl App {
                 let levels = magi_tui::model_card::LEVELS;
                 let now = levels.iter().position(|l| *l == self.thinking).unwrap_or(0);
                 Some(self.set_thinking_here(levels[(now + 1) % levels.len()]))
+            }
+            // A provider row, or the router's own: marked at once, then asked of the session.
+            _ if id.starts_with("provider:") => {
+                let tag = id.trim_start_matches("provider:");
+                let provider = (!tag.is_empty()).then(|| tag.to_owned());
+                self.provider.clone_from(&provider);
+                self.show_model();
+                Some(magi_proto::UiCommand::SetProvider { provider })
             }
             _ => None,
         }

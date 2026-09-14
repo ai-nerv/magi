@@ -48,6 +48,8 @@ pub(super) async fn switch_model(
     {
         let mut held = session.lock().await;
         held.set_model(Some(info));
+        // Another model has other providers: a choice made for the last one means nothing here.
+        held.set_provider(None);
         held.announce_model();
         remember(catalog, held.model_name(), Some(held.thinking().to_owned()));
     }
@@ -96,9 +98,13 @@ pub(super) async fn switch_thinking(
 
     // Rebuilt from the catalog rather than mutated in place, so the level is applied as it would
     // have been had the session started with it.
-    let name = session.lock().await.model_name()?;
+    let (name, provider) = {
+        let held = session.lock().await;
+        (held.model_name()?, held.provider().map(ToOwned::to_owned))
+    };
     let mut backend = catalog.backend(&name)?;
     backend.wants.thinking = Some(parsed);
+    backend.wants.provider = provider;
     // Gated, like the one it replaces: `Worker::start` is `gated(backend, None)`, which asks nothing.
     let fresh = Arc::new(worker::Worker::gated(
         backend,
@@ -112,6 +118,35 @@ pub(super) async fn switch_thinking(
     held.set_thinking(level.to_owned());
     held.announce_model();
     remember(catalog, held.model_name(), Some(level.to_owned()));
+    None
+}
+
+/// Have one provider serve the model from here on, or leave it to the router again. Rebuilt the way
+/// a thinking change is, keeping the level: both ride on every request.
+pub(super) async fn switch_provider(
+    session: &Arc<Mutex<Session>>,
+    worker: &tokio::sync::RwLock<Option<Arc<worker::Worker>>>,
+    catalog: &crate::catalog::Catalog,
+    person: &crate::asking::Person,
+    scribe: &crate::scribe::Held,
+    provider: Option<String>,
+) -> Option<String> {
+    let (name, thinking) = {
+        let held = session.lock().await;
+        (held.model_name()?, held.thinking().to_owned())
+    };
+    let mut backend = catalog.backend(&name)?;
+    backend.wants.thinking = serde_json::from_value(serde_json::Value::String(thinking)).ok();
+    backend.wants.provider.clone_from(&provider);
+    let fresh = Arc::new(worker::Worker::gated(
+        backend,
+        Some(Arc::clone(&person.approver)),
+        Arc::clone(&person.asks),
+        Arc::clone(&person.holds),
+        Arc::clone(scribe),
+    ));
+    *worker.write().await = Some(fresh);
+    session.lock().await.set_provider(provider);
     None
 }
 

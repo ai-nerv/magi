@@ -41,7 +41,7 @@ pub struct Card {
     pub needs: Option<String>,
 }
 
-/// What a caller wants beyond the conversation.
+/// What a caller wants beyond the conversation: reasoning, a cap, a schema, and which provider.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Wants {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -51,6 +51,8 @@ pub struct Wants {
     /// A JSON Schema the answer must satisfy, and what to call it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<Schema>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
 }
 
 /// A named JSON Schema an answer must satisfy.
@@ -182,6 +184,7 @@ mod tests {
                 thinking: Some(ThinkingLevel::Medium),
                 max_tokens: Some(256),
                 schema: None,
+                provider: None,
             },
             about: "t1".into(),
         }

@@ -48,6 +48,10 @@ pub enum UiCommand {
     SetThinking {
         level: String,
     },
+    /// Which provider serves the model, by routing tag; `None` lets the router choose.
+    SetProvider {
+        provider: Option<String>,
+    },
     Permit {
         id: ToolCallId,
         decision: crate::permit::Decision,

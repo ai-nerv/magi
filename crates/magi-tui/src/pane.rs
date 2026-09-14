@@ -37,8 +37,6 @@ pub struct Pane {
     /// The row the cursor is on, as an index into `rows`. The keys move it entry by entry, the
     /// pointer puts it where it points, and every row of its entry is lit.
     pub hover: Option<usize>,
-    /// The keys worth knowing, beside the title.
-    pub hint: String,
     /// Bring the cursor's entry into view at the next draw, the one place the page is known.
     reveal: bool,
 }
@@ -55,7 +53,6 @@ impl Pane {
             empty: "nothing yet".to_owned(),
             picks: Vec::new(),
             hover: None,
-            hint: String::new(),
             reveal: false,
         }
     }
@@ -63,12 +60,6 @@ impl Pane {
     #[must_use]
     pub fn saying(mut self, empty: impl Into<String>) -> Self {
         self.empty = empty.into();
-        self
-    }
-
-    #[must_use]
-    pub fn hinting(mut self, hint: impl Into<String>) -> Self {
-        self.hint = hint.into();
         self
     }
 
@@ -307,18 +298,12 @@ impl Pane {
     ) -> Vec<Line<'static>> {
         // The heading and the blank under it are content rows, so the light runs past them rather
         // than round a hole in the box.
-        let mut heading = vec![Span::styled(
+        let heading = vec![Span::styled(
             self.heading(page),
             Style::default()
                 .fg(crate::colour::hint())
                 .add_modifier(Modifier::BOLD),
         )];
-        if !self.hint.is_empty() {
-            heading.push(Span::styled(
-                format!("   {}", self.hint),
-                Style::default().fg(crate::colour::dim()),
-            ));
-        }
         let mut body = vec![Line::from(heading), Line::from(String::new())];
         body.extend(self.showing(page));
 

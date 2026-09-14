@@ -130,6 +130,8 @@ pub fn options(loaded: &Loaded) -> magi_proto::ask::Wants {
         schema: None,
         thinking,
         max_tokens: None,
+        // Chosen on the model's card, never in the config: providers come and go by the hour.
+        provider: None,
     }
 }
 

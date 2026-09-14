@@ -1,19 +1,21 @@
 //! The model's card, opened from its name in the footer: what the model is, the settings that can be
-//! changed from here, what its provider publishes about it, and what this session has spent on it,
-//! drawn as charts. Rows for a list float that scrolls; the rows naming a setting are selectable.
+//! changed from here, what is published about it, who serves it and at what price, and what this
+//! session has spent on it. Every part is its own section, set off by a dashed rule. Rows for a list
+//! float that scrolls; the rows naming a choice are selectable.
 
 mod charts;
+mod published;
 
 use crate::footer::format_tokens;
 use charts::Item;
 use magi_proto::Usage;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 /// Every reasoning level, lowest first: what ←/→ step along.
 pub const LEVELS: [&str; 6] = ["off", "minimal", "low", "medium", "high", "max"];
 
-/// What the provider publishes about a model, where it publishes anything.
+/// What is published about a model, where anything is.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Details {
     pub description: Option<String>,
@@ -25,18 +27,34 @@ pub struct Details {
     /// Named scores out of a hundred.
     pub benchmarks: Vec<(String, f64)>,
     pub endpoints: Vec<Endpoint>,
+    pub tokenizer: Option<String>,
+    /// What it takes in and gives back: `text`, `image`, `audio`.
+    pub inputs: Vec<String>,
+    pub outputs: Vec<String>,
+    /// The request parameters it accepts, as the provider names them.
+    pub features: Vec<String>,
+    /// When it was published, in seconds since the epoch.
+    pub created: Option<u64>,
+    pub moderated: Option<bool>,
 }
 
-/// One provider serving the model, and how reliably it has.
+/// One provider serving the model, and on what terms.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Endpoint {
     pub provider: String,
+    /// What a request names it by; `None` for one that cannot be asked for.
+    pub tag: Option<String>,
     pub quantization: Option<String>,
-    /// Percent of the last half hour it answered.
-    pub uptime: Option<f64>,
+    /// Dollars per million tokens, as [`Details::price`].
+    pub price: [f64; 4],
+    pub context: Option<u64>,
+    pub max_output: Option<u64>,
+    pub latency_ms: Option<f64>,
+    /// Tokens a second.
+    pub throughput: Option<f64>,
 }
 
-/// Where the provider's details stand.
+/// Where the published details stand.
 pub enum Known<'a> {
     Asking,
     Missing(&'a str),
@@ -50,14 +68,16 @@ pub struct Card<'a> {
     pub context_window: u64,
     pub reasons: bool,
     pub thinking: &'a str,
+    /// Which provider serves it, by tag; `None` leaves it to the router.
+    pub provider: Option<&'a str>,
     /// This session's turns, oldest first.
     pub turns: &'a [Usage],
     pub details: Known<'a>,
-    /// Columns the charts may take.
+    /// Columns the card may take.
     pub width: u16,
 }
 
-/// The card's rows and, parallel to them, the setting each one selects.
+/// The card's rows and, parallel to them, the choice each one selects.
 #[derive(Default)]
 pub struct Rendered {
     pub rows: Vec<Line<'static>>,
@@ -84,21 +104,36 @@ impl Rendered {
         }
     }
 
-    /// A section's title, with a rule running on from it to the width.
-    fn section(&mut self, title: &str, width: u16) {
-        let rule = usize::from(width).saturating_sub(title.chars().count() + 1);
+    /// A dashed rule across the card, then the section's title and what it says about itself.
+    fn section(&mut self, title: &str, note: &str, width: u16) {
+        self.blank();
+        let rule = "- ".repeat(usize::from(width) / 2);
+        self.say(
+            rule.trim_end(),
+            Style::default().fg(crate::colour::border()),
+        );
+        let mut spans = vec![Span::styled(
+            title.to_owned(),
+            Style::default()
+                .fg(crate::colour::text())
+                .add_modifier(Modifier::BOLD),
+        )];
+        if !note.is_empty() {
+            spans.push(Span::styled(
+                format!("  {note}"),
+                Style::default().fg(crate::colour::dim()),
+            ));
+        }
+        self.push(Line::from(spans), None);
+        self.blank();
+    }
+
+    /// A label and its value, the labels in one column.
+    fn fact(&mut self, label: &str, value: impl Into<String>, ink: &Ink) {
         self.push(
             Line::from(vec![
-                Span::styled(
-                    title.to_owned(),
-                    Style::default()
-                        .fg(crate::colour::muted())
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!(" {}", "─".repeat(rule)),
-                    Style::default().fg(crate::colour::border()),
-                ),
+                Span::styled(format!("{label:<14}"), ink.label),
+                Span::raw(value.into()),
             ]),
             None,
         );
@@ -112,8 +147,7 @@ struct Ink {
     value: Style,
 }
 
-/// The whole card, top to bottom: who the model is, how full its window is, its settings, what the
-/// provider says, and this session's spend.
+/// The whole card, top to bottom.
 #[must_use]
 pub fn view(card: &Card<'_>) -> Rendered {
     let ink = Ink {
@@ -124,15 +158,15 @@ pub fn view(card: &Card<'_>) -> Rendered {
     let width = card.width.max(20);
     let mut out = Rendered::default();
     heading(&mut out, card, &ink, width);
-    out.blank();
+    out.section("Settings", "", width);
     settings(&mut out, card, &ink);
-    out.blank();
-    published(&mut out, &card.details, &ink, width);
+    context(&mut out, card, width);
+    published::sections(&mut out, card, &ink, width);
     spent(&mut out, card, &ink, width);
     out
 }
 
-/// The name, where it comes from, what the provider says it is for, and how full its window is.
+/// The name, where it comes from, and what is said it is for.
 fn heading(out: &mut Rendered, card: &Card<'_>, ink: &Ink, width: u16) {
     let (provider, name) = card.model.split_once('/').unwrap_or(("", card.model));
     out.say(name, ink.value.add_modifier(Modifier::BOLD));
@@ -157,32 +191,13 @@ fn heading(out: &mut Rendered, card: &Card<'_>, ink: &Ink, width: u16) {
         ..
     }) = card.details
     {
+        out.blank();
         for line in crate::wrap::line(Line::from(said.clone()), width)
             .into_iter()
-            .take(4)
+            .take(5)
         {
             out.say(line.to_string(), ink.dim.add_modifier(Modifier::ITALIC));
         }
-    }
-    let used = card.turns.last().map_or(0, |turn| turn.prompt_tokens());
-    if card.context_window > 0 && used > 0 {
-        let share = used as f64 / card.context_window as f64;
-        let ink = match share {
-            s if s > 0.9 => crate::colour::error(),
-            s if s > 0.7 => crate::colour::warning(),
-            _ => crate::colour::success(),
-        };
-        out.blank();
-        out.chart(charts::gauge(
-            share,
-            format!(
-                "context {:.0}% of {}  ",
-                share * 100.0,
-                format_tokens(card.context_window)
-            ),
-            ink,
-            width,
-        ));
     }
 }
 
@@ -211,141 +226,35 @@ fn settings(out: &mut Rendered, card: &Card<'_>, ink: &Ink) {
     );
 }
 
-/// What the provider publishes: prices, limits, benchmark scores, and who serves it how reliably.
-fn published(out: &mut Rendered, known: &Known<'_>, ink: &Ink, width: u16) {
-    let details = match known {
-        Known::Asking => {
-            out.say("asking the provider about it…", ink.dim);
-            out.blank();
-            return;
-        }
-        Known::Missing(why) => {
-            out.say(*why, ink.dim);
-            out.blank();
-            return;
-        }
-        Known::Found(details) => details,
+/// How full the window is, off the last turn.
+fn context(out: &mut Rendered, card: &Card<'_>, width: u16) {
+    let used = card.turns.last().map_or(0, |turn| turn.prompt_tokens());
+    if card.context_window == 0 || used == 0 {
+        return;
+    }
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a share of the window, to the percent"
+    )]
+    let share = used as f64 / card.context_window as f64;
+    let ink = match share {
+        s if s > 0.9 => crate::colour::error(),
+        s if s > 0.7 => crate::colour::warning(),
+        _ => crate::colour::success(),
     };
-    pricing(out, details, width);
-    let facts = [
-        (
-            "Output",
-            details
-                .max_output
-                .map(|n| format!("up to {} tokens", format_tokens(n))),
-        ),
-        ("Knows up to", details.knowledge_cutoff.clone()),
-        ("Modality", details.modality.clone()),
-    ];
-    for (label, fact) in facts {
-        if let Some(fact) = fact {
-            out.push(
-                Line::from(vec![
-                    Span::styled(format!("{label:<14}"), ink.label),
-                    Span::raw(fact),
-                ]),
-                None,
-            );
-        }
-    }
-    out.blank();
-    scores(out, details, width);
-    serving(out, details, width);
-}
-
-/// What a million tokens costs each way, as bars against the dearest.
-fn pricing(out: &mut Rendered, details: &Details, width: u16) {
-    let [input, output, read, write] = details.price;
-    let named = [
-        ("input", input, crate::colour::code_command()),
-        ("output", output, crate::colour::accent()),
-        ("cache read", read, crate::colour::success()),
-        ("cache write", write, crate::colour::warning()),
-    ];
-    let items: Vec<Item> = named
-        .iter()
-        .filter(|(_, price, _)| *price > 0.0)
-        .map(|(label, price, ink)| Item {
-            label: (*label).to_owned(),
-            value: thousandths(*price),
-            said: money(*price),
-            ink: *ink,
-        })
-        .collect();
-    if items.is_empty() {
-        return;
-    }
-    out.section("Pricing  per million tokens", width);
-    let top = items.iter().map(|item| item.value).max().unwrap_or(1);
-    out.chart(charts::bars(&items, top, width));
-    out.blank();
-}
-
-/// Each benchmark as a bar out of a hundred, each in a colour of its own.
-fn scores(out: &mut Rendered, details: &Details, width: u16) {
-    if details.benchmarks.is_empty() {
-        return;
-    }
-    let hues = [
-        crate::colour::accent(),
-        crate::colour::code_command(),
-        crate::colour::success(),
-        crate::colour::warning(),
-    ];
-    let items: Vec<Item> = details
-        .benchmarks
-        .iter()
-        .zip(hues.iter().cycle())
-        .map(|((name, score), ink)| Item {
-            label: name.clone(),
-            value: whole(*score),
-            said: format!("{score:.1}"),
-            ink: *ink,
-        })
-        .collect();
-    out.section("Benchmarks  Artificial Analysis, out of 100", width);
-    out.chart(charts::bars(&items, 100, width));
-    out.blank();
-}
-
-/// Who serves it, most reliable first: the last half hour's uptime, drawn from 90% to 100% so the
-/// difference between a good provider and a great one shows.
-fn serving(out: &mut Rendered, details: &Details, width: u16) {
-    let mut endpoints: Vec<&Endpoint> = details
-        .endpoints
-        .iter()
-        .filter(|endpoint| endpoint.uptime.is_some())
-        .collect();
-    if endpoints.is_empty() {
-        return;
-    }
-    endpoints.sort_by(|a, b| b.uptime.unwrap_or(0.0).total_cmp(&a.uptime.unwrap_or(0.0)));
-    let items: Vec<Item> = endpoints
-        .iter()
-        .take(8)
-        .map(|endpoint| {
-            let up = endpoint.uptime.unwrap_or(0.0);
-            let mut label = endpoint.provider.clone();
-            if let Some(quantization) = &endpoint.quantization {
-                label.push_str(&format!(" {quantization}"));
-            }
-            Item {
-                label,
-                value: whole((up - 90.0).max(0.0) * 10.0),
-                said: format!("{up:.2}%"),
-                ink: reliable(up),
-            }
-        })
-        .collect();
-    out.section("Providers  uptime, last half hour, 90–100%", width);
-    out.chart(charts::bars(&items, 100, width));
-    out.blank();
+    out.section("Context", "how full the window is now", width);
+    let label = format!(
+        "context {:.0}% of {}",
+        share * 100.0,
+        format_tokens(card.context_window)
+    );
+    out.chart(charts::gauge(share, &label, ink, width));
 }
 
 /// What this session has spent: the totals, then a column a turn, how full the window got, and
-/// the money as it added up.
+/// the money as it added up, each a section of its own.
 fn spent(out: &mut Rendered, card: &Card<'_>, ink: &Ink, width: u16) {
-    out.section("This session", width);
+    out.section("This session", "", width);
     let turns = card.turns;
     if turns.is_empty() {
         out.say("nothing yet — this fills in as turns finish", ink.dim);
@@ -355,25 +264,33 @@ fn spent(out: &mut Rendered, card: &Card<'_>, ink: &Ink, width: u16) {
         sum.add(*turn);
         sum
     });
-    let mut said = format!(
-        "{} turns · {} in · {} out",
-        turns.len(),
-        format_tokens(total.prompt_tokens()),
-        format_tokens(total.output),
+    out.fact("Turns", turns.len().to_string(), ink);
+    out.fact(
+        "Tokens",
+        format!(
+            "{} in · {} out",
+            format_tokens(total.prompt_tokens()),
+            format_tokens(total.output)
+        ),
+        ink,
     );
     if let Some(rate) = total.cache_hit_rate() {
-        said.push_str(&format!(" · {rate:.0}% cached"));
+        out.fact("Cached", format!("{rate:.0}% of what went in"), ink);
     }
-    out.say(said, Style::default());
     if total.cost_micros > 0 {
-        out.say(
-            format!("{} spent", crate::cost::dollars(total.cost_micros)),
-            Style::default().fg(crate::colour::success()),
+        out.push(
+            Line::from(vec![
+                Span::styled(format!("{:<14}", "Spent"), ink.label),
+                Span::styled(
+                    crate::cost::dollars(total.cost_micros),
+                    Style::default().fg(crate::colour::success()),
+                ),
+            ]),
+            None,
         );
     }
-    out.blank();
 
-    out.say("tokens per turn", ink.label);
+    out.section("Tokens per turn", "in and out together", width);
     let columns: Vec<Item> = turns
         .iter()
         .enumerate()
@@ -381,89 +298,76 @@ fn spent(out: &mut Rendered, card: &Card<'_>, ink: &Ink, width: u16) {
             let tokens = turn.prompt_tokens() + turn.output;
             Item {
                 label: (at + 1).to_string(),
-                value: tokens,
+                value: figure(tokens),
                 said: format_tokens(tokens),
                 ink: crate::colour::code_command(),
             }
         })
         .collect();
-    out.chart(charts::columns(&columns, width, 12));
-    out.blank();
+    out.chart(charts::columns(&columns, width, 8));
 
     if card.context_window > 0 {
-        out.say("how full the window got, turn by turn", ink.label);
+        out.section(
+            "Context use",
+            "how full the window got, turn by turn",
+            width,
+        );
         let points: Vec<(f64, f64)> = turns
             .iter()
             .enumerate()
             .map(|(at, turn)| {
                 (
-                    (at + 1) as f64,
-                    turn.prompt_tokens() as f64 / card.context_window as f64 * 100.0,
+                    figure(at as u64 + 1),
+                    figure(turn.prompt_tokens()) / figure(card.context_window) * 100.0,
                 )
             })
             .collect();
         let ticks = ["0%".to_owned(), "50%".to_owned(), "100%".to_owned()];
-        let ink = crate::colour::warning();
-        out.chart(charts::line(&points, 100.0, ticks, ink, width, 10));
-        out.blank();
+        out.chart(charts::line(
+            &points,
+            100.0,
+            ticks,
+            crate::colour::warning(),
+            width,
+            10,
+        ));
     }
 
     if total.cost_micros > 0 {
-        out.say("money, as it added up", ink.label);
+        out.section("Spend", "as it added up", width);
         let mut running = 0_u64;
         let points: Vec<(f64, f64)> = turns
             .iter()
             .enumerate()
             .map(|(at, turn)| {
                 running += turn.cost_micros;
-                ((at + 1) as f64, running as f64)
+                (figure(at as u64 + 1), figure(running))
             })
             .collect();
-        let top = total.cost_micros as f64;
         let ticks = [
             "$0".to_owned(),
             crate::cost::dollars(total.cost_micros / 2),
             crate::cost::dollars(total.cost_micros),
         ];
-        let ink = crate::colour::success();
-        out.chart(charts::line(&points, top, ticks, ink, width, 10));
+        out.chart(charts::line(
+            &points,
+            figure(total.cost_micros),
+            ticks,
+            crate::colour::success(),
+            width,
+            10,
+        ));
     }
 }
 
-/// Green for a provider that nearly always answers, orange for one that mostly does, red otherwise.
-fn reliable(uptime: f64) -> Color {
-    if uptime >= 99.0 {
-        crate::colour::success()
-    } else if uptime >= 95.0 {
-        crate::colour::warning()
-    } else {
-        crate::colour::error()
-    }
-}
-
-/// A price per million tokens: to the cent, or finer for one below a cent.
-fn money(dollars: f64) -> String {
-    if dollars >= 0.01 || dollars == 0.0 {
-        format!("${dollars:.2}")
-    } else {
-        format!("${dollars:.4}")
-    }
-}
-
-/// A price in thousandths of a dollar, so bars can be compared in whole numbers.
-fn thousandths(dollars: f64) -> u64 {
-    whole(dollars * 1000.0)
-}
-
-/// A non-negative figure rounded to a whole number.
-fn whole(value: f64) -> u64 {
+/// A count as a chart coordinate.
+fn figure(count: u64) -> f64 {
     #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "clamped to zero and rounded first"
+        clippy::cast_precision_loss,
+        reason = "token counts and micro-dollars, far below where f64 loses precision"
     )]
-    let rounded = value.max(0.0).round() as u64;
-    rounded
+    let value = count as f64;
+    value
 }
 
 #[cfg(test)]
