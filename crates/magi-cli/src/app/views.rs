@@ -125,4 +125,17 @@ impl App {
             magi_tui::corner::Corner::Cost => self.show_cost(),
         }
     }
+
+    /// Open a sibling's menu from its footer dot, the same float the agents and cost views use; a
+    /// second press closes it. Empty until each sibling has something to offer there.
+    pub fn press_sibling(&mut self, nth: usize) {
+        let Some((_, name)) = magi_tui::footer::SIBLINGS.get(nth) else {
+            return;
+        };
+        if self.pane.as_ref().is_some_and(|open| open.title == *name) {
+            self.pane = None;
+            return;
+        }
+        self.pane = Some(magi_tui::pane::Pane::new(*name, Vec::new()).saying("nothing here yet"));
+    }
 }

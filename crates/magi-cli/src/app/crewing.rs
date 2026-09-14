@@ -3,7 +3,7 @@
 
 use super::App;
 use crate::melchior::Peer;
-use magi_proto::{Cursor, UiCommand};
+use magi_proto::{Cursor, Entry, UiCommand};
 
 /// Where a step left the screen pointed. The own seat carries no path: the driver names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,6 +133,18 @@ impl App {
             Some(them) => format!("{}/{}", them.role, them.id),
         }
     }
+
+    /// Say once why a `--view-only` screen sent nothing: these are keys people lean on.
+    pub fn refuse_view_only(&mut self) {
+        let said = format!(
+            "View only: nothing you type reaches `{}`. Attach without `--view-only` to drive it.",
+            self.viewing()
+        );
+        if matches!(self.entries.last(), Some(Entry::Notice { text }) if *text == said) {
+            return;
+        }
+        self.show_notice(said);
+    }
 }
 
 /// Whether this command is about this terminal's own screen — its size, a held key, the mouse —
@@ -144,6 +156,13 @@ pub fn for_screen(command: &UiCommand) -> bool {
         command,
         UiCommand::Sized { .. } | UiCommand::Keyed { .. } | UiCommand::Moused { .. }
     )
+}
+
+/// Whether this command would change the session it lands on: anything but attaching, detaching
+/// and this terminal's own geometry. What a `--view-only` screen holds back.
+#[must_use]
+pub fn changes(command: &UiCommand) -> bool {
+    !for_screen(command) && !matches!(command, UiCommand::Attach { .. } | UiCommand::Detach)
 }
 
 #[cfg(test)]

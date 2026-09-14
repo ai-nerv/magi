@@ -180,26 +180,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
         );
     }
 
-    // The UI picks the mood, not the agent. Anything open on the screen outranks whatever the agent
-    // is doing: a permission ask arrives *during* a turn, so `is_busy()` first said `Working`.
-    let mood = if !app.connected {
-        magi_tui::beacon::Mood::Away
-    } else if app
-        .overlay
-        .as_ref()
-        .is_some_and(magi_tui::overlay::Overlay::is_completion)
-    {
-        magi_tui::beacon::Mood::Narrowing
-    } else if app.overlay.is_some() {
-        magi_tui::beacon::Mood::Asking
-    } else if app.is_busy() {
-        magi_tui::beacon::Mood::Working
-    } else if app.editor.is_blank() {
-        magi_tui::beacon::Mood::Resting
-    } else {
-        magi_tui::beacon::Mood::Holding
-    };
-    let mut status_line = status::working(&mut app.trace, mood, app.tick, area.width);
+    // The middle of the footer says whether the three siblings are up: a dot each, green or red.
+    let mut status_line =
+        ratatui::text::Line::from(footer::siblings(app.siblings, app.sibling_hover));
     if !app.connected {
         status_line.spans.extend(status::queued(app.queued));
     }
@@ -233,6 +216,21 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
             width: columns.end - columns.start,
             height: 1,
         }
+    });
+    // Where each sibling's segment landed, for the pointer; none when the middle did not fit.
+    let said: usize = status_line
+        .spans
+        .iter()
+        .map(|s| s.content.chars().count())
+        .sum();
+    let middle = footer::middle_column(footer_data, said, area.width);
+    app.sibling_rects = std::array::from_fn(|nth| {
+        middle.map(|at| Rect {
+            x: footer_area.x + at + footer::SIBLING_STEP * u16::try_from(nth).unwrap_or(0),
+            y: footer_area.y,
+            width: footer::SIBLING_WIDTH,
+            height: 1,
+        })
     });
 
     // A float, over the finished screen and under nothing: it covers what it lands on rather than

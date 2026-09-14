@@ -160,6 +160,13 @@ pub struct Melchior {
     pub run: String,
 }
 
+impl Melchior {
+    /// Whether the melchior process is still running: what the footer's `MEL` dot reports.
+    pub fn alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+}
+
 /// The reader, not the pipe: dropping it closes the pipe, so the session hears its own name
 /// and then nothing.
 fn serving(

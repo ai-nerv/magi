@@ -208,6 +208,22 @@ pub fn stop() {
     ended(ours);
 }
 
+/// Whether the memory layer is up: the balthasar this magi started still running, or one somebody
+/// else named for it. What the footer's `BAL` dot reports.
+pub fn alive() -> bool {
+    if std::env::var_os("MAGI_API_SOCKET").is_some_and(|v| !v.is_empty()) {
+        return true;
+    }
+    STARTED
+        .lock()
+        .ok()
+        .and_then(|mut held| {
+            held.as_mut()
+                .map(|ours| matches!(ours.child.try_wait(), Ok(None)))
+        })
+        .unwrap_or(false)
+}
+
 /// Split from [`stop`] so the order can be tested without the process-wide static.
 fn ended(Ours { mut child, sockets }: Ours) {
     let _ = child.kill();

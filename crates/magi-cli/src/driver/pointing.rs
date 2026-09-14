@@ -77,6 +77,12 @@ pub(crate) fn on_the_screen(
                 .is_some_and(|at| within(at, mouse.row, mouse.column));
             let mut changed = over_name != app.name_hover;
             app.name_hover = over_name;
+            let over_dot = app
+                .sibling_rects
+                .iter()
+                .position(|at| at.is_some_and(|at| within(at, mouse.row, mouse.column)));
+            changed |= over_dot != app.sibling_hover;
+            app.sibling_hover = over_dot;
             // A selectable row in an open float lights up under the pointer, off it goes dark.
             if let Some(at) = app.pane_rect.filter(|_| app.pane.is_some()) {
                 let inside = within(at, mouse.row, mouse.column);
@@ -105,6 +111,15 @@ pub(crate) fn on_the_screen(
                 .is_some_and(|at| within(at, mouse.row, mouse.column))
             {
                 app.press_corner();
+                return Pointing::Redraw;
+            }
+            // A sibling's dot opens its menu, the same float the name and the badge open.
+            if let Some(nth) = app
+                .sibling_rects
+                .iter()
+                .position(|at| at.is_some_and(|at| within(at, mouse.row, mouse.column)))
+            {
+                app.press_sibling(nth);
                 return Pointing::Redraw;
             }
             // The footer name opens the agents view — the `< >` control that used to do it is gone.

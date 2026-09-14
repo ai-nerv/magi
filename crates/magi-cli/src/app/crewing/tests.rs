@@ -198,3 +198,20 @@ fn only_this_screens_geometry_is_kept_from_somebody_else() {
         holds: false,
     }));
 }
+
+/// `--view-only` holds back everything that would change a session, and nothing a viewer needs.
+#[test]
+fn a_view_only_screen_changes_nothing() {
+    assert!(changes(&UiCommand::SubmitPrompt {
+        text: "x".into(),
+        aside: String::new(),
+    }));
+    assert!(changes(&UiCommand::Interrupt));
+    assert!(changes(&UiCommand::Branch { keeps: Some(0) }));
+    assert!(!changes(&UiCommand::Detach));
+    assert!(!changes(&UiCommand::Sized {
+        rows: None,
+        cols: 80,
+        holds: false,
+    }));
+}

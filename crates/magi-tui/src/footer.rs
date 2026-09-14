@@ -92,6 +92,134 @@ pub fn name_columns(data: &FooterData, width: u16) -> std::ops::Range<u16> {
     pad..pad + u16::try_from(name_width).unwrap_or(0)
 }
 
+/// Where a middle `said` cells wide starts, in columns of the inset `width`, when it fits between
+/// the name and the model; `None` when it is left out. The draw and the pointer's layout both ask
+/// here, so the dots and the cells a hover is measured against agree.
+fn middle_start(data: &FooterData, said: usize, width: usize) -> Option<usize> {
+    let gap = usize::from(crate::metric::column_gap());
+    let name = fit_name(&data.identity, width);
+    let model = fit_path(
+        &data.model,
+        width.saturating_sub(name.chars().count() + gap * 2),
+    );
+    let name_width = name.chars().count();
+    let model_at = width.saturating_sub(model.chars().count());
+    // Centred on the row so one column changing does not slide the other two, but clamped: on a
+    // narrow screen the centre reached the model and the two printed into each other.
+    let middle_at = (width.saturating_sub(said) / 2)
+        .max(name_width + gap)
+        .min(model_at.saturating_sub(said + gap));
+    (middle_at >= name_width && middle_at + said + gap <= model_at).then_some(middle_at)
+}
+
+/// Where the middle landed, as a column from the left edge (the pad included), for the pointer.
+#[must_use]
+pub fn middle_column(data: &FooterData, said: usize, width: u16) -> Option<u16> {
+    let pad = crate::metric::footer_pad();
+    let inset = usize::from(width).saturating_sub(usize::from(pad) * 2);
+    middle_start(data, said, inset)
+        .and_then(|at| u16::try_from(at).ok())
+        .map(|at| pad + at)
+}
+
+/// The three siblings the footer reports on, in the order they are drawn: the short name on the
+/// footer and the full one on the menu.
+pub const SIBLINGS: [(&str, &str); 3] =
+    [("MEL", "melchior"), ("BAL", "balthasar"), ("CAS", "casper")];
+/// How wide one sibling's segment is, `[● MEL]`, and how far the next one starts from it.
+pub const SIBLING_WIDTH: u16 = 7;
+pub const SIBLING_STEP: u16 = 8;
+
+/// `[● MEL] [● BAL] [● CAS]`: a dot each, green when that sibling is up and red when it is not; the
+/// one whose menu is open drawn inverted, the way the name shows it is a button.
+#[must_use]
+pub fn siblings(up: [bool; 3], open: Option<usize>) -> Vec<Span<'static>> {
+    let dim = Style::default().fg(colour::dim());
+    let mut spans = Vec::new();
+    for (nth, (short, _)) in SIBLINGS.iter().enumerate() {
+        if nth > 0 {
+            spans.push(Span::styled(" ", dim));
+        }
+        let lit = if open == Some(nth) {
+            Modifier::REVERSED
+        } else {
+            Modifier::empty()
+        };
+        let dot = if up[nth] {
+            colour::success()
+        } else {
+            colour::error()
+        };
+        spans.push(Span::styled("[", dim.add_modifier(lit)));
+        spans.push(Span::styled(
+            "●",
+            Style::default().fg(dot).add_modifier(lit),
+        ));
+        spans.push(Span::styled(format!(" {short}]"), dim.add_modifier(lit)));
+    }
+    spans
+}
+
+#[cfg(test)]
+mod siblings_tests {
+    use super::*;
+
+    fn text(spans: &[Span<'_>]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn three_segments_one_dot_each_at_fixed_columns() {
+        let drawn = text(&siblings([true, false, true], None));
+        assert_eq!(drawn, "[● MEL] [● BAL] [● CAS]");
+        for (nth, (short, _)) in SIBLINGS.iter().enumerate() {
+            let at = usize::from(SIBLING_STEP) * nth;
+            let segment: String = drawn
+                .chars()
+                .skip(at)
+                .take(usize::from(SIBLING_WIDTH))
+                .collect();
+            assert_eq!(segment, format!("[● {short}]"));
+        }
+    }
+
+    #[test]
+    fn a_dot_is_green_when_up_and_red_when_not() {
+        let dots: Vec<_> = siblings([true, false, true], None)
+            .into_iter()
+            .filter(|s| s.content == "●")
+            .map(|s| s.style.fg)
+            .collect();
+        assert_eq!(
+            dots,
+            vec![
+                Some(colour::success()),
+                Some(colour::error()),
+                Some(colour::success())
+            ]
+        );
+    }
+
+    #[test]
+    fn the_middle_lands_where_the_pointer_is_told() {
+        let data = FooterData {
+            identity: "p/lead/xi".into(),
+            model: "some/model".into(),
+            ..Default::default()
+        };
+        let middle = siblings([true; 3], None);
+        let said = middle.iter().map(|s| s.content.chars().count()).sum();
+        let at = middle_column(&data, said, 120).expect("fits on a wide screen");
+        let row: String = render(&data, &middle, 120)[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        let drawn: String = row.chars().skip(usize::from(at)).take(said).collect();
+        assert_eq!(drawn, text(&middle));
+    }
+}
+
 /// Render the footer, on one line: the session name on the left, usage in the middle, the model on
 /// the right, each dropped in that order when the terminal cannot hold it. The name is the button
 /// that opens the agents view, and inverts while the pointer is on it.
@@ -114,16 +242,7 @@ pub fn render(data: &FooterData, status: &[Span<'static>], width: u16) -> Vec<Li
     );
     let name_width = name.chars().count();
     let model_at = width.saturating_sub(model.chars().count());
-
-    // The middle is centred on the row rather than laid after the name, so one column changing --
-    // and the middle changes every time the agent starts or stops -- does not slide the other two.
     let said: usize = status.iter().map(|s| s.content.chars().count()).sum();
-    let middle_at = width.saturating_sub(said) / 2;
-    // Centred in the whole row is not the same as fitting between the other two: on a narrow screen
-    // the middle reached the right-hand column and the two printed into each other.
-    let middle_at = middle_at
-        .max(name_width + gap)
-        .min(model_at.saturating_sub(said + gap));
 
     // Brighter when it is somebody else's, inverted while the pointer is on it: everything else on
     // the screen looks the same either way, and the invert is how the name says it is a button.
@@ -134,7 +253,7 @@ pub fn render(data: &FooterData, status: &[Span<'static>], width: u16) -> Vec<Li
     let mut spans = vec![Span::styled(" ".repeat(pad), dim)];
     spans.push(Span::styled(name, name_style));
     let mut col = name_width;
-    if middle_at >= col && middle_at + said + gap <= model_at {
+    if let Some(middle_at) = middle_start(data, said, width) {
         spans.push(Span::styled(" ".repeat(middle_at - col), dim));
         spans.extend(status.iter().cloned());
         col = middle_at + said;

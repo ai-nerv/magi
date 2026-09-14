@@ -57,7 +57,6 @@ pub struct App {
     pub named: String,
     pub tease: magi_tui::tease::Tease,
     pub landing: magi_tui::decrypt::Landing,
-    pub trace: magi_tui::beacon::Trace,
     pub modal: crate::keys::Modal,
     /// Pushed by melchior for the `$` popup: a completion offered on a keystroke cannot go look.
     pub reachable: Vec<crate::melchior::Peer>,
@@ -89,9 +88,17 @@ pub struct App {
     pub name_rect: Option<ratatui::layout::Rect>,
     /// Whether the pointer is over that name, so the footer can draw it inverted like the usage badge.
     pub name_hover: bool,
+    /// Whether melchior, balthasar and casper are up, in that order, for the footer's three dots.
+    pub siblings: [bool; 3],
+    /// Where each of those three landed on the footer, for the pointer.
+    pub sibling_rects: [Option<ratatui::layout::Rect>; 3],
+    /// Which sibling's dot the pointer is on: drawn inverted, the way the name shows it is a button.
+    pub sibling_hover: Option<usize>,
     /// An id `--attach` named to watch: held until that agent appears on the roster, then the screen
     /// points at it and this clears. `None` for an ordinary session.
     pub attach_wanted: Option<String>,
+    /// Started with `--view-only`: nothing this screen sends may change a session.
+    pub view_only: bool,
     pub corner: magi_tui::corner::Corner,
 }
 
@@ -124,7 +131,6 @@ impl App {
             named: String::new(),
             tease: magi_tui::tease::Tease::new(opener()),
             landing: magi_tui::decrypt::Landing::default(),
-            trace: magi_tui::beacon::Trace::default(),
             modal: crate::keys::Modal::default(),
             reachable: Vec::new(),
             attached: None,
@@ -143,7 +149,11 @@ impl App {
             pane_rect: None,
             name_rect: None,
             name_hover: false,
+            siblings: [false; 3],
+            sibling_rects: [None; 3],
+            sibling_hover: None,
             attach_wanted: None,
+            view_only: false,
             corner: magi_tui::corner::Corner::default(),
             pending_notice: None,
             no_model: None,
@@ -391,7 +401,7 @@ impl App {
 
 mod crewing;
 mod kin;
-pub use crewing::{Seat, for_screen};
+pub use crewing::{Seat, changes, for_screen};
 pub(crate) use kin::relation;
 mod picking;
 pub use picking::Picking;

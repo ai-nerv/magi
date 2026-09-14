@@ -6,9 +6,13 @@ use magi_proto::UiCommand;
 use magi_tui::footer::FooterData;
 use tokio::sync::{mpsc, watch};
 
-/// Send a command to whichever session is on screen, yours or one you attached to: attaching is
-/// driving. Only this terminal's geometry stays home, since that session draws nothing here.
+/// Send a command to whichever session is on screen: attaching is driving, and `--view-only` is
+/// not. Only this terminal's geometry stays home, since that session draws nothing here.
 pub(super) async fn direct(app: &mut App, to: &mpsc::Sender<UiCommand>, command: UiCommand) {
+    if app.view_only && crate::app::changes(&command) {
+        app.refuse_view_only();
+        return;
+    }
     if app.attached.is_some() && crate::app::for_screen(&command) {
         return;
     }

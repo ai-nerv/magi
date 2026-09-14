@@ -28,6 +28,7 @@ pub async fn run(
     project: &str,
     started: Option<(crate::melchior::Melchior, std::path::PathBuf)>,
     attach: Option<String>,
+    view_only: bool,
 ) -> Result<()> {
     // Before anything reads a setting: `colour`, `glyph` and `metric` each hold their table in a
     // `OnceLock` the first read fills with defaults, and `adopt` after that is a no-op.
@@ -37,6 +38,19 @@ pub async fn run(
     let mut app = App::new();
     // A `--attach <id>` waits for that agent to show up in the roster, then points the screen at it.
     app.attach_wanted = attach;
+    app.view_only = view_only;
+    // Whether casper answers is asked once, off the UI thread: the probe starts the program.
+    let casper_up = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    if let Some(loaded) = &loaded {
+        let program = crate::config::tooling(loaded).program;
+        let up = Arc::clone(&casper_up);
+        tokio::task::spawn_blocking(move || {
+            up.store(
+                !magi_tools::supplier::cards_from(&program).is_empty(),
+                Ordering::Relaxed,
+            );
+        });
+    }
     // What the configuration already allows, so a session taking a child on can lend it at once.
     if let Some(loaded) = &loaded {
         app.granted = crate::config::granted(loaded);
@@ -296,6 +310,11 @@ pub async fn run(
                         // Noted before the match consumes it; the rule lives in `keys::recomputes`.
                         let accepted = !keys::recomputes(&action);
                         match action {
+                            Action::Submit(text) if app.view_only => {
+                                app.refuse_view_only();
+                                app.editor.insert_str(&text);
+                                dirty = true;
+                            }
                             Action::Submit(text) => {
                                 crate::history::remember(&text);
                                 // Beside the prompt, not appended to it: naming an instance tells the
@@ -638,6 +657,13 @@ pub async fn run(
                     app.answered();
                 }
                 was_busy = app.is_busy();
+                app.siblings = [
+                    layer
+                        .as_mut()
+                        .is_some_and(crate::melchior::Melchior::alive),
+                    crate::balthasar::alive(),
+                    casper_up.load(Ordering::Relaxed),
+                ];
                 if let Some(layer) = layer.as_mut() {
                     let (phase, cause) = app.phase();
                     layer.doing(

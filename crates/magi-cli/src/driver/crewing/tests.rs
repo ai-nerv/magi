@@ -44,6 +44,31 @@ async fn a_prompt_typed_at_a_peer_reaches_it() {
     assert!(app.entries().is_empty(), "and nothing is said against it");
 }
 
+/// A `--view-only` screen sends nothing that would change a session, and says why once.
+#[tokio::test]
+async fn a_view_only_screen_sends_no_prompt_and_says_so_once() {
+    let mut app = app_with(vec![peer("beta-nu")]);
+    app.view_only = true;
+    let (to, mut sent) = mpsc::channel(8);
+    app.attach_to(Some(peer("beta-nu")));
+    for _ in 0..3 {
+        direct(
+            &mut app,
+            &to,
+            UiCommand::SubmitPrompt {
+                text: "x".into(),
+                aside: String::new(),
+            },
+        )
+        .await;
+    }
+    assert!(
+        sent.try_recv().is_err(),
+        "a view-only screen drove a session"
+    );
+    assert_eq!(app.entries().len(), 1, "{:?}", app.entries());
+}
+
 /// The same funnel, on our own session, sends everything.
 #[tokio::test]
 async fn our_own_session_takes_what_it_is_given() {
