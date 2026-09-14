@@ -201,11 +201,11 @@ pub(crate) fn strip(
     // Reversed either way, so it is always a block; open changes only the text colour inside it, and
     // while a turn runs it dims with the border beside it.
     let ink = match (open, dim) {
-        (true, _) => colour::text(),
-        (false, Some(dim)) => colour::blend(colour::text(), colour::hint(), dim),
-        (false, None) => colour::hint(),
+        (true, _) => Style::default().fg(colour::text()),
+        (false, Some(dim)) => colour::shade(colour::text(), colour::hint(), dim),
+        (false, None) => Style::default().fg(colour::hint()),
     };
-    let mut style = Style::default().fg(ink).add_modifier(Modifier::REVERSED);
+    let mut style = ink.add_modifier(Modifier::REVERSED);
     if open {
         style = style.add_modifier(Modifier::BOLD);
     }

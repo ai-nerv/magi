@@ -176,6 +176,29 @@ pub fn blend(from: Color, to: Color, t: f32) -> Color {
     Color::Rgb(mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))
 }
 
+/// `from` taken `t` of the way to `to` without leaving the terminal's palette: two greyscale steps
+/// walk the indices between them, as the scan does the other way, so a theme's greys stay its own.
+/// RGB blends; any other index cannot be mixed, and past halfway is itself, dimmed.
+#[must_use]
+pub fn shade(from: Color, to: Color, t: f32) -> ratatui::style::Style {
+    let t = t.clamp(0.0, 1.0);
+    let style = ratatui::style::Style::default();
+    match (from, to) {
+        (Color::Indexed(a @ 232..=255), Color::Indexed(b @ 232..=255)) => {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "at most 23 steps"
+            )]
+            let step = (f32::from(a.abs_diff(b)) * t).round() as u8;
+            style.fg(Color::Indexed(if b < a { a - step } else { a + step }))
+        }
+        _ if rgb_of(from).is_some() && rgb_of(to).is_some() => style.fg(blend(from, to, t)),
+        _ if t >= 0.5 => style.fg(from).add_modifier(ratatui::style::Modifier::DIM),
+        _ => style.fg(from),
+    }
+}
+
 /// The RGB a colour stands for, where that is fixed: an RGB hue, or a step of the 232-255 greyscale.
 fn rgb_of(colour: Color) -> Option<(u8, u8, u8)> {
     match colour {

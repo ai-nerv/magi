@@ -90,11 +90,7 @@ pub(crate) fn placeholder_spans(
 /// colour, darkened where the band is, in step with the border above and below it.
 fn moving(column: usize, across: u16, tick: usize) -> Style {
     let dimmed = crate::border::dimming(column, usize::from(across), tick);
-    Style::default().fg(colour::blend(
-        colour::hint(),
-        colour::shimmer_shadow(),
-        dimmed,
-    ))
+    colour::shade(colour::hint(), colour::shimmer_shadow(), dimmed)
 }
 
 /// How many text rows the prompt shows right now, on a terminal `rows` tall. Worked out rather than

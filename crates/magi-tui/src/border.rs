@@ -288,12 +288,11 @@ fn cell(glyph: &str, at: usize, heads: &[Head], ring: usize) -> Span<'static> {
 /// The working border at `column` of a box `width` across: the resting border colour, only ever
 /// darkened, where the band is — the same band the words in the box carry.
 fn shaded(glyph: &str, column: usize, width: usize, tick: usize) -> Span<'static> {
-    let ink = colour::blend(
-        colour::border(),
-        colour::shimmer_shadow(),
-        dimming(column, width, tick),
-    );
-    Span::styled(glyph.to_owned(), Style::default().fg(ink))
+    let dimmed = dimming(column, width, tick);
+    Span::styled(
+        glyph.to_owned(),
+        colour::shade(colour::border(), colour::shimmer_shadow(), dimmed),
+    )
 }
 
 /// How far the band has dimmed `column` of a box `width` across, from 0 lit to 1 dark. Asked by
@@ -345,18 +344,25 @@ mod tests {
 
     #[test]
     fn working_never_lights_the_border_it_only_darkens_it() {
+        // And stays in the terminal's own palette, as the scan does: a themed grey is never swapped
+        // for a fixed one.
         use ratatui::style::Color;
-        let Color::Rgb(ceiling, _, _) = colour::blend(colour::border(), colour::border(), 0.0)
-        else {
-            panic!("the border is a grey");
+        let Color::Indexed(ceiling) = colour::border() else {
+            panic!("the border is a palette grey");
+        };
+        let Color::Indexed(floor) = colour::shimmer_shadow() else {
+            panic!("and so is its shadow");
         };
         for tick in 0..60 {
             let (top, bottom) = edges(24, 1, tick, Scan::Working);
             for cell in top.spans.iter().chain(&bottom.spans) {
-                let Some(Color::Rgb(red, _, _)) = cell.style.fg else {
-                    panic!("{cell:?}");
+                let Some(Color::Indexed(n)) = cell.style.fg else {
+                    panic!("left the palette: {cell:?}");
                 };
-                assert!(red <= ceiling, "brighter than the resting border at {tick}");
+                assert!(
+                    (floor..=ceiling).contains(&n),
+                    "{n} is not between the border and its shadow at {tick}"
+                );
             }
         }
     }
