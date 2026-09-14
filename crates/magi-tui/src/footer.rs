@@ -144,14 +144,14 @@ pub fn middle_column(data: &FooterData, said: usize, width: u16) -> Option<u16> 
 /// footer and the full one on the menu.
 pub const SIBLINGS: [(&str, &str); 3] =
     [("MEL", "melchior"), ("BAL", "balthasar"), ("CAS", "casper")];
-/// How wide one sibling's segment is, `[● MEL]`, and how far the next one starts from it.
+/// How wide one sibling's segment is, `[✻ MEL]`, and how far the next one starts from it.
 pub const SIBLING_WIDTH: u16 = 7;
 pub const SIBLING_STEP: u16 = 8;
 
-/// `[● MEL] [● BAL] [● CAS]`: a dot each, in the footer's own colour at rest and red for a sibling
+/// `[✻ MEL] [✻ BAL] [✻ CAS]`: a star each, in the footer's own colour at rest and red for a sibling
 /// that is down; the one whose menu is open drawn inverted, the way the name shows it is a button.
-/// `stirred` is how lit each one still is from just having done something, 1 to 0: only its dot
-/// flashes, towards that sibling's own hue, and fades back.
+/// `stirred` is how lit each one is this frame: a lit one turns to a `●` in its sibling's own hue,
+/// so a flickering sibling changes shape as well as colour.
 #[must_use]
 pub fn siblings(up: [bool; 3], open: Option<usize>, stirred: [f32; 3]) -> Vec<Span<'static>> {
     let dim = Style::default().fg(colour::dim());
@@ -170,14 +170,14 @@ pub fn siblings(up: [bool; 3], open: Option<usize>, stirred: [f32; 3]) -> Vec<Sp
         } else {
             colour::error()
         };
-        let dot = match stirred[nth] {
-            by if by > 0.0 => colour::blend(rest, stir_hue(nth), by),
-            _ => rest,
+        let (glyph, ink) = match stirred[nth] {
+            by if by > 0.5 => ("●", colour::blend(rest, stir_hue(nth), by)),
+            _ => ("✻", rest),
         };
         spans.push(Span::styled("[", dim.add_modifier(lit)));
         spans.push(Span::styled(
-            "●",
-            Style::default().fg(dot).add_modifier(lit),
+            glyph,
+            Style::default().fg(ink).add_modifier(lit),
         ));
         spans.push(Span::styled(format!(" {short}]"), dim.add_modifier(lit)));
     }
@@ -201,6 +201,11 @@ mod siblings_tests {
         spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
+    /// Whether a span is one of the three marks, at rest or lit.
+    fn marks(span: &Span<'_>) -> bool {
+        span.content == "✻" || span.content == "●"
+    }
+
     #[test]
     fn a_lit_segment_is_one_background_dot_included() {
         // The whole segment is dim reversed, the dot with it, so its ground matches the rest.
@@ -214,7 +219,7 @@ mod siblings_tests {
     #[test]
     fn three_segments_one_dot_each_at_fixed_columns() {
         let drawn = text(&siblings([true, false, true], None, [0.0; 3]));
-        assert_eq!(drawn, "[● MEL] [● BAL] [● CAS]");
+        assert_eq!(drawn, "[✻ MEL] [✻ BAL] [✻ CAS]");
         for (nth, (short, _)) in SIBLINGS.iter().enumerate() {
             let at = usize::from(SIBLING_STEP) * nth;
             let segment: String = drawn
@@ -222,7 +227,7 @@ mod siblings_tests {
                 .skip(at)
                 .take(usize::from(SIBLING_WIDTH))
                 .collect();
-            assert_eq!(segment, format!("[● {short}]"));
+            assert_eq!(segment, format!("[✻ {short}]"));
         }
     }
 
@@ -230,7 +235,7 @@ mod siblings_tests {
     fn a_dot_rests_in_the_footer_colour_and_is_red_only_when_down() {
         let dots: Vec<_> = siblings([true, false, true], None, [0.0; 3])
             .into_iter()
-            .filter(|s| s.content == "●")
+            .filter(|s| s.content == "✻")
             .map(|s| s.style.fg)
             .collect();
         assert_eq!(
@@ -249,19 +254,27 @@ mod siblings_tests {
         let dot = |stirred| {
             drawn(stirred)
                 .into_iter()
-                .filter(|s| s.content == "●")
+                .filter(marks)
                 .nth(2)
-                .and_then(|s| s.style.fg)
+                .map(|s| (s.content.into_owned(), s.style.fg))
         };
         assert_eq!(
             dot([0.0, 0.0, 1.0]),
-            Some(colour::blend(colour::dim(), colour::warning(), 1.0))
+            Some((
+                "●".to_owned(),
+                Some(colour::blend(colour::dim(), colour::warning(), 1.0))
+            )),
+            "a lit one is a dot in its own hue"
         );
-        assert_eq!(dot([1.0, 1.0, 0.0]), Some(colour::dim()), "only its own");
+        assert_eq!(
+            dot([1.0, 1.0, 0.0]),
+            Some(("✻".to_owned(), Some(colour::dim()))),
+            "only its own"
+        );
         assert!(
             drawn([1.0; 3])
                 .iter()
-                .filter(|s| s.content != "●")
+                .filter(|s| !marks(s))
                 .all(|s| s.style.fg == Some(colour::dim())),
             "the brackets and the name stay as they are"
         );
