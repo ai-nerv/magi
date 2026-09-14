@@ -27,13 +27,13 @@ pub fn of(role: Role) -> Color {
         Role::Removed => colour::diff_removed(),
         Role::Marker => colour::diff_marker(),
         Role::Context => colour::diff_context(),
-        // Borrowed from the markdown palette so a highlighted `cat` and a fenced block agree.
-        Role::Keyword => colour::md_heading(),
-        Role::String => colour::md_code(),
-        Role::Number => colour::md_code(),
-        Role::Comment => colour::md_quote(),
-        Role::Type => colour::md_code_block(),
-        Role::Func => colour::accent(),
+        // The code colours, so a file casper highlighted and a fenced block agree.
+        Role::Keyword => colour::code_keyword(),
+        Role::String => colour::code_string(),
+        Role::Number => colour::code_number(),
+        Role::Comment => colour::code_comment(),
+        Role::Type => colour::code_type(),
+        Role::Func => colour::code_command(),
     }
 }
 
@@ -93,10 +93,13 @@ mod tests {
             colour::diff_removed(),
             colour::diff_marker(),
             colour::diff_context(),
-            colour::md_heading(),
             colour::md_code(),
-            colour::md_quote(),
-            colour::md_code_block(),
+            colour::code_keyword(),
+            colour::code_string(),
+            colour::code_number(),
+            colour::code_comment(),
+            colour::code_type(),
+            colour::code_command(),
         ];
         for role in [
             Role::Text,

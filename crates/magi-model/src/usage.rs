@@ -10,6 +10,10 @@ pub struct Usage {
     pub output: u64,
     pub cache_read: u64,
     pub cache_write: u64,
+    /// What the provider said the request cost, in millionths of a US dollar; zero where it did
+    /// not say. Whole numbers, so a total adds up exactly.
+    #[serde(default)]
+    pub cost_micros: u64,
 }
 
 impl Usage {
@@ -30,6 +34,7 @@ impl Usage {
         self.output += other.output;
         self.cache_read += other.cache_read;
         self.cache_write += other.cache_write;
+        self.cost_micros += other.cost_micros;
     }
 
     #[must_use]
@@ -68,6 +73,7 @@ mod tests {
             output: 50,
             cache_read: 900,
             cache_write: 10,
+            cost_micros: 0,
         };
         assert_eq!(usage.prompt_tokens(), 1010);
     }

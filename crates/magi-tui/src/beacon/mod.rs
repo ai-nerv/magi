@@ -49,10 +49,19 @@ pub enum Mood {
 pub fn render(trace: &mut Trace, mood: Mood, tick: usize, cells: usize) -> Vec<Span<'static>> {
     trace.advance(mood, tick, cells * 2);
     let dots = trace.dots(cells * 2);
-    let style = Style::default().fg(colour::dim());
+    let style = Style::default().fg(ink(mood));
     (0..cells)
         .map(|cell| Span::styled(cell_of(&dots, cell).to_string(), style))
         .collect()
+}
+
+/// The display's colour: lit while a turn runs or something waits on you, the footer's grey at rest.
+fn ink(mood: Mood) -> ratatui::style::Color {
+    match mood {
+        Mood::Working => colour::spinning(),
+        Mood::Asking | Mood::Narrowing => colour::warning(),
+        Mood::Resting | Mood::Holding | Mood::Away => colour::dim(),
+    }
 }
 
 fn cell_of(dots: &Dots, cell: usize) -> char {
@@ -122,16 +131,22 @@ mod tests {
     }
 
     #[test]
-    fn it_is_all_one_colour() {
-        let footer = Some(colour::dim());
+    fn it_is_one_colour_at_a_time() {
         for mood in EVERY {
+            let lit = Some(ink(mood));
             let mut trace = Trace::default();
             for tick in 0..STEPS {
                 for cell in render(&mut trace, mood, tick, CELLS) {
-                    assert_eq!(cell.style.fg, footer, "{mood:?} at {tick}");
+                    assert_eq!(cell.style.fg, lit, "{mood:?} at {tick}");
                 }
             }
         }
+    }
+
+    #[test]
+    fn it_is_lit_while_a_turn_runs_and_grey_at_rest() {
+        assert_eq!(ink(Mood::Working), colour::spinning());
+        assert_eq!(ink(Mood::Resting), colour::dim());
     }
 
     #[test]

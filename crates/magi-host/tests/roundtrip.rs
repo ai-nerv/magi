@@ -410,6 +410,7 @@ async fn what_a_turn_cost_reaches_the_ui() {
         output: 9,
         cache_read: 768,
         cache_write: 0,
+        cost_micros: 0,
     };
     {
         let mut held = session.lock().await;

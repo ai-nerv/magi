@@ -11,12 +11,12 @@ mod placeholder_tests {
     fn the_placeholder_is_dimmer_than_what_you_type() {
         // A placeholder in the text colour reads as something already in the box, and the first
         // thing anybody does is try to delete it.
-        assert!(
-            colour::palette().hint < colour::palette().text,
-            "the hint is not dimmer: {} against {}",
-            colour::palette().hint,
-            colour::palette().text
-        );
+        let (ratatui::style::Color::Indexed(hint), ratatui::style::Color::Indexed(text)) =
+            (colour::palette().hint, colour::palette().text)
+        else {
+            panic!("both are greys on the terminal's palette");
+        };
+        assert!(hint < text, "the hint is not dimmer: {hint} against {text}");
     }
 
     #[test]

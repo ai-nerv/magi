@@ -67,7 +67,9 @@ pub(super) fn block(
     let mut said: Vec<Line<'static>> = Vec::new();
     // What the call was given, as the block's first row, where it has the width to be read.
     let asked = summarize(args, detail);
-    if !asked.trim().is_empty() {
+    if let Some(command) = super::shell::asked(name, args, detail, style, width, body, lead) {
+        said.extend(command);
+    } else if !asked.trim().is_empty() {
         said.extend(laid(
             asked.trim(),
             style.fg(colour::tool_output()),
@@ -96,9 +98,17 @@ pub(super) fn block(
         };
         match painted {
             Some(lines) => {
-                for spans in &lines[..shown] {
-                    let drawn = crate::painted::line(spans, style);
-                    rows.extend(wrapped(drawn, style, detail, width, body, lead));
+                // In the file's own language, where it is one syntect knows; each row on its own
+                // ground, which for an edit is the colour of what happened to the line.
+                let drawn = super::code::repaint(name, args, &lines[..shown], style)
+                    .unwrap_or_else(|| {
+                        lines[..shown]
+                            .iter()
+                            .map(|spans| (crate::painted::line(spans, style), style))
+                            .collect()
+                    });
+                for (line, on) in drawn {
+                    rows.extend(wrapped(line, on, detail, width, body, lead));
                 }
             }
             // Without a painting there is only `change_colour`, which guesses from the first
@@ -132,12 +142,24 @@ pub(super) fn block(
     // A box only when there is something to put in it: framing a call that has produced nothing
     // drew two edges with a gap between them.
     if rows.is_empty() {
-        out.push(super::frame::lone(
-            name,
-            label,
-            &summarize(args, detail),
-            width,
-        ));
+        // A running shell command is highlighted like the block it grows into; anything else is
+        // its arguments in grey.
+        let beside = super::shell::command_of(name, args).map_or_else(
+            || {
+                let said = summarize(args, detail);
+                let said = said.trim();
+                if said.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![Span::styled(
+                        said.to_owned(),
+                        Style::default().fg(colour::dim()),
+                    )]
+                }
+            },
+            |command| super::shell::highlight(&flatten(&command), Style::default()),
+        );
+        out.push(super::frame::lone(name, label, beside, width));
         return out;
     }
     // What became of the call, beside its name. Nothing is patched into the buffer: the transcript

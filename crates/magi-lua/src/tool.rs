@@ -153,7 +153,7 @@ pub fn assemble(
     }
     // The one builtin that reaches the harness — not a tool in casper's sense but magi coordinating
     // its own agent tree — given the environment it starts a child with.
-    magi_tools::builtin::install_spawn(&mut registry, environ);
+    magi_tools::builtin::install_spawn(&mut registry, environ, &tooling.kinds);
 
     // A name a config declared for itself is that config's, however far it also travelled.
     let declared: Vec<String> = engine

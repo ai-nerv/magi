@@ -10,18 +10,33 @@ use serde_json::{Value, json};
 
 /// Register the one builtin that reaches the harness: `spawn`, which starts a child session.
 /// `environ` is what a child process is told (`MAGI_MELCHIOR_*`, `MAGI_SESSION_PID`); without it a
-/// root could not name itself to melchior.
+/// root could not name itself to melchior. `kinds` are the roles the configuration describes.
 pub fn install_spawn(
     registry: &mut crate::Registry,
     environ: &std::collections::BTreeMap<String, String>,
+    kinds: &[Kind],
 ) {
-    registry.register(Box::new(Spawn {
-        environ: environ.clone(),
-        // Whether this session may start children at all: a parent that spawned it without leave
-        // set [`NO_SPAWN`] in its environment, and the flag can only be taken away going down.
-        may_spawn: std::env::var(NO_SPAWN).is_err(),
-    }));
+    // Whether this session may start children at all: a parent that spawned it without leave set
+    // [`NO_SPAWN`] in its environment, and the flag can only be taken away going down.
+    let may_spawn = std::env::var(NO_SPAWN).is_err();
+    registry.register(Box::new(Spawn::new(
+        environ.clone(),
+        may_spawn,
+        kinds.to_vec(),
+    )));
 }
+
+/// A role the configuration describes, as `spawn` offers it: what it is called, what it is for, and
+/// whether a child in it may start children of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Kind {
+    pub name: String,
+    pub description: String,
+    pub delegate: bool,
+}
+
+/// The most of a role's description melchior will file with a child's name.
+const DESCRIBED: usize = 280;
 
 /// Set on a child started without leave to spawn its own; the child's `spawn` refuses while it is
 /// there. Inherited, and only ever added going down the tree, so `delegate` narrows like a grant.
@@ -40,6 +55,40 @@ pub struct Spawn {
     environ: std::collections::BTreeMap<String, String>,
     /// Whether this session was given leave to start children — see [`NO_SPAWN`].
     may_spawn: bool,
+    /// The roles a child can be given by name, and the description that lists them for the model.
+    kinds: Vec<Kind>,
+    described: String,
+}
+
+/// What the model is told `spawn` does, before the configured roles are listed.
+const DESCRIPTION: &str = "Start a child agent in this project to do one part of a larger task, \
+alongside others. It sees none of your conversation, so `prompt` must be a complete brief. Returns \
+the child's id; you are woken when it finishes, and its report arrives in your inbox (`agent` tool). \
+The tree has a depth and a breadth limit, and starting one past either is refused.";
+
+impl Spawn {
+    #[must_use]
+    pub fn new(
+        environ: std::collections::BTreeMap<String, String>,
+        may_spawn: bool,
+        kinds: Vec<Kind>,
+    ) -> Self {
+        let mut described = DESCRIPTION.to_owned();
+        if !kinds.is_empty() {
+            described.push_str(
+                "\n\nRoles a child can be given as `role`, each with instructions of its own:",
+            );
+            for kind in &kinds {
+                described.push_str(&format!("\n- `{}`: {}", kind.name, kind.description));
+            }
+        }
+        Self {
+            environ,
+            may_spawn,
+            kinds,
+            described,
+        }
+    }
 }
 
 /// A child's task with a closing line to report back. The coordinator's own reaction is to read
@@ -64,10 +113,7 @@ impl Tool for Spawn {
     }
 
     fn description(&self) -> &str {
-        "Start a child agent in this project to do one part of a larger task, alongside others. It \
-         sees none of your conversation, so `prompt` must be a complete brief. Returns the child's \
-         id; you are woken when it finishes, and its report arrives in your inbox (`agent` tool). \
-         The tree has a depth and a breadth limit, and starting one past either is refused."
+        &self.described
     }
 
     fn parameters(&self) -> Value {
@@ -76,7 +122,8 @@ impl Tool for Spawn {
             "properties": {
                 "role": {
                     "type": "string",
-                    "description": "One word for what the child is for, like `backend` or `tests`.",
+                    "description": "What the child is for: one of the roles listed above, or any \
+                                    one word like `backend` or `tests`.",
                 },
                 "prompt": {
                     "type": "string",
@@ -107,8 +154,10 @@ impl Tool for Spawn {
         };
         let role = arguments["role"].as_str();
         let prompt = arguments["prompt"].as_str();
-        // A child started with `delegate: false` is one that may not spawn in turn.
-        let delegate = arguments["delegate"].as_bool().unwrap_or(true);
+        let kind = role.and_then(|role| self.kinds.iter().find(|kind| kind.name == role));
+        // A child started with `delegate: false`, or in a role that may not, may not spawn in turn.
+        let delegate = arguments["delegate"].as_bool().unwrap_or(true)
+            && kind.is_none_or(|kind| kind.delegate);
         let mut shown = vec!["fork".to_owned()];
         if let Some(role) = role {
             shown.push(format!("--role={role}"));
@@ -116,6 +165,12 @@ impl Tool for Spawn {
         // What the `run` grant sees: binary and role, not the free-text `prompt` — whose `(` would
         // trip the chain guard and defeat a standing grant, and which is the child's task anyway.
         let asked = format!("{} {}", exe.display(), shown.join(" "));
+        // Filed by melchior with the child's name. Free text, so like the prompt it is kept out of
+        // what the grant sees.
+        if let Some(kind) = kind.filter(|kind| !kind.description.is_empty()) {
+            let about: String = kind.description.chars().take(DESCRIBED).collect();
+            shown.push(format!("--role-description={about}"));
+        }
         // A coordinator wakes when a child finishes and reads its inbox; a child that never sends
         // leaves it empty. So a task carries a closing line telling the child to report back to the
         // session that started it — this one, named by its own melchior id.
@@ -175,7 +230,7 @@ mod tests {
         // spawn, and it is not there until install_spawn adds it.
         let mut registry = crate::Registry::new();
         assert_eq!(registry.len(), 0, "magi's registry starts empty");
-        install_spawn(&mut registry, &std::collections::BTreeMap::new());
+        install_spawn(&mut registry, &std::collections::BTreeMap::new(), &[]);
         assert_eq!(registry.len(), 1);
         assert!(
             registry.get("spawn").is_some(),
@@ -187,10 +242,7 @@ mod tests {
     fn a_child_cannot_be_started_without_a_brief() {
         // A child with no prompt comes up with nothing to do and nothing to report, so the schema
         // refuses the call before the tool runs.
-        let spawn = Spawn {
-            environ: std::collections::BTreeMap::new(),
-            may_spawn: true,
-        };
+        let spawn = Spawn::new(std::collections::BTreeMap::new(), true, Vec::new());
         let refused = crate::schema::check(&json!({ "role": "backend" }), &spawn.parameters());
         assert!(refused.is_err(), "a spawn with no prompt was accepted");
         let taken = crate::schema::check(&json!({ "prompt": "build it" }), &spawn.parameters());
@@ -210,11 +262,7 @@ mod tests {
             crate::permit::Ledger::new(),
             std::sync::Arc::new(crate::approve::DenyAll),
         );
-        let out = Spawn {
-            environ: std::collections::BTreeMap::new(),
-            may_spawn: true,
-        }
-        .run(
+        let out = Spawn::new(std::collections::BTreeMap::new(), true, Vec::new()).run(
             &json!({ "prompt": "do a thing" }),
             &ops,
             &crate::Uncancelled,
@@ -256,11 +304,7 @@ mod tests {
             ledger,
             std::sync::Arc::new(Records(std::sync::Arc::clone(&asked))),
         );
-        Spawn {
-            environ: std::collections::BTreeMap::new(),
-            may_spawn: true,
-        }
-        .run(
+        Spawn::new(std::collections::BTreeMap::new(), true, Vec::new()).run(
             &json!({ "role": "scanner", "prompt": "look at the magi crate (the nerv repo)" }),
             &ops,
             &crate::Uncancelled,
@@ -297,16 +341,33 @@ mod tests {
         // was granted — the refusal is before the gate is even consulted.
         let dir = scratch("no-leave");
         let ops = crate::ops::Real::new(dir.to_path_buf());
-        let out = Spawn {
-            environ: std::collections::BTreeMap::new(),
-            may_spawn: false,
-        }
-        .run(&json!({ "prompt": "x" }), &ops, &crate::Uncancelled);
+        let out = Spawn::new(std::collections::BTreeMap::new(), false, Vec::new()).run(
+            &json!({ "prompt": "x" }),
+            &ops,
+            &crate::Uncancelled,
+        );
         assert!(
             out.is_error,
             "a child without leave spawned anyway: {}",
             out.content
         );
         assert!(out.content.contains("without leave"), "{}", out.content);
+    }
+
+    #[test]
+    fn the_configured_roles_are_offered_by_name_and_what_they_are_for() {
+        let reviewer = Kind {
+            name: "reviewer".to_owned(),
+            description: "reads a change".to_owned(),
+            delegate: false,
+        };
+        let offered = Spawn::new(std::collections::BTreeMap::new(), true, vec![reviewer]);
+        assert!(
+            offered.description().contains("`reviewer`: reads a change"),
+            "{}",
+            offered.description()
+        );
+        let bare = Spawn::new(std::collections::BTreeMap::new(), true, Vec::new());
+        assert!(!bare.description().contains("Roles"), "no roles, no list");
     }
 }

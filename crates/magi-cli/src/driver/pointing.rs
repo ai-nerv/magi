@@ -77,6 +77,11 @@ pub(crate) fn on_the_screen(
                 .is_some_and(|at| within(at, mouse.row, mouse.column));
             let mut changed = over_name != app.name_hover;
             app.name_hover = over_name;
+            let over_model = app
+                .model_rect
+                .is_some_and(|at| within(at, mouse.row, mouse.column));
+            changed |= over_model != app.model_hover;
+            app.model_hover = over_model;
             let over_dot = app
                 .sibling_rects
                 .iter()
@@ -120,6 +125,14 @@ pub(crate) fn on_the_screen(
                 .position(|at| at.is_some_and(|at| within(at, mouse.row, mouse.column)))
             {
                 app.press_sibling(nth);
+                return Pointing::Redraw;
+            }
+            // The model's name opens its card, the same float the name and the badge open.
+            if app
+                .model_rect
+                .is_some_and(|at| within(at, mouse.row, mouse.column))
+            {
+                app.press_model();
                 return Pointing::Redraw;
             }
             // The footer name opens the agents view — the `< >` control that used to do it is gone.

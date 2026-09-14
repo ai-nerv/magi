@@ -16,6 +16,7 @@ fn row(width: u16, crew: usize) -> String {
         crew,
         own: true,
         name_hover: false,
+        model_hover: false,
     };
     render(&data, &[Span::raw("waiting")], width)[0]
         .spans

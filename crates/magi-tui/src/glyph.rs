@@ -72,8 +72,7 @@ glyphs! {
     block_edge = "─", "Repeated along a transcript block's top and bottom edges.";
     expand = "▸", "On the top edge of a folded tool block: click to open it.";
     collapse = "▾", "On the top edge of an open tool block: click to fold it.";
-    copy = "⧉", "On the top edge of a block: click to put what it says on the clipboard.";
-    running = "·", "Beside a call that has been made and has not come back.";
+    copy = "⧉", "On the top edge of a block: click to put what it says on the clipboard.";    running = "·", "Beside a call that has been made and has not come back.";
     outcome_ok = "✓", "Beside a call that came back without an error.";
     outcome_failed = "✗", "Beside a call that reported a problem.";
     quote_rule = "│ ", "Down the left of a block quote.";

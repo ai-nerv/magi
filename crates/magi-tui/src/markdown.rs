@@ -18,6 +18,9 @@ use ratatui::text::{Line, Span};
 pub fn render(source: &str, width: u16, base: Style) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     let mut in_fence = false;
+    // A fenced block is held until it closes, so it can be highlighted as a whole.
+    let mut fence: Vec<String> = Vec::new();
+    let mut language = String::new();
     // Consecutive prose lines are one paragraph and reflow together; a hard break in the
     // source is an artifact of how the model emitted it, not something the reader asked for.
     let mut paragraph: Vec<&str> = Vec::new();
@@ -43,7 +46,9 @@ pub fn render(source: &str, width: u16, base: Style) -> Vec<Line<'static>> {
             in_fence = !in_fence;
             if in_fence {
                 out.push(fence_head(rest, width));
+                rest.clone_into(&mut language);
             } else {
+                flush_fence(&mut fence, &language, &mut out);
                 // Closed, so the eye has something to land on. An opening bar with no closing
                 // one leaves the block looking like it ran off the end of the message.
                 out.push(Line::from(Span::styled(
@@ -55,13 +60,7 @@ pub fn render(source: &str, width: u16, base: Style) -> Vec<Line<'static>> {
         }
 
         if in_fence {
-            out.push(Line::from(vec![
-                Span::styled(glyph::quote_rule(), Style::default().fg(colour::rule())),
-                Span::styled(
-                    crate::wrap::expand_tabs(trimmed),
-                    Style::default().fg(colour::md_code_block()),
-                ),
-            ]));
+            fence.push(crate::wrap::expand_tabs(trimmed));
             continue;
         }
 
@@ -87,10 +86,25 @@ pub fn render(source: &str, width: u16, base: Style) -> Vec<Line<'static>> {
     }
 
     flush_paragraph(&mut paragraph, &mut out, width, base);
+    // A fence still open at the end is a reply still arriving: what has come is drawn all the same.
+    flush_fence(&mut fence, &language, &mut out);
     if !table.is_empty() {
         out.extend(table::render(&table, width));
     }
     out
+}
+
+/// A fenced block's lines behind its bar, highlighted in the language its fence named.
+fn flush_fence(fence: &mut Vec<String>, language: &str, out: &mut Vec<Line<'static>>) {
+    for line in crate::syntax::block(language, fence, Style::default()) {
+        let mut spans = vec![Span::styled(
+            glyph::quote_rule(),
+            Style::default().fg(colour::rule()),
+        )];
+        spans.extend(line);
+        out.push(Line::from(spans));
+    }
+    fence.clear();
 }
 
 /// The opening line of a fenced block: the bar, and the language if one was named.

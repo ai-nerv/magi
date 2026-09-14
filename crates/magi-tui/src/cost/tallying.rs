@@ -10,6 +10,7 @@ fn turn(at: usize, input: u64, output: u64, read: u64, write: u64) -> Turn {
             output,
             cache_read: read,
             cache_write: write,
+            cost_micros: 0,
         },
     }
 }
@@ -71,6 +72,21 @@ fn it_does_not_invent_a_price() {
         "and it says where the rate lives: {said}"
     );
     assert!(said.contains("anthropic/x"), "for this model: {said}");
+}
+
+#[test]
+fn what_the_provider_said_a_turn_cost_is_shown_and_summed() {
+    let mut one = turn(1, 100, 10, 0, 0);
+    one.usage.cost_micros = 1_234;
+    let mut two = turn(2, 100, 10, 0, 0);
+    two.usage.cost_micros = 20_000;
+    let said = text(&lines(&[one, two], Some("openrouter/x")));
+    assert!(said.contains("cost"), "a money column: {said}");
+    assert!(said.contains("$0.0012"), "the first turn: {said}");
+    assert!(
+        said.contains("spent $0.0212"),
+        "and the whole session: {said}"
+    );
 }
 
 #[test]

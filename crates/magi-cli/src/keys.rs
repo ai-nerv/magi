@@ -55,6 +55,12 @@ pub enum Action {
         /// Along the ring rather than back down it.
         forward: bool,
     },
+    /// The entry under a list's cursor was taken: point the screen at that agent.
+    Attach(String),
+    /// Shut the branch under a list's cursor, or open it.
+    Fold {
+        open: bool,
+    },
     /// Hand the prompt to `$EDITOR`.
     ExternalEdit,
     Scroll(Scroll),
@@ -73,7 +79,12 @@ pub enum Action {
 pub fn recomputes(action: &Action) -> bool {
     !matches!(
         action,
-        Action::Accepted | Action::Dismissed | Action::Recalled | Action::Moved
+        Action::Accepted
+            | Action::Dismissed
+            | Action::Recalled
+            | Action::Moved
+            | Action::Attach(_)
+            | Action::Fold { .. }
     )
 }
 /// Apply a keypress to the editor and whatever is open under it. `busy` gates submission. A
@@ -92,40 +103,56 @@ pub fn handle(
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
-    // A float takes the navigation keys first: escape closes it rather than clearing the prompt.
+    // A float takes the navigation keys first: escape closes it rather than clearing the prompt. A
+    // list moves a cursor entry by entry, and any other float scrolls.
     if let Some(open) = pane.as_mut() {
+        let listed = !open.picks.is_empty();
+        let pages = (page / 3).max(1);
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
                 *pane = None;
                 return Action::Dismissed;
             }
-            KeyCode::Up | KeyCode::Char('k') => {
-                open.up(1);
-                return Action::Moved;
+            KeyCode::Enter if listed => {
+                return open
+                    .chosen()
+                    .map_or(Action::Ignore, |id| Action::Attach(id.to_owned()));
             }
-            KeyCode::Down | KeyCode::Char('j') => {
-                open.down(1, page);
-                return Action::Moved;
+            KeyCode::Left | KeyCode::Char('h') if listed => return Action::Fold { open: false },
+            KeyCode::Right | KeyCode::Char('l') if listed => return Action::Fold { open: true },
+            // Past the first or last entry the keys scroll instead: a list may have rows under it.
+            KeyCode::Up | KeyCode::Char('k') if listed => {
+                if !open.step(false) {
+                    open.up(1);
+                }
             }
-            KeyCode::PageUp => {
-                open.up(page);
-                return Action::Moved;
+            KeyCode::Down | KeyCode::Char('j') if listed => {
+                if !open.step(true) {
+                    open.down(1, page);
+                }
             }
-            KeyCode::PageDown => {
-                open.down(page, page);
-                return Action::Moved;
+            KeyCode::PageUp if listed => {
+                if !(0..pages).fold(false, |moved, _| open.step(false) || moved) {
+                    open.up(page);
+                }
             }
-            KeyCode::Home => {
-                open.top = 0;
-                return Action::Moved;
+            KeyCode::PageDown if listed => {
+                if !(0..pages).fold(false, |moved, _| open.step(true) || moved) {
+                    open.down(page, page);
+                }
             }
-            KeyCode::End => {
-                open.bottom(page);
-                return Action::Moved;
-            }
+            KeyCode::Home | KeyCode::Char('g') if listed => open.first(),
+            KeyCode::End | KeyCode::Char('G') if listed => open.last(),
+            KeyCode::Up | KeyCode::Char('k') => open.up(1),
+            KeyCode::Down | KeyCode::Char('j') => open.down(1, page),
+            KeyCode::PageUp => open.up(page),
+            KeyCode::PageDown => open.down(page, page),
+            KeyCode::Home | KeyCode::Char('g') => open.top = 0,
+            KeyCode::End | KeyCode::Char('G') => open.bottom(page),
             // Everything else is ignored rather than reaching the prompt: a float is modal.
             _ => return Action::Ignore,
         }
+        return Action::Moved;
     }
 
     if let Some(open) = overlay

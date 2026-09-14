@@ -100,6 +100,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
             badge: &badge,
             badge_open,
             mode: app.modal.mode,
+            working: Some((app.scan_tick(), area.width)),
             ..Default::default()
         }
     };
@@ -210,6 +211,16 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
     // layout knows the row.
     app.name_rect = (!footer_data.identity.is_empty()).then(|| {
         let columns = footer::name_columns(footer_data, area.width);
+        Rect {
+            x: footer_area.x + columns.start,
+            y: footer_area.y,
+            width: columns.end - columns.start,
+            height: 1,
+        }
+    });
+    // And the model's name, at the other end, which opens the model's card.
+    app.model_rect = (!footer_data.model.is_empty()).then(|| {
+        let columns = footer::model_columns(footer_data, area.width);
         Rect {
             x: footer_area.x + columns.start,
             y: footer_area.y,

@@ -71,6 +71,9 @@ pub(crate) fn placeholder_spans(
             ghost
         } else if at == 0 {
             mine
+        } else if let Some((tick, across)) = saying.working {
+            // Two columns in: the text sits inside the side and its padding.
+            moving(2 + at, across, tick)
         } else {
             dim
         };
@@ -81,6 +84,17 @@ pub(crate) fn placeholder_spans(
         spans.push(Span::styled(" ", ghost));
     }
     spans
+}
+
+/// A letter of a running turn's words at `column` of a box `across` wide: the placeholder's own
+/// colour, darkened where the band is, in step with the border above and below it.
+fn moving(column: usize, across: u16, tick: usize) -> Style {
+    let dimmed = crate::border::dimming(column, usize::from(across), tick);
+    Style::default().fg(colour::blend(
+        colour::hint(),
+        colour::shimmer_shadow(),
+        dimmed,
+    ))
 }
 
 /// How many text rows the prompt shows right now, on a terminal `rows` tall. Worked out rather than
@@ -146,8 +160,21 @@ pub fn render(
     let content = shown + if menu.is_empty() { 0 } else { 1 + menu.len() };
     let (top, bottom) = crate::border::edges(width, content, tick, scan);
 
+    // What sits on the border dims with it while a turn runs, by the column it sits in: the mode
+    // near the left, the usage near the right.
+    let dimmed = |column: usize| {
+        saying
+            .working
+            .map(|(tick, _)| crate::border::dimming(column, usize::from(width), tick))
+    };
+    let mode_dim = dimmed(4);
+    let badge_dim = dimmed(usize::from(width).saturating_sub(badge.chars().count() / 2 + 3));
     let mut out = Vec::with_capacity(content + 2);
-    out.push(tagged(hidden(top, Direction::Up, offset), saying.mode));
+    out.push(tagged(
+        hidden(top, Direction::Up, offset),
+        saying.mode,
+        mode_dim,
+    ));
 
     for row in 0..shown {
         let body = if blank {
@@ -168,7 +195,7 @@ pub fn render(
             row,
             tick,
             scan,
-            &crate::fold::strip(badge, shown, row, saying.badge_open),
+            &crate::fold::strip(badge, shown, row, saying.badge_open, badge_dim),
         ));
     }
 
@@ -294,18 +321,20 @@ fn hidden(edge: Line<'static>, direction: Direction, count: usize) -> Line<'stat
 
 /// Write the mode onto the top edge of the box, top-left, in three letters always so the frame does
 /// not move when the mode does.
-fn tagged(edge: Line<'static>, mode: crate::vim::Mode) -> Line<'static> {
+fn tagged(edge: Line<'static>, mode: crate::vim::Mode, dim: Option<f32>) -> Line<'static> {
     let label = format!(" {} ", mode.tag());
     if label.chars().count() + 4 > columns_of(&edge) {
         return edge;
     }
-    // Insert mode is the one where a keystroke changes something.
-    let style = Style::default().fg(if mode.is_insert() {
-        colour::accent()
-    } else {
-        colour::border()
-    });
-    caption(edge, &label, style, 2)
+    // Each mode in its own hue, so which one the keys are in reads at a glance; while a turn runs it
+    // dims with the border it sits on.
+    let hue = match mode {
+        crate::vim::Mode::Normal => colour::mode_normal(),
+        crate::vim::Mode::Insert => colour::mode_insert(),
+        crate::vim::Mode::Command => colour::mode_command(),
+    };
+    let ink = dim.map_or(hue, |dim| colour::blend(hue, colour::border(), 0.7 * dim));
+    caption(edge, &label, Style::default().fg(ink), 2)
 }
 
 /// How many columns an edge occupies.
@@ -407,6 +436,7 @@ mod tests {
                 mode: crate::vim::Mode::default(),
                 block: false,
                 marked: None,
+                working: None,
             },
         ));
         assert_eq!(rendered.len(), 3, "top edge, text, bottom edge");
@@ -590,6 +620,7 @@ mod narrow_tests {
                 mode: crate::vim::Mode::default(),
                 block: false,
                 marked: None,
+                working: None,
             },
         )
         .lines[1]

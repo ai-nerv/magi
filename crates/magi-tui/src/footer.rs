@@ -23,6 +23,8 @@ pub struct FooterData {
     /// The pointer is over the name, which opens the agents view: drawn inverted while it is, the
     /// same block the usage badge always wears, so the name reads as the button it is.
     pub name_hover: bool,
+    /// The pointer is over the model's name, which opens the model's card: inverted while it is.
+    pub model_hover: bool,
 }
 
 /// Abbreviate a token count the way Pi's `formatTokens` does.
@@ -92,6 +94,22 @@ pub fn name_columns(data: &FooterData, width: u16) -> std::ops::Range<u16> {
     pad..pad + u16::try_from(name_width).unwrap_or(0)
 }
 
+/// Where the model's name lands, as columns from the left edge (the pad included), for the press
+/// that opens its card: right-aligned in the inset, fitted the way the draw fits it.
+#[must_use]
+pub fn model_columns(data: &FooterData, width: u16) -> std::ops::Range<u16> {
+    let pad = crate::metric::footer_pad();
+    let inset = usize::from(width).saturating_sub(usize::from(pad) * 2);
+    let gap = usize::from(crate::metric::column_gap());
+    let name = fit_name(&data.identity, inset);
+    let model = fit_path(
+        &data.model,
+        inset.saturating_sub(name.chars().count() + gap * 2),
+    );
+    let end = pad + u16::try_from(inset).unwrap_or(u16::MAX);
+    end.saturating_sub(u16::try_from(model.chars().count()).unwrap_or(0))..end
+}
+
 /// Where a middle `said` cells wide starts, in columns of the inset `width`, when it fits between
 /// the name and the model; `None` when it is left out. The draw and the pointer's layout both ask
 /// here, so the dots and the cells a hover is measured against agree.
@@ -151,10 +169,13 @@ pub fn siblings(up: [bool; 3], open: Option<usize>) -> Vec<Span<'static>> {
             colour::error()
         };
         spans.push(Span::styled("[", dim.add_modifier(lit)));
-        spans.push(Span::styled(
-            "●",
-            Style::default().fg(dot).add_modifier(lit),
-        ));
+        // Not reversed: that would swap the dot's green or red into the background. The segment's
+        // own background instead, with the dot still in its colour.
+        let mut ink = Style::default().fg(dot);
+        if open == Some(nth) {
+            ink = ink.bg(colour::dim());
+        }
+        spans.push(Span::styled("●", ink));
         spans.push(Span::styled(format!(" {short}]"), dim.add_modifier(lit)));
     }
     spans
@@ -166,6 +187,19 @@ mod siblings_tests {
 
     fn text(spans: &[Span<'_>]) -> String {
         spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn a_lit_segment_is_one_background_dot_included() {
+        // The rest is dim reversed, whose background is dim; the dot has to match it.
+        let lit = siblings([true; 3], Some(0));
+        let dot = lit.iter().find(|s| s.content == "●").expect("a dot");
+        assert_eq!(dot.style.bg, Some(colour::dim()));
+        assert_eq!(dot.style.fg, Some(colour::success()), "still green");
+        assert!(!dot.style.add_modifier.contains(Modifier::REVERSED));
+        let label = lit.iter().find(|s| s.content.contains("MEL")).expect("MEL");
+        assert_eq!(label.style.fg, Some(colour::dim()));
+        assert!(label.style.add_modifier.contains(Modifier::REVERSED));
     }
 
     #[test]
@@ -261,7 +295,12 @@ pub fn render(data: &FooterData, status: &[Span<'static>], width: u16) -> Vec<Li
     if model_at >= col {
         spans.push(Span::styled(" ".repeat(model_at - col), dim));
     }
-    spans.push(Span::styled(model, muted));
+    let model_style = if data.model_hover {
+        muted.add_modifier(Modifier::REVERSED)
+    } else {
+        muted
+    };
+    spans.push(Span::styled(model, model_style));
 
     let mut row = vec![spans.remove(0)];
     row.extend(clip_spans(spans, width));
@@ -514,6 +553,7 @@ mod anchored {
             crew: 1,
             own: true,
             name_hover: false,
+            model_hover: false,
         }
     }
 
@@ -586,6 +626,7 @@ mod inset_tests {
             crew,
             own: true,
             name_hover: false,
+            model_hover: false,
         };
         render(&data, &[Span::raw("waiting")], width)[0]
             .spans
@@ -637,6 +678,19 @@ pub fn usage(data: &FooterData) -> String {
         });
     }
     parts.join(" ")
+}
+
+/// How full the context window is, and nothing else: what the prompt box's corner wears. The rest
+/// of the usage is one press away, in the view the corner opens.
+#[must_use]
+pub fn context(data: &FooterData) -> String {
+    if data.context_window == 0 {
+        return String::new();
+    }
+    match data.context_percent {
+        Some(pct) => format!("{pct:.0}%"),
+        None => "?%".to_owned(),
+    }
 }
 
 /// The colour the usage is worth: context pressure is the one number here that is ever urgent.

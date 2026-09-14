@@ -16,27 +16,22 @@ impl Corner {
         }
     }
 
-    /// What it draws. Empty means wear nothing.
+    /// What it draws: for the cost corner, how full the context is. Empty wears nothing.
     #[must_use]
     pub fn label(self, data: &crate::footer::FooterData) -> String {
         match self {
-            Self::Cost => crate::footer::usage(data),
+            Self::Cost => crate::footer::context(data),
         }
     }
 
-    /// The same, cut to what will fit: each corner says which part of itself matters most.
+    /// The same, where it fits: a few columns, so it only goes on a screen too narrow for anything.
     #[must_use]
     pub fn fitted(self, data: &crate::footer::FooterData, width: u16) -> String {
-        let whole = self.label(data);
-        if whole.chars().count() <= usize::from(width) / 3 {
-            return whole;
-        }
-        match self {
-            Self::Cost => crate::footer::usage(&crate::footer::FooterData {
-                input_tokens: 0,
-                output_tokens: 0,
-                ..data.clone()
-            }),
+        let said = self.label(data);
+        if said.chars().count() <= usize::from(width) / 3 {
+            said
+        } else {
+            String::new()
         }
     }
 }

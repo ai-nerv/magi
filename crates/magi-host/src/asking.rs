@@ -156,13 +156,24 @@ impl Asker {
     fn through_a_surface(&self, tool: &str, action: &Action) -> Option<Decision> {
         let holds = self.holds.as_ref()?;
         let offers = magi_tools::permit::Ledger::offers(action);
-        // Asked for rather than assumed, because only the thing drawing it knows how tall it is.
-        let rows = u16::try_from(offers.len() + 6).unwrap_or(u16::MAX);
+        // Asked for rather than assumed, because only the thing drawing it knows how tall it is: the
+        // question, the call's own lines, a row an offer and the refusal, what the chosen one means,
+        // and the keys.
+        let told: usize = action
+            .subject()
+            .lines()
+            .map(|line| line.chars().count() / 70 + 1)
+            .sum();
+        let rows = u16::try_from(offers.len() + 7 + told).unwrap_or(u16::MAX);
         let mut rows_json: Vec<serde_json::Value> = offers
             .iter()
             .enumerate()
             .map(|(nth, scope)| {
-                serde_json::json!({"id": nth.to_string(), "label": scope.label(action)})
+                serde_json::json!({
+                    "id": nth.to_string(),
+                    "label": scope.label(action),
+                    "about": lasting(scope),
+                })
             })
             .collect();
         rows_json.push(serde_json::json!({
@@ -206,6 +217,17 @@ impl Asker {
             });
         }
         Some(decision)
+    }
+}
+
+/// What choosing a width means, in the words the prompt shows under the one the cursor is on.
+fn lasting(scope: &magi_proto::permit::Scope) -> &'static str {
+    match scope {
+        magi_proto::permit::Scope::Once => "asked again the next time",
+        magi_proto::permit::Scope::Anything => {
+            "for the rest of this session, and the widest there is"
+        }
+        _ => "for the rest of this session",
     }
 }
 

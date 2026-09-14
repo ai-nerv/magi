@@ -87,6 +87,35 @@ magi.allow = {
 -- by melchior's depth and breadth limits. Privileged: a project's own file cannot turn it on.
 magi.may_spawn = true
 
+-- Roles: the kinds of agent a lead can start with `spawn`. Each has a description the lead chooses
+-- by, a prompt added to the child's own instructions, and optionally a `model` of its own and
+-- `delegate = false` to stop it starting children in turn. `main` is the session nobody started.
+-- Any other word is still a valid `role`; it just comes with nothing extra. (`magi.roles` is a
+-- different thing: which program fills memory, tools and models.)
+magi.agents = {
+  explorer = {
+    description = "Reads code and docs to answer a question; changes nothing.",
+    prompt = [[You are an explorer. Find things out and report them: read, search, and run
+read-only commands. Do not create, edit or delete files. Report what you found with file paths
+and line numbers, and say plainly what you could not find.]],
+    delegate = false,
+  },
+  builder = {
+    description = "Implements one part of a plan, in the files its brief gives it.",
+    prompt = [[You are a builder. Implement the part your brief gives you, in the files it names
+and no others, to the contract it names. Build and test what you wrote before you report, and
+report what you changed and how you checked it.]],
+  },
+  reviewer = {
+    description = "Reviews a change against its brief for bugs and gaps; changes nothing.",
+    prompt = [[You are a reviewer. Read the change your brief points at and check it against what
+it was meant to do: correctness, edge cases, tests, and whether it builds. Do not edit files.
+Report each problem with its file, its line and why it is wrong, most serious first, or say that
+you found none.]],
+    delegate = false,
+  },
+}
+
 -- Environment every process magi starts is given, on top of what it inherits. `OSLO_PROFILE`
 -- is set to "magi" whether or not this says so, and naming it here overrides that.
 --
@@ -130,11 +159,16 @@ magi.may_spawn = true
 --
 -- Everything the UI draws with is a setting under `magi.ui`. Three kinds:
 --
--- COLOURS are palette indices, 0-255, and mean whatever your terminal says they mean:
+-- COLOURS are a palette index, 0-255, or an RGB value, "#rrggbb". The text hues ship as RGB, so a
+-- theme tool that repaints the terminal's sixteen leaves them alone; greys and backgrounds ship
+-- as indices, and follow the theme:
 --
---   accent  success  warning  error  typed
+--   accent  success  warning  error  typed  spinning
+--   mode_normal  mode_insert  mode_command
 --   md_heading  md_code  md_code_block  md_quote
---   diff_added  diff_added_bg  diff_removed  diff_removed_bg  diff_context
+--   diff_added  diff_added_bg  diff_removed  diff_removed_bg  diff_changed_bg  diff_context
+--   code_command  code_subcommand  code_flag  code_path  code_number  code_string  code_variable
+--   code_operator  code_comment  code_argument  code_keyword  code_type
 --   tool_bg  tool_title  tool_ok  tool_failed  tool_output  tool_fold
 --   menu_selected_bg  menu_selected  menu_detail  menu_detail_selected  menu_meta
 --   border  scan  hint  rule

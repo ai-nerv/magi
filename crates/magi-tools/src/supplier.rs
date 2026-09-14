@@ -47,6 +47,8 @@ pub struct Tooling {
     /// What this session tells it to be, as the JSON it goes over. One process per call, so the
     /// settings ride on every spawn rather than being sent once. Empty means "whatever it is".
     pub configure: String,
+    /// The roles the configuration describes, which `spawn` offers a child by name.
+    pub kinds: Vec<crate::builtin::Kind>,
 }
 
 impl Default for Tooling {
@@ -56,6 +58,7 @@ impl Default for Tooling {
             program: CASPER.to_owned(),
             pin: None,
             configure: String::new(),
+            kinds: Vec::new(),
         }
     }
 }

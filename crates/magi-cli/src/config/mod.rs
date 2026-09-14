@@ -261,6 +261,7 @@ pub fn catalog(loaded: &Loaded, cards: Vec<magi_proto::ask::Card>) -> magi_host:
     catalog
 }
 
+pub mod agents;
 pub(crate) mod chosen;
 mod discovered;
 mod lent;

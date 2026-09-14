@@ -71,6 +71,9 @@ pub struct Saying<'a> {
     /// Whether the view this badge opens is on screen right now; drawn harder while it is.
     pub badge_open: bool,
     pub mode: crate::vim::Mode,
+    /// `text` is a turn saying it is running: the frame, and how wide the box is, so its letters dim
+    /// in the same column as the border above and below them.
+    pub working: Option<(usize, u16)>,
 }
 
 /// The box, and what it is in the middle of doing to itself.
@@ -125,6 +128,7 @@ impl Tease {
             badge: "",
             badge_open: false,
             mode: crate::vim::Mode::default(),
+            working: None,
         }
     }
 

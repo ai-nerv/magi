@@ -90,6 +90,7 @@ fn the_cost_view_counts_the_turns_that_finished() {
                 output,
                 cache_read: 0,
                 cache_write: 0,
+                cost_micros: 0,
             },
             error: None,
             signatures: magi_proto::Signatures::default(),

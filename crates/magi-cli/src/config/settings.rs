@@ -79,7 +79,12 @@ fn inherited(said: Option<&str>) -> Vec<magi_proto::permit::Grant> {
 #[must_use]
 pub fn system(loaded: &Loaded) -> Option<String> {
     let cwd = std::env::current_dir().unwrap_or_default();
-    magi_host::system::assemble(loaded.config.string("system"), seat(), &cwd, &today())
+    // What the configuration says this session's own role is told, after the seat's guidance.
+    let role = super::agents::own(loaded);
+    let told = role
+        .as_ref()
+        .and_then(|role| Some((role.name.as_str(), role.prompt.as_deref()?)));
+    magi_host::system::assemble_as(loaded.config.string("system"), seat(), told, &cwd, &today())
 }
 
 /// Where this session sits among the run's agents, which decides what it is told about working
@@ -143,9 +148,8 @@ pub fn adopt_ui(loaded: &Loaded) {
     // A value of the wrong kind is left alone rather than coerced, so the mistake stays visible.
     let mut palette = magi_tui::colour::Palette::default();
     palette.overlay(&|name| {
-        ui.get(name)
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|n| u8::try_from(n).ok())
+        let value = ui.get(name)?;
+        magi_tui::colour::read(value.as_u64(), value.as_str())
     });
     magi_tui::colour::adopt(palette);
 
@@ -210,9 +214,8 @@ mod ui_tests {
             .unwrap_or_default();
         let mut palette = magi_tui::colour::Palette::default();
         palette.overlay(&|name| {
-            ui.get(name)
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|n| u8::try_from(n).ok())
+            let value = ui.get(name)?;
+            magi_tui::colour::read(value.as_u64(), value.as_str())
         });
         palette
     }
@@ -260,14 +263,24 @@ mod ui_tests {
     fn a_field_can_be_set_without_declaring_the_table_first() {
         // `magi.ui` exists before any config runs, so this assigns rather than indexes a nil.
         let chosen = palette_of("magi.ui.accent = 1");
-        assert_eq!(chosen.accent, 1);
+        assert_eq!(chosen.accent, ratatui::style::Color::Indexed(1));
         assert_eq!(chosen.muted, magi_tui::colour::STOCK.muted, "and only that");
     }
 
     #[test]
     fn the_whole_table_can_be_replaced_at_once() {
         let chosen = palette_of("magi.ui = { accent = 1, muted = 8, border = 237 }");
-        assert_eq!((chosen.accent, chosen.muted, chosen.border), (1, 8, 237));
+        let at = ratatui::style::Color::Indexed;
+        assert_eq!(
+            (chosen.accent, chosen.muted, chosen.border),
+            (at(1), at(8), at(237))
+        );
+    }
+
+    #[test]
+    fn a_colour_can_be_given_as_rgb() {
+        let chosen = palette_of(r##"magi.ui.accent = "#ff8800""##);
+        assert_eq!(chosen.accent, ratatui::style::Color::Rgb(0xff, 0x88, 0x00));
     }
 
     #[test]
@@ -335,6 +348,7 @@ pub fn tooling(loaded: &Loaded) -> magi_tools::supplier::Tooling {
         pin: pinned(loaded, &program),
         configure: configured(loaded, &program),
         program,
+        kinds: super::agents::kinds(loaded),
     }
 }
 

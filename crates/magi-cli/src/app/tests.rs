@@ -248,6 +248,7 @@ mod usage_tests {
             output,
             cache_read: 0,
             cache_write: 0,
+            cost_micros: 0,
         }
     }
 

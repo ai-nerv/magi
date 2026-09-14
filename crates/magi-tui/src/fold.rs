@@ -183,7 +183,13 @@ mod cursor_tests {
 /// The strip down the right of the box, and what sits in it on this row. Reserved on every row, not
 /// just the badge's own: a margin that moved would reflow the right-hand edge as the prompt grew.
 /// The badge sits on the middle *text* row, rounding down — a menu under the divider is not part of it.
-pub(crate) fn strip(badge: &str, rows: usize, row: usize, open: bool) -> Vec<Span<'static>> {
+pub(crate) fn strip(
+    badge: &str,
+    rows: usize,
+    row: usize,
+    open: bool,
+    dim: Option<f32>,
+) -> Vec<Span<'static>> {
     if badge.is_empty() {
         return Vec::new();
     }
@@ -192,8 +198,13 @@ pub(crate) fn strip(badge: &str, rows: usize, row: usize, open: bool) -> Vec<Spa
     if row != rows / 2 {
         return vec![Span::raw(" ".repeat(worn))];
     }
-    // Reversed either way, so it is always a block; open changes only the text colour inside it.
-    let ink = if open { colour::text() } else { colour::hint() };
+    // Reversed either way, so it is always a block; open changes only the text colour inside it, and
+    // while a turn runs it dims with the border beside it.
+    let ink = match (open, dim) {
+        (true, _) => colour::text(),
+        (false, Some(dim)) => colour::blend(colour::text(), colour::hint(), dim),
+        (false, None) => colour::hint(),
+    };
     let mut style = Style::default().fg(ink).add_modifier(Modifier::REVERSED);
     if open {
         style = style.add_modifier(Modifier::BOLD);

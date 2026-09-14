@@ -155,6 +155,7 @@ impl Session {
                     output: total.output + usage.output,
                     cache_read: total.cache_read + usage.cache_read,
                     cache_write: total.cache_write + usage.cache_write,
+                    cost_micros: total.cost_micros + usage.cost_micros,
                 },
                 _ => total,
             })

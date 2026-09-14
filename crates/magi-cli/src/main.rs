@@ -5,6 +5,7 @@ mod balthasar;
 mod child;
 mod clipboard;
 mod config;
+mod details;
 mod doctor;
 mod driver;
 mod driving;

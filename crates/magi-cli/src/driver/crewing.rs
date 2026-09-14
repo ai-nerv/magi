@@ -33,6 +33,20 @@ pub(super) async fn walk(
     let Some(seat) = app.step(forward) else {
         return false;
     };
+    dial(app, seat, own, target, to, held).await;
+    true
+}
+
+/// Tell the connection loop to dial `seat`, which the app already points at, and let go of what was
+/// held for this session if the screen is back on it. Shared by the arrows, a click and the keys.
+pub(super) async fn dial(
+    app: &App,
+    seat: crate::app::Seat,
+    own: &std::path::Path,
+    target: &watch::Sender<std::path::PathBuf>,
+    to: &mpsc::Sender<UiCommand>,
+    held: &mut Vec<UiCommand>,
+) {
     let at = match seat {
         crate::app::Seat::Own => own.to_path_buf(),
         crate::app::Seat::Peer(at) => at,
@@ -45,7 +59,6 @@ pub(super) async fn walk(
             let _ = to.send(command).await;
         }
     }
-    true
 }
 
 /// Keep a command for this session until the screen is back on it. Sent while the screen is
@@ -71,6 +84,7 @@ pub(super) fn footer_data(app: &App) -> FooterData {
         crew: app.crew_size(),
         own: app.attached.is_none(),
         name_hover: app.name_hover,
+        model_hover: app.model_hover,
         model: app.model.as_ref().map_or_else(
             || magi_tui::glyph::no_model().to_owned(),
             |model| model.name.clone(),

@@ -10,8 +10,10 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::collections::BTreeSet;
 
+mod code;
 mod frame;
 mod hover;
+mod shell;
 mod tool;
 
 use frame::{MARGIN, bottom, inside, top};

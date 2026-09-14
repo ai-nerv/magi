@@ -112,12 +112,28 @@ complete brief, and verify their work before you report.";
 /// for `seat` comes after the instructions, so a configuration that replaces them still gets it.
 #[must_use]
 pub fn assemble(instructions: Option<&str>, seat: Seat, cwd: &Path, now: &str) -> Option<String> {
+    assemble_as(instructions, seat, None, cwd, now)
+}
+
+/// The same, for a session in a role the configuration describes: `role` is its name and what it is
+/// told, set after the seat's guidance so a role narrows how the session works rather than replacing it.
+#[must_use]
+pub fn assemble_as(
+    instructions: Option<&str>,
+    seat: Seat,
+    role: Option<(&str, &str)>,
+    cwd: &Path,
+    now: &str,
+) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     if let Some(text) = instructions.map(str::trim).filter(|t| !t.is_empty()) {
         parts.push(text.to_owned());
     }
     if let Some(guidance) = seat.guidance() {
         parts.push(guidance.to_owned());
+    }
+    if let Some((name, told)) = role.filter(|(_, told)| !told.trim().is_empty()) {
+        parts.push(format!("# Your role: {name}\n\n{}", told.trim()));
     }
     parts.push(environment(cwd, now));
     if let Some(project) = project_notes(cwd) {
@@ -309,5 +325,17 @@ mod tests {
         // After whatever else the prompt carries, not instead of it.
         let both = Seat::Lead.remind("named".to_owned());
         assert!(both.starts_with("named\n\n"), "{both}");
+    }
+
+    #[test]
+    fn a_role_adds_its_instructions_after_the_seat() {
+        let dir = scratch("role");
+        let told = Some(("reviewer", "Edit nothing."));
+        let built =
+            assemble_as(Some("x"), Seat::Worker, told, &dir, "2026-08-27").expect("a prompt");
+        let seat = built.find("# Working as a subagent").expect("the seat");
+        let role = built.find("# Your role: reviewer").expect("the role");
+        assert!(seat < role, "{built}");
+        assert!(built.contains("Edit nothing."), "{built}");
     }
 }

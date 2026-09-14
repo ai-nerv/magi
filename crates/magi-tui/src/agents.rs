@@ -1,9 +1,10 @@
 //! The run as a tree: every agent under this session's root, drawn with git-log rails, for the
-//! agents panel. One row per agent; children sit under the one that started them, and each row is
-//! selectable — a click attaches the screen to that agent.
+//! agents panel. Three rows per agent — who it is, what it is doing, what it is for — and children
+//! under the one that started them. Every row of an entry selects it; attaching goes to that agent.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use std::collections::BTreeSet;
 
 /// One agent in the run, as the panel needs to draw it.
 pub struct Agent {
@@ -24,18 +25,21 @@ pub struct Agent {
     pub waiting: usize,
     /// The work it has claimed, if any.
     pub claim: Option<String>,
+    /// What its role is for, when the configuration says.
+    pub about: Option<String>,
 }
 
 /// The panel's rows and, parallel to them, the agent each row selects. A header and the blank under
-/// it select nothing; every tree row carries the id a click on it attaches to.
+/// it select nothing; every row of an entry carries the id attaching to it goes to.
 pub struct Rendered {
     pub rows: Vec<Line<'static>>,
     pub picks: Vec<Option<String>>,
 }
 
-/// The agents view: a count, a blank, then the run's tree drawn with rails, roots first.
+/// The agents view: a count, a blank, then the run's tree, roots first. Anything under an id in
+/// `folded` is left out, and the folded agent says how many.
 #[must_use]
-pub fn view(agents: &[Agent]) -> Rendered {
+pub fn view(agents: &[Agent], folded: &BTreeSet<String>) -> Rendered {
     let mut out = Rendered {
         rows: Vec::new(),
         picks: Vec::new(),
@@ -51,9 +55,11 @@ pub fn view(agents: &[Agent]) -> Rendered {
     out.rows.push(Line::from(String::new()));
     out.picks.push(None);
     out.picks.push(None);
-    for (agent, rail) in tiered(agents) {
-        out.rows.push(row(agent, &rail));
-        out.picks.push(Some(agent.id.clone()));
+    for placed in tiered(agents, folded) {
+        for line in entry(&placed) {
+            out.rows.push(line);
+            out.picks.push(Some(placed.agent.id.clone()));
+        }
     }
     out
 }
@@ -67,16 +73,24 @@ fn counted(n: usize) -> String {
     }
 }
 
-/// One agent's line: the tree rail, a busy/idle dot, `role/id`, then dim live status — working with
-/// its timer or idle, what waits, what it holds — and a tag for the viewer's own and the one on screen.
-fn row(agent: &Agent, rail: &str) -> Line<'static> {
+/// Where one agent lands in the tree: the rail beside its name, the rail beside the two rows under
+/// the name, and how many agents below it are folded away.
+struct Placed<'a> {
+    agent: &'a Agent,
+    head: String,
+    body: String,
+    hidden: usize,
+}
+
+/// One agent's three rows: a phase glyph and `role/id` with its tags, then what it is doing, then
+/// what it is for — the role's description, or who started it.
+fn entry(placed: &Placed<'_>) -> [Line<'static>; 3] {
     use magi_proto::Phase;
+    let agent = placed.agent;
     let dim = Style::default().add_modifier(Modifier::DIM);
     let bold = Style::default().add_modifier(Modifier::BOLD);
-    let mut spans = Vec::new();
-    if !rail.is_empty() {
-        spans.push(Span::styled(rail.to_owned(), dim));
-    }
+    let rail = |text: &str| Span::styled(text.to_owned(), dim);
+
     // A glyph per phase, lit only while working: the tree should read at a glance, with the one
     // agent doing something now the one that stands out.
     let (dot, lit) = match agent.phase {
@@ -88,20 +102,46 @@ fn row(agent: &Agent, rail: &str) -> Line<'static> {
         Phase::Gone => ("· ", dim),
         Phase::Idle => ("○ ", dim),
     };
-    spans.push(Span::styled(dot.to_owned(), lit));
-    spans.push(Span::styled(
-        format!("{}/{}", agent.role, agent.id),
-        if agent.phase == Phase::Working {
-            bold
-        } else {
+    let mut name = vec![
+        rail(&placed.head),
+        Span::styled(dot.to_owned(), lit),
+        Span::styled(agent.role.clone(), bold),
+        Span::raw(format!("/{}", agent.id)),
+    ];
+    if agent.here {
+        name.push(Span::styled("  (you)".to_owned(), bold));
+    } else if agent.attached {
+        name.push(Span::styled(
+            "  • viewing".to_owned(),
             Style::default()
-        },
-    ));
+                .fg(crate::colour::hint())
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    if placed.hidden > 0 {
+        name.push(Span::styled(format!("  ▸ {} folded", placed.hidden), dim));
+    }
 
-    // The phase in words, with the timer on `working` and the cause on `waiting`/`blocked`, so a
-    // reader sees not just that an agent is stuck but on what.
-    let mut meta = String::from("  ");
-    meta.push_str(match agent.phase {
+    let about = agent
+        .about
+        .clone()
+        .or_else(|| agent.parent.as_ref().map(|up| format!("started by {up}")))
+        .unwrap_or_else(|| "the root of this run".to_owned());
+    [
+        Line::from(name),
+        Line::from(vec![rail(&placed.body), Span::styled(doing(agent), dim)]),
+        Line::from(vec![
+            rail(&placed.body),
+            Span::styled(about, dim.add_modifier(Modifier::ITALIC)),
+        ]),
+    ]
+}
+
+/// The phase in words, with the timer on `working` and the cause on `waiting`/`blocked`, so a
+/// reader sees not just that an agent is stuck but on what; then what waits for it and what it holds.
+fn doing(agent: &Agent) -> String {
+    use magi_proto::Phase;
+    let mut said = String::from(match agent.phase {
         Phase::Working => "working",
         Phase::Blocked => "blocked",
         Phase::Finished => "finished",
@@ -111,32 +151,20 @@ fn row(agent: &Agent, rail: &str) -> Line<'static> {
         Phase::Idle => "idle",
     });
     if agent.phase == Phase::Working && agent.working_for > 0 {
-        meta.push_str(&format!(" {}", elapsed(agent.working_for)));
+        said.push_str(&format!(" {}", elapsed(agent.working_for)));
     }
     if matches!(agent.phase, Phase::Waiting | Phase::Blocked)
         && let Some(cause) = &agent.cause
     {
-        meta.push_str(&format!(": {cause}"));
+        said.push_str(&format!(": {cause}"));
     }
     if agent.waiting > 0 {
-        meta.push_str(&format!("  ✉{}", agent.waiting));
+        said.push_str(&format!("  ✉{}", agent.waiting));
     }
     if let Some(claim) = &agent.claim {
-        meta.push_str(&format!("  · {claim}"));
+        said.push_str(&format!("  · {claim}"));
     }
-    spans.push(Span::styled(meta, dim));
-
-    if agent.here {
-        spans.push(Span::styled("  (you)".to_owned(), bold));
-    } else if agent.attached {
-        spans.push(Span::styled(
-            "  • viewing".to_owned(),
-            Style::default()
-                .fg(crate::colour::hint())
-                .add_modifier(Modifier::BOLD),
-        ));
-    }
-    Line::from(spans)
+    said
 }
 
 /// A working-for span: `m:ss` once past a minute, else `Ns`.
@@ -148,63 +176,108 @@ fn elapsed(secs: u64) -> String {
     }
 }
 
-/// The agents as a tree, depth-first and id-ordered, each paired with the rail drawn to its left.
-/// Ring-safe, and anything a note orphaned is listed at the root, so nobody is hidden.
-fn tiered(agents: &[Agent]) -> Vec<(&Agent, String)> {
-    use std::collections::BTreeSet;
+/// The agents as a tree, depth-first and id-ordered, each with its rails. Ring-safe, and anything
+/// a note orphaned is listed at the root, so nobody is hidden who was not folded away.
+fn tiered<'a>(agents: &'a [Agent], folded: &'a BTreeSet<String>) -> Vec<Placed<'a>> {
     let known: BTreeSet<&str> = agents.iter().map(|a| a.id.as_str()).collect();
     let mut roots: Vec<&Agent> = agents
         .iter()
         .filter(|a| a.parent.as_deref().is_none_or(|up| !known.contains(up)))
         .collect();
     roots.sort_by(|one, two| one.id.cmp(&two.id));
-    let mut seen = BTreeSet::new();
-    let mut out = Vec::new();
-    for root in &roots {
-        descend(agents, root, "", true, 0, &mut seen, &mut out);
+    let mut walk = Walk {
+        agents,
+        folded,
+        seen: BTreeSet::new(),
+        out: Vec::new(),
+    };
+    for root in roots {
+        walk.descend(root, "", true, 0);
     }
-    // Anything a ring hid from the walk is still owed a row, listed flat at the root.
+    // Anything a ring hid from the walk is still owed an entry, listed flat at the root.
     for agent in agents {
-        if seen.insert(agent.id.clone()) {
-            out.push((agent, String::new()));
+        if walk.seen.insert(agent.id.clone()) {
+            walk.out.push(Placed {
+                agent,
+                head: String::new(),
+                body: "  ".to_owned(),
+                hidden: 0,
+            });
         }
     }
-    out
+    walk.out
 }
 
-/// Walk one node and its children, building the rail as we go: `├─ ` or `└─ ` for the node, and
-/// `│  ` or three spaces carried down for each ancestor depending on whether it had more below it.
-fn descend<'a>(
+/// One walk of the tree: what has been drawn, and what is shut.
+struct Walk<'a> {
     agents: &'a [Agent],
-    them: &'a Agent,
-    prefix: &str,
-    last: bool,
-    depth: usize,
-    seen: &mut std::collections::BTreeSet<String>,
-    out: &mut Vec<(&'a Agent, String)>,
-) {
-    if !seen.insert(them.id.clone()) {
-        return;
+    folded: &'a BTreeSet<String>,
+    seen: BTreeSet<String>,
+    out: Vec<Placed<'a>>,
+}
+
+impl<'a> Walk<'a> {
+    /// The agents `id` started, by id.
+    fn kids(&self, id: &str) -> Vec<&'a Agent> {
+        let agents = self.agents;
+        let mut kids: Vec<&'a Agent> = agents
+            .iter()
+            .filter(|a| a.parent.as_deref() == Some(id))
+            .collect();
+        kids.sort_by(|one, two| one.id.cmp(&two.id));
+        kids
     }
-    let rail = if depth == 0 {
-        String::new()
-    } else {
-        format!("{prefix}{}", if last { "└─ " } else { "├─ " })
-    };
-    out.push((them, rail));
-    let child_prefix = if depth == 0 {
-        String::new()
-    } else {
-        format!("{prefix}{}", if last { "   " } else { "│  " })
-    };
-    let mut kids: Vec<&Agent> = agents
-        .iter()
-        .filter(|a| a.parent.as_deref() == Some(them.id.as_str()))
-        .collect();
-    kids.sort_by(|one, two| one.id.cmp(&two.id));
-    let end = kids.len().saturating_sub(1);
-    for (at, kid) in kids.into_iter().enumerate() {
-        descend(agents, kid, &child_prefix, at == end, depth + 1, seen, out);
+
+    /// Place one node and its children. `├─ ` or `└─ ` beside the name, and carried down for each
+    /// ancestor `│  ` or three spaces, depending on whether it had more below it. The rows under a
+    /// name carry a `│` under its glyph when children hang below, so the rail does not break.
+    fn descend(&mut self, them: &'a Agent, prefix: &str, last: bool, depth: usize) {
+        if !self.seen.insert(them.id.clone()) {
+            return;
+        }
+        let (head, carry) = if depth == 0 {
+            (String::new(), String::new())
+        } else {
+            (
+                format!("{prefix}{}", if last { "└─ " } else { "├─ " }),
+                format!("{prefix}{}", if last { "   " } else { "│  " }),
+            )
+        };
+        let kids = self.kids(&them.id);
+        let shut = !kids.is_empty() && self.folded.contains(&them.id);
+        let hidden = if shut { self.hide(&them.id) } else { 0 };
+        let body = format!(
+            "{carry}{}",
+            if kids.is_empty() || shut {
+                "  "
+            } else {
+                "│ "
+            }
+        );
+        self.out.push(Placed {
+            agent: them,
+            head,
+            body,
+            hidden,
+        });
+        if shut {
+            return;
+        }
+        let end = kids.len().saturating_sub(1);
+        for (at, kid) in kids.into_iter().enumerate() {
+            self.descend(kid, &carry, at == end, depth + 1);
+        }
+    }
+
+    /// Count everything under `id` as placed without placing it, and say how many that was.
+    fn hide(&mut self, id: &str) -> usize {
+        let mut count = 0;
+        for kid in self.kids(id) {
+            if self.seen.insert(kid.id.clone()) {
+                count += 1 + self.hide(&kid.id);
+            }
+        }
+        count
     }
 }
 
@@ -215,117 +288,5 @@ pub fn empty() -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn agent(id: &str, parent: Option<&str>) -> Agent {
-        Agent {
-            id: id.to_owned(),
-            role: "worker".to_owned(),
-            parent: parent.map(ToOwned::to_owned),
-            here: false,
-            attached: false,
-            phase: magi_proto::Phase::Idle,
-            cause: None,
-            working_for: 0,
-            waiting: 0,
-            claim: None,
-        }
-    }
-
-    /// The ids in draw order, each with the depth its rail implies (two rail cells per level).
-    fn laid(held: &[Agent]) -> Vec<(String, usize)> {
-        tiered(held)
-            .into_iter()
-            .map(|(a, rail)| (a.id.clone(), rail.chars().count() / 3))
-            .collect()
-    }
-
-    #[test]
-    fn a_run_of_three_generations_indents_by_depth() {
-        let held = vec![
-            agent("phi", Some("theta")),
-            agent("alpha", None),
-            agent("theta", Some("alpha")),
-        ];
-        assert_eq!(
-            laid(&held),
-            vec![
-                ("alpha".to_owned(), 0),
-                ("theta".to_owned(), 1),
-                ("phi".to_owned(), 2)
-            ]
-        );
-    }
-
-    #[test]
-    fn the_last_child_gets_the_corner_and_the_rest_a_tee() {
-        let held = vec![
-            agent("root", None),
-            agent("a", Some("root")),
-            agent("b", Some("root")),
-        ];
-        let rails: Vec<String> = tiered(&held).into_iter().map(|(_, rail)| rail).collect();
-        assert_eq!(rails[0], "");
-        assert!(rails[1].starts_with("├─"), "{rails:?}");
-        assert!(rails[2].starts_with("└─"), "{rails:?}");
-    }
-
-    #[test]
-    fn an_orphan_whose_parent_is_not_here_is_listed_and_not_hidden() {
-        let held = vec![agent("alpha", None), agent("stray", Some("gone"))];
-        assert_eq!(tiered(&held).len(), 2);
-    }
-
-    #[test]
-    fn a_row_is_offered_for_every_agent_and_none_for_the_header() {
-        let held = vec![agent("alpha", None), agent("beta", Some("alpha"))];
-        let rendered = view(&held);
-        assert_eq!(rendered.rows.len(), rendered.picks.len());
-        assert_eq!(rendered.picks[0], None, "the count line selects nothing");
-        assert_eq!(rendered.picks[1], None, "nor the blank under it");
-        let picked: Vec<&str> = rendered
-            .picks
-            .iter()
-            .flatten()
-            .map(String::as_str)
-            .collect();
-        assert_eq!(picked, vec!["alpha", "beta"]);
-    }
-
-    /// The whole point of the phase: `finished` reads differently from `idle`, and a coordinator
-    /// can see it at a glance.
-    #[test]
-    fn the_phase_shows_in_the_row() {
-        let text = |a: &Agent| -> String {
-            row(a, "")
-                .spans
-                .iter()
-                .map(|s| s.content.as_ref())
-                .collect()
-        };
-        let mut a = agent("psi", None);
-        a.phase = magi_proto::Phase::Working;
-        a.working_for = 5;
-        assert!(
-            text(&a).contains("◗") && text(&a).contains("working 5s"),
-            "{}",
-            text(&a)
-        );
-        a.phase = magi_proto::Phase::Finished;
-        assert!(
-            text(&a).contains("✓") && text(&a).contains("finished"),
-            "{}",
-            text(&a)
-        );
-        a.phase = magi_proto::Phase::Blocked;
-        a.cause = Some("run declined".to_owned());
-        assert!(text(&a).contains("blocked: run declined"), "{}", text(&a));
-        a.phase = magi_proto::Phase::Idle;
-        assert!(
-            text(&a).contains("○") && text(&a).contains("idle"),
-            "{}",
-            text(&a)
-        );
-    }
-}
+#[path = "agents/tests.rs"]
+mod tests;

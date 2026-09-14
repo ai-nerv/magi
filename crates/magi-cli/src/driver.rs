@@ -38,6 +38,10 @@ pub async fn run(
     let mut app = App::new();
     // A `--attach <id>` waits for that agent to show up in the roster, then points the screen at it.
     app.attach_wanted = attach;
+    if let Some(loaded) = &loaded {
+        app.about = crate::config::agents::descriptions(loaded);
+        app.mind = crate::config::mind(loaded);
+    }
     app.view_only = view_only;
     // Whether casper answers is asked once, off the UI thread: the probe starts the program.
     let casper_up = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -366,6 +370,31 @@ pub async fn run(
                                     dirty = true;
                                 }
                             }
+                            // On the model's card, Enter takes a setting and ←/→ step it.
+                            Action::Attach(id) if app.pane_titled("model") => {
+                                if let Some(command) = app.choose_on_model(&id) {
+                                    direct(&mut app, &command_tx, command).await;
+                                }
+                                dirty = true;
+                            }
+                            Action::Fold { open } if app.pane_titled("model") => {
+                                if let Some(command) = app.adjust_model(open) {
+                                    direct(&mut app, &command_tx, command).await;
+                                }
+                                dirty = true;
+                            }
+                            // Enter on an entry in the agents view: the same as a click on it.
+                            Action::Attach(id) => {
+                                if let Some(seat) = app.attach_id(&id) {
+                                    dial(&app, seat, socket, &target_tx, &command_tx, &mut held)
+                                        .await;
+                                }
+                                dirty = true;
+                            }
+                            Action::Fold { open } => {
+                                app.fold_agent(open);
+                                dirty = true;
+                            }
                             Action::Chose(value) => {
                                 // Answered down the pipe, not over the socket, so it is taken first.
                                 if let Some(crate::app::Picking::Adoption { id }) =
@@ -530,16 +559,7 @@ pub async fn run(
                             // A row in the agents view was clicked. `press_pane_row` already pointed
                             // the app at it; this dials the socket, the way `walk` does for the keys.
                             pointing::Pointing::Steer(seat) => {
-                                let at = match seat {
-                                    crate::app::Seat::Own => socket.to_path_buf(),
-                                    crate::app::Seat::Peer(at) => at,
-                                };
-                                let _ = target_tx.send(at);
-                                if app.attached.is_none() {
-                                    for command in held.drain(..) {
-                                        let _ = command_tx.send(command).await;
-                                    }
-                                }
+                                dial(&app, seat, socket, &target_tx, &command_tx, &mut held).await;
                                 dirty = true;
                             }
                         }
@@ -566,6 +586,7 @@ pub async fn run(
                 // The prompt's border scan runs whenever the box is on screen, and one that stopped
                 // when a turn ended would read as the UI having frozen.
                 app.advance();
+                app.poll_details();
                 // Done on the frame rather than where the state changes: melchior and the socket both
                 // answer with whatever they were last told.
                 let mut ended = false;
@@ -728,7 +749,7 @@ use connecting::connection_loop;
 
 /// Which agent the screen is pointed at, and what may be sent to one that is not ours.
 mod crewing;
-use crewing::{direct, footer_data, ours, walk};
+use crewing::{dial, direct, footer_data, ours, walk};
 
 /// The pointer, and which of two readers it belongs to.
 mod pointing;

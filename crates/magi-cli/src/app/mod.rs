@@ -13,6 +13,7 @@ fn add(total: magi_proto::Usage, next: magi_proto::Usage) -> magi_proto::Usage {
         output: total.output + next.output,
         cache_read: total.cache_read + next.cache_read,
         cache_write: total.cache_write + next.cache_write,
+        cost_micros: total.cost_micros + next.cost_micros,
     }
 }
 
@@ -88,12 +89,25 @@ pub struct App {
     pub name_rect: Option<ratatui::layout::Rect>,
     /// Whether the pointer is over that name, so the footer can draw it inverted like the usage badge.
     pub name_hover: bool,
+    /// Where the model's name landed on the footer, which opens its card; and whether the pointer is on it.
+    pub model_rect: Option<ratatui::layout::Rect>,
+    pub model_hover: bool,
     /// Whether melchior, balthasar and casper are up, in that order, for the footer's three dots.
     pub siblings: [bool; 3],
     /// Where each of those three landed on the footer, for the pointer.
     pub sibling_rects: [Option<ratatui::layout::Rect>; 3],
     /// Which sibling's dot the pointer is on: drawn inverted, the way the name shows it is a button.
     pub sibling_hover: Option<usize>,
+    /// Agents whose branch is shut in the agents view, by id. Kept here rather than in the view, so a
+    /// fold survives the view being rebuilt or reopened.
+    pub folded: std::collections::BTreeSet<String>,
+    /// What each configured role is for, by name, for the agents view to say.
+    pub about: std::collections::BTreeMap<String, String>,
+    /// Which program owns the model, asked for a model's card.
+    pub mind: String,
+    /// What the provider published about a model, by its name, once asked; and an answer on its way.
+    pub details: Option<(String, Result<magi_tui::model_card::Details, String>)>,
+    pub details_rx: Option<std::sync::mpsc::Receiver<crate::app::views::Answered>>,
     /// An id `--attach` named to watch: held until that agent appears on the roster, then the screen
     /// points at it and this clears. `None` for an ordinary session.
     pub attach_wanted: Option<String>,
@@ -149,9 +163,16 @@ impl App {
             pane_rect: None,
             name_rect: None,
             name_hover: false,
+            model_rect: None,
+            model_hover: false,
             siblings: [false; 3],
             sibling_rects: [None; 3],
             sibling_hover: None,
+            folded: std::collections::BTreeSet::new(),
+            about: std::collections::BTreeMap::new(),
+            mind: "melchior".to_owned(),
+            details: None,
+            details_rx: None,
             attach_wanted: None,
             view_only: false,
             corner: magi_tui::corner::Corner::default(),

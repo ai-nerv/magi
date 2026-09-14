@@ -8,7 +8,6 @@
 //!
 //! No sides: they would cost two columns of every row, taken out of the text on a narrow terminal.
 
-use super::clip;
 use crate::colour;
 use crate::glyph;
 use ratatui::style::Style;
@@ -327,7 +326,12 @@ mod nesting {
 
 /// A call with nothing to show yet: one line, no box, because framing it drew two edges with a gap
 /// between them. No handle, since nothing is folded away. It grows its box when it has a result.
-pub(super) fn lone(label: &str, chip: Style, beside: &str, width: u16) -> Line<'static> {
+pub(super) fn lone(
+    label: &str,
+    chip: Style,
+    beside: Vec<Span<'static>>,
+    width: u16,
+) -> Line<'static> {
     let named = format!("[ {label} ]");
     // A call with no result yet is the one still out, so this row always wears the running dot.
     let waiting = format!("{} ", glyph::running());
@@ -339,13 +343,15 @@ pub(super) fn lone(label: &str, chip: Style, beside: &str, width: u16) -> Line<'
         Span::styled(" ]".to_owned(), Style::default().fg(colour::block_frame())),
     ];
     let mut used = MARGIN + crate::wrap::columns(&waiting) + crate::wrap::columns(&named);
-    if !beside.trim().is_empty() {
-        let beside = clip(
-            &format!(" {}", beside.trim()),
-            usize::from(width).saturating_sub(used),
-        );
-        used += crate::wrap::columns(&beside);
-        spans.push(Span::styled(beside, Style::default().fg(colour::dim())));
+    if !beside.is_empty() {
+        let mut said = vec![Span::raw(" ")];
+        said.extend(beside);
+        let kept = super::shell::clipped(said, usize::from(width).saturating_sub(used));
+        used += kept
+            .iter()
+            .map(|s| crate::wrap::columns(&s.content))
+            .sum::<usize>();
+        spans.extend(kept);
     }
     spans.push(Span::raw(
         " ".repeat(usize::from(width).saturating_sub(used)),

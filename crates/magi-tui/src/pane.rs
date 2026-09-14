@@ -16,6 +16,10 @@ const HEIGHT: u16 = 70;
 /// Rows the frame draws above the content (border, heading, blank) — taken off a click's row first.
 const HEAD: u16 = 3;
 
+/// Left of every row in a list: a bar beside the entry the cursor is on, blank beside the rest.
+const GUTTER: &str = "┃ ";
+const NO_GUTTER: &str = "  ";
+
 /// A view drawn in the middle of the screen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pane {
@@ -28,9 +32,15 @@ pub struct Pane {
     /// What to say when there is nothing to show.
     pub empty: String,
     /// Parallel to `rows`: what a click on each row selects; empty for a view with no targets.
+    /// Consecutive rows naming the same target are one entry.
     pub picks: Vec<Option<String>>,
-    /// The row the pointer is over, as an index into `rows`, lit while it is a selectable one.
+    /// The row the cursor is on, as an index into `rows`. The keys move it entry by entry, the
+    /// pointer puts it where it points, and every row of its entry is lit.
     pub hover: Option<usize>,
+    /// The keys worth knowing, beside the title.
+    pub hint: String,
+    /// Bring the cursor's entry into view at the next draw, the one place the page is known.
+    reveal: bool,
 }
 
 impl Pane {
@@ -45,12 +55,20 @@ impl Pane {
             empty: "nothing yet".to_owned(),
             picks: Vec::new(),
             hover: None,
+            hint: String::new(),
+            reveal: false,
         }
     }
 
     #[must_use]
     pub fn saying(mut self, empty: impl Into<String>) -> Self {
         self.empty = empty.into();
+        self
+    }
+
+    #[must_use]
+    pub fn hinting(mut self, hint: impl Into<String>) -> Self {
+        self.hint = hint.into();
         self
     }
 
@@ -68,15 +86,102 @@ impl Pane {
         self.picks.get(self.top + content)?.as_deref()
     }
 
-    /// Light the row `row_in_panel` cells below the top edge, if it is a selectable one, and say
-    /// whether that changed anything — so a move within the same row skips a redraw.
+    /// What the cursor is on.
+    #[must_use]
+    pub fn chosen(&self) -> Option<&str> {
+        self.picks.get(self.hover?)?.as_deref()
+    }
+
+    /// Put the cursor on the row the pointer is over, `row_in_panel` cells below the top edge, when
+    /// that row selects something; anywhere else it stays where it was. Says whether the lit entry
+    /// changed, so a move within one entry skips a redraw.
     pub fn hover_at(&mut self, row_in_panel: u16) -> bool {
-        let was = self.hover;
-        self.hover = row_in_panel
+        let Some(at) = row_in_panel
             .checked_sub(HEAD)
             .map(|content| self.top + usize::from(content))
-            .filter(|at| self.picks.get(*at).is_some_and(Option::is_some));
+            .filter(|at| self.picks.get(*at).is_some_and(Option::is_some))
+        else {
+            return false;
+        };
+        let was = self.lit_rows();
+        self.hover = Some(at);
+        was != self.lit_rows()
+    }
+
+    /// Put the cursor on `id`'s entry. False when nothing here selects it.
+    pub fn point_at(&mut self, id: &str) -> bool {
+        let Some(at) = self
+            .picks
+            .iter()
+            .position(|pick| pick.as_deref() == Some(id))
+        else {
+            return false;
+        };
+        self.hover = Some(at);
+        self.reveal = true;
+        true
+    }
+
+    /// Move the cursor one entry on, or back; onto the first entry when it is on none. Says whether
+    /// it moved, so a key that finds the end of the entries can scroll the rows past them instead.
+    pub fn step(&mut self, forward: bool) -> bool {
+        let starts = self.starts();
+        if starts.is_empty() {
+            return false;
+        }
+        let was = self.hover;
+        let now = self
+            .hover
+            .and_then(|at| starts.iter().rposition(|start| *start <= at));
+        let next = match now {
+            None => 0,
+            Some(nth) if forward => (nth + 1).min(starts.len() - 1),
+            Some(nth) => nth.saturating_sub(1),
+        };
+        self.hover = Some(starts[next]);
+        self.reveal = true;
         was != self.hover
+    }
+
+    /// The cursor onto the first entry, or the last.
+    pub fn first(&mut self) {
+        self.hover = self.starts().first().copied().or(self.hover);
+        self.reveal = true;
+    }
+
+    pub fn last(&mut self) {
+        self.hover = self.starts().last().copied().or(self.hover);
+        self.reveal = true;
+    }
+
+    /// The first row of every entry: wherever the target changes to a new one.
+    fn starts(&self) -> Vec<usize> {
+        self.picks
+            .iter()
+            .enumerate()
+            .filter(|(at, pick)| pick.is_some() && (*at == 0 || self.picks[at - 1] != **pick))
+            .map(|(at, _)| at)
+            .collect()
+    }
+
+    /// The rows of the entry the cursor is on; empty when it is on none.
+    fn lit_rows(&self) -> std::ops::Range<usize> {
+        let Some(at) = self
+            .hover
+            .filter(|at| self.picks.get(*at).is_some_and(Option::is_some))
+        else {
+            return 0..0;
+        };
+        let pick = &self.picks[at];
+        let from = (0..at)
+            .rev()
+            .take_while(|row| self.picks[*row] == *pick)
+            .last()
+            .unwrap_or(at);
+        let to = (at..self.picks.len())
+            .take_while(|row| self.picks[*row] == *pick)
+            .count();
+        from..at + to
     }
 
     #[must_use]
@@ -86,11 +191,23 @@ impl Pane {
     }
 
     /// Settle the scroll position for a viewport `page` tall. Clears [`Pane::follow`], so a later
-    /// scroll up is not undone on the next draw.
+    /// scroll up is not undone on the next draw, and brings a cursor the keys moved into view.
     pub fn settle(&mut self, page: usize) {
         if self.follow {
             self.bottom(page);
             self.follow = false;
+        }
+        if self.reveal {
+            let lit = self.lit_rows();
+            if self.starts().first() == Some(&lit.start) {
+                // The first entry shows what sits above it too: the heading of the list.
+                self.top = 0;
+            } else if lit.start < self.top {
+                self.top = lit.start;
+            } else if lit.end > self.top + page {
+                self.top = lit.end.saturating_sub(page);
+            }
+            self.reveal = false;
         }
     }
 
@@ -143,21 +260,23 @@ impl Pane {
         self.top = self.rows.len().saturating_sub(page);
     }
 
-    /// The rows to draw, for a viewport `page` tall. The row under the pointer is drawn inverted,
-    /// the way the fold handles and the usage badge invert, so a selectable row shows it is one.
+    /// The rows to draw, for a viewport `page` tall. A list wears a gutter, and the entry the
+    /// cursor is on is a band with a bar beside it.
     #[must_use]
     pub fn showing(&self, page: usize) -> Vec<Line<'static>> {
         if self.rows.is_empty() {
             return vec![Line::from(self.empty.clone())];
         }
+        let lit = self.lit_rows();
+        let listed = !self.picks.is_empty();
         self.rows
             .iter()
             .enumerate()
             .skip(self.top)
             .take(page)
             .map(|(at, line)| {
-                if Some(at) == self.hover {
-                    lit(line)
+                if listed {
+                    guttered(line, lit.contains(&at))
                 } else {
                     line.clone()
                 }
@@ -177,15 +296,19 @@ impl Pane {
     ) -> Vec<Line<'static>> {
         // The heading and the blank under it are content rows, so the light runs past them rather
         // than round a hole in the box.
-        let mut body = vec![
-            Line::from(Span::styled(
-                self.heading(page),
-                Style::default()
-                    .fg(crate::colour::hint())
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(String::new()),
-        ];
+        let mut heading = vec![Span::styled(
+            self.heading(page),
+            Style::default()
+                .fg(crate::colour::hint())
+                .add_modifier(Modifier::BOLD),
+        )];
+        if !self.hint.is_empty() {
+            heading.push(Span::styled(
+                format!("   {}", self.hint),
+                Style::default().fg(crate::colour::dim()),
+            ));
+        }
+        let mut body = vec![Line::from(heading), Line::from(String::new())];
         body.extend(self.showing(page));
 
         // Padded out to the full page rather than shrunk to fit, so the window does not jump size.
@@ -194,14 +317,15 @@ impl Pane {
         let (top, bottom) = crate::border::edges(width, content, tick, scan);
         let mut out = Vec::with_capacity(content + 2);
         out.push(top);
+        let room = usize::from(width).saturating_sub(3);
         for (row, line) in body.into_iter().enumerate() {
             let (left, right) = crate::border::side(width, content, row, tick, scan);
+            let fill = line.style;
+            let (kept, used) = clipped(line.spans, room);
             let mut spans = vec![left, Span::raw(" ")];
-            let used: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
-            spans.extend(line.spans);
-            let room = usize::from(width).saturating_sub(3);
+            spans.extend(kept);
             if used < room {
-                spans.push(Span::raw(" ".repeat(room - used)));
+                spans.push(Span::styled(" ".repeat(room - used), fill));
             }
             spans.push(right);
             out.push(Line::from(spans));
@@ -220,21 +344,48 @@ impl Pane {
     }
 }
 
-/// A copy of `line` with every span inverted: the whole row reads as one highlighted block.
-fn lit(line: &Line<'static>) -> Line<'static> {
-    let spans = line
-        .spans
-        .iter()
-        .map(|span| {
-            Span::styled(
-                span.content.clone(),
-                span.style.add_modifier(Modifier::REVERSED),
-            )
-        })
-        .collect::<Vec<_>>();
-    Line::from(spans)
+/// `line` behind a list's gutter. Lit, the bar and a band behind the whole row, carried to the
+/// frame by the line's own style; otherwise two blank cells, so every row keeps one column.
+fn guttered(line: &Line<'static>, lit: bool) -> Line<'static> {
+    if !lit {
+        let mut spans = vec![Span::raw(NO_GUTTER)];
+        spans.extend(line.spans.iter().cloned());
+        return Line::from(spans);
+    }
+    let band = Style::default().bg(crate::colour::pane_selected_bg());
+    let mut spans = vec![Span::styled(GUTTER, band.fg(crate::colour::accent()))];
+    spans.extend(
+        line.spans
+            .iter()
+            .map(|span| Span::styled(span.content.clone(), span.style.patch(band))),
+    );
+    Line::from(spans).style(band)
+}
+
+/// `spans` cut to `room` columns, and how many of them they fill: a row too long for the panel
+/// would push its right edge off the box.
+fn clipped(spans: Vec<Span<'static>>, room: usize) -> (Vec<Span<'static>>, usize) {
+    let mut used = 0;
+    let mut out = Vec::new();
+    for span in spans {
+        let wide = span.content.chars().count();
+        if used + wide <= room {
+            used += wide;
+            out.push(span);
+            continue;
+        }
+        let kept: String = span.content.chars().take(room - used).collect();
+        used = room;
+        out.push(Span::styled(kept, span.style));
+        break;
+    }
+    (out, used)
 }
 
 #[cfg(test)]
 #[path = "pane/placing.rs"]
 mod placing;
+
+#[cfg(test)]
+#[path = "pane/listing.rs"]
+mod listing;

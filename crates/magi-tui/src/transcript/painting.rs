@@ -78,8 +78,8 @@ fn a_painted_row_keeps_a_colour_per_span() {
         ]],
     };
     let lines = block_of(Some(painted), "fn main", Detail::Full);
-    assert_eq!(colour_of(&lines, "fn"), Some(colour::md_heading()));
-    assert_eq!(colour_of(&lines, "main"), Some(colour::accent()));
+    assert_eq!(colour_of(&lines, "fn"), Some(colour::code_keyword()));
+    assert_eq!(colour_of(&lines, "main"), Some(colour::code_command()));
 }
 
 #[test]
