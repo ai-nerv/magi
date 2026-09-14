@@ -3,7 +3,7 @@
 //! lit some fraction of the way from border colour to scan colour; two heads take the brighter. Only
 //! the heads move: a step along this ramp is a step towards the accent, so a breathing base colour
 //! recoloured the whole box. The mode is the state: drifting at rest, shuttling the long edges with
-//! something typed, racing while a turn runs.
+//! something typed, and while a turn runs no heads at all — the whole box breathes, slowly.
 
 use crate::colour;
 use crate::glyph;
@@ -37,7 +37,7 @@ pub enum Scan {
     Resting,
     /// Something is in the prompt: two comets shuttling the long edges in step.
     Holding,
-    /// A turn is running: the same circuit, at speed.
+    /// A turn is running: the whole border breathes, slowly, and nothing travels.
     Working,
     /// A floating pane has the keyboard: four comets, evenly spaced. Four because it is a bigger box
     /// and two heads on a border twice the length leave most of it unlit.
@@ -66,33 +66,37 @@ pub fn edges(width: u16, rows: usize, tick: usize, scan: Scan) -> (Line<'static>
     let ring = walk_length(inner, rows);
     let heads = heads(scan, tick, inner, rows, ring);
     let walk = |at: usize| walk_of(at, inner, rows);
+    // Working is one brightness for the whole box, breathing; every other mode is the ring.
     let working = matches!(scan, Scan::Working);
-    // The horizontal cell at screen `column`: the working sweep runs along the edges and leaves the
-    // corners dark; every other mode is the ring, addressed by how far round it looks.
-    let bright = |column: usize, at: usize| {
+    let bright = |at: usize| {
         if working {
-            sweeping(tick, inner, column)
+            breathing(tick)
         } else {
             from_heads(walk(at), &heads, ring)
         }
     };
-    let corner = |at: usize| if working { 0.0 } else { from_heads(walk(at), &heads, ring) };
 
     let mut top = Vec::with_capacity(width);
-    top.push(paint(glyph::corner_top_left(), corner(0)));
+    top.push(paint(glyph::corner_top_left(), bright(0)));
     for i in 0..inner {
-        top.push(paint(glyph::edge_horizontal(), bright(i, 1 + i)));
+        top.push(paint(glyph::edge_horizontal(), bright(1 + i)));
     }
-    top.push(paint(glyph::corner_top_right(), corner(1 + inner)));
+    top.push(paint(glyph::corner_top_right(), bright(1 + inner)));
 
     // Anticlockwise along the bottom: the ring runs clockwise, so bottom-right comes before bottom-left.
     let bottom_right = 1 + inner + 1 + rows;
     let mut bottom = Vec::with_capacity(width);
-    bottom.push(paint(glyph::corner_bottom_left(), corner(bottom_right + inner + 1)));
+    bottom.push(paint(
+        glyph::corner_bottom_left(),
+        bright(bottom_right + inner + 1),
+    ));
     for i in 0..inner {
-        bottom.push(paint(glyph::edge_horizontal(), bright(i, bottom_right + inner - i)));
+        bottom.push(paint(
+            glyph::edge_horizontal(),
+            bright(bottom_right + inner - i),
+        ));
     }
-    bottom.push(paint(glyph::corner_bottom_right(), corner(bottom_right)));
+    bottom.push(paint(glyph::corner_bottom_right(), bright(bottom_right)));
 
     (Line::from(top), Line::from(bottom))
 }
@@ -107,12 +111,11 @@ pub fn side(
     scan: Scan,
 ) -> (Span<'static>, Span<'static>) {
     let inner = usize::from(width).max(2) - 2;
-    // The working sweep is a scanner over the two long edges only: the sides stay dark, so it does
-    // not read as light rolling round the box.
     if matches!(scan, Scan::Working) {
+        let glow = breathing(tick);
         return (
-            paint(glyph::edge_vertical(), 0.0),
-            paint(glyph::edge_vertical(), 0.0),
+            paint(glyph::edge_vertical(), glow),
+            paint(glyph::edge_vertical(), glow),
         );
     }
     let ring = walk_length(inner, rows);
@@ -180,8 +183,8 @@ fn heads(scan: Scan, tick: usize, inner: usize, rows: usize, ring: usize) -> Vec
     let step = tick * num / den;
     let forward = |at: usize| Head { at, forward: true };
     match scan {
-        // Working does not walk the ring at all — it sweeps the top and bottom edges and is drawn
-        // by [`sweeping`], not by heads. Off is dark. Both light nothing here.
+        // Working does not walk the ring at all — the whole box breathes, drawn by [`breathing`],
+        // not by heads. Off is dark. Both light nothing here.
         Scan::Off | Scan::Working => Vec::new(),
         // Opposite points of the ring, so the box always has light on two sides of it.
         Scan::Resting => {
@@ -256,12 +259,17 @@ fn lit(at: usize, head: Head, ring: usize) -> f32 {
 
 /// How brightly the heads light the cell at ring position `at`.
 fn from_heads(at: usize, heads: &[Head], ring: usize) -> f32 {
-    heads.iter().fold(0.0_f32, |best, &head| best.max(lit(at, head, ring)))
+    heads
+        .iter()
+        .fold(0.0_f32, |best, &head| best.max(lit(at, head, ring)))
 }
 
 /// A glyph painted a fraction of the way from border colour to scan colour.
 fn paint(glyph: &str, best: f32) -> Span<'static> {
-    Span::styled(glyph.to_string(), Style::default().fg(colour::scan_at(best)))
+    Span::styled(
+        glyph.to_string(),
+        Style::default().fg(colour::scan_at(best)),
+    )
 }
 
 /// One border cell, lit by whichever head is nearest.
@@ -269,42 +277,21 @@ fn cell(glyph: &str, at: usize, heads: &[Head], ring: usize) -> Span<'static> {
     paint(glyph, from_heads(at, heads, ring))
 }
 
-/// How wide the working sweep is, in cells: the leading segment plus the ones trailing it, spacing
-/// and all. The lit region never spans more than this, which is how a reader tells it from the ring.
-const SWEEP_SPAN: usize = (SEGMENTS - 1) * SPACING + SEG_LEN;
-const SEGMENTS: usize = 4;
-/// Cells per bright segment, and cells from one segment's start to the next — the gap between them
-/// is `SPACING - SEG_LEN`, so the segments read as separate lines rather than one streak.
-const SEG_LEN: usize = 3;
-const SPACING: usize = 6;
-/// Dark ticks after the last segment leaves the right edge, before a fresh set enters from the left.
-const SWEEP_GAP: usize = 8;
+/// How long one breath of the working glow takes, in and out. In time rather than frames, so a
+/// faster frame rate does not make it pant.
+const BREATH_MS: u64 = 2800;
+/// How far towards the accent a breath goes at its fullest: a glow, never a flash.
+const BREATH_DEPTH: f32 = 0.45;
 
-/// The working sweep: how brightly the top/bottom cell at screen `column` (0 at the left) is lit by
-/// a train of [`SEGMENTS`] short bright segments running left to right, one behind the other. Unlike
-/// the ring scan it does not wrap — the train crosses, runs off the right edge and is gone, then a
-/// gap, then a fresh set from the left. The sides never light, so the box reads as a scanner over its
-/// two long edges rather than a circuit round it.
-fn sweeping(tick: usize, inner: usize, column: usize) -> f32 {
-    if inner == 0 {
-        return 0.0;
-    }
-    let (num, den) = pace(Scan::Working);
-    let step = tick * num / den;
-    // The lead segment runs from 0 until the whole train is off the right; then a dark gap.
-    let period = inner + SWEEP_SPAN + SWEEP_GAP;
-    let lead = (step % period) as isize;
-    let c = column as isize;
-    let mut best = 0.0_f32;
-    for nth in 0..SEGMENTS {
-        // Each segment trails the lead by `SPACING`; brightest at its leading cell, fading back.
-        let start = lead - (nth * SPACING) as isize;
-        if c >= start && c < start + SEG_LEN as isize {
-            let back = u16::try_from(start + SEG_LEN as isize - 1 - c).unwrap_or(u16::MAX);
-            best = best.max(fade(back, SEG_LEN as u16));
-        }
-    }
-    best
+/// The working glow: the whole border at one brightness, rising and falling on a slow cosine. Nothing
+/// travels, so it says "busy" without pulling the eye, and it cannot be mistaken for the resting comets.
+fn breathing(tick: usize) -> f32 {
+    let period = u16::try_from(BREATH_MS / metric::frame_ms().max(1))
+        .unwrap_or(u16::MAX)
+        .max(1);
+    let phase = u16::try_from(tick % usize::from(period)).unwrap_or(0);
+    let turn = f32::from(phase) / f32::from(period);
+    (1.0 - (turn * std::f32::consts::TAU).cos()) / 2.0 * BREATH_DEPTH
 }
 
 #[cfg(test)]
@@ -329,50 +316,38 @@ mod tests {
         assert_eq!(r.content.as_ref(), "│");
     }
 
-    /// The columns of a top/bottom edge line that are lit (not the plain border colour).
-    fn lit_columns(line: &Line<'_>) -> Vec<usize> {
-        line.spans
-            .iter()
-            .enumerate()
-            .filter(|(_, s)| s.style.fg != Some(colour::border()))
-            .map(|(i, _)| i)
-            .collect()
-    }
-
     #[test]
-    fn working_sweeps_the_edges_and_leaves_the_sides_and_corners_dark() {
+    fn working_breathes_the_whole_box_at_one_brightness() {
+        // Nothing travels: every border cell, sides and corners too, shares one brightness a tick.
         let width = 24u16;
-        let inner = usize::from(width) - 2;
-        for tick in 0..(inner + 12) {
-            let (l, r) = side(width, 1, 0, tick, Scan::Working);
-            assert_eq!(l.style.fg, Some(colour::border()), "left side lit at {tick}");
-            assert_eq!(r.style.fg, Some(colour::border()), "right side lit at {tick}");
+        for tick in 0..60 {
             let (top, bottom) = edges(width, 1, tick, Scan::Working);
-            for line in [&top, &bottom] {
-                let lit = lit_columns(line);
-                // Never the corners (column 0 or the last), so it does not round the box.
-                assert!(
-                    !lit.contains(&0) && !lit.contains(&(usize::from(width) - 1)),
-                    "a corner lit at {tick}: {lit:?}"
-                );
-                // The lit cells sit within one sweep window — a wrap would put them at both ends.
-                if let (Some(&first), Some(&last)) = (lit.first(), lit.last()) {
-                    assert!(last - first < SWEEP_SPAN, "wrapped at {tick}: {lit:?}");
-                }
-            }
+            let (l, r) = side(width, 1, 0, tick, Scan::Working);
+            let colours: Vec<_> = top
+                .spans
+                .iter()
+                .chain(bottom.spans.iter())
+                .map(|s| s.style.fg)
+                .chain([l.style.fg, r.style.fg])
+                .collect();
+            assert!(
+                colours.windows(2).all(|p| p[0] == p[1]),
+                "uneven at {tick}: {colours:?}"
+            );
         }
     }
 
     #[test]
-    fn the_working_streak_travels_left_to_right() {
-        let width = 40u16;
-        let head = |tick| {
-            lit_columns(&edges(width, 1, tick, Scan::Working).0)
-                .into_iter()
-                .max()
-        };
-        // Its leading edge is further right a few ticks on, before it runs off and resets.
-        assert!(head(1) < head(6), "the streak did not move right: {:?} -> {:?}", head(1), head(6));
+    fn the_working_glow_rises_and_falls_but_never_flashes() {
+        let glows: Vec<f32> = (0..200).map(breathing).collect();
+        let low = glows.iter().copied().fold(f32::MAX, f32::min);
+        let high = glows.iter().copied().fold(0.0_f32, f32::max);
+        assert!(low < 0.05, "it dims back down: {low}");
+        assert!(high > 0.3, "and brightens: {high}");
+        assert!(
+            high <= BREATH_DEPTH + f32::EPSILON,
+            "but never to full accent: {high}"
+        );
     }
 
     #[test]
@@ -388,7 +363,7 @@ mod tests {
 
     #[test]
     fn every_running_mode_has_two_heads() {
-        for scan in [Scan::Resting, Scan::Holding, Scan::Working] {
+        for scan in [Scan::Resting, Scan::Holding] {
             let (top, bottom) = edges(40, 1, 0, scan);
             let peaks = top
                 .spans
@@ -407,7 +382,11 @@ mod tests {
         let ring = 44;
         let heads = heads(Scan::Resting, 30, 20, 1, ring);
         assert_eq!(heads.len(), 2);
-        assert_eq!(heads[1].at.abs_diff(heads[0].at), ring / 2, "opposite each other");
+        assert_eq!(
+            heads[1].at.abs_diff(heads[0].at),
+            ring / 2,
+            "opposite each other"
+        );
         assert!(heads.iter().all(|h| h.forward), "both travelling");
     }
 
@@ -468,7 +447,7 @@ mod tests {
         // The border does not move on its own: a breathing base colour walks towards the accent.
         let quiet: Vec<_> = (0..40)
             .map(|tick| {
-                let (top, _) = edges(60, 1, tick, Scan::Working);
+                let (top, _) = edges(60, 1, tick, Scan::Resting);
                 top.spans[30].style.fg
             })
             .collect();
@@ -522,8 +501,8 @@ mod tests {
 
     #[test]
     fn a_tall_box_lights_its_sides_too() {
-        // The ring modes go round, not just along the top — checked on `Resting`; `Working` is a
-        // deliberate exception, a scanner over the long edges that leaves the sides dark.
+        // The ring modes go round, not just along the top — checked on `Resting`; `Working` has no
+        // ring at all, it breathes the whole box.
         let lit = (0..120)
             .flat_map(|tick| (0..6).map(move |row| (tick, row)))
             .filter(|&(tick, row)| {
@@ -664,7 +643,7 @@ mod walking {
         let ring = walk_length(20, 3);
         assert_eq!(heads(Scan::Resting, 0, 20, 3, ring).len(), 2);
         assert_eq!(heads(Scan::Holding, 0, 20, 3, ring).len(), 2);
-        // Working rides no heads now — it sweeps the edges, drawn by `sweeping`, not the ring.
+        // Working rides no heads: it breathes the whole box, drawn by `breathing`, not the ring.
         assert!(heads(Scan::Working, 0, 20, 3, ring).is_empty());
         assert!(heads(Scan::Off, 0, 20, 3, ring).is_empty());
     }
