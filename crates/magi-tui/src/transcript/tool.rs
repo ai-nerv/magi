@@ -109,11 +109,15 @@ pub(super) fn block(
             // Without a painting there is only `change_colour`, which guesses from the first
             // character — right for a diff, wrong for a `shell` running `git log --oneline`.
             None => {
+                // Only output that is a diff is read as one: `ls -la` opens its lines with `-` too.
+                let diff = output.lines().any(|line| line.starts_with("@@"));
                 for line in output.lines().take(shown) {
                     let fg = if result.is_error {
                         colour::tool_failed()
-                    } else {
+                    } else if diff {
                         change_colour(line)
+                    } else {
+                        colour::tool_output()
                     };
                     let drawn = Line::from(Span::styled(line.to_owned(), style.fg(fg)));
                     rows.extend(wrapped(drawn, style, detail, width, body, lead));
@@ -265,7 +269,7 @@ mod diff_tests {
     #[test]
     fn added_and_removed_lines_are_coloured_apart() {
         let lines = entry_lines(
-            &edit_entry("edited a.rs\n-was\n+now\n"),
+            &edit_entry("edited a.rs\n@@ -1 +1 @@\n-was\n+now\n"),
             40,
             Detail::Preview,
         );
@@ -276,14 +280,14 @@ mod diff_tests {
     #[test]
     fn ordinary_output_keeps_the_tool_colour() {
         let lines = entry_lines(&edit_entry("edited a.rs\n"), 40, Detail::Preview);
-        assert_eq!(colour_of(&lines, "edited"), Some(colour::diff_context()));
+        assert_eq!(colour_of(&lines, "edited"), Some(colour::tool_output()));
     }
 
     #[test]
     fn file_headers_are_not_changes() {
         // `---`/`+++` name the file; coloured as changes, a diff appears to add and remove it.
         let lines = entry_lines(
-            &edit_entry("--- a.rs\n+++ a.rs\n-was\n"),
+            &edit_entry("--- a.rs\n+++ a.rs\n@@ -1 +1 @@\n-was\n"),
             40,
             Detail::Preview,
         );

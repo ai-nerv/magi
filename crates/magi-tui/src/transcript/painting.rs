@@ -57,13 +57,11 @@ fn a_role_the_guesser_would_have_got_wrong_is_drawn_as_the_tool_meant_it() {
     let lines = block_of(Some(painted), "- not a diff at all", Detail::Full);
     assert_eq!(colour_of(&lines, "not a diff"), Some(colour::text()));
 
-    // And without the tool saying so, the guess still stands — which is what every tool
-    // that has no view relies on.
-    let guessed = block_of(None, "- not a diff at all", Detail::Full);
-    assert_eq!(
-        colour_of(&guessed, "not a diff"),
-        Some(colour::diff_removed())
-    );
+    // And without the tool saying so, only output that is a diff is read as one: `ls -la` is not.
+    let plain = block_of(None, "- not a diff at all", Detail::Full);
+    assert_eq!(colour_of(&plain, "not a diff"), Some(colour::tool_output()));
+    let diff = block_of(None, "@@ -1 +1 @@\n-was\n+now", Detail::Full);
+    assert_eq!(colour_of(&diff, "-was"), Some(colour::diff_removed()));
 }
 
 #[test]
