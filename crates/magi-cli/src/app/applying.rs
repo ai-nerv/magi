@@ -37,6 +37,16 @@ impl App {
                 self.choices = choices;
                 let empty = entries.is_empty();
                 self.entries = entries;
+                // Turns from before this screen are counted under the model it found running.
+                if let Some(model) = self.model.as_ref().map(|m| m.name.clone()) {
+                    for entry in &self.entries {
+                        if let Entry::Assistant { id, .. } = entry {
+                            self.turn_models
+                                .entry(id.clone())
+                                .or_insert_with(|| model.clone());
+                        }
+                    }
+                }
                 self.set_status(status);
                 // Now that the daemon's entries have replaced ours, anything the UI knew at
                 // startup can be added without the snapshot eating it.
@@ -139,6 +149,9 @@ impl App {
                     *stop = Some(stop_reason);
                     *err = error;
                     *cost = usage;
+                }
+                if let Some(model) = self.model.as_ref().map(|m| m.name.clone()) {
+                    self.turn_models.entry(id).or_insert(model);
                 }
             }
             // Said in the transcript, once the conversation has started. Which model answered

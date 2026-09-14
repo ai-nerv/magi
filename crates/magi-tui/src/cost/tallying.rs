@@ -2,97 +2,152 @@
 
 use super::*;
 
-fn turn(at: usize, input: u64, output: u64, read: u64, write: u64) -> Turn {
-    Turn {
-        at,
-        usage: Usage {
-            input,
-            output,
-            cache_read: read,
-            cache_write: write,
-            cost_micros: 0,
-        },
+fn used(input: u64, output: u64, cost_micros: u64) -> Usage {
+    Usage {
+        input,
+        output,
+        cost_micros,
+        ..Usage::default()
     }
 }
 
-fn text(lines: &[Line<'static>]) -> String {
-    lines
+fn turn(at: usize, model: &str, usage: Usage) -> Turn {
+    Turn {
+        at,
+        model: model.to_owned(),
+        usage,
+    }
+}
+
+fn text(drawn: &Rendered) -> Vec<String> {
+    drawn.rows.iter().map(ToString::to_string).collect()
+}
+
+fn report<'a>(turns: &'a [Turn], agents: &'a [Agent]) -> Report<'a> {
+    Report {
+        turns,
+        agents,
+        width: 70,
+    }
+}
+
+/// Whether any row carries a braille cell: a line chart was drawn.
+fn charted(shown: &[String]) -> bool {
+    shown
         .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join("\n")
+        .any(|row| row.chars().any(|c| ('\u{2801}'..='\u{28FF}').contains(&c)))
 }
 
 #[test]
-fn nothing_spent_says_so_rather_than_a_table_of_zeroes() {
-    assert!(lines(&[], None).is_empty());
+fn nothing_spent_draws_nothing_and_says_so() {
+    assert!(view(&report(&[], &[])).rows.is_empty());
     assert!(empty().contains("nothing spent"));
 }
 
 #[test]
-fn every_turn_is_a_row_and_the_total_is_the_sum() {
-    let said = text(&lines(
-        &[turn(1, 100, 20, 0, 0), turn(2, 200, 30, 50, 10)],
-        None,
-    ));
-    assert!(said.contains("all"), "there is a total row: {said}");
-    // 300 in, 50 out — the sum, not the last turn.
-    assert!(said.contains("300"), "{said}");
-    assert!(said.contains("50"), "{said}");
+fn the_heading_is_the_whole_of_what_was_spent() {
+    let turns = [
+        turn(1, "m/alpha", used(100, 10, 1_234)),
+        turn(2, "m/alpha", used(100, 10, 20_000)),
+    ];
+    let shown = text(&view(&report(&turns, &[])));
+    assert_eq!(shown[0], "$0.0212 spent", "{shown:?}");
 }
 
 #[test]
-fn the_four_counters_are_kept_apart() {
-    let said = text(&lines(&[turn(1, 10, 20, 30, 40)], None));
-    for column in ["in", "out", "cache rd", "cache wr"] {
-        assert!(said.contains(column), "{column} is a column: {said}");
-    }
+fn each_model_is_a_bar_of_its_own() {
+    let turns = [
+        turn(1, "openrouter/x/alpha", used(1_000, 100, 1_000)),
+        turn(2, "openrouter/y/beta", used(2_000, 100, 3_000)),
+    ];
+    let shown = text(&view(&report(&turns, &[])));
+    let has = |needle: &str| shown.iter().any(|row| row.contains(needle));
+    assert!(has("By model") && has("alpha") && has("beta"), "{shown:?}");
+    assert!(has("█"), "drawn as bars: {shown:?}");
+    assert!(has("2 models"), "{shown:?}");
 }
 
 #[test]
-fn it_says_how_much_of_the_prompt_was_cached() {
-    // 900 of 1000 prompt tokens from cache.
-    let said = text(&lines(&[turn(1, 100, 5, 900, 0)], None));
-    assert!(said.contains("90% of the prompt"), "{said}");
-}
-
-#[test]
-fn a_session_with_no_prompt_tokens_does_not_divide_by_zero() {
-    let said = text(&lines(&[turn(1, 0, 5, 0, 0)], None));
-    assert!(!said.contains("% of the prompt"), "{said}");
+fn every_agent_of_the_run_is_counted() {
+    let turns = [turn(1, "m/alpha", used(1_000, 100, 1_000))];
+    let agents = [
+        Agent {
+            name: "main/xi".to_owned(),
+            here: true,
+            spent: vec![("m/alpha".to_owned(), used(1_000, 100, 1_000))],
+        },
+        Agent {
+            name: "builder/pi".to_owned(),
+            here: false,
+            spent: vec![("m/beta".to_owned(), used(2_000, 200, 4_000))],
+        },
+    ];
+    let shown = text(&view(&report(&turns, &agents)));
+    let has = |needle: &str| shown.iter().any(|row| row.contains(needle));
+    assert_eq!(shown[0], "$0.0050 spent", "the whole run: {shown:?}");
+    assert!(
+        has("By agent") && has("builder/pi") && has("you"),
+        "{shown:?}"
+    );
+    assert!(has("beta"), "a model only a child used: {shown:?}");
 }
 
 #[test]
 fn it_does_not_invent_a_price() {
     // melchior owns the rate catalog; a rate guessed here would go stale unnoticed.
-    let said = text(&lines(&[turn(1, 1_000, 100, 0, 0)], Some("anthropic/x")));
-    assert!(!said.contains('$'), "no money: {said}");
-    assert!(
-        said.contains("providers.lua"),
-        "and it says where the rate lives: {said}"
-    );
-    assert!(said.contains("anthropic/x"), "for this model: {said}");
+    let turns = [turn(1, "anthropic/x", used(1_000, 100, 0))];
+    let shown = text(&view(&report(&turns, &[])));
+    assert!(shown.iter().all(|row| !row.contains('$')), "{shown:?}");
+    assert!(shown[0].ends_with("tokens"), "{shown:?}");
 }
 
 #[test]
-fn what_the_provider_said_a_turn_cost_is_shown_and_summed() {
-    let mut one = turn(1, 100, 10, 0, 0);
-    one.usage.cost_micros = 1_234;
-    let mut two = turn(2, 100, 10, 0, 0);
-    two.usage.cost_micros = 20_000;
-    let said = text(&lines(&[one, two], Some("openrouter/x")));
-    assert!(said.contains("cost"), "a money column: {said}");
-    assert!(said.contains("$0.0012"), "the first turn: {said}");
+fn how_much_came_from_cache_is_a_gauge() {
+    let cached = Usage {
+        cache_read: 900,
+        ..used(100, 5, 0)
+    };
+    let shown = text(&view(&report(&[turn(1, "m/a", cached)], &[])));
     assert!(
-        said.contains("spent $0.0212"),
-        "and the whole session: {said}"
+        shown
+            .iter()
+            .any(|row| row.contains("90% of the prompt from cache")),
+        "{shown:?}"
     );
 }
 
 #[test]
-fn the_newest_turn_is_last() {
-    let said = text(&lines(&[turn(1, 1, 0, 0, 0), turn(2, 2, 0, 0, 0)], None));
-    let first = said.find("\n1 ").or_else(|| said.find("1     "));
-    let second = said.find("\n2 ").or_else(|| said.find("2     "));
-    assert!(first < second, "{said}");
+fn turns_are_charted_and_listed_with_their_model() {
+    let turns = [
+        turn(1, "m/alpha", used(1_000, 100, 1_000)),
+        turn(2, "m/alpha", used(3_000, 100, 2_000)),
+        turn(3, "m/beta", used(2_000, 100, 1_000)),
+    ];
+    let shown = text(&view(&report(&turns, &[])));
+    let has = |needle: &str| shown.iter().any(|row| row.contains(needle));
+    assert!(
+        has("Tokens per turn") && has("turn 1") && has("turn 3"),
+        "{shown:?}"
+    );
+    assert!(charted(&shown), "the spend over time: {shown:?}");
+    assert!(has("Recent turns"), "{shown:?}");
+    let listed = shown.iter().position(|row| row.contains("Recent turns"));
+    let last = shown.iter().rposition(|row| row.contains("beta"));
+    assert!(listed < last, "the newest turn is last: {shown:?}");
+}
+
+#[test]
+fn no_row_is_wider_than_the_view() {
+    let turns: Vec<Turn> = (1..=40)
+        .map(|at| {
+            turn(
+                at,
+                "openrouter/some-provider/a-very-long-model-name",
+                used(9_000, 900, 900),
+            )
+        })
+        .collect();
+    for row in text(&view(&report(&turns, &[]))) {
+        assert!(row.chars().count() <= 70, "{row:?}");
+    }
 }

@@ -31,6 +31,11 @@ pub struct Session {
     /// Entries settled here and not yet handed to balthasar, by cursor. Keyed rather than appended,
     /// so an amended message is one write; drained under a short lock and written outside it.
     pending: std::collections::BTreeMap<u64, Entry>,
+    /// What each model has cost this session, a finished turn counted once under the model that
+    /// answered it; a last-value channel like `phase`, for whoever reports on this session.
+    spent: watch::Sender<Vec<(String, magi_proto::Usage)>>,
+    tallied: std::collections::BTreeMap<String, magi_proto::Usage>,
+    counted: std::collections::HashSet<magi_proto::MessageId>,
 }
 
 impl Session {
@@ -41,7 +46,11 @@ impl Session {
     pub fn recorded(id: SessionId, entries: Vec<Entry>) -> Self {
         let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
         let (phase, _) = watch::channel(AgentStatus::Idle);
+        let (spent, _) = watch::channel(Vec::new());
         Self {
+            spent,
+            tallied: std::collections::BTreeMap::new(),
+            counted: std::collections::HashSet::new(),
             journal: Journal::recorded(id, entries),
             status: AgentStatus::Idle,
             cancel: crate::cancel::Cancel::default(),
@@ -120,6 +129,46 @@ impl Session {
 
     pub fn set_model(&mut self, model: Option<magi_proto::ModelInfo>) {
         self.model = model;
+        // A resumed session's turns are counted once there is a model to count them under.
+        for entry in self.journal.entries().to_vec() {
+            self.tally(&entry);
+        }
+    }
+
+    /// What each model has cost this session, as it changes.
+    #[must_use]
+    pub fn spent_watch(&self) -> watch::Receiver<Vec<(String, magi_proto::Usage)>> {
+        self.spent.subscribe()
+    }
+
+    /// Count a finished turn under the model answering now, and once: a turn is amended many times
+    /// as it streams, and only its ending carries what it cost.
+    fn tally(&mut self, entry: &Entry) {
+        let Entry::Assistant {
+            id,
+            stop_reason: Some(_),
+            usage,
+            ..
+        } = entry
+        else {
+            return;
+        };
+        let Some(model) = self.model_name() else {
+            return;
+        };
+        if usage.prompt_tokens() == 0 && usage.output == 0 && usage.cost_micros == 0 {
+            return;
+        }
+        if !self.counted.insert(id.clone()) {
+            return;
+        }
+        self.tallied.entry(model).or_default().add(*usage);
+        self.spent.send_replace(
+            self.tallied
+                .iter()
+                .map(|(name, used)| (name.clone(), *used))
+                .collect(),
+        );
     }
 
     pub fn set_choices(&mut self, choices: Vec<magi_proto::ModelChoice>) {
@@ -244,6 +293,7 @@ impl Session {
             // A send with no subscribers is not a failure: the daemon outlives its UIs.
             let _ = self.events.send(event);
         }
+        self.tally(&entry);
         self.pending.insert(cursor.0, entry);
         Ok(cursor)
     }
@@ -256,6 +306,7 @@ impl Session {
         for event in amendment_events(cursor, previous.as_ref(), &entry) {
             let _ = self.events.send(event);
         }
+        self.tally(&entry);
         self.pending.insert(cursor.0, entry);
         Ok(cursor)
     }
@@ -272,6 +323,7 @@ impl Session {
         for event in amendment_events(cursor, previous.as_ref(), &entry) {
             let _ = self.events.send(event);
         }
+        self.tally(&entry);
         self.pending.insert(cursor.0, entry);
         Ok(())
     }

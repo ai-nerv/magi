@@ -1,9 +1,9 @@
 //! The model's card, opened from its name in the footer: what the model is, the settings that can be
-//! changed from here, what is published about it, who serves it and at what price, and what this
-//! session has spent on it. Every part is its own section, set off by a dashed rule. Rows for a list
-//! float that scrolls; the rows naming a choice are selectable.
+//! changed from here, how full this agent's window is, what is published about the model, and who
+//! serves it at what price. What was spent is the cost view's. Every part is its own section, set
+//! off by a dashed rule. Rows for a list float that scrolls; the rows naming a choice are selectable.
 
-mod charts;
+pub(crate) mod charts;
 mod published;
 
 use crate::footer::format_tokens;
@@ -85,27 +85,27 @@ pub struct Rendered {
 }
 
 impl Rendered {
-    fn push(&mut self, line: Line<'static>, pick: Option<&str>) {
+    pub(crate) fn push(&mut self, line: Line<'static>, pick: Option<&str>) {
         self.rows.push(line);
         self.picks.push(pick.map(ToOwned::to_owned));
     }
 
-    fn say(&mut self, text: impl Into<String>, style: Style) {
+    pub(crate) fn say(&mut self, text: impl Into<String>, style: Style) {
         self.push(Line::from(Span::styled(text.into(), style)), None);
     }
 
-    fn blank(&mut self) {
+    pub(crate) fn blank(&mut self) {
         self.push(Line::default(), None);
     }
 
-    fn chart(&mut self, lines: Vec<Line<'static>>) {
+    pub(crate) fn chart(&mut self, lines: Vec<Line<'static>>) {
         for line in lines {
             self.push(line, None);
         }
     }
 
     /// A dashed rule across the card, then the section's title and what it says about itself.
-    fn section(&mut self, title: &str, note: &str, width: u16) {
+    pub(crate) fn section(&mut self, title: &str, note: &str, width: u16) {
         self.blank();
         let rule = "- ".repeat(usize::from(width) / 2);
         self.say(
@@ -129,7 +129,7 @@ impl Rendered {
     }
 
     /// A label and its value, the labels in one column.
-    fn fact(&mut self, label: &str, value: impl Into<String>, ink: &Ink) {
+    pub(crate) fn fact(&mut self, label: &str, value: impl Into<String>, ink: &Ink) {
         self.push(
             Line::from(vec![
                 Span::styled(format!("{label:<14}"), ink.label),
@@ -140,21 +140,25 @@ impl Rendered {
     }
 }
 
-/// The styles a card is drawn in.
-struct Ink {
-    dim: Style,
-    label: Style,
-    value: Style,
+/// The styles a card is drawn in, shared with the cost view so the two read as one family.
+pub(crate) struct Ink {
+    pub(crate) dim: Style,
+    pub(crate) label: Style,
+    pub(crate) value: Style,
+}
+
+pub(crate) fn ink() -> Ink {
+    Ink {
+        dim: Style::default().fg(crate::colour::dim()),
+        label: Style::default().fg(crate::colour::muted()),
+        value: Style::default().fg(crate::colour::accent()),
+    }
 }
 
 /// The whole card, top to bottom.
 #[must_use]
 pub fn view(card: &Card<'_>) -> Rendered {
-    let ink = Ink {
-        dim: Style::default().fg(crate::colour::dim()),
-        label: Style::default().fg(crate::colour::muted()),
-        value: Style::default().fg(crate::colour::accent()),
-    };
+    let ink = ink();
     let width = card.width.max(20);
     let mut out = Rendered::default();
     heading(&mut out, card, &ink, width);
@@ -162,7 +166,6 @@ pub fn view(card: &Card<'_>) -> Rendered {
     settings(&mut out, card, &ink);
     context(&mut out, card, width);
     published::sections(&mut out, card, &ink, width);
-    spent(&mut out, card, &ink, width);
     out
 }
 
@@ -249,125 +252,6 @@ fn context(out: &mut Rendered, card: &Card<'_>, width: u16) {
         format_tokens(card.context_window)
     );
     out.chart(charts::gauge(share, &label, ink, width));
-}
-
-/// What this session has spent: the totals, then a column a turn, how full the window got, and
-/// the money as it added up, each a section of its own.
-fn spent(out: &mut Rendered, card: &Card<'_>, ink: &Ink, width: u16) {
-    out.section("This session", "", width);
-    let turns = card.turns;
-    if turns.is_empty() {
-        out.say("nothing yet — this fills in as turns finish", ink.dim);
-        return;
-    }
-    let total = turns.iter().fold(Usage::default(), |mut sum, turn| {
-        sum.add(*turn);
-        sum
-    });
-    out.fact("Turns", turns.len().to_string(), ink);
-    out.fact(
-        "Tokens",
-        format!(
-            "{} in · {} out",
-            format_tokens(total.prompt_tokens()),
-            format_tokens(total.output)
-        ),
-        ink,
-    );
-    if let Some(rate) = total.cache_hit_rate() {
-        out.fact("Cached", format!("{rate:.0}% of what went in"), ink);
-    }
-    if total.cost_micros > 0 {
-        out.push(
-            Line::from(vec![
-                Span::styled(format!("{:<14}", "Spent"), ink.label),
-                Span::styled(
-                    crate::cost::dollars(total.cost_micros),
-                    Style::default().fg(crate::colour::success()),
-                ),
-            ]),
-            None,
-        );
-    }
-
-    out.section("Tokens per turn", "in and out together", width);
-    let columns: Vec<Item> = turns
-        .iter()
-        .enumerate()
-        .map(|(at, turn)| {
-            let tokens = turn.prompt_tokens() + turn.output;
-            Item {
-                label: (at + 1).to_string(),
-                value: figure(tokens),
-                said: format_tokens(tokens),
-                ink: crate::colour::code_command(),
-            }
-        })
-        .collect();
-    out.chart(charts::columns(&columns, width, 8));
-
-    if card.context_window > 0 {
-        out.section(
-            "Context use",
-            "how full the window got, turn by turn",
-            width,
-        );
-        let points: Vec<(f64, f64)> = turns
-            .iter()
-            .enumerate()
-            .map(|(at, turn)| {
-                (
-                    figure(at as u64 + 1),
-                    figure(turn.prompt_tokens()) / figure(card.context_window) * 100.0,
-                )
-            })
-            .collect();
-        let ticks = ["0%".to_owned(), "50%".to_owned(), "100%".to_owned()];
-        out.chart(charts::line(
-            &points,
-            100.0,
-            ticks,
-            crate::colour::warning(),
-            width,
-            10,
-        ));
-    }
-
-    if total.cost_micros > 0 {
-        out.section("Spend", "as it added up", width);
-        let mut running = 0_u64;
-        let points: Vec<(f64, f64)> = turns
-            .iter()
-            .enumerate()
-            .map(|(at, turn)| {
-                running += turn.cost_micros;
-                (figure(at as u64 + 1), figure(running))
-            })
-            .collect();
-        let ticks = [
-            "$0".to_owned(),
-            crate::cost::dollars(total.cost_micros / 2),
-            crate::cost::dollars(total.cost_micros),
-        ];
-        out.chart(charts::line(
-            &points,
-            figure(total.cost_micros),
-            ticks,
-            crate::colour::success(),
-            width,
-            10,
-        ));
-    }
-}
-
-/// A count as a chart coordinate.
-fn figure(count: u64) -> f64 {
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "token counts and micro-dollars, far below where f64 loses precision"
-    )]
-    let value = count as f64;
-    value
 }
 
 #[cfg(test)]

@@ -23,28 +23,80 @@ impl App {
         );
     }
 
-    /// Open what this session has spent, per turn and in total. Tokens, not money: magi does not
-    /// know the rates, melchior does.
+    /// Open what was spent: this agent's turns and the models they went to, and every agent of the
+    /// run it belongs to, as melchior's roster last had them.
     pub fn show_cost(&mut self) {
-        let turns: Vec<magi_tui::cost::Turn> = self
-            .entries
+        let turns = self.cost_turns();
+        let mine = self.named.split('/').nth(2);
+        let run = self
+            .reachable
+            .iter()
+            .find(|them| Some(them.id.as_str()) == mine)
+            .and_then(|me| me.session.clone());
+        let mut agents = vec![magi_tui::cost::Agent {
+            name: self.named.split('/').skip(1).collect::<Vec<_>>().join("/"),
+            here: true,
+            spent: self.spent(),
+        }];
+        agents.extend(
+            self.reachable
+                .iter()
+                .filter(|them| Some(them.id.as_str()) != mine)
+                .filter(|them| run.is_some() && them.session == run)
+                .map(|them| magi_tui::cost::Agent {
+                    name: format!("{}/{}", them.role, them.id),
+                    here: false,
+                    spent: them
+                        .spent
+                        .iter()
+                        .map(|row| (row.model.clone(), row.usage()))
+                        .collect(),
+                }),
+        );
+        let drawn = magi_tui::cost::view(&magi_tui::cost::Report {
+            turns: &turns,
+            agents: &agents,
+            width: card_width(),
+        });
+        self.pane =
+            Some(magi_tui::pane::Pane::new("cost", drawn.rows).saying(magi_tui::cost::empty()));
+    }
+
+    /// This agent's finished turns, each with the model that answered it.
+    #[must_use]
+    pub fn cost_turns(&self) -> Vec<magi_tui::cost::Turn> {
+        self.entries
             .iter()
             .filter_map(|entry| match entry {
-                magi_proto::Entry::Assistant { usage, .. }
-                    if usage.prompt_tokens() > 0 || usage.output > 0 =>
+                magi_proto::Entry::Assistant { id, usage, .. }
+                    if usage.prompt_tokens() > 0 || usage.output > 0 || usage.cost_micros > 0 =>
                 {
-                    Some(*usage)
+                    Some((id, *usage))
                 }
                 _ => None,
             })
             .enumerate()
-            .map(|(at, usage)| magi_tui::cost::Turn { at: at + 1, usage })
-            .collect();
-        let model = self.model.as_ref().map(|m| m.name.clone());
-        self.pane = Some(
-            magi_tui::pane::Pane::new("cost", magi_tui::cost::lines(&turns, model.as_deref()))
-                .saying(magi_tui::cost::empty()),
-        );
+            .map(|(at, (id, usage))| magi_tui::cost::Turn {
+                at: at + 1,
+                model: self
+                    .turn_models
+                    .get(id)
+                    .cloned()
+                    .unwrap_or_else(|| "model not recorded".to_owned()),
+                usage,
+            })
+            .collect()
+    }
+
+    /// What each model has cost this agent, for melchior to carry to the rest of the run.
+    #[must_use]
+    pub fn spent(&self) -> Vec<(String, magi_proto::Usage)> {
+        let mut by: std::collections::BTreeMap<String, magi_proto::Usage> =
+            std::collections::BTreeMap::new();
+        for turn in self.cost_turns() {
+            by.entry(turn.model).or_default().add(turn.usage);
+        }
+        by.into_iter().collect()
     }
 
     /// Open the run as a tree of agents, this session marked and whichever one is on screen too.

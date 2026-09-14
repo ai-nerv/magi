@@ -294,7 +294,7 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
             let key = opening.key;
             let socket = opening.socket;
             // Reaped even when it will not serve: `start` refuses after convening balthasar.
-            let phase_watch = match host::start(
+            let (phase_watch, spent_watch) = match host::start(
                 &socket,
                 cli.resume,
                 &cwd,
@@ -316,7 +316,15 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
             };
             // The same session either way: bound, announced and recorded before anything looks.
             let ran = if headless(&cli) {
-                child::run(&socket, cli.prompt, started, cli.tied, phase_watch).await
+                child::run(
+                    &socket,
+                    cli.prompt,
+                    started,
+                    cli.tied,
+                    phase_watch,
+                    spent_watch,
+                )
+                .await
             } else {
                 driver::run(
                     &socket,

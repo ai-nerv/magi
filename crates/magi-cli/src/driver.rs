@@ -719,6 +719,7 @@ pub async fn run(
                         Some(app.unanswered()),
                         phase,
                         cause.as_deref(),
+                        &app.spent(),
                     );
                 }
                 // Take it up only into an idle session on its own screen, with no half-typed prompt

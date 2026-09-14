@@ -116,6 +116,34 @@ pub struct Peer {
     pub cause: Option<String>,
     #[serde(default)]
     pub claim: Option<String>,
+    /// What it has spent, a row a model, as its screen or reporter last told melchior.
+    #[serde(default)]
+    pub spent: Vec<Spent>,
+}
+
+/// What one agent spent on one model, as the roster carries it.
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(default)]
+pub struct Spent {
+    pub model: String,
+    pub input: u64,
+    pub output: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    pub cost_micros: u64,
+}
+
+impl Spent {
+    #[must_use]
+    pub fn usage(&self) -> magi_proto::Usage {
+        magi_proto::Usage {
+            input: self.input,
+            output: self.output,
+            cache_read: self.cache_read,
+            cache_write: self.cache_write,
+            cost_micros: self.cost_micros,
+        }
+    }
 }
 
 /// Whether a message of this sort reaches a session mid-turn — mirrors melchior's `Sort::interrupts`.
@@ -258,10 +286,25 @@ impl Melchior {
         waiting: Option<usize>,
         phase: magi_proto::Phase,
         cause: Option<&str>,
+        spent: &[(String, magi_proto::Usage)],
     ) {
         let Some(told) = self.told.as_mut() else {
             return;
         };
+        // A row a model, so the whole run's cost can be added up from the roster.
+        let spent: Vec<serde_json::Value> = spent
+            .iter()
+            .map(|(model, used)| {
+                serde_json::json!({
+                    "model": model,
+                    "input": used.input,
+                    "output": used.output,
+                    "cache_read": used.cache_read,
+                    "cache_write": used.cache_write,
+                    "cost_micros": used.cost_micros,
+                })
+            })
+            .collect();
         let line = serde_json::json!({
             "event": "doing",
             "busy": busy,
@@ -269,6 +312,7 @@ impl Melchior {
             "waiting": waiting,
             "phase": phase.as_str(),
             "cause": cause,
+            "spent": spent,
         });
         // Best effort: melchior having gone away is a session without siblings.
         let _ = writeln!(told, "{line}");

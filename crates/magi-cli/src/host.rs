@@ -17,6 +17,12 @@ pub struct Named<'a> {
     pub agent: Option<&'a str>,
 }
 
+/// What a headless child reports from: the session's status, and what each model has cost it.
+pub type Watches = (
+    tokio::sync::watch::Receiver<magi_proto::AgentStatus>,
+    tokio::sync::watch::Receiver<Vec<(String, magi_proto::Usage)>>,
+);
+
 /// Open this session and serve it, bound before returning so the UI's first dial cannot race it.
 pub async fn start(
     socket: &Path,
@@ -25,7 +31,7 @@ pub async fn start(
     loaded: Option<&crate::config::Loaded>,
     environ: &std::collections::BTreeMap<String, String>,
     named: Named<'_>,
-) -> Result<tokio::sync::watch::Receiver<magi_proto::AgentStatus>> {
+) -> Result<Watches> {
     let Named { key, run, agent } = named;
     let cwd = cwd.display().to_string();
     let id = magi_proto::SessionId::new(recorded_as(run, key));
@@ -87,10 +93,11 @@ pub async fn start(
     stamp(&mut backend, &mut catalog, environ);
     // A last-value view of status for a headless child to report its phase without attaching.
     let phase_watch = session.phase_watch();
+    let spent_watch = session.spent_watch();
     tokio::spawn(async move {
         let _ = magi_host::serve_on(listener, session, backend, catalog, ours).await;
     });
-    Ok(phase_watch)
+    Ok((phase_watch, spent_watch))
 }
 
 /// Take the socket back down: a path nothing answers would meet the next `magi` as a name taken.

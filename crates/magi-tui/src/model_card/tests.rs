@@ -65,13 +65,6 @@ fn published() -> Details {
     }
 }
 
-/// Whether any row carries a braille cell: a line chart was drawn.
-fn charted(shown: &[String]) -> bool {
-    shown
-        .iter()
-        .any(|row| row.chars().any(|c| ('\u{2801}'..='\u{28FF}').contains(&c)))
-}
-
 #[test]
 fn it_says_which_model_and_where_it_comes_from() {
     let shown = text(&view(&card(true, &[], Known::Asking)));
@@ -187,46 +180,19 @@ fn a_date_is_read_off_the_epoch() {
 }
 
 #[test]
-fn a_session_with_no_turns_says_so() {
-    let shown = text(&view(&card(true, &[], Known::Asking)));
-    assert!(
-        shown.iter().any(|row| row.contains("nothing yet")),
-        "{shown:?}"
-    );
-    assert!(!charted(&shown), "no chart of nothing");
-}
-
-#[test]
-fn a_session_is_drawn_as_columns_a_gauge_and_a_line() {
-    let turns = [
-        turn(10_000, 100, 0),
-        turn(40_000, 400, 0),
-        turn(20_000, 200, 0),
-    ];
+fn how_full_the_window_is_stays_and_what_was_spent_goes_to_the_cost_view() {
+    let turns = [turn(10_000, 100, 900), turn(20_000, 200, 900)];
     let shown = text(&view(&card(true, &turns, Known::Asking)));
-    let has = |needle: &str| shown.iter().any(|row| row.contains(needle));
-    assert!(has("Turns") && has("3"), "{shown:?}");
     assert!(
-        has("context 16% of 128k"),
+        shown.iter().any(|row| row.contains("context 16% of 128k")),
         "the gauge, off the last turn: {shown:?}"
     );
-    assert!(has("Tokens per turn") && has("█"), "the columns: {shown:?}");
-    assert!(has("turn 1") && has("turn 3"), "{shown:?}");
-    assert!(charted(&shown), "the window's line: {shown:?}");
-    assert!(!has("spent"), "no money unsaid");
-}
-
-#[test]
-fn money_is_shown_and_charted_where_the_provider_said_it() {
-    let turns = [turn(1_000, 100, 1_500), turn(1_000, 100, 2_500)];
-    let shown = text(&view(&card(true, &turns, Known::Asking)));
     assert!(
         shown
             .iter()
-            .any(|row| row.starts_with("Spent") && row.contains("$0.0040")),
+            .all(|row| !row.contains("Tokens per turn") && !row.contains("Spent")),
         "{shown:?}"
     );
-    assert!(shown.iter().any(|row| row.contains("Spend")), "{shown:?}");
 }
 
 /// Not a check: prints a whole card, to look at. `cargo test -p magi-tui a_card_to_look_at -- --ignored --nocapture`.

@@ -45,6 +45,8 @@ pub struct App {
     pub thinking: String,
     /// Which provider serves the model, by routing tag, as chosen on its card; `None` is the router's.
     pub provider: Option<String>,
+    /// Which model answered each finished turn, as it was when the turn ended.
+    pub turn_models: std::collections::HashMap<MessageId, String>,
     model_reasons: bool,
     pub choices: Vec<magi_proto::ModelChoice>,
     /// A list or a completion popup. One slot: running a command closes the popup that offered it.
@@ -141,6 +143,7 @@ impl App {
             model: None,
             thinking: "off".to_owned(),
             provider: None,
+            turn_models: std::collections::HashMap::new(),
             model_reasons: false,
             choices: Vec::new(),
             overlay: None,

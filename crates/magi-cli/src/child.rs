@@ -30,6 +30,7 @@ pub async fn run(
     started: Option<(crate::melchior::Melchior, std::path::PathBuf)>,
     parent: Option<u32>,
     phase: watch::Receiver<AgentStatus>,
+    spent: watch::Receiver<Vec<(String, magi_proto::Usage)>>,
 ) -> Result<()> {
     let mut layer = started.map(|(layer, _at)| layer);
     // Said once, because a session with no terminal has no other way to say what it is called.
@@ -40,7 +41,7 @@ pub async fn run(
     }
     // Coming up, before the prompt lands: the one moment `starting` is true.
     if let Some(layer) = layer.as_mut() {
-        layer.doing(false, 0, None, Phase::Starting, None);
+        layer.doing(false, 0, None, Phase::Starting, None, &[]);
     }
     if let Some(prompt) = prompt {
         // Not fatal: a child whose prompt did not land is still a session somebody can attach to.
@@ -48,7 +49,7 @@ pub async fn run(
             eprintln!("magi: this session could not be given its prompt: {why}");
         }
     }
-    park(socket, &mut layer, parent, phase).await;
+    park(socket, &mut layer, parent, phase, spent).await;
     Ok(())
 }
 
@@ -98,6 +99,7 @@ async fn park(
     layer: &mut Option<crate::melchior::Melchior>,
     parent: Option<u32>,
     mut phase: watch::Receiver<AgentStatus>,
+    spent: watch::Receiver<Vec<(String, magi_proto::Usage)>>,
 ) {
     let mut heard = layer
         .as_mut()
@@ -131,7 +133,7 @@ async fn park(
         std::collections::BTreeMap::new();
     let status = phase.borrow().clone();
     let (mut phase_now, working_for) = derive(&status, &mut has_worked, &mut working_since);
-    announce(layer, phase_now, working_for, &children);
+    announce(layer, phase_now, working_for, &children, &spent);
 
     loop {
         tokio::select! {
@@ -144,7 +146,7 @@ async fn park(
                 Some(crate::melchior::Heard::Signal { from, kind, kin, cause }) => {
                     if kin == "child" {
                         children.insert(from.clone(), kind.clone());
-                        announce(layer, phase_now, working_since.map_or(0, |t| t.elapsed().as_secs()), &children);
+                        announce(layer, phase_now, working_since.map_or(0, |t| t.elapsed().as_secs()), &children, &spent);
                     }
                     if let Some(occasion) = wake_prompt(&kin, &kind, &from, cause.as_deref()) {
                         pending_wake = Some(occasion);
@@ -174,14 +176,14 @@ async fn park(
                 let (next, working_for) =
                     derive(&status, &mut has_worked, &mut working_since);
                 phase_now = next;
-                announce(layer, next, working_for, &children);
+                announce(layer, next, working_for, &children, &spent);
                 hand_over(socket, phase_now, &mut arrivals).await;
                 flush_wake(socket, phase_now, &mut pending_wake, &mut last_wake).await;
             }
             // Keeps the working timer moving, and catches a wake deferred by the cooldown.
             _ = beat.tick() => {
                 if let Some(since) = working_since {
-                    announce(layer, Phase::Working, since.elapsed().as_secs(), &children);
+                    announce(layer, Phase::Working, since.elapsed().as_secs(), &children, &spent);
                 }
                 hand_over(socket, phase_now, &mut arrivals).await;
                 flush_wake(socket, phase_now, &mut pending_wake, &mut last_wake).await;
@@ -196,7 +198,8 @@ async fn park(
             () = &mut ended => break,
         }
     }
-    report(layer, Phase::Gone, None, 0);
+    let last = spent.borrow().clone();
+    report(layer, Phase::Gone, None, 0, &last);
 }
 
 /// The occasion to wake this session on, or `None` for a signal it should only observe. A child or
@@ -346,6 +349,7 @@ fn announce(
     base: Phase,
     working_for: u64,
     children: &std::collections::BTreeMap<String, String>,
+    spent: &watch::Receiver<Vec<(String, magi_proto::Usage)>>,
 ) {
     let (phase, cause) = match base {
         Phase::Idle | Phase::Finished => match waiting_on(children) {
@@ -354,7 +358,8 @@ fn announce(
         },
         _ => (base, None),
     };
-    report(layer, phase, cause.as_deref(), working_for);
+    let spent = spent.borrow().clone();
+    report(layer, phase, cause.as_deref(), working_for, &spent);
 }
 
 /// How many watched children have not reached an end, as a cause line, or `None` when all are done.
@@ -373,6 +378,7 @@ fn report(
     phase: Phase,
     cause: Option<&str>,
     working_for: u64,
+    spent: &[(String, magi_proto::Usage)],
 ) {
     if let Some(layer) = layer.as_mut() {
         layer.doing(
@@ -381,6 +387,7 @@ fn report(
             None,
             phase,
             cause,
+            spent,
         );
     }
 }
@@ -520,6 +527,7 @@ mod tests {
                 &mut None,
                 None,
                 watch::channel(AgentStatus::Idle).1,
+                watch::channel(Vec::new()).1,
             ),
         )
         .await;
@@ -544,6 +552,7 @@ mod tests {
                 &mut None,
                 Some(pid),
                 watch::channel(AgentStatus::Idle).1,
+                watch::channel(Vec::new()).1,
             ),
         )
         .await;

@@ -406,8 +406,8 @@ fn what_the_session_is_doing_keeps_reaching_the_layer() {
         return;
     };
     let me = layer.named.clone();
-    layer.doing(false, 0, Some(0), magi_proto::Phase::Idle, None);
-    layer.doing(true, 41, Some(2), magi_proto::Phase::Working, None);
+    layer.doing(false, 0, Some(0), magi_proto::Phase::Idle, None, &[]);
+    layer.doing(true, 41, Some(2), magi_proto::Phase::Working, None, &[]);
 
     let Some((them, theirs)) = a_sibling(&project) else {
         return;

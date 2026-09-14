@@ -10,7 +10,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Axis, Chart, Dataset, GraphType, Widget};
 
 /// One bar or column: its label, its size, what is written beside it, and its colour.
-pub(super) struct Item {
+pub(crate) struct Item {
     pub label: String,
     pub value: f64,
     pub said: String,
@@ -74,7 +74,7 @@ fn rows(widget: impl Widget, width: u16, height: u16) -> Vec<Line<'static>> {
 }
 
 /// Each item as a bar out of `max`, a row each: its label, the bar on a dotted track, its figure.
-pub(super) fn bars(items: &[Item], max: f64, width: u16) -> Vec<Line<'static>> {
+pub(crate) fn bars(items: &[Item], max: f64, width: u16) -> Vec<Line<'static>> {
     let label = items
         .iter()
         .map(|item| item.label.chars().count())
@@ -118,7 +118,7 @@ pub(super) fn bars(items: &[Item], max: f64, width: u16) -> Vec<Line<'static>> {
 
 /// Each item as a column rising from a floor, the newest that fit, the peak marked on the left and
 /// the first and last labels under them. Brighter towards the top, the way a level meter is.
-pub(super) fn columns(items: &[Item], width: u16, height: u16) -> Vec<Line<'static>> {
+pub(crate) fn columns(items: &[Item], width: u16, height: u16) -> Vec<Line<'static>> {
     let top = items.iter().map(|item| item.value).fold(0.0_f64, f64::max);
     let peak = items
         .iter()
@@ -170,7 +170,7 @@ pub(super) fn columns(items: &[Item], width: u16, height: u16) -> Vec<Line<'stat
 }
 
 /// `label`, then a bar filled `ratio` of the way along a track, in `ink`.
-pub(super) fn gauge(ratio: f64, label: &str, ink: Color, width: u16) -> Vec<Line<'static>> {
+pub(crate) fn gauge(ratio: f64, label: &str, ink: Color, width: u16) -> Vec<Line<'static>> {
     let room = usize::from(width)
         .saturating_sub(label.chars().count() + 1)
         .max(4);
@@ -196,7 +196,7 @@ pub(super) fn gauge(ratio: f64, label: &str, ink: Color, width: u16) -> Vec<Line
 
 /// A line through `points` over a filled area beneath it, in braille, on quiet axes: turns along,
 /// `0..top` up, `ticks` its marks.
-pub(super) fn line(
+pub(crate) fn line(
     points: &[(f64, f64)],
     top: f64,
     ticks: [String; 3],
