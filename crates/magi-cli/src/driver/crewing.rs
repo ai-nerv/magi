@@ -6,13 +6,10 @@ use magi_proto::UiCommand;
 use magi_tui::footer::FooterData;
 use tokio::sync::{mpsc, watch};
 
-/// Send a command, unless it would drive an agent this screen is only reading. Every write the UI
-/// performs goes through here, so a command added later is gated by having been sent at all.
+/// Send a command to whichever session is on screen, yours or one you attached to: attaching is
+/// driving. Only this terminal's geometry stays home, since that session draws nothing here.
 pub(super) async fn direct(app: &mut App, to: &mpsc::Sender<UiCommand>, command: UiCommand) {
-    if app.attached.is_some() && crate::app::drives(&command) {
-        if crate::app::spoken(&command) {
-            app.refuse_drive();
-        }
+    if app.attached.is_some() && crate::app::for_screen(&command) {
         return;
     }
     let _ = to.send(command).await;

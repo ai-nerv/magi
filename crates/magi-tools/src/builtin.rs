@@ -27,6 +27,10 @@ pub fn install_spawn(
 /// there. Inherited, and only ever added going down the tree, so `delegate` narrows like a grant.
 pub const NO_SPAWN: &str = "MAGI_NO_SPAWN";
 
+/// The grants of the session that started a child, as JSON: the child may do what its parent may,
+/// no wider. Read once, when the child starts.
+pub const GRANTS: &str = "MAGI_GRANTS";
+
 /// Start a child agent of this session. The one builtin that reaches the harness: it runs the very
 /// binary this session is — [`std::env::current_exe`], never `magi` off `$PATH`, which could be a
 /// stale install — with `fork`, so melchior names the child and caps the tree and magi spawns it.
@@ -60,23 +64,32 @@ impl Tool for Spawn {
     }
 
     fn description(&self) -> &str {
-        "Start a child agent of this session in the same project. `role` is one word for what it \
-         is for; `prompt` is what it should get on with, omitted for one that waits. Returns the \
-         child's id; reach it afterwards with the `agent` tool. The tree has a depth and a breadth \
-         limit, and starting one past either is refused."
+        "Start a child agent in this project to do one part of a larger task, alongside others. It \
+         sees none of your conversation, so `prompt` must be a complete brief. Returns the child's \
+         id; you are woken when it finishes, and its report arrives in your inbox (`agent` tool). \
+         The tree has a depth and a breadth limit, and starting one past either is refused."
     }
 
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "role": { "type": "string", "description": "One word for what the child is for." },
-                "prompt": { "type": "string", "description": "What it should get on with." },
+                "role": {
+                    "type": "string",
+                    "description": "One word for what the child is for, like `backend` or `tests`.",
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "The complete brief: the goal, the files it owns and must stay \
+                                    within, the interfaces or contract it must follow, constraints, \
+                                    how to check its own work, and what to report back.",
+                },
                 "delegate": {
                     "type": "boolean",
                     "description": "Whether the child may start children of its own. Default true.",
                 }
-            }
+            },
+            "required": ["prompt"],
         })
     }
 
@@ -107,7 +120,10 @@ impl Tool for Spawn {
         // leaves it empty. So a task carries a closing line telling the child to report back to the
         // session that started it — this one, named by its own melchior id.
         if let Some(prompt) = prompt {
-            shown.push(report_back(prompt, self.environ.get("MAGI_MELCHIOR_ID").map(String::as_str)));
+            shown.push(report_back(
+                prompt,
+                self.environ.get("MAGI_MELCHIOR_ID").map(String::as_str),
+            ));
         }
         if let Err(why) = ops.allow(
             "spawn",
@@ -120,6 +136,11 @@ impl Tool for Spawn {
         }
         let mut command = std::process::Command::new(&exe);
         command.args(&shown).envs(&self.environ);
+        // The child inherits what this session may do: nobody is attached to a headless child to
+        // ask, so without this it is refused what its parent would be allowed.
+        if let Ok(held) = serde_json::to_string(&ops.held()) {
+            command.env(GRANTS, held);
+        }
         if !delegate {
             command.env(NO_SPAWN, "1");
         }
@@ -158,6 +179,23 @@ mod tests {
         assert!(
             registry.get("spawn").is_some(),
             "install_spawn did not register spawn"
+        );
+    }
+
+    #[test]
+    fn a_child_cannot_be_started_without_a_brief() {
+        // A child with no prompt comes up with nothing to do and nothing to report, so the schema
+        // refuses the call before the tool runs.
+        let spawn = Spawn {
+            environ: std::collections::BTreeMap::new(),
+            may_spawn: true,
+        };
+        let refused = crate::schema::check(&json!({ "role": "backend" }), &spawn.parameters());
+        assert!(refused.is_err(), "a spawn with no prompt was accepted");
+        let taken = crate::schema::check(&json!({ "prompt": "build it" }), &spawn.parameters());
+        assert!(
+            taken.is_ok(),
+            "a spawn with a prompt was refused: {taken:?}"
         );
     }
 
@@ -235,12 +273,21 @@ mod tests {
     #[test]
     fn a_task_tells_the_child_to_report_back_to_the_session_that_started_it() {
         let told = report_back("scan the magi crate", Some("alpha-mu"));
-        assert!(told.starts_with("scan the magi crate"), "the task is kept: {told}");
+        assert!(
+            told.starts_with("scan the magi crate"),
+            "the task is kept: {told}"
+        );
         assert!(told.contains("send"), "no reporting instruction: {told}");
-        assert!(told.contains("`alpha-mu`"), "the parent is not named: {told}");
+        assert!(
+            told.contains("`alpha-mu`"),
+            "the parent is not named: {told}"
+        );
         // Without a known parent it still says to report, by way of `whoami`.
         let rootless = report_back("do a thing", None);
-        assert!(rootless.contains("whoami"), "no fallback recipient: {rootless}");
+        assert!(
+            rootless.contains("whoami"),
+            "no fallback recipient: {rootless}"
+        );
     }
 
     #[test]

@@ -117,6 +117,8 @@ pub async fn run(
     // screen is up — then run as a turn so the coordinator reacts, the wake a headless `park` runs.
     let mut pending_wake: Option<String> = None;
     let mut last_wake: Option<Instant> = None;
+    // A lead's own prompts carry the size check, so whether to coordinate is decided at the task.
+    let seat = crate::config::seat();
 
     let list_paths = |query: &str| {
         std::env::current_dir()
@@ -129,7 +131,7 @@ pub async fn run(
         let _ = command_tx
             .send(UiCommand::SubmitPrompt {
                 text,
-                aside: String::new(),
+                aside: seat.remind(String::new()),
             })
             .await;
     }
@@ -294,19 +296,18 @@ pub async fn run(
                         // Noted before the match consumes it; the rule lives in `keys::recomputes`.
                         let accepted = !keys::recomputes(&action);
                         match action {
-                            // Given back, not swallowed: `submit` empties the box before the gate.
-                            Action::Submit(text) if app.attached.is_some() => {
-                                app.refuse_drive();
-                                app.editor.insert_str(&text);
-                                dirty = true;
-                            }
                             Action::Submit(text) => {
                                 crate::history::remember(&text);
                                 // Beside the prompt, not appended to it: naming an instance tells the
                                 // model it is there and that a tool reaches it.
-                                let aside = layer
+                                let briefed = layer
                                     .as_ref()
                                     .map_or_else(String::new, |l| l.briefing(&text, project));
+                                let aside = if app.attached.is_none() {
+                                    seat.remind(briefed)
+                                } else {
+                                    briefed
+                                };
                                 direct(
                                     &mut app,
                                     &command_tx,
@@ -558,7 +559,8 @@ pub async fn run(
                             ours(&app, &command_tx, &mut held, arrived).await;
                             // An `attention` or `trouble` message is the one kind meant to reach a
                             // session mid-turn: interrupt this one's own turn so it attends sooner.
-                            // Only its own — a peer on screen is read-only, and `direct` drops it.
+                            // Only while our own session is on screen: attached, the interrupt would
+                            // stop the agent we are driving instead.
                             if app.attached.is_none()
                                 && app.is_busy()
                                 && crate::melchior::interrupts(&sort)
@@ -570,8 +572,8 @@ pub async fn run(
                         crate::melchior::Heard::Around { agents, names } => {
                             app.reachable = crate::melchior::peers(agents, names);
                             // A `--attach <id>` points the screen at its target once that agent
-                            // appears on the roster with a screen to draw over, read-only, as a
-                            // manual `alt+.` onto it would.
+                            // appears on the roster with a screen to draw over, as a manual
+                            // `alt+.` onto it would.
                             if let Some(id) = app.attach_wanted.clone()
                                 && let Some(them) = app
                                     .reachable

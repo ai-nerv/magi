@@ -38,27 +38,24 @@ pub async fn run(
     {
         println!("{named}");
     }
-    // Whether it was given work at birth: what tells `idle` (waiting to be told) from `finished`
-    // (the work it was given is done) once its turn ends.
-    let had_prompt = prompt.is_some();
     // Coming up, before the prompt lands: the one moment `starting` is true.
     if let Some(layer) = layer.as_mut() {
         layer.doing(false, 0, None, Phase::Starting, None);
     }
     if let Some(prompt) = prompt {
         // Not fatal: a child whose prompt did not land is still a session somebody can attach to.
-        if let Err(why) = ask(socket, prompt).await {
+        if let Err(why) = ask(socket, prompt, crate::config::seat().remind(String::new())).await {
             eprintln!("magi: this session could not be given its prompt: {why}");
         }
     }
-    park(socket, &mut layer, parent, phase, had_prompt).await;
+    park(socket, &mut layer, parent, phase).await;
     Ok(())
 }
 
 /// Hand the session its prompt, then let go of the socket. It waits to see the prompt land: the
 /// session `select!`s between the commands it has read and the task reading them, and a client that
 /// wrote and closed in one breath loses that coin toss half the time.
-async fn ask(socket: &Path, prompt: String) -> Result<()> {
+async fn ask(socket: &Path, prompt: String, aside: String) -> Result<()> {
     let stream = magi_ipc::connect(socket).await?;
     let (read_half, write_half) = stream.into_split();
     let mut reader = FrameReader::new(read_half);
@@ -81,7 +78,7 @@ async fn ask(socket: &Path, prompt: String) -> Result<()> {
     writer
         .write(&UiCommand::SubmitPrompt {
             text: prompt,
-            aside: String::new(),
+            aside,
         })
         .await?;
     // Whatever the session publishes first, bounded so a stalled session does not block parking.
@@ -101,12 +98,18 @@ async fn park(
     layer: &mut Option<crate::melchior::Melchior>,
     parent: Option<u32>,
     mut phase: watch::Receiver<AgentStatus>,
-    had_prompt: bool,
 ) {
     let mut heard = layer
         .as_mut()
         .and_then(crate::melchior::Melchior::hearing)
         .map(listening);
+    // This session's own name, which the host needs to label who a message came from.
+    let named = layer
+        .as_ref()
+        .map(|layer| layer.named.clone())
+        .unwrap_or_default();
+    // What other instances said, held while a turn runs and handed to the host once it is idle.
+    let mut arrivals: Vec<UiCommand> = Vec::new();
     let watching = parent.map(|pid| (pid, started_at(pid)));
     let mut looking = watching.as_ref().map(|_| tokio::time::interval(LOOK));
     let mut ended = signal();
@@ -127,8 +130,7 @@ async fn park(
     let mut children: std::collections::BTreeMap<String, String> =
         std::collections::BTreeMap::new();
     let status = phase.borrow().clone();
-    let (mut phase_now, working_for) =
-        derive(&status, had_prompt, &mut has_worked, &mut working_since);
+    let (mut phase_now, working_for) = derive(&status, &mut has_worked, &mut working_since);
     announce(layer, phase_now, working_for, &children);
 
     loop {
@@ -149,17 +151,16 @@ async fn park(
                         flush_wake(socket, phase_now, &mut pending_wake, &mut last_wake).await;
                     }
                 }
-                // The one message allowed to reach a session mid-turn. Working: stop the turn so it
-                // attends sooner; the queued occasion then wakes it when the turn ends.
-                Some(crate::melchior::Heard::Message { who, sort, text })
-                    if crate::melchior::interrupts(&sort) =>
-                {
-                    pending_wake = Some(urgent(&who, &sort, &text));
-                    if phase_now == Phase::Working {
+                // Another instance said something: passed to the host as a screen would, once this
+                // session is idle, so `question`, `answer` and `handoff` start a turn here too.
+                // `attention` and `trouble` also stop a running turn so it is taken up sooner.
+                Some(crate::melchior::Heard::Message { who, sort, text }) => {
+                    if crate::melchior::interrupts(&sort) && phase_now == Phase::Working {
                         interrupt(socket).await;
-                    } else {
-                        flush_wake(socket, phase_now, &mut pending_wake, &mut last_wake).await;
                     }
+                    let kin = crate::app::relation(&who, &named);
+                    arrivals.push(UiCommand::Arrived { who, kin, sort, text });
+                    hand_over(socket, phase_now, &mut arrivals).await;
                 }
                 Some(_) => {}
             },
@@ -171,9 +172,10 @@ async fn park(
                 }
                 let status = phase.borrow_and_update().clone();
                 let (next, working_for) =
-                    derive(&status, had_prompt, &mut has_worked, &mut working_since);
+                    derive(&status, &mut has_worked, &mut working_since);
                 phase_now = next;
                 announce(layer, next, working_for, &children);
+                hand_over(socket, phase_now, &mut arrivals).await;
                 flush_wake(socket, phase_now, &mut pending_wake, &mut last_wake).await;
             }
             // Keeps the working timer moving, and catches a wake deferred by the cooldown.
@@ -181,6 +183,7 @@ async fn park(
                 if let Some(since) = working_since {
                     announce(layer, Phase::Working, since.elapsed().as_secs(), &children);
                 }
+                hand_over(socket, phase_now, &mut arrivals).await;
                 flush_wake(socket, phase_now, &mut pending_wake, &mut last_wake).await;
             }
             () = tick(&mut looking) => {
@@ -199,7 +202,12 @@ async fn park(
 /// The occasion to wake this session on, or `None` for a signal it should only observe. A child or
 /// a watched agent finishing or hitting trouble is what a coordinator resumes for; a parent's edge,
 /// and a mere start or working tick, are not.
-pub(crate) fn wake_prompt(kin: &str, kind: &str, from: &str, cause: Option<&str>) -> Option<String> {
+pub(crate) fn wake_prompt(
+    kin: &str,
+    kind: &str,
+    from: &str,
+    cause: Option<&str>,
+) -> Option<String> {
     if kin != "child" && kin != "watched" {
         return None;
     }
@@ -211,11 +219,13 @@ pub(crate) fn wake_prompt(kin: &str, kind: &str, from: &str, cause: Option<&str>
     match kind {
         "finished" => Some(format!(
             "{whose}, `{from}`, has finished. Read your crew and inbox with the `agent` tool — \
-             `crew` for who is still going, `inbox` for what they sent. Your summary must come only \
-             from what `inbox` actually holds: if a child sent nothing, say it reported nothing — do \
-             not invent, recall, or guess its findings. If everyone you were waiting on is done, \
-             write that short summary and stop; otherwise keep waiting. Do not spawn new agents, \
-             change roles, or look for files."
+             `crew` for who is still going, `inbox` for anything new they sent. If the task you were \
+             given has a next step that was waiting on this, take it now. Otherwise, if everyone you \
+             were waiting on is done, check the combined result yourself (build it, run its tests), \
+             then write a short summary and stop; if not, keep waiting. Report \
+             only what your subagents actually sent — in your inbox now, or read earlier in this \
+             conversation — and if one sent nothing, say so rather than inventing, recalling, or \
+             guessing its findings. Do nothing your task did not ask for, and change no roles."
         )),
         "blocked" => Some(format!(
             "{whose}, `{from}`, is blocked{}. Say in one line what should happen next. Do not spawn \
@@ -254,22 +264,34 @@ async fn flush_wake(
 /// Give this session a turn, on its own socket, without staying attached — the same brief connection
 /// [`ask`] makes. Best effort: a wake that cannot land is a coordinator that stays parked, not a crash.
 async fn wake(socket: &Path, occasion: &str) {
-    if let Err(why) = ask(socket, occasion.to_owned()).await {
+    if let Err(why) = ask(socket, occasion.to_owned(), String::new()).await {
         eprintln!("magi: a signal could not wake this session: {why}");
     }
 }
 
-/// The occasion to take up an urgent message on.
-fn urgent(who: &str, sort: &str, text: &str) -> String {
-    let text: String = text.chars().take(200).collect();
-    format!(
-        "An urgent `{sort}` from `{who}`: {text}. Read your inbox with the agent tool and attend to it."
-    )
+/// Hand what other instances said to the host once this session is idle. The host decides from
+/// each one's sort whether it starts a turn (`magi_host::wants_answering`) and keeps the rest.
+async fn hand_over(socket: &Path, phase_now: Phase, arrivals: &mut Vec<UiCommand>) {
+    if phase_now == Phase::Working {
+        return;
+    }
+    for arrived in arrivals.drain(..) {
+        tell(socket, arrived).await;
+    }
 }
 
-/// Stop this session's running turn, over its own socket, without staying attached. Best effort: a
-/// turn that cannot be reached ends on its own soon enough.
+/// Stop this session's running turn. Best effort: a turn that cannot be reached ends on its own.
 async fn interrupt(socket: &Path) {
+    tell(socket, UiCommand::Interrupt).await;
+}
+
+/// How long a command is given to be read before the connection closes under it.
+const SETTLE: Duration = Duration::from_secs(2);
+
+/// Give this session one command over its own socket without staying attached, then wait briefly
+/// for what the host publishes next: closing in the same breath as writing can lose the command,
+/// the race [`ask`] waits out too.
+async fn tell(socket: &Path, command: UiCommand) {
     let Ok(stream) = magi_ipc::connect(socket).await else {
         return;
     };
@@ -285,16 +307,18 @@ async fn interrupt(socket: &Path) {
         return;
     }
     let _ = reader.read::<HarnessEvent>().await;
-    let _ = writer.write(&UiCommand::Interrupt).await;
+    if writer.write(&command).await.is_err() {
+        return;
+    }
+    let _ = tokio::time::timeout(SETTLE, reader.read::<HarnessEvent>()).await;
     let _ = writer.write(&UiCommand::Detach).await;
 }
 
-/// The phase a headless session is in, from its host's status and whether it was given work: a turn
-/// running is `working`; the first quiet after one is `finished` for a session that had a task,
-/// `idle` for one still waiting to be told.
+/// The phase a headless session is in, from its host's status: a turn running is `working`; the
+/// quiet after any turn is `finished`, whether the work came as its prompt or as a message it was
+/// asked, and `idle` is only for one that has not yet been given anything.
 fn derive(
     status: &AgentStatus,
-    had_prompt: bool,
     has_worked: &mut bool,
     working_since: &mut Option<Instant>,
 ) -> (Phase, u64) {
@@ -306,7 +330,7 @@ fn derive(
         }
         AgentStatus::Idle => {
             *working_since = None;
-            if had_prompt && *has_worked {
+            if *has_worked {
                 (Phase::Finished, 0)
             } else {
                 (Phase::Idle, 0)
@@ -496,7 +520,6 @@ mod tests {
                 &mut None,
                 None,
                 watch::channel(AgentStatus::Idle).1,
-                false,
             ),
         )
         .await;
@@ -521,13 +544,29 @@ mod tests {
                 &mut None,
                 Some(pid),
                 watch::channel(AgentStatus::Idle).1,
-                false,
             ),
         )
         .await;
         assert!(
             waited.is_ok(),
             "the child outlived the session that forked it"
+        );
+    }
+
+    #[test]
+    fn a_session_that_worked_is_finished_whether_or_not_it_had_a_prompt() {
+        // Work handed over as a message rather than a prompt still ends `finished`, so the session
+        // that started it is woken; only one never given anything reads `idle`.
+        let mut since = None;
+        let mut worked = false;
+        assert_eq!(
+            derive(&AgentStatus::Idle, &mut worked, &mut since).0,
+            Phase::Idle
+        );
+        worked = true;
+        assert_eq!(
+            derive(&AgentStatus::Idle, &mut worked, &mut since).0,
+            Phase::Finished
         );
     }
 
@@ -565,7 +604,7 @@ mod tests {
         assert!(wake_prompt("parent", "finished", "lead", None).is_none());
         assert!(
             wake_prompt("child", "blocked", "psi", Some("run declined"))
-                .unwrap()
+                .expect("a blocked child wakes its parent")
                 .contains("run declined")
         );
     }

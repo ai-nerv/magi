@@ -57,7 +57,21 @@ pub fn grants(loaded: &Loaded) -> Vec<magi_proto::permit::Grant> {
             },
         });
     }
+    // A spawned child may do what the session that started it may: those grants arrive in the
+    // environment `spawn` set, on top of this configuration's own.
+    for grant in inherited(std::env::var(magi_tools::builtin::GRANTS).ok().as_deref()) {
+        if !out.contains(&grant) {
+            out.push(grant);
+        }
+    }
     out
+}
+
+/// The grants a parent handed down. What does not parse is nothing rather than a failure: a child
+/// with no grants still starts, and is refused what it cannot ask about.
+fn inherited(said: Option<&str>) -> Vec<magi_proto::permit::Grant> {
+    said.and_then(|said| serde_json::from_str(said).ok())
+        .unwrap_or_default()
 }
 
 /// What the model is told it is, for this session: assembled where the configuration and the
@@ -65,8 +79,21 @@ pub fn grants(loaded: &Loaded) -> Vec<magi_proto::permit::Grant> {
 #[must_use]
 pub fn system(loaded: &Loaded) -> Option<String> {
     let cwd = std::env::current_dir().unwrap_or_default();
-    magi_host::system::assemble(loaded.config.string("system"), &cwd, &today())
+    magi_host::system::assemble(loaded.config.string("system"), seat(), &cwd, &today())
 }
+
+/// Where this session sits among the run's agents, which decides what it is told about working
+/// with them: whether it may spawn, and whether a parent started it.
+#[must_use]
+pub fn seat() -> magi_host::system::Seat {
+    magi_host::system::Seat::of(
+        std::env::var_os(magi_tools::builtin::NO_SPAWN).is_none(),
+        std::env::var_os(PARENT).is_some(),
+    )
+}
+
+/// Set on a child by the session that started it, naming that parent.
+const PARENT: &str = "MAGI_MELCHIOR_PARENT";
 
 fn today() -> String {
     let seconds = std::time::SystemTime::now()
@@ -211,6 +238,22 @@ mod ui_tests {
                 && matches!(&g.scope, Scope::Program { program } if *program == exe)),
             "may_spawn should grant run of `{exe}`, got {granted:?}"
         );
+    }
+
+    #[test]
+    fn a_child_takes_on_the_grants_its_parent_handed_down() {
+        use magi_proto::permit::{Grant, Scope};
+        let parent = vec![Grant {
+            verb: "read".to_owned(),
+            scope: Scope::Directory {
+                path: "/home/x/work".to_owned(),
+            },
+        }];
+        let said = serde_json::to_string(&parent).expect("grants serialise");
+        assert_eq!(inherited(Some(&said)), parent);
+        // Nothing handed down, or nothing readable, is no grants rather than a failure.
+        assert!(inherited(None).is_empty());
+        assert!(inherited(Some("not json")).is_empty());
     }
 
     #[test]

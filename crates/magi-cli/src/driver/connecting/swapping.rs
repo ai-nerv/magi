@@ -149,22 +149,21 @@ async fn the_session_we_left_is_told_we_have_gone() {
     );
 }
 
-/// The race the UI's own gate cannot close: a command queued a moment before the screen moved.
+/// Attaching is driving: a prompt sent while the screen is on a peer is written to the peer.
 #[tokio::test]
-async fn a_command_meant_for_our_own_session_never_reaches_a_peer() {
-    let swapped = swap("gate", Cursor::ZERO).await;
+async fn a_prompt_sent_while_on_a_peer_reaches_it() {
+    let swapped = swap("drive", Cursor::ZERO).await;
     swapped
         .commands
         .send(UiCommand::SubmitPrompt {
-            text: "this was meant for my own session".into(),
+            text: "for the agent on screen".into(),
             aside: String::new(),
         })
         .await
         .expect("queued");
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    let asked = swapped.peer.lock().expect("heard").clone();
+    let asked = settled(&swapped.peer, 2).await;
     assert!(
-        !asked
+        asked
             .iter()
             .any(|c| matches!(c, UiCommand::SubmitPrompt { .. })),
         "{asked:?}"

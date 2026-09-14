@@ -22,9 +22,8 @@ const KEYS: &str = "\
 - `ctrl+c` clear the prompt — `:q` to leave, `:qa` to take everything with it
 - `ctrl+a/e` line start/end — `ctrl+k/u` kill — `ctrl+y` yank
 - `alt+←/→` word motion — `↑/↓` prompt history
-- `alt+,`/`alt+.` move to the previous or next agent — the `< >` at the bottom left
-  says there is somewhere to go. A peer's screen is read-only: what you type goes
-  nowhere until you come back to your own.";
+- `alt+,`/`alt+.` move to the previous or next agent; what you type then goes to that
+  agent, as if it were your own session.";
 
 /// What `:help` prints. The command list is built from the same one the completion popup offers,
 /// rather than written out beside it; two lists drift the moment either is edited.

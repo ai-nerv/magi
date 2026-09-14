@@ -391,7 +391,8 @@ impl App {
 
 mod crewing;
 mod kin;
-pub use crewing::{Seat, drives, spoken};
+pub use crewing::{Seat, for_screen};
+pub(crate) use kin::relation;
 mod picking;
 pub use picking::Picking;
 mod applying;

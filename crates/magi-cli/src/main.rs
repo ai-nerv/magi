@@ -42,9 +42,9 @@ struct Cli {
     #[arg(short, long, global = true)]
     resume: bool,
 
-    /// Open watching another agent in this project, by its id — the run's other sessions, e.g. a
-    /// `--headless` one. Read-only: use `alt+.` / the agents panel to move on. Same as starting
-    /// here and stepping onto it.
+    /// Open on another agent in this project, by its id — e.g. a `--headless` one — and drive it:
+    /// what you type goes to it. `alt+.` / the agents panel move on. Same as starting here and
+    /// stepping onto it.
     #[arg(long, value_name = "ID")]
     attach: Option<String>,
 

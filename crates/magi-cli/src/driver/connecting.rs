@@ -94,10 +94,9 @@ pub(super) async fn connection_loop(
             tokio::select! {
                 command = commands.recv() => {
                     let Some(command) = command else { return };
-                    // A command queued a moment before the screen moved would be written to whoever
-                    // it moved to. Dropped rather than held.
-                    if !draws && crate::app::drives(&command) {
-                        debug_log(format_args!("dropped a command meant for our own session"));
+                    // A peer draws nothing in this terminal, so its geometry never goes to one;
+                    // everything else does, since attaching is driving.
+                    if !draws && crate::app::for_screen(&command) {
                         continue;
                     }
                     // Awaited in the branch body, not as a select arm: a cancelled write desyncs.

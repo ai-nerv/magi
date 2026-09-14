@@ -116,6 +116,71 @@ mod gate_tests {
     }
 
     #[test]
+    fn a_directory_grant_covers_a_relative_read_under_the_root() {
+        // The gap the tree scan hit: a scanner reads `melchior/Cargo.toml`, the grant is on the
+        // absolute repo, and the textual `Directory` match never met the two until the gate
+        // resolved the relative path against the root the way `read` does.
+        let dir = scratch("relative-read");
+        let approver = Scripted::new(vec![]);
+        let mut ledger = crate::permit::Ledger::new();
+        ledger.take_on(vec![magi_proto::permit::Grant {
+            verb: "read".into(),
+            scope: Scope::Directory {
+                path: dir.to_path_buf().display().to_string(),
+            },
+        }]);
+        let ops = Real::gated(dir.to_path_buf(), ledger, approver.clone());
+        ops.allow(
+            "read",
+            &Action::Read {
+                path: "src/main.rs".into(),
+            },
+        )
+        .expect("a relative read under the granted root is allowed");
+        assert!(
+            approver.asked().is_empty(),
+            "the grant should cover it without asking"
+        );
+    }
+
+    #[test]
+    fn a_session_holds_what_it_was_granted_for_a_child_to_inherit() {
+        // What `spawn` hands a child: the configured grants and the ones answered since.
+        let dir = scratch("held");
+        let configured = magi_proto::permit::Grant {
+            verb: "run".into(),
+            scope: Scope::Program {
+                program: "melchior".into(),
+            },
+        };
+        let approver = Scripted::new(vec![Decision::Allow {
+            scope: Scope::Directory {
+                path: "/home/x/work".into(),
+            },
+            lifetime: Lifetime::Session,
+        }]);
+        let ops = Real::gated(
+            dir.to_path_buf(),
+            crate::permit::Ledger::with(vec![configured.clone()]),
+            approver,
+        );
+        ops.allow(
+            "read",
+            &Action::Read {
+                path: "/home/x/work/a.rs".into(),
+            },
+        )
+        .expect("allowed");
+        let held = ops.held();
+        assert!(held.contains(&configured), "the configured grant: {held:?}");
+        assert!(
+            held.iter().any(|g| g.verb == "read"
+                && matches!(&g.scope, Scope::Directory { path } if path == "/home/x/work")),
+            "the answered grant: {held:?}"
+        );
+    }
+
+    #[test]
     fn a_gated_session_is_still_confined() {
         // `magi.confine = true` used to be dropped whenever there was somebody to ask, so it
         // held only for headless runs. Asserted with an approver that would allow anything: if

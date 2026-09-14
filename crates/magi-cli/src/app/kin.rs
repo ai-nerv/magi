@@ -28,7 +28,7 @@ impl App {
 }
 
 /// How the sender stands to us, from the two names. Only enough to label a block on screen.
-fn relation(who: &str, me: &str) -> String {
+pub(crate) fn relation(who: &str, me: &str) -> String {
     let project = |name: &str| name.split('/').next().unwrap_or_default().to_owned();
     if who == me {
         return "myself".to_owned();

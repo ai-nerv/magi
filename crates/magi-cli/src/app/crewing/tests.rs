@@ -169,11 +169,19 @@ fn a_peer_is_named_by_its_role_and_id() {
     assert_eq!(app.viewing(), "tau-mu", "an older melchior says no role");
 }
 
-/// **Peeking is reading.** Everything that would change a session is refused in front of the
-/// socket, because the session on the other end cannot tell which of its UIs lives there.
+/// **Attaching is driving.** What a person sends reaches whichever session is on screen; only this
+/// terminal's geometry stays home, because the session on the other end draws nothing here.
 #[test]
-fn only_attaching_and_detaching_may_be_sent_to_somebody_else() {
-    let reads = [
+fn only_this_screens_geometry_is_kept_from_somebody_else() {
+    let driving = [
+        UiCommand::SubmitPrompt {
+            text: "hello".into(),
+            aside: String::new(),
+        },
+        UiCommand::Interrupt,
+        UiCommand::SetModel { name: "x".into() },
+        UiCommand::Branch { keeps: Some(0) },
+        UiCommand::DeclareNeeds,
         UiCommand::Attach {
             session: None,
             from_cursor: Cursor::ZERO,
@@ -181,68 +189,12 @@ fn only_attaching_and_detaching_may_be_sent_to_somebody_else() {
         },
         UiCommand::Detach,
     ];
-    for command in reads {
-        assert!(!drives(&command), "{command:?}");
+    for command in driving {
+        assert!(!for_screen(&command), "{command:?}");
     }
-    let writes = [
-        UiCommand::SubmitPrompt {
-            text: "hello".into(),
-            aside: String::new(),
-        },
-        UiCommand::Interrupt,
-        UiCommand::SetModel { name: "x".into() },
-        UiCommand::SetThinking {
-            level: "off".into(),
-        },
-        UiCommand::Branch { keeps: Some(0) },
-        UiCommand::TakeGrants { grants: Vec::new() },
-        UiCommand::DeclareNeeds,
-        UiCommand::Resume { id: "s".into() },
-        UiCommand::Sized {
-            rows: None,
-            cols: 80,
-            holds: false,
-        },
-    ];
-    for command in writes {
-        assert!(drives(&command), "{command:?}");
-    }
-}
-
-/// And a refusal a person reads is not the same as one the machinery earns.
-#[test]
-fn a_width_is_refused_without_a_sentence_about_it() {
-    assert!(spoken(&UiCommand::Interrupt));
-    assert!(!spoken(&UiCommand::Sized {
+    assert!(for_screen(&UiCommand::Sized {
         rows: None,
         cols: 80,
         holds: false,
     }));
-}
-
-/// The sentence itself: who you are reading, how to get back, and only once.
-#[test]
-fn the_refusal_says_what_to_do_about_it_and_says_it_once() {
-    let mut app = app_with(vec![peer("beta-nu", "reviewer")]);
-    app.attach_to(Some(peer("beta-nu", "reviewer")));
-    app.refuse_drive();
-    app.refuse_drive();
-    app.refuse_drive();
-    assert_eq!(app.entries().len(), 1, "{:?}", app.entries());
-    match &app.entries()[0] {
-        Entry::Notice { text } => {
-            assert!(text.contains("reviewer/beta-nu"), "{text}");
-            assert!(text.contains("axum/main/alpha-rho"), "{text}");
-            assert!(text.contains("alt+,"), "{text}");
-        }
-        other => panic!("expected a notice, got {other:?}"),
-    }
-}
-
-/// Nothing is refused on our own session, which is the whole point of the gate being one-sided.
-#[test]
-fn our_own_session_is_never_refused_anything() {
-    let mut app = app_with(vec![peer("beta-nu", "reviewer")]);
-    app.refuse_drive();
-    assert!(app.entries().is_empty(), "{:?}", app.entries());
 }

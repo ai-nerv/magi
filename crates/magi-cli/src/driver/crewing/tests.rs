@@ -20,9 +20,9 @@ fn app_with(reachable: Vec<Peer>) -> App {
     app
 }
 
-/// Everything a person can type reaches the session they are looking at, and nothing else does.
+/// Attached, what a person types reaches the agent on screen, as it would their own session.
 #[tokio::test]
-async fn a_prompt_typed_at_a_peer_is_refused_and_said_so() {
+async fn a_prompt_typed_at_a_peer_reaches_it() {
     let mut app = app_with(vec![peer("beta-nu")]);
     let (to, mut sent) = mpsc::channel(8);
     app.attach_to(Some(peer("beta-nu")));
@@ -38,10 +38,10 @@ async fn a_prompt_typed_at_a_peer_is_refused_and_said_so() {
     .await;
 
     assert!(
-        sent.try_recv().is_err(),
-        "a prompt reached a session this screen is only reading"
+        matches!(sent.try_recv(), Ok(UiCommand::SubmitPrompt { .. })),
+        "the prompt did not reach the agent on screen"
     );
-    assert_eq!(app.entries().len(), 1, "and nothing said why");
+    assert!(app.entries().is_empty(), "and nothing is said against it");
 }
 
 /// The same funnel, on our own session, sends everything.

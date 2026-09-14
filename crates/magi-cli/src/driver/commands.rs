@@ -19,13 +19,9 @@ pub(super) fn run_command(input: &str, app: &mut App) -> Control {
         // `:q` and `:qa` do the same thing today: magi starts no subagents, and the `melchior serve`
         // beside it and the tool peers below it already go when this process goes.
         ":quit" | ":q" | ":quitall" | ":qa" => Control::Quit,
-        // Clears both the view and what the model is shown; the branch is journalled, so the record
-        // survives. Refused outright on a screen that is only reading.
+        // Clears both the view and what the model is shown, on whichever session is on screen; the
+        // branch is journalled, so the record survives.
         ":clear" => {
-            if app.attached.is_some() {
-                app.refuse_drive();
-                return Control::Continue;
-            }
             app.clear_view();
             Control::Send(UiCommand::Branch { keeps: Some(0) })
         }

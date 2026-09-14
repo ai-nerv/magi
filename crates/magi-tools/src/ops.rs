@@ -53,6 +53,11 @@ pub trait Ops: Send + Sync {
         let _ = grants;
     }
 
+    /// Every grant this session holds, for a child it starts to inherit. Nothing by default.
+    fn held(&self) -> Vec<magi_proto::permit::Grant> {
+        Vec::new()
+    }
+
     /// Permission questions decided since the last time this was asked, read by the turn loop where
     /// the watchers are; see [`crate::watching::Pending`]. Nothing by default.
     fn noticed(&self) -> Vec<crate::watching::Noted> {
@@ -209,6 +214,22 @@ impl Real {
         }
         Ok(normalised)
     }
+
+    /// The same action with any `Read`/`Write` path resolved against the root, so the gate sees
+    /// what the deed will act on. `Run` and `Network` carry no path and pass through unchanged.
+    fn resolved_action(&self, action: &magi_proto::permit::Action) -> magi_proto::permit::Action {
+        use magi_proto::permit::Action;
+        let resolved = |path: &str| self.resolved(Path::new(path)).display().to_string();
+        match action {
+            Action::Read { path } => Action::Read {
+                path: resolved(path),
+            },
+            Action::Write { path } => Action::Write {
+                path: resolved(path),
+            },
+            other => other.clone(),
+        }
+    }
 }
 
 /// Resolve `.` and `..` without touching the filesystem. `canonicalize` would be stricter but
@@ -254,6 +275,8 @@ impl Ops for Real {
         let Some(gate) = &self.gate else {
             return Ok(());
         };
+        // Against the resolved path, as `read`/`write` act, or a relative one never meets a grant.
+        let action = &self.resolved_action(action);
         if gate.ledger.lock().is_ok_and(|ledger| ledger.allows(action)) {
             return Ok(());
         }
@@ -301,6 +324,10 @@ impl Ops for Real {
         {
             ledger.take_on(grants);
         }
+    }
+
+    fn held(&self) -> Vec<magi_proto::permit::Grant> {
+        self.grants()
     }
 }
 

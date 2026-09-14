@@ -1,10 +1,9 @@
-//! Which agent the screen is pointed at, and what may be done to one that is not ours. Driving a
-//! peer is refused here, in front of the socket, rather than on the wire: the session on the other
-//! end cannot tell which of the UIs attached to it is the one that lives there.
+//! Which agent the screen is pointed at. Attaching is driving: what a person sends goes to the agent
+//! on screen as it would to their own session, and only this terminal's geometry stays home.
 
 use super::App;
 use crate::melchior::Peer;
-use magi_proto::{Cursor, Entry, UiCommand};
+use magi_proto::{Cursor, UiCommand};
 
 /// Where a step left the screen pointed. The own seat carries no path: the driver names it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,36 +133,14 @@ impl App {
             Some(them) => format!("{}/{}", them.role, them.id),
         }
     }
-
-    /// Say why a keystroke did nothing, once — these are keys people lean on.
-    pub fn refuse_drive(&mut self) {
-        if self.attached.is_none() {
-            return;
-        }
-        let said = format!(
-            "You are reading `{}`, not driving it. `alt+,` and `alt+.` move between agents — go back to `{}` before you type.",
-            self.viewing(),
-            self.named,
-        );
-        if matches!(self.entries.last(), Some(Entry::Notice { text }) if *text == said) {
-            return;
-        }
-        self.show_notice(said);
-    }
 }
 
-/// Whether this command would change the session it lands on. An allow-list of the two that would
-/// not, so a command added later defaults to blocked.
+/// Whether this command is about this terminal's own screen — its size, a held key, the mouse —
+/// which only the session drawing here can use. Everything else drives whichever session is on
+/// screen, yours or one you attached to.
 #[must_use]
-pub fn drives(command: &UiCommand) -> bool {
-    !matches!(command, UiCommand::Attach { .. } | UiCommand::Detach)
-}
-
-/// Whether refusing it is worth a sentence: only what a person pressed a key for, since a notice
-/// per mouse move would bury the transcript.
-#[must_use]
-pub fn spoken(command: &UiCommand) -> bool {
-    !matches!(
+pub fn for_screen(command: &UiCommand) -> bool {
+    matches!(
         command,
         UiCommand::Sized { .. } | UiCommand::Keyed { .. } | UiCommand::Moused { .. }
     )
