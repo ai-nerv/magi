@@ -66,8 +66,8 @@ palette! {
     code_string = GREEN, "A quoted string in a shell command.";
     code_variable = ORANGE, "`$NAME`, `${NAME}`, and `NAME=value` before a command.";
     code_operator = PINK, "`|`, `&&`, `;`, `>` and the other joints between commands.";
-    code_comment = at(245), "A trailing `#` comment on a shell command.";
-    code_argument = at(253), "Everything else on a shell command: its plain arguments.";
+    code_comment = Color::Rgb(0x8a, 0x90, 0xa0), "A comment in code, or trailing a shell command.";
+    code_argument = Color::Rgb(0xd8, 0xd8, 0xd8), "Everything else on a shell command: its plain arguments.";
     code_keyword = VIOLET, "A keyword in a code block: `fn`, `if`, `return`.";
     code_type = CYAN, "A type or class name in a code block.";
 
@@ -79,10 +79,10 @@ palette! {
     diff_added = GREEN, "Added lines in a diff.";
     diff_removed = RED, "Removed lines in a diff.";
     diff_marker = VIOLET, "A diff's file and hunk headers, which are neither added nor removed.";
-    diff_context = at(245), "Unchanged context lines in a diff.";
-    diff_added_bg = at(22), "Behind a line an edit added.";
-    diff_removed_bg = at(52), "Behind a line an edit removed.";
-    diff_changed_bg = at(94), "Behind the new side of a changed line: added straight after removed ones.";
+    diff_context = Color::Rgb(0x9a, 0x9a, 0x9a), "Unchanged context lines in a diff.";
+    diff_added_bg = Color::Rgb(0x1f, 0x4a, 0x2c), "Behind a line an edit added. RGB, so no theme can hide it.";
+    diff_removed_bg = Color::Rgb(0x5e, 0x1f, 0x24), "Behind a line an edit removed.";
+    diff_changed_bg = Color::Rgb(0x5c, 0x42, 0x14), "Behind the new side of a changed line: added straight after removed ones.";
 
     tool_bg = at(237), "Behind a tool block.";
     tool_title = BLUE, "The tool's name, while the call is out.";
