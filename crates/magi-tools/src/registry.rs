@@ -187,7 +187,8 @@ impl Registry {
                     // half that got cut, and before anything sees it.
                     content: crate::bound::apply(name, crate::masking::apply(output.content)),
                     is_error: output.is_error,
-                    shown: None,
+                    // What the person is shown, masked the same way: the painting is the file.
+                    shown: crate::masking::painted(output.shown),
                     unlocks: Vec::new(),
                 }
             }
@@ -284,7 +285,7 @@ impl Registry {
         Output {
             content: crate::bound::apply(&name, crate::masking::apply(output.content)),
             is_error: output.is_error,
-            shown: None,
+            shown: crate::masking::painted(output.shown),
             unlocks: Vec::new(),
         }
     }
@@ -398,6 +399,48 @@ mod tests {
 
     fn ops() -> Real {
         Real::new(std::env::temp_dir())
+    }
+
+    /// A tool that paints what it says, as casper's `read` does.
+    struct Painter;
+
+    impl Tool for Painter {
+        fn name(&self) -> &str {
+            "paint"
+        }
+        fn description(&self) -> &str {
+            "paints"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({ "type": "object" })
+        }
+        fn run(&self, _: &serde_json::Value, _: &dyn Ops, _: &dyn Cancel) -> Output {
+            use magi_proto::tooling::{Role, Shown, Span};
+            Output {
+                shown: Some(Shown::Painted {
+                    lines: vec![vec![Span::new(Role::Keyword, "fn")]],
+                }),
+                ..Output::ok("fn")
+            }
+        }
+    }
+
+    #[test]
+    fn what_a_tool_painted_reaches_the_screen_by_either_path() {
+        let mut registry = Registry::new();
+        registry.register(Box::new(Painter));
+        let called = registry.call("paint", &serde_json::json!({}), &ops(), &crate::Uncancelled);
+        let answered = registry.answer("paint", "{}", &ops(), &crate::Uncancelled);
+        for output in [called, answered] {
+            assert!(
+                matches!(
+                    output.shown,
+                    Some(magi_proto::tooling::Shown::Painted { .. })
+                ),
+                "the painting was dropped: {:?}",
+                output.shown
+            );
+        }
     }
 
     #[test]

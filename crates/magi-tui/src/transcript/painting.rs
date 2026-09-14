@@ -67,6 +67,36 @@ fn a_role_the_guesser_would_have_got_wrong_is_drawn_as_the_tool_meant_it() {
 }
 
 #[test]
+fn an_edit_keeps_its_code_colours_on_the_ground_of_each_change() {
+    let back = |role, text: &str| Painted {
+        back: Some(role),
+        ..Painted::new(Role::Keyword, text)
+    };
+    let painted = Shown::Painted {
+        lines: vec![
+            vec![back(Role::Removed, "let was")],
+            vec![back(Role::Changed, "let now")],
+        ],
+    };
+    let lines = block_of(Some(painted), "-let was\n+let now", Detail::Full);
+    let span = |text: &str| {
+        lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|s| s.content.contains(text))
+            .map(|s| s.style)
+            .expect("drawn")
+    };
+    assert_eq!(
+        span("let was").fg,
+        Some(colour::code_keyword()),
+        "still code"
+    );
+    assert_eq!(span("let was").bg, Some(colour::diff_removed_bg()));
+    assert_eq!(span("let now").bg, Some(colour::diff_changed_bg()));
+}
+
+#[test]
 fn a_painted_row_keeps_a_colour_per_span() {
     // A highlighted `cat` is many roles on one line, and a renderer that took the first
     // would paint the whole line as its first token.

@@ -4,6 +4,8 @@
 //! [`crate::Registry::call`]. Masked by value, not by pattern, so there are no false positives: a
 //! key in a file nothing exported is not masked, because nothing here knows it is one.
 
+use magi_proto::tooling::{Role, Shown, Span};
+
 /// What a masked value is replaced with — the name, because "is the key set?" is a fair question.
 fn marker(name: &str) -> String {
     format!("⟨{name}⟩")
@@ -35,6 +37,31 @@ pub fn apply(content: String) -> String {
     out
 }
 
+/// What a tool painted, masked as its text is. A line holding a credential is kept whole and plain,
+/// so a key split across highlighted pieces cannot survive between them.
+#[must_use]
+pub fn painted(shown: Option<Shown>) -> Option<Shown> {
+    let Some(Shown::Painted { lines }) = shown else {
+        return shown;
+    };
+    let lines = lines
+        .into_iter()
+        .map(|line| {
+            let whole: String = line.iter().map(|span| span.text.as_str()).collect();
+            let masked = apply(whole.clone());
+            if masked == whole {
+                return line;
+            }
+            let back = line.first().and_then(|span| span.back);
+            vec![Span {
+                back,
+                ..Span::new(Role::Text, masked)
+            }]
+        })
+        .collect();
+    Some(Shown::Painted { lines })
+}
+
 /// This process's secret-looking variables, longest value first: one value can contain another, and
 /// masking the short one first would leave the rest of the long one in place, which looks redacted.
 pub(crate) fn secrets() -> Vec<(String, String)> {
@@ -52,7 +79,40 @@ pub(crate) fn secrets() -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SHORTEST, apply, marker, secrets};
+    use super::{SHORTEST, apply, marker, painted, secrets};
+    use magi_proto::tooling::{Role, Shown, Span};
+
+    #[test]
+    fn a_painted_line_holding_a_credential_is_masked_whole() {
+        let Some((name, value)) = secrets().into_iter().next() else {
+            return;
+        };
+        let half = value
+            .char_indices()
+            .nth(value.chars().count() / 2)
+            .map_or(0, |(at, _)| at);
+        let (head, tail) = value.split_at(half);
+        let shown = Some(Shown::Painted {
+            lines: vec![vec![
+                Span::new(Role::String, head),
+                Span::new(Role::Text, tail),
+            ]],
+        });
+        let Some(Shown::Painted { lines }) = painted(shown) else {
+            panic!("still a painting");
+        };
+        let text: String = lines[0].iter().map(|span| span.text.as_str()).collect();
+        assert!(!text.contains(&value), "the value is gone: {text}");
+        assert!(text.contains(&marker(&name)), "and named: {text}");
+    }
+
+    #[test]
+    fn a_painting_holding_no_credential_keeps_its_colours() {
+        let shown = Some(Shown::Painted {
+            lines: vec![vec![Span::new(Role::Keyword, "fn")]],
+        });
+        assert_eq!(painted(shown.clone()), shown);
+    }
 
     #[test]
     fn text_holding_no_credential_is_untouched() {
