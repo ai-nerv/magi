@@ -1,9 +1,9 @@
 -- The tools magi ships.
 --
--- magi ships no tool that does anything to the machine. Reading, writing, editing, searching and
--- running a command are all the tools program's (casper's), spawned per call: `cat` reads, `shell`
--- writes and runs, `patch` diffs, `ls`/`find`/`grep` search. magi's own `read`/`write`/`edit`
--- builtins were removed once casper filled the role — see `magi-tools` and `ROLES.md`.
+-- magi ships no tool that does anything to the machine. Reading, writing, editing and running a
+-- command are all the tools program's (casper's), spawned per call: `read`, `write`, `edit` and
+-- `shell`, with the rarely needed ones behind casper's `tools` manual. magi's own builtins of those
+-- names were removed once casper filled the role — see `magi-tools` and `ROLES.md`.
 --
 -- What is left here is what is not a tool in casper's sense. The memory role's tools are this
 -- session's own memory; `agent` reaches the other magi through melchior. Both are about *this

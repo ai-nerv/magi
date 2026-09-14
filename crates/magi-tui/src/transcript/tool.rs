@@ -81,47 +81,51 @@ pub(super) fn block(
     // entries that need separating are in view.
     let mut out: Vec<Line<'static>> = Vec::new();
     if let Some(result) = result {
+        // What the tool painted for the person, drawn on its own terms and however long it runs:
+        // the model may be told one line ("wrote a.rs") while the person is shown the whole file.
+        // A failure is drawn from the text, in the failure colour; a question is not output at all.
+        let painted = match &result.shown {
+            Some(magi_proto::tooling::Shown::Painted { lines }) if !result.is_error => Some(lines),
+            _ => None,
+        };
         let output = result.output.trim_end();
-        if !output.is_empty() {
-            let all: Vec<&str> = output.lines().collect();
-            let shown = match detail {
-                Detail::Preview => all.len().min(usize::from(crate::metric::preview_lines())),
-                Detail::Full => all.len(),
-            };
-            // What the tool said it meant, when it said anything: a painted result carries a role
-            // per span. Without one there is only `change_colour`, which guesses from the first
-            // character — right for a patch, wrong for a `bash` running `git log --oneline`.
-            let painted = match &result.shown {
-                Some(magi_proto::tooling::Shown::Painted { lines }) => Some(lines),
-                // A question is not output; it is drawn by whoever can answer it.
-                _ => None,
-            };
-            for (nth, line) in all[..shown].iter().enumerate() {
-                let drawn = match painted.and_then(|lines| lines.get(nth)) {
-                    Some(spans) if !result.is_error => crate::painted::line(spans, style),
-                    _ => {
-                        let fg = if result.is_error {
-                            colour::tool_failed()
-                        } else {
-                            change_colour(line)
-                        };
-                        Line::from(Span::styled((*line).to_owned(), style.fg(fg)))
-                    }
-                };
-                rows.extend(wrapped(drawn, style, detail, width, body, lead));
+        let total = painted.map_or_else(|| output.lines().count(), Vec::len);
+        let shown = match detail {
+            Detail::Preview => total.min(usize::from(crate::metric::preview_lines())),
+            Detail::Full => total,
+        };
+        match painted {
+            Some(lines) => {
+                for spans in &lines[..shown] {
+                    let drawn = crate::painted::line(spans, style);
+                    rows.extend(wrapped(drawn, style, detail, width, body, lead));
+                }
             }
-            // The affordance goes on the fold, where a reader looks when the rest is missing.
-            if all.len() > shown {
-                rows.push(super::frame::inside(
-                    Line::from(Span::styled(
-                        format!("… {} more lines · ctrl+o", all.len() - shown),
-                        style.fg(colour::tool_fold()),
-                    )),
-                    width,
-                    style,
-                    lead,
-                ));
+            // Without a painting there is only `change_colour`, which guesses from the first
+            // character — right for a diff, wrong for a `shell` running `git log --oneline`.
+            None => {
+                for line in output.lines().take(shown) {
+                    let fg = if result.is_error {
+                        colour::tool_failed()
+                    } else {
+                        change_colour(line)
+                    };
+                    let drawn = Line::from(Span::styled(line.to_owned(), style.fg(fg)));
+                    rows.extend(wrapped(drawn, style, detail, width, body, lead));
+                }
             }
+        }
+        // The affordance goes on the fold, where a reader looks when the rest is missing.
+        if total > shown {
+            rows.push(super::frame::inside(
+                Line::from(Span::styled(
+                    format!("… {} more lines · ctrl+o", total - shown),
+                    style.fg(colour::tool_fold()),
+                )),
+                width,
+                style,
+                lead,
+            ));
         }
     }
 

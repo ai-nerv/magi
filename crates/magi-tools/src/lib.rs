@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 
 /// What a tool produced. `content` is what the model reads and `shown` is what the person is drawn;
 /// they are not the same content, and a tool with nothing to add leaves the second empty.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Output {
     pub content: String,
     /// Whether the tool failed. A tool that ran and reported a problem is still a result, not an
@@ -38,6 +38,9 @@ pub struct Output {
     /// What the person sees, when it is more than the text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shown: Option<magi_proto::tooling::Shown>,
+    /// Deferred tools this call made available, for the registry to add to the model's list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unlocks: Vec<String>,
 }
 
 impl Output {
@@ -48,6 +51,7 @@ impl Output {
             content: content.into(),
             is_error: false,
             shown: None,
+            unlocks: Vec::new(),
         }
     }
 
@@ -58,6 +62,7 @@ impl Output {
             content: content.into(),
             is_error: true,
             shown: None,
+            unlocks: Vec::new(),
         }
     }
 }

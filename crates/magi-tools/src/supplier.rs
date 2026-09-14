@@ -388,6 +388,10 @@ impl Tool for SuppliedTool {
         self.card.parameters.clone()
     }
 
+    fn deferred(&self) -> bool {
+        self.card.deferred
+    }
+
     fn run(&self, arguments: &serde_json::Value, ops: &dyn Ops, _cancel: &dyn Cancel) -> Output {
         let mut call = Call {
             tool: self.card.name.clone(),
@@ -540,6 +544,7 @@ fn finished(ran: Ran) -> Output {
         content: ran.said,
         is_error: ran.failed,
         shown: ran.shown,
+        unlocks: ran.unlocks,
     }
 }
 
@@ -633,6 +638,7 @@ mod gating {
             description: String::new(),
             parameters: serde_json::json!({}),
             needs: needs.map(ToOwned::to_owned),
+            deferred: false,
         }
     }
 

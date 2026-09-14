@@ -29,6 +29,12 @@ pub trait Tool {
     /// default: only a peer can disagree, being another program that a config only makes claims about.
     fn probe(&self, _ops: &dyn Ops) {}
 
+    /// Whether this tool is kept out of the model's list until a `tools` lookup unlocks it. Only a
+    /// supplied tool can be: its card says so.
+    fn deferred(&self) -> bool {
+        false
+    }
+
     /// Start the call without waiting for it, if this tool can be waited on separately: the half of
     /// a round that overlaps, so three files cost the slowest rather than the sum.
     /// [`Sending::Inline`] by default, meaning there is nothing to overlap — only a peer has
@@ -61,6 +67,8 @@ pub enum Sending {
 pub struct Registry {
     tools: BTreeMap<String, Box<dyn Tool>>,
     watching: crate::watching::Watchers,
+    /// Deferred tools a `tools` lookup has made available, for the rest of the session.
+    unlocked: std::cell::RefCell<std::collections::BTreeSet<String>>,
 }
 
 impl Registry {
@@ -88,12 +96,16 @@ impl Registry {
         self.watching.saw(event);
     }
 
-    /// A tool finished, which is the event the registry itself raises.
-    fn finished(&self, name: &str, arguments: &serde_json::Value, is_error: bool) {
+    /// A tool finished, which is the event the registry itself raises — and where a lookup that
+    /// unlocked deferred tools is taken up, since every call passes through here.
+    fn finished(&self, name: &str, arguments: &serde_json::Value, output: &Output) {
+        self.unlocked
+            .borrow_mut()
+            .extend(output.unlocks.iter().cloned());
         self.saw(&Event::Tool {
             name,
             arguments,
-            is_error,
+            is_error: output.is_error,
         });
     }
 
@@ -127,11 +139,14 @@ impl Registry {
         self.tools.is_empty()
     }
 
-    /// Every tool, as a provider needs them declared.
+    /// Every tool the model may call now, as a provider needs them declared: a deferred tool only
+    /// once a `tools` lookup has unlocked it. Asked every round, so an unlock counts from the next.
     #[must_use]
     pub fn declarations(&self) -> Vec<magi_model::Tool> {
+        let unlocked = self.unlocked.borrow();
         self.tools
             .values()
+            .filter(|tool| !tool.deferred() || unlocked.contains(tool.name()))
             .map(|tool| magi_model::Tool {
                 name: tool.name().to_owned(),
                 description: tool.description().to_owned(),
@@ -166,13 +181,14 @@ impl Registry {
                     }
                 };
                 let output = tool.run(&arguments, ops, cancel);
-                self.finished(name, &arguments, output.is_error);
+                self.finished(name, &arguments, &output);
                 Output {
                     // Masked before it is capped, so a credential cannot survive by being in the
                     // half that got cut, and before anything sees it.
                     content: crate::bound::apply(name, crate::masking::apply(output.content)),
                     is_error: output.is_error,
                     shown: None,
+                    unlocks: Vec::new(),
                 }
             }
             None => {
@@ -264,11 +280,12 @@ impl Registry {
                 None => Output::error(format!("{name} is gone")),
             },
         };
-        self.finished(&name, &ran, output.is_error);
+        self.finished(&name, &ran, &output);
         Output {
             content: crate::bound::apply(&name, crate::masking::apply(output.content)),
             is_error: output.is_error,
             shown: None,
+            unlocks: Vec::new(),
         }
     }
 }

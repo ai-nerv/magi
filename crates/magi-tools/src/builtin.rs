@@ -149,6 +149,7 @@ impl Tool for Spawn {
                 content: String::from_utf8_lossy(&out.stdout).trim().to_owned(),
                 is_error: false,
                 shown: None,
+                unlocks: Vec::new(),
             },
             Ok(out) => Output::error(format!(
                 "the child could not be started: {}",

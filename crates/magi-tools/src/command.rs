@@ -180,6 +180,7 @@ impl Finished {
                 content: self.out,
                 is_error: false,
                 shown: None,
+                unlocks: Vec::new(),
             };
         }
         match self.code {
@@ -187,11 +188,13 @@ impl Finished {
                 content: String::new(),
                 is_error: false,
                 shown: None,
+                unlocks: Vec::new(),
             },
             Some(code) if self.err.is_empty() => Output {
                 content: format!("{program} exited {code} with no output"),
                 is_error: false,
                 shown: None,
+                unlocks: Vec::new(),
             },
             Some(code) => Output::error(format!("{program} exited {code}: {}", self.err.trim())),
             None => Output::error(format!("{program} was killed: {}", self.err.trim())),

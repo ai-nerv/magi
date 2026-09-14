@@ -17,6 +17,9 @@ pub struct Card {
     /// vocabulary. `None` for a tool that touches nothing a person would want a say over.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub needs: Option<String>,
+    /// Kept out of the model's list until a `tools` lookup unlocks it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub deferred: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -42,6 +45,9 @@ pub struct Ran {
     pub failed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shown: Option<Shown>,
+    /// Deferred tools this call made available: a `tools` lookup that reached one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unlocks: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -256,6 +262,7 @@ mod tests {
             description: "Run a command.".to_owned(),
             parameters: serde_json::json!({"type": "object"}),
             needs: Some("run".to_owned()),
+            deferred: false,
         };
         let wire = serde_json::to_string(&card).expect("encodes");
         assert!(!wire.contains("allow") && !wire.contains("grant"), "{wire}");
