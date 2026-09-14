@@ -285,8 +285,8 @@ async fn permissions(
     }
 }
 
-/// Rounds of tool use one prompt may take before the loop gives up.
-const MAX_ROUNDS: usize = 24;
+/// Rounds of tool use one prompt may take: a guard against a stuck model, not a budget.
+const MAX_ROUNDS: usize = 200;
 
 /// Run a prompt to completion: provider, tools, provider, until the turn ends. Every result is
 /// journalled as its own entry, so the transcript shows what was asked and what came back.
