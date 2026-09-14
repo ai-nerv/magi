@@ -27,6 +27,7 @@ pub fn of(role: Role) -> Color {
         Role::Removed => colour::diff_removed(),
         Role::Marker => colour::diff_marker(),
         Role::Context => colour::diff_context(),
+        Role::Changed => colour::warning(),
         // The code colours, so a file casper highlighted and a fenced block agree.
         Role::Keyword => colour::code_keyword(),
         Role::String => colour::code_string(),
@@ -51,14 +52,37 @@ pub fn line(spans: &[Span], on: Style) -> Line<'static> {
                 let fg = span
                     .rgb
                     .map_or_else(|| of(span.role), |[r, g, b]| Color::Rgb(r, g, b));
-                let style = match span.bg {
-                    Some([r, g, b]) => on.fg(fg).bg(Color::Rgb(r, g, b)),
-                    None => on.fg(fg),
+                let style = match (span.back.and_then(ground_of), span.bg) {
+                    (Some(ground), _) => on.fg(fg).bg(ground),
+                    (None, Some([r, g, b])) => on.fg(fg).bg(Color::Rgb(r, g, b)),
+                    (None, None) => on.fg(fg),
                 };
                 ratatui::text::Span::styled(span.text.clone(), style)
             })
             .collect::<Vec<_>>(),
     )
+}
+
+/// The ground a change sits on, from the palette; `None` for a role that is not a change.
+#[must_use]
+pub fn ground_of(role: Role) -> Option<Color> {
+    match role {
+        Role::Added => Some(colour::diff_added_bg()),
+        Role::Removed => Some(colour::diff_removed_bg()),
+        Role::Changed => Some(colour::diff_changed_bg()),
+        _ => None,
+    }
+}
+
+/// What a whole row of `spans` is drawn on: `on`, on the ground of the change it marks, if any, so
+/// the colour runs the width of the block rather than stopping where the text does.
+#[must_use]
+pub fn row(spans: &[Span], on: Style) -> Style {
+    spans
+        .first()
+        .and_then(|span| span.back)
+        .and_then(ground_of)
+        .map_or(on, |ground| on.bg(ground))
 }
 
 /// A whole painted document.

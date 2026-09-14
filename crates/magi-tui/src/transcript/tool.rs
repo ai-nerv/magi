@@ -98,16 +98,11 @@ pub(super) fn block(
         };
         match painted {
             Some(lines) => {
-                // In the file's own language, where it is one syntect knows; each row on its own
-                // ground, which for an edit is the colour of what happened to the line.
-                let drawn = super::code::repaint(name, args, &lines[..shown], style)
-                    .unwrap_or_else(|| {
-                        lines[..shown]
-                            .iter()
-                            .map(|spans| (crate::painted::line(spans, style), style))
-                            .collect()
-                    });
-                for (line, on) in drawn {
+                // casper's painting as it stands: code in its roles, and each row of an edit on
+                // the ground of what happened to it.
+                for spans in &lines[..shown] {
+                    let on = crate::painted::row(spans, style);
+                    let line = crate::painted::line(spans, on);
                     rows.extend(wrapped(line, on, detail, width, body, lead));
                 }
             }

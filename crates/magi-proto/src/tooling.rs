@@ -125,6 +125,10 @@ pub struct Span {
     /// of text read as inverted rather than merely coloured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bg: Option<[u8; 3]>,
+    /// The ground a changed line sits on — `added`, `removed` or `changed` — as a role, so it comes
+    /// from the reader's palette while the text keeps the colour of its code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub back: Option<Role>,
 }
 
 impl Span {
@@ -135,6 +139,7 @@ impl Span {
             text: text.into(),
             rgb: None,
             bg: None,
+            back: None,
         }
     }
 
@@ -145,6 +150,7 @@ impl Span {
             text: text.into(),
             rgb: Some(rgb),
             bg: None,
+            back: None,
         }
     }
 }
@@ -172,6 +178,7 @@ pub enum Role {
     Removed,
     Marker,
     Context,
+    Changed,
 
     // Code.
     Keyword,
