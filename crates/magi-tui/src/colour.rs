@@ -104,7 +104,7 @@ palette! {
     border = at(240), "The prompt's border with nothing lit, and the floor of its scan.";
     scan = at(255), "The brightest point of the light travelling along the border.";
     hint = at(241), "The empty prompt's placeholder. Well under the text, so it reads as a label rather than as something you wrote.";
-    shimmer_shadow = at(238), "What the working band darkens the words in the prompt box towards, where it passes.";
+    shimmer_shadow = at(237), "What the working band darkens the words in the prompt box towards, where it passes.";
     rule = at(245), "The rule above and below a quotation.";
 
     message_bg = at(237), "Behind something you said.";
