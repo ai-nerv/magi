@@ -67,6 +67,11 @@ pub async fn start(
     let family = dialled
         .map_err(|why| anyhow::anyhow!("{}", unreachable(&memory, "reach", &why.to_string())))?;
     let mut scribe = magi_host::scribe::Scribe::over(family, ours.clone(), &id);
+    // A child records its own transcript; a run's agents share the id their memory is filed under.
+    let child = environ.contains_key("MAGI_MELCHIOR_PARENT");
+    if let (true, Some(agent)) = (child, agent) {
+        scribe = scribe.recording_as(format!("{id}@{agent}"));
+    }
     let carried = match resume.then(|| resumable(&mut scribe)) {
         Some(fut) => fut.await,
         None => Vec::new(),
@@ -91,6 +96,12 @@ pub async fn start(
     };
     let mut backend = crate::config::backend(&catalog);
     stamp(&mut backend, &mut catalog, environ);
+    if child {
+        catalog.helpers.no_notes = true;
+        if let Some(backend) = backend.as_mut() {
+            backend.helpers.no_notes = true;
+        }
+    }
     // A last-value view of status for a headless child to report its phase without attaching.
     let phase_watch = session.phase_watch();
     let spent_watch = session.spent_watch();
@@ -372,7 +383,8 @@ async fn resumable(scribe: &mut magi_host::scribe::Scribe) -> Vec<magi_proto::En
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned)
         })
-        .next();
+        // A child's own transcript is `run@agent`; resuming means resuming a run.
+        .find(|id| !id.contains('@'));
     match newest {
         Some(id) => match scribe.replay_of(&id).await {
             Ok(entries) => entries,

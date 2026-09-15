@@ -40,6 +40,9 @@ pub struct Helpers {
     pub roles: std::collections::BTreeMap<String, String>,
     pub timeout_ms: u64,
     pub per_prompt_micros: Option<u64>,
+    /// Whether this session's conversation stays out of the project's notes: a child's prompts
+    /// are its lead's instructions for one task, not what the person wants kept.
+    pub no_notes: bool,
 }
 
 #[derive(Debug, Clone)]

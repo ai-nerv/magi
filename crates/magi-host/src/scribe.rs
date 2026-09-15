@@ -59,6 +59,8 @@ pub struct Scribe {
     /// recording for the session. `None` when the connection was found rather than named.
     at: Option<std::path::PathBuf>,
     session: String,
+    /// Whose transcript this is: the session's own, or one agent's within a run it shares.
+    transcript: String,
     /// Cursors already sent, so a second write says `amend` rather than `observe`.
     sent: std::collections::BTreeSet<u64>,
 }
@@ -70,6 +72,7 @@ impl Scribe {
             family: Family::find(None).await?,
             at: None,
             session: session.as_str().to_owned(),
+            transcript: session.as_str().to_owned(),
             sent: std::collections::BTreeSet::new(),
         })
     }
@@ -82,8 +85,17 @@ impl Scribe {
             family,
             at,
             session: session.as_str().to_owned(),
+            transcript: session.as_str().to_owned(),
             sent: std::collections::BTreeSet::new(),
         }
+    }
+
+    /// Record this agent's transcript under its own key while its memory stays the run's: agents
+    /// of one run share a session, and one transcript for all of them let each overwrite the others.
+    #[must_use]
+    pub fn recording_as(mut self, key: String) -> Self {
+        self.transcript = key;
+        self
     }
 
     /// Open the connection again, after one that was dropped.
@@ -135,7 +147,7 @@ impl Scribe {
                 "`{verb}` is not one of the memory role's verbs; see ROLES.md"
             )));
         }
-        let args = vec![serde_json::Value::String(self.session.clone()), arg];
+        let args = vec![serde_json::Value::String(self.transcript.clone()), arg];
         self.family.call(verb, args).await
     }
 
@@ -191,7 +203,7 @@ impl Scribe {
             "kind": kind,
             "text": text,
         });
-        let args = vec![serde_json::Value::String(self.session.clone()), turn];
+        let args = vec![serde_json::Value::String(self.transcript.clone()), turn];
         self.family.call("observe", args).await.map(|_| ())
     }
 
@@ -206,7 +218,7 @@ impl Scribe {
                 "`{verb}` is not one of the memory role's verbs; see ROLES.md"
             )));
         }
-        let args = vec![serde_json::Value::String(self.session.clone())];
+        let args = vec![serde_json::Value::String(self.transcript.clone())];
         self.family.call(verb, args).await
     }
 
@@ -242,7 +254,7 @@ impl Scribe {
         beside: &Beside,
     ) -> Result<(), Fault> {
         let turn = turn(cursor, entry, beside)?;
-        let args = vec![serde_json::Value::String(self.session.clone()), turn];
+        let args = vec![serde_json::Value::String(self.transcript.clone()), turn];
         // On the durable clock, not a feature's: the store a session writes to is opened by this
         // very call the first time, and what is not handed over is not anywhere else either.
         match self
@@ -268,7 +280,7 @@ impl Scribe {
 
     /// Everything this session said, in cursor order, as it finally stood.
     pub async fn replay(&mut self) -> Result<Vec<(Cursor, Entry)>, Fault> {
-        let session = self.session.clone();
+        let session = self.transcript.clone();
         self.replay_at(&session).await
     }
 
@@ -386,7 +398,7 @@ impl Scribe {
             .family
             .call(
                 "resume",
-                vec![serde_json::Value::String(self.session.clone())],
+                vec![serde_json::Value::String(self.transcript.clone())],
             )
             .await?;
         Ok(values
@@ -406,7 +418,7 @@ impl Scribe {
     /// `:model` switches, so the store knows which model produced a run.
     pub async fn note_model(&mut self, name: &str, window: u64) -> Result<(), Fault> {
         let args = vec![
-            serde_json::Value::String(self.session.clone()),
+            serde_json::Value::String(self.transcript.clone()),
             serde_json::json!({ "model": name, "context": window }),
         ];
         self.family.call("model", args).await.map(|_| ())
