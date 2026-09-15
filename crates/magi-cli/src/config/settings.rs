@@ -124,7 +124,8 @@ pub fn options(loaded: &Loaded) -> magi_proto::ask::Wants {
     let thinking = loaded
         .config
         .string("thinking")
-        .and_then(|level| serde_json::from_value(serde_json::Value::String(level.to_owned())).ok());
+        .and_then(|level| serde_json::from_value(serde_json::Value::String(level.to_owned())).ok())
+        .or(Some(magi_model::ThinkingLevel::Off));
     magi_proto::ask::Wants {
         // Set per request, not per session: a schema belongs to one question.
         schema: None,
