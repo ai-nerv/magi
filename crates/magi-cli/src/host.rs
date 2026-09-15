@@ -69,9 +69,7 @@ pub async fn start(
     let mut scribe = magi_host::scribe::Scribe::over(family, ours.clone(), &id);
     // A child records its own transcript; a run's agents share the id their memory is filed under.
     let child = std::env::var_os("MAGI_MELCHIOR_PARENT").is_some();
-    if let (true, Some(agent)) = (child, agent) {
-        scribe = scribe.recording_as(format!("{id}@{agent}"));
-    }
+    let transcript = agent.filter(|_| child).map(|agent| format!("{id}@{agent}"));
     let carried = match resume.then(|| resumable(&mut scribe)) {
         Some(fut) => fut.await,
         None => Vec::new(),
@@ -96,6 +94,7 @@ pub async fn start(
     };
     let mut backend = crate::config::backend(&catalog);
     stamp(&mut backend, &mut catalog, environ);
+    catalog.transcript = transcript;
     if child {
         catalog.helpers.no_notes = true;
         if let Some(backend) = backend.as_mut() {

@@ -250,6 +250,7 @@ pub fn catalog(loaded: &Loaded, cards: Vec<magi_proto::ask::Card>) -> magi_host:
         grants: grants(loaded),
         environ: environ(loaded),
         chosen: None,
+        transcript: None,
         helpers: settings::helpers(loaded),
         confine: loaded.config.boolean("confine").unwrap_or(false),
         // On by default: every session's tool commands run in the kernel jail, the network kept

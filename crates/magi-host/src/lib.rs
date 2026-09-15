@@ -148,15 +148,26 @@ pub async fn serve_on(
     let told = balthasar.clone();
     let scribe = Arc::new(Mutex::new({
         let id = session.lock().await.id().clone();
-        match balthasar {
+        let found = match balthasar {
             Some(path) => magi_ipc::family::Family::dial(&path)
                 .await
                 .ok()
                 .map(|family| crate::scribe::Scribe::over(family, Some(path.clone()), &id)),
             None => crate::scribe::Scribe::find(&id).await.ok(),
-        }
+        };
+        found.map(|scribe| match &catalog.transcript {
+            Some(key) => scribe.recording_as(key.clone()),
+            None => scribe,
+        })
     }));
     let _ = DRAINING.set((Arc::clone(&session), Arc::clone(&scribe)));
+    magi_model::noted!(
+        "scribe: recording as {}",
+        catalog
+            .transcript
+            .as_deref()
+            .unwrap_or("the session itself")
+    );
     magi_model::noted!(
         "session: {} as agent {} serving in {}, model {}, memory {}",
         session.lock().await.id(),

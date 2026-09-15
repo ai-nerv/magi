@@ -73,6 +73,9 @@ pub struct Catalog {
     pub chosen: Option<String>,
     /// The small models that run jobs for balthasar and questions for surfaces — `magi.helpers`.
     pub helpers: Helpers,
+    /// The key this session's transcript is recorded under, when not the session's own: a child
+    /// of a run records `run@agent`, or the run's agents overwrite each other.
+    pub transcript: Option<String>,
 }
 
 impl Catalog {
@@ -92,6 +95,7 @@ impl Catalog {
             system: None,
             chosen: None,
             helpers: Helpers::default(),
+            transcript: None,
             confine: false,
             isolate: false,
             grants: Vec::new(),
