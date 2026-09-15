@@ -1,89 +1,78 @@
-//! The session, running inside the process that shows it.
-//!
-//! There is no daemon. There was: `magi` spawned `magi host` as a background child that owned
-//! the journal and the socket, and a UI quitting was a *detach* — the child stayed up. Two
-//! things came of that, and both were wrong.
-//!
-//! The first was invisible until somebody opened two windows. The daemon's socket was named
-//! after the working directory, so the second `magi` in a project found the first one's daemon
-//! already answering and attached to it. Two windows, one session, one transcript: whatever
-//! either of them typed appeared in both. Every instance name magi had just learned to write
-//! was a fiction over a single conversation.
-//!
-//! The second was the pile. Nothing ever ended a daemon, so a week of work left a process per
-//! project holding a socket, a model and the environment of whichever shell happened to start
-//! it — and `magi stop` existed only to clean up after a design that leaked.
-//!
-//! So the host is a task here, in the process that draws the screen. It binds before the first
-//! frame and it goes when the process goes, because it *is* the process. One `magi` is one
-//! instance: one name, one journal, one conversation, and nothing left behind.
-//!
-//! # Why there is still a socket
-//!
-//! The UI and the session speak the same framed protocol they always did, over a socket this
-//! process binds and unlinks. Kept rather than replaced with a channel, because it is what
-//! `magi fake-host` answers — the replay host is how the UI is developed without a model, and
-//! a UI that could only talk to something in its own address space could not be pointed at it.
+//! The session, running inside the process that shows it. There is no daemon: the host is a task
+//! here, and it goes when the process goes, so one `magi` is one instance — one name, one journal,
+//! one conversation. A daemon named its socket after the working directory, so a second `magi` in a
+//! project attached to the first one's session. The socket is kept rather than replaced with a
+//! channel because it is what `magi fake-host` answers.
 
 use anyhow::{Context, Result};
 use std::os::unix::fs::FileTypeExt;
 use std::path::Path;
 
-/// Open this session and start serving it, without waiting for it to finish.
-///
-/// Bound before returning, so the UI's first dial cannot race the bind. Everything after that
-/// is a task: the caller goes on to draw.
-///
-/// `resume` continues this directory's most recent journal instead of starting one.
+/// The three names a session opens under — one parameter rather than three, because two of them are
+/// `Option<&str>` and a call site that swapped them would compile.
+pub struct Named<'a> {
+    /// This process's own, for its host socket and the balthasar it convenes.
+    pub key: &'a str,
+    pub run: Option<&'a str>,
+    pub agent: Option<&'a str>,
+}
+
+/// What a headless child reports from: the session's status, and what each model has cost it.
+pub type Watches = (
+    tokio::sync::watch::Receiver<magi_proto::AgentStatus>,
+    tokio::sync::watch::Receiver<Vec<(String, magi_proto::Usage)>>,
+);
+
+/// Open this session and serve it, bound before returning so the UI's first dial cannot race it.
 pub async fn start(
     socket: &Path,
-    sessions: Option<&Path>,
     resume: bool,
     cwd: &Path,
     loaded: Option<&crate::config::Loaded>,
     environ: &std::collections::BTreeMap<String, String>,
-    key: &str,
-) -> Result<()> {
-    let dir = sessions.map_or_else(magi_host::paths::sessions_dir, Path::to_path_buf);
+    named: Named<'_>,
+) -> Result<Watches> {
+    let Named { key, run, agent } = named;
     let cwd = cwd.display().to_string();
-    let id = magi_proto::SessionId::new(magi_host::paths::session_id(unix_seconds(), key));
-    // Told before started. A sibling reads what a coordinator said as it comes up, so saying it
-    // afterwards would configure the turn after this one.
+    let id = magi_proto::SessionId::new(recorded_as(run, key));
+    // Told before started: a sibling reads what a coordinator said as it comes up.
     if let Some(loaded) = loaded {
         crate::driving::settle(loaded).await;
     }
 
-    // Started here, not found. magi convenes its siblings: a session whose transcript depended
-    // on somebody else having launched a memory layer would record sometimes and not others.
-    // Named after this session, so two windows in a project get one each and neither can take
-    // the other's down.
-    let ours = crate::balthasar::start(&id.as_str().replace('/', "-"), Path::new(&cwd)).await;
+    // Started here, not found: magi convenes its siblings. Whichever program fills the `memory`
+    // role, named after the key rather than the run — a run is shared by every agent in it, so a
+    // socket named after one would refuse the second agent.
+    let memory = loaded.map_or_else(
+        || crate::config::roles::BALTHASAR.to_owned(),
+        crate::config::memory,
+    );
+    let ours = crate::balthasar::start(&memory, key, Path::new(&cwd), agent).await;
 
-    // With balthasar running there is no journal on disk at all: it is the store, and a second
-    // copy is a copy that goes stale. Without it, the file is the store exactly as before.
+    // The memory layer is the store, and there is no other. A JSONL fallback made two stores, one
+    // of them going stale and silently — a session resumed from it resumes into something that half
+    // happened. A session that cannot record is refused instead.
+    let ours = match ours {
+        crate::balthasar::Started::Ours(socket) => Some(socket),
+        crate::balthasar::Started::Theirs => None,
+        // Said in the words the attempt produced: refusing a session means naming what went wrong.
+        crate::balthasar::Started::Refused(why) => {
+            anyhow::bail!("{}", unreachable(&memory, "convene", &why))
+        }
+    };
     let dialled = match &ours {
         Some(socket) => magi_ipc::family::Family::dial(socket).await,
         None => magi_ipc::family::Family::find(None).await,
     };
-    let mut carried = match dialled {
-        Ok(family) => {
-            let mut scribe = magi_host::scribe::Scribe::over(family, ours.clone(), &id);
-            Some(match resume.then(|| resumable(&mut scribe)) {
-                Some(fut) => fut.await,
-                None => Vec::new(),
-            })
-        }
-        Err(_) => None,
+    let family = dialled
+        .map_err(|why| anyhow::anyhow!("{}", unreachable(&memory, "reach", &why.to_string())))?;
+    let mut scribe = magi_host::scribe::Scribe::over(family, ours.clone(), &id);
+    let carried = match resume.then(|| resumable(&mut scribe)) {
+        Some(fut) => fut.await,
+        None => Vec::new(),
     };
-    let session = match carried.take() {
-        Some(entries) => magi_host::session::Session::recorded(id, entries),
-        None => match resume.then(|| free(&dir, &cwd, socket.parent())).flatten() {
-            Some(path) => magi_host::session::Session::open(&path, id, &cwd, unix_seconds())?,
-            None => magi_host::open_session(&dir, &cwd, unix_seconds(), key)?,
-        },
-    };
-    // A stale socket cannot be a running session any more — nothing outlives its process — so
-    // one found here was left by a crash and is cleared rather than treated as somebody's.
+    let session = magi_host::session::Session::recorded(id, carried);
+    // Nothing outlives its process, so a stale socket here was left by a crash and is cleared.
     if let Some(parent) = socket.parent() {
         tokio::fs::create_dir_all(parent).await?;
         sweep(parent);
@@ -92,8 +81,7 @@ pub async fn start(
         .await
         .with_context(|| format!("binding {}", socket.display()))?;
 
-    // Asked once, here, and handed to the session. melchior owns the catalog; a session that
-    // re-read it per switch would answer with a model the person did not choose.
+    // Asked once and handed to the session; melchior owns the catalog.
     let mut catalog = match loaded {
         Some(loaded) => crate::config::catalog(
             loaded,
@@ -103,35 +91,27 @@ pub async fn start(
     };
     let mut backend = crate::config::backend(&catalog);
     stamp(&mut backend, &mut catalog, environ);
+    // A last-value view of status for a headless child to report its phase without attaching.
+    let phase_watch = session.phase_watch();
+    let spent_watch = session.spent_watch();
     tokio::spawn(async move {
         let _ = magi_host::serve_on(listener, session, backend, catalog, ours).await;
     });
-    Ok(())
+    Ok((phase_watch, spent_watch))
 }
 
-/// Take the socket back down.
-///
-/// A path nothing answers is indistinguishable from a session that is merely busy, and the next
-/// `magi` in this project would meet it as a name already taken.
+/// Take the socket back down: a path nothing answers would meet the next `magi` as a name taken.
 pub fn done(socket: &Path) {
     let _ = std::fs::remove_file(socket);
-    // And the directory, if this was the last session in the project. `remove_dir` refuses one
-    // that still holds something, which is the whole test: whoever leaves last does it, and a
-    // session binding at the same moment is not raced.
+    // And the directory, if this was the last session: `remove_dir` refuses a non-empty one.
     if let Some(parent) = socket.parent() {
         let _ = std::fs::remove_dir(parent);
     }
 }
 
-/// Clear out sockets in `dir` that nothing is serving.
-///
-/// Run at startup rather than only at exit, because the sessions that need clearing are the ones
-/// that never reached their exit path: a crash, a kill, or a build that named its socket
-/// differently. Ten of those had collected in one project here, and nothing would ever have
-/// removed them — the directory is how a session is found, so litter in it is not cosmetic.
-///
-/// Dialled, never guessed. Unlinking a path because it looks stale would take a live session's
-/// socket out from under it, and both would then believe they were reachable.
+/// Clear out sockets in `dir` that nothing is serving, at startup rather than only at exit, because
+/// what needs clearing is the sessions that never reached their exit path. Dialled, never guessed:
+/// unlinking a path because it looks stale would take a live session's socket out from under it.
 fn sweep(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -146,63 +126,26 @@ fn sweep(dir: &Path) {
     }
 }
 
-/// Seconds since the epoch, for naming a session.
-///
-/// A session id is a sortable timestamp, which is what makes "the most recent session" a
-/// directory listing rather than an index to maintain.
+/// What balthasar files this session's history and its scratch under: melchior's run when there is
+/// one, since that is the segment balthasar opens a scratch directory for and magi's key is a pid
+/// and a clock. The key stays as the fallback for a session with no melchior. Nothing is moved.
+fn recorded_as(run: Option<&str>, key: &str) -> String {
+    match run.map(str::trim).filter(|run| !run.is_empty()) {
+        Some(run) => run.to_owned(),
+        None => magi_host::paths::session_id(unix_seconds(), key),
+    }
+}
+
+/// Seconds since the epoch: a session id is a sortable timestamp, so "the most recent session" is
+/// a directory listing rather than an index to maintain.
 fn unix_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
 }
 
-/// The newest journal for `cwd` that nothing is still writing to.
-///
-/// `--resume` used to mean "the newest one here", full stop, and that was fine while a directory
-/// had one session. It does not any more: two `magi -r` in one project both took the newest,
-/// both opened it, and appended into one file in whatever order they happened to write — a
-/// transcript neither of them said.
-///
-/// A journal is named after the session that made it and a session id ends in that session's
-/// key, so "is anybody still writing this" is a question `sockets` answers: if something is
-/// listening on the socket that key names, the journal is taken. `None` means every one of them
-/// is, which is a fresh session rather than a refusal — somebody asking to resume wants to start
-/// working.
-///
-/// Dialled rather than looked for. A path is left behind by a crash, and a journal nobody could
-/// ever resume again because the session that wrote it died badly is worse than one opened twice.
-fn free(dir: &Path, cwd: &str, sockets: Option<&Path>) -> Option<std::path::PathBuf> {
-    magi_host::paths::summaries(dir, cwd)
-        .into_iter()
-        .find(|session| {
-            let Some(whose) = session.id.split_once('-').map(|(_, key)| key) else {
-                // A journal from before session ids carried a key. Nothing can be checked, and
-                // the old behaviour is the right one for it.
-                return true;
-            };
-            !answers(sockets, whose)
-        })
-        .map(|session| session.path)
-}
-
-/// Whether a session with this key is still up.
-///
-/// Connecting is the whole test: a socket with nothing behind it refuses, and one still being
-/// served accepts. Nothing is sent — the question is whether anybody is there, and asking it
-/// twice would be a protocol.
-fn answers(sockets: Option<&Path>, key: &str) -> bool {
-    sockets.is_some_and(|dir| {
-        std::os::unix::net::UnixStream::connect(crate::session::socket_in(dir, key)).is_ok()
-    })
-}
-
-/// Put this session's environment where every process it starts will pick it up.
-///
-/// **Both, and the reason is not symmetry.** Tools are built from the *backend*, so stamping the
-/// catalog alone left the `agent` peer with no name: `mine()` answered `None` and every verb
-/// refused with "this process was not started by an magi session" — a session reachable by name
-/// that could reach nobody. And the catalog is what a `/model` switch rebuilds a backend from,
-/// so stamping the backend alone would have worked right up until somebody changed model.
+/// Put this session's environment where every process it starts will pick it up. Both, because
+/// tools are built from the *backend* and a `/model` switch rebuilds a backend from the catalog.
 fn stamp(
     backend: &mut Option<magi_host::turn::Backend>,
     catalog: &mut magi_host::catalog::Catalog,
@@ -214,11 +157,35 @@ fn stamp(
     }
 }
 
+/// Which name a session's history is kept under.
+#[cfg(test)]
+mod naming {
+    use super::*;
+
+    #[test]
+    fn a_session_in_a_run_is_recorded_as_the_run() {
+        // `<session>` in balthasar's scratch path is melchior's run, so every agent of one run
+        // opens a directory beside its siblings'.
+        assert_eq!(recorded_as(Some("alpha-rho"), "beef00042"), "alpha-rho");
+    }
+
+    #[test]
+    fn a_session_with_no_melchior_falls_back_to_its_own_key() {
+        // pid and clock, exactly as before: there is no run to belong to.
+        for absent in [None, Some(""), Some("   ")] {
+            let fallback = recorded_as(absent, "beef00042");
+            assert!(
+                fallback.ends_with("-beef00042"),
+                "the key is what tells apart two sessions started in one second: {fallback}"
+            );
+        }
+    }
+}
+
 /// A tool peer can find out which session it belongs to.
 #[cfg(test)]
 mod tests {
     use super::*;
-    use magi_model::scratch::Scratch;
 
     fn environ() -> std::collections::BTreeMap<String, String> {
         [
@@ -249,10 +216,8 @@ mod tests {
 
     #[test]
     fn the_session_s_name_reaches_the_tools_it_starts() {
-        // The bug this is here for. A tool peer is spawned from the *backend*'s environment, so
-        // a name put only on the catalog never reached it, and the `agent` tool answered every
-        // verb with "this process was not started by an magi session" — a session reachable by
-        // name that could reach nobody.
+        // A tool peer is spawned from the *backend*'s environment, so a name put only on the
+        // catalog never reached it.
         let mut catalog = catalog();
         let mut backend = catalog.backend("fake/m");
         assert!(backend.is_some(), "the fixture yields a backend");
@@ -275,8 +240,7 @@ mod tests {
 
     #[test]
     fn and_survives_a_change_of_model() {
-        // `/model` builds a fresh backend from the catalog, so a name stamped only on the
-        // backend would have been lost the moment somebody switched.
+        // `/model` builds a fresh backend from the catalog, so a name only on the backend is lost.
         let mut catalog = catalog();
         let mut backend = catalog.backend("fake/m");
         stamp(&mut backend, &mut catalog, &environ());
@@ -289,46 +253,9 @@ mod tests {
         );
     }
 
-    /// A journal in `dir` for `cwd`, named after the session that made it.
-    fn journal(dir: &Path, id: &str, cwd: &str) {
-        let path = dir.join(format!("{id}.jsonl"));
-        magi_journal::Journal::open(&path, magi_proto::SessionId::new(id.to_owned()), cwd, 1)
-            .expect("journal");
-    }
-
-    #[test]
-    fn resuming_takes_the_newest_journal_nobody_is_writing_to() {
-        // Two `magi -r` in one project both used to take the newest, both open it, and append
-        // into one file in whatever order they happened to write.
-        let dir = Scratch::new("magi-free", "one");
-        journal(&dir, "00000000000000000001-alpha-rho", "/work");
-        journal(&dir, "00000000000000000002-beta-nu", "/work");
-
-        // Nothing is listening in either name, so the newest wins as it always did.
-        let found = free(&dir, "/work", Some(&dir)).expect("a journal");
-        assert!(found.to_string_lossy().contains("beta-nu"), "{found:?}");
-    }
-
-    #[test]
-    fn a_journal_from_before_names_is_still_resumable() {
-        // Written when a session id was a bare timestamp. Nothing can be checked about it, and
-        // refusing to resume it would lose somebody their history over a naming change.
-        let dir = Scratch::new("magi-old", "one");
-        journal(&dir, "00000000000000000007", "/work");
-        assert!(free(&dir, "/work", Some(&dir)).is_some());
-    }
-
-    #[test]
-    fn nothing_to_resume_is_a_fresh_session_rather_than_a_refusal() {
-        // Somebody asking to resume wants to start working.
-        let dir = Scratch::new("magi-none", "one");
-        assert!(free(&dir, "/work", Some(&dir)).is_none());
-    }
-
     #[test]
     fn a_session_with_no_model_still_names_itself() {
-        // Every `agent` verb works without one, and a session that cannot answer a prompt can
-        // still be asked what it is doing.
+        // Every `agent` verb works without one.
         let mut catalog = magi_host::catalog::Catalog::empty();
         let mut nothing = None;
         stamp(&mut nothing, &mut catalog, &environ());
@@ -346,17 +273,30 @@ mod leftovers {
     use super::*;
     use magi_model::scratch::Scratch;
 
+    /// A socket file with nothing behind it, the way a session's corpse is left.
+    ///
+    /// `mknod` rather than a bind that is dropped: a `fork` on any other thread between the two
+    /// copies the listening descriptor into the child, and until it `exec`s the kernel still
+    /// accepts on the path. `mknod` opens no descriptor, so there is nothing to inherit.
+    fn corpse(path: &Path) {
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            path,
+            rustix::fs::FileType::Socket,
+            rustix::fs::Mode::from_bits_truncate(0o600),
+            0,
+        )
+        .expect("mknod a socket");
+    }
+
     #[test]
     fn a_socket_nothing_answers_is_cleared_and_a_live_one_is_not() {
-        // Ten of these had collected in one project, from crashes and from a build that named
-        // its socket differently, and nothing would ever have removed them. The directory is how
-        // a session is found, so litter in it is not cosmetic.
+        // The directory is how a session is found, so litter in it is not cosmetic.
         let dir = Scratch::new("magi-sweep", "one");
 
         let live = std::os::unix::net::UnixListener::bind(dir.join("alive.host")).expect("bind");
-        // A socket with nothing behind it: bound, then the listener dropped.
         let dead = dir.join("dead.host");
-        drop(std::os::unix::net::UnixListener::bind(&dead).expect("bind"));
+        corpse(&dead);
         // And something that is not a socket at all, which must be left alone.
         std::fs::write(dir.join("keep.me"), b"not mine").expect("write");
 
@@ -383,8 +323,7 @@ mod leftovers {
 
     #[test]
     fn a_directory_somebody_else_is_still_in_stays() {
-        // The test is `remove_dir` refusing a directory that holds something, which is what
-        // makes this safe without a listing and without racing a session that is binding.
+        // The test is `remove_dir` refusing a directory that holds something.
         let dir = Scratch::new("magi-busy", "one");
         std::fs::write(dir.join("mine.host"), b"").expect("write");
         std::fs::write(dir.join("theirs.host"), b"").expect("write");
@@ -398,13 +337,29 @@ mod leftovers {
     }
 }
 
-/// The newest run balthasar holds for this project, for `--resume`.
-///
-/// Empty when there is nothing to carry on from, which is a fresh session rather than a
-/// refusal: somebody asking to resume wants to start working.
+/// Why a session is refused when the `memory` role's program will not answer. The program is named
+/// rather than balthasar: a person who pointed `magi.memory` elsewhere is owed the name they chose.
+fn unreachable(memory: &str, what: &str, why: &str) -> String {
+    format!(
+        "magi could not {what} {memory}, which holds this session's history: {why}\n\
+         {memory} fills the `memory` role and is the store — there is no local journal to fall \
+         back to. Install it and put it on PATH, or check `{memory} status`."
+    )
+}
+
+/// The newest run balthasar holds for this project, for `--resume`. Empty is a fresh session.
 async fn resumable(scribe: &mut magi_host::scribe::Scribe) -> Vec<magi_proto::Entry> {
-    let Ok(rows) = scribe.sessions().await else {
-        return Vec::new();
+    // Both failures below used to return an empty conversation and say nothing, so `--resume`
+    // against a memory layer that could not answer looked exactly like a session with nothing to
+    // resume — a fresh start, at exit 0, having quietly dropped everything.
+    let rows = match scribe.sessions().await {
+        Ok(rows) => rows,
+        Err(why) => {
+            eprintln!(
+                "magi: --resume found nothing: the memory layer would not list its runs: {why}"
+            );
+            return Vec::new();
+        }
     };
     let newest = rows
         .iter()
@@ -419,7 +374,13 @@ async fn resumable(scribe: &mut magi_host::scribe::Scribe) -> Vec<magi_proto::En
         })
         .next();
     match newest {
-        Some(id) => scribe.replay_of(&id).await.unwrap_or_default(),
+        Some(id) => match scribe.replay_of(&id).await {
+            Ok(entries) => entries,
+            Err(why) => {
+                eprintln!("magi: --resume found `{id}` but could not read it back: {why}");
+                Vec::new()
+            }
+        },
         None => Vec::new(),
     }
 }

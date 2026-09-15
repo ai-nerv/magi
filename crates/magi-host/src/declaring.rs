@@ -1,33 +1,14 @@
-//! Asking the model what it is going to need, before it starts.
-//!
-//! **Why ask at all.** Permission prompts arrive one at a time, in the middle of work, and each
-//! one is a decision made with no idea how many more are coming. Answering "yes" four times to
-//! four narrow questions is a worse outcome than answering once to an accurate description of
-//! the whole job — and the only party that knows the shape of the job before it starts is the
-//! model.
-//!
-//! So it is asked, in a [schema](magi_proto::ask::Schema) rather than in prose: what verbs,
-//! on what, and why. The answer is a *proposal*, not a decision. It is turned into the same
-//! prompt every other request goes through, and the person can grant all of it, some of it, or
-//! none — the model has no more authority over the ledger than it had before.
-//!
-//! **What it is not.** It is not a security boundary. A model that under-declares still hits the
-//! per-action gate on everything it did not mention, which is exactly what that gate is for.
-//! This buys fewer interruptions, not more trust.
+//! Asking the model what it is going to need, before it starts, so a person answers once to an
+//! accurate description of the job rather than four times to narrow questions. The answer is a
+//! proposal, not a decision: a model that under-declares still hits the per-action gate. This buys
+//! fewer interruptions, not more trust.
 
 use magi_proto::ask::Schema;
 use magi_proto::permit::{Grant, Scope};
 
-/// What the model is asked, as a message of its own.
-///
-/// The schema says what shape to answer in; it does not say what the question is. A conversation
-/// handed to a provider with a schema and no question ends on whatever was said last — usually
-/// the model's own answer — and a model asked to continue its own turn says nothing at all,
-/// which arrives here as an empty body and an answer that will not parse.
-///
-/// `here` is named in it because a scope has to be a thing the ledger can hold. Asked without
-/// it, the answer came back as "project root" three times over, and the person was offered "any
-/// `project root` command" — a sentence that means nothing and grants nothing.
+/// What the model is asked, as a message of its own. A conversation handed to a provider with a
+/// schema and no question ends on whatever was said last and comes back empty. `here` is named in
+/// it because a scope has to be a thing the ledger can hold.
 #[must_use]
 pub fn question(here: &std::path::Path) -> String {
     format!(
@@ -41,10 +22,8 @@ pub fn question(here: &std::path::Path) -> String {
     )
 }
 
-/// The shape the model is asked to answer in.
-///
-/// Deliberately small. A model asked for an elaborate object fills it in elaborately, and every
-/// field is another thing a person has to read before deciding.
+/// The shape the model is asked to answer in, deliberately small: every field is another thing a
+/// person has to read before deciding.
 #[must_use]
 pub fn schema() -> Schema {
     Schema {
@@ -91,19 +70,13 @@ pub fn schema() -> Schema {
 pub struct Need {
     /// One of `read`, `write`, `run`, `reach`.
     pub verb: String,
-    /// A directory, a program, or a host.
     pub scope: String,
-    /// Why, in the model's words, for the person deciding.
     pub why: String,
 }
 
 impl Need {
-    /// The grant this would become, if allowed.
-    ///
-    /// A `run` need becomes a program, everything else a directory-or-host. A verb this does not
-    /// recognise becomes nothing: a model that invents one has not asked for anything, and
-    /// guessing what it meant would put a sentence in front of somebody that does not match what
-    /// would actually be granted.
+    /// The grant this would become, if allowed. A `run` need becomes a program, everything else a
+    /// directory-or-host; a verb this does not recognise becomes nothing rather than a guess.
     #[must_use]
     pub fn grant(&self) -> Option<Grant> {
         if self.scope.trim().is_empty() {
@@ -125,10 +98,8 @@ impl Need {
     }
 }
 
-/// Read the model's answer, dropping anything malformed.
-///
-/// Lenient about the envelope and strict about each entry: a schema-honouring provider returns
-/// exactly this shape, and one that does not has produced something nobody should act on.
+/// Read the model's answer, dropping anything malformed. Lenient about the envelope and strict
+/// about each entry.
 #[must_use]
 pub fn read(value: &serde_json::Value) -> Vec<Need> {
     let Some(needs) = value.get("needs").and_then(|v| v.as_array()) else {
@@ -156,16 +127,12 @@ mod tests {
 
     #[test]
     fn the_question_names_the_directory_the_answer_is_about() {
-        // Without it the answer came back as "project root" for all three needs, and the person
-        // was offered "any `project root` command".
         let asked = question(std::path::Path::new("/home/you/work"));
         assert!(asked.contains("/home/you/work"), "{asked}");
     }
 
     #[test]
     fn the_schema_names_the_verbs_the_ledger_understands() {
-        // A model offered a verb the ledger cannot store would be asked to declare something
-        // that could never be granted.
         let schema = schema();
         let verbs = &schema.schema["properties"]["needs"]["items"]["properties"]["verb"]["enum"];
         assert_eq!(verbs, &serde_json::json!(["read", "write", "run", "reach"]));
@@ -207,8 +174,6 @@ mod tests {
 
     #[test]
     fn an_invented_verb_grants_nothing() {
-        // Guessing what it meant would show somebody a sentence that does not match what would
-        // actually be granted.
         let need = Need {
             verb: "delete".into(),
             scope: "/".into(),

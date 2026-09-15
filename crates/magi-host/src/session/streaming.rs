@@ -3,15 +3,11 @@
 //! Split from [`super`] under THE RULE, which caps a file at 800 lines.
 
 use super::*;
-use magi_model::scratch::{Scratch, ScratchFile};
 use magi_proto::{MessageId, Signatures, StopReason, Usage};
 
-fn journal_path(name: &str) -> ScratchFile {
-    Scratch::file("magi-stream", name, "s.jsonl")
-}
-
-fn session(path: &std::path::Path) -> Session {
-    Session::open(path, SessionId::new("s1"), "/tmp", 0).expect("open")
+/// A session holding nothing, which is what balthasar replays for one that has not run.
+fn session() -> Session {
+    Session::recorded(SessionId::new("s1"), Vec::new())
 }
 
 fn assistant(text: &str) -> Entry {
@@ -39,8 +35,7 @@ fn drain(events: &mut tokio::sync::broadcast::Receiver<HarnessEvent>) -> Vec<Har
 fn a_message_still_arriving_is_published_a_piece_at_a_time() {
     // The milestone: a three-hundred word answer was fourteen seconds of spinner and then
     // the whole text at once, because nothing left the daemon until the message was done.
-    let path = journal_path("progressive");
-    let mut s = session(&path);
+    let mut s = session();
     s.commit(assistant("")).expect("commit");
     let mut events = s.subscribe();
 
@@ -58,32 +53,35 @@ fn a_message_still_arriving_is_published_a_piece_at_a_time() {
 }
 
 #[test]
-fn a_revision_is_not_written_down_until_the_message_ends() {
-    // Correct and unusable the other way: `amend` appends a whole record and flushes, so a
-    // thousand-token answer would write the message a thousand times, each copy longer than
-    // the last. The transcript is still current in memory.
-    let path = journal_path("unwritten");
-    let mut s = session(&path);
+fn a_revision_is_not_handed_to_the_store_until_the_message_ends() {
+    // **The queue coalesces by cursor, and that is what makes streaming affordable.** This read
+    // the property off a JSONL file once — "nothing was flushed until the message ended" — and
+    // there is no file: balthasar is the store, and what is queued for it is `pending`. Revising
+    // does queue, deliberately (see `Session::revise`), because a flush landing between an
+    // entry's commit and its settling amendment would otherwise record the empty message it
+    // started as. What must not happen is a *write per revision*: a thousand-token answer would
+    // send the message a thousand times, each copy longer than the last.
+    let mut s = session();
     s.commit(assistant("")).expect("commit");
-    s.revise(assistant("Hello"));
+    for word in ["He", "Hell", "Hello"] {
+        s.revise(assistant(word));
+    }
 
     assert!(
         matches!(s.entries().last(), Some(Entry::Assistant { text, .. }) if text == "Hello"),
         "a UI attaching now sees what has arrived"
     );
-    let written = std::fs::read_to_string(&path).expect("read");
-    assert_eq!(
-        written.matches("Hello").count(),
-        0,
-        "and nothing was flushed"
-    );
-
     s.amend(assistant("Hello")).expect("amend");
-    let written = std::fs::read_to_string(&path).expect("read");
+
+    let queued = s.take_pending();
     assert_eq!(
-        written.matches("Hello").count(),
+        queued.len(),
         1,
-        "the end writes it once"
+        "one commit and three revisions cost one write, not four: {queued:?}"
+    );
+    assert!(
+        matches!(&queued[0].1, Entry::Assistant { text, .. } if text == "Hello"),
+        "and the one write is the finished message, not the empty one it began as"
     );
 }
 
@@ -91,8 +89,7 @@ fn a_revision_is_not_written_down_until_the_message_ends() {
 fn a_message_taken_back_is_described_in_full_rather_than_as_an_append() {
     // What a retry mid-answer needs. A delta is an append, so describing a retraction as one
     // would leave both copies on screen.
-    let path = journal_path("retract");
-    let mut s = session(&path);
+    let mut s = session();
     s.commit(assistant("")).expect("commit");
     s.revise(assistant("half an answer"));
     let mut events = s.subscribe();
@@ -122,8 +119,7 @@ fn a_message_taken_back_is_described_in_full_rather_than_as_an_append() {
 #[test]
 fn an_ordinary_ending_is_still_one_delta_and_a_stop() {
     // The repair must be invisible when a message merely finishes.
-    let path = journal_path("ending");
-    let mut s = session(&path);
+    let mut s = session();
     s.commit(assistant("")).expect("commit");
     s.revise(assistant("done"));
     let mut events = s.subscribe();

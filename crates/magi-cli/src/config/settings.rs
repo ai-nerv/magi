@@ -1,17 +1,9 @@
-//! Reading one setting at a time.
-//!
-//! Split from the loading under THE RULE. This module does two jobs -- put the Lua files
-//! together in the right order, then answer questions about what they said -- and the second
-//! half grows every time a setting is added.
+//! Reading one setting at a time, split from the loading of the Lua files in `mod.rs`.
 
 use super::Loaded;
 
-/// Permissions the configuration granted outright.
-///
-/// `magi.allow` is a list of rules somebody wrote down deliberately, which is a question already
-/// answered: those go into the ledger at startup rather than being prompted for. Anything not
-/// listed is asked about the first time it comes up.
-///
+/// Permissions the configuration granted outright: `magi.allow` rules go into the ledger at startup
+/// rather than being prompted for. Anything not listed is asked about the first time it comes up.
 /// ```lua
 /// magi.allow = {
 ///   { verb = "read",  anything = true },
@@ -22,51 +14,97 @@ use super::Loaded;
 #[must_use]
 pub fn grants(loaded: &Loaded) -> Vec<magi_proto::permit::Grant> {
     use magi_proto::permit::{Grant, Scope};
-    let Some(rules) = loaded.config.get("allow").and_then(|v| v.as_array()) else {
-        return Vec::new();
-    };
-    rules
-        .iter()
-        .filter_map(|rule| {
-            let verb = rule.get("verb")?.as_str()?.to_owned();
-            let scope = if rule.get("anything").and_then(serde_json::Value::as_bool) == Some(true) {
-                Scope::Anything
-            } else if let Some(program) = rule.get("program").and_then(|v| v.as_str()) {
-                Scope::Program {
-                    program: program.to_owned(),
-                }
-            } else if let Some(path) = rule.get("directory").and_then(|v| v.as_str()) {
-                Scope::Directory {
-                    path: path.to_owned(),
-                }
-            } else {
-                // A rule naming no width grants nothing. Silently widening a typo to `Anything`
-                // would be the worst possible reading of it.
-                return None;
-            };
-            Some(Grant { verb, scope })
+    let mut out: Vec<Grant> = loaded
+        .config
+        .get("allow")
+        .and_then(|v| v.as_array())
+        .map(|rules| {
+            rules
+                .iter()
+                .filter_map(|rule| {
+                    let verb = rule.get("verb")?.as_str()?.to_owned();
+                    let scope = if rule.get("anything").and_then(serde_json::Value::as_bool)
+                        == Some(true)
+                    {
+                        Scope::Anything
+                    } else if let Some(program) = rule.get("program").and_then(|v| v.as_str()) {
+                        Scope::Program {
+                            program: program.to_owned(),
+                        }
+                    } else if let Some(path) = rule.get("directory").and_then(|v| v.as_str()) {
+                        Scope::Directory {
+                            path: path.to_owned(),
+                        }
+                    } else {
+                        // A rule naming no width grants nothing; a typo widened to `Anything` would.
+                        return None;
+                    };
+                    Some(Grant { verb, scope })
+                })
+                .collect()
         })
-        .collect()
+        .unwrap_or_default();
+    // `magi.may_spawn` pre-authorises starting children: `spawn` runs this very binary with `fork`,
+    // gated as a `run` of its own path. Granted by the path the process runs from, so it needs no
+    // machine-specific rule and survives a config reinstall — which a hand-written path does not.
+    if loaded.config.boolean("may_spawn").unwrap_or(false)
+        && let Ok(exe) = std::env::current_exe()
+    {
+        out.push(Grant {
+            verb: "run".to_owned(),
+            scope: Scope::Program {
+                program: exe.display().to_string(),
+            },
+        });
+    }
+    // A spawned child may do what the session that started it may: those grants arrive in the
+    // environment `spawn` set, on top of this configuration's own.
+    for grant in inherited(std::env::var(magi_tools::builtin::GRANTS).ok().as_deref()) {
+        if !out.contains(&grant) {
+            out.push(grant);
+        }
+    }
+    out
 }
 
-/// What the model is told it is, for this session.
-///
-/// Assembled here because this is where the configuration and the working directory are both
-/// in hand. Every milestone before this one sent nothing: the model got tool schemas and no
-/// idea what it was, where it was, or what machine it was on.
+/// The grants a parent handed down. What does not parse is nothing rather than a failure: a child
+/// with no grants still starts, and is refused what it cannot ask about.
+fn inherited(said: Option<&str>) -> Vec<magi_proto::permit::Grant> {
+    said.and_then(|said| serde_json::from_str(said).ok())
+        .unwrap_or_default()
+}
+
+/// What the model is told it is, for this session: assembled where the configuration and the
+/// working directory are both in hand.
 #[must_use]
 pub fn system(loaded: &Loaded) -> Option<String> {
     let cwd = std::env::current_dir().unwrap_or_default();
-    magi_host::system::assemble(loaded.config.string("system"), &cwd, &today())
+    // What the configuration says this session's own role is told, after the seat's guidance.
+    let role = super::agents::own(loaded);
+    let told = role
+        .as_ref()
+        .and_then(|role| Some((role.name.as_str(), role.prompt.as_deref()?)));
+    magi_host::system::assemble_as(loaded.config.string("system"), seat(), told, &cwd, &today())
 }
 
-/// Today, as the model should read it.
+/// Where this session sits among the run's agents, which decides what it is told about working
+/// with them: whether it may spawn, and whether a parent started it.
+#[must_use]
+pub fn seat() -> magi_host::system::Seat {
+    magi_host::system::Seat::of(
+        std::env::var_os(magi_tools::builtin::NO_SPAWN).is_none(),
+        std::env::var_os(PARENT).is_some(),
+    )
+}
+
+/// Set on a child by the session that started it, naming that parent.
+const PARENT: &str = "MAGI_MELCHIOR_PARENT";
+
 fn today() -> String {
     let seconds = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    // Civil from days, so a date needs no calendar crate. The model wants to know roughly
-    // when it is, not to do arithmetic with it.
+    // Civil from days, so a date needs no calendar crate.
     let days = i64::try_from(seconds / 86_400).unwrap_or(0) + 719_468;
     let era = days.div_euclid(146_097);
     let doe = days.rem_euclid(146_097);
@@ -79,12 +117,8 @@ fn today() -> String {
     format!("{year:04}-{month:02}-{day:02}")
 }
 
-/// What to ask for beyond the conversation.
-///
-/// `magi.thinking` is off unless asked for. Reasoning costs tokens and money, and a default
-/// that quietly spends both is the wrong kind of surprise — but the whole branch that requests
-/// it existed in every protocol description with nothing ever setting this, so asking was
-/// impossible rather than merely off.
+/// What to ask for beyond the conversation. `magi.thinking` is off unless asked for, since
+/// reasoning costs tokens and money.
 #[must_use]
 pub fn options(loaded: &Loaded) -> magi_proto::ask::Wants {
     let thinking = loaded
@@ -96,35 +130,28 @@ pub fn options(loaded: &Loaded) -> magi_proto::ask::Wants {
         schema: None,
         thinking,
         max_tokens: None,
+        // Chosen on the model's card, never in the config: providers come and go by the hour.
+        provider: None,
     }
 }
 
-/// Everything `magi.ui` says about how the screen looks.
-///
-/// One table, three kinds of value, and the names come from the three modules themselves — so a
-/// colour, a glyph or a size that exists is one a config can set, and there is no list here to
-/// keep in step with them.
-///
+/// Everything `magi.ui` says about how the screen looks. The names come from the colour, glyph and
+/// metric modules themselves; one that is not any of theirs is ignored rather than refused.
 /// ```lua
 /// magi.ui.accent    = 1
 /// magi.ui.marker    = "▶ "
 /// magi.ui.menu_rows = 12
 /// ```
-///
-/// A name that is not any of theirs is ignored rather than refused: a config written for a later
-/// magi should not stop an earlier one from starting.
 pub fn adopt_ui(loaded: &Loaded) {
     let Some(ui) = loaded.config.get("ui").and_then(|v| v.as_object()) else {
         return;
     };
 
-    // A value of the wrong kind is left alone rather than coerced. `accent = "red"` is a mistake,
-    // and painting something anyway would hide it behind a colour nobody chose.
+    // A value of the wrong kind is left alone rather than coerced, so the mistake stays visible.
     let mut palette = magi_tui::colour::Palette::default();
     palette.overlay(&|name| {
-        ui.get(name)
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|n| u8::try_from(n).ok())
+        let value = ui.get(name)?;
+        magi_tui::colour::read(value.as_u64(), value.as_str())
     });
     magi_tui::colour::adopt(palette);
 
@@ -134,8 +161,7 @@ pub fn adopt_ui(loaded: &Loaded) {
             .and_then(serde_json::Value::as_str)
             .map(ToOwned::to_owned)
     });
-    // A spinner with no frames is a division by zero at the one moment somebody is watching, so
-    // an empty list is read as "say nothing about the spinner" rather than obeyed.
+    // An empty frame list is read as "say nothing about the spinner": obeying it divides by zero.
     if let Some(frames) = ui.get("spinner").and_then(|v| v.as_array()) {
         let drawn: Vec<String> = frames
             .iter()
@@ -145,8 +171,7 @@ pub fn adopt_ui(loaded: &Loaded) {
             glyphs.spinner = drawn;
         }
     }
-    // The same, and an empty list *is* obeyed here: a person who wants a blank prompt has said
-    // something, and a placeholder is not load-bearing the way a spinner frame is.
+    // An empty list *is* obeyed here — a blank prompt is a choice, a blank spinner frame is not.
     for (name, into) in [
         ("placeholders", &mut glyphs.placeholders),
         ("openers", &mut glyphs.openers),
@@ -191,9 +216,8 @@ mod ui_tests {
             .unwrap_or_default();
         let mut palette = magi_tui::colour::Palette::default();
         palette.overlay(&|name| {
-            ui.get(name)
-                .and_then(serde_json::Value::as_u64)
-                .and_then(|n| u8::try_from(n).ok())
+            let value = ui.get(name)?;
+            magi_tui::colour::read(value.as_u64(), value.as_str())
         });
         palette
     }
@@ -204,18 +228,61 @@ mod ui_tests {
     }
 
     #[test]
+    fn may_spawn_grants_a_run_of_this_binary_by_its_own_path() {
+        use magi_proto::permit::Scope;
+        let exe = std::env::current_exe()
+            .expect("a test binary path")
+            .display()
+            .to_string();
+        // Off: nothing extra is granted.
+        assert!(grants(&from_lua("")).is_empty());
+        // On: a `run` of exactly this process's own binary, so `spawn`'s `magi fork` is pre-approved.
+        let granted = grants(&from_lua("magi.may_spawn = true"));
+        assert!(
+            granted.iter().any(|g| g.verb == "run"
+                && matches!(&g.scope, Scope::Program { program } if *program == exe)),
+            "may_spawn should grant run of `{exe}`, got {granted:?}"
+        );
+    }
+
+    #[test]
+    fn a_child_takes_on_the_grants_its_parent_handed_down() {
+        use magi_proto::permit::{Grant, Scope};
+        let parent = vec![Grant {
+            verb: "read".to_owned(),
+            scope: Scope::Directory {
+                path: "/home/x/work".to_owned(),
+            },
+        }];
+        let said = serde_json::to_string(&parent).expect("grants serialise");
+        assert_eq!(inherited(Some(&said)), parent);
+        // Nothing handed down, or nothing readable, is no grants rather than a failure.
+        assert!(inherited(None).is_empty());
+        assert!(inherited(Some("not json")).is_empty());
+    }
+
+    #[test]
     fn a_field_can_be_set_without_declaring_the_table_first() {
-        // `magi.ui` exists before any config runs, so this is an assignment rather than an
-        // attempt to index a nil.
+        // `magi.ui` exists before any config runs, so this assigns rather than indexes a nil.
         let chosen = palette_of("magi.ui.accent = 1");
-        assert_eq!(chosen.accent, 1);
+        assert_eq!(chosen.accent, ratatui::style::Color::Indexed(1));
         assert_eq!(chosen.muted, magi_tui::colour::STOCK.muted, "and only that");
     }
 
     #[test]
     fn the_whole_table_can_be_replaced_at_once() {
         let chosen = palette_of("magi.ui = { accent = 1, muted = 8, border = 237 }");
-        assert_eq!((chosen.accent, chosen.muted, chosen.border), (1, 8, 237));
+        let at = ratatui::style::Color::Indexed;
+        assert_eq!(
+            (chosen.accent, chosen.muted, chosen.border),
+            (at(1), at(8), at(237))
+        );
+    }
+
+    #[test]
+    fn a_colour_can_be_given_as_rgb() {
+        let chosen = palette_of(r##"magi.ui.accent = "#ff8800""##);
+        assert_eq!(chosen.accent, ratatui::style::Color::Rgb(0xff, 0x88, 0x00));
     }
 
     #[test]
@@ -248,14 +315,11 @@ mod ui_tests {
     }
 }
 
-/// Environment every process magi starts is given, beside the mandatory pairs.
-///
+/// Environment every process magi starts is given, beside the mandatory pairs. A flat table of
+/// strings; anything that is not one is skipped rather than stringified.
 /// ```lua
 /// magi.env = { RUST_LOG = "warn", PAGER = "cat" }
 /// ```
-///
-/// A flat table of strings. Anything that is not one is skipped rather than stringified: an
-/// environment variable holding `table: 0x...` is a typo that would otherwise reach a shell.
 #[must_use]
 pub fn environ(loaded: &Loaded) -> std::collections::BTreeMap<String, String> {
     let Some(table) = loaded.config.get("env").and_then(|v| v.as_object()) else {
@@ -267,26 +331,48 @@ pub fn environ(loaded: &Loaded) -> std::collections::BTreeMap<String, String> {
         .collect()
 }
 
-/// The SHA-256 casper's program must hash to, if this configuration pinned one.
+/// The program filling the `tools` role, with what this configuration pinned and told it.
 ///
-/// **casper supplies the whole tool set and is found on `$PATH`.** That is the largest trust
-/// assumption magi makes and the one it made with no acknowledgement at all: a `casper` earlier
-/// on the path than the real one owns `shell`, `read` and everything else the model calls.
-/// Pinning binds the session to the bytes it was set up against, exactly as an MCP server's
-/// `sha256` does.
-///
+/// The pin and the settings are keyed by the program's **own** name rather than by the role's:
+/// `magi.casper_sha256` and `magi.casper` when casper fills it, `magi.<program>_sha256` and
+/// `magi.<program>` when something else does. One rule, and it needs no compatibility shim — for
+/// the default program the two spellings are the same string. `magi.tools` stays the name and
+/// nothing else, the way `magi.melchior` does.
 /// ```lua
-/// magi.casper_sha256 = "…"   -- from `magi doctor`
+/// magi.tools = "workbench"           -- who fills the role
+/// magi.workbench_sha256 = "…"        -- from `magi doctor`
+/// magi.workbench = { … }             -- what it is told to be
 /// ```
-///
-/// `None` is the ordinary case and starts anything.
 #[must_use]
-pub fn casper_pin(loaded: &Loaded) -> Option<String> {
+pub fn tooling(loaded: &Loaded) -> magi_tools::supplier::Tooling {
+    let program = super::roles::fills(loaded, "tools");
+    magi_tools::supplier::Tooling {
+        pin: pinned(loaded, &program),
+        configure: configured(loaded, &program),
+        program,
+        kinds: super::agents::kinds(loaded),
+    }
+}
+
+/// The SHA-256 the tools program must hash to, if this configuration pinned one. It is found on
+/// `$PATH` and supplies the whole tool set, so pinning binds the session to the bytes it was set up
+/// against. `None` is the ordinary case and starts anything.
+fn pinned(loaded: &Loaded, program: &str) -> Option<String> {
     loaded
         .config
-        .string("casper_sha256")
+        .string(&format!("{program}_sha256"))
         .map(str::to_owned)
         .filter(|pin| !pin.trim().is_empty())
+}
+
+/// What this configuration tells the tools program to be, as the JSON it goes over. It is one
+/// process per call, so a `configure` would reach only the process that answered it and the
+/// settings ride on every spawn instead. Empty when the table says nothing.
+fn configured(loaded: &Loaded, program: &str) -> String {
+    let Some(table) = loaded.config.get(program).and_then(|v| v.as_object()) else {
+        return String::new();
+    };
+    serde_json::to_string(table).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -319,8 +405,7 @@ mod environ_tests {
 
     #[test]
     fn a_value_that_is_not_a_string_is_left_out() {
-        // Otherwise a nested table reaches a shell as `table: 0x55f...`, which is a typo that
-        // presents as a mysterious environment rather than as a mistake in the config.
+        // Otherwise a nested table reaches a shell as `table: 0x55f...`.
         let seen = from(r#"magi.env = { GOOD = "yes", BAD = { 1, 2 } }"#);
         assert_eq!(seen.get("GOOD").map(String::as_str), Some("yes"));
         assert!(!seen.contains_key("BAD"));
@@ -402,9 +487,7 @@ mod placeholder_tests {
 
     #[test]
     fn every_one_has_a_relative_it_can_be_edited_into() {
-        // The engine walks to the words that differ, shows them, takes them and types the
-        // replacement. A line with nothing near it in the pool can only be retyped whole, which
-        // is the one performance that teaches nothing -- so every line needs a family.
+        // A line with nothing near it in the pool is retyped whole, so every line needs a family.
         let lines = shipped();
         let words = |line: &str| -> Vec<String> {
             line.split_whitespace().map(ToOwned::to_owned).collect()
@@ -441,16 +524,14 @@ mod placeholder_tests {
 
     #[test]
     fn none_of_them_carry_the_markup_the_old_engine_used() {
-        // `a ~~b~~ c` was the format when the correction was written out by hand. The engine
-        // works the difference out for itself now, and a stray `~~` would be typed literally.
+        // The engine works the difference out itself now; a stray `~~` would be typed literally.
         for line in shipped() {
             assert!(!line.contains("~~"), "{line:?} still has strike markers");
         }
     }
     #[test]
     fn none_of_them_is_too_long_for_an_ordinary_terminal() {
-        // A line wider than the box falls back to the short hint, which is correct and also
-        // means the line is never seen. Eighty columns less the box and its padding.
+        // Wider than the box falls back to the short hint: eighty columns less the box and padding.
         for line in shipped() {
             let shown = line.replace("~~", "").chars().count();
             assert!(shown <= 76, "{line:?} is {shown} columns");

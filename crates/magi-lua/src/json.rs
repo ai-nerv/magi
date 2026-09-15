@@ -1,13 +1,8 @@
-//! JSON for the VM.
-//!
-//! A protocol description reads provider payloads, and every one of them is JSON. Lending a
-//! parser is cheaper and safer than each description carrying its own — the family's client
-//! clients carry one only because they must run inside hosts that lend nothing.
+//! JSON for the VM: a protocol description reads provider payloads, and every one of them is JSON.
 
 use crate::convert::{json_from_lua, lua_from_json};
 use luna::{Callback, CallbackReturn, Context, Table, Value};
 
-/// Build the `json` table.
 pub fn table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
     let json = Table::new(&ctx);
 

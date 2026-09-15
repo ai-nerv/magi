@@ -4,14 +4,28 @@
 -- assigned, descriptions go to a registrar, and the file returns nothing.
 
 -- What runs. Nothing is discovered by scanning: a file not named here does not load.
--- Clients first — a tool loads its sibling's client library as it declares itself.
-magi.load("clients/hexe.lua")
-magi.load("clients/oslo.lua")
-magi.load("clients/balthasar.lua")
+--
+-- No clients are named. A sibling's client library comes from the sibling — `client` serves it, so
+-- a copy on disk here is a copy that goes stale. `clients/<name>.lua` still loads if you name one,
+-- and loads before `tools.lua`, because a tool reads its sibling's library as it declares itself.
 magi.load("tools.lua")
 
 -- Which model to use, as `magi models` prints it.
-magi.model = "anthropic/claude-sonnet-4-5"
+magi.model = "openrouter/deepseek/deepseek-v4-flash-0731"
+
+-- Which program fills each role -- what a program is *for*, as `ROLES.md` sets it out. Named
+-- rather than assumed: magi does not know its memory is called balthasar, only that whatever
+-- `magi.memory` names answers the memory role's verbs. `scripts/gate-role.sh memory ./yours`
+-- says whether a candidate does, and `magi doctor` reports each role and who is filling it.
+--
+-- These are the defaults, and every one of them is a program on `$PATH`.
+--
+-- magi.memory   = "balthasar"   -- records the conversation and gives it back
+-- magi.tools    = "casper"      -- offers the tools a model may run
+-- magi.melchior = "melchior"    -- owns which models exist and how to speak to one
+--
+-- `magi.model` above is the *model*, not the program that serves models; the one that names the
+-- program is `magi.melchior`, which has meant that since before roles were written down.
 
 -- An endpoint of your own goes in melchior's config, not here. melchior owns the model: which
 -- protocol one speaks, where it lives and what credential it takes are all its, and magi holds
@@ -66,6 +80,42 @@ magi.allow = {
   { verb = "run", program = "melchior" },
 }
 
+-- May a session start children with `spawn` without asking each time? `spawn` runs this very binary
+-- with `fork`, and granting that by hand means naming its install path -- which differs per machine
+-- and is wiped by a config reinstall. This flag grants it by the path the process is running from,
+-- so headless agents (no one at a keyboard to approve) can spawn their crews. The tree stays capped
+-- by melchior's depth and breadth limits. Privileged: a project's own file cannot turn it on.
+magi.may_spawn = true
+
+-- Roles: the kinds of agent a lead can start with `spawn`. Each has a description the lead chooses
+-- by, a prompt added to the child's own instructions, and optionally a `model` of its own and
+-- `delegate = false` to stop it starting children in turn. `main` is the session nobody started.
+-- Any other word is still a valid `role`; it just comes with nothing extra. (`magi.roles` is a
+-- different thing: which program fills memory, tools and models.)
+magi.agents = {
+  explorer = {
+    description = "Reads code and docs to answer a question; changes nothing.",
+    prompt = [[You are an explorer. Find things out and report them: read, search, and run
+read-only commands. Do not create, edit or delete files. Report what you found with file paths
+and line numbers, and say plainly what you could not find.]],
+    delegate = false,
+  },
+  builder = {
+    description = "Implements one part of a plan, in the files its brief gives it.",
+    prompt = [[You are a builder. Implement the part your brief gives you, in the files it names
+and no others, to the contract it names. Build and test what you wrote before you report, and
+report what you changed and how you checked it.]],
+  },
+  reviewer = {
+    description = "Reviews a change against its brief for bugs and gaps; changes nothing.",
+    prompt = [[You are a reviewer. Read the change your brief points at and check it against what
+it was meant to do: correctness, edge cases, tests, and whether it builds. Do not edit files.
+Report each problem with its file, its line and why it is wrong, most serious first, or say that
+you found none.]],
+    delegate = false,
+  },
+}
+
 -- Environment every process magi starts is given, on top of what it inherits. `OSLO_PROFILE`
 -- is set to "magi" whether or not this says so, and naming it here overrides that.
 --
@@ -109,11 +159,16 @@ magi.allow = {
 --
 -- Everything the UI draws with is a setting under `magi.ui`. Three kinds:
 --
--- COLOURS are palette indices, 0-255, and mean whatever your terminal says they mean:
+-- COLOURS are a palette index, 0-255, or an RGB value, "#rrggbb". The text hues ship as RGB, so a
+-- theme tool that repaints the terminal's sixteen leaves them alone; greys and backgrounds ship
+-- as indices, and follow the theme:
 --
---   accent  success  warning  error  typed
+--   accent  success  warning  error  typed  spinning
+--   mode_normal  mode_insert  mode_command
 --   md_heading  md_code  md_code_block  md_quote
---   diff_added  diff_added_bg  diff_removed  diff_removed_bg  diff_context
+--   diff_added  diff_added_bg  diff_removed  diff_removed_bg  diff_changed_bg  diff_context
+--   code_command  code_subcommand  code_flag  code_path  code_number  code_string  code_variable
+--   code_operator  code_comment  code_argument  code_keyword  code_type
 --   tool_bg  tool_title  tool_ok  tool_failed  tool_output  tool_fold
 --   menu_selected_bg  menu_selected  menu_detail  menu_detail_selected  menu_meta
 --   border  scan  hint  rule
@@ -285,8 +340,11 @@ magi.system = [[
 You are magi, a coding agent working in a terminal alongside a person at their computer.
 
 Do the work rather than describing it. When a change is needed, make it with `edit` or `write`;
-when something needs checking, check it with `read` or `shell`. Prefer reading the code to
-guessing about it, and prefer running a command to predicting its output.
+when something needs checking, check it with `read` or `shell`. Prefer reading the code to guessing
+about it, and prefer running a command to predicting its output.
+
+More tools exist than you are shown -- terminal programs, this session, games -- and `tools` is
+their manual. Look one up only when a task needs it: every lookup costs tokens.
 
 Match the code you are editing: its naming, its idioms, its comment density. A change that
 reads like the file around it is easier to review than one that is merely correct.
@@ -307,6 +365,6 @@ make the ordinary judgement call, say which one you made, and carry on.
 --
 -- Unpinned is the ordinary case and starts anything. `magi doctor` prints what casper actually
 -- hashed to, which is where the value below comes from; a mismatch takes no tools from it and
--- says so.
+-- says so. With `magi.tools` naming another program, pin that one: `magi.<program>_sha256`.
 --
 -- magi.casper_sha256 = "…"

@@ -1,15 +1,11 @@
-//! Pointing a session at a different model, or a different amount of reasoning.
-//!
-//! Split out under THE RULE; the session next door is what these are for. Both rebuild the
-//! worker rather than reconfiguring it: the worker holds a VM built for one protocol, and the
-//! level rides on every request the backend makes.
+//! Pointing a session at a different model, or a different amount of reasoning. Both rebuild the
+//! worker rather than reconfiguring it: it holds a VM built for one protocol, and the level rides
+//! on every request the backend makes.
 
 use super::*;
 
-/// Point the session at a different model, or say why not.
-///
-/// Returns `None` on success. The new worker is built before the old one is dropped, so a
-/// switch that fails leaves the session able to carry on with what it had.
+/// Point the session at a different model, or say why not. Returns `None` on success; the new
+/// worker is built before the old one is dropped, so a failed switch leaves the session working.
 pub(super) async fn switch_model(
     session: &Arc<Mutex<Session>>,
     worker: &tokio::sync::RwLock<Option<Arc<worker::Worker>>>,
@@ -36,9 +32,11 @@ pub(super) async fn switch_model(
         name: backend.model.clone(),
         context_window: backend.context_window.unwrap_or(0),
     };
-    // Gated, like the one it replaces. `Worker::start` is `gated(backend, None)` — a worker
-    // nothing asks — so switching the model used to switch the permission model off with it,
-    // and every tool for the rest of the session ran without being asked about.
+    // Taken before the backend is handed to the worker, which consumes it.
+    let planning_for = backend
+        .context_window
+        .map(|window| (backend.model.clone(), window));
+    // Gated, like the one it replaces: `Worker::start` is `gated(backend, None)`, which asks nothing.
     let fresh = Arc::new(worker::Worker::gated(
         backend,
         Some(Arc::clone(&person.approver)),
@@ -50,27 +48,37 @@ pub(super) async fn switch_model(
     {
         let mut held = session.lock().await;
         held.set_model(Some(info));
-        // Announced so the footer changes now rather than after the next turn: the whole
-        // point of switching is to see that it happened.
+        // Another model has other providers: a choice made for the last one means nothing here.
+        held.set_provider(None);
         held.announce_model();
         remember(catalog, held.model_name(), Some(held.thinking().to_owned()));
+    }
+
+    // balthasar is told, because the window it plans against just changed. Told after the switch
+    // has taken, so a failed one leaves it planning for the model this session still talks to.
+    if let Some((model, window)) = planning_for {
+        let told = {
+            let mut open = scribe.lock().await;
+            match open.as_mut() {
+                Some(open) => open.note_model(&model, window).await,
+                None => Ok(()),
+            }
+        };
+        if let Err(why) = told {
+            magi_model::noted!("scribe: balthasar was not told about the new model: {why}");
+        }
     }
     None
 }
 
 /// Write down what this directory is now using, so the next run starts with it.
-///
-/// A switch made in the UI is a decision somebody made in front of the thing. Forgetting it on
-/// restart meant the only way to keep a choice was to stop making it in the UI and edit a file.
 fn remember(catalog: &crate::catalog::Catalog, model: Option<String>, thinking: Option<String>) {
     let cwd = catalog.cwd.display().to_string();
     crate::remember::keep(&cwd, &crate::remember::Chosen { model, thinking });
 }
 
-/// Ask for more or less reasoning from here on, or say why not.
-///
-/// The worker is rebuilt for the same reason a model switch rebuilds it: the level rides on
-/// every request, and the worker holds the backend the requests are built from.
+/// Ask for more or less reasoning from here on, or say why not. The worker is rebuilt because the
+/// level rides on every request, and the worker holds the backend the requests are built from.
 pub(super) async fn switch_thinking(
     session: &Arc<Mutex<Session>>,
     worker: &tokio::sync::RwLock<Option<Arc<worker::Worker>>>,
@@ -88,14 +96,16 @@ pub(super) async fn switch_thinking(
         ));
     };
 
-    // Rebuilt from the catalog rather than mutated in place, so the level is applied the same
-    // way it would have been had the session started with it.
-    let name = session.lock().await.model_name()?;
+    // Rebuilt from the catalog rather than mutated in place, so the level is applied as it would
+    // have been had the session started with it.
+    let (name, provider) = {
+        let held = session.lock().await;
+        (held.model_name()?, held.provider().map(ToOwned::to_owned))
+    };
     let mut backend = catalog.backend(&name)?;
     backend.wants.thinking = Some(parsed);
-    // Gated, like the one it replaces. `Worker::start` is `gated(backend, None)` — a worker
-    // nothing asks — so switching the model used to switch the permission model off with it,
-    // and every tool for the rest of the session ran without being asked about.
+    backend.wants.provider = provider;
+    // Gated, like the one it replaces: `Worker::start` is `gated(backend, None)`, which asks nothing.
     let fresh = Arc::new(worker::Worker::gated(
         backend,
         Some(Arc::clone(&person.approver)),
@@ -111,16 +121,38 @@ pub(super) async fn switch_thinking(
     None
 }
 
-/// Why there is no model, in the terms of the config that produced the situation.
-///
-/// Public because the UI says the same thing at attach, and said it worse: a fixed "No model is
-/// configured" on screen while the daemon, on the first prompt, gave the real reason. Two answers
-/// to one question, and the one you met first was the wrong one.
-///
-/// "No model is configured" was the whole of what this said, and it was wrong in the common
-/// case: a model *is* configured, its provider's key is not set, and several other providers
-/// are ready and waiting. Somebody whose environment holds an OpenRouter key reads that message
-/// as OpenRouter being broken, because nothing in it mentions either fact.
+/// Have one provider serve the model from here on, or leave it to the router again. Rebuilt the way
+/// a thinking change is, keeping the level: both ride on every request.
+pub(super) async fn switch_provider(
+    session: &Arc<Mutex<Session>>,
+    worker: &tokio::sync::RwLock<Option<Arc<worker::Worker>>>,
+    catalog: &crate::catalog::Catalog,
+    person: &crate::asking::Person,
+    scribe: &crate::scribe::Held,
+    provider: Option<String>,
+) -> Option<String> {
+    let (name, thinking) = {
+        let held = session.lock().await;
+        (held.model_name()?, held.thinking().to_owned())
+    };
+    let mut backend = catalog.backend(&name)?;
+    backend.wants.thinking = serde_json::from_value(serde_json::Value::String(thinking)).ok();
+    backend.wants.provider.clone_from(&provider);
+    let fresh = Arc::new(worker::Worker::gated(
+        backend,
+        Some(Arc::clone(&person.approver)),
+        Arc::clone(&person.asks),
+        Arc::clone(&person.holds),
+        Arc::clone(scribe),
+    ));
+    *worker.write().await = Some(fresh);
+    session.lock().await.set_provider(provider);
+    None
+}
+
+/// Why there is no model, in the terms of the config that produced the situation. Public because
+/// the UI says the same thing at attach: a model may well be configured with its provider's key
+/// unset while several other providers are ready.
 #[must_use]
 pub fn no_model(catalog: &crate::catalog::Catalog) -> String {
     let chosen = catalog.chosen();
@@ -128,8 +160,7 @@ pub fn no_model(catalog: &crate::catalog::Catalog) -> String {
     let ready = catalog.usable();
 
     let mut said = match (&chosen, &why) {
-        // The reason already opens with the name, so prefixing it printed the model twice in
-        // one sentence.
+        // The reason already opens with the name, so prefixing it printed the model twice.
         (Some(_), Some(reason)) => format!("{reason}."),
         (Some(name), None) => format!("`{name}` is not a model this build knows about."),
         (None, _) => "No model is configured.".to_owned(),
@@ -137,8 +168,7 @@ pub fn no_model(catalog: &crate::catalog::Catalog) -> String {
     if ready.is_empty() {
         said.push_str(" Nothing else is ready either — set a provider key, or run `magi models` to see what each one needs.");
     } else {
-        // A few, not all of them. Nine model ids is a wall of text in an error, and the point
-        // is to get moving: `/model` is one keystroke from here and shows the rest.
+        // A few, not all of them: `/model` is one keystroke from here and shows the rest.
         let shown = ready.len().min(3);
         let more = ready.len() - shown;
         let tail = if more > 0 {

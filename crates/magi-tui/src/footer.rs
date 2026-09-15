@@ -1,27 +1,30 @@
-//! The footer.
-//!
-//! Two dim lines, as Pi renders them: the working directory with the git branch, then usage
-//! stats on the left with the session name right-aligned.
+//! The footer: one dim line, the directory and branch left, usage in the middle, session name right.
 
 use crate::colour;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 /// What the footer displays. The UI owns none of this; the session reports it.
 #[derive(Debug, Clone, Default)]
 pub struct FooterData {
-    /// Cumulative input tokens.
     pub input_tokens: u64,
-    /// Cumulative output tokens.
     pub output_tokens: u64,
-    /// Percentage of the context window in use.
     pub context_percent: Option<f64>,
-    /// Size of the context window, in tokens.
     pub context_window: u64,
-    /// What this session calls itself: `project/role/id`. The left of the footer.
+    /// What the agent on screen is called: this session's own `project/role/id`, or `role/id` for a
+    /// peer, whose project cannot differ because a roster is one project's.
     pub identity: String,
-    /// Model id, as the provider names it. The right of the footer.
     pub model: String,
+    /// How many agents there are, this one included. No longer drawn — the agents view has taken
+    /// over moving between them — but still the count the roster reports.
+    pub crew: usize,
+    /// Whether the agent on screen is this session. Only the identity's styling turns on it.
+    pub own: bool,
+    /// The pointer is over the name, which opens the agents view: drawn inverted while it is, the
+    /// same block the usage badge always wears, so the name reads as the button it is.
+    pub name_hover: bool,
+    /// The pointer is over the model's name, which opens the model's card: inverted while it is.
+    pub model_hover: bool,
 }
 
 /// Abbreviate a token count the way Pi's `formatTokens` does.
@@ -49,19 +52,14 @@ pub fn format_cwd(cwd: &str, home: Option<&str>) -> String {
         .map_or_else(|| cwd.to_owned(), |rest| format!("~/{rest}"))
 }
 
-/// Fit a path into `width`, dropping leading components rather than trailing ones.
-///
-/// The old `clip` took the head and cut the tail, which on a long path hides the only part
-/// that says where you are: `/home/you/work/deep/nested/thing` became `/home/you/work/dee…`.
-/// Leading components are the ones a reader can infer.
+/// Fit a path into `width`, dropping leading components rather than trailing ones: the tail is the
+/// part that says where you are, and the head is what a reader can infer.
 #[must_use]
 pub fn fit_path(path: &str, width: usize) -> String {
     if path.chars().count() <= width {
         return path.to_owned();
     }
-    // No room at all is not a licence to overflow: a caller with nothing left to give gets
-    // nothing back. Returning the original here is how the footer once printed a sixty-column
-    // model name onto a twenty-column terminal.
+    // No room at all is not a licence to overflow: a caller with nothing left to give gets nothing.
     if width == 0 {
         return String::new();
     }
@@ -80,51 +78,262 @@ pub fn fit_path(path: &str, width: usize) -> String {
     format!("…{}", last.chars().skip(start).collect::<String>())
 }
 
-/// Render the footer.
-///
-/// **One line.** It was two — the directory on its own row above the stats — and two rows of
-/// dim text under the prompt is a lot of screen for something you glance at. Everything that
-/// was on both is here: the directory and branch on the left, usage in the middle, the session name on
-/// the right, and each is dropped in that order when the terminal cannot hold it.
-#[must_use]
-pub fn render(data: &FooterData, status: &[Span<'static>], width: u16) -> Vec<Line<'static>> {
-    let dim = Style::default().fg(colour::dim());
-    let muted = Style::default().fg(colour::muted());
-    // Held clear at both ends, and the same at both: the prompt box above draws a border in
-    // column zero and stops one short of the right, so a footer running edge to edge under it
-    // read as leaning left. Everything below measures against the inset width, not the screen.
-    let pad = usize::from(crate::metric::footer_pad());
-    let width = usize::from(width).saturating_sub(pad * 2);
-    let gap = usize::from(crate::metric::column_gap());
+/// The name's slot: against the left edge, a third of the inset wide. Both the draw below and the
+/// layout that records where a click lands measure it here, so the button and its cells agree.
+fn fit_name(identity: &str, inset: usize) -> String {
+    fit_path(identity, inset / 3)
+}
 
-    // Ends first, and the shorter of the two has priority: what the session calls itself is
-    // fixed for the whole run, and the model is what you check before sending something.
-    let name = fit_path(&data.identity, width / 3);
+/// Where the name lands, as columns from the left edge (the pad included), for the click target the
+/// layout records. An empty range when there is no name to aim at.
+#[must_use]
+pub fn name_columns(data: &FooterData, width: u16) -> std::ops::Range<u16> {
+    let pad = crate::metric::footer_pad();
+    let inset = usize::from(width).saturating_sub(usize::from(pad) * 2);
+    let name_width = fit_name(&data.identity, inset).chars().count();
+    pad..pad + u16::try_from(name_width).unwrap_or(0)
+}
+
+/// Where the model's name lands, as columns from the left edge (the pad included), for the press
+/// that opens its card: right-aligned in the inset, fitted the way the draw fits it.
+#[must_use]
+pub fn model_columns(data: &FooterData, width: u16) -> std::ops::Range<u16> {
+    let pad = crate::metric::footer_pad();
+    let inset = usize::from(width).saturating_sub(usize::from(pad) * 2);
+    let gap = usize::from(crate::metric::column_gap());
+    let name = fit_name(&data.identity, inset);
+    let model = fit_path(
+        &data.model,
+        inset.saturating_sub(name.chars().count() + gap * 2),
+    );
+    let end = pad + u16::try_from(inset).unwrap_or(u16::MAX);
+    end.saturating_sub(u16::try_from(model.chars().count()).unwrap_or(0))..end
+}
+
+/// Where a middle `said` cells wide starts, in columns of the inset `width`, when it fits between
+/// the name and the model; `None` when it is left out. The draw and the pointer's layout both ask
+/// here, so the dots and the cells a hover is measured against agree.
+fn middle_start(data: &FooterData, said: usize, width: usize) -> Option<usize> {
+    let gap = usize::from(crate::metric::column_gap());
+    let name = fit_name(&data.identity, width);
     let model = fit_path(
         &data.model,
         width.saturating_sub(name.chars().count() + gap * 2),
     );
     let name_width = name.chars().count();
     let model_at = width.saturating_sub(model.chars().count());
-
-    // Then the middle, which is the display and whatever it has to say. Centred on the row
-    // rather than laid after the name: each column is placed from the width alone, so one of
-    // them changing -- and the middle changes every time the agent starts or stops -- does not
-    // slide the other two sideways.
-    let said: usize = status.iter().map(|s| s.content.chars().count()).sum();
-    let middle_at = width.saturating_sub(said) / 2;
-    // Centred in the whole row is not the same as fitting between the other two. On a narrow
-    // screen the middle reached the right-hand column and the two printed into each other --
-    // `12.5%/200kaxum/main/al`. Pushed off centre rather than dropped: the display is the one
-    // thing here that says the session is alive.
-    let middle_at = middle_at
+    // Centred on the row so one column changing does not slide the other two, but clamped: on a
+    // narrow screen the centre reached the model and the two printed into each other.
+    let middle_at = (width.saturating_sub(said) / 2)
         .max(name_width + gap)
         .min(model_at.saturating_sub(said + gap));
+    (middle_at >= name_width && middle_at + said + gap <= model_at).then_some(middle_at)
+}
 
+/// Where the middle landed, as a column from the left edge (the pad included), for the pointer.
+#[must_use]
+pub fn middle_column(data: &FooterData, said: usize, width: u16) -> Option<u16> {
+    let pad = crate::metric::footer_pad();
+    let inset = usize::from(width).saturating_sub(usize::from(pad) * 2);
+    middle_start(data, said, inset)
+        .and_then(|at| u16::try_from(at).ok())
+        .map(|at| pad + at)
+}
+
+/// The three siblings the footer reports on, in the order they are drawn: the short name on the
+/// footer and the full one on the menu.
+pub const SIBLINGS: [(&str, &str); 3] =
+    [("MEL", "melchior"), ("BAL", "balthasar"), ("CAS", "casper")];
+/// How wide one sibling's segment is, `[✻ MEL]`, and how far the next one starts from it.
+pub const SIBLING_WIDTH: u16 = 7;
+pub const SIBLING_STEP: u16 = 8;
+
+/// `[✻ MEL] [✻ BAL] [✻ CAS]`: a star each, in the footer's own colour at rest and red for a sibling
+/// that is down; the one whose menu is open drawn inverted, the way the name shows it is a button.
+/// `stirred` is how lit each one is this frame: a lit one turns to a `●` in its sibling's own hue,
+/// so a flickering sibling changes shape as well as colour.
+#[must_use]
+pub fn siblings(up: [bool; 3], open: Option<usize>, stirred: [f32; 3]) -> Vec<Span<'static>> {
+    let dim = Style::default().fg(colour::dim());
+    let mut spans = Vec::new();
+    for (nth, (short, _)) in SIBLINGS.iter().enumerate() {
+        if nth > 0 {
+            spans.push(Span::styled(" ", dim));
+        }
+        let lit = if open == Some(nth) {
+            Modifier::REVERSED
+        } else {
+            Modifier::empty()
+        };
+        let rest = if up[nth] {
+            colour::dim()
+        } else {
+            colour::error()
+        };
+        let (glyph, ink) = match stirred[nth] {
+            by if by > 0.5 => ("●", colour::blend(rest, stir_hue(nth), by)),
+            _ => ("✻", rest),
+        };
+        spans.push(Span::styled("[", dim.add_modifier(lit)));
+        spans.push(Span::styled(
+            glyph,
+            Style::default().fg(ink).add_modifier(lit),
+        ));
+        spans.push(Span::styled(format!(" {short}]"), dim.add_modifier(lit)));
+    }
+    spans
+}
+
+/// What each sibling flashes: melchior violet, balthasar cyan, casper orange.
+fn stir_hue(nth: usize) -> ratatui::style::Color {
+    match nth {
+        0 => colour::accent(),
+        1 => colour::code_type(),
+        _ => colour::warning(),
+    }
+}
+
+#[cfg(test)]
+mod siblings_tests {
+    use super::*;
+
+    fn text(spans: &[Span<'_>]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// Whether a span is one of the three marks, at rest or lit.
+    fn marks(span: &Span<'_>) -> bool {
+        span.content == "✻" || span.content == "●"
+    }
+
+    #[test]
+    fn a_lit_segment_is_one_background_dot_included() {
+        // The whole segment is dim reversed, the dot with it, so its ground matches the rest.
+        let lit = siblings([true; 3], Some(0), [0.0; 3]);
+        for piece in lit.iter().take(3) {
+            assert_eq!(piece.style.fg, Some(colour::dim()), "{piece:?}");
+            assert!(piece.style.add_modifier.contains(Modifier::REVERSED));
+        }
+    }
+
+    #[test]
+    fn three_segments_one_dot_each_at_fixed_columns() {
+        let drawn = text(&siblings([true, false, true], None, [0.0; 3]));
+        assert_eq!(drawn, "[✻ MEL] [✻ BAL] [✻ CAS]");
+        for (nth, (short, _)) in SIBLINGS.iter().enumerate() {
+            let at = usize::from(SIBLING_STEP) * nth;
+            let segment: String = drawn
+                .chars()
+                .skip(at)
+                .take(usize::from(SIBLING_WIDTH))
+                .collect();
+            assert_eq!(segment, format!("[✻ {short}]"));
+        }
+    }
+
+    #[test]
+    fn a_dot_rests_in_the_footer_colour_and_is_red_only_when_down() {
+        let dots: Vec<_> = siblings([true, false, true], None, [0.0; 3])
+            .into_iter()
+            .filter(|s| s.content == "✻")
+            .map(|s| s.style.fg)
+            .collect();
+        assert_eq!(
+            dots,
+            vec![
+                Some(colour::dim()),
+                Some(colour::error()),
+                Some(colour::dim())
+            ]
+        );
+    }
+
+    #[test]
+    fn only_the_dot_of_a_stirred_sibling_flashes_its_own_hue() {
+        let drawn = |stirred: [f32; 3]| siblings([true; 3], None, stirred);
+        let dot = |stirred| {
+            drawn(stirred)
+                .into_iter()
+                .filter(marks)
+                .nth(2)
+                .map(|s| (s.content.into_owned(), s.style.fg))
+        };
+        assert_eq!(
+            dot([0.0, 0.0, 1.0]),
+            Some((
+                "●".to_owned(),
+                Some(colour::blend(colour::dim(), colour::warning(), 1.0))
+            )),
+            "a lit one is a dot in its own hue"
+        );
+        assert_eq!(
+            dot([1.0, 1.0, 0.0]),
+            Some(("✻".to_owned(), Some(colour::dim()))),
+            "only its own"
+        );
+        assert!(
+            drawn([1.0; 3])
+                .iter()
+                .filter(|s| !marks(s))
+                .all(|s| s.style.fg == Some(colour::dim())),
+            "the brackets and the name stay as they are"
+        );
+    }
+
+    #[test]
+    fn the_middle_lands_where_the_pointer_is_told() {
+        let data = FooterData {
+            identity: "p/lead/xi".into(),
+            model: "some/model".into(),
+            ..Default::default()
+        };
+        let middle = siblings([true; 3], None, [0.0; 3]);
+        let said = middle.iter().map(|s| s.content.chars().count()).sum();
+        let at = middle_column(&data, said, 120).expect("fits on a wide screen");
+        let row: String = render(&data, &middle, 120)[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        let drawn: String = row.chars().skip(usize::from(at)).take(said).collect();
+        assert_eq!(drawn, text(&middle));
+    }
+}
+
+/// Render the footer, on one line: the session name on the left, usage in the middle, the model on
+/// the right, each dropped in that order when the terminal cannot hold it. The name is the button
+/// that opens the agents view, and inverts while the pointer is on it.
+#[must_use]
+pub fn render(data: &FooterData, status: &[Span<'static>], width: u16) -> Vec<Line<'static>> {
+    let dim = Style::default().fg(colour::dim());
+    let muted = Style::default().fg(colour::muted());
+    // Held clear at both ends and the same at both, because the box above stops one short of the
+    // right. Everything below measures against the inset width, not the screen.
+    let pad = usize::from(crate::metric::footer_pad());
+    let width = usize::from(width).saturating_sub(pad * 2);
+    let gap = usize::from(crate::metric::column_gap());
+
+    // Ends first, shorter of the two with priority: the name takes its third of the inset, the model
+    // whatever is left once the name and the gaps around the middle are out.
+    let name = fit_name(&data.identity, width);
+    let model = fit_path(
+        &data.model,
+        width.saturating_sub(name.chars().count() + gap * 2),
+    );
+    let name_width = name.chars().count();
+    let model_at = width.saturating_sub(model.chars().count());
+    let said: usize = status.iter().map(|s| s.content.chars().count()).sum();
+
+    // Brighter when it is somebody else's, inverted while the pointer is on it: everything else on
+    // the screen looks the same either way, and the invert is how the name says it is a button.
+    let mut name_style = if data.own { dim } else { muted };
+    if data.name_hover {
+        name_style = name_style.add_modifier(Modifier::REVERSED);
+    }
     let mut spans = vec![Span::styled(" ".repeat(pad), dim)];
-    spans.push(Span::styled(name, dim));
+    spans.push(Span::styled(name, name_style));
     let mut col = name_width;
-    if middle_at >= col && middle_at + said + gap <= model_at {
+    if let Some(middle_at) = middle_start(data, said, width) {
         spans.push(Span::styled(" ".repeat(middle_at - col), dim));
         spans.extend(status.iter().cloned());
         col = middle_at + said;
@@ -132,7 +341,12 @@ pub fn render(data: &FooterData, status: &[Span<'static>], width: u16) -> Vec<Li
     if model_at >= col {
         spans.push(Span::styled(" ".repeat(model_at - col), dim));
     }
-    spans.push(Span::styled(model, muted));
+    let model_style = if data.model_hover {
+        muted.add_modifier(Modifier::REVERSED)
+    } else {
+        muted
+    };
+    spans.push(Span::styled(model, model_style));
 
     let mut row = vec![spans.remove(0)];
     row.extend(clip_spans(spans, width));
@@ -140,11 +354,8 @@ pub fn render(data: &FooterData, status: &[Span<'static>], width: u16) -> Vec<Li
     vec![Line::from(row)]
 }
 
-/// Trim a styled line to `width`, dropping whole spans and then characters.
-///
-/// The last guard on the stats line. Every part of it is fitted on its own, but a terminal
-/// narrow enough that the token counts alone overflow leaves nothing to fit -- and a line that
-/// overflows wraps, which costs the footer a row it was not given.
+/// Trim a styled line to `width`, dropping whole spans and then characters. The last guard on the
+/// stats line: a line that overflows wraps, which costs the footer a row it was not given.
 fn clip_spans(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
     let mut out = Vec::with_capacity(spans.len());
     let mut used = 0usize;
@@ -192,9 +403,7 @@ mod tests {
 
     #[test]
     fn the_three_columns_are_the_name_the_display_and_the_model() {
-        // The working directory, the branch and the mouse state had it. Two of them never change
-        // while the session runs, and the third has the whole terminal to announce itself. The
-        // status took the row above the box, which is a row of chrome for one word.
+        // The status took the row above the box, which is a row of chrome for one word.
         let data = FooterData {
             input_tokens: 1200,
             output_tokens: 340,
@@ -274,8 +483,7 @@ mod fit_tests {
 
     #[test]
     fn a_long_path_keeps_the_end_that_says_where_you_are() {
-        // The old clip took the head: `/home/you/work/deep/nested/thing` became
-        // `/home/you/work/dee…`, which names every directory except the one you are in.
+        // The old clip took the head, which names every directory except the one you are in.
         let fitted = fit_path("/home/you/work/deep/nested/thing", 20);
         assert!(fitted.ends_with("thing"), "{fitted}");
         assert!(fitted.chars().count() <= 20, "{fitted}");
@@ -335,8 +543,7 @@ mod name_fit_tests {
 
     #[test]
     fn a_long_name_keeps_the_part_that_names_it() {
-        // Right-aligned text is cut on the left by the terminal and on the right by us; either
-        // way `a-long-project/main/alpha` must not become `a-long-project/main`.
+        // Cut on the left by the terminal and on the right by us; either way the tail must survive.
         let data = FooterData {
             identity: "a-long-project/main/alpha".into(),
             context_window: 164_000,
@@ -389,15 +596,17 @@ mod anchored {
             context_window: 200_000,
             identity: "axum/main/alpha".into(),
             model: "claude-opus-5".into(),
+            crew: 1,
+            own: true,
+            name_hover: false,
+            model_hover: false,
         }
     }
 
-    /// Which column `needle` starts at, counted in characters rather than bytes.
     fn column(row: &str, needle: &str) -> Option<usize> {
         row.find(needle).map(|byte| row[..byte].chars().count())
     }
 
-    /// The row rendered with `said` on the left.
     fn row(said: &str) -> String {
         let status = [Span::raw(said.to_owned())];
         render(&data(), &status, 70)[0]
@@ -409,9 +618,7 @@ mod anchored {
 
     #[test]
     fn what_the_agent_is_doing_does_not_move_the_ends() {
-        // The complaint this answers: the two ends slid sideways every time the middle changed,
-        // which is every time a turn starts or ends. The display is fixed-width now, which is
-        // most of the answer, but a middle that grows must still not push anything.
+        // The display is fixed-width, but a middle that grows must still not push the ends.
         let short = row("⣠⣾⠀⠀⠀");
         let long = row(&"⣿".repeat(20));
         for line in [&short, &long] {
@@ -451,6 +658,10 @@ mod inset_tests {
     use super::*;
 
     fn row(width: u16, identity: &str) -> String {
+        crewed(width, identity, 1)
+    }
+
+    fn crewed(width: u16, identity: &str, crew: usize) -> String {
         let data = FooterData {
             input_tokens: 12_500,
             output_tokens: 900,
@@ -458,6 +669,10 @@ mod inset_tests {
             context_window: 200_000,
             identity: identity.into(),
             model: "claude-opus-5".into(),
+            crew,
+            own: true,
+            name_hover: false,
+            model_hover: false,
         };
         render(&data, &[Span::raw("waiting")], width)[0]
             .spans
@@ -479,8 +694,7 @@ mod inset_tests {
 
     #[test]
     fn the_middle_never_prints_into_the_name() {
-        // `12.5%/200kaxum/main/al`, which is what a centred middle does once the row is inset
-        // and nobody checks it against the column to its right.
+        // What a centred middle does once the row is inset and nobody checks the column to its right.
         for width in 30..90u16 {
             let line = row(width, "axum/main/alpha");
             assert!(
@@ -492,12 +706,8 @@ mod inset_tests {
     }
 }
 
-/// The usage, as one string: what went up, what came down, and how full the window is.
-///
-/// Public because it is no longer drawn here. It had the middle of the footer and the middle is
-/// now the display; it is worn by the prompt box instead, in the inverted strip down its right,
-/// which is where you are looking when the number matters. Empty when there is nothing to say --
-/// `?/0` is three characters of noise on exactly the screen a new person is trying to read.
+/// The usage as one string: what went up, what came down, how full the window is. Public because it
+/// is worn by the prompt box now, not drawn here. Empty when there is nothing to say.
 #[must_use]
 pub fn usage(data: &FooterData) -> String {
     let mut parts = Vec::new();
@@ -514,6 +724,19 @@ pub fn usage(data: &FooterData) -> String {
         });
     }
     parts.join(" ")
+}
+
+/// How full the context window is, and nothing else: what the prompt box's corner wears. The rest
+/// of the usage is one press away, in the view the corner opens.
+#[must_use]
+pub fn context(data: &FooterData) -> String {
+    if data.context_window == 0 {
+        return String::new();
+    }
+    match data.context_percent {
+        Some(pct) => format!("{pct:.0}%"),
+        None => "?%".to_owned(),
+    }
 }
 
 /// The colour the usage is worth: context pressure is the one number here that is ever urgent.
@@ -534,7 +757,6 @@ mod middle_tests {
     #[test]
     fn the_display_sits_on_the_screens_own_middle() {
         // The two ends are pinned to the edges, so anything off-centre between them is visible.
-        // Checked at both parities of terminal width, which is the case that needed the work.
         for screen in 60..160u16 {
             let cells = crate::beacon::fitted(screen);
             let data = FooterData {
@@ -561,3 +783,8 @@ mod middle_tests {
         }
     }
 }
+
+/// The control for moving between agents, and the width it is allowed to cost.
+#[cfg(test)]
+#[path = "footer/crewing.rs"]
+mod crewing;

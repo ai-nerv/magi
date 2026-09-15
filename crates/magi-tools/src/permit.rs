@@ -1,17 +1,7 @@
-//! Deciding whether a tool may do what it is about to do.
-//!
-//! **Asked, not configured.** Sandboxing was opt-in — a `bwrap` line you had to know to write —
-//! which means it was off for everybody who had not already thought about it. That is the wrong
-//! default for the one question worth interrupting somebody about. The rule now is that an
-//! action outside what has already been allowed *stops and asks*, and the asking is the product
-//! rather than a warning printed after the fact.
-//!
-//! **What a decision becomes.** A person answers one prompt, at a width they choose, and the
-//! answer is turned into a standing [`Grant`] — or into nothing, if they said "just this once".
-//! The ledger holds grants for the session; the ones marked `Always` are also written down.
-//!
-//! This module decides. It does not ask: that needs a UI on the other end of a socket, and a
-//! decision procedure that cannot be tested without one is a decision procedure nobody trusts.
+//! Deciding whether a tool may do what it is about to do. An action outside what has already been
+//! allowed stops and asks; the answer becomes a standing [`Grant`], or nothing when the person said
+//! "just this once". The ledger holds grants for the session and the ones marked `Always` are also
+//! written down. This module decides. It does not ask: that needs a UI on the other end of a socket.
 
 pub use magi_proto::permit::{Action, Decision, Grant, Lifetime, Scope};
 
@@ -34,14 +24,9 @@ impl Ledger {
         Self { grants }
     }
 
-    /// Take on grants somebody else already holds.
-    ///
-    /// For a session that has been adopted: it may do what its parent may do, and no more. The
-    /// grants are the parent's own — the ones a person there either wrote in a config or answered
-    /// a prompt with — so nothing arrives here that somebody did not already consent to once.
-    ///
-    /// Added rather than replacing, because the child keeps whatever it was already allowed. A
-    /// duplicate costs a redundant entry and decides nothing differently.
+    /// Take on grants somebody else already holds, for a session that has been adopted: it may do
+    /// what its parent may do, and no more. Added rather than replacing, so the child keeps what it
+    /// was already allowed.
     pub fn take_on(&mut self, grants: Vec<Grant>) {
         self.grants.extend(grants);
     }
@@ -52,11 +37,8 @@ impl Ledger {
         self.grants.iter().any(|g| g.covers(action))
     }
 
-    /// Record what was decided about `action`.
-    ///
-    /// A refusal records nothing: it is an answer about this call, not a standing rule that
-    /// would have to be found and undone later. `Once` records nothing either, for the same
-    /// reason — it was spent on the call that asked.
+    /// Record what was decided about `action`. A refusal records nothing — it is an answer about
+    /// this call, not a standing rule — and `Once` records nothing either, being spent on the call.
     pub fn remember(&mut self, action: &Action, decision: &Decision) {
         let Decision::Allow { scope, .. } = decision else {
             return;
@@ -75,11 +57,8 @@ impl Ledger {
         &self.grants
     }
 
-    /// The widths a person should be offered for this action.
-    ///
-    /// Narrow first, because the list is read top to bottom and the safest answer should be the
-    /// one under the cursor. Every action gets "once" and "anything"; what sits between them
-    /// depends on what was asked, which is the whole point of asking in these terms.
+    /// The widths a person should be offered for this action, narrow first, because the list is
+    /// read top to bottom and the safest answer should be under the cursor.
     #[must_use]
     pub fn offers(action: &Action) -> Vec<Scope> {
         let mut out = vec![Scope::Once];
@@ -104,16 +83,10 @@ impl Ledger {
     }
 }
 
-/// The grant a decision leaves behind, if any.
-///
-/// `Exact` and `Once` are not stored as themselves: a grant has to answer a *future* action, and
-/// a scope that only means something beside the request it came from cannot. An exact file
-/// becomes a directory of one, which matches that path and nothing under it because it is not a
-/// directory.
-///
-/// Public because the UI needs the same reading. It is where a person's answer is turned into a
-/// decision, and a session that lends its permissions to a child has to know what it holds — two
-/// readings of "what did that answer grant" would part company the first time either changed.
+/// The grant a decision leaves behind, if any. `Exact` and `Once` are not stored as themselves: a
+/// grant has to answer a future action, so an exact file becomes a directory of one, matching that
+/// path and nothing under it. Public because the UI turns a person's answer into a grant the same
+/// way, and a session lending its permissions to a child has to know what it holds.
 pub fn standing(action: &Action, scope: &Scope) -> Option<Grant> {
     let verb = action.verb().to_owned();
     match scope {
@@ -137,11 +110,8 @@ pub fn standing(action: &Action, scope: &Scope) -> Option<Grant> {
                 verb,
                 scope: Scope::Directory { path: path.clone() },
             }),
-            // Nothing is stored. "Exactly this" about a command line has no width in this
-            // vocabulary: the only thing a `Run` grant can hold is a program, and storing the
-            // whole line as one made a grant that `covers` then compared against a first word
-            // and never matched. An answer that quietly does nothing is worse than a narrower
-            // one, so it is spent on the call that asked, the way `Once` is.
+            // Nothing is stored: the only thing a `Run` grant can hold is a program, so "exactly
+            // this" about a command line has no width here. It is spent on the call that asked.
             Action::Run { .. } => None,
             Action::Network { host } => Some(Grant {
                 verb,
@@ -193,8 +163,7 @@ mod tests {
 
     #[test]
     fn a_new_ledger_allows_nothing() {
-        // The default has to be "ask". Opt-in safety is off for everybody who has not already
-        // thought about it, which is everybody it was meant to protect.
+        // The default has to be "ask": opt-in safety is off for everybody it was meant to protect.
         assert!(!Ledger::new().allows(&read("/etc/passwd")));
     }
 
@@ -228,8 +197,8 @@ mod tests {
 
     #[test]
     fn an_exact_file_does_not_become_its_directory() {
-        // The narrow answer has to stay narrow: `Exact` on a file is stored as a root that
-        // matches that path, and nothing else in the folder.
+        // The narrow answer has to stay narrow: `Exact` on a file matches that path and nothing
+        // else in the folder.
         let mut ledger = Ledger::new();
         ledger.remember(&read("/home/x/work/a.rs"), &allow(Scope::Exact));
         assert!(ledger.allows(&read("/home/x/work/a.rs")));

@@ -10,12 +10,48 @@ use magi_proto::ask::Card;
 /// Models that are not ready are listed too, with the variable that would enable them: somebody
 /// choosing a model wants to see what exists, not a list narrowed to whatever happens to be
 /// exported in this shell.
-pub fn print(all: bool) {
-    let default = crate::config::load()
-        .ok()
+pub fn print(all: bool, how: crate::verbs::As) {
+    let loaded = crate::config::load().ok();
+    let default = loaded
+        .as_ref()
         .and_then(|loaded| loaded.config.string("model").map(str::to_owned));
+    // The `model` role's program, the one a session would ask, rather than whatever is called
+    // melchior on `$PATH`.
+    let program = loaded.as_ref().map_or_else(
+        || magi_host::broker::MELCHIOR.to_owned(),
+        crate::config::mind,
+    );
 
-    let cards = melchior();
+    let cards = melchior(&program);
+    // Framed, the cards go back as they came: every one of them, since narrowing a listing is a
+    // courtesy to a reader and a caller that asked for bytes is not one.
+    if how.framed() {
+        if cards.is_empty() {
+            crate::verbs::say(
+                &magi_ipc::family::Reply::refused(
+                    "melchior is not answering, so magi has no models to list",
+                ),
+                how,
+            );
+            return;
+        }
+        let rows = cards
+            .iter()
+            .filter(|card| all || card.ready)
+            .map(|card| {
+                let mut row = serde_json::to_value(card).unwrap_or_default();
+                if let Some(row) = row.as_object_mut() {
+                    row.insert(
+                        "default".into(),
+                        (default.as_deref() == Some(&card.id)).into(),
+                    );
+                }
+                row
+            })
+            .collect();
+        crate::verbs::say(&magi_ipc::family::Reply::rows(rows), how);
+        return;
+    }
     if cards.is_empty() {
         eprintln!("magi: melchior is not answering, so there are no models to list.");
         eprintln!("      install it, or run `melchior models` to see what it says.");
@@ -65,29 +101,29 @@ fn print_card(card: &Card, default: Option<&str>) {
     println!("{marker} {:<48} {window:>7}{reasons}{note}", card.id);
 }
 
-/// Every card melchior offers, or nothing when it will not answer.
+/// Every card `program` offers, or nothing when it will not answer.
 ///
 /// Blocking, because this is a command rather than a session: there is no runtime to borrow and
 /// nothing else to get on with while it answers.
-fn melchior() -> Vec<Card> {
-    let Ok(out) = std::process::Command::new("melchior")
+fn melchior(program: &str) -> Vec<Card> {
+    let Ok(out) = std::process::Command::new(program)
         .arg("models")
         .arg("--json")
         .stderr(std::process::Stdio::null())
         .output()
     else {
-        magi_model::noted!("models: melchior could not be started");
+        magi_model::noted!("models: {program} could not be started");
         return Vec::new();
     };
     let Ok(reply) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else {
         magi_model::noted!(
-            "models: melchior answered {} bytes that are not json",
+            "models: {program} answered {} bytes that are not json",
             out.stdout.len()
         );
         return Vec::new();
     };
     if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
-        magi_model::noted!("models: melchior refused: {reply}");
+        magi_model::noted!("models: {program} refused: {reply}");
         return Vec::new();
     }
     reply
@@ -130,8 +166,8 @@ mod tests {
 
     #[test]
     fn an_absent_melchior_is_no_models_rather_than_a_panic() {
-        // Whatever is on this machine, the shape of the answer is a list.
-        let _: Vec<Card> = melchior();
+        // A program that is not there is an empty catalog, and the command still prints.
+        assert!(melchior("magi-no-such-melchior-anywhere").is_empty());
     }
 
     #[test]

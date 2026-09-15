@@ -1,20 +1,7 @@
-//! Modes, motions and operators.
-//!
-//! The prompt is modal: it opens in normal mode and does not take text until you ask it to.
-//! That is the whole point of the thing — a key press in normal mode is a command, and typing
-//! into a buffer is one command among the rest rather than the default.
-//!
-//! There is no setting for it. A modal editor that can be switched off is two editors to keep
-//! working, and the second one is the one nobody tests.
-//!
-//! What lives here is the *vocabulary*: which mode the prompt is in, and what a key means in
-//! normal mode. Applying that to a buffer is [`crate::editor`]'s job, and deciding what a
-//! non-editing command does — scrolling, submitting, searching — belongs to the caller, which
-//! is the only thing that knows there is a transcript.
-//!
-//! **Operators and motions compose**, as they should: `d` `c` and `y` each wait for a motion
-//! and act over the ground it covers, so `dw` `d$` `ct,` `yb` all work without being written
-//! out one by one. That is the difference between vim bindings and vim.
+//! Modes, motions and operators. The prompt opens in normal mode and does not take text until you
+//! ask it to; there is no setting for it. What lives here is the vocabulary — which mode the prompt
+//! is in, and what a key means in normal mode. Applying it to a buffer is [`crate::editor`]'s job,
+//! and non-editing commands belong to the caller. Operators and motions compose: `dw`, `d$`, `ct,`.
 
 /// Which mode the prompt is in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -22,14 +9,9 @@ pub enum Mode {
     /// Keys are commands. Where the prompt opens, and where `esc` returns it.
     #[default]
     Normal,
-    /// Keys are text.
     Insert,
-    /// Keys are a command line, and the prompt is holding your text for you.
-    ///
-    /// Its own mode rather than a colon typed into the buffer. `:` used to insert one and let
-    /// the completion menu notice it, which meant a colon typed *in insert mode* — in the
-    /// middle of a sentence, in a path, in a ratio — opened the command menu over the prompt.
-    /// A command line is a different buffer, so this is a different mode.
+    /// Keys are a command line, and the prompt is holding your text for you. Its own mode, not a
+    /// colon in the buffer, or a colon typed in insert mode would open the command menu.
     Command,
 }
 
@@ -51,16 +33,11 @@ impl Mode {
     }
 }
 
-/// What a key means in normal mode.
-///
-/// Motions and edits are separated from everything else because the first two are the editor's
-/// and the rest are the caller's: `Scroll` needs a transcript, `Submit` needs a daemon, and
-/// neither is something a text buffer should know about.
+/// What a key means in normal mode. Motions and edits are the editor's; the rest are the caller's —
+/// `Scroll` needs a transcript and `Submit` needs a daemon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Deed {
-    /// Move the cursor.
     Move(Motion),
-    /// Change the buffer where it stands.
     Edit(Edit),
     /// Wait for a motion, then act over the ground it covers.
     Operate(Operator),
@@ -68,99 +45,67 @@ pub enum Deed {
     Await(Wants),
     /// Enter insert mode, having first done `Edit` — `a` moves right, `o` opens a line.
     Insert(Option<Edit>),
-    /// Open the command line.
     Command,
-    /// Move the transcript.
     Scroll(Toward),
-    /// Start a search.
     Search,
-    /// Go to the next or previous match.
-    Match { forward: bool },
-    /// Go back one change.
+    Match {
+        forward: bool,
+    },
     Undo,
-    /// Send what is in the buffer.
     Submit,
     /// Nothing is bound to this key.
     Unbound,
 }
 
-/// A cursor movement, and the ground an operator covers when given one.
+/// A cursor movement, and the ground an operator covers when given one:
+/// `h` `l` `j` `k` `w` `b` `e` `0` `^` `$` `gg` `G`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Motion {
-    /// `h`
     Left,
-    /// `l`
     Right,
-    /// `j`
     Down,
-    /// `k`
     Up,
-    /// `w`
     WordRight,
-    /// `b`
     WordLeft,
-    /// `e`
     WordEnd,
-    /// `0`
     LineStart,
-    /// `^`
     FirstWord,
-    /// `$`
     LineEnd,
-    /// `gg`
     First,
-    /// `G`
     Last,
     /// `f`, `t`, `F`, `T`, with the character they were given.
     ToChar {
-        /// What to look for.
         target: char,
-        /// Forwards through the line, or backwards.
         forward: bool,
         /// Stop one short of it, which is what `t` and `T` do.
         short: bool,
     },
 }
 
-/// A change made where the cursor stands, with no motion to wait for.
+/// A change made where the cursor stands, with no motion to wait for:
+/// `x` `X` `dd` `yy` `D` `p` `P` `o` `O` `J` `~`, then `r` and the motion half of `A` and `I`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Edit {
-    /// `x`
     DeleteChar,
-    /// `X`
     DeleteBack,
-    /// `dd`
     DeleteLine,
-    /// `yy`
     YankLine,
-    /// `D`
     KillToEnd,
-    /// `p`
     PasteAfter,
-    /// `P`
     PasteBefore,
-    /// `o`
     OpenBelow,
-    /// `O`
     OpenAbove,
-    /// `J`
     Join,
-    /// `~`
     FlipCase,
-    /// `r`, with the character it was given.
     Replace(char),
-    /// The motion half of `A`, `I` and friends, which move without changing anything.
     Go(Motion),
 }
 
-/// An operator waiting for a motion.
+/// An operator waiting for a motion: `d`, `c`, `y`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operator {
-    /// `d`
     Delete,
-    /// `c`
     Change,
-    /// `y`
     Yank,
 }
 
@@ -176,18 +121,14 @@ impl Operator {
     }
 }
 
-/// A key that needs one more before it means anything.
+/// A key that needs one more before it means anything: `f` and `t` forwards, `F` and `T`
+/// backwards, `r` to replace what is under the cursor. `t` and `T` stop one short.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wants {
-    /// `f` — forwards, onto it.
     Find,
-    /// `t` — forwards, up to it.
     Till,
-    /// `F` — backwards, onto it.
     FindBack,
-    /// `T` — backwards, up to it.
     TillBack,
-    /// `r` — replace what is under the cursor with it.
     Replace,
 }
 
@@ -221,29 +162,20 @@ impl Wants {
     }
 }
 
-/// Where the transcript is being asked to go.
+/// Where the transcript is being asked to go: `ctrl+u`, `ctrl+d`, and `k` `j` `gg` `G` on a
+/// single-line prompt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Toward {
-    /// `ctrl+u`
     HalfUp,
-    /// `ctrl+d`
     HalfDown,
-    /// `k` on a single-line prompt
     LineUp,
-    /// `j` on a single-line prompt
     LineDown,
-    /// `gg` on a single-line prompt
     Top,
-    /// `G` on a single-line prompt
     Bottom,
 }
 
-/// A key in normal mode, given how tall the prompt is.
-///
-/// `tall` decides what `j`, `k`, `gg` and `G` mean, and it is the one genuinely awkward thing
-/// here. A single-line prompt has nowhere to move up or down *to*, so they move the transcript,
-/// which is what somebody reading back through output wants. A prompt with several lines has
-/// somewhere to go, so they go there.
+/// A key in normal mode, given how tall the prompt is. `tall` decides what `j`, `k`, `gg` and `G`
+/// mean: a single-line prompt has nowhere to move to, so they move the transcript instead.
 #[must_use]
 pub fn deed(key: char, tall: bool) -> Deed {
     match key {
@@ -309,18 +241,14 @@ pub fn after_g(key: char, tall: bool) -> Deed {
     }
 }
 
-/// Whether a change made under this operator should take whole lines.
-///
-/// `dd`, `cc` and `yy`: the operator doubled. Everything else covers the ground a motion does.
+/// Whether a change made under this operator should take whole lines: `dd`, `cc`, `yy`.
 #[must_use]
 pub fn doubled(operator: Operator, key: char) -> bool {
     operator.key() == key
 }
 
-/// Move the cursor, and say whether the motion found anywhere to go.
-///
-/// The answer matters for `f` and `t`: `df,` on a line with no comma must leave the line alone
-/// rather than deleting to wherever the cursor happened to stop.
+/// Move the cursor, and say whether the motion found anywhere to go. It matters for `f` and `t`:
+/// `df,` on a line with no comma must leave the line alone.
 pub fn travel(motion: Motion, editor: &mut crate::Editor) -> bool {
     match motion {
         Motion::Left => editor.left(),
@@ -390,23 +318,20 @@ mod tests {
 
     #[test]
     fn it_opens_in_normal_mode() {
-        // The whole point. A modal editor that starts in insert mode is a non-modal editor
-        // with an extra key to press.
+        // A modal editor that starts in insert mode is a non-modal editor with an extra key.
         assert_eq!(Mode::default(), Mode::Normal);
         assert!(!Mode::default().is_insert());
     }
 
     #[test]
     fn the_command_line_takes_text_like_insert_mode_does() {
-        // It is a place you type, so a printable key belongs in it. What makes it a mode of its
-        // own is where the text goes, not whether keys are text.
+        // What makes it a mode of its own is where the text goes, not whether keys are text.
         assert!(Mode::Command.is_insert());
     }
 
     #[test]
     fn every_tag_is_three_letters_wide() {
-        // They sit on the prompt's border, and a tag that changed width would move the border
-        // every time the mode did.
+        // They sit on the prompt's border, which a tag that changed width would move.
         for mode in [Mode::Normal, Mode::Insert, Mode::Command] {
             assert_eq!(mode.tag().chars().count(), 3, "{mode:?}");
         }
@@ -414,8 +339,7 @@ mod tests {
 
     #[test]
     fn letters_are_commands_and_not_text() {
-        // `i` is not an `i`. Every printable key that reaches normal mode either does something
-        // or does nothing, and none of them land in the buffer.
+        // Every printable key that reaches normal mode either does something or does nothing.
         for key in "hjklwbeWBE0^$xXDdcypPJ~uiaIAoOCSnNGftFTr:/".chars() {
             assert_ne!(deed(key, false), Deed::Unbound, "{key:?} does nothing");
         }
@@ -450,8 +374,7 @@ mod tests {
 
     #[test]
     fn j_and_k_move_in_a_tall_prompt_and_scroll_a_short_one() {
-        // The one binding that depends on anything but the key. A single-line prompt has
-        // nowhere to move up or down to, and somebody reading back through output wants these.
+        // The one binding that depends on anything but the key.
         assert_eq!(deed('j', true), Deed::Move(Motion::Down));
         assert_eq!(deed('j', false), Deed::Scroll(Toward::LineDown));
         assert_eq!(deed('G', true), Deed::Move(Motion::Last));
@@ -462,15 +385,13 @@ mod tests {
 
     #[test]
     fn a_half_typed_command_is_abandoned_rather_than_guessed_at() {
-        // `gw` is not a command, and doing *something* on the grounds that two keys were
-        // pressed is how an editor eats a line nobody asked it to.
+        // `gw` is not a command, and doing something anyway is how an editor eats a line.
         assert_eq!(after_g('w', false), Deed::Unbound);
     }
 
     #[test]
     fn every_motion_reaches_the_editor() {
-        // A variant added here and not wired into `travel` is a key that does nothing, which is
-        // indistinguishable from an unbound one until somebody presses it.
+        // A variant not wired into `travel` is a key that does nothing, indistinguishable from unbound.
         let every = [
             Motion::Left,
             Motion::Right,
@@ -523,8 +444,7 @@ mod tests {
 
     #[test]
     fn a_motion_that_finds_nothing_says_so() {
-        // `df,` on a line with no comma has to leave the line alone rather than deleting to
-        // wherever the cursor stopped.
+        // `df,` on a line with no comma has to leave the line alone.
         let mut editor = crate::Editor::new();
         editor.insert_str("no commas here");
         editor.home();
@@ -541,8 +461,7 @@ mod tests {
 
     #[test]
     fn moving_about_is_not_a_change() {
-        // `u` walks back through edits. A motion in the undo stack is a keypress you have to
-        // press `u` twice to get past, for no change you can see.
+        // A motion in the undo stack is a keypress you press `u` twice to get past, for no change.
         assert!(!changes(Edit::Go(Motion::LineEnd)));
         assert!(!changes(Edit::YankLine), "copying leaves the buffer alone");
         assert!(changes(Edit::DeleteLine));

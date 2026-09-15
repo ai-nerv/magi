@@ -1,13 +1,6 @@
-//! Path candidates for `@` completion.
-//!
-//! Gitignore-aware, because Pi's is: it shells out to `fd`, which honours ignore files, and a
-//! completion list led by build output or vendored checkouts is worse than no completion.
-//!
-//! Walked here rather than by the `ignore` crate. That crate is the right answer for a grep
-//! tool and the wrong one for this: it reaches `globset` and then `regex-automata`, and the
-//! three of them together were **eight hundred kilobytes of the binary** — eleven per cent of
-//! it — to rank filenames in a popup eight rows tall. What this needs of a gitignore is the
-//! handful of pattern forms people actually write in one, and `ignoring::Rule` is that.
+//! Path candidates for `@` completion, gitignore-aware. Walked here rather than by the `ignore`
+//! crate: that crate reaches `globset` and `regex-automata`, eight hundred kilobytes of binary to
+//! rank filenames in a popup eight rows tall. `ignoring::Rule` covers the patterns people write.
 
 mod ignoring;
 
@@ -50,10 +43,8 @@ fn walk(root: &Path, here: &Path, depth: usize, ignores: &mut Ignores, out: &mut
     let Ok(entries) = std::fs::read_dir(here) else {
         return;
     };
-    // Sorted, because `read_dir` is in whatever order the filesystem holds them and a
-    // completion list that reshuffles between keystrokes is unusable. The final sort orders the
-    // whole result; this one decides which entries survive `MAX_ENTRIES`, which has to be the
-    // same set every time or the list flickers.
+    // Sorted, because `read_dir` order is arbitrary: this sort decides which entries survive
+    // `MAX_ENTRIES`, which has to be the same set every time or the list flickers.
     let mut found: Vec<std::fs::DirEntry> = entries.flatten().collect();
     found.sort_by_key(std::fs::DirEntry::file_name);
 

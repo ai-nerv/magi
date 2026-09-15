@@ -1,9 +1,5 @@
-//! `magi -p "…"` — one prompt, one answer, no terminal.
-//!
-//! The same daemon, the same journal and the same turn loop the UI drives; only the front end
-//! is different. That is the point of running it through the socket rather than in-process: a
-//! `-p` run leaves a session behind that `magi --resume` picks up, and there is one
-//! implementation of the loop rather than two that agree until they stop agreeing.
+//! `magi -p "…"` — one prompt, one answer, no terminal. Run through the socket like the UI, so a
+//! `-p` run leaves a session `magi --resume` picks up and there is one implementation of the loop.
 
 use anyhow::Result;
 use magi_ipc::{FrameReader, FrameWriter};
@@ -11,16 +7,11 @@ use magi_ipc::{FrameReader, FrameWriter};
 use magi_proto::{AgentStatus, Cursor, HarnessEvent, StopReason, UiCommand};
 use std::path::Path;
 
-/// What a finished print run reports to the shell.
-///
-/// An error is an exit code, not a panic: `-p` is what gets put in a pipeline, and a caller
-/// deciding whether the answer is usable should not have to parse the answer to find out.
+/// What a finished print run reports to the shell. An error is an exit code, not a panic: `-p` goes
+/// in a pipeline, and a caller should not have to parse the answer to know it failed.
 pub struct Outcome {
-    /// The last assistant message, which is what goes to stdout.
     pub text: String,
-    /// Why it ended, when the daemon said.
     pub stop_reason: Option<StopReason>,
-    /// The failure, if there was one.
     pub error: Option<String>,
 }
 
@@ -43,15 +34,13 @@ pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
     let mut reader = FrameReader::new(read_half);
     let mut writer = FrameWriter::new(write_half);
 
-    // Attached from the end rather than from zero: a resumed session's history is context for
-    // the model, not output for this run, and replaying it would print an answer to somebody
-    // else's question as if it were this one's.
+    // Attached from the end rather than from zero: a resumed session's history is context for the
+    // model, not output for this run.
     writer
         .write(&UiCommand::Attach {
             session: None,
             from_cursor: FROM_END,
-            // No terminal and nobody watching. A session told otherwise would reserve rows for
-            // a surface nothing here could draw or answer.
+            // No terminal and nobody watching, so no rows are reserved for a surface.
             draws: false,
         })
         .await?;
@@ -72,17 +61,14 @@ pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
     let mut stop_reason = None;
     let mut error = None;
     let mut started = false;
-    // A tool-using turn stops between rounds: the provider says "tool_use", the daemon runs
-    // them, and the session is briefly idle before the next round begins. Treating that idle
-    // as the end returns whatever the model had said before it reached for a tool, which for
-    // most tool-using prompts is nothing at all.
+    // A tool-using turn stops between rounds, so treating that idle as the end would return
+    // whatever the model had said before it reached for a tool.
     let mut awaiting_tools = false;
 
     while let Ok(event) = reader.read::<HarnessEvent>().await {
         match event {
             HarnessEvent::AssistantStarted { .. } => {
-                // Only the last message is printed, so each new one replaces what came before:
-                // the intermediate messages in a tool-using turn are working, not the answer.
+                // Only the last message is printed; the intermediate ones are working, not answer.
                 text.clear();
                 started = true;
                 awaiting_tools = false;
@@ -102,15 +88,9 @@ pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
                 awaiting_tools = true;
             }
             HarnessEvent::ToolCallStarted { name, .. } => eprintln!("· {name}"),
-            // Nobody is at the keyboard. Answered rather than ignored: the daemon stops the
-            // turn on this question and waits for the answer, so a `-p` run that ignored it
-            // hung until it was killed -- with the call committed to the journal, `result:
-            // null`, and no way to tell from the outside what it was waiting for.
-            //
-            // Denied rather than allowed, because `-p` is what goes in a pipeline and a run
-            // nobody is watching is the wrong place to widen what a tool may do. `magi.allow`
-            // is how a person says in advance what an unattended run may do; anything it does
-            // not cover is refused here, and the model is told so it can say so.
+            // Nobody is at the keyboard, and the daemon waits for an answer, so a `-p` run that
+            // ignored this would hang. Denied rather than allowed: `magi.allow` is how a person
+            // says in advance what an unattended run may do, and anything else is refused here.
             HarnessEvent::PermissionAsked {
                 id, tool, action, ..
             } => {
@@ -127,15 +107,9 @@ pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
                     })
                     .await?;
             }
-            // The same, for a question a tool asked in its own words. Answered rather than
-            // ignored, and for the identical reason: a `-p` run that left one unanswered would
-            // sit there until the question timed itself out, with nothing on screen saying what
-            // it was waiting for.
-            //
-            // The *last* option, by convention, because a tool lists what it is asking for
-            // first and the way out last — `once`, `always`, then `no`. There is no better
-            // guess available here: nobody is attached, and choosing the first would be
-            // choosing the most permissive thing on somebody's behalf.
+            // The same, for a question a tool asked in its own words: a `-p` run that left one
+            // unanswered would sit until the question timed out. The *last* option by convention,
+            // because a tool lists what it wants first and the way out last.
             HarnessEvent::Asked {
                 id,
                 tool,
@@ -144,8 +118,7 @@ pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
                 ..
             } => {
                 let Some(last) = options.last() else {
-                    // A question with no answers cannot be answered. The tool will give up on
-                    // its own, and saying so is better than a silent wait.
+                    // A question with no answers cannot be answered; the tool gives up on its own.
                     eprintln!("· {tool} asked \"{question}\" and offered nothing to answer with");
                     continue;
                 };
@@ -165,8 +138,7 @@ pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
                 error = Some(message);
                 break;
             }
-            // The backstop, for a turn that ends without a final assistant entry. Ignored
-            // before the first response, because the session is idle when the prompt arrives.
+            // The backstop, for a turn that ends without a final assistant entry.
             HarnessEvent::StatusChanged {
                 status: AgentStatus::Idle,
                 ..
@@ -183,11 +155,8 @@ pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
     })
 }
 
-/// An attach position past every entry there could be.
-///
-/// The snapshot carries everything up to the cursor and the replay carries everything after,
-/// so asking from the far end is how a client says "history is already accounted for, send me
-/// only what happens next".
+/// An attach position past every entry there could be: the snapshot carries everything up to the
+/// cursor, so asking from the far end says "send me only what happens next".
 const FROM_END: Cursor = Cursor(u64::MAX);
 
 #[cfg(test)]

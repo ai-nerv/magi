@@ -1,0 +1,695 @@
+//! Tools supplied by the program filling the `tools` role — casper, unless `magi.tools` names
+//! another. magi has no tools of its own; every one is reached by asking this program what exists,
+//! handing over a call and reading back what it produced.
+//!
+//! Two doors, chosen by `MAGI_TOOLS_DOOR` and mirroring the agent and memory switches. `command`,
+//! the default, spawns the program once per call. `library` connects to one `serve` the program
+//! keeps running for the session: the jail is the same either way, because it is the one magi gave
+//! `serve` at spawn, not one the call named. [`magi_proto::tooling::Ran`] carries `said` for the
+//! model and `shown` for the screen; this module keeps `said`, because a [`Tool`] returns text.
+
+use crate::question::Asks;
+use crate::{Cancel, Ops, Output, Tool};
+use magi_proto::tooling::{Call, Card, Ran, Shown};
+use std::collections::HashMap;
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// The program that fills the `tools` role when no configuration names one, found on `PATH`.
+pub const CASPER: &str = "casper";
+
+/// The variable a tools program reads its settings out of. Named here as well as there because it
+/// is a wire between two repositories that cannot depend on each other.
+pub const CONFIGURE: &str = "MAGI_TOOLS_CONFIGURE";
+
+/// The same variable under casper's own name, which is the one casper reads.
+pub const CONFIGURE_WAS: &str = "CASPER_CONFIGURE";
+
+/// What the tools program reads its jail profile out of — casper's `CASPER_JAIL`, set only when
+/// `magi.isolation` is on.
+pub const JAIL: &str = "CASPER_JAIL";
+
+/// Which door magi reaches the tools program on: `command` (the default) spawns one process per
+/// call; `library` connects to one `serve` it keeps running for the session. Mirrors the agent and
+/// memory door switches.
+pub const DOOR: &str = "MAGI_TOOLS_DOOR";
+
+/// The program filling the `tools` role, and what this session tells it.
+///
+/// One value, so the program name reaches every spawn the pin and the settings reach.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tooling {
+    /// As `magi.tools` named it, or [`CASPER`] when a configuration named nobody.
+    pub program: String,
+    /// The SHA-256 that program must hash to, if this configuration pinned one.
+    pub pin: Option<String>,
+    /// What this session tells it to be, as the JSON it goes over. One process per call, so the
+    /// settings ride on every spawn rather than being sent once. Empty means "whatever it is".
+    pub configure: String,
+    /// The roles the configuration describes, which `spawn` offers a child by name.
+    pub kinds: Vec<crate::builtin::Kind>,
+}
+
+impl Default for Tooling {
+    /// casper, unpinned, unconfigured: what a session had before any of this was nameable.
+    fn default() -> Self {
+        Self {
+            program: CASPER.to_owned(),
+            pin: None,
+            configure: String::new(),
+            kinds: Vec::new(),
+        }
+    }
+}
+
+impl Tooling {
+    /// The role filled by a named program, with nothing else said about it.
+    #[must_use]
+    pub fn of(program: &str) -> Self {
+        Self {
+            program: program.to_owned(),
+            ..Self::default()
+        }
+    }
+}
+
+/// What `program` says it offers. Empty when it is not installed or would not answer, which is not
+/// an error: the session keeps the tools magi declares itself.
+#[must_use]
+pub fn cards_from(program: &str) -> Vec<Card> {
+    cards_configured(program, "")
+}
+
+/// The same, saying what this session has configured the program to be. It is one process per
+/// call, so the configuration goes on every spawn. Empty means "whatever it is by default".
+#[must_use]
+pub fn cards_configured(program: &str, configured: &str) -> Vec<Card> {
+    let Ok(out) = std::process::Command::new(program)
+        .arg("tools")
+        .env(CONFIGURE, configured)
+        .env(CONFIGURE_WAS, configured)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+    else {
+        magi_model::noted!("tools: {program} tools could not be started");
+        return Vec::new();
+    };
+    listed(rows(&out.stdout).unwrap_or_default())
+}
+
+/// The cards in a reply's rows, whichever of the two shapes they arrived in. Flat is the contract;
+/// the nested shape casper also sends is read too, because the two ship from separate repositories.
+fn listed(rows: Vec<serde_json::Value>) -> Vec<Card> {
+    if let Some(nested) = rows.first().filter(|first| first.is_array()) {
+        return serde_json::from_value(nested.clone()).unwrap_or_default();
+    }
+    rows.into_iter()
+        .filter_map(|row| serde_json::from_value(row).ok())
+        .collect()
+}
+
+/// The rows of a family reply, or nothing when it was not one.
+fn rows(body: &[u8]) -> Option<Vec<serde_json::Value>> {
+    let reply: serde_json::Value = serde_json::from_slice(body).ok()?;
+    if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+        return None;
+    }
+    reply
+        .get("result")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+}
+
+/// Hand one call to `program` and read back what it produced.
+///
+/// # Errors
+/// A refusal — the program could not be started, or would not take the call. Distinct from a tool
+/// that *ran* and reported a problem, which comes back as [`Ran::failed`].
+pub fn run(program: &str, call: &Call) -> Result<Ran, String> {
+    run_configured(program, call, "")
+}
+
+/// The same, saying what this session has configured the program to be. See [`cards_configured`].
+///
+/// # Errors
+/// A refusal — the program could not be started, or would not take the call.
+pub fn run_configured(program: &str, call: &Call, configured: &str) -> Result<Ran, String> {
+    run_jailed(program, call, configured, None)
+}
+
+/// The same, inside the jail `jail` describes when `Some`, carried in the [`JAIL`] env.
+///
+/// # Errors
+/// A refusal — the program could not be started, or would not take the call.
+pub fn run_jailed(
+    program: &str,
+    call: &Call,
+    configured: &str,
+    jail: Option<&str>,
+) -> Result<Ran, String> {
+    use std::io::Write;
+    // The library door, when it is asked for and a session daemon can be reached. A socket that
+    // fails falls through to a spawn rather than failing the call.
+    if library_door()
+        && let Some(path) = serving(program, configured, jail)
+    {
+        match over_socket(&path, call) {
+            Ok(ran) => return Ok(ran),
+            Err(why) => {
+                magi_model::noted!("tools: {program} socket call fell back to a spawn: {why}");
+            }
+        }
+    }
+    let body =
+        serde_json::to_vec(call).map_err(|why| format!("this call will not encode: {why}"))?;
+
+    let mut spawning = std::process::Command::new(program);
+    spawning
+        .arg("run")
+        .env(CONFIGURE, configured)
+        .env(CONFIGURE_WAS, configured);
+    if let Some(jail) = jail {
+        spawning.env(JAIL, jail);
+    }
+    let mut child = spawning
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|why| {
+            magi_model::noted!("tools: {program} run could not be started: {why}");
+            format!("{program} could not be started: {why}")
+        })?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        // Written and closed. The program reads to end of file, so a handle left open is a call
+        // that never starts, and a half-written body reads back as an unreadable answer.
+        if let Err(why) = stdin.write_all(&body) {
+            magi_model::noted!("tools: the call to {program} was not fully written: {why}");
+        }
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|why| format!("{program} did not finish: {why}"))?;
+
+    let rows = rows(&out.stdout).ok_or_else(|| {
+        // Anything else is a program that answered something this build cannot read.
+        format!("{program} answered something unreadable")
+    })?;
+    let first = rows
+        .first()
+        .cloned()
+        .ok_or_else(|| format!("{program} answered nothing"))?;
+    serde_json::from_value(first).map_err(|why| format!("{program}: {why}"))
+}
+
+/// Whether this session was told to reach the tools program on its socket.
+fn library_door() -> bool {
+    std::env::var(DOOR).is_ok_and(|value| value.trim() == "library")
+}
+
+/// The sockets of the `serve` daemons this session has started, by (program, settings, jail).
+fn daemons() -> &'static Mutex<HashMap<String, PathBuf>> {
+    static DAEMONS: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
+    DAEMONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The socket of a running `program serve` for this session's settings and jail, spawned the first
+/// time and reused after. The daemon ties itself to magi and dies with it; magi keeps only its
+/// path. `None` when it cannot start, and the caller falls back to a spawn.
+fn serving(program: &str, configured: &str, jail: Option<&str>) -> Option<PathBuf> {
+    // casper binds only under `$XDG_RUNTIME_DIR/casper`; with none, the library door is unavailable.
+    let dir = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?).join("casper");
+    let key = format!("{program}\u{0}{configured}\u{0}{}", jail.unwrap_or(""));
+    let mut running = daemons().lock().ok()?;
+    if let Some(path) = running.get(&key) {
+        if UnixStream::connect(path).is_ok() {
+            return Some(path.clone());
+        }
+        running.remove(&key);
+    }
+    let path = dir.join(format!(
+        "magi-{}-{}.sock",
+        std::process::id(),
+        running.len()
+    ));
+    let mut spawning = std::process::Command::new(program);
+    spawning
+        .arg("serve")
+        .arg("--at")
+        .arg(&path)
+        .env(CONFIGURE, configured)
+        .env(CONFIGURE_WAS, configured)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    if let Some(jail) = jail {
+        spawning.env(JAIL, jail);
+    }
+    let mut child = spawning.spawn().ok()?;
+    // The bind is announced on stdout; connecting before it would race the socket into existence.
+    let announced = child.stdout.take().is_some_and(|out| {
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(out), &mut line).is_ok()
+            && line.contains("listening")
+    });
+    if !announced {
+        return None;
+    }
+    running.insert(key, path.clone());
+    Some(path)
+}
+
+/// Hand one call to a running daemon over its socket, wrapped as the `run` verb, and read the reply.
+fn over_socket(path: &Path, call: &Call) -> Result<Ran, String> {
+    let framed = serde_json::to_vec(&serde_json::json!({ "call": "run", "args": [call] }))
+        .map_err(|why| format!("this call will not encode: {why}"))?;
+    let mut stream =
+        UnixStream::connect(path).map_err(|why| format!("connect {}: {why}", path.display()))?;
+    write_frame(&mut stream, &framed).map_err(|why| why.to_string())?;
+    let body = read_frame(&mut stream).map_err(|why| why.to_string())?;
+    let rows = rows(&body).ok_or_else(|| "the socket answered something unreadable".to_owned())?;
+    let first = rows
+        .first()
+        .cloned()
+        .ok_or_else(|| "the socket answered nothing".to_owned())?;
+    serde_json::from_value(first).map_err(|why| why.to_string())
+}
+
+/// Write one length-prefixed frame: a 4-byte big-endian length, then the body (duplicated framing).
+fn write_frame(to: &mut impl std::io::Write, body: &[u8]) -> std::io::Result<()> {
+    let len = u32::try_from(body.len()).map_err(|_| std::io::Error::other("frame too long"))?;
+    to.write_all(&len.to_be_bytes())?;
+    to.write_all(body)?;
+    to.flush()
+}
+
+/// Read one length-prefixed frame's body.
+fn read_frame(from: &mut impl std::io::Read) -> std::io::Result<Vec<u8>> {
+    let mut header = [0_u8; 4];
+    from.read_exact(&mut header)?;
+    let want = u32::from_be_bytes(header) as usize;
+    if want > (1 << 20) {
+        return Err(std::io::Error::other("that is too much to read at once"));
+    }
+    let mut body = vec![0_u8; want];
+    from.read_exact(&mut body)?;
+    Ok(body)
+}
+
+/// One tool the role's program supplied, as magi's registry sees it.
+pub struct SuppliedTool {
+    card: Card,
+    program: String,
+    asks: Arc<dyn Asks>,
+    holds: Arc<dyn crate::holding::Holds>,
+    /// What this session told the program to be, carried on every spawn. See [`cards_configured`].
+    configured: String,
+}
+
+impl SuppliedTool {
+    /// Every tool the role's program offers, if it is the program that was pinned. It supplies
+    /// magi's tool set and is resolved off `$PATH`, so one earlier on the path owns `shell`, `read`
+    /// and everything else the model calls. No pin starts anything, which is the ordinary case;
+    /// `magi doctor` prints what the program actually hashed to.
+    #[must_use]
+    pub fn pinned(
+        tooling: &Tooling,
+        asks: Arc<dyn Asks>,
+        holds: Arc<dyn crate::holding::Holds>,
+    ) -> Vec<Self> {
+        let program = tooling.program.as_str();
+        if let Some(pinned) = &tooling.pin {
+            match fingerprint(program) {
+                Some(actual) if &actual == pinned => {}
+                Some(actual) => {
+                    eprintln!(
+                        "magi: {program} is not the program this configuration pinned: it is \
+                         {actual} and the pin says {pinned}. No tools were taken from it"
+                    );
+                    return Vec::new();
+                }
+                None => {
+                    eprintln!("magi: {program} is pinned to {pinned} and cannot be read to check");
+                    return Vec::new();
+                }
+            }
+        }
+        Self::all(tooling, asks, holds)
+    }
+
+    /// Every tool the role's program offers, ready to register. `asks` is how a question reaches
+    /// the person, taken here rather than looked up when the question arrives.
+    #[must_use]
+    pub fn all(
+        tooling: &Tooling,
+        asks: Arc<dyn Asks>,
+        holds: Arc<dyn crate::holding::Holds>,
+    ) -> Vec<Self> {
+        cards_configured(&tooling.program, &tooling.configure)
+            .into_iter()
+            .map(|card| Self {
+                card,
+                program: tooling.program.clone(),
+                asks: Arc::clone(&asks),
+                holds: Arc::clone(&holds),
+                configured: tooling.configure.clone(),
+            })
+            .collect()
+    }
+}
+
+impl Tool for SuppliedTool {
+    fn composition(&self) -> Vec<(&'static str, String)> {
+        // The program's own name, not the role's default.
+        let mut out = vec![
+            ("transport", self.program.clone()),
+            (
+                "command",
+                format!("{} run {}", self.program, self.card.name),
+            ),
+        ];
+        // Printed so it can be pinned: this program supplies the whole tool set and is found on
+        // `$PATH`.
+        if let Some(fingerprint) = fingerprint(&self.program) {
+            out.push(("sha256", fingerprint));
+        }
+        out
+    }
+
+    fn name(&self) -> &str {
+        &self.card.name
+    }
+
+    fn description(&self) -> &str {
+        &self.card.description
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        self.card.parameters.clone()
+    }
+
+    fn deferred(&self) -> bool {
+        self.card.deferred
+    }
+
+    fn run(&self, arguments: &serde_json::Value, ops: &dyn Ops, _cancel: &dyn Cancel) -> Output {
+        let mut call = Call {
+            tool: self.card.name.clone(),
+            args: arguments.clone(),
+            cwd: ops.cwd().display().to_string(),
+            answered: None,
+        };
+        // magi decides, the program describes: the card says which verb this tool acts under and
+        // the ledger answers, so a tool moved out of magi's config cannot leave the gate behind it.
+        if let Some(action) = wants(&self.card, arguments)
+            && let Err(why) = ops.allow(&self.card.name, &action)
+        {
+            return Output::error(why);
+        }
+        let jail = ops.jail();
+        // A call may stop and ask, and then go on. Bounded, because a tool that asked forever would
+        // hold the turn open forever; two questions is as far as anything has needed to go.
+        for _ in 0..3 {
+            let ran = match run_jailed(&self.program, &call, &self.configured, jail.as_deref()) {
+                // A refusal is still something the model reads, and it can try another way round.
+                Err(why) => return Output::error(why),
+                Ok(ran) => ran,
+            };
+            // Rows a tool fills itself, the general form of a question: magi reserves the space and
+            // drives the surface, and the answer comes back as an id and resumes the call.
+            if let Some(Shown::Surface(surface)) = &ran.shown {
+                let Some(chosen) = self.holds.hold(&self.card.name, surface, arguments) else {
+                    return Output::error(format!(
+                        "{} wanted the screen for {} and there was none",
+                        self.card.name, surface.about
+                    ));
+                };
+                call.answered = Some(chosen);
+                continue;
+            }
+            let Some(Shown::Ask(ask)) = &ran.shown else {
+                return finished(ran);
+            };
+            let Some(choice) = self.asks.ask(&self.card.name, ask) else {
+                // Nobody answered. Told to the model, because a blank result reads as a tool that
+                // silently does nothing.
+                return Output::error(format!(
+                    "{} stopped to ask \"{}\" and nobody answered",
+                    self.card.name, ask.question
+                ));
+            };
+            call.answered = Some(choice);
+        }
+        Output::error(format!(
+            "{} kept asking rather than answering",
+            self.card.name
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// A pinned casper that is not the pinned program supplies nothing.
+    #[test]
+    fn a_pinned_casper_that_is_not_the_pinned_program_supplies_no_tools() {
+        let asks: Arc<dyn Asks> = Arc::new(crate::question::Unanswered);
+        let holds: Arc<dyn crate::holding::Holds> = Arc::new(crate::holding::Screenless);
+
+        let wrong = SuppliedTool::pinned(
+            &Tooling {
+                pin: Some(
+                    "0000000000000000000000000000000000000000000000000000000000000000".to_owned(),
+                ),
+                ..Tooling::default()
+            },
+            Arc::clone(&asks),
+            Arc::clone(&holds),
+        );
+        assert!(wrong.is_empty(), "a substituted casper supplied tools");
+
+        // Skipped when casper is not installed, which is a session with no tools from it either way.
+        if let Some(actual) = fingerprint(CASPER) {
+            let right = SuppliedTool::pinned(
+                &Tooling {
+                    pin: Some(actual),
+                    ..Tooling::default()
+                },
+                asks,
+                holds,
+            );
+            assert_eq!(
+                right.len(),
+                SuppliedTool::all(
+                    &Tooling::default(),
+                    Arc::new(crate::question::Unanswered),
+                    Arc::new(crate::holding::Screenless),
+                )
+                .len(),
+                "pinning the right program changed what it offers"
+            );
+        }
+    }
+
+    use super::*;
+
+    #[test]
+    fn a_casper_that_is_not_there_offers_nothing_rather_than_failing() {
+        // The ordinary case on a machine without it: the session keeps the tools magi declares.
+        assert!(cards_from("magi-no-such-casper-anywhere").is_empty());
+    }
+
+    #[test]
+    fn a_call_to_something_absent_says_which_program() {
+        let why = run(
+            "magi-no-such-casper-anywhere",
+            &Call {
+                tool: "ls".to_owned(),
+                args: serde_json::Value::Null,
+                cwd: String::new(),
+                answered: None,
+            },
+        )
+        .expect_err("nothing to call");
+        assert!(why.contains("magi-no-such-casper-anywhere"), "{why}");
+    }
+
+    #[test]
+    fn a_reply_that_is_not_the_familys_shape_yields_nothing() {
+        assert!(rows(b"not json at all").is_none());
+        assert!(rows(br#"{"ok":false,"error":"no"}"#).is_none());
+        assert_eq!(
+            rows(br#"{"ok":true,"n":1,"result":[1]}"#).map(|r| r.len()),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn cards_are_read_in_either_shape_casper_has_sent_them() {
+        // Flat is the contract; nested is what casper sent for as long as it has existed. The two
+        // programs are installed separately and either side can be upgraded first.
+        let card =
+            serde_json::json!({ "name": "cat", "description": "read a file", "parameters": {} });
+        let flat = listed(vec![card.clone()]);
+        let nested = listed(vec![serde_json::json!([card])]);
+        assert_eq!(flat.len(), 1, "flat");
+        assert_eq!(nested.len(), 1, "nested");
+        assert_eq!(flat[0].name, nested[0].name);
+    }
+}
+
+/// One finished call, as the registry wants it: `said` for the model, `shown` for the screen. A
+/// tool that reported a problem is still a result, so a failure carries its view too.
+fn finished(ran: Ran) -> Output {
+    Output {
+        content: ran.said,
+        is_error: ran.failed,
+        shown: ran.shown,
+        unlocks: ran.unlocks,
+    }
+}
+
+/// What this call is about to do, in magi's own vocabulary. `None` when the card names no verb — a
+/// tool that touches nothing a person would want a say over is not gated. A verb this build has no
+/// meaning for is treated as `run`, the most guarded thing there is, rather than waved through.
+fn wants(card: &Card, arguments: &serde_json::Value) -> Option<magi_proto::permit::Action> {
+    use magi_proto::permit::Action;
+    let needs = card.needs.as_deref()?;
+    // The argument a person would judge it by; a tool with no path is asked about by name.
+    let text = |key: &str| {
+        arguments
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_owned()
+    };
+    let path = || {
+        let path = text("path");
+        if path.is_empty() {
+            card.name.clone()
+        } else {
+            path
+        }
+    };
+    Some(match needs {
+        "read" => Action::Read { path: path() },
+        "write" => Action::Write { path: path() },
+        "reach" => Action::Network { host: text("host") },
+        _ => {
+            let command = {
+                let command = text("command");
+                if command.is_empty() {
+                    card.name.clone()
+                } else {
+                    command
+                }
+            };
+            // The same reading the process transport uses. Taking the first word outright made
+            // `FOO=1 git status` offer "any `FOO=1` command", whose grant then covered every
+            // command line starting `FOO=1`. A permission subject that differs by transport is a bug.
+            let program = first_word(&command);
+            let program = if program.is_empty() {
+                card.name.clone()
+            } else {
+                program
+            };
+            Action::Run { command, program }
+        }
+    })
+}
+
+/// The command's program name, for the permission subject, stepping over any leading `VAR=value`.
+fn first_word(command: &str) -> String {
+    command
+        .split_whitespace()
+        .find(|word| !word.contains('=') || word.starts_with('/'))
+        .unwrap_or("")
+        .to_owned()
+}
+
+/// The SHA-256 of the tools program on disk, for pinning: a coordinator records it and a mismatch
+/// on the next run is a different binary answering. `None` when the program cannot be found or read.
+fn fingerprint(command: &str) -> Option<String> {
+    use sha2::Digest;
+    let path = resolve(command)?;
+    let bytes = std::fs::read(path).ok()?;
+    Some(format!("{:x}", sha2::Sha256::digest(&bytes)))
+}
+
+/// Where a command name resolves, the way `execvp` would.
+fn resolve(command: &str) -> Option<std::path::PathBuf> {
+    if command.contains(std::path::MAIN_SEPARATOR) {
+        let path = std::path::PathBuf::from(command);
+        return path.is_file().then_some(path);
+    }
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| dir.join(command))
+        .find(|candidate| candidate.is_file())
+}
+
+/// What a card asks magi to decide before it runs.
+#[cfg(test)]
+mod gating {
+    use super::*;
+    use magi_proto::permit::Action;
+
+    fn card(needs: Option<&str>) -> Card {
+        Card {
+            name: "bash".to_owned(),
+            description: String::new(),
+            parameters: serde_json::json!({}),
+            needs: needs.map(ToOwned::to_owned),
+            deferred: false,
+        }
+    }
+
+    #[test]
+    fn a_tool_that_needs_nothing_is_not_gated() {
+        // Asking about something nobody would want a say over turns a prompt into a nuisance, and a
+        // nuisance is answered without being read.
+        assert!(wants(&card(None), &serde_json::json!({})).is_none());
+    }
+
+    #[test]
+    fn a_verb_becomes_the_action_magi_already_knows_how_to_ask_about() {
+        let read = wants(&card(Some("read")), &serde_json::json!({"path": "/tmp/x"}));
+        assert_eq!(
+            read,
+            Some(Action::Read {
+                path: "/tmp/x".to_owned()
+            })
+        );
+        let run = wants(
+            &card(Some("run")),
+            &serde_json::json!({"command": "rm -rf build"}),
+        );
+        assert_eq!(
+            run,
+            Some(Action::Run {
+                command: "rm -rf build".to_owned(),
+                program: "rm".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn a_verb_nobody_recognises_is_guarded_rather_than_waved_through() {
+        // A newer casper inventing a verb must not be treated as harmless.
+        let odd = wants(&card(Some("teleport")), &serde_json::json!({}));
+        assert!(matches!(odd, Some(Action::Run { .. })), "{odd:?}");
+    }
+
+    #[test]
+    fn a_tool_with_nothing_to_name_is_asked_about_by_its_own_name() {
+        // Better than an empty prompt: "bash wants to run" with a blank where the command goes.
+        let bare = wants(&card(Some("read")), &serde_json::json!({}));
+        assert_eq!(
+            bare,
+            Some(Action::Read {
+                path: "bash".to_owned()
+            })
+        );
+    }
+}

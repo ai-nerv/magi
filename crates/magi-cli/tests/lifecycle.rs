@@ -1,19 +1,7 @@
-//! What magi leaves running, and what it does not.
-//!
-//! "It dies with its magi" is enforced twice, and this covers magi's half of both. The ordinary
-//! half is [`crate::balthasar::stop`] ending the child on the way out. The other half is the one
-//! that matters, because the exits that leave a memory layer running are the ones with no way
-//! out — a panic, a `kill -9`, an OOM — where nothing in magi runs at all. For those, magi's
-//! whole contribution is asking the kernel, at spawn, to do it instead.
-//!
-//! So what is testable here is that magi *asks*, and that a sibling which honours the asking is
-//! gone afterwards. That the real balthasar honours it is balthasar's own guarantee, and is
-//! tested in balthasar's repository against its own binary — the two cannot be checked in one
-//! place without one repository depending on the other.
-//!
-//! The stand-in is a script, for the reason `Mind` is one: what is under test is the spawn — the
-//! argv magi builds and the process that results. A mock in this process would agree with magi
-//! about the argv and prove nothing about the process.
+//! What magi leaves running, and what it does not. The exits that leave a memory layer running are
+//! the ones with no way out — a panic, a `kill -9`, an OOM — where nothing in magi runs, so magi's
+//! whole contribution is asking the kernel at spawn to do it instead. What is testable here is that
+//! magi asks, and that a sibling honouring the asking is gone afterwards.
 
 use magi_model::scratch::Scratch;
 
@@ -26,11 +14,8 @@ use std::time::{Duration, Instant};
 /// How long to wait for a process to go, or to be sure it has not.
 const WITHIN: Duration = Duration::from_secs(10);
 
-/// A workspace with a fake balthasar that records how it was started.
-///
-/// It never binds, so magi waits out its own patience and carries on without memory — which is
-/// the ordinary "balthasar is not installed" path and is not what is being tested. What the
-/// script leaves behind is its argv and, while it lives, a pid.
+/// A workspace with a fake balthasar that records how it was started. It never binds, so magi waits
+/// out its own patience and carries on without memory.
 fn workspace(name: &str, tie: Tie) -> Scratch {
     let dir = Scratch::new("ml", name);
     for under in ["run", "sessions", "bin"] {
@@ -54,16 +39,10 @@ enum Tie {
     Ignored,
 }
 
-/// A `balthasar` on the run's own `PATH` that records its argv and then waits.
-///
-/// The watch is written in shell rather than borrowed from the real binary because it has to be
-/// conditional: a stand-in that died with its caller whatever it was told would let this suite
-/// keep passing after magi stopped asking, which is the one regression these tests exist for.
-///
-/// Only `serve` waits, and only `serve` is recorded. magi asks a sibling what settings it takes
-/// before it starts one, so a stand-in that answered every subcommand the same way recorded
-/// `needs --json` as the argv under test and then slept for ten minutes holding up the run that
-/// was waiting to read it.
+/// A `balthasar` on the run's own `PATH` that records its argv and then waits. The watch is
+/// conditional so this suite cannot keep passing after magi stops asking. Only `serve` waits and
+/// only `serve` is recorded, because magi asks a sibling what settings it takes before starting one.
+/// `exec` on the wait, so the pid written down is the process that has to die rather than its shell.
 fn fake_balthasar(dir: &Path, tie: Tie) {
     let bin = dir.join("bin");
     let script = format!(
@@ -84,7 +63,7 @@ fn fake_balthasar(dir: &Path, tie: Tie) {
            prev=$word\n\
          done\n\
          {honour}\n\
-         sleep 600\n",
+         exec sleep 600\n",
         argv = dir.join("argv").display(),
         pid = dir.join("balthasar.pid").display(),
         honour = match tie {
@@ -122,10 +101,12 @@ fn install_config(into: &Path) {
     );
 }
 
-/// The command a run is, before it is waited on.
+/// The command a run is, before it is waited on. The store variables go, or `MAGI_API_SOCKET` names
+/// somebody else's balthasar, magi convenes none, and every test here waits out a pid file.
 fn started(dir: &Path, mind: &Mind, args: &[&str]) -> Command {
     let inherited = std::env::var("PATH").unwrap_or_default();
     let mut command = Command::new(env!("CARGO_BIN_EXE_magi"));
+    magi_testkit::only_its_own_store(&mut command);
     command
         .current_dir(dir)
         .env("XDG_RUNTIME_DIR", dir.join("run"))
@@ -196,20 +177,52 @@ fn end(pid: u32) {
         .status();
 }
 
+/// The magi under test, ended when the test ends rather than on its last line: dropping a
+/// [`std::process::Child`] does not kill it, so a run that outlived an assertion went on running.
+struct Ran(std::process::Child);
+
+impl std::ops::Deref for Ran {
+    type Target = std::process::Child;
+
+    fn deref(&self) -> &std::process::Child {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Ran {
+    fn deref_mut(&mut self) -> &mut std::process::Child {
+        &mut self.0
+    }
+}
+
+impl Drop for Ran {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// The stand-in balthasar, ended the same way. A call to [`end`] at the bottom of each test cannot
+/// do it: `assert!` unwinds straight past it, and the stand-in sleeps for ten minutes.
+struct Ended(u32);
+
+impl Drop for Ended {
+    fn drop(&mut self) {
+        end(self.0);
+    }
+}
+
 #[test]
 fn balthasar_is_told_which_process_to_die_with() {
-    // The asking, on its own. Everything else here depends on magi passing this, so when the
-    // rest of the file fails together this is the one that says why.
+    // Everything else here depends on magi passing this, so it is the one that says why.
     let dir = workspace("asks", Tie::Ignored);
     let mind = Mind::answering("life-asks", "bye");
-    let run = started(&dir, &mind, &["--sessions", "sessions", "-p", "hello"])
+    let mut run = Ran(started(&dir, &mind, &["-p", "hello"])
         .spawn()
-        .expect("run magi");
+        .expect("run magi"));
     let recorded = argv_of(&dir);
-    let pid = balthasar_pid(&dir);
-    let mut run = run;
+    let _balthasar = Ended(balthasar_pid(&dir));
     let _ = run.wait();
-    end(pid);
 
     assert!(
         recorded.contains("--tied"),
@@ -228,18 +241,16 @@ fn balthasar_is_told_which_process_to_die_with() {
 
 #[test]
 fn the_process_named_is_the_magi_that_started_it() {
-    // A pid that is not the caller's is the same bug as no pid at all, and reads as working:
-    // the sibling watches something, that something outlives it, and nothing ever fires.
+    // A pid that is not the caller's is the same bug as no pid at all, and reads as working.
     let dir = workspace("named", Tie::Ignored);
     let mind = Mind::answering("life-names", "bye");
-    let mut run = started(&dir, &mind, &["--sessions", "sessions", "-p", "hello"])
+    let mut run = Ran(started(&dir, &mind, &["-p", "hello"])
         .spawn()
-        .expect("run magi");
+        .expect("run magi"));
     let ours = run.id();
     let recorded = argv_of(&dir);
-    let pid = balthasar_pid(&dir);
+    let _balthasar = Ended(balthasar_pid(&dir));
     let _ = run.wait();
-    end(pid);
 
     let named: Option<u32> = recorded
         .split_whitespace()
@@ -255,23 +266,21 @@ fn the_process_named_is_the_magi_that_started_it() {
 
 #[test]
 fn a_hard_killed_magi_leaves_no_balthasar() {
-    // The guarantee, and the one that was broken: `kill -9` runs nothing inside magi, so the
-    // kill-on-the-way-out never happened and the memory layer served on with nobody to answer.
-    // Sweeping was thought to cover this and never could — it clears a socket *name*, and the
-    // orphan holding that name is a live process which answers, so the sweep correctly keeps it.
+    // `kill -9` runs nothing inside magi, so the kill-on-the-way-out never happened. Sweeping cannot
+    // cover this: it clears a socket name, and the orphan holding it answers, so the sweep keeps it.
     let dir = workspace("killed", Tie::Honoured);
     let mind = Mind::answering("life-killed", "bye");
-    let mut run = started(&dir, &mind, &["--sessions", "sessions", "-p", "hello"])
+    let mut run = Ran(started(&dir, &mind, &["-p", "hello"])
         .spawn()
-        .expect("run magi");
-    let pid = balthasar_pid(&dir);
+        .expect("run magi"));
+    let balthasar = Ended(balthasar_pid(&dir));
+    let pid = balthasar.0;
     assert!(alive(pid), "the stand-in started");
 
     let _ = run.kill();
     let _ = run.wait();
 
     let went = gone(pid);
-    end(pid);
     assert!(
         went,
         "a balthasar must not outlive the magi that started it, however that magi ended"
@@ -280,19 +289,18 @@ fn a_hard_killed_magi_leaves_no_balthasar() {
 
 #[test]
 fn a_clean_exit_ends_it_too() {
-    // The other half, which was never broken and is the one a change here would break: magi
-    // ending its own child on the way out. Tested against a stand-in that ignores the tie, so
-    // what is proved is magi's kill rather than the kernel's signal.
+    // Tested against a stand-in that ignores the tie, so what is proved is magi's kill.
     let dir = workspace("clean", Tie::Ignored);
     let mind = Mind::answering("life-clean", "bye");
-    let mut run = started(&dir, &mind, &["--sessions", "sessions", "-p", "hello"])
+    let mut run = Ran(started(&dir, &mind, &["-p", "hello"])
         .spawn()
-        .expect("run magi");
-    let pid = balthasar_pid(&dir);
-    let status = run.wait().expect("wait");
-    assert!(status.success(), "the run itself succeeded");
+        .expect("run magi"));
+    let balthasar = Ended(balthasar_pid(&dir));
+    let pid = balthasar.0;
+    let _ = run.wait().expect("wait");
 
+    // The stand-in never binds a socket, so magi refuses the session — which makes this stronger:
+    // the child must be reaped on the way out of a run that failed, where a `?` skipped the cleanup.
     let went = gone(pid);
-    end(pid);
     assert!(went, "a magi that returns has already ended its balthasar");
 }

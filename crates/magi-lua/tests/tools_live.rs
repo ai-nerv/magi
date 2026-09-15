@@ -1,9 +1,7 @@
 //! The shipped Lua tools, against siblings that are actually running.
 //!
-//! Skips quietly when nothing is listening: a test that needs someone else's daemon must not
-//! fail a build on a machine that has none. When one *is* running, this is the only thing that
-//! proves the client, the socket primitive and the tool declaration line up — every one of those
-//! works when magi talks to itself.
+//! Skips quietly when nothing is listening. When one is running, this is the only thing that
+//! proves the client, the socket primitive and the tool declaration line up.
 
 use magi_lua::Engine;
 use magi_tools::Registry;
@@ -18,28 +16,70 @@ fn config(name: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
-// `hexe` and the missing-client case were tested here and are casper's now, along with the tool
-// itself. A test that kept asking magi's registry for `hexe` would fail for the right reason and
-// read as a regression: the tool is not missing, it moved.
-//
-// What is left is what magi still declares — `agent`, which reaches the other sessions through
-// melchior, and the memory tools balthasar registers into this session.
+// `hexe` and the missing-client case are casper's now, along with the tool itself. What is left is
+// what magi still declares: `agent`, and the memory tools balthasar registers into this session.
 
-/// A live `melchior serve`: the child, what it says, and the name it chose for itself.
-///
-/// The *reader* rather than the pipe, because what is already buffered is lost with the reader
-/// that buffered it — and the line a test is waiting for may well be in there.
+/// A live `melchior serve`: the child, what it says, and the name it chose. The reader rather than
+/// the pipe, because what is already buffered is lost with the reader that buffered it.
 type Session = (
     std::process::Child,
     std::io::BufReader<std::process::ChildStdout>,
     String,
 );
 
-/// Start one, and wait until it is reachable.
+/// Do something on another thread, and give up on it after `patience`.
 ///
-/// The child is handed back rather than dropped: melchior exits when its parent's pipe closes, which
-/// is the whole of how a session's socket lives exactly as long as the session. Letting it go
-/// here would end it before the tool under test could reach it.
+/// `read_line` on a `melchior serve` that is up and says nothing has no other end: the child is
+/// held open for the whole test, so a line that goes astray blocks rather than fails. The deadline
+/// is a backstop, not an assertion. The thread is left blocked when it fires.
+fn within<T: Send + 'static>(
+    patience: std::time::Duration,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let (done, ready) = std::sync::mpsc::channel();
+    std::thread::spawn(move || done.send(work()));
+    ready.recv_timeout(patience).ok()
+}
+
+const READ_WITHIN: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// One of those, killed when the test ends rather than on its last line: `let _ = a.kill()` at the
+/// bottom does not run when an `assert!` unwinds past it, and a `kill` with no `wait` leaves a
+/// zombie.
+struct Running(std::process::Child);
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// The project melchior files these sessions under, and the directory it keeps for it. Nothing
+/// here can point melchior at a scratch — it reads `$XDG_RUNTIME_DIR` from its own environment and
+/// `set_var` is `unsafe` — so the directory is removed afterwards, from a `Drop`.
+struct Project(String);
+
+impl std::ops::Deref for Project {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Drop for Project {
+    fn drop(&mut self) {
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        let _ = std::fs::remove_dir_all(runtime.join("melchior").join(&self.0));
+    }
+}
+
+/// Start one, and wait until it is reachable. The child is handed back rather than dropped:
+/// melchior exits when its parent's pipe closes, which is how a session's socket lives exactly as
+/// long as the session.
 fn a_session(project: &str) -> Option<Session> {
     use std::io::BufRead;
     let mut child = std::process::Command::new("melchior")
@@ -49,9 +89,16 @@ fn a_session(project: &str) -> Option<Session> {
         .stderr(std::process::Stdio::null())
         .spawn()
         .ok()?;
-    let mut said = String::new();
-    let mut out = std::io::BufReader::new(child.stdout.take()?);
-    out.read_line(&mut said).ok()?;
+    let child_out = child.stdout.take()?;
+    // The reader goes to the thread and comes back with the line, so the buffering survives the
+    // deadline.
+    let (said, out) = within(READ_WITHIN, move || {
+        let mut said = String::new();
+        let mut out = std::io::BufReader::new(child_out);
+        let read = out.read_line(&mut said).is_ok();
+        (read.then_some(said), out)
+    })?;
+    let said = said?;
     let named = said
         .split("\"as\":\"")
         .nth(1)?
@@ -63,25 +110,22 @@ fn a_session(project: &str) -> Option<Session> {
 
 #[test]
 fn the_agent_tool_reaches_another_session_through_melchior() {
-    // The one path nothing else covers, and every piece of it works in isolation: the Lua
-    // declaration, the placeholder substitution, the environment a tool is spawned with, and
-    // melchior's own socket. It is the *join* that was wrong before -- the tool was a peer process
-    // and became a command, and a command that inherited no environment would be a session that
-    // cannot say who it is, refusing every verb with a plausible-sounding message.
-    let project = format!("magi-test-{}", std::process::id());
-    let Some((mut a, _hears_a, me)) = a_session(&project) else {
+    // Declared before the sessions so it drops after them: locals go in reverse order, and a
+    // directory removed while a melchior is still running comes straight back.
+    let project = Project(format!("magi-test-{}", std::process::id()));
+    let Some((a, _hears_a, me)) = a_session(&project) else {
         eprintln!("melchior is not installed; skipping");
         return;
     };
-    let Some((mut b, mut hears_b, them)) = a_session(&project) else {
-        let _ = a.kill();
+    let _a = Running(a);
+    let Some((b, mut hears_b, them)) = a_session(&project) else {
         eprintln!("melchior is not installed; skipping");
         return;
     };
+    let _b = Running(b);
 
     // What `magi_cli::host::stamp` puts on the backend every tool is spawned from. Spelled out
-    // rather than imported: this crate cannot see the CLI, and a test that shared the code
-    // would not notice the day the two stopped agreeing.
+    // rather than imported: this crate cannot see the CLI.
     let mut parts = me.split('/');
     let environ: std::collections::BTreeMap<String, String> = [
         ("MAGI_MELCHIOR_PROJECT", parts.next().unwrap_or_default()),
@@ -105,9 +149,8 @@ fn the_agent_tool_reaches_another_session_through_melchior() {
     );
 
     let ops = magi_tools::ops::Real::new(std::env::temp_dir());
-    // `list` takes no `who`, so its placeholder is filled with nothing. melchior drops an empty
-    // argument rather than looking for an instance named "" -- which is the contract between a
-    // substitution that must fill every flag and a program that must not be confused by it.
+    // `list` takes no `who`, so its placeholder is filled with nothing, and melchior drops an empty
+    // argument rather than looking for an instance named "".
     let listed = registry.call(
         "agent",
         &serde_json::json!({ "verb": "list" }),
@@ -130,12 +173,10 @@ fn the_agent_tool_reaches_another_session_through_melchior() {
     );
     assert!(!sent.is_error, "{}", sent.content);
 
-    // And it arrived where a harness reads it: up the receiving session's own pipe, which is
-    // the line magi turns into an entry in its transcript.
-    let heard = {
+    // And it arrived where a harness reads it: up the receiving session's own pipe.
+    let heard = within(READ_WITHIN, move || {
         use std::io::BufRead;
         let mut line = String::new();
-        // Past the roster it publishes when the second session appeared.
         while hears_b.read_line(&mut line).is_ok_and(|read| read > 0) {
             if line.contains("\"message\"") {
                 break;
@@ -143,19 +184,16 @@ fn the_agent_tool_reaches_another_session_through_melchior() {
             line.clear();
         }
         line
-    };
-    let _ = a.kill();
-    let _ = b.kill();
+    })
+    .unwrap_or_else(|| panic!("the receiving session said nothing within {READ_WITHIN:?}"));
     assert!(
         heard.contains("does this reach you") && heard.contains(&me),
         "the receiving session heard: {heard}"
     );
 }
 
-/// The argument vector the shipped `agent` declaration actually builds.
-///
-/// Rendered from `config/tools.lua` rather than a fixture, because the bug was *in* the
-/// declaration and a fixture would have been written from the same misunderstanding.
+/// The argument vector the shipped `agent` declaration actually builds. Rendered from
+/// `config/tools.lua` rather than a fixture, because the bug was in the declaration.
 fn agent_argv(call: serde_json::Value) -> Vec<String> {
     let mut engine = Engine::new();
     engine.run(&config("tools.lua"), "tools.lua").expect("runs");
@@ -175,19 +213,44 @@ fn agent_argv(call: serde_json::Value) -> Vec<String> {
 }
 
 #[test]
+fn every_argument_the_agent_declares_reaches_melchior() {
+    // `role` was declared by melchior and by nothing here, so `role` and `assign` -- the two verbs
+    // that say what an agent is for -- were refused for want of an argument the model had no way
+    // to send. The rule is the general one: an argument offered to the model and not passed on is
+    // an argument that does nothing.
+    let mut engine = Engine::new();
+    engine.run(&config("tools.lua"), "tools.lua").expect("runs");
+    let spec = engine
+        .tools()
+        .into_iter()
+        .find(|(name, _)| name == "agent")
+        .map(|(_, spec)| spec)
+        .expect("the agent tool is declared");
+    let args = spec["transport"]["args"].to_string();
+    for name in spec["parameters"]["properties"]
+        .as_object()
+        .expect("properties")
+        .keys()
+    {
+        assert!(
+            args.contains(&format!("{{{name}}}")),
+            "the model may send {name:?} and no argument carries it: {args}"
+        );
+    }
+}
+
+#[test]
 fn an_argument_the_model_left_out_takes_its_flag_with_it() {
-    // The bug, exactly. An absent argument is dropped *whole* -- but only when the flag and the
-    // placeholder are one token. Written as `"--about", "{about}"`, the placeholder vanished and
-    // the bare flag stayed, so `reply` with no `about` sent `--about --sort` and the layer read
-    // the next flag as the value: `about` came out as the string "--sort".
+    // An absent argument is dropped whole, but only when the flag and the placeholder are one
+    // token: written as `"--about", "{about}"`, the bare flag stayed and swallowed the next one.
     let argv = agent_argv(serde_json::json!({ "verb": "list" }));
     assert_eq!(argv, vec!["tool", "--verb=list"], "{argv:?}");
 }
 
 #[test]
 fn no_rendered_flag_is_ever_left_holding_the_next_one() {
-    // The general form, so this cannot come back under a different argument name. Every token
-    // after the subcommand carries its own value; none is a bare flag waiting to swallow one.
+    // The general form: every token after the subcommand carries its own value, and none is a bare
+    // flag waiting to swallow one.
     for call in [
         serde_json::json!({ "verb": "help" }),
         serde_json::json!({ "verb": "inbox" }),
@@ -206,8 +269,7 @@ fn no_rendered_flag_is_ever_left_holding_the_next_one() {
 
 #[test]
 fn what_the_model_sends_arrives_as_what_it_meant() {
-    // The values themselves, because a `=` in a message must not split the pair: the name ends
-    // at the *first* `=` and everything after it is the value.
+    // A `=` in a message must not split the pair: the name ends at the first `=`.
     let argv = agent_argv(serde_json::json!({
         "verb": "reply",
         "who": "beta-nu",
@@ -220,8 +282,21 @@ fn what_the_model_sends_arrives_as_what_it_meant() {
 
 #[test]
 fn the_memory_tools_register_and_answer_when_balthasar_is_running() {
+    // The client library is borrowed rather than vendored: a copy that had fallen behind silently
+    // removed every memory tool from every session on a machine. The declarations are magi's own.
+    let Some(client) = borrowed("balthasar") else {
+        eprintln!("skipping: balthasar is not installed");
+        return;
+    };
+    // Where to dial, told before the VM is built, the way a session tells it. Without a named
+    // socket the client finds none in here: `magi.fs` lends no lister to a VM with no `Ops`, and
+    // the sandbox took `io` away, so its own discovery has nothing to list a directory with.
+    let serving = serving("balthasar");
+    if let Some(at) = serving.as_deref() {
+        magi_lua::name_session("tools-live", Some(at));
+    }
     let mut engine = Engine::new();
-    engine.install_clients(&[("balthasar".to_owned(), config("clients/balthasar.lua"))]);
+    engine.install_clients(&[("balthasar".to_owned(), client)]);
     engine
         .run(&config("tools.lua"), "tools.lua")
         .expect("the tool declaration must run");
@@ -230,18 +305,13 @@ fn the_memory_tools_register_and_answer_when_balthasar_is_running() {
     let mut registry = Registry::new();
     magi_lua::tool::install(Rc::clone(&engine), &mut registry, &Default::default());
 
-    if !answers("balthasar") {
-        // Nothing to register from: the vocabulary is balthasar's, so with balthasar absent
-        // there are no memory tools rather than empty ones.
-        assert!(
-            registry.get("recall").is_none(),
-            "declared without a source"
-        );
-        return;
-    }
-
+    // Declared from the library in hand, so nothing here depends on a round trip landing.
     for verb in ["recall", "remember", "forget", "why"] {
         assert!(registry.get(verb).is_some(), "{verb} did not register");
+    }
+    if serving.is_none() {
+        eprintln!("skipping the wire: no balthasar is serving");
+        return;
     }
 
     let ops = magi_tools::ops::Real::new(std::env::temp_dir());
@@ -268,32 +338,26 @@ fn the_memory_tools_register_and_answer_when_balthasar_is_running() {
     );
 }
 
-/// Whether a sibling is actually serving, rather than merely having left a socket behind.
+/// A sibling's socket that is actually serving, rather than one merely left behind.
 ///
-/// A socket file outlives the process that bound it, so listing the directory answers "did one
-/// run here" and not "is one running". Connecting was the whole of the test and is not enough
-/// either: the kernel's backlog accepts for a listener whose owner has stopped reading, so a
-/// wedged or half-dead sibling passes it. That is not hypothetical — a `serve` left over from an
-/// earlier build sat in this directory accepting connections and answering none, and this test
-/// failed with "recall did not register" on a machine where balthasar was, by this function's
-/// reckoning, running.
-///
-/// So it asks. One `verbs` call, framed the way the family frames everything — four bytes of
-/// big-endian length, then JSON — and a reply within a moment. Nothing else distinguishes a
-/// listener from a corpse.
-fn answers(name: &str) -> bool {
+/// A socket file outlives the process that bound it, and connecting is not enough either: the
+/// kernel's backlog accepts for a listener whose owner has stopped reading. So it asks — one
+/// `verbs` call, framed the way the family frames everything, answered within a moment.
+fn serving(name: &str) -> Option<std::path::PathBuf> {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    let Ok(dir) = std::fs::read_dir(runtime.join(name)) else {
-        return false;
-    };
-    dir.flatten()
-        .filter(|e| e.file_name().to_string_lossy().starts_with("api@"))
-        .any(|e| replies(&e.path()))
+    std::fs::read_dir(runtime.join(name))
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("api@"))
+        })
+        .find(|path| replies(path))
 }
 
-/// One `verbs` call over `socket`, answered inside [`PATIENCE`].
 fn replies(socket: &std::path::Path) -> bool {
     use std::io::{Read, Write};
 
@@ -311,15 +375,25 @@ fn replies(socket: &std::path::Path) -> bool {
     if stream.write_all(&framed).is_err() {
         return false;
     }
-    // The length alone. Whether the body is what was asked for is the rest of this file's
-    // business; that four bytes came back at all is what says somebody is reading.
+    // The length alone: that four bytes came back at all is what says somebody is reading.
     let mut head = [0_u8; 4];
     stream.read_exact(&mut head).is_ok() && u32::from_be_bytes(head) > 0
 }
 
-/// How long a live sibling gets to answer one question.
-///
-/// Generous: this is a local socket and a running balthasar answers `verbs` from memory, so a
-/// second is two orders of magnitude more than it needs and still short enough that a wedged
-/// one does not hold the suite.
+/// How long a live sibling gets to answer one question. Generous: a local socket, answered from
+/// memory, and still short enough that a wedged sibling does not hold the suite.
 const PATIENCE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// A sibling's client library, from the sibling. `None` when it is not installed or has none to
+/// lend, which is a skip rather than a failure.
+fn borrowed(program: &str) -> Option<String> {
+    let out = std::process::Command::new(program)
+        .arg("client")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let source = String::from_utf8(out.stdout).ok()?;
+    // A library is Lua; a refusal is the family's reply shape, and no Lua chunk starts with `{`.
+    (!source.trim_start().is_empty() && !source.trim_start().starts_with('{')).then_some(source)
+}

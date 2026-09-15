@@ -1,8 +1,5 @@
-//! The UI event loop.
-//!
-//! Three sources feed one `select!`: the socket, the terminal, and a spinner timer. State
-//! lives in [`App`], drawing lives in [`ui`], and this file owns only the wiring — which is
-//! what keeps the loop small enough to read.
+//! The UI event loop. Three sources feed one `select!`: the socket, the terminal, and a spinner
+//! timer. State lives in [`App`], drawing lives in [`ui`], and this file owns only the wiring.
 
 use crate::app::App;
 use crate::keys;
@@ -12,62 +9,63 @@ use crate::ui;
 use anyhow::Result;
 use crossterm::event::{Event, EventStream};
 use magi_proto::{HarnessEvent, UiCommand};
-use magi_tui::footer::FooterData;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 
 /// How long to wait before redialling a session that went away.
 const RECONNECT_DELAY: Duration = Duration::from_millis(500);
 
-/// Run the UI until the user quits.
-///
-/// `prompt` is the positional argument: `magi "…"` opens the UI with the question already
-/// asked, so the first thing on screen is the answer arriving rather than an empty box the
-/// user has to retype into.
+/// Run the UI until the user quits. `prompt` is the positional argument: `magi "…"` opens the UI
+/// with the question already asked.
 pub async fn run(
     socket: &Path,
     prompt: Option<String>,
     loaded: Option<crate::config::Loaded>,
     project: &str,
     started: Option<(crate::melchior::Melchior, std::path::PathBuf)>,
+    attach: Option<String>,
+    view_only: bool,
 ) -> Result<()> {
-    // **Before anything reads a setting.** `colour`, `glyph` and `metric` each hold their table
-    // in a `OnceLock` that the first *read* fills with the built-in defaults, and `adopt` after
-    // that is a no-op. `App::new` reads one — it needs a line for the empty prompt — so building
-    // it first threw the whole configured `magi.ui` away, silently, and left the box repeating
-    // the one placeholder compiled into the binary.
-    //
-    // Read here rather than taken from the session, because this is about the screen in front of
-    // the person reading it. A model or a tool set has to come from the session — it is what the
-    // session is actually using — but nothing on the other end of the socket has an opinion about
-    // how fast a border moves.
+    // Before anything reads a setting: `colour`, `glyph` and `metric` each hold their table in a
+    // `OnceLock` the first read fills with defaults, and `adopt` after that is a no-op.
     if let Some(loaded) = &loaded {
         crate::config::adopt_ui(loaded);
     }
     let mut app = App::new();
-    // What the configuration already allows, so a session that takes a child on can lend it what
-    // it holds from the first moment rather than only what a person has answered a prompt with
-    // since. The ledger the session enforces with is seeded from the same list.
+    // A `--attach <id>` waits for that agent to show up in the roster, then points the screen at it.
+    app.attach_wanted = attach;
+    if let Some(loaded) = &loaded {
+        app.about = crate::config::agents::descriptions(loaded);
+        app.mind = crate::config::mind(loaded);
+    }
+    app.view_only = view_only;
+    // Whether casper answers is asked once, off the UI thread: the probe starts the program.
+    let casper_up = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    if let Some(loaded) = &loaded {
+        let program = crate::config::tooling(loaded).program;
+        let up = Arc::clone(&casper_up);
+        tokio::task::spawn_blocking(move || {
+            up.store(
+                !magi_tools::supplier::cards_from(&program).is_empty(),
+                Ordering::Relaxed,
+            );
+        });
+    }
+    // What the configuration already allows, so a session taking a child on can lend it at once.
     if let Some(loaded) = &loaded {
         app.granted = crate::config::granted(loaded);
     }
-    // What the footer shows. melchior names a session because it can see the namespace and magi
-    // cannot; without melchior there are no siblings to be told apart, so the project is name enough.
+    // melchior names a session because it can see the namespace and magi cannot.
     app.named = started
         .as_ref()
         .map_or_else(|| project.to_owned(), |(layer, _)| layer.named.clone());
-    // The prompts from previous runs, so the arrow keys reach past this one.
     app.editor = magi_tui::Editor::with_history(crate::history::load());
     if let Some(loaded) = &loaded {
-        // Worked out here because the answer needs the catalog, and the snapshot carries only
-        // whether there is a model — not why there is not. Same text the session refuses a prompt
-        // with, so meeting the problem at attach and meeting it at the first prompt say one thing.
-        // The cards come from melchior, so this asks it. One process at attach, against the
-        // alternative of a picker that lists what magi believed rather than what can be reached.
+        // The snapshot carries only whether there is a model; the answer needs the catalog.
         let catalog = crate::config::catalog(
             loaded,
             magi_host::broker::cards(&crate::config::mind(loaded)).await,
@@ -76,10 +74,8 @@ pub async fn run(
             app.no_model = Some(magi_host::no_model(&catalog));
         }
     }
-    // Before anything else, because the answer to "why is my new tool not there" has to arrive
-    // before the model is asked to use it. A session holds the tool set it was built with, and
-    // one that has been open across a config edit reports the tool as unregistered -- which
-    // reads as a broken tool rather than as a session that predates it.
+    // A session holds the tool set it was built with, and one open across a config edit reports a
+    // new tool as unregistered — which reads as a broken tool rather than a stale session.
     let edited = crate::config::edited_since_start(socket);
     if !edited.is_empty() {
         let names: Vec<String> = edited
@@ -92,34 +88,27 @@ pub async fn run(
         ));
     }
     let mut session = Session::open()?;
-    // From here, not from the start of `main`: the clock is for the screen, and there is no
-    // screen until the alternate one is open.
+    // From here, not from the start of `main`: there is no screen until the alternate one is open.
     magi_tui::decrypt::begin();
     let mut terminal_events = EventStream::new();
     let mut ticker = tokio::time::interval(Duration::from_millis(magi_tui::metric::frame_ms()));
 
     let (event_tx, mut event_rx) = mpsc::channel::<HarnessEvent>(256);
     let (command_tx, command_rx) = mpsc::channel::<UiCommand>(32);
-    // Shared rather than inferred from the event stream: a dropped connection produces no
-    // event, so a UI watching only for events cannot tell "nothing is happening" from
-    // "nothing can happen".
+    // A dropped connection produces no event, so events alone cannot tell "nothing is happening"
+    // from "nothing can happen".
     let attached = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-    // What melchior says, on its way to becoming an entry. Read on a thread because it is a
-    // blocking pipe and everything else in this loop is not — and dropped, along with melchior
-    // itself, when this function returns.
+    // Read on a thread because it is a blocking pipe, and dropped with melchior when this returns.
     let (heard_tx, mut heard) = mpsc::channel::<crate::melchior::Heard>(64);
     let mut layer = started.map(|(layer, _at)| layer);
     if let Some(reading) = layer.as_mut().and_then(crate::melchior::Melchior::hearing) {
         std::thread::spawn(move || {
             use std::io::BufRead;
-            // Already buffered, and handed over as the reader for that reason: the line that
-            // named this session was read through it, and whatever followed the newline is
-            // sitting in it. Wrapping the raw pipe again here would have thrown that away.
+            // Already buffered, and handed over for that reason: the line that named this session
+            // was read through it, and whatever followed the newline is sitting in it.
             for line in reading.lines().map_while(Result::ok) {
-                // A line this build cannot read is a newer melchior, not a reason to stop reading:
-                // the next one may well be a message, and dropping the whole pipe over a field
-                // nobody here knows about would lose it.
+                // A line this build cannot read is a newer melchior, not a reason to stop reading.
                 let Ok(said) = serde_json::from_str::<crate::melchior::Heard>(&line) else {
                     continue;
                 };
@@ -130,13 +119,24 @@ pub async fn run(
         });
     }
 
+    // A watch, not a channel: somebody who pressed the arrow four times wants the fourth agent.
+    let (target_tx, target_rx) = tokio::sync::watch::channel(socket.to_path_buf());
     tokio::spawn(connection_loop(
         socket.to_path_buf(),
+        target_rx,
         event_tx,
         command_rx,
         app.cursor(),
         Arc::clone(&attached),
     ));
+    // What melchior handed this session while the screen was somewhere else. See `crewing::ours`.
+    let mut held: Vec<UiCommand> = Vec::new();
+    // The latest child/watched edge worth a turn, held until this session is idle and its own
+    // screen is up — then run as a turn so the coordinator reacts, the wake a headless `park` runs.
+    let mut pending_wake: Option<String> = None;
+    let mut last_wake: Option<Instant> = None;
+    // A lead's own prompts carry the size check, so whether to coordinate is decided at the task.
+    let seat = crate::config::seat();
 
     let list_paths = |query: &str| {
         std::env::current_dir()
@@ -144,52 +144,39 @@ pub async fn run(
             .unwrap_or_default()
     };
 
-    // Sent once the connection task exists, not before: the channel buffers it, and it reaches
-    // the session after the attach that the connection loop opens with.
+    // Sent once the connection task exists: the channel buffers it until after the attach.
     if let Some(text) = prompt {
         let _ = command_tx
             .send(UiCommand::SubmitPrompt {
                 text,
-                aside: String::new(),
+                aside: seat.remind(String::new()),
             })
             .await;
     }
 
     let mut dirty = true;
-    // Whether the extra keyboard layer is up. A surface reading a *hold* needs releases on keys
-    // that produce text, and asking for those globally stops `:` opening the command line — so the
-    // layer goes on when a surface takes the keyboard and comes off when it gives it back.
+    // A surface reading a hold needs releases on keys that produce text, and asking for those
+    // globally stops `:` opening the command line — so the layer goes on only while one has it.
     let mut keys_held = false;
-    // Whether the last key a surface was sent was an escape. Two in a row take the screen back,
-    // so `esc` itself stays a key the tenant can read -- see where a surface is handed one.
+    // Two escapes in a row take the screen back, so `esc` itself stays a key the tenant can read.
     let mut escaped = false;
-    // What shape the terminal was last told to draw its cursor in. Insert mode is a bar and
-    // normal mode a block, which is the one cue that says which mode you are in without
-    // looking away from what you are typing.
+    // Insert mode is a bar and normal mode a block, the one cue that says which mode you are in.
     let mut shown = magi_tui::vim::Mode::Insert;
-    // Set by a mouse release, acted on after the next draw: the text a selection covers is read
-    // back out of the frame it was drawn into, so there has to be a frame.
+    // Set by a mouse release, acted on after the next draw: the text is read back out of the frame.
     let mut copied: Option<magi_tui::select::Selection> = None;
-    // Whether a turn was running last frame. A turn *ending* is the edge that answers an
-    // arrival, and neither side of the pipe can see it: melchior cannot see a turn at all, and the
-    // session publishes what it is doing rather than what it just stopped doing.
+    // A turn ending is the edge that answers an arrival, and neither side of the pipe can see it.
     let mut was_busy = false;
-    // The room a surface would have had in the last frame drawn. The session grants rows out of
-    // this, and it moves without the window doing: a prompt that wrapped onto a second line took
-    // a row off it. Compared rather than sent every frame, so a redraw per keystroke is not also
-    // a command per keystroke.
+    // Compared rather than sent every frame, so a redraw per keystroke is not a command per keystroke.
     let mut told_room = None;
+    let mut told_float: Option<(u16, u16)> = None;
     loop {
-        // Read each pass rather than tracked here: the connection lives in another task, and
-        // this is the one thing about it the screen has to show.
+        // Read each pass rather than tracked here: the connection lives in another task.
         let attached_now = attached.load(Ordering::Relaxed);
         if attached_now != app.connected {
             app.connected = attached_now;
             dirty = true;
         }
-        // Compared each pass rather than hooked onto the events, because a surface can end several
-        // ways — answered, cancelled, its tenant gone — and every one of them has to give the
-        // keyboard back. What matters is whether one is holding it now.
+        // Compared each pass because a surface can end several ways, all of which free the keyboard.
         let holding_now = app.holding().is_some();
         if holding_now != keys_held {
             crate::terminal::hold_keys(holding_now);
@@ -204,33 +191,35 @@ pub async fn run(
                 app.queued = command_tx.max_capacity() - command_tx.capacity();
                 room = ui::draw(frame, &mut app, &footer);
             })?;
-            // Measured in the draw, told after it. The session has no terminal and cannot work
-            // this out, so a tool asking for eight rows on a window with three would be granted
-            // eight and lay itself out for five nobody can see.
+            // Measured in the draw, told after it: the session has no terminal.
             if told_room != Some(room) {
                 told_room = Some(room);
-                let _ = command_tx
-                    .send(UiCommand::Sized {
+                direct(
+                    &mut app,
+                    &command_tx,
+                    UiCommand::Sized {
                         rows: Some(room),
                         cols: inner(),
                         holds: crate::terminal::reports_holds(),
-                    })
-                    .await;
+                    },
+                )
+                .await;
             }
-            // Read out of the frame that was just drawn, which is what `draw` hands back.
-            //
-            // **Not `current_buffer_mut`.** ratatui keeps two buffers and ends every draw with
-            // `swap_buffers`, which *resets* the one it is about to make current — so the
-            // "current" buffer after a draw is blank, and the text taken from it was always the
-            // empty string. Nothing ever reached the clipboard: the highlight appeared, the
-            // release was seen, and the copy silently did nothing.
+            // And the float's inside, which a surface asking for the float is given whole.
+            let (rows, cols) = float_room();
+            if told_float != Some((rows, cols)) {
+                told_float = Some((rows, cols));
+                direct(&mut app, &command_tx, UiCommand::FloatSized { rows, cols }).await;
+            }
+            // Read out of the frame that was just drawn, which is what `draw` hands back. Not
+            // `current_buffer_mut`: ratatui ends every draw with `swap_buffers`, which resets the
+            // one it is about to make current, so the text taken from it is always empty.
             let copy = copied
                 .take()
                 .map(|sel| magi_tui::select::text(drawn.buffer, sel, drawn.area))
                 .filter(|text| !text.is_empty());
             dirty = false;
-            // After the frame, and only when it has changed: the shape is the terminal's own
-            // cursor, so it outlives a redraw and does not need setting on every one.
+            // Only when it has changed: the shape is the terminal's own cursor and outlives a redraw.
             if shown != app.modal.mode {
                 shown = app.modal.mode;
                 let _ = crossterm::execute!(std::io::stdout(), crate::terminal::shape(shown));
@@ -247,50 +236,56 @@ pub async fn run(
             }
             Some(Ok(event)) = terminal_events.next() => {
                 match event {
-                    // **Every kind of key event, not only presses.** With the Kitty protocol a
-                    // held key arrives as `Repeat` and a released one as `Release`, and both are
-                    // needed: a surface cannot tell "tapped" from "still holding" without them.
-                    // Which of the three each reader wants is decided below rather than here.
+                    // Every kind of key event: with the Kitty protocol a held key arrives as `Repeat`.
                     Event::Key(key) => {
-                        // Somebody is here. Whatever the box was writing to itself, it stops and
-                        // starts its wait over -- including on the keys that leave the prompt
-                        // empty, which is most of them at this point.
+                        // Whatever the box was writing to itself, it stops and starts its wait over.
                         app.tease.interrupt();
-                        // **This is how magi learns the protocol is live.** No terminal sends a
-                        // repeat or a release unless it is, so the first one is proof where the
-                        // startup probe was only a guess — and a surface already on screen is told,
-                        // once, so it can offer the control it now knows it has.
+                        // How magi learns the protocol is live; the startup probe was only a guess.
                         if matches!(
                             key.kind,
                             crossterm::event::KeyEventKind::Repeat
                                 | crossterm::event::KeyEventKind::Release
                         ) && crate::terminal::noticed_hold()
                         {
-                            let _ = command_tx
-                                .send(UiCommand::Sized {
+                            direct(
+                                &mut app,
+                                &command_tx,
+                                UiCommand::Sized {
                                     rows: None,
                                     cols: inner(),
                                     holds: true,
-                                })
-                                .await;
+                                },
+                            )
+                            .await;
                         }
-                        // **A surface has the keyboard while it has the rows.** Forwarded by
-                        // name and not interpreted: what `j` means is the tenant's business, and
-                        // a driver that decided would be back to owning what it just handed over.
-                        //
-                        // **Escape twice takes the screen back.** It used to be once, which is
-                        // how a person gets out of a tenant that has stopped answering — and then
-                        // a tenant turned out to be able to hold a pty, where `esc` is a key the
-                        // program inside wants and closes nothing. So a single one is forwarded
-                        // like any other, and only a second with nothing between them is magi's.
-                        // Every existing tenant answers the first one anyway, so the second never
-                        // arrives; a program in a pty gets both.
+                        // A surface has the keyboard while it has the rows, forwarded by name and
+                        // never interpreted. Escape twice takes the screen back: a single one is
+                        // forwarded, because a tenant can hold a pty where `esc` is the program's.
                         if let Some(held) = app.holding() {
                             let id = held.id.clone();
+                            // magi's own, never the tenant's: ctrl+c ends it, ctrl+d goes nowhere.
+                            let ctrl = key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL);
+                            if ctrl && matches!(key.code, crossterm::event::KeyCode::Char('c' | 'd'))
+                            {
+                                if key.code == crossterm::event::KeyCode::Char('c')
+                                    && key.kind == crossterm::event::KeyEventKind::Press
+                                {
+                                    app.surface = None;
+                                    escaped = false;
+                                    direct(&mut app, &command_tx, UiCommand::Unsurface { id })
+                                        .await;
+                                }
+                                continue;
+                            }
                             if key.kind != crossterm::event::KeyEventKind::Release {
                                 if key.code == crossterm::event::KeyCode::Esc {
+                                    // Ended at the session too, or its program runs on unseen.
                                     if escaped {
                                         app.surface = None;
+                                        escaped = false;
+                                        direct(&mut app, &command_tx, UiCommand::Unsurface { id })
+                                            .await;
+                                        continue;
                                     }
                                     escaped = true;
                                 } else {
@@ -298,97 +293,141 @@ pub async fn run(
                                 }
                             }
                             if let Some(named) = crate::keying::named(key) {
-                                // **What the terminal actually sent.** The one question nobody
-                                // can answer by looking at the screen: a list stepping two rows
-                                // for one press is a release being read as a press, or the same
-                                // press arriving twice, and those are bugs in different programs.
-                                // One line per event settles which — see `debug_log`.
+                                // A list stepping two rows for one press is a release read as a
+                                // press, or the same press twice — bugs in different programs.
                                 debug_log(format_args!(
                                     "surface key {named} {:?}",
                                     crate::keying::held(key)
                                 ));
-                                let _ = command_tx
-                                    .send(UiCommand::Keyed {
+                                direct(
+                                    &mut app,
+                                    &command_tx,
+                                    UiCommand::Keyed {
                                         id,
                                         key: named,
                                         state: crate::keying::held(key),
-                                    })
-                                    .await;
+                                    },
+                                )
+                                .await;
                             }
                             continue;
                         }
-                        // The prompt is text, and text has no use for a release. A *repeat* it
-                        // very much has: with the protocol on, holding backspace arrives as
-                        // repeats, and a reader that took only presses would delete one character
-                        // and then stop — on exactly the terminals that support this.
+                        // A repeat it has: with the protocol on, holding backspace arrives as repeats.
                         if key.kind == crossterm::event::KeyEventKind::Release {
                             continue;
                         }
+                        // `:trace` and `:cost` are modal for the keyboard, which is wrong when a turn
+                        // has stopped: the picker would be underneath and Enter would never arrive.
+                        if app.questioned() {
+                            app.pane = None;
+                        }
                         let busy = app.is_busy();
+                        let page = magi_tui::pane::Pane::page(ratatui::layout::Rect {
+                            x: 0,
+                            y: 0,
+                            width: terminal_size().0,
+                            height: terminal_size().1,
+                        });
                         let action = keys::handle(
                             key,
                             &mut app.editor,
                             &mut app.overlay,
+                            &mut app.pane,
+                            page,
                             busy,
                             &mut app.modal,
                         );
-                        // Noted before the match consumes it: a taken completion must not be
-                        // recomputed, and the arms move the action's payload out.
-                        let accepted = matches!(
-                            action,
-                            Action::Accepted | Action::Dismissed | Action::Recalled
-                        );
+                        // Noted before the match consumes it; the rule lives in `keys::recomputes`.
+                        let accepted = !keys::recomputes(&action);
                         match action {
+                            Action::Submit(text) if app.view_only => {
+                                app.refuse_view_only();
+                                app.editor.insert_str(&text);
+                                dirty = true;
+                            }
                             Action::Submit(text) => {
                                 crate::history::remember(&text);
-                                // A prompt that names another instance is still the model's to
-                                // answer. What naming one does is *tell the model it is there*
-                                // and that there is a tool for reaching it -- magi delivering
-                                // the message itself would be the harness deciding what the
-                                // model meant by "tell", which is the model's job.
-                                //
-                                // Beside the prompt, not appended to it. It used to be spliced
-                                // onto the end under a rule, so typing "ask $iota-mu about the
-                                // parser" put a page of facts about `iota-mu` into the
-                                // transcript under your own name. You typed one line; you
-                                // should see one line.
-                                let aside = layer
+                                // Beside the prompt, not appended to it: naming an instance tells the
+                                // model it is there and that a tool reaches it.
+                                let briefed = layer
                                     .as_ref()
                                     .map_or_else(String::new, |l| l.briefing(&text, project));
-                                let _ = command_tx
-                                    .send(UiCommand::SubmitPrompt { text, aside })
-                                    .await;
+                                let aside = if app.attached.is_none() {
+                                    seat.remind(briefed)
+                                } else {
+                                    briefed
+                                };
+                                direct(
+                                    &mut app,
+                                    &command_tx,
+                                    UiCommand::SubmitPrompt { text, aside },
+                                )
+                                .await;
                                 dirty = true;
                             }
                             Action::Command(text) => {
                                 match run_command(&text, &mut app) {
                                     Control::Quit => break,
                                     Control::Send(command) => {
-                                        let _ = command_tx.send(command).await;
+                                        direct(&mut app, &command_tx, command).await;
                                     }
                                     Control::Continue => {}
                                 }
                                 dirty = true;
                             }
-                            // Search is the next thing to be built; until it is, these move
-                            // nothing and say nothing rather than pretending to.
+                            // Search is the next thing to be built; until it is, these move nothing.
                             Action::Search | Action::Match { .. } => {}
                             Action::Interrupt => {
-                                let _ = command_tx.send(UiCommand::Interrupt).await;
+                                direct(&mut app, &command_tx, UiCommand::Interrupt).await;
+                                dirty = true;
+                            }
+                            // This replaces the lot — see `App::attach_to`, where the forgetting is.
+                            Action::Crew { forward } => {
+                                if walk(
+                                    &mut app,
+                                    forward,
+                                    socket,
+                                    &target_tx,
+                                    &command_tx,
+                                    &mut held,
+                                )
+                                .await
+                                {
+                                    dirty = true;
+                                }
+                            }
+                            // On the model's card, Enter takes a setting and ←/→ step it.
+                            Action::Attach(id) if app.pane_titled("model") => {
+                                if let Some(command) = app.choose_on_model(&id) {
+                                    direct(&mut app, &command_tx, command).await;
+                                }
+                                dirty = true;
+                            }
+                            Action::Fold { open } if app.pane_titled("model") => {
+                                if let Some(command) = app.adjust_model(open) {
+                                    direct(&mut app, &command_tx, command).await;
+                                }
+                                dirty = true;
+                            }
+                            // Enter on an entry in the agents view: the same as a click on it.
+                            Action::Attach(id) => {
+                                if let Some(seat) = app.attach_id(&id) {
+                                    dial(&app, seat, socket, &target_tx, &command_tx, &mut held)
+                                        .await;
+                                }
+                                dirty = true;
+                            }
+                            Action::Fold { open } => {
+                                app.fold_agent(open);
                                 dirty = true;
                             }
                             Action::Chose(value) => {
-                                // Answered down the pipe, not over the socket, so it is taken
-                                // before the list that turns a choice into a `UiCommand`. melchior
-                                // is holding a request another session is blocked on; this
-                                // session's own turn loop knows nothing about it.
+                                // Answered down the pipe, not over the socket, so it is taken first.
                                 if let Some(crate::app::Picking::Adoption { id }) =
                                     app.picking.as_ref()
                                 {
                                     let (id, accept) = (id.clone(), value == "yes");
-                                    // Taken at the moment of accepting, and it does not track
-                                    // afterwards: what was consented to is what was on the table
-                                    // when the question was answered.
+                                    // What was consented to is what was on the table then.
                                     let lending = accept.then(|| app.lending());
                                     app.picking = None;
                                     if let Some(layer) = layer.as_mut() {
@@ -401,14 +440,12 @@ pub async fn run(
                                     Some(crate::app::Picking::Thinking) => {
                                         UiCommand::SetThinking { level: value }
                                     }
-                                    // A list with no recorded purpose cannot have been opened
-                                    // by anything here, so there is nothing to send.
+                                    // No recorded purpose, so nothing here opened it and nothing goes.
                                     Some(crate::app::Picking::Model) => {
                                         UiCommand::SetModel { name: value }
                                     }
-                                    // Matched back by position, because a row is labelled with
-                                    // what a person can read -- when it was, what they asked --
-                                    // and none of that is the id the session needs.
+                                    // Matched back by position: a row is labelled for a person to
+                                    // read, and none of that is the id the session needs.
                                     Some(crate::app::Picking::Session { rows }) => {
                                         let found = rows
                                             .iter()
@@ -419,10 +456,7 @@ pub async fn run(
                                             None => continue,
                                         }
                                     }
-                                    // Matched back by label, because that is what the person
-                                    // read and chose, and the picker that held the positions is
-                                    // already gone by here. The tool asked to get an id back,
-                                    // which is not what a row says.
+                                    // Matched back by label: the picker holding the positions is gone.
                                     Some(crate::app::Picking::Asked { id, rows }) => {
                                         let chosen = rows
                                             .iter()
@@ -430,26 +464,21 @@ pub async fn run(
                                             .map(|(_, choice)| choice.clone());
                                         match chosen {
                                             Some(choice) => UiCommand::Answered { id, choice },
-                                            // Nothing to send: no row matches, so answering
-                                            // would resume a tool with a choice nobody made.
+                                            // No row matches, so answering would resume a tool with
+                                            // a choice nobody made.
                                             None => continue,
                                         }
                                     }
-                                    // Matched back by *label*, because that is what the person
-                                    // read and chose. The labels were generated from these same
-                                    // scopes a moment ago, so the pairing is exact rather than
-                                    // a guess — and a value matching none of them is the "no"
-                                    // row, which is the only other thing in the list.
+                                    // Matched back by label, generated from these same scopes, so the
+                                    // pairing is exact; a value matching none of them is the "no" row.
                                     Some(crate::app::Picking::Permission { id, offers }) => {
                                         let chosen = offers
                                             .iter()
                                             .find(|scope| {
                                                 scope.label(&app.asking_about) == value
                                             });
-                                        // Remembered here because here is where it is known. The
-                                        // ledger that enforces it lives on the worker thread and
-                                        // is never read back, and a session that lends its
-                                        // permissions to a child has to know what it holds.
+                                        // The enforcing ledger is on the worker thread and never read
+                                        // back, so what this session holds is kept here.
                                         if let Some(scope) = chosen
                                             && let Some(grant) = magi_tools::permit::standing(
                                                 &app.asking_about,
@@ -467,32 +496,29 @@ pub async fn run(
                                         );
                                         UiCommand::Permit { id, decision }
                                     }
-                                    // Taken above, before this list: its answer is not a
-                                    // `UiCommand` and has nowhere to go from here.
+                                    // Taken above: its answer is not a `UiCommand`.
                                     Some(crate::app::Picking::Adoption { .. }) | None => continue,
                                 };
-                                let _ = command_tx.send(command).await;
+                                direct(&mut app, &command_tx, command).await;
                                 dirty = true;
                             }
-                            // Leaving a question is an answer to it. A permission prompt is the
-                            // only list something is waiting on, and the wait is a turn that
-                            // has stopped: closing it without a word left the session blocked
-                            // until its own patience ran out, which on screen is a hang.
+                            // Leaving a question is an answer: closing one without a word left the
+                            // session blocked, which on screen is a hang.
                             Action::Dismissed => {
                                 match app.picking.take() {
                                     Some(crate::app::Picking::Permission { id, .. }) => {
-                                        let _ = command_tx
-                                            .send(UiCommand::Permit {
+                                        direct(
+                                            &mut app,
+                                            &command_tx,
+                                            UiCommand::Permit {
                                                 id,
                                                 decision: magi_proto::permit::Decision::Deny,
-                                            })
-                                            .await;
+                                            },
+                                        )
+                                        .await;
                                     }
-                                    // Walking away is a no, and it has to be *said*. The asking
-                                    // session has been waiting since its call came back with
-                                    // "the question has been put"; a dismissal that answered
-                                    // nothing would leave it waiting for good, and the person
-                                    // who closed the box would think they had refused.
+                                    // Walking away is a no and has to be said: the asking session has
+                                    // been waiting since its call came back.
                                     Some(crate::app::Picking::Adoption { id }) => {
                                         if let Some(layer) = layer.as_mut() {
                                             layer.answered(&id, false, None);
@@ -503,10 +529,7 @@ pub async fn run(
                                 dirty = true;
                             }
                             Action::ToggleDetail => {
-                                // No notice. A view toggle is not something that happened in
-                                // the conversation, and one line per press left a transcript
-                                // that was half commentary after ten of them. What the fold
-                                // is and how to undo it is written on the fold itself.
+                                // No notice: a view toggle did not happen in the conversation.
                                 app.toggle_detail();
                                 dirty = true;
                             }
@@ -527,14 +550,11 @@ pub async fn run(
                                 }
                                 dirty = true;
                             }
-                            Action::Redraw | Action::Accepted | Action::Recalled => dirty = true,
+                            Action::Redraw | Action::Accepted | Action::Recalled | Action::Moved => dirty = true,
                             Action::Ignore => {}
                         }
-                        // The popup is derived from the prompt, so it is recomputed after
-                        // every key rather than mutated alongside the buffer -- except the
-                        // key that just accepted one, which still matches what offered it.
-                        // Not while a list is open: the popup is derived from the prompt, and
-                        // the prompt is not what the arrows are about right now.
+                        // The popup is derived from the prompt, so it is recomputed after every key —
+                        // except the key that just accepted one, and not while a list is open.
                         if !accepted
                             && !app
                                 .overlay
@@ -544,13 +564,12 @@ pub async fn run(
                             app.refresh_completion(&list_paths);
                         }
                     }
-                    // magi asks for the pointer -- see `terminal::MOUSE_ON` -- which is why it
-                    // does its own text selection: mouse reporting is one terminal-wide switch,
-                    // and an application holding it stops the terminal running its own drag.
+                    // magi asks for the pointer — see `terminal::MOUSE_ON` — so it selects text
+                    // itself: mouse reporting is one terminal-wide switch.
                     Event::Mouse(mouse) => {
-                        // A surface first, when the pointer landed on the rows one is holding.
-                        // Everything else on the screen is magi's -- see `driver::pointing`.
-                        if pointing::to_surface(&app, mouse, &command_tx).await {
+                        // A surface first, when the pointer landed on its rows. Not on a peer's: a
+                        // pointer sent there would be driving that session.
+                        if app.attached.is_none() && pointing::to_surface(&app, mouse, &command_tx).await {
                             continue;
                         }
                         let view = terminal_size().1.saturating_sub(ui::chrome_rows());
@@ -563,6 +582,12 @@ pub async fn run(
                         ) {
                             pointing::Pointing::Redraw => dirty = true,
                             pointing::Pointing::Nothing => continue,
+                            // A row in the agents view was clicked. `press_pane_row` already pointed
+                            // the app at it; this dials the socket, the way `walk` does for the keys.
+                            pointing::Pointing::Steer(seat) => {
+                                dial(&app, seat, socket, &target_tx, &command_tx, &mut held).await;
+                                dirty = true;
+                            }
                         }
                     }
                     Event::Paste(text) => {
@@ -571,83 +596,154 @@ pub async fn run(
                         dirty = true;
                     }
                     Event::Resize(..) => {
-                        // The width is the terminal's and changes under whatever is drawing in
-                        // the rows a tool was given. Only the height is magi's to grant.
-                        let _ = command_tx
-                            .send(UiCommand::Sized { rows: None, cols: inner(), holds: crate::terminal::reports_holds() })
-                            .await;
+                        // The width is the terminal's. Only the height is magi's to grant.
+                        direct(
+                            &mut app,
+                            &command_tx,
+                            UiCommand::Sized { rows: None, cols: inner(), holds: crate::terminal::reports_holds() },
+                        )
+                        .await;
                         dirty = true;
                     }
                     _ => {}
                 }
             }
             _ = ticker.tick() => {
-                // Always, now. The spinner needed this only while something was running; the
-                // prompt's border scan runs whenever the box is on screen, and a scan that
-                // stops the moment a turn ends reads as the UI having frozen.
+                // The prompt's border scan runs whenever the box is on screen, and one that stopped
+                // when a turn ended would read as the UI having frozen.
                 app.advance();
-                // What the socket is allowed to say about us, and what it heard. Done on the
-                // frame rather than where the state changes: the socket answers with whatever
-                // was last published, and a session that only republished on some paths would
-                // report a turn that finished a minute ago.
-                // What melchior heard, and what it is allowed to say about us. Done on the frame
-                // rather than where the state changes: melchior answers with whatever it was last
-                // told, and a session that only told it on some paths would report a turn that
-                // finished a minute ago.
+                app.poll_details();
+                // Done on the frame rather than where the state changes: melchior and the socket both
+                // answer with whatever they were last told.
                 let mut ended = false;
                 while let Ok(said) = heard.try_recv() {
                     match said {
-                        // Handed to the session, not drawn here. melchior is where a message lands,
-                        // but the transcript and the turns are the session's — an entry the UI
-                        // appended for itself is one the model never sees, and an instance
-                        // could be asked a question and sit there until somebody typed at it.
+                        // Handed to the session, not drawn here: an entry the UI appended for itself
+                        // is one the model never sees. Kept while the screen is on a peer.
                         crate::melchior::Heard::Message { who, sort, text } => {
-                            let _ = command_tx.send(app.received(&who, &sort, &text)).await;
+                            let arrived = app.received(&who, &sort, &text);
+                            ours(&app, &command_tx, &mut held, arrived).await;
+                            // An `attention` or `trouble` message is the one kind meant to reach a
+                            // session mid-turn: interrupt this one's own turn so it attends sooner.
+                            // Only while our own session is on screen: attached, the interrupt would
+                            // stop the agent we are driving instead.
+                            if app.attached.is_none()
+                                && app.is_busy()
+                                && crate::melchior::interrupts(&sort)
+                            {
+                                direct(&mut app, &command_tx, UiCommand::Interrupt).await;
+                            }
                         }
-                        crate::melchior::Heard::Around { names } => app.reachable = names,
-                        // Straight to the screen, and it takes it. Nothing is blocked on this
-                        // turn — the asking session is blocked on the *answer*, and it has been
-                        // told to expect one.
+                        // Either shape. An older melchior says `names` and nothing else.
+                        crate::melchior::Heard::Around { agents, names } => {
+                            app.reachable = crate::melchior::peers(agents, names);
+                            // A `--attach <id>` points the screen at its target once that agent
+                            // appears on the roster with a screen to draw over, as a manual
+                            // `alt+.` onto it would.
+                            if let Some(id) = app.attach_wanted.clone()
+                                && let Some(them) = app
+                                    .reachable
+                                    .iter()
+                                    .find(|them| them.id == id && them.ui.is_some())
+                                    .cloned()
+                                && let Some(at) = them.ui.clone()
+                            {
+                                app.attach_to(Some(them));
+                                let _ = target_tx.send(at);
+                                app.attach_wanted = None;
+                            }
+                        }
+                        // A watched agent changed phase. A dim line so a coordinator sees a child
+                        // finish or hit trouble, and — for the edges that end a wait — an occasion
+                        // queued to wake this session once it is idle, the same turn a headless
+                        // `park` would run. The rest updates the panel silently.
+                        crate::melchior::Heard::Signal {
+                            from,
+                            kind,
+                            kin,
+                            cause,
+                        } => {
+                            if app.attached.is_none()
+                                && let Some(note) = signal_notice(&from, &kind, cause.as_deref())
+                            {
+                                app.show_notice(note);
+                            }
+                            if let Some(occasion) =
+                                crate::child::wake_prompt(&kin, &kind, &from, cause.as_deref())
+                            {
+                                pending_wake = Some(occasion);
+                            }
+                        }
+                        // The asking session is blocked on the answer, not on this turn.
                         crate::melchior::Heard::Asked { id, who, why } => {
                             app.asked_to_adopt(&id, &who, &why);
                         }
-                        // Straight into the ledger, never into the transcript. Permissions a
-                        // model can read are permissions it can reason about acquiring more of.
+                        // Never into the transcript: permissions a model can read it can reason about.
                         crate::melchior::Heard::Adopted { by, handover } => {
                             let grants = handover
                                 .as_deref()
                                 .and_then(|said| serde_json::from_str(said).ok())
                                 .unwrap_or_default();
-                            let _ = command_tx
-                                .send(UiCommand::TakeGrants { grants })
+                            ours(&app, &command_tx, &mut held, UiCommand::TakeGrants { grants })
                                 .await;
                             app.notice_after_attach(format!(
                                 "`{by}` took this session on. It may now do what that session may."
                             ));
                         }
                         crate::melchior::Heard::Stopped => ended = true,
-                        // Said once, at startup, and read there. A second one is a newer melchior
-                        // saying something this build has no use for.
+                        // Said once, at startup, and read there.
                         crate::melchior::Heard::Listening { .. } => {}
                     }
                 }
                 if ended {
                     break;
                 }
-                // The turn that was running has finished, so whatever it was answering has been
-                // answered. Counted rather than matched up one for one: a turn answers whatever
-                // arrived before it, and a sibling asking `status` wants to know whether it is
-                // still waiting, not which of its messages this was.
+                // Counted rather than matched one for one: a sibling asking `status` wants to know
+                // whether it is still waiting.
                 if was_busy && !app.is_busy() {
                     app.answered();
                 }
                 was_busy = app.is_busy();
+                app.siblings = [
+                    layer
+                        .as_mut()
+                        .is_some_and(crate::melchior::Melchior::alive),
+                    crate::balthasar::alive(),
+                    casper_up.load(Ordering::Relaxed),
+                ];
                 if let Some(layer) = layer.as_mut() {
+                    let (phase, cause) = app.phase();
                     layer.doing(
                         app.is_busy(),
                         app.elapsed().map_or(0, |since| since.as_secs()),
-                        app.unanswered(),
+                        Some(app.unanswered()),
+                        phase,
+                        cause.as_deref(),
+                        &app.spent(),
                     );
+                }
+                // Take it up only into an idle session on its own screen, with no half-typed prompt
+                // and no question waiting, no faster than the cooldown — so a burst lands as one
+                // turn and never steps on the person at the keyboard.
+                let cooled = last_wake.is_none_or(|at| at.elapsed() >= crate::child::WAKE_COOLDOWN);
+                if pending_wake.is_some()
+                    && app.attached.is_none()
+                    && !app.is_busy()
+                    && !app.questioned()
+                    && app.editor.is_blank()
+                    && cooled
+                    && let Some(occasion) = pending_wake.take()
+                {
+                    last_wake = Some(Instant::now());
+                    let aside = layer
+                        .as_ref()
+                        .map_or_else(String::new, |l| l.briefing(&occasion, project));
+                    direct(
+                        &mut app,
+                        &command_tx,
+                        UiCommand::SubmitPrompt { text: occasion, aside },
+                    )
+                    .await;
                 }
                 dirty = true;
             }
@@ -661,36 +757,35 @@ fn terminal_size() -> (u16, u16) {
     crossterm::terminal::size().unwrap_or((80, 24))
 }
 
-/// The footer as of now.
-///
-/// Rebuilt each frame from what the session has reported rather than kept in step by hand: the
-/// numbers change on every delta, and a copy updated at each of the places that could change
-/// them is a copy that misses one.
-fn footer_data(app: &App) -> FooterData {
-    let window = app.model.as_ref().map_or(0, |m| m.context_window);
-    FooterData {
-        identity: app.named.clone(),
-        model: app.model.as_ref().map_or_else(
-            || magi_tui::glyph::no_model().to_owned(),
-            |model| model.name.clone(),
-        ),
-        input_tokens: app.usage().prompt_tokens(),
-        output_tokens: app.usage().output,
-        context_window: window,
-        // Against the last turn's prompt, not the running total: the window holds one
-        // conversation, and a session that has spent ten windows over an afternoon is not
-        // ten times full. `None` until a model says how big its window is, which is what the
-        // footer's question mark means.
-        context_percent: (window > 0).then(|| {
-            let used = app.last_prompt_tokens();
-            (used as f64 / window as f64) * 100.0
+/// The float's inside at this terminal size, as `(rows, cols)`: all a float surface is given.
+pub(super) fn float_room() -> (u16, u16) {
+    let (width, height) = terminal_size();
+    let inside = magi_tui::pane::Pane::surface_inside(magi_tui::pane::Pane::area(
+        ratatui::layout::Rect::new(0, 0, width, height),
+    ));
+    (inside.height, inside.width)
+}
+
+/// The line, if any, a watched agent's phase change is worth putting in front of a person. Only the
+/// edges that end a wait — `finished` and `blocked` — the rest is left to the panel to show quietly.
+fn signal_notice(from: &str, kind: &str, cause: Option<&str>) -> Option<String> {
+    match kind {
+        "finished" => Some(format!("`{from}` finished.")),
+        "blocked" => Some(match cause {
+            Some(why) => format!("`{from}` is blocked: {why}"),
+            None => format!("`{from}` is blocked."),
         }),
+        _ => None,
     }
 }
 
 /// The socket to the session, and redialling one that dropped.
 mod connecting;
 use connecting::connection_loop;
+
+/// Which agent the screen is pointed at, and what may be sent to one that is not ours.
+mod crewing;
+use crewing::{dial, direct, footer_data, ours, walk};
 
 /// The pointer, and which of two readers it belongs to.
 mod pointing;

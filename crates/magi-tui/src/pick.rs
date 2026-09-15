@@ -1,15 +1,7 @@
-//! Choosing the next placeholder.
-//!
-//! A new one every time the prompt empties, rather than one a session. The line is read once and
-//! then it is furniture; a fresh one on every empty box is the difference between a joke and a
-//! label. Emptying covers both ways it happens — a prompt submitted, and a prompt deleted back
-//! to nothing.
+//! Choosing the next placeholder: a fresh one every time the prompt empties, whether it was
+//! submitted or deleted back to nothing.
 
-/// A different index from `now`, out of `count`.
-///
-/// **Different**, not merely random: one in twenty-four rolls repeats, and a placeholder that
-/// does not change when you have just watched it change is indistinguishable from one that is
-/// stuck. So the roll is over the other twenty-three and then shifted past the current one.
+/// A different index from `now`, out of `count`. Never a repeat, which reads as a stuck box.
 #[must_use]
 pub fn another(now: usize, count: usize) -> usize {
     if count <= 1 {
@@ -25,10 +17,7 @@ pub fn first(count: usize) -> usize {
     if count == 0 { 0 } else { roll() % count }
 }
 
-/// Something that varies, without a dependency for it.
-///
-/// The clock's nanoseconds. Not uniform and not unpredictable, and neither matters: this decides
-/// which joke you get.
+/// Something that varies: the clock's nanoseconds, neither uniform nor unpredictable.
 fn roll() -> usize {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

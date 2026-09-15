@@ -21,7 +21,7 @@ fn temp(name: &str) -> (Scratch, PathBuf) {
 
 async fn start(name: &str) -> (Scratch, PathBuf) {
     let (dir, socket) = temp(name);
-    let session = open_session(&dir, "/tmp", 1, "").expect("session");
+    let session = open_session(1, "");
     let listener = magi_ipc::bind(&socket).await.expect("bind");
     tokio::spawn(async move { serve(listener, session, None).await });
     (dir, socket)
@@ -170,7 +170,7 @@ async fn two_uis_both_see_a_prompt_either_one_submits() {
 }
 
 #[tokio::test]
-async fn the_journal_outlives_the_daemon() {
+async fn a_session_keeps_no_transcript_of_its_own() {
     let (dir, socket) = start("durable").await;
     {
         let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
@@ -180,25 +180,34 @@ async fn the_journal_outlives_the_daemon() {
         }
     }
 
-    let journal = std::fs::read_dir(&dir)
+    // **Inverted, and that is the point.** This used to find the session's JSONL journal here and
+    // read the prompt back out of it. There is no journal: balthasar is the store, and magi
+    // keeping a second copy was a copy that goes stale. So what is asserted is the absence — a
+    // session that ran, answered and was disconnected from wrote nothing of its own anywhere.
+    //
+    // That the transcript survives the connection is next door, in
+    // `a_prompt_survives_the_ui_and_is_replayed_on_reattach`, where it belongs: it is a property
+    // of the session, not of a file.
+    let ours: Vec<_> = std::fs::read_dir(&dir)
         .expect("read dir")
         .flatten()
-        .map(|e| e.path())
-        .find(|p| p.extension().is_some_and(|e| e == "jsonl"))
-        .expect("a journal");
-    let source = std::fs::read_to_string(&journal).expect("read");
-    assert!(source.contains("persisted"), "the prompt reached the disk");
-    assert!(source.lines().count() >= 3, "meta, prompt, reply");
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|end| end == "jsonl"))
+        .collect();
+    assert!(
+        ours.is_empty(),
+        "magi wrote a transcript of its own beside the store: {ours:?}"
+    );
 }
 
 /// A daemon that asks `mind`, so a submitted prompt starts a real turn.
 async fn start_with_mind(name: &str, mind: &Mind) -> (Scratch, PathBuf) {
     let (dir, socket) = temp(name);
-    let session = open_session(&dir, "/tmp", 1, "").expect("session");
+    let session = open_session(1, "");
     let backend = magi_host::turn::Backend {
         tools: Vec::new(),
         clients: Vec::new(),
-        casper: None,
+        tooling: Default::default(),
         cwd: std::env::temp_dir(),
         model: "fake/one".to_owned(),
         mind: mind.program().display().to_string(),
@@ -206,6 +215,7 @@ async fn start_with_mind(name: &str, mind: &Mind) -> (Scratch, PathBuf) {
         context_window: Some(200_000),
         system: Some("You are magi.".to_owned()),
         confine: false,
+        isolate: false,
         grants: Vec::new(),
         environ: std::collections::BTreeMap::new(),
     };
@@ -297,8 +307,8 @@ async fn an_amended_entry_is_not_announced_as_a_new_one() {
     // and every message once empty and once full.
     use magi_proto::{Entry, MessageId, ToolCallId, ToolResult};
 
-    let (dir, _socket) = temp("amend");
-    let session = open_session(&dir, "/tmp", 1, "").expect("session");
+    let (_dir, _socket) = temp("amend");
+    let session = open_session(1, "");
     let session = std::sync::Arc::new(tokio::sync::Mutex::new(session));
 
     let mut live = session.lock().await.subscribe();
@@ -390,8 +400,8 @@ async fn what_a_turn_cost_reaches_the_ui() {
     // only a cold replay uses, had the right one, so nothing that replayed noticed.
     use magi_proto::{Entry, MessageId, Signatures, StopReason, Usage};
 
-    let (dir, _socket) = temp("usage");
-    let session = open_session(&dir, "/tmp", 1, "").expect("session");
+    let (_dir, _socket) = temp("usage");
+    let session = open_session(1, "");
     let session = std::sync::Arc::new(tokio::sync::Mutex::new(session));
     let mut live = session.lock().await.subscribe();
 
@@ -400,6 +410,7 @@ async fn what_a_turn_cost_reaches_the_ui() {
         output: 9,
         cache_read: 768,
         cache_write: 0,
+        cost_micros: 0,
     };
     {
         let mut held = session.lock().await;
@@ -474,7 +485,7 @@ fn two_models() -> magi_host::catalog::Catalog {
 
 async fn start_with_catalog(name: &str) -> (Scratch, PathBuf) {
     let (dir, socket) = temp(name);
-    let session = open_session(&dir, "/tmp", 1, "").expect("session");
+    let session = open_session(1, "");
     let catalog = two_models();
     let backend = catalog.backend("local/a");
     let listener = magi_ipc::bind(&socket).await.expect("bind");
@@ -611,4 +622,47 @@ async fn the_model_is_told_what_it_is_before_the_conversation() {
         "the system prompt has to reach the pipe, not just the struct: {ask}"
     );
     assert!(ask.contains("hello"), "and the conversation with it: {ask}");
+}
+
+/// A prompt written by a client that then hangs up is still run.
+///
+/// **The one case where a client says all it has to say and leaves.** `magi fork` does exactly
+/// this: a child is handed its work over the socket and the connection goes, because a client
+/// that stayed attached would turn every refusal in that session into a five-minute wait for an
+/// answer nobody is there to give.
+///
+/// Repeated, because what this guards against was a `select!` choosing at random between two
+/// arms that were both ready — the queued prompt, and the news that the reader had finished. It
+/// came out right about half the time, which is indistinguishable from working if you try it
+/// once. Sixteen rounds is a one-in-sixty-five-thousand chance of passing against the bug.
+#[tokio::test]
+async fn a_prompt_written_by_a_client_that_hangs_up_is_still_run() {
+    for round in 0..16 {
+        let (_dir, socket) = start(&format!("hangup{round}")).await;
+        {
+            let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
+            client.submit("work handed over").await;
+            // Nothing drained and nothing waited for: the close goes out behind the prompt, so
+            // both reach the session together. That is the whole of the race.
+        }
+
+        // Asked of the session, not of a stream held open — the connection that sent it is gone,
+        // and the question is whether the session kept what it was given.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let kept = loop {
+            let (_client, entries) = Client::attach(&socket, Cursor(2)).await;
+            if !entries.is_empty() {
+                break entries;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "round {round}: the prompt was taken and then dropped on the way in"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        };
+        match &kept[0] {
+            Entry::User { text, .. } => assert_eq!(text, "work handed over", "round {round}"),
+            other => panic!("round {round}: expected a user entry, got {other:?}"),
+        }
+    }
 }

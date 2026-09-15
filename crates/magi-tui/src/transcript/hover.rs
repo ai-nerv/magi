@@ -1,21 +1,11 @@
-//! Lighting up the handle under the pointer.
-//!
-//! Split out under THE RULE; the transcript next door is what this is about.
+//! Lighting up the fold handle under the pointer.
 
 use super::*;
 
 /// Light up the fold handle at `column` of `line`, if the pointer is over one.
 ///
-/// Reversed, which is the same thing a selection does to the text under it: the terminal already
-/// means "this is the thing you are pointing at" by inverting, and a second idea — a brighter
-/// colour, a bolder weight — would be a second vocabulary for one meaning.
-///
-/// **Only the handle.** The name chip is set into the edge the same way and looks identical, and
-/// lighting it up would promise a click that does nothing. What makes a chip a handle is the
-/// glyph inside it, so that is what is asked.
-///
-/// Returns whether anything changed, so a caller can leave the screen alone when the pointer
-/// moved within the same chip — which, with motion reported per cell, is most of the time.
+/// Only the handle: the name chip looks identical but a click on it does nothing. Returns whether
+/// anything changed, so a caller can skip a redraw when the pointer moved within the same chip.
 pub fn hovered(line: &mut Line<'static>, column: u16) -> bool {
     let handles = [glyph::expand(), glyph::collapse(), glyph::copy()];
     let mut at = 0_u16;
@@ -73,8 +63,7 @@ mod pointing {
     fn the_handle_lights_up_and_the_edge_around_it_does_not() {
         let line = edge();
         let lit = lit(&line);
-        // Two chips of five columns each — `[ ⧉ ]` and `[ ▸ ]` — and nothing either side of
-        // them. Both act on a click, so both answer the pointer.
+        // Two chips of five columns each — `[ ⧉ ]` and `[ ▸ ]` — and nothing either side.
         assert_eq!(lit.len(), 10, "{lit:?}");
         // Contiguous within each chip, with the edge between them dark.
         let breaks = lit.windows(2).filter(|pair| pair[1] != pair[0] + 1).count();
@@ -86,8 +75,7 @@ mod pointing {
 
     #[test]
     fn the_name_chip_does_not_light_up() {
-        // It is set into the edge the same way and looks identical, so lighting it would promise
-        // a click that does nothing.
+        // It looks identical to a handle, so lighting it would promise a click that does nothing.
         let line = edge();
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         let at = text
@@ -113,7 +101,7 @@ mod pointing {
 
     #[test]
     fn a_row_with_no_handle_on_it_lights_nothing() {
-        // Most of the screen. The answer has to be cheap and it has to be "no".
+        // Most of the screen, so the answer has to be cheap and it has to be "no".
         let mut prose = Line::from("  just some words");
         assert!((0..40).all(|column| !hovered(&mut prose, column)));
     }

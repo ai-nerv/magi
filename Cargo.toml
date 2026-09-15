@@ -18,7 +18,7 @@ resolver = "3"
 edition = "2024"
 license = "MIT"
 publish = false
-version = "0.1.0"
+version = "0.2.0"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
@@ -58,6 +58,9 @@ bytes = "1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 ignore = "0.4"
 similar = "2"
+# Sublime's regex grammars, read by a pure-Rust regex engine: code in a transcript is highlighted
+# without compiling a parser per language, and without a C dependency on the musl build.
+syntect = { version = "5", default-features = false, features = ["default-syntaxes", "regex-fancy"] }
 luna = { git = "https://github.com/onix-os/luna", tag = "v0.5.0" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "gzip"] }
 crossterm = { version = "0.28", default-features = false, features = ["bracketed-paste", "events", "event-stream"] }

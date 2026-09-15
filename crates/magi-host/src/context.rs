@@ -1,78 +1,59 @@
-//! Rebuilding the conversation the provider is shown.
-//!
-//! The journal holds what happened; a provider needs what was said. They are not the same
-//! thing and the gap between them is where this module lives: a tool call is journalled as its
-//! own record but has to be sent inside the message that made it, an errored turn is on screen
-//! but must not be replayed as if the model had said it, and a session that has been compacted
-//! or rewound shows more than it sends.
-//!
-//! Everything here is a *view*. Sessions are append-only and delete-never, so nothing in this
+//! Rebuilding the conversation the provider is shown. The journal holds what happened; a provider
+//! needs what was said. Everything here is a view: sessions are append-only, so nothing in this
 //! file removes anything — it decides what to look at.
 
 use crate::session::Session;
 use magi_model::{Content, Context, Message, Role, StopReason};
 use magi_proto::Entry;
 
-/// Build the provider-facing conversation from the transcript.
-///
-/// The journal holds what was shown; a provider needs what was said. Tool entries become tool
-/// results, and an assistant entry that failed is dropped — replaying an error as if the model
-/// had said it teaches it to produce more of them.
+/// Build the provider-facing conversation from the transcript. Tool entries become tool results,
+/// and an assistant entry that failed is dropped rather than replayed as if the model had said it.
 pub fn of(session: &Session) -> Context {
     of_entries(session.entries())
 }
 
-/// The same, over entries the caller chose.
-///
-/// Compaction needs it: it has to summarise *exactly* the entries it is about to declare
-/// replaced, and the only way to be sure of that is to build the messages from those entries.
-/// It used to take the whole conversation's messages and cut them at
-/// `messages.len() - KEEP`, while the journal recorded a cut at `entries.len() - KEEP` — two
-/// boundaries computed independently in two different spaces, which agree only when every entry
-/// makes exactly one message. They do not: a `Notice`, a `Branch`, a `Compaction` and an
-/// assistant entry that errored all make none. Every one of those in the head of the transcript
-/// pushed the entry cut further than the message cut, and everything between them was declared
-/// summarised without being shown to the summariser — tool results included, silently.
+/// The same, over entries the caller chose. Compaction needs it: it has to summarise exactly the
+/// entries it declares replaced. Entry counts and message counts agree only when every entry makes
+/// one message, and a `Notice`, `Branch`, `Compaction` or errored assistant entry makes none.
 #[must_use]
 pub fn of_entries(entries: &[Entry]) -> Context {
-    let (live, summary) = live_entries(entries);
-    let live = live.into_iter().map(|i| &entries[i]);
+    let view = live_entries(entries);
+    let summary = view.summary;
+    let masks = view.masks;
+    // Carried with the entry, because a mask names an entry by its index in the transcript.
+    let live = view.live.into_iter().map(|at| (at, &entries[at]));
 
     let mut messages: Vec<Message> = Vec::new();
     if let Some(summary) = summary {
-        // As a user message, because it is context the model is being given rather than
-        // something it said. A model shown its own words as a summary tends to continue them.
+        // As a user message: a model shown its own words as a summary tends to continue them.
         messages.push(Message::user(format!(
             "Here is a summary of the earlier part of this conversation:\n\n{summary}"
         )));
     }
 
-    // Where the assistant message currently being rebuilt lives, so the tool entries that
-    // follow it can put their calls back into it. The journal stores a call as its own record
-    // -- it is committed before the registry is consulted, which is what makes an unrouted
-    // call auditable -- but a provider needs it inside the message that made it.
+    // Where the assistant message being rebuilt lives, so the tool entries after it can put their
+    // calls back into it. The journal stores a call as its own record; a provider needs it inside.
     let mut open: Option<usize> = None;
 
-    for entry in live {
+    for (at, entry) in live {
         match entry {
-            // A notice is one UI talking to the person in front of it. Sending it to a
-            // provider would be telling the model what magi told somebody about magi.
-            Entry::Branch { .. } | Entry::Compaction { .. } | Entry::Notice { .. } => {}
+            // A notice is one UI talking to the person in front of it. A mask is bookkeeping about
+            // another entry; what it carries is applied where that entry is written out, below.
+            Entry::Branch { .. }
+            | Entry::Compaction { .. }
+            | Entry::Notice { .. }
+            | Entry::Masked { .. } => {}
             Entry::User { text, aside, .. } => {
                 open = None;
-                // The aside goes with it, under a rule, so the model can tell what the person
-                // said from what the harness knew. Nobody sees this but the model — the
-                // transcript shows the prompt on its own.
+                // The aside goes with it, under a rule, so the model can tell it from the prompt.
                 messages.push(Message::user(if aside.is_empty() {
                     text.clone()
                 } else {
                     format!("{text}\n\n---\n{aside}")
                 }));
             }
-            // Somebody addressed this session, so it is a user turn — but not *the* user, and
-            // the difference decides whether the model treats it as an instruction or as
-            // something a peer said. Named rather than dropped: silently swallowing a message
-            // another agent sent is the one failure worth none of the tidiness.
+            // Somebody addressed this session, so it is a user turn — but not the user. Named
+            // rather than dropped: swallowing a message another agent sent is worth no tidiness.
             Entry::From { who, kin, text, .. } => {
                 open = None;
                 messages.push(Message::user(format!(
@@ -106,8 +87,7 @@ pub fn of_entries(entries: &[Entry]) -> Context {
                         signature: signatures.text.clone(),
                     });
                 }
-                // Pushed even when empty, because the common shape of a tool-using turn is a
-                // model that says nothing and calls something. The empty ones are pruned below.
+                // Pushed even when empty: a tool-using turn is a model that says nothing and calls.
                 messages.push(Message {
                     role: Role::Assistant,
                     content,
@@ -133,12 +113,19 @@ pub fn of_entries(entries: &[Entry]) -> Context {
                     });
                 }
                 if let Some(result) = result {
+                    // Where masking saves the window. The stub is the tool's own words, because
+                    // only its author knows what a useful one says. The call above is never masked:
+                    // a result without its call is an orphan, and providers refuse those.
+                    let content = masks
+                        .get(&at)
+                        .cloned()
+                        .unwrap_or_else(|| result.output.clone());
                     messages.push(Message {
                         role: Role::Tool,
                         content: vec![Content::ToolResult {
                             id: id.to_string(),
                             name: name.clone(),
-                            content: result.output.clone(),
+                            content,
                             is_error: result.is_error,
                         }],
                         stop_reason: None,
@@ -150,8 +137,7 @@ pub fn of_entries(entries: &[Entry]) -> Context {
         }
     }
 
-    // The entry committed before the first delta has no content and never gained a call. A
-    // message with nothing in it is rejected by every provider that checks.
+    // A message with nothing in it is rejected by every provider that checks.
     messages.retain(|m| !(m.role == Role::Assistant && m.content.is_empty()));
     Context {
         messages: repair(messages),
@@ -159,37 +145,16 @@ pub fn of_entries(entries: &[Entry]) -> Context {
     }
 }
 
-/// What a call that was never answered is told to the model as.
-///
-/// The turn loop writes "cancelled before this tool ran" for every remaining call when a turn is
-/// interrupted, which is the same shape and the honest sentence for that cause. This is the other
-/// one: the daemon went away while the tool was still running, so nobody was left to amend the
-/// entry. Both are an error result, because a call the model is shown as unanswered is a call it
-/// will sit and wait for.
+/// What a call that was never answered is told to the model as. An error result, because a call the
+/// model is shown as unanswered is a call it will sit and wait for.
 const NEVER_ANSWERED: &str =
     "no result was recorded for this call — the session ended while the tool was running";
 
-/// Make the conversation one a provider will accept.
-///
-/// Two shapes break it, in opposite directions, and both come back from melchior as
-/// [`magi_proto::ask::Refusal::Invalid`] — neither retryable nor `Overflow` — so nothing
-/// recovers and `/clear` is the only way out.
-///
-/// **A result with no call.** A compaction or a branch whose boundary fell between an assistant
-/// message and the tool entries answering it. [`crate::compact::covers`] no longer places a cut
-/// there, but a rewind can, and a session recorded by an older build already has one. The result
-/// is dropped: the call it answers is gone, and there is nothing to attach it to.
-///
-/// **A call with no result.** An `Entry::Tool` committed before the registry was consulted and
-/// never amended, which is what a daemon killed mid-tool leaves behind. Verified by doing it, and
-/// verified honestly: OpenRouter accepted the orphan and answered, so this is latent and
-/// provider-dependent rather than live — Anthropic rejects an unanswered `tool_use`. An error
-/// result is synthesised, because dropping the call instead would rewrite what the model said.
-///
-/// This is the pass §8 listed as stolen from Pi's `transform_messages()` and never wrote. Pi's
-/// does four jobs; this does the one that breaks conversations. Image downgrade and thinking
-/// keep/drop/downgrade belong to whatever needs them, and tool-id rewriting is per dialect, which
-/// is the adapters' business rather than this file's.
+/// Make the conversation one a provider will accept. Two shapes break it, and both come back as
+/// [`magi_proto::ask::Refusal::Invalid`] — neither retryable nor `Overflow` — so nothing recovers.
+/// A result with no call is dropped, since the call it answers is gone; a rewind can still place a
+/// cut there. A call with no result gets a synthesised error result, because dropping the call
+/// would rewrite what the model said — Anthropic rejects an unanswered `tool_use`.
 fn repair(messages: Vec<Message>) -> Vec<Message> {
     let answered: std::collections::BTreeSet<String> = messages
         .iter()
@@ -201,8 +166,7 @@ fn repair(messages: Vec<Message>) -> Vec<Message> {
         .collect();
 
     let mut out: Vec<Message> = Vec::with_capacity(messages.len());
-    // Calls seen so far, so a result is matched against the calls *before* it rather than
-    // against the whole conversation: a result that arrives first has nothing to answer.
+    // A result is matched against the calls before it: one that arrives first has nothing to answer.
     let mut called: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
     for mut message in messages {
@@ -252,18 +216,24 @@ fn repair(messages: Vec<Message>) -> Vec<Message> {
     out
 }
 
-/// The entries the provider is shown, and the summary standing in for the rest.
-///
-/// One pass, because compactions and branches both answer the same question — which entries
-/// are still live — and they compose. A branch after a compaction drops the tail of what
-/// survived it; a compaction after a branch summarises what the branch left. Both count in
-/// entries from the start of the session, so both are answered against the same indices, and
-/// neither has to know the other exists.
-///
-/// Nothing is removed from the journal by either. This is a view.
-fn live_entries(entries: &[Entry]) -> (Vec<usize>, Option<String>) {
+/// What a view of the transcript comes to.
+struct Live {
+    /// Indices into the transcript, in the order a provider is shown them.
+    live: Vec<usize>,
+    /// The summary standing in for whatever a compaction replaced.
+    summary: Option<String>,
+    /// What a masked entry is sent as instead of itself, by index.
+    masks: std::collections::BTreeMap<usize, String>,
+}
+
+/// The entries the provider is shown, the summary standing in for the rest, and the stubs. One
+/// pass: compactions and branches both answer which entries are live, they compose, and both count
+/// in entries from the start of the session. A mask does not change which entries are live, only
+/// what one of them says. Nothing is removed from the journal by any of them — this is a view.
+fn live_entries(entries: &[Entry]) -> Live {
     let mut live: Vec<usize> = Vec::new();
     let mut summary = None;
+    let mut masks: std::collections::BTreeMap<usize, String> = std::collections::BTreeMap::new();
     for (at, entry) in entries.iter().enumerate() {
         match entry {
             // Everything after the branch point stops being live. The entries stay.
@@ -276,34 +246,34 @@ fn live_entries(entries: &[Entry]) -> (Vec<usize>, Option<String>) {
                 summary = Some(text.clone());
                 live.retain(|&i| i >= *replaces);
             }
+            // The record itself is not sent; what it carries is applied where the entry is written.
+            Entry::Masked {
+                at: which, shown, ..
+            } => {
+                masks.insert(*which, shown.clone());
+            }
             _ => live.push(at),
         }
     }
-    (live, summary)
+    Live {
+        live,
+        summary,
+        masks,
+    }
 }
 
-/// Where "undo the last exchange" rewinds to.
-///
-/// The last user message that is still live — not the last one in the journal. After a rewind
-/// the abandoned exchange is still on screen, so counting from the journal would name a
-/// message that is already gone and rewinding twice would do nothing the second time.
-///
-/// `None` when there is nothing to undo.
+/// Where "undo the last exchange" rewinds to: the last live user message, not the last journalled
+/// one, or rewinding twice would do nothing the second time. `None` when there is nothing to undo.
 #[must_use]
 pub fn rewind_point(entries: &[Entry]) -> Option<usize> {
-    let (live, _) = live_entries(entries);
-    live.into_iter()
+    live_entries(entries)
+        .live
+        .into_iter()
         .rev()
         .find(|&i| matches!(entries[i], Entry::User { .. }))
 }
 
-/// The last thing the person actually asked, among what is still live.
-///
-/// What a recall is keyed on: the turn is about the prompt in front of it, and a query built
-/// from the whole conversation would return what the session has been about rather than what it
-/// is about now. Live rather than journalled, so a rewound exchange does not steer the memory
-/// of the one that replaced it.
-///
+/// The last thing the person actually asked, among what is still live — what a recall is keyed on.
 /// `None` when nothing has been asked, which is a session that has only been listened to.
 #[must_use]
 pub fn last_asked(session: &Session) -> Option<String> {
@@ -324,8 +294,7 @@ mod context_tests {
 
     fn session(name: &str) -> (Session, Scratch) {
         let dir = Scratch::new("magi-ctx", name);
-        let session =
-            Session::open(&dir.join("s.jsonl"), SessionId::new("s"), "/tmp", 0).expect("session");
+        let session = Session::recorded(SessionId::new("s"), Vec::new());
         (session, dir)
     }
 
@@ -364,8 +333,7 @@ mod context_tests {
 
     #[test]
     fn the_call_the_model_made_is_replayed_with_its_result() {
-        // A tool result with no preceding tool call is not a conversation. Anthropic rejects
-        // it outright; an OpenAI-compatible endpoint takes it and leaves the model with no
+        // An OpenAI-compatible endpoint takes an orphaned result and leaves the model with no
         // record of what it asked for, which is worse because it looks like it worked.
         let (mut session, _dir) = session("callback");
         tool_round(&mut session).expect("journal");
@@ -423,9 +391,8 @@ mod context_tests {
 
     #[test]
     fn the_signatures_survive_the_journal() {
-        // A reasoning model does not send back reasoning you can re-send; it sends a token
-        // standing for it. Dropping it makes the next request a 400 on the providers that
-        // check, which is the second round trip of every tool-using turn.
+        // A reasoning model sends a token standing for its reasoning; dropping it is a 400 on the
+        // second round trip of every tool-using turn.
         let (mut session, _dir) = session("signatures");
         tool_round(&mut session).expect("journal");
 
@@ -456,8 +423,7 @@ mod context_tests {
 
     #[test]
     fn a_message_that_only_asked_for_a_tool_is_still_a_message() {
-        // Empty text and empty thinking, which is the common shape: the model says nothing and
-        // calls something. Dropping it takes the tool call with it.
+        // The common shape: the model says nothing and calls something. Dropping it takes the call.
         let (mut session, _dir) = session("silent");
         session
             .commit(Entry::Assistant {
@@ -497,8 +463,7 @@ mod context_tests {
 
     #[test]
     fn an_assistant_message_with_nothing_at_all_is_still_dropped() {
-        // The empty entry the turn loop commits before the first delta. Sending it would be
-        // a message with no content, which providers reject.
+        // The empty entry the turn loop commits before the first delta; providers reject it.
         let (mut session, _dir) = session("empty");
         session
             .commit(Entry::Assistant {
@@ -523,8 +488,7 @@ mod branch_tests {
 
     fn session(name: &str) -> (Session, Scratch) {
         let dir = Scratch::new("magi-branch", name);
-        let session =
-            Session::open(&dir.join("s.jsonl"), SessionId::new("s"), "/tmp", 0).expect("session");
+        let session = Session::recorded(SessionId::new("s"), Vec::new());
         (session, dir)
     }
 
@@ -570,9 +534,7 @@ mod branch_tests {
 
     #[test]
     fn the_rewind_point_is_the_last_live_message_not_the_last_one() {
-        // Rewinding twice must go back twice. Counting from the journal instead of the live
-        // view would name a message the first rewind already dropped, and the second would do
-        // nothing.
+        // Counting from the journal would name a message the first rewind already dropped.
         let (mut session, _dir) = session("twice");
         exchange(&mut session, 1);
         exchange(&mut session, 2);
@@ -598,8 +560,7 @@ mod branch_tests {
 
     #[test]
     fn a_branch_and_a_compaction_compose() {
-        // Both answer the same question — which entries are live — so they have to agree.
-        // A branch after a compaction drops the tail of what survived it.
+        // Both answer which entries are live, so they have to agree.
         let (mut session, _dir) = session("compose");
         for n in 1..=6 {
             exchange(&mut session, n);
@@ -637,3 +598,7 @@ mod branch_tests {
 
 #[cfg(test)]
 mod repairing;
+
+#[cfg(test)]
+#[path = "context/masking.rs"]
+mod masking;

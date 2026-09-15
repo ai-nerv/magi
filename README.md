@@ -38,8 +38,9 @@ an error.
 
 ## Status
 
-A real agent: a model answers, tools run in their own processes, and the session is journalled
-and resumable. See `PLAN.md` for how it was built.
+A real agent: a model answers, tools run in their own processes, and the session is held by
+balthasar — which is also what makes it resumable, and what decides when it is compacted. magi
+keeps no transcript of its own. See `PLAN.md` for how it was built.
 
 ```sh
 make run          # magi, for real, in the current directory
@@ -81,15 +82,19 @@ same person for the same permission, and is capped and masked on the way back.
 
 | Kind | What it is |
 |---|---|
-| `builtin` | compiled in: `read`, `write`, `edit` |
-| `lua` | a function in the config's own VM |
-| `command` | one exec per call, arguments built from the call |
-| `process` | a peer with its own life, spoken to over a pipe |
-| `mcp` | an MCP server — the one declaration that registers *several* tools |
+| `supplied` | from the tools program (casper) — one exec per call. Every tool that does anything to the machine |
+| `builtin` | compiled in: `spawn` — magi's only one, and coordination, not machine work |
+| `lua` | a function in the config's own VM — how the memory tools reach balthasar |
+| `command` | one exec per call, arguments built from the call — how `agent` reaches melchior |
 
-Most of them arrive from **casper**, which is another program and supplies the whole set. That
-makes it the largest trust assumption magi makes, and `magi.casper_sha256` pins it to the bytes
-you set it up against. An MCP server pins the same way, on its declaration.
+The machine tools all arrive from **casper**, which is another program and supplies the whole set.
+That makes it the largest trust assumption magi makes, and `magi.casper_sha256` pins it to the bytes
+you set it up against. magi runs no tool of its own beyond `spawn`; there is no in-magi shell, no
+process peer, no MCP — running a tool is casper's.
+
+casper is the default for the `tools` role, not a requirement: `magi.tools = "workbench"` hands the
+role to any program that answers `ROLES.md`'s core, and `magi.workbench_sha256` pins that one
+instead. Only your own configuration can name it — a project file that tries is refused.
 
 ```sh
 magi tools        # what the model can call, and how each is reached
@@ -183,10 +188,10 @@ harness spawns, because a layer that started harnesses would have to know what o
 | `magi-model` | the provider-neutral message model |
 | `magi-provider` | the HTTP side: streaming, SSE, retries, what each error means |
 | `magi-core` | the turn loop, as an explicit state machine |
-| `magi-tools` | what a tool is, and the three the floor is made of |
+| `magi-tools` | what a tool is, and how one is dispatched to the tools program |
 | `magi-lua` | the Lua VM, and the config API it offers `init.lua` |
-| `magi-journal` | an append-only session journal |
-| `magi-host` | the session: the journal, the socket, and the turns |
+| `magi-journal` | the transcript this process holds; balthasar is what stores it |
+| `magi-host` | the session: the transcript, the socket, and the turns |
 | `magi-tui` | rendering: theme, markdown, transcript, editor, status, footer |
 | `magi-cli` | the UI process, and `melchior.rs` — everything magi knows of the agent layer |
 | `magi-testkit` | fake harness and recordings |
@@ -209,8 +214,13 @@ make verify       # all of it
 | `gate-proto-size` | `magi-proto` under 4,000 lines |
 | `gate-reachable` | no crate unreachable from the binary |
 | `gate-cycles` | no two top-level modules depend on each other |
-| `gate-hermetic` | the suite leaves nothing behind in `$TMPDIR` |
+| `gate-hermetic` | the suite leaves behind no file and no process |
 | `gate-wire` | one way of saying a thing crosses a boundary |
+| `gate-one-store` | balthasar holds the history and magi keeps no copy |
+| `gate-family` | the binary answers the family contract |
+| `gate-sandbox` | one Lua VM, sandboxed, and a checkout cannot govern the session |
+| `gate-lints` | every crate takes the workspace's denials and nothing takes them back |
+| `gate-comments` | a comment describes the block; it is not a fifth of the code arguing with it |
 
 `gate-cycles` is the one pi never built. It built *reachability* — and a cycle is maximally
 reachable, so a reachability gate passes at 240,000 lines with the knot still in it. Ours had the
@@ -220,11 +230,24 @@ three cycles nobody had named.
 `gate-hermetic` runs the suite under a `TMPDIR` of its own and asserts it is empty afterwards.
 Every test used to tidy up on its last line — and `assert!` unwinds straight past a trailing
 `remove_dir_all`, so a *failing* test always leaked. Three thousand six hundred directories had
-collected before anything looked.
+collected before anything looked. It also counts what survives: a leaked process is found by its
+working directory *or* by `$TMPDIR` appearing in its environment, because cargo runs a test binary
+in the package directory and a child inherits that — the cwd question alone is blind to every
+test that does not call `current_dir`.
+
+`gate-sandbox` holds the count of Lua VMs at one. The sandbox's own tests prove the removals work;
+what they cannot prove is that every VM went through the constructor that applies them, and a
+second `Lua::full()` is a full standard library with no test anywhere going red.
 
 `gate-modules` earns its place on its own: a file nobody declares is not a compile error, not a
 warning and not run — it simply is not part of the crate. Two were found at once, each holding
 tests that had silently not run since the commit that moved them.
+
+`gate-comments` caps comment lines at 20% of the code in the same file. `SAFETY:` notes do not
+count, from the `SAFETY:` line onward, and every file gets a floor of three lines whatever its
+size. It flagged 175 files at first: the prose had grown into the argument for each decision, the
+story of the bug behind it, and the case against alternatives nobody had proposed. What a comment
+is for is the block underneath it.
 
 The gates are not advisory. Every agent this one was measured against carries dead code nothing
 reaches and a god file in the tens of thousands of lines — 6,549 in one, 34,875 in another. None
@@ -263,7 +286,7 @@ Everything magi knows about the outside world is Lua, and it all lives in `confi
 | `config/apis/*.lua` | the wire protocols — how to talk to an endpoint |
 | `config/providers.lua` | the catalog — which endpoints exist and what they offer |
 | `config/tools.lua` | what the model may call, and how each tool is reached |
-| `config/clients/*.lua` | the stubs siblings ship, copied in — `hexe` and `oslo` so far |
+| `config/clients/*.lua` | a sibling's client library, if you name one — none ships, because `client` serves it |
 | `config/init.lua` | your settings, and anything you want to add |
 
 `make configs` copies them to `$XDG_CONFIG_HOME/magi/`, where magi reads them. The binary also

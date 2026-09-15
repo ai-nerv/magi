@@ -1,24 +1,9 @@
-//! Starting the memory layer, and taking it down again.
-//!
-//! magi convenes its siblings rather than finding them lying about. balthasar holds this
-//! session's transcript, so a session that had to wait for somebody else to start one would be a
-//! session that sometimes records and sometimes does not.
-//!
-//! **One balthasar per magi, named after the session.** Not one per project: two windows in a
-//! project would then share an instance, and whichever quit first would take the other's store
-//! out from under it — which is exactly how the old daemon failed. They still meet, but in the
-//! project's store file rather than in a process.
-//!
-//! **It dies with its magi.** Nothing outlives the window here, and a memory layer left running
-//! is the daemon pile in another costume. Twice over, because one way is not enough: [`stop`]
-//! ends it on the way out, and `--tied` asks the kernel for `PR_SET_PDEATHSIG` so the exits
-//! that have no way out — a panic, a `kill -9`, an OOM — end it too.
-//!
-//! The second is not belt and braces. Sweeping a leftover socket was the whole answer here and
-//! it was never one: it clears a *name*, and the orphan holding that name is a live process
-//! that answers `verbs` — so [`sweep`] keeps its socket, correctly, and the process runs until
-//! the machine is rebooted. `unsafe` is not needed for the fix; `rustix` wraps the call, and
-//! balthasar makes it on itself rather than through a `pre_exec`.
+//! Starting the memory layer, and taking it down again. One balthasar per magi, named after the
+//! session, not one per project: two windows would share an instance and whichever quit first would
+//! take the other's store out from under it. It dies with its magi twice over — [`stop`] ends it on
+//! the way out, and `--tied` asks the kernel for `PR_SET_PDEATHSIG` so a panic, a `kill -9` or an
+//! OOM ends it too. Sweeping a leftover socket is not a substitute: that clears a name, and the
+//! orphan holding it is a live process that still answers `verbs`.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -27,95 +12,192 @@ use std::sync::Mutex;
 /// The balthasar this process started, so it can be ended and its path cleared.
 static STARTED: Mutex<Option<Ours>> = Mutex::new(None);
 
-/// A balthasar this magi started, and the path it was told to bind.
-///
-/// The path is kept beside the child because only the two together can be tidied up: the child
-/// is stopped with a signal it cannot handle, so it never unlinks its own socket, and the path
-/// alone is not enough to know whether unlinking it is safe.
-struct Ours {
-    /// The process, to end.
-    child: Child,
-    /// Where it was told to listen, to unlink once it has.
-    socket: PathBuf,
+/// What the memory role reads a connection's agent out of, spelled here because magi is what sets
+/// it: the coupling is a variable name and nothing else. Both, for one release — a memory layer
+/// that has not been rebuilt reads only the second, and would file this session under `main`.
+pub const AGENT: [&str; 2] = ["MAGI_MEMORY_AGENT", "BALTHASAR_AGENT"];
+
+/// The id out of `project/role/id`. Told to the balthasar magi spawns, not set on this process:
+/// balthasar reads it out of the peer's `/proc/<pid>/environ`, which `setenv` never touches.
+pub fn agent_of(named: &str) -> Option<&str> {
+    named
+        .split('/')
+        .nth(2)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
 }
 
-/// How long to wait for a freshly started balthasar to bind.
-const PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
+/// A balthasar this magi started, and every path it may have bound. The paths are kept beside the
+/// child, which is killed with a signal it cannot handle and so never unlinks its own sockets.
+struct Ours {
+    child: Child,
+    sockets: Vec<PathBuf>,
+}
 
-/// Start a balthasar for this session and return the socket it bound.
-///
-/// `None` when balthasar is not installed or did not bind in time, which is the ordinary case on
-/// a machine without it: the session then keeps its own journal exactly as it did before.
-pub async fn start(instance: &str, project: &Path) -> Option<PathBuf> {
-    // Somebody else already said which one to talk to — a magi spawned by a balthasar, or a test
-    // pointing at a fixture. Theirs, not ours to start.
+/// How long to wait for a freshly started balthasar to bind. Generous: there is no fallback,
+/// and the loop below stops the moment the child exits.
+const PATIENCE: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// What came of trying to convene this session's store.
+#[derive(Debug)]
+pub enum Started {
+    Ours(PathBuf),
+    /// Somebody else already said which one to talk to. Theirs, not ours to start or to stop.
+    Theirs,
+    Refused(String),
+}
+
+/// Start this session's memory layer and return the socket it bound. `program` is whatever fills
+/// the `memory` role — see `ROLES.md`. The reason is carried out rather than logged, because the
+/// caller refuses the session and has to say the actual cause.
+pub async fn start(program: &str, instance: &str, project: &Path, agent: Option<&str>) -> Started {
+    // Somebody else already said which one to talk to. Theirs, not ours to start.
     if std::env::var_os("MAGI_API_SOCKET").is_some_and(|v| !v.is_empty()) {
-        return None;
+        return Started::Theirs;
     }
 
-    let dir = magi_ipc::family::socket_dir();
-    let socket = dir.join(format!("api@{instance}.sock"));
-    // The whole directory, not only the path about to be taken. A session id is unique per
-    // magi, so sweeping one path only ever cleared a corpse this same session had left --
-    // which, since the id is never reused, is none. Every run therefore left a file behind for
-    // good, and after a week the directory is a list of sessions that ended.
-    sweep_stale(&dir);
+    // Both of the role's directories, the new name first: one that has not been rebuilt binds only
+    // the old, and waiting on the new alone times out against a program that came up perfectly.
+    let dirs = magi_ipc::family::socket_dirs();
+    let sockets: Vec<PathBuf> = dirs
+        .iter()
+        .map(|dir| dir.join(format!("api@{instance}.sock")))
+        .collect();
+    // The whole directory, not only the path about to be taken: a session id is unique per magi, so
+    // sweeping one path only ever cleared a corpse this same session had left, which is none.
+    for dir in &dirs {
+        sweep_stale(dir);
+    }
 
-    let child = Command::new("balthasar")
+    let mut spawning = Command::new(program);
+    // In the child's initial environment, which is the only place balthasar can read it from.
+    if let Some(agent) = agent {
+        for named in AGENT {
+            spawning.env(named, agent);
+        }
+    }
+    let child = spawning
         .arg("serve")
         .arg("--instance")
         .arg(instance)
         .arg("--scope")
         .arg("project")
-        // The kernel's copy of "it dies with its magi", for the exits that never reach `stop`.
-        // This process names itself: an orphan has already been reparented by the time it could
-        // look, so "am I still yours" is only answerable against a pid it was told.
+        // The kernel's copy of "it dies with its magi". This process names itself: an orphan has
+        // already been reparented by the time it could look.
         .arg("--tied")
         .arg(std::process::id().to_string())
         .current_dir(project)
-        // Silenced: this shares a terminal with the UI, and a line on stderr lands in the middle
-        // of a frame.
+        // Piped rather than silenced: it must not reach the terminal the UI shares, but a balthasar
+        // that refuses to start needs its last words, which are all a person has to go on.
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .inspect_err(|why| magi_model::noted!("balthasar: serve could not be started: {why}"))
-        .ok()?;
+        .stderr(Stdio::piped())
+        .spawn();
+    let child = match child {
+        Ok(child) => child,
+        Err(why) => {
+            return Started::Refused(format!("`{program} serve` could not be started: {why}"));
+        }
+    };
     if let Ok(mut held) = STARTED.lock() {
         *held = Some(Ours {
             child,
-            socket: socket.clone(),
+            sockets: sockets.clone(),
         });
     }
 
-    // Polled rather than assumed. A socket appears when balthasar binds it, and dialling before
-    // then is the one failure that would look like "balthasar is not installed".
+    // Polled rather than assumed: a socket appears when balthasar binds it. The child is watched as
+    // well, so an install that exits at once is not reported twenty seconds later as a timeout.
     let deadline = std::time::Instant::now() + PATIENCE;
+    let mut bound: Option<PathBuf> = None;
     while std::time::Instant::now() < deadline {
-        if magi_ipc::family::blocking::Family::dial(&socket).is_ok() {
-            return Some(socket);
+        for socket in &sockets {
+            match reached(socket).await {
+                Reached::Answering => return Started::Ours(socket.clone()),
+                Reached::Bound => bound = bound.or_else(|| Some(socket.clone())),
+                Reached::Nothing => {}
+            }
+        }
+        if let Some(status) = exited() {
+            let said = last_words();
+            stop();
+            return Started::Refused(match said.is_empty() {
+                true => format!(
+                    "`{program} serve` exited ({status}) without binding {}",
+                    named(&sockets)
+                ),
+                false => format!("`{program} serve` exited ({status}): {said}"),
+            });
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
-    magi_model::noted!(
-        "balthasar: nothing bound {} within {PATIENCE:?}",
-        socket.display()
-    );
+    // Bound and still busy opening its store. The session may have it: a write is on a clock of its
+    // own, long enough to outlast the rest of that, where refusing here loses the session outright.
+    if let Some(socket) = bound {
+        return Started::Ours(socket);
+    }
     stop();
-    None
+    Started::Refused(format!(
+        "{program} did not bind {} within {PATIENCE:?}",
+        named(&sockets)
+    ))
 }
 
-/// End the balthasar this process started, and clear the path it was listening on.
-///
-/// Reaped before the socket is unlinked, and in that order. The rule everywhere else here is
-/// that a path is only ever removed once something has proved nothing is serving it — a dial
-/// that was refused, for [`sweep`]. This is the other proof, and the stronger one: after
-/// [`std::process::Child::wait`] the process is gone, so the name cannot still be answering.
-/// Unlinking first would remove a name a live balthasar was serving on, which is the mistake
-/// `sweep` exists to avoid.
-///
-/// Leaving it would not break anything — the next magi sweeps it — but "nothing outlives the
-/// window" should be true of the file as well as the process.
+/// The paths waited on, for a refusal that has to say what was looked for.
+fn named(sockets: &[PathBuf]) -> String {
+    sockets
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(" or ")
+}
+
+/// How far a poll got: balthasar opens its store on the first call, so it answers after it binds.
+enum Reached {
+    Nothing,
+    Bound,
+    Answering,
+}
+
+/// Dial, and ask for something every balthasar answers.
+async fn reached(path: &Path) -> Reached {
+    let Ok(mut open) = magi_ipc::family::Family::dial(path).await else {
+        return Reached::Nothing;
+    };
+    match open.call("verbs", Vec::new()).await {
+        Ok(_) => Reached::Answering,
+        Err(_) => Reached::Bound,
+    }
+}
+
+/// How the balthasar this process started ended, if it has. Reaped through the handle, not by
+/// pid, so nothing races a reaper.
+fn exited() -> Option<std::process::ExitStatus> {
+    let mut held = STARTED.lock().ok()?;
+    held.as_mut()?.child.try_wait().ok().flatten()
+}
+
+/// What a balthasar that would not start said on its way out: the last line only, read after the
+/// child has exited, so the pipe is closed and this cannot block.
+fn last_words() -> String {
+    use std::io::Read;
+    let mut said = String::new();
+    if let Ok(mut held) = STARTED.lock()
+        && let Some(ours) = held.as_mut()
+        && let Some(pipe) = ours.child.stderr.as_mut()
+    {
+        let _ = pipe.read_to_string(&mut said);
+    }
+    said.lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_default()
+        .trim()
+        .to_owned()
+}
+
+/// End the balthasar this process started and clear its path, reaping before the unlink: after
+/// [`std::process::Child::wait`] the name cannot still be answering.
 pub fn stop() {
     let Ok(mut held) = STARTED.lock() else {
         return;
@@ -126,44 +208,42 @@ pub fn stop() {
     ended(ours);
 }
 
-/// Stop one balthasar and clear the path it was listening on.
-///
-/// Split from [`stop`] so the order can be tested without the static, which is process-wide and
-/// would make two tests that used it pass alone and fail together.
-fn ended(Ours { mut child, socket }: Ours) {
-    let _ = child.kill();
-    let _ = child.wait();
-    // Absent when it never got as far as binding, which is the timeout path into here.
-    let _ = std::fs::remove_file(&socket);
+/// Whether the memory layer is up: the balthasar this magi started still running, or one somebody
+/// else named for it. What the footer's `BAL` dot reports.
+pub fn alive() -> bool {
+    if std::env::var_os("MAGI_API_SOCKET").is_some_and(|v| !v.is_empty()) {
+        return true;
+    }
+    STARTED
+        .lock()
+        .ok()
+        .and_then(|mut held| {
+            held.as_mut()
+                .map(|ours| matches!(ours.child.try_wait(), Ok(None)))
+        })
+        .unwrap_or(false)
 }
 
-/// Clear every socket in `dir` that nothing is serving.
-///
-/// A pass over the directory rather than over one name, because the ones worth clearing are
-/// never the one this session is about to bind: the path is named after a session id that is
-/// unique per magi, so nothing can be squatting on it. What accumulates is the *predecessors* —
-/// a file per run, each outliving the balthasar that bound it.
-///
-/// Only `api@*.sock`, so the settings and the tool description sitting beside them are left
-/// alone. And on the way up rather than on the way down, because the runs that leave a file are
-/// exactly the ones that did not get to run anything on the way down.
+/// Split from [`stop`] so the order can be tested without the process-wide static.
+fn ended(Ours { mut child, sockets }: Ours) {
+    let _ = child.kill();
+    let _ = child.wait();
+    // Every name it may have answered under; absent when it never got as far as binding.
+    for socket in &sockets {
+        let _ = std::fs::remove_file(socket);
+    }
+}
+
+/// Clear every socket in `dir` that nothing is serving — a pass over the directory, because what
+/// accumulates is predecessors. Only `api@*.sock`, so settings and tool descriptions are spared.
 fn sweep_stale(dir: &Path) {
     for path in magi_ipc::family::sockets_in(dir) {
         sweep(&path);
     }
 }
 
-/// Clear a socket at `path` that nothing is serving.
-///
-/// Asked, never guessed: a live balthasar's socket looks exactly like a dead one's, so unlinking
-/// on appearance would take another window's memory layer out from under it.
-///
-/// **A connection is not an answer.** This dialled and kept anything that accepted, and the
-/// kernel accepts on behalf of a listener whose owner has stopped reading — so the one case a
-/// sweep most needs to clear, a balthasar that is wedged or left over from an older build, was
-/// the one case it always kept. Worse, the stale socket is usually the *newest*, so every client
-/// that tries them newest-first reached it, waited out a timeout and gave up: a session with no
-/// memory and no message. One `verbs` call settles it.
+/// Clear a socket at `path` that nothing is serving. Asked rather than merely dialled: the kernel
+/// accepts on behalf of a listener whose owner has stopped reading, so one `verbs` call settles it.
 fn sweep(path: &Path) {
     if !path.exists() {
         return;
@@ -180,40 +260,19 @@ mod tests {
     use super::*;
     use magi_model::scratch::Scratch;
 
-    /// Held by every test here that binds a socket or starts a process.
-    ///
-    /// The two cannot overlap. `fork` copies the whole descriptor table, so a child spawned while
-    /// another thread holds a listening socket keeps that socket open until it `exec`s — and for
-    /// that moment a socket whose listener this process already dropped still *accepts* a
-    /// connection. `CLOEXEC` closes it at the `exec` and not before, so there is nothing to fix
-    /// in the spawn.
-    ///
-    /// That race is no longer what decides the sweep: [`super::sweep`] asks for an answer now,
-    /// and an inherited descriptor cannot give one — it was never listening, only holding the
-    /// socket open. This is kept because spawning a process while another test is binding is
-    /// still not something to do concurrently, and because the guarantee is cheaper to keep than
-    /// to re-derive.
+    /// Held by every test that binds a socket or starts a process: `fork` copies the descriptor
+    /// table, so a spawn during another thread's bind keeps that socket open until it `exec`s.
     static ALONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Take [`ALONE`], ignoring a poisoning left by some other test's failure.
-    ///
-    /// A panic elsewhere has already been reported; refusing to run the rest would turn one
-    /// failure into a page of them.
     fn alone() -> std::sync::MutexGuard<'static, ()> {
         ALONE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// A socket something is actually serving on: it accepts, and it answers.
-    ///
-    /// A bare `UnixListener` used to stand in for a live balthasar, and under the new rule it no
-    /// longer can — which is the point. It also could not stand in for one reliably: a `fork` on
-    /// another thread copies the descriptor table, so a listener this process has already dropped
-    /// keeps answering dials until the child `exec`s, and the *dead* fixture would pass as live.
-    /// Answering is not something an inherited descriptor can do by accident.
-    ///
-    /// One connection, one reply, then it ends. That is all a sweep asks for.
+    /// A socket something is actually serving on: it accepts, and it answers. A bare `UnixListener`
+    /// cannot stand in — an inherited descriptor accepts but cannot answer.
     fn serving(path: &std::path::Path) -> std::thread::JoinHandle<()> {
         use std::io::{Read, Write};
 
@@ -277,8 +336,7 @@ mod tests {
     #[tokio::test]
     async fn every_socket_nobody_answers_is_cleared_not_only_this_sessions() {
         let _alone = alone();
-        // The leak. Sweeping one path cleared a corpse of this session's own, and a session id
-        // is never reused — so nothing was ever cleared and every run left a file for good.
+        // A session id is never reused, so sweeping one path only ever cleared a corpse of its own.
         let (dir, live, dead) = littered("directory");
         let served = serving(&live);
 
@@ -294,8 +352,7 @@ mod tests {
     #[tokio::test]
     async fn what_is_not_a_socket_is_left_where_it_is() {
         let _alone = alone();
-        // The settings a coordinator wrote and the tool description sit in the same directory,
-        // and a sweep that went by "everything here is stale" would take both.
+        // The settings a coordinator wrote and the tool description sit in the same directory.
         let (dir, _live, _dead) = littered("bystanders");
         let given = dir.join("given.lua");
         let tool = dir.join("balthasar.tool");
@@ -308,16 +365,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_session_takes_its_socket_with_it() {
+    async fn a_session_takes_every_socket_it_answered_under_with_it() {
         let _alone = alone();
-        // "Nothing outlives the window" should be true of the file as well as the process.
-        // Left behind, it was cleared by the next magi rather than by this one -- so a machine
-        // at rest always had one, and the directory never quite emptied.
+        // Left behind, they were cleared by the next magi rather than by this one. Both names,
+        // because a memory layer this magi killed outright unlinks neither of its own.
         let dir = Scratch::new("magi-ended", "one");
         let socket = dir.join("api@00000000000000000003-gamma.sock");
+        let older = dir.join("api@00000000000000000003-gamma-old.sock");
         let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
-        // A stand-in for balthasar: something that is running and holds the socket open, so
-        // this is a kill and an unlink rather than a tidy exit.
+        let elder = std::os::unix::net::UnixListener::bind(&older).expect("bind");
+        // A stand-in for balthasar: running and holding the socket open, so this is a kill.
         let child = Command::new("sleep")
             .arg("30")
             .stdout(Stdio::null())
@@ -327,11 +384,16 @@ mod tests {
 
         ended(Ours {
             child,
-            socket: socket.clone(),
+            sockets: vec![socket.clone(), older.clone()],
         });
         drop(listener);
+        drop(elder);
 
         assert!(!socket.exists(), "the socket outlived the session");
+        assert!(
+            !older.exists(),
+            "the name it also answered under outlived the session"
+        );
         assert!(
             !Path::new(&format!("/proc/{id}")).exists(),
             "the child outlived the session"
@@ -341,8 +403,7 @@ mod tests {
     #[tokio::test]
     async fn a_balthasar_that_never_bound_is_still_ended() {
         let _alone = alone();
-        // The timeout path into `stop`: the process started and never got as far as binding,
-        // so there is a child to kill and no file to remove.
+        // The timeout path into `stop`: a child to kill and no file to remove.
         let child = Command::new("sleep")
             .arg("30")
             .stdout(Stdio::null())
@@ -351,7 +412,7 @@ mod tests {
         let id = child.id();
         ended(Ours {
             child,
-            socket: std::env::temp_dir().join("magi-never-bound-anything.sock"),
+            sockets: vec![std::env::temp_dir().join("magi-never-bound-anything.sock")],
         });
         assert!(
             !Path::new(&format!("/proc/{id}")).exists(),
@@ -367,8 +428,22 @@ mod tests {
 
     #[tokio::test]
     async fn a_directory_that_is_not_there_is_not_an_error() {
-        // The first run on a machine. Nothing to sweep is the ordinary case, not a failure.
+        // The first run on a machine: nothing to sweep is ordinary, not a failure.
         sweep_stale(Path::new("/nonexistent/magi-sweep-nothing-here"));
+    }
+
+    #[test]
+    fn the_agent_is_the_last_part_of_the_name_melchior_gave() {
+        assert_eq!(agent_of("magi/main/alpha-rho"), Some("alpha-rho"));
+        assert_eq!(agent_of("magi/reviewer/zeta-pi"), Some("zeta-pi"));
+    }
+
+    #[test]
+    fn a_session_with_no_melchior_is_named_nothing_rather_than_a_guess() {
+        // An invented agent name files somebody's memory under a name that does not exist.
+        for named in ["", "magi", "magi/main", "magi/main/", "magi/main/   "] {
+            assert_eq!(agent_of(named), None, "{named:?} was named as something");
+        }
     }
 
     #[tokio::test]
@@ -376,8 +451,13 @@ mod tests {
         // Set for the length of this test only, and read before anything is spawned.
         let saved = std::env::var_os("MAGI_API_SOCKET");
         assert!(
-            saved.is_none() || start("x", Path::new("/tmp")).await.is_none(),
-            "an explicit socket means somebody else's balthasar"
+            saved.is_none()
+                || matches!(
+                    start("balthasar", "x", Path::new("/tmp"), None).await,
+                    Started::Theirs
+                ),
+            "an explicit socket means somebody else's balthasar — not ours to start, and not a \
+             refusal either"
         );
     }
 }

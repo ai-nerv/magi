@@ -16,6 +16,27 @@ mod reduction {
     }
 
     #[test]
+    fn a_busy_dot_flickers_like_a_drive_lamp_and_goes_dark_when_idle() {
+        let mut app = App::new();
+        assert!(app.stirring().iter().all(|lit| *lit < 0.5), "dark at rest");
+        app.stir(2);
+        assert!(app.stirring()[2] > 0.5, "lit the moment it works");
+        app.stirred[2] = Some(std::time::Instant::now() - std::time::Duration::from_millis(300));
+        let seen: Vec<f32> = (0..40)
+            .map(|frame| {
+                app.scan_phase = frame;
+                app.stirring()[2]
+            })
+            .collect();
+        assert!(
+            seen.iter().any(|lit| *lit > 0.5) && seen.iter().any(|lit| *lit < 0.5),
+            "it blinks while busy rather than holding on: {seen:?}"
+        );
+        app.stirred[2] = Some(std::time::Instant::now() - std::time::Duration::from_secs(5));
+        assert!(app.stirring()[2] < 0.5, "dark once it has stopped");
+    }
+
+    #[test]
     fn deltas_accumulate_onto_the_started_message() {
         let app = app_with(vec![
             HarnessEvent::AssistantStarted {
@@ -248,6 +269,7 @@ mod usage_tests {
             output,
             cache_read: 0,
             cache_write: 0,
+            cost_micros: 0,
         }
     }
 

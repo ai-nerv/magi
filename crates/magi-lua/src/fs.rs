@@ -1,18 +1,20 @@
 //! The directory lister the family's clients use to find each other.
 //!
-//! A sibling's client prefers `host.fs.ls(dir)` over shelling out to `io.popen`, because a
-//! sandboxed host may refuse the latter. Offering it is what lets hexe's and oslo's clients
-//! discover their own sockets while running inside magi.
-//!
-//! **`fs.dir` is deliberately not offered.** A client asks the host for "the directory my
-//! sockets live in", and any host that answers gets believed — so magi answering would send
-//! hexe's client looking for hexe sockets in magi's directory. Listing is generic and safe to
-//! lend; naming your own runtime directory is not.
+//! A sibling's client prefers `host.fs.ls(dir)` over shelling out to `io.popen`, which a sandboxed
+//! host may refuse. `fs.write` runs through the session's `Ops`, and answers only while those ops
+//! are lent, so a config cannot write while it is being read. `fs.dir` is deliberately not offered:
+//! a client believes whatever host answers "the directory my sockets live in", so magi answering
+//! would send hexe's client to magi's directory.
 
 use luna::{Callback, CallbackReturn, Context, Table, Value};
+use std::cell::RefCell;
+use std::rc::Rc;
 
-/// Build the `fs` table.
-pub fn table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
+/// The session's `Ops`, lent to the VM for as long as the worker lives. Empty in every path but a
+/// real session; `magi.fs.write` answers only while it holds one.
+pub type Lent = Rc<RefCell<Option<Rc<dyn magi_tools::Ops>>>>;
+
+pub fn table<'gc>(ctx: Context<'gc>, lent: Lent) -> Table<'gc> {
     let fs = Table::new(&ctx);
     let ls = Callback::from_fn(&ctx, |ctx, _exec, mut stack| {
         let path: Value = stack.consume(ctx)?;
@@ -23,8 +25,7 @@ pub fn table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
         let path = String::from_utf8_lossy(path.as_bytes()).into_owned();
 
         let out = Table::new(&ctx);
-        // An unreadable directory is an empty listing, not a raise: a client probing several
-        // candidate directories expects "nothing here", and most of them will not exist.
+        // An unreadable directory is an empty listing, not a raise: a client probes several.
         if let Ok(entries) = std::fs::read_dir(&path) {
             let mut index = 1_i64;
             for entry in entries.flatten() {
@@ -35,8 +36,7 @@ pub fn table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
                     .ok();
 
                 // Modification time, because the client sorts by it to prefer the newest session.
-                // Absent rather than zero when the filesystem will not say: zero would sort as
-                // the oldest, which is a different claim from "unknown".
+                // Absent rather than zero when the filesystem will not say.
                 if let Some(mtime) = entry
                     .metadata()
                     .ok()
@@ -53,5 +53,95 @@ pub fn table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
         Ok(CallbackReturn::Return)
     });
     fs.set(ctx, "ls", ls).ok();
+
+    // Writing, through the same seam the file tools use. Two returns rather than a raise: taking
+    // the session down because a watcher could not write would break the thing observed.
+    let write = Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
+        let (path, contents): (Value, Value) = stack.consume(ctx)?;
+        let (Value::String(path), Value::String(contents)) = (path, contents) else {
+            stack.replace(
+                ctx,
+                (Value::Nil, "magi.fs.write(path, contents): two strings"),
+            );
+            return Ok(CallbackReturn::Return);
+        };
+        let path = String::from_utf8_lossy(path.as_bytes()).into_owned();
+        let contents = String::from_utf8_lossy(contents.as_bytes()).into_owned();
+
+        let held = lent.borrow();
+        let Some(ops) = held.as_ref() else {
+            // Config load time: nothing has been lent yet.
+            stack.replace(ctx, (Value::Nil, "magi.fs.write is not available here"));
+            return Ok(CallbackReturn::Return);
+        };
+        let action = magi_tools::permit::Action::Write { path: path.clone() };
+        if let Err(why) = ops.allow("fs.write", &action) {
+            stack.replace(ctx, (Value::Nil, why));
+            return Ok(CallbackReturn::Return);
+        }
+        match ops.write(std::path::Path::new(&path), &contents) {
+            Ok(()) => stack.replace(ctx, (true, Value::Nil)),
+            Err(why) => {
+                let why = luna::String::from_slice(&ctx, why.as_bytes());
+                stack.replace(ctx, (Value::Nil, why));
+            }
+        }
+        Ok(CallbackReturn::Return)
+    });
+    fs.set(ctx, "write", write).ok();
     fs
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Engine;
+
+    #[test]
+    fn writing_before_anything_is_lent_is_refused_rather_than_done() {
+        // Config load time. Every config file in every checkout is read before anybody has been
+        // asked anything.
+        let mut engine = Engine::new();
+        engine
+            .run(
+                r#"local ok, why = magi.fs.write("/tmp/magi-should-not-exist", "x")
+                   magi.wrote = ok and "yes" or "no"
+                   magi.why = why"#,
+                "test",
+            )
+            .expect("runs");
+        engine.harvest();
+        let config = engine.config();
+        assert_eq!(config.string("wrote"), Some("no"));
+        assert!(
+            config
+                .string("why")
+                .is_some_and(|why| why.contains("not available")),
+            "{:?}",
+            config.string("why")
+        );
+        assert!(
+            !std::path::Path::new("/tmp/magi-should-not-exist").exists(),
+            "and nothing was written"
+        );
+    }
+
+    #[test]
+    fn the_arguments_are_checked_before_anything_else() {
+        let mut engine = Engine::new();
+        engine
+            .run(
+                r#"local ok, why = magi.fs.write(1, 2) magi.why = why"#,
+                "test",
+            )
+            .expect("runs");
+        engine.harvest();
+        assert!(
+            engine
+                .config()
+                .string("why")
+                .is_some_and(|why| why.contains("two strings")),
+            "{:?}",
+            engine.config().string("why")
+        );
+    }
 }

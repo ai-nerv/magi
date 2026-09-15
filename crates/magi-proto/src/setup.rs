@@ -1,52 +1,21 @@
 //! Telling a sibling how to behave.
 //!
-//! magi coordinates. A sibling it started should not be reading a configuration file of its own
-//! and hoping the two agree — magi decides, and says so. So a sibling exposes two verbs beside
-//! its own vocabulary:
-//!
-//! | verb | |
-//! |---|---|
-//! | `needs` | what it wants to be told, as [`Need`]s — the questions, not the answers |
-//! | `configure` | a chunk of its config Lua, run in its own VM, answering [`Applied`] |
-//!
-//! **Both directions matter.** A coordinator that only pushed settings would have to know every
-//! sibling's vocabulary by heart, and would be wrong first — so the sibling declares what it
-//! takes, and the coordinator answers what it knows. A setting nobody asked for is refused
-//! rather than silently ignored, because a typo that does nothing is the worst kind.
-//!
-//! # Why Lua and not a table of values
-//!
-//! Because the config API *is* Lua, and a data-only second surface would be a second thing to
-//! keep in step — the failure this whole arrangement exists to avoid. A sibling runs what it is
-//! sent through the same sandboxed VM, the same registrars and the same refusals as the file it
-//! would have read. Nothing new is trusted.
-//!
-//! # What is trusted
-//!
-//! The peer, by the kernel. A sibling accepts configuration only from the same uid — the family
-//! already refuses anything else at the socket — and that uid can already edit the config file
-//! this replaces, pass argv, and set the environment. The VM is the sandboxed one: no
-//! `os.execute`, no `io`, no filesystem. This is not a new privilege; it is the existing one
-//! arriving down a pipe instead of off a disk.
-//!
-//! A sibling started *without* a coordinator reads its own files exactly as before. Configuring
-//! over the wire is what happens when somebody is coordinating, not instead of.
+//! magi decides configuration and says so, rather than a sibling reading a file of its own and
+//! hoping the two agree. A sibling exposes two verbs beside its own vocabulary: `needs`, which
+//! declares what it takes as [`Need`]s, and `configure`, which runs a chunk of config Lua in its
+//! own sandboxed VM and answers [`Applied`]. A setting nobody asked for is refused with a reason
+//! rather than ignored. Configuration is accepted only from the same uid, which is the uid that
+//! could already edit the file this replaces. A sibling started without a coordinator reads its
+//! own files exactly as before.
 
 use serde::{Deserialize, Serialize};
 
-/// What kind of value a setting takes.
-///
-/// Deliberately coarse. This says enough for a coordinator to send the right shape and for a
-/// person to read the list; anything finer would be a schema language, and the sibling is going
-/// to validate what it receives regardless.
+/// What kind of value a setting takes. Coarse: the sibling validates what it receives regardless.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
-    /// A string.
     Text,
-    /// A number.
     Number,
-    /// True or false.
     Flag,
     /// A table — a list or a map, and the sibling says which in `about`.
     Table,
@@ -57,39 +26,24 @@ pub enum Kind {
 pub struct Need {
     /// What to set, as the config names it: `thinking`, `retention.days`.
     pub name: String,
-    /// What sort of value it takes.
     pub kind: Kind,
-    /// One line, for a person reading the list.
     pub about: String,
-    /// Whether the sibling cannot work without it.
-    ///
-    /// Most settings are not: a sibling with a sensible default should say so rather than
-    /// demand an answer, and a coordinator that had to fill in twenty fields to start one would
-    /// be a coordinator nobody uses.
     #[serde(default)]
     pub required: bool,
-    /// What it does when nothing is said, when that is expressible.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default: Option<serde_json::Value>,
 }
 
-/// What a `configure` call did.
-///
-/// Named rather than counted: "3 settings applied" cannot be checked against what was sent, and
-/// the case that matters is the one where a coordinator sent something the sibling does not
-/// take. That is a refusal with a reason, never silence.
+/// What a `configure` call did, named rather than counted, so a refusal names the setting.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Applied {
-    /// Settings that took effect, by name.
     #[serde(default)]
     pub set: Vec<String>,
-    /// Settings that were sent and not taken, with why.
     #[serde(default)]
     pub refused: Vec<Refused>,
 }
 
 impl Applied {
-    /// Whether everything sent was taken.
     #[must_use]
     pub fn whole(&self) -> bool {
         self.refused.is_empty()
@@ -99,9 +53,7 @@ impl Applied {
 /// One setting a sibling would not take.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Refused {
-    /// What was sent.
     pub name: String,
-    /// Why it was not taken.
     pub why: String,
 }
 
@@ -159,7 +111,6 @@ mod tests {
 
     #[test]
     fn the_whole_exchange_survives_cbor_as_well() {
-        // Both encodings, like everything else that crosses between siblings.
         let applied = Applied {
             set: vec!["thinking".into()],
             refused: Vec::new(),

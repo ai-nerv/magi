@@ -1,183 +1,125 @@
-//! UI state, and the reduction of harness events onto it.
-//!
-//! Pure: no terminal, no socket. The driver feeds it events and keys and asks it what to
-//! draw, which is what lets the whole state machine be tested without a pty.
+//! UI state, and the reduction of harness events onto it. Pure: no terminal, no socket, so the
+//! whole state machine can be tested without a pty.
 
 use magi_proto::{AgentStatus, Cursor, Entry, HarnessEvent, MessageId, ToolCallId};
 use magi_tui::Editor;
 use magi_tui::overlay::Overlay;
 use magi_tui::scrollback::Scrollback;
 
-/// Add two token counts.
-///
-/// Written out because `Usage` is four independent counters, and summing three while
-/// forgetting the fourth shows up as a footer that quietly reads low.
+/// Add two token counts. `Usage` is four independent counters; missing one reads low in the footer.
 fn add(total: magi_proto::Usage, next: magi_proto::Usage) -> magi_proto::Usage {
     magi_proto::Usage {
         input: total.input + next.input,
         output: total.output + next.output,
         cache_read: total.cache_read + next.cache_read,
         cache_write: total.cache_write + next.cache_write,
+        cost_micros: total.cost_micros + next.cost_micros,
     }
 }
 
 /// Everything the UI knows.
 pub struct App {
-    /// Transcript in order.
     entries: Vec<Entry>,
     /// Highest cursor seen, so a reconnect resumes rather than replays.
     cursor: Cursor,
-    /// What the agent is doing.
     status: AgentStatus,
-    /// The prompt buffer.
     pub editor: Editor,
     /// The transcript, which magi owns: the alternate screen has no terminal history to defer to.
     pub scrollback: Scrollback,
 
-    /// Whether the socket is currently up.
     pub connected: bool,
-    /// When the current turn started, for the elapsed clock.
     working_since: Option<std::time::Instant>,
-    /// A notice to show once the session's own entries have arrived.
-    ///
-    /// Not shown immediately: attaching replaces `entries` wholesale with what the daemon has,
-    /// so anything appended before the first snapshot is discarded by it. This is for things
-    /// the UI knows at startup and the daemon does not.
+    /// Held back until the first snapshot: attaching replaces `entries` wholesale.
     pending_notice: Option<String>,
-    /// What to say when the daemon reports no model, if the UI has worked out something better.
-    ///
-    /// The fixed sentence is a last resort: it claims nothing is configured, which is false in
-    /// the ordinary case of a configured model whose provider key is not set.
+    /// Overrides the fixed "nothing is configured" sentence when only the provider key is unset.
     pub no_model: Option<String>,
-    /// What the open permission prompt is about.
-    ///
-    /// Kept because a scope's label is written *in terms of the action* — "any `git` command",
-    /// "anything under /home/you/work" — so turning a chosen label back into a scope needs the
-    /// action that produced it.
+    /// A scope's label is written in terms of the action, so turning one back needs that action.
     pub asking_about: magi_proto::permit::Action,
-    /// Commands submitted but not yet handed to a daemon.
-    ///
-    /// Set by the driver from the command channel: a prompt sent while the daemon is away
-    /// waits in it rather than being lost, and an emptied prompt box with nothing on screen
-    /// gave no way to tell those two apart.
+    /// Submitted but not yet handed to a daemon: a prompt sent while it is away waits here.
     pub queued: usize,
-    /// Spinner phase.
     pub tick: usize,
-    /// Scan phase, in hundredths of a tick.
-    ///
-    /// Its own clock rather than the spinner's, because the scan has a speed somebody can set
-    /// and the spinner does not. Hundredths so `scan_speed = 0.5` is half as fast rather than
-    /// stopped, which is what it would round to in whole ticks.
+    /// In hundredths of a tick, so `scan_speed = 0.5` is half as fast rather than stopped.
     scan_phase: usize,
-    /// Which model is answering, as the daemon reported it.
-    ///
-    /// From the daemon rather than read from the configuration here: a UI reading the config
-    /// for itself would name whatever is configured *now*, which after an edit is not what the
-    /// daemon on the other end of the socket is actually talking to.
+    /// As the daemon reported it, not read from the config here — after an edit the two differ.
     pub model: Option<magi_proto::ModelInfo>,
-    /// How much reasoning is being asked for.
     pub thinking: String,
-    /// Whether the model answering can reason at all.
+    /// Which provider serves the model, by routing tag, as chosen on its card; `None` is the router's.
+    pub provider: Option<String>,
+    /// Which model answered each finished turn, as it was when the turn ended.
+    pub turn_models: std::collections::HashMap<MessageId, String>,
     model_reasons: bool,
-    /// Everything the daemon says this session could switch to.
     pub choices: Vec<magi_proto::ModelChoice>,
-    /// What is open under the prompt: a list, a completion popup, or nothing.
-    ///
-    /// One slot rather than two. They were never open together — a list is opened by a command,
-    /// and running a command closes the popup that offered it — and holding that apart in a
-    /// comment while every reader checked both fields is how the two drifted into two heights,
-    /// two draw calls and two looks.
+    /// A list or a completion popup. One slot: running a command closes the popup that offered it.
     pub overlay: Option<Overlay>,
-    /// What that list is choosing.
-    ///
-    /// Held beside the list rather than inside it, because the list is a generic widget and
-    /// this is the one thing about it only its opener knows. Without it every list's answer
-    /// went to the same place, and picking a thinking level asked for a model called "medium".
+    pub pane: Option<magi_tui::pane::Pane>,
+    /// Recorded from the start whether or not anybody looks, in one bounded ring.
+    pub timeline: magi_tui::trace::Trace,
     pub picking: Option<Picking>,
-    /// Rows a tool is holding, and the last frame it drew in them.
-    ///
-    /// One at a time: a turn runs its tool calls in order, so two tools cannot be holding the
-    /// screen at once, and a list would be a queue nothing ever puts a second thing in.
+    /// One at a time: a turn runs its tool calls in order.
     pub surface: Option<surfacing::Surfacing>,
-    /// How much of each tool result to show.
     pub detail: magi_tui::transcript::Detail,
-    /// What this session is called, as the footer shows it.
-    ///
-    /// `project/role/id` when melchior is running, because naming is its job: it holds the directory
-    /// those names live in and can look before it chooses. Just the project otherwise — with no
-    /// layer there are no siblings to be told apart.
+    /// `project/role/id` when melchior is running, which does the naming; the project alone otherwise.
     pub named: String,
-    /// The empty prompt writing to itself.
-    ///
-    /// Held here rather than in the renderer because it moves on a clock and on what the person
-    /// is doing, neither of which a draw call knows about. See [`App::settle_prompt`].
     pub tease: magi_tui::tease::Tease,
-    /// The scramble a newly opened list lands with.
-    ///
-    /// A field rather than a static, unlike the opening one: the screen opens once and a list
-    /// opens every time you ask for a model or answer a permission.
     pub landing: magi_tui::decrypt::Landing,
-    /// The footer's trace, and everything that has scrolled past on it.
-    pub trace: magi_tui::beacon::Trace,
-    /// Which mode the prompt is in, and any half-typed command waiting on its second key.
     pub modal: crate::keys::Modal,
-    /// Every session melchior says is listening in this project, for the `$` popup.
-    ///
-    /// Pushed by melchior rather than read here: a completion offered on a keystroke cannot go and
-    /// look, and magi reading the directory would be a second place that knows the layout.
-    pub reachable: Vec<String>,
-    /// How many messages from other sessions have arrived and not been answered.
-    ///
-    /// A count, not the messages. What was said goes into the transcript like anything else,
-    /// and what is *unanswered* is the only part a sibling asking `status` cares about —
-    /// everything else about an inbox belongs to the layer that holds it.
+    /// Pushed by melchior for the `$` popup: a completion offered on a keystroke cannot go look.
+    pub reachable: Vec<crate::melchior::Peer>,
+    /// Whose session is on screen, `None` for this one's own; see [`crewing`].
+    pub attached: Option<crate::melchior::Peer>,
     pub waiting: usize,
-    /// What this session is allowed to do, as far as the screen has seen it decided.
-    ///
-    /// Kept here rather than asked of the session, because the UI is where every one of them was
-    /// decided: the configured rules are read at startup, and each later grant is a picker answer
-    /// this loop sent. The ledger the session actually enforces with lives on the worker thread,
-    /// behind a lock, and going to fetch it would be a round trip for something already known.
-    ///
-    /// It exists for one purpose: handing it to a session this one takes on as a child. A child
-    /// gets what its parent already holds and nothing more, so this is that list.
+    /// What the screen has seen decided, for handing to a session this one takes on as a child.
     pub granted: Vec<magi_proto::permit::Grant>,
-    /// Whether the prompt was empty when it was last looked at.
     was_blank: bool,
-    /// Which transcript line and column the pointer is over, when it is over a handle.
-    ///
-    /// A transcript coordinate rather than a screen one, so scrolling carries the highlight with
-    /// the block it belongs to instead of leaving it on whatever moved under it.
+    /// A transcript coordinate rather than a screen one, so scrolling carries the highlight.
     pub hovering: Option<(usize, u16)>,
-    /// The text being dragged over, or the last drag that finished.
-    ///
-    /// Kept after the button comes up so the highlight stays until the next click, which is how
-    /// a person checks they got what they meant before pasting it.
+    /// Kept after the button comes up, so the highlight stays until the next click.
     pub selection: Option<magi_tui::select::Selection>,
-    /// Tool blocks showing the opposite of `detail`, because they were clicked.
-    ///
-    /// Membership rather than an absolute state, so the fold key still moves every block a
-    /// person has not had an opinion about, and every block they have keeps the one they gave.
+    /// Blocks showing the opposite of `detail`, by membership, so the fold key still moves the rest.
     pub flipped: std::collections::BTreeSet<ToolCallId>,
-    /// Which tool call each rendered line belongs to, parallel to the scrollback.
     pub owners: Vec<Option<ToolCallId>>,
-    /// Which entry drew each rendered line, parallel to the scrollback.
-    ///
-    /// Every block, not only the ones that fold: a copy chip has to gather the rows of the block
-    /// it sits in, and an assistant message has no id to key that on.
+    /// Parallel to the scrollback, for every block: an assistant message has no id to key on.
     pub blocks: Vec<Option<usize>>,
-    /// Which screen rows the transcript occupies, so a click can be turned into a line.
-    ///
-    /// Recorded by the drawing pass because only it knows: the live region ends where the
-    /// prompt begins, and the prompt grows with what has been typed into it.
+    /// Recorded by the drawing pass, which is the only thing that knows where the prompt begins.
     pub live_rows: std::ops::Range<u16>,
-    /// Where the rows a tool is holding landed on screen, when one is holding any.
-    ///
-    /// The whole of what magi knows about a surface's position, and the whole of what a tenant is
-    /// never told: this is how a click at row 31 becomes "row 2 of your own rows", and the tenant
-    /// gets the second half of that sentence. `None` when nothing is holding rows, so a pointer
-    /// over an ordinary picker is not translated into coordinates for a surface that has closed.
+    /// `None` when nothing holds rows, so a pointer over a picker is not translated for a closed surface.
     pub surface_rect: Option<ratatui::layout::Rect>,
+    /// Recorded by the layout rather than recomputed; `None` when the corner wears nothing.
+    pub corner_rect: Option<ratatui::layout::Rect>,
+    /// So a press outside the pane can close it. `None` when none is open.
+    pub pane_rect: Option<ratatui::layout::Rect>,
+    /// Where the footer name landed: a press on it opens the agents view. `None` before the first
+    /// draw records it.
+    pub name_rect: Option<ratatui::layout::Rect>,
+    /// Whether the pointer is over that name, so the footer can draw it inverted like the usage badge.
+    pub name_hover: bool,
+    /// Where the model's name landed on the footer, which opens its card; and whether the pointer is on it.
+    pub model_rect: Option<ratatui::layout::Rect>,
+    pub model_hover: bool,
+    /// Whether melchior, balthasar and casper are up, in that order, for the footer's three dots.
+    pub siblings: [bool; 3],
+    /// When each of those three last did something, for the flash on its dot.
+    pub stirred: [Option<std::time::Instant>; 3],
+    /// Where each of those three landed on the footer, for the pointer.
+    pub sibling_rects: [Option<ratatui::layout::Rect>; 3],
+    /// Which sibling's dot the pointer is on: drawn inverted, the way the name shows it is a button.
+    pub sibling_hover: Option<usize>,
+    /// Agents whose branch is shut in the agents view, by id. Kept here rather than in the view, so a
+    /// fold survives the view being rebuilt or reopened.
+    pub folded: std::collections::BTreeSet<String>,
+    /// What each configured role is for, by name, for the agents view to say.
+    pub about: std::collections::BTreeMap<String, String>,
+    /// Which program owns the model, asked for a model's card.
+    pub mind: String,
+    /// What the provider published about a model, by its name, once asked; and an answer on its way.
+    pub details: Option<(String, Result<magi_tui::model_card::Details, String>)>,
+    pub details_rx: Option<std::sync::mpsc::Receiver<crate::app::views::Answered>>,
+    /// An id `--attach` named to watch: held until that agent appears on the roster, then the screen
+    /// points at it and this clears. `None` for an ordinary session.
+    pub attach_wanted: Option<String>,
+    /// Started with `--view-only`: nothing this screen sends may change a session.
+    pub view_only: bool,
+    pub corner: magi_tui::corner::Corner,
 }
 
 impl Default for App {
@@ -187,10 +129,11 @@ impl Default for App {
 }
 
 impl App {
-    /// A UI with an empty transcript.
     #[must_use]
     pub fn new() -> Self {
         Self {
+            pane: None,
+            timeline: magi_tui::trace::Trace::new(),
             entries: Vec::new(),
             cursor: Cursor::ZERO,
             status: AgentStatus::Idle,
@@ -199,19 +142,20 @@ impl App {
             connected: false,
             model: None,
             thinking: "off".to_owned(),
+            provider: None,
+            turn_models: std::collections::HashMap::new(),
             model_reasons: false,
             choices: Vec::new(),
             overlay: None,
             picking: None,
-            // Folded. A transcript of whole build logs is not a transcript, and the handle at
-            // the foot of each block is how you open the one you care about.
+            // Folded; the handle at the foot of each block opens the one you care about.
             detail: magi_tui::transcript::Detail::Preview,
             named: String::new(),
             tease: magi_tui::tease::Tease::new(opener()),
             landing: magi_tui::decrypt::Landing::default(),
-            trace: magi_tui::beacon::Trace::default(),
             modal: crate::keys::Modal::default(),
             reachable: Vec::new(),
+            attached: None,
             waiting: 0,
             granted: Vec::new(),
             was_blank: true,
@@ -223,6 +167,24 @@ impl App {
             surface: None,
             live_rows: 0..0,
             surface_rect: None,
+            corner_rect: None,
+            pane_rect: None,
+            name_rect: None,
+            name_hover: false,
+            model_rect: None,
+            model_hover: false,
+            siblings: [false; 3],
+            stirred: [None; 3],
+            sibling_rects: [None; 3],
+            sibling_hover: None,
+            folded: std::collections::BTreeSet::new(),
+            about: std::collections::BTreeMap::new(),
+            mind: "melchior".to_owned(),
+            details: None,
+            details_rx: None,
+            attach_wanted: None,
+            view_only: false,
+            corner: magi_tui::corner::Corner::default(),
             pending_notice: None,
             no_model: None,
             asking_about: magi_proto::permit::Action::Read {
@@ -235,11 +197,7 @@ impl App {
         }
     }
 
-    /// Move the empty prompt on, and put it back to an opener when somebody types.
-    ///
-    /// A prompt that has just emptied -- deleted back to nothing, or submitted -- starts its
-    /// wait over with a fresh opener. A prompt with something in it shows no placeholder at all,
-    /// so there is nothing to advance.
+    /// Move the empty prompt on, and put it back to a fresh opener when it changes emptiness.
     pub fn settle_prompt(&mut self) {
         let blank = self.editor.is_blank();
         if blank != self.was_blank {
@@ -264,19 +222,84 @@ impl App {
         self.scan_phase / usize::from(magi_tui::metric::NORMAL)
     }
 
-    /// The transcript.
+    /// Flash a sibling's dot: 0 melchior, 1 balthasar, 2 casper.
+    pub fn stir(&mut self, nth: usize) {
+        if let Some(at) = self.stirred.get_mut(nth) {
+            *at = Some(std::time::Instant::now());
+        }
+    }
+
+    /// Flash whichever siblings an event says just worked: the model turns through melchior, the
+    /// scribe files every entry with balthasar, and every tool but memory's is casper's.
+    pub(super) fn stir_for(&mut self, event: &HarnessEvent) {
+        let memory = |name: &str| matches!(name, "recall" | "remember" | "forget" | "why");
+        let (mel, bal, cas) = match event {
+            HarnessEvent::AssistantStarted { .. } | HarnessEvent::AssistantDelta { .. } => {
+                (true, false, false)
+            }
+            HarnessEvent::MessageArrived { .. } => (true, true, false),
+            HarnessEvent::UserMessage { .. }
+            | HarnessEvent::AssistantEnded { .. }
+            | HarnessEvent::Compacted { .. } => (false, true, false),
+            HarnessEvent::ToolCallStarted { name, .. } => (false, memory(name), !memory(name)),
+            HarnessEvent::ToolCallEnded { id, .. } => {
+                let remembered = self
+                    .tool_mut(id)
+                    .is_some_and(|entry| matches!(entry, Entry::Tool { name, .. } if memory(name)));
+                (false, true, !remembered)
+            }
+            HarnessEvent::Surfaced { .. } | HarnessEvent::PermissionAsked { .. } => {
+                (false, false, true)
+            }
+            _ => (false, false, false),
+        };
+        for (nth, stirred) in [mel, bal, cas].into_iter().enumerate() {
+            if stirred {
+                self.stir(nth);
+            }
+        }
+    }
+
+    /// Each dot's light this frame, like a drive's activity lamp: lit the moment its sibling works,
+    /// then blinking at random while it stays busy, more often the more recently it worked, and dark
+    /// once it has stopped.
+    #[must_use]
+    pub fn stirring(&self) -> [f32; 3] {
+        const BUSY_SECS: f32 = 1.2;
+        let mut lit = [0.0; 3];
+        for (nth, at) in self.stirred.iter().enumerate() {
+            let Some(at) = at else { continue };
+            let since = at.elapsed().as_secs_f32();
+            if since >= BUSY_SECS {
+                continue;
+            }
+            let busy = 1.0 - since / BUSY_SECS;
+            if since < 0.08 || Self::roll(self.scan_phase, nth) < 0.3 + 0.5 * busy {
+                lit[nth] = 1.0;
+            }
+        }
+        lit
+    }
+
+    /// A fresh number in `0..1` for each frame and dot: the flicker's dice, the same on a redraw.
+    fn roll(frame: usize, nth: usize) -> f32 {
+        let seed = u64::try_from(frame)
+            .unwrap_or(0)
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ u64::try_from(nth + 1)
+                .unwrap_or(1)
+                .wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        let mixed = (seed ^ (seed >> 31)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        let mixed = mixed ^ (mixed >> 29);
+        f32::from(u16::try_from(mixed % 1000).unwrap_or(0)) / 1000.0
+    }
+
     #[must_use]
     pub fn entries(&self) -> &[Entry] {
         &self.entries
     }
 
-    /// Every token this session has spent.
-    ///
-    /// Derived from the transcript rather than accumulated as events arrive. A running total
-    /// has to be right in two places — the snapshot on attach, and each event after it — and a
-    /// reattach replays events the snapshot already counted, so the two disagree by however
-    /// much was replayed. Folding the entries cannot double count, because there is only one
-    /// of each.
+    /// Every token this session has spent, folded from the transcript: a running total would double on reattach.
     #[must_use]
     pub fn usage(&self) -> magi_proto::Usage {
         self.entries
@@ -287,12 +310,7 @@ impl App {
             })
     }
 
-    /// Tokens the most recent request actually sent.
-    ///
-    /// How full the window is, which is not the same question as what the session has spent:
-    /// the window holds one conversation, and an afternoon that used ten windows' worth is not
-    /// ten times full. Zero until a turn has reported any, and after a compaction it drops —
-    /// which is the point of compacting.
+    /// Tokens the most recent request sent: how full the window is. Zero until reported, and it drops on compaction.
     #[must_use]
     pub fn last_prompt_tokens(&self) -> u64 {
         self.entries
@@ -313,11 +331,7 @@ impl App {
         self.cursor
     }
 
-    /// Record what the agent is doing, and when it started doing it.
-    ///
-    /// The clock is kept here rather than derived from the spinner tick: the tick runs
-    /// whether or not a turn is in flight, so it says how long the UI has been open and not
-    /// how long you have been waiting.
+    /// Record what the agent is doing, and when it started. Its own clock: the spinner runs between turns.
     fn set_status(&mut self, status: AgentStatus) {
         let was_idle = matches!(self.status, AgentStatus::Idle);
         let now_idle = matches!(status, AgentStatus::Idle);
@@ -329,17 +343,12 @@ impl App {
         self.status = status;
     }
 
-    /// How long the current turn has been running.
     #[must_use]
     pub fn elapsed(&self) -> Option<std::time::Duration> {
         self.working_since.map(|t| t.elapsed())
     }
 
-    /// Whether this session has said anything yet.
-    ///
-    /// Notices do not count. A fresh install opens with "no model is configured", which is a
-    /// message from magi about itself rather than the beginning of a conversation -- and
-    /// treating it as one replaced the whole first screen with a single line.
+    /// Whether this session has said anything yet. Notices do not count — a fresh install opens with one.
     #[must_use]
     pub fn started(&self) -> bool {
         self.entries
@@ -347,7 +356,6 @@ impl App {
             .any(|e| !matches!(e, Entry::Notice { .. }))
     }
 
-    /// What the agent is doing.
     #[must_use]
     pub fn status(&self) -> &AgentStatus {
         &self.status
@@ -359,299 +367,50 @@ impl App {
         !matches!(self.status, AgentStatus::Idle)
     }
 
-    /// Fold one harness event into the state.
-    pub fn apply(&mut self, event: HarnessEvent) {
-        self.cursor = self.cursor.max(event.cursor());
-        match event {
-            HarnessEvent::SessionSnapshot {
-                cursor: _,
-                entries,
-                status,
-                model,
-                choices,
-                thinking,
-                ..
-            } => {
-                let unconfigured = model.is_none();
-                self.model = model;
-                self.model_reasons = self.model.as_ref().is_some_and(|chosen| {
-                    choices.iter().any(|c| c.name == chosen.name && c.reasoning)
-                });
-                if !thinking.is_empty() {
-                    self.thinking = thinking;
-                }
-                self.choices = choices;
-                let empty = entries.is_empty();
-                self.entries = entries;
-                self.set_status(status);
-                // Now that the daemon's entries have replaced ours, anything the UI knew at
-                // startup can be added without the snapshot eating it.
-                if let Some(text) = self.pending_notice.take() {
-                    self.show_notice(text);
-                }
-                // Said once, on a session that has not started yet. A fresh install points at
-                // a model whose key nobody has set, and the whole of what it told you was
-                // `no-model` in a corner of the footer — true, and no help at all.
-                if unconfigured && empty && !self.choices.is_empty() {
-                    let said = self.no_model.clone().unwrap_or_else(|| {
-                        "No model is configured. Type `:model` to choose one.".to_owned()
-                    });
-                    self.show_notice(said);
-                }
-            }
-            HarnessEvent::UserMessage { id, text, .. } => {
-                // No aside. It is context for the model and the transcript never shows it, so
-                // there is nothing here for one to be.
-                self.entries.push(Entry::User {
-                    id,
-                    text,
-                    aside: String::new(),
-                });
-            }
-            // Drawn from the session's own stream rather than appended when it landed on the
-            // socket. The UI is where a message arrives and the session is where it *is*: an
-            // entry the UI kept for itself was one the model never saw, so an instance could be
-            // asked a question and sit there until somebody typed at it.
-            HarnessEvent::MessageArrived {
-                who,
-                kin,
-                sort,
-                text,
-                ..
-            } => {
-                self.entries.push(Entry::From {
-                    who,
-                    kin,
-                    sort,
-                    text,
-                });
-            }
-            // Beginning a message that is already on screen means beginning it *again*: an
-            // attempt streamed half an answer, failed, and the retry starts from nothing. So it
-            // empties the one that is there rather than pushing a second — which is what a
-            // retry mid-answer used to leave behind, two copies of the same half-message.
-            HarnessEvent::AssistantStarted { id, .. } => {
-                if let Some(Entry::Assistant {
-                    text,
-                    thinking,
-                    stop_reason,
-                    error,
-                    ..
-                }) = self.assistant_mut(&id)
-                {
-                    text.clear();
-                    thinking.clear();
-                    *stop_reason = None;
-                    *error = None;
-                } else {
-                    self.entries.push(Entry::Assistant {
-                        id,
-                        text: String::new(),
-                        thinking: String::new(),
-                        stop_reason: None,
-                        error: None,
-                        signatures: magi_proto::Signatures::default(),
-                        usage: magi_proto::Usage::default(),
-                    });
-                }
-            }
-            HarnessEvent::AssistantDelta {
-                id, text, thinking, ..
-            } => {
-                if let Some(Entry::Assistant {
-                    text: body,
-                    thinking: reasoning,
-                    ..
-                }) = self.assistant_mut(&id)
-                {
-                    body.push_str(&text);
-                    reasoning.push_str(&thinking);
-                }
-            }
-            HarnessEvent::AssistantEnded {
-                id,
-                stop_reason,
-                error,
-                usage,
-                ..
-            } => {
-                if let Some(Entry::Assistant {
-                    stop_reason: stop,
-                    error: err,
-                    usage: cost,
-                    ..
-                }) = self.assistant_mut(&id)
-                {
-                    *stop = Some(stop_reason);
-                    *err = error;
-                    *cost = usage;
-                }
-            }
-            // Said in the transcript, once the conversation has started. Which model answered
-            // is part of the record, and a switch that changes only two dim words in the
-            // footer leaves no mark on the place a reader actually reads.
-            // The turn is blocked until this is answered, so it takes the screen: a picker
-            // opened over whatever else was there, with the narrowest answer under the cursor.
-            HarnessEvent::PermissionAsked {
-                id,
-                tool,
-                action,
-                offers,
-                ..
-            } => {
-                let choices = offers
-                    .iter()
-                    .map(|scope| magi_tui::picker::Choice {
-                        value: scope.label(&action),
-                        detail: String::new(),
-                        ready: true,
-                    })
-                    .chain(std::iter::once(magi_tui::picker::Choice {
-                        value: "no".to_owned(),
-                        detail: "refuse, and tell the model".to_owned(),
-                        ready: true,
-                    }))
-                    .collect();
-                // The call on its own rows, not in the title. A long command clipped into a
-                // heading is clipped in the middle of the very thing being decided about.
-                let about = magi_tui::wrap::hard(action.subject(), 60);
-                self.overlay = Some(
-                    magi_tui::picker::Picker::new(
-                        format!("{tool} wants to {}", action.verb()),
-                        choices,
-                        None,
-                    )
-                    .about(about)
-                    .into(),
-                );
-                self.asking_about = action;
-                self.picking = Some(Picking::Permission { id, offers });
-            }
-            // The general question, drawn with the same picker a permission is — see `asked`.
-            HarnessEvent::Asked {
-                id,
-                tool,
-                question,
-                options,
-                detail,
-                ..
-            } => self.asked(id, &tool, &question, options, detail),
-            // Rows a tool asked for. Nothing here reads what goes in them — see `surfacing`.
-            HarnessEvent::Surfaced {
-                id,
-                tool,
-                rows,
-                about,
-                ..
-            } => self.surfaced(id, tool, rows, about),
-            HarnessEvent::Drew { id, lines, cursor } => self.drew(&id, lines, cursor),
-            HarnessEvent::Unsurfaced { id, .. } => self.unsurfaced(&id),
-            // A permission answered on a surface. Remembered here because a session lends what it
-            // holds to a child, and this one was decided on the tool thread without passing
-            // through the loop that usually notices.
-            HarnessEvent::Granted { grant, .. } => self.was_granted(grant),
-            HarnessEvent::ModelChanged { model, .. } => {
-                let before = self.model.as_ref().map(|m| m.name.clone());
-                let after = model.as_ref().map(|m| m.name.clone());
-                if self.started()
-                    && before != after
-                    && let Some(name) = after
-                {
-                    self.show_notice(format!("Model is now `{name}`."));
-                }
-                self.model = model;
-            }
-            // Not a transcript entry: the request was understood and declined, which is a
-            // fact about what the UI asked rather than about the conversation.
-            HarnessEvent::Refused { message, .. } => self.show_notice(message),
-            // A rule marks the boundary between what is still sent and what is not. On a view
-            // with nothing above it there is no boundary to mark, only a line saying nothing
-            // is sent from here -- which is every empty session.
-            HarnessEvent::Branched { id, keeps, .. } => {
-                if self.started() {
-                    self.entries.push(Entry::Branch { id, keeps });
-                }
-            }
-            HarnessEvent::Compacted {
-                id,
-                summary,
-                replaces,
-                ..
-            } => self.entries.push(Entry::Compaction {
-                id,
-                summary,
-                replaces,
-            }),
-            HarnessEvent::ToolCallStarted { id, name, args, .. } => {
-                self.entries.push(Entry::Tool {
-                    id,
-                    name,
-                    args,
-                    result: None,
-                    thought_signature: None,
-                });
-            }
-            HarnessEvent::ToolCallEnded { id, result, .. } => {
-                if let Some(Entry::Tool { result: slot, .. }) = self.tool_mut(&id) {
-                    *slot = Some(result);
-                }
-            }
-            HarnessEvent::StatusChanged { status, .. } => self.set_status(status),
-            HarnessEvent::Error { class, message, .. } => {
-                self.entries.push(Entry::Assistant {
-                    id: MessageId::new("error"),
-                    text: String::new(),
-                    thinking: String::new(),
-                    stop_reason: Some(magi_proto::StopReason::Error),
-                    error: Some(format!("{class:?}: {message}")),
-                    signatures: magi_proto::Signatures::default(),
-                    usage: magi_proto::Usage::default(),
-                });
-            }
+    /// The coarse phase this session reports to the roster — what a coordinator reads off the tree.
+    /// Working while a turn runs; blocked (with a one-line cause) when the last turn errored; idle
+    /// otherwise. Mechanical: derived from turn state, never from anything the model chose to say.
+    /// `finished` belongs to the headless path, which knows its assigned work is done — not here,
+    /// where an interactive session going quiet only means "ready for more".
+    #[must_use]
+    pub fn phase(&self) -> (magi_proto::Phase, Option<String>) {
+        use magi_proto::Phase;
+        if self.is_busy() {
+            return (Phase::Working, None);
         }
+        if let Some(Entry::Assistant {
+            error: Some(why), ..
+        }) = self.entries.last()
+        {
+            let cause = why.lines().next().unwrap_or(why).chars().take(80).collect();
+            return (Phase::Blocked, Some(cause));
+        }
+        (Phase::Idle, None)
     }
 
-    /// Drop the transcript without touching the daemon.
-    ///
-    /// `/clear` hides history from the view; it does not delete it. The journal is
-    /// append-only, and a UI command must never be able to rewrite it.
+    /// Drop the transcript without touching the daemon: the journal is append-only and `/clear` only hides it.
     pub fn clear_view(&mut self) {
         self.entries.clear();
     }
 
-    /// Append a local notice to the transcript.
-    ///
-    /// Notices are UI-side only and never reach the journal: `:help` output is not something
-    /// a future session should replay, and the daemon never authored it.
+    /// Append a local notice. Notices are UI-side only and never reach the journal.
     pub fn show_notice(&mut self, text: String) {
         self.entries.push(Entry::Notice { text });
     }
 
-    /// Hold a notice until the first snapshot has landed.
     pub fn notice_after_attach(&mut self, text: String) {
         self.pending_notice = Some(text);
     }
 
-    /// Append the keybinding reference.
     pub fn show_help(&mut self) {
         self.show_notice(crate::help::text());
     }
 
-    /// Open the model list.
-    ///
-    /// Every model, not only the reachable ones: somebody asking this question has usually
-    /// configured nothing, and a list narrowed to what already works would be empty exactly
-    /// when they most need it to name a variable.
+    /// Open the model list: every model, not only the reachable ones, or it is empty before anything works.
     pub fn open_model_picker(&mut self) {
         let choices: Vec<magi_tui::picker::Choice> = self
             .choices
             .iter()
-            // "set OPENROUTER_API_KEY" used to be a lie told to somebody who had set it an hour
-            // ago: the daemon captured its environment at start and outlived the shell that
-            // started it, so a key exported afterwards never reached it, and this was the only
-            // process that could tell the two apart. There is no daemon now — the session is
-            // this process — so what it can see and what the catalog was built from are the
-            // same environment, always.
             .map(|choice| magi_tui::picker::Choice {
                 value: choice.name.clone(),
                 detail: if choice.requirement.is_empty() {
@@ -674,10 +433,7 @@ impl App {
         self.picking = Some(Picking::Model);
     }
 
-    /// Open the reasoning-level list.
-    ///
-    /// Every level, marked with what this model can actually do: a level the catalog says it
-    /// refuses is shown and cannot be taken, for the same reason an unconfigured provider is.
+    /// Open the reasoning-level list. Every level is shown; one the catalog says this model refuses is not takeable.
     pub fn open_thinking_picker(&mut self) {
         const LEVELS: [(&str, &str); 6] = [
             ("off", "no reasoning — the default"),
@@ -706,11 +462,7 @@ impl App {
         self.picking = Some(Picking::Thinking);
     }
 
-    /// Show every line of each tool result, or go back to the preview.
-    ///
-    /// A whole transcript at a time rather than one block: picking a block needs a selection,
-    /// and a selection needs keys, a highlight and a rule for what happens when the thing
-    /// selected scrolls away. The question being asked is almost always about the last result.
+    /// Show every line of each tool result, or go back to the preview. A whole transcript at a time.
     pub fn toggle_detail(&mut self) -> magi_tui::transcript::Detail {
         self.detail = match self.detail {
             magi_tui::transcript::Detail::Preview => magi_tui::transcript::Detail::Full,
@@ -719,19 +471,14 @@ impl App {
         self.detail
     }
 
-    /// Recompute the completion popup from the current prompt.
-    ///
-    /// The command menu only opens on the command line. A colon typed in insert mode is a
-    /// colon -- in a sentence, in a path, in a ratio -- and it used to put the command palette
-    /// over the prompt every time somebody wrote one.
+    /// Recompute the completion popup. The command menu only opens on the command line.
     pub fn refresh_completion(&mut self, list_paths: &dyn Fn(&str) -> Vec<String>) {
         let (row, col) = self.editor.cursor();
         let line = self.editor.lines()[row].clone();
-        // `$` offers whoever is listening. Read from the socket directory on the keystroke
-        // rather than from a list kept up to date, because an instance that died did not get to
-        // remove itself from one.
-        let resolved =
-            magi_tui::complete::resolve_with(&line, col, list_paths, &|_| self.reachable.clone());
+        // `$` offers whoever is listening, read on the keystroke: a dead instance did not deregister.
+        let resolved = magi_tui::complete::resolve_with(&line, col, list_paths, &|_| {
+            self.reachable.iter().map(|them| them.id.clone()).collect()
+        });
         self.overlay = resolved
             .filter(|found| {
                 found.kind != magi_tui::complete::Kind::Command || self.modal.commanding()
@@ -754,9 +501,13 @@ impl App {
     }
 }
 
+mod crewing;
 mod kin;
+pub use crewing::{Seat, changes, for_screen};
+pub(crate) use kin::relation;
 mod picking;
 pub use picking::Picking;
+mod applying;
 mod asked;
 mod folding;
 #[cfg(test)]
@@ -765,10 +516,10 @@ mod sessions;
 pub mod surfacing;
 #[cfg(test)]
 mod tests;
+#[path = "views.rs"]
+mod views;
 
-/// A line for the box to open with.
-///
-/// Drawn fresh each time the prompt empties, so sitting down twice does not read the same twice.
+/// A line for the box to open with, drawn fresh each time the prompt empties.
 pub(crate) fn opener() -> &'static str {
     let list = magi_tui::glyph::openers();
     if list.is_empty() {
@@ -781,3 +532,7 @@ pub(crate) fn opener() -> &'static str {
 #[cfg(test)]
 #[path = "opening.rs"]
 mod opening_tests;
+
+#[cfg(test)]
+#[path = "panes.rs"]
+mod panes;

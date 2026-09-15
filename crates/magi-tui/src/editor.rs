@@ -1,28 +1,18 @@
-//! The prompt editor.
-//!
-//! Multi-line, with word navigation and a kill ring, because a coding prompt is a paragraph
-//! and not a shell command. Enter submits; Shift+Enter inserts a newline, which is why the
-//! Kitty keyboard protocol is negotiated at startup.
+//! The prompt editor: multi-line, with word navigation and a kill ring. Enter submits and
+//! Shift+Enter inserts a newline, which is why the Kitty keyboard protocol is negotiated at startup.
 
 /// A multi-line text buffer with a cursor.
 #[derive(Debug, Default)]
 pub struct Editor {
     lines: Vec<String>,
-    /// Line index of the cursor.
     row: usize,
     /// Character index within `lines[row]`, not a byte offset.
     col: usize,
-    /// Most recently killed text, for `Ctrl-Y` and for `p`.
     kill_ring: String,
-    /// Whether what is in the kill ring was taken as whole lines.
-    ///
-    /// vim's distinction, and it is not decoration: `yy` then `p` puts the line *below* the
-    /// one you are on, while `yw` then `p` puts the word *after the cursor*. Without this the
-    /// two are the same paste and one of them is always wrong.
+    /// Whether what is in the kill ring was taken as whole lines. `yy` then `p` puts the line below
+    /// the one you are on, where `yw` then `p` puts the word after the cursor.
     kill_lines: bool,
-    /// Buffers to go back to, oldest first.
     undo: Vec<Snapshot>,
-    /// Submitted prompts, oldest first.
     history: Vec<String>,
     /// Position while walking `history`; `None` means "editing, not browsing".
     history_pos: Option<usize>,
@@ -30,11 +20,8 @@ pub struct Editor {
     typed: Vec<Typed>,
 }
 
-/// A character somebody has just typed: where it went, what it was, and when.
-///
-/// The character is kept as well as the position because an edit that moves text around leaves
-/// the positions pointing at somebody else's letters. Checking what is actually there is cheaper
-/// than invalidating this from every method that can shift a line.
+/// A character somebody has just typed: where it went, what it was, and when. The character is kept
+/// as well as the position, because an edit that moves text leaves positions on other letters.
 #[derive(Debug, Clone, Copy)]
 struct Typed {
     row: usize,
@@ -43,7 +30,6 @@ struct Typed {
     at: std::time::Instant,
 }
 
-/// A buffer as it stood, to go back to.
 #[derive(Debug, Clone)]
 struct Snapshot {
     lines: Vec<String>,
@@ -51,10 +37,7 @@ struct Snapshot {
     col: usize,
 }
 
-/// How many edits back you can go.
-///
-/// Bounded because a session is long and every keystroke in normal mode can be an edit. Deep
-/// enough that nobody reaches the end of it while still remembering what they did.
+/// How many edits back you can go. Bounded because every keystroke in normal mode can be an edit.
 const UNDOS: usize = 200;
 
 /// How long a typed character is remembered, whatever the reveal is set to.
@@ -64,7 +47,6 @@ const REMEMBERED: std::time::Duration = std::time::Duration::from_secs(1);
 const RECENT: usize = 64;
 
 impl Editor {
-    /// An empty editor with one blank line.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -74,10 +56,6 @@ impl Editor {
     }
 
     /// The same, starting with the prompts from previous runs.
-    ///
-    /// The arrow keys have walked a history since M2 and the history started empty every run, so
-    /// it worked within one session and had nothing in it the moment you came back — which is
-    /// when the prompt you want again is the one from yesterday.
     #[must_use]
     pub fn with_history(history: Vec<String>) -> Self {
         Self {
@@ -87,7 +65,6 @@ impl Editor {
         }
     }
 
-    /// The full text, lines joined by newlines.
     #[must_use]
     pub fn text(&self) -> String {
         self.lines.join("\n")
@@ -99,7 +76,6 @@ impl Editor {
         self.lines.iter().all(|l| l.trim().is_empty())
     }
 
-    /// The buffer's lines, for rendering.
     #[must_use]
     pub fn lines(&self) -> &[String] {
         &self.lines
@@ -111,7 +87,6 @@ impl Editor {
         (self.row, self.col)
     }
 
-    /// Empty the buffer and stop browsing history.
     pub fn clear(&mut self) {
         self.lines = vec![String::new()];
         self.row = 0;
@@ -119,9 +94,8 @@ impl Editor {
         self.history_pos = None;
     }
 
-    /// Take the text, record it in history, and reset.
-    ///
-    /// Returns `None` for a blank buffer so Enter on an empty prompt does nothing.
+    /// Take the text, record it in history, and reset. `None` for a blank buffer, so Enter on
+    /// an empty prompt does nothing.
     pub fn submit(&mut self) -> Option<String> {
         if self.is_blank() {
             return None;
@@ -132,7 +106,6 @@ impl Editor {
         Some(text)
     }
 
-    /// Insert a character at the cursor.
     pub fn insert(&mut self, c: char) {
         let byte = self.byte_offset();
         self.lines[self.row].insert(byte, c);
@@ -141,7 +114,6 @@ impl Editor {
         self.note(c);
     }
 
-    /// Remember that `c` was just typed, and forget anything too old to still be resolving.
     fn note(&mut self, c: char) {
         let at = std::time::Instant::now();
         self.typed.retain(|t| at.duration_since(t.at) < REMEMBERED);
@@ -178,7 +150,6 @@ impl Editor {
         }
     }
 
-    /// Split the current line at the cursor.
     pub fn newline(&mut self) {
         let byte = self.byte_offset();
         let tail = self.lines[self.row].split_off(byte);
@@ -203,7 +174,6 @@ impl Editor {
         self.history_pos = None;
     }
 
-    /// Move the cursor one character left, wrapping to the previous line.
     pub fn left(&mut self) {
         if self.col > 0 {
             self.col -= 1;
@@ -213,7 +183,6 @@ impl Editor {
         }
     }
 
-    /// Move the cursor one character right, wrapping to the next line.
     pub fn right(&mut self) {
         if self.col < self.lines[self.row].chars().count() {
             self.col += 1;
@@ -223,7 +192,6 @@ impl Editor {
         }
     }
 
-    /// Move to the start of the line.
     pub fn home(&mut self) {
         self.col = 0;
     }
@@ -236,7 +204,6 @@ impl Editor {
         }
     }
 
-    /// Move the cursor one line down, keeping as much of its column as the line has.
     pub fn down(&mut self) {
         if self.row + 1 < self.lines.len() {
             self.row += 1;
@@ -252,22 +219,17 @@ impl Editor {
             .unwrap_or(0);
     }
 
-    /// Move to the last line.
     pub fn last_line(&mut self) {
         self.row = self.lines.len() - 1;
         self.col = self.col.min(self.lines[self.row].chars().count());
     }
 
-    /// Move to the first line.
     pub fn first_line(&mut self) {
         self.row = 0;
         self.col = self.col.min(self.lines[self.row].chars().count());
     }
 
-    /// Delete the character under the cursor.
-    ///
-    /// Nothing at the end of a line: `x` in vim does not join lines, and a delete that
-    /// silently pulled the next line up would be a different operator wearing the same key.
+    /// Delete the character under the cursor. Nothing at the end of a line: `x` does not join.
     pub fn delete_char(&mut self) {
         let byte = self.byte_offset();
         if byte < self.lines[self.row].len() {
@@ -277,10 +239,8 @@ impl Editor {
         self.col = self.col.min(self.lines[self.row].chars().count());
     }
 
-    /// Delete the whole line, into the kill ring.
-    ///
-    /// The last line is emptied rather than removed: a buffer with no lines has no cursor
-    /// position, and every method here indexes `lines[row]`.
+    /// Delete the whole line, into the kill ring. The last line is emptied rather than removed:
+    /// a buffer with no lines has no cursor position, and every method here indexes `lines[row]`.
     pub fn delete_line(&mut self) {
         self.kill_ring = std::mem::take(&mut self.lines[self.row]);
         self.kill_lines = true;
@@ -291,29 +251,24 @@ impl Editor {
         self.col = 0;
     }
 
-    /// Open a blank line below the cursor and put the cursor on it.
     pub fn open_below(&mut self) {
         self.lines.insert(self.row + 1, String::new());
         self.row += 1;
         self.col = 0;
     }
 
-    /// Open a blank line above the cursor and put the cursor on it.
     pub fn open_above(&mut self) {
         self.lines.insert(self.row, String::new());
         self.col = 0;
     }
 
-    /// How many lines the buffer holds.
     #[must_use]
     pub fn height(&self) -> usize {
         self.lines.len()
     }
 
-    /// Pull the cursor back off the end of the line.
-    ///
-    /// Normal mode sits *on* a character rather than between two, so the column one past the
-    /// end — where insert mode legitimately puts it — is not a place it can rest.
+    /// Pull the cursor back off the end of the line. Normal mode sits *on* a character, so the
+    /// column one past the end is not a place it can rest.
     pub fn settle(&mut self) {
         let last = self.lines[self.row].chars().count();
         self.col = self.col.min(last.saturating_sub(1));
@@ -325,11 +280,8 @@ impl Editor {
         self.col = col.min(self.lines[self.row].chars().count());
     }
 
-    /// Keep the buffer as it stands, to go back to.
-    ///
-    /// Called by whatever is about to change it rather than by the methods that do the
-    /// changing: one command is one undo, and a command built out of three editor calls would
-    /// otherwise take three `u` to walk back.
+    /// Keep the buffer as it stands, to go back to. Called by whatever is about to change it, so
+    /// one command is one undo however many editor calls it is built from.
     pub fn remember(&mut self) {
         self.undo.push(Snapshot {
             lines: self.lines.clone(),
@@ -341,10 +293,7 @@ impl Editor {
         }
     }
 
-    /// Go back to the buffer before the last remembered change.
-    ///
-    /// Answers whether there was anything to go back to, so a caller can say "already at the
-    /// oldest change" rather than redrawing an unchanged screen.
+    /// Go back to the buffer before the last remembered change, answering whether there was one.
     pub fn undo(&mut self) -> bool {
         let Some(was) = self.undo.pop() else {
             return false;
@@ -377,7 +326,6 @@ impl Editor {
         out
     }
 
-    /// Cut the text between two positions into the kill ring.
     pub fn cut(&mut self, from: (usize, usize), to: (usize, usize)) {
         let (start, end) = if from <= to { (from, to) } else { (to, from) };
         self.kill_ring = self.between(start, end);
@@ -390,7 +338,6 @@ impl Editor {
         self.history_pos = None;
     }
 
-    /// Copy the text between two positions into the kill ring, leaving the buffer alone.
     pub fn copy(&mut self, from: (usize, usize), to: (usize, usize)) {
         self.kill_ring = self.between(from, to);
         self.kill_lines = false;
@@ -438,7 +385,6 @@ impl Editor {
         }
     }
 
-    /// Replace the character under the cursor.
     pub fn replace_char(&mut self, c: char) {
         let byte = self.byte_offset();
         if byte < self.lines[self.row].len() {
@@ -452,7 +398,6 @@ impl Editor {
         self.history_pos = None;
     }
 
-    /// Swap the case of the character under the cursor, and step over it.
     pub fn flip_case(&mut self) {
         let Some(c) = self.lines[self.row].chars().nth(self.col) else {
             return;
@@ -481,10 +426,8 @@ impl Editor {
         self.history_pos = None;
     }
 
-    /// Move to the next occurrence of `c` on this line, or to just before it.
-    ///
-    /// Answers whether it found one, so `df,` on a line with no comma leaves the line alone
-    /// rather than deleting to the end of it.
+    /// Move to the next occurrence of `c` on this line, or to just before it, answering whether
+    /// it found one — so `df,` on a line with no comma leaves the line alone.
     pub fn find_char(&mut self, c: char, before: bool) -> bool {
         let chars: Vec<char> = self.lines[self.row].chars().collect();
         let found = chars
@@ -521,12 +464,10 @@ impl Editor {
         true
     }
 
-    /// Move to the end of the line.
     pub fn end(&mut self) {
         self.col = self.lines[self.row].chars().count();
     }
 
-    /// Move left by one word.
     pub fn word_left(&mut self) {
         let chars: Vec<char> = self.lines[self.row].chars().collect();
         while self.col > 0 && chars[self.col - 1].is_whitespace() {
@@ -537,7 +478,6 @@ impl Editor {
         }
     }
 
-    /// Move right by one word.
     pub fn word_right(&mut self) {
         let chars: Vec<char> = self.lines[self.row].chars().collect();
         while self.col < chars.len() && !chars[self.col].is_whitespace() {
@@ -548,13 +488,11 @@ impl Editor {
         }
     }
 
-    /// Kill from the cursor to the end of the line, into the kill ring.
     pub fn kill_to_end(&mut self) {
         let byte = self.byte_offset();
         self.kill_ring = self.lines[self.row].split_off(byte);
     }
 
-    /// Kill from the start of the line to the cursor, into the kill ring.
     pub fn kill_to_start(&mut self) {
         let byte = self.byte_offset();
         let tail = self.lines[self.row].split_off(byte);
@@ -562,14 +500,12 @@ impl Editor {
         self.col = 0;
     }
 
-    /// Insert the kill ring at the cursor.
     pub fn yank(&mut self) {
         let text = std::mem::take(&mut self.kill_ring);
         self.insert_str(&text);
         self.kill_ring = text;
     }
 
-    /// Replace the buffer with the previous history entry.
     pub fn history_prev(&mut self) {
         if self.history.is_empty() {
             return;
@@ -601,10 +537,8 @@ impl Editor {
         self.col = self.lines[self.row].chars().count();
     }
 
-    /// Replace the characters from `start` to the cursor with `text`.
-    ///
-    /// Used when a completion is accepted: the token the popup was built from is exactly the
-    /// span between where it began and where the cursor sits now.
+    /// Replace the characters from `start` to the cursor with `text`, which is the token a
+    /// completion popup was built from.
     pub fn replace_token(&mut self, start: usize, text: &str) {
         let start = start.min(self.col);
         let from = self.byte_at(start);
@@ -614,9 +548,7 @@ impl Editor {
         self.history_pos = None;
     }
 
-    /// Replace the whole buffer, putting the cursor at the end.
-    ///
-    /// The external-editor round trip lands here: the file is authoritative on return.
+    /// Replace the whole buffer, cursor at the end. The external-editor round trip lands here.
     pub fn set_text(&mut self, text: &str) {
         self.lines = text.split('\n').map(str::to_owned).collect();
         if self.lines.is_empty() {
@@ -635,10 +567,8 @@ impl Editor {
             .map_or(self.lines[self.row].len(), |(i, _)| i)
     }
 
-    /// Byte offset of the cursor within its line.
-    ///
-    /// `col` counts characters so cursor motion is uniform across scripts; indexing a `String`
-    /// needs bytes, and the two differ the moment a prompt contains anything non-ASCII.
+    /// Byte offset of the cursor within its line. `col` counts characters so motion is uniform
+    /// across scripts, and indexing a `String` needs bytes.
     fn byte_offset(&self) -> usize {
         self.lines[self.row]
             .char_indices()

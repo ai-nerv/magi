@@ -1,24 +1,20 @@
-//! Keeping a socket to the session, and redialling one that dropped.
-//!
-//! The other half of the driver: one loop reads the terminal and draws, this one owns the
-//! connection. Split because they answer to different things — a keypress and a socket that went
-//! away — and the only state they share is the two channels between them.
+//! Keeping a socket to the session, and redialling one that dropped. Which session is not fixed, so
+//! the target arrives on a watch — only the latest value means anything.
 
 use magi_ipc::{FrameReader, FrameWriter};
 use magi_proto::{Cursor, HarnessEvent, UiCommand};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use super::RECONNECT_DELAY;
 use super::editing::{debug_log, inner};
 
-/// Keep a connection to the session, redialling when it drops.
-///
-/// A dead session is not an error for the UI: it is the detach case, and reattaching with the
-/// last cursor is how an in-flight turn is rejoined rather than replayed.
+/// Keep a connection to whichever session the screen is pointed at, redialling when it drops. A dead
+/// session is the detach case, not an error; `own` is what separates a peer's socket from ours.
 pub(super) async fn connection_loop(
-    socket: std::path::PathBuf,
+    own: std::path::PathBuf,
+    mut target: watch::Receiver<std::path::PathBuf>,
     events: mpsc::Sender<HarnessEvent>,
     mut commands: mpsc::Receiver<UiCommand>,
     mut from_cursor: Cursor,
@@ -26,18 +22,21 @@ pub(super) async fn connection_loop(
 ) {
     loop {
         attached.store(false, Ordering::Relaxed);
+        let socket = target.borrow_and_update().clone();
+        // Only ever our own: two UIs drawing one session is a tool given rows in the wrong terminal.
+        let draws = socket == own;
         let Ok(stream) = magi_ipc::connect(&socket).await else {
             debug_log(format_args!("connect failed"));
-            // Waited out rather than restarted. There is nothing to restart: the session is a
-            // task in this process, so a socket that will not answer means this process is
-            // still binding it — the only race left — or has begun shutting it down, and
-            // either way the loop ends when the process does.
-            //
-            // This used to spawn a session. It had to: the session was a separate process that
-            // could crash, be killed, or be lost to a sleeping machine, and a UI with nothing
-            // to talk to had to build itself a new one and resume the journal. None of those
-            // can happen to something that dies exactly when its window does.
-            tokio::time::sleep(RECONNECT_DELAY).await;
+            // Waited out rather than restarted: the session is a task in this process. A peer's
+            // socket never comes back, so the wait ends early when the screen moves.
+            tokio::select! {
+                () = tokio::time::sleep(RECONNECT_DELAY) => {}
+                // A watch nobody holds answers at once, so this arm must end the loop.
+                pointed = target.changed() => {
+                    if pointed.is_err() { return }
+                    from_cursor = Cursor::ZERO;
+                }
+            }
             continue;
         };
 
@@ -49,8 +48,7 @@ pub(super) async fn connection_loop(
             .write(&UiCommand::Attach {
                 session: None,
                 from_cursor,
-                // There is a terminal on this end, so a tool may be given rows in it.
-                draws: true,
+                draws,
             })
             .await
             .is_err()
@@ -58,25 +56,23 @@ pub(super) async fn connection_loop(
             tokio::time::sleep(RECONNECT_DELAY).await;
             continue;
         }
-        // Straight after the attach, and again on every resize. The session has no terminal, so a
-        // tool given rows in this one has no other way to know how wide they are — and this is
-        // sent on reconnect too, because the window may have changed while nothing was attached.
-        //
-        // The width only. How much room there is comes from the draw, which is the one place that
-        // knows what the prompt and the footer have already taken; a number invented here would be
-        // a grant made against a layout nobody had measured.
-        let _ = writer
-            .write(&UiCommand::Sized {
-                rows: None,
-                cols: inner(),
-                holds: crate::terminal::reports_holds(),
-            })
-            .await;
+        // Straight after the attach and on every resize, including reconnects. The width only: how
+        // much room there is comes from the draw. Not to a peer, which has no rows to grant.
+        if draws {
+            let _ = writer
+                .write(&UiCommand::Sized {
+                    rows: None,
+                    cols: inner(),
+                    holds: crate::terminal::reports_holds(),
+                })
+                .await;
+            let (rows, cols) = super::float_room();
+            let _ = writer.write(&UiCommand::FloatSized { rows, cols }).await;
+        }
 
-        // Reads run in their own task because `FrameReader::read` is not cancel-safe: it takes
-        // a length and then a body, and a `select!` that drops it between the two leaves the
-        // next read parsing body bytes as a length. Sending a command used to do exactly that,
-        // which desynced the stream on the first prompt.
+        // Reads run in their own task because `FrameReader::read` is not cancel-safe: it takes a
+        // length and then a body, and a `select!` dropping it between the two leaves the next read
+        // parsing body bytes as a length.
         attached.store(true, Ordering::Relaxed);
         let cursor = Arc::new(AtomicU64::new(from_cursor.0));
         let reader_cursor = Arc::clone(&cursor);
@@ -95,23 +91,51 @@ pub(super) async fn connection_loop(
             }
         });
 
+        let mut moved = false;
         loop {
             tokio::select! {
                 command = commands.recv() => {
                     let Some(command) = command else { return };
-                    // Awaited in the branch body, not as a select arm: a cancelled write
-                    // desyncs the stream the same way a cancelled read does.
+                    // A peer draws nothing in this terminal, so its geometry never goes to one;
+                    // everything else does, since attaching is driving.
+                    if !draws && crate::app::for_screen(&command) {
+                        continue;
+                    }
+                    // Awaited in the branch body, not as a select arm: a cancelled write desyncs.
                     if writer.write(&command).await.is_err() {
                         break;
                     }
+                }
+                pointed = target.changed() => {
+                    // Said rather than dropped: the session counts its screens.
+                    let _ = writer.write(&UiCommand::Detach).await;
+                    if pointed.is_err() {
+                        reading.abort();
+                        return;
+                    }
+                    moved = true;
+                    break;
                 }
                 _ = &mut reading => break,
             }
         }
 
         reading.abort();
-        from_cursor = Cursor(cursor.load(Ordering::Relaxed));
+        // Carried across a swap the cursor is a peer's whole history silently withheld; across a
+        // reconnect it is what rejoins an in-flight turn rather than replaying it.
+        from_cursor = if moved {
+            Cursor::ZERO
+        } else {
+            Cursor(cursor.load(Ordering::Relaxed))
+        };
 
-        tokio::time::sleep(RECONNECT_DELAY).await;
+        // Not after a swap. The delay keeps a session still binding its socket from being hammered.
+        if !moved {
+            tokio::time::sleep(RECONNECT_DELAY).await;
+        }
     }
 }
+
+#[cfg(test)]
+#[path = "connecting/swapping.rs"]
+mod swapping;

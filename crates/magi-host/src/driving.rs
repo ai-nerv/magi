@@ -1,24 +1,11 @@
-//! Telling the siblings what to be.
-//!
-//! magi coordinates. A sibling it started should not be reading a configuration of its own and
-//! hoping the two agree, so magi asks what each takes and says — once, on the way up, before
-//! either is used for anything.
-//!
-//! **Asked before told.** A coordinator that pushed settings from a list of its own would have
-//! to know every sibling's vocabulary by heart and would be wrong first: a renamed setting would
-//! fail silently on the far side and nothing here would notice. So [`needs`] is read, what magi
-//! has an answer for is sent, and anything the sibling would not take comes back named.
-//!
-//! A sibling nobody started this way reads its own files exactly as before. This is what happens
-//! when somebody is coordinating, not instead of it.
+//! Telling the siblings what to be. magi asks what each takes and says it once, on the way up:
+//! [`needs`] is read, what magi has an answer for is sent, and anything the sibling would not take
+//! comes back named. A sibling nobody started this way reads its own files exactly as before.
 
 use magi_proto::setup::{Applied, Need};
 
-/// What a sibling says it takes.
-///
-/// Empty when it is not installed or will not answer — not an error. A sibling that cannot be
-/// asked cannot be told either, and the session carries on without it exactly as it did before
-/// any of this existed.
+/// What a sibling says it takes. Empty when it is not installed or will not answer, which is not
+/// an error: a sibling that cannot be asked cannot be told either.
 pub async fn needs(program: &str) -> Vec<Need> {
     let Ok(out) = tokio::process::Command::new(program)
         .arg("needs")
@@ -30,7 +17,7 @@ pub async fn needs(program: &str) -> Vec<Need> {
         magi_model::noted!("driving: {program} needs could not be started");
         return Vec::new();
     };
-    rows(&out.stdout)
+    flat(rows(&out.stdout))
         .into_iter()
         .filter_map(|row| serde_json::from_value(row).ok())
         .collect()
@@ -40,8 +27,7 @@ pub async fn needs(program: &str) -> Vec<Need> {
 ///
 /// # Errors
 /// When the sibling could not be started, would not answer, or refused the chunk outright. A
-/// setting it declined is *not* an error: it comes back in [`Applied::refused`], because a
-/// coordinator wants to know which one rather than have the whole exchange fail.
+/// setting it declined is not an error: it comes back in [`Applied::refused`].
 pub async fn configure(program: &str, source: &str) -> Result<Applied, String> {
     let mut child = tokio::process::Command::new(program)
         .arg("configure")
@@ -57,9 +43,12 @@ pub async fn configure(program: &str, source: &str) -> Result<Applied, String> {
 
     if let Some(mut stdin) = child.stdin.take() {
         use tokio::io::AsyncWriteExt;
-        let _ = stdin.write_all(source.as_bytes()).await;
-        // Closed, because the far side reads to end of file. A handle left open is a sibling
-        // waiting for a chunk that has already been written.
+        // Half of a Lua file is still a Lua file, and the sibling would apply it; the log at least
+        // says the pipe went.
+        if let Err(why) = stdin.write_all(source.as_bytes()).await {
+            magi_model::noted!("driving: the configuration for {program} was cut short: {why}");
+        }
+        // Closed, because the far side reads to end of file.
         let _ = stdin.shutdown().await;
     }
     let out = child
@@ -76,18 +65,20 @@ pub async fn configure(program: &str, source: &str) -> Result<Applied, String> {
             .unwrap_or("it refused and gave no reason")
             .to_owned());
     }
-    reply
-        .get("result")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|rows| rows.first().cloned())
-        .and_then(|row| serde_json::from_value(row).ok())
-        .ok_or_else(|| format!("{program} answered something unreadable"))
+    flat(
+        reply
+            .get("result")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
+    )
+    .into_iter()
+    .find_map(|row| serde_json::from_value(row).ok())
+    .ok_or_else(|| format!("{program} answered something unreadable"))
 }
 
-/// Write the Lua that says what magi has decided, for the settings this sibling takes.
-///
-/// Only what it asked for. A coordinator that sent everything it knew would be relying on the
-/// far side to ignore the rest, and "ignored" is indistinguishable from "misspelled".
+/// Write the Lua that says what magi has decided, for the settings this sibling takes. Only what it
+/// asked for: "ignored" is indistinguishable from "misspelled".
 #[must_use]
 pub fn saying(module: &str, needs: &[Need], answers: &[(&str, serde_json::Value)]) -> String {
     let mut out = String::new();
@@ -100,18 +91,37 @@ pub fn saying(module: &str, needs: &[Need], answers: &[(&str, serde_json::Value)
     out
 }
 
-/// One JSON value as the Lua literal for it.
-///
-/// Enough for what a coordinator sends: a string, a number, a flag. A table is declared by a
-/// registrar rather than assigned, so it does not come through here.
+/// One JSON value as the Lua literal for it, tables included — melchior, balthasar and casper all
+/// declare table settings. A map becomes `{ ["key"] = value }` and a list `{ value, value }`; keys
+/// are bracketed strings, so a key that is a Lua keyword or has a dash in it is not a syntax error.
 fn lua(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::String(text) => format!("{text:?}"),
         serde_json::Value::Bool(flag) => flag.to_string(),
         serde_json::Value::Number(number) => number.to_string(),
-        // Anything else is not a setting a coordinator should be assigning, and `nil` is the
-        // honest rendering: it sets nothing and the sibling reports nothing set.
-        _ => "nil".to_owned(),
+        serde_json::Value::Array(items) => {
+            let inner: Vec<String> = items.iter().map(lua).collect();
+            format!("{{ {} }}", inner.join(", "))
+        }
+        serde_json::Value::Object(fields) => {
+            let inner: Vec<String> = fields
+                .iter()
+                .map(|(key, value)| format!("[{key:?}] = {}", lua(value)))
+                .collect();
+            format!("{{ {} }}", inner.join(", "))
+        }
+        // `nil` sets nothing, and the sibling reports nothing set.
+        serde_json::Value::Null => "nil".to_owned(),
+    }
+}
+
+/// The rows a reply meant, when one of them turns out to be the rows. casper once sent its listings
+/// as one row that was itself a list. It sends them flat now; this stays because the four programs
+/// ship from four repositories and are installed one at a time.
+fn flat(rows: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+    match rows.first() {
+        Some(serde_json::Value::Array(inner)) if rows.len() == 1 => inner.clone(),
+        _ => rows,
     }
 }
 
@@ -147,8 +157,6 @@ mod tests {
 
     #[test]
     fn only_what_the_sibling_asked_for_is_sent() {
-        // The whole point of asking first. Sending a setting it does not take would be relying
-        // on it to ignore the rest, and "ignored" reads the same as "misspelled".
         let needs = [need("thinking", Kind::Text)];
         let said = saying(
             "melchior",
@@ -185,8 +193,7 @@ mod tests {
 
     #[test]
     fn a_string_is_quoted_and_escaped_rather_than_pasted() {
-        // A value with a quote in it would otherwise end the literal and leave the rest of the
-        // line as Lua — which is a coordinator writing code it did not mean to.
+        // A value with a quote in it would otherwise end the literal and leave the rest as Lua.
         let needs = [need("model", Kind::Text)];
         let said = saying(
             "melchior",
@@ -220,5 +227,80 @@ mod tests {
             .await
             .expect_err("nothing to configure");
         assert!(why.contains("magi-no-such-sibling-anywhere"), "{why}");
+    }
+}
+
+#[cfg(test)]
+mod table_tests {
+    use super::*;
+
+    fn need(name: &str) -> Need {
+        Need {
+            name: name.to_owned(),
+            kind: magi_proto::setup::Kind::Table,
+            about: String::new(),
+            required: false,
+            default: None,
+        }
+    }
+
+    #[test]
+    fn a_table_setting_is_rendered_rather_than_nilled() {
+        let said = saying(
+            "casper",
+            &[need("tools")],
+            &[(
+                "tools",
+                serde_json::json!({ "dino": { "off": true }, "shell": { "hidden": true } }),
+            )],
+        );
+        assert!(
+            said.contains("casper.tools = {"),
+            "a table, not nil: {said}"
+        );
+        assert!(said.contains(r#"["dino"]"#), "{said}");
+        assert!(said.contains("[\"off\"] = true"), "{said}");
+        assert!(!said.contains("nil"), "nothing was dropped: {said}");
+    }
+
+    #[test]
+    fn a_list_is_a_list_and_not_a_map() {
+        let said = saying(
+            "balthasar",
+            &[need("sources")],
+            &[("sources", serde_json::json!(["magi", "shell"]))],
+        );
+        assert!(said.contains(r#"{ "magi", "shell" }"#), "{said}");
+    }
+
+    #[test]
+    fn a_key_that_is_not_an_identifier_is_still_written() {
+        // Bracketed strings rather than bare names: a dash or a Lua keyword in a key would
+        // otherwise be a syntax error in a chunk somebody else has to run.
+        let said = saying(
+            "melchior",
+            &[need("compat")],
+            &[(
+                "compat",
+                serde_json::json!({ "thinking-format": "deepseek", "end": 1 }),
+            )],
+        );
+        assert!(said.contains(r#"["thinking-format"]"#), "{said}");
+        assert!(said.contains(r#"["end"]"#), "a keyword as a key: {said}");
+    }
+    #[test]
+    fn a_listing_that_arrived_as_one_row_of_rows_is_still_read() {
+        let nested = vec![serde_json::json!([{ "name": "tools" }, { "name": "load" }])];
+        assert_eq!(flat(nested).len(), 2);
+    }
+
+    #[test]
+    fn flat_rows_are_left_alone() {
+        let rows = vec![serde_json::json!({ "name": "tools" })];
+        assert_eq!(flat(rows.clone()), rows);
+        // Two rows whose first is genuinely a list is not the wrapping, and unwrapping it would
+        // lose the second.
+        let mixed = vec![serde_json::json!([1, 2]), serde_json::json!(3)];
+        assert_eq!(flat(mixed.clone()), mixed);
     }
 }

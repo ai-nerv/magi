@@ -1,16 +1,8 @@
-//! The family socket: four bytes of big-endian length, then the body.
-//!
-//! The same framing as magi's own codec, a different contract. magi's own wire is CBOR between a
-//! UI and its session; this one is between siblings, and its reply shape is fixed for the whole
-//! family: `{"ok":true,"family":1,"n":N,"result":[…]}`, where `result` is a *list* of return
-//! values.
-//!
-//! **One shape, two encodings.** Calls go out in JSON unless [`Family::speaking`] says otherwise,
-//! and replies are read in whichever encoding they arrive in — a body says which it is in its
-//! first byte, so nothing is negotiated and a peer that only speaks JSON is unaffected.
-//!
-//! A refusal is a reply. Only the transport failing closes anything, which is what lets
-//! [`Fault`] tell "balthasar said no" from "balthasar is not there".
+//! The family socket: four bytes of big-endian length, then the body. Between siblings, with a
+//! reply shape fixed for the whole family: `{"ok":true,"family":1,"n":N,"result":[…]}`, where
+//! `result` is a *list* of return values. Calls go out in JSON unless [`Family::speaking`] says
+//! otherwise, and replies are read in whichever encoding they arrive in. A refusal is a reply;
+//! only the transport failing closes anything.
 
 use std::path::{Path, PathBuf};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -20,25 +12,21 @@ use tokio::net::UnixStream;
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
 /// Where a call ended up.
-///
-/// Three, not two. A caller that cannot tell these apart either carries on after losing a turn
-/// or gives up over a missing feature.
 #[derive(Debug, thiserror::Error)]
 pub enum Fault {
     /// Nothing answered: no socket, a dead socket, or the connection died mid-call.
-    #[error("balthasar is not reachable: {0}")]
+    #[error("the memory layer is not reachable: {0}")]
     Unavailable(String),
 
     /// The verb was declined. Costs a feature; the caller carries on.
-    #[error("balthasar refused: {0}")]
+    #[error("the memory layer refused: {0}")]
     Refused(String),
 
     /// The write did not land. What was handed over is not recorded.
-    #[error("balthasar did not record it: {0}")]
+    #[error("the memory layer did not record it: {0}")]
     Failed(String),
 
-    /// The reply was not the shape the family agreed on.
-    #[error("balthasar answered something unreadable: {0}")]
+    #[error("the memory layer answered something unreadable: {0}")]
     Malformed(String),
 }
 
@@ -50,19 +38,17 @@ impl Fault {
     }
 }
 
-/// One held connection.
-///
-/// balthasar serves many calls per connection and is asked several times in a turn, so the
-/// stream is kept rather than redialled.
+/// One held connection: balthasar serves many calls per connection, so the stream is kept.
 pub struct Family {
     stream: UnixStream,
     scratch: Vec<u8>,
-    /// Which encoding calls go out in. Replies are read in whichever came back.
-    ///
-    /// JSON by default: it is what every sibling has always understood, and what a person
-    /// piping the socket through a text tool can read. CBOR is asked for, never assumed.
+    /// Which encoding calls go out in; replies are read in whichever came back. JSON by default.
     wire: crate::Wire,
     path: PathBuf,
+    /// Whether a call went out whose reply was never read to the end. One reply per call, in
+    /// order, so an abandoned one is still in the stream: the next call would read it as its own
+    /// answer, and every answer after that belongs to the call before it.
+    adrift: bool,
 }
 
 impl Family {
@@ -77,13 +63,23 @@ impl Family {
             scratch: Vec::new(),
             wire: crate::Wire::default(),
             path,
+            adrift: false,
         })
     }
 
-    /// Connect to whichever socket [`candidates`] offers first, newest wins.
-    ///
-    /// Each is tried in turn: a socket file left by a killed frontend looks exactly like a live
-    /// one until something connects to it.
+    /// Take the connection down and open another to the same socket, dropping whatever the old one
+    /// still owed. The only way back into step: a reply cannot be skipped without reading it, and
+    /// reading it means waiting for a call this side has already given up on.
+    async fn reopen(&mut self) -> Result<(), Fault> {
+        self.stream = UnixStream::connect(&self.path)
+            .await
+            .map_err(|e| Fault::Unavailable(format!("{}: {e}", self.path.display())))?;
+        self.adrift = false;
+        Ok(())
+    }
+
+    /// Connect to whichever socket [`candidates`] offers first, newest wins. Each is tried in turn:
+    /// a socket file left by a killed frontend looks like a live one until something connects to it.
     pub async fn find(dir: Option<&Path>) -> Result<Self, Fault> {
         let mut last = None;
         for path in candidates(dir) {
@@ -101,11 +97,7 @@ impl Family {
         &self.path
     }
 
-    /// Send calls in `wire` from here on.
-    ///
-    /// Replies are read in whichever encoding they arrive in either way, so this only decides
-    /// what goes out. JSON is the default and stays the default: it is what every sibling has
-    /// always understood, and a wire a person can read with `cat` is worth keeping.
+    /// Send calls in `wire` from here on. Replies are read in whichever encoding they arrive in.
     #[must_use]
     pub fn speaking(mut self, wire: crate::Wire) -> Self {
         self.wire = wire;
@@ -117,6 +109,17 @@ impl Family {
         &mut self,
         verb: &str,
         args: Vec<serde_json::Value>,
+    ) -> Result<Vec<serde_json::Value>, Fault> {
+        self.call_within(verb, args, PATIENCE).await
+    }
+
+    /// The same, waiting `patience` rather than the clock a feature keeps. For the calls whose
+    /// failure costs the conversation rather than a feature — see [`DURABLE`].
+    pub async fn call_within(
+        &mut self,
+        verb: &str,
+        args: Vec<serde_json::Value>,
+        patience: std::time::Duration,
     ) -> Result<Vec<serde_json::Value>, Fault> {
         let mut body = serde_json::Map::new();
         body.insert("call".into(), serde_json::Value::String(verb.to_owned()));
@@ -131,20 +134,24 @@ impl Family {
         let mut frame = Vec::with_capacity(4 + body.len());
         frame.extend_from_slice(&(body.len() as u32).to_be_bytes());
         frame.extend_from_slice(&body);
+        // Whatever the abandoned call still owes arrives on this stream and nowhere else, so the
+        // stream goes rather than the answer being skipped.
+        if self.adrift {
+            self.reopen().await?;
+        }
+        // Set before the write, not after: a `call` dropped where it stands — a caller's own
+        // timeout around this one — leaves a request on the wire either way.
+        self.adrift = true;
         self.stream
             .write_all(&frame)
             .await
             .map_err(|e| Fault::Unavailable(format!("sending {verb}: {e}")))?;
 
-        // **On a clock, here, so no caller can forget one.** The blocking half has had
-        // `set_read_timeout` since it was written; this half had nothing at all, so every
-        // asynchronous call — a recall before a turn, a flush at the turn boundary, a
-        // cross-check at start-up — waited forever on a balthasar that accepted the connection
-        // and then thought about it. A socket that accepts and never replies is the ordinary
-        // shape of a wedged process, not an exotic one.
-        tokio::time::timeout(PATIENCE, self.read_reply(verb))
+        // A socket that accepts the connection and then never replies is the ordinary shape of a
+        // wedged process, so every asynchronous call is on a clock here rather than at the caller.
+        tokio::time::timeout(patience, self.read_reply(verb))
             .await
-            .map_err(|_| Fault::Unavailable(format!("{verb}: no answer in {PATIENCE:?}")))?
+            .map_err(|_| Fault::Unavailable(format!("{verb}: no answer in {patience:?}")))?
     }
 
     /// Read one framed reply and unwrap the family's envelope.
@@ -165,43 +172,134 @@ impl Family {
             .read_exact(&mut self.scratch)
             .await
             .map_err(|e| Fault::Unavailable(format!("reading {verb}: {e}")))?;
+        // The whole frame is off the wire, so the next call starts where a reply does. Before the
+        // envelope is read: a refusal is an answer, and answering leaves nothing owed.
+        self.adrift = false;
 
-        // Read in whichever encoding came back rather than in the one we asked in. A sibling is
-        // free to answer either way, and a client that insisted would refuse a valid reply.
+        // Read in whichever encoding came back rather than in the one we asked in.
         let reply: serde_json::Value = crate::Wire::read(&self.scratch)
             .map_err(|e| Fault::Malformed(format!("{verb}: {e}")))?;
         unwrap(&reply, verb)
     }
 }
 
-/// The newest revision of the family wire this understands.
-///
-/// Duplicated in each sibling rather than shared, like the types themselves: a crate held in
-/// common would be a dependency between repositories, and this family has none.
+/// The newest revision of the family wire this understands, duplicated in each sibling.
 pub const FAMILY: u16 = 1;
 
-/// How long a call waits for its answer.
-///
-/// The same number the blocking half uses, and for the same reason: a memory layer is on the
-/// turn path, and a caller that waits forever turns "balthasar is wedged" into "magi is wedged".
-/// Generous for a local socket answering out of its own memory.
+/// [`FAMILY`], for serde's `default`.
+fn family() -> u16 {
+    FAMILY
+}
+
+/// Which kind of no a reply carries. Absent on the wire means [`Faulted::Refused`], the answer
+/// that costs a feature rather than a turn. Named apart from [`Fault`], which is what a *call*
+/// ended up as on this side rather than what a reply says about itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Faulted {
+    Refused,
+    Failed,
+}
+
+/// One reply, in the shape FAMILY.md fixes for every program in the family. Built here rather
+/// than assembled by hand at each site: a hand-built envelope agrees with the contract only for
+/// as long as nobody edits it.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Reply {
+    pub ok: bool,
+    /// Defaulted on the way in, so a reply from a build older than this field still parses.
+    #[serde(default = "family")]
+    pub family: u16,
+    /// Only ever on `verbs`: a fact about the program rather than about the reply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface: Option<u16>,
+    /// Always `result.len()`.
+    #[serde(default)]
+    pub n: usize,
+    /// The values, always a list: a listing is the rows, never one row that is the list.
+    #[serde(default)]
+    pub result: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fault: Option<Faulted>,
+}
+
+impl Reply {
+    /// An answer of one value.
+    #[must_use]
+    pub fn of(value: serde_json::Value) -> Self {
+        Self::rows(vec![value])
+    }
+
+    /// An answer of several.
+    #[must_use]
+    pub fn rows(values: Vec<serde_json::Value>) -> Self {
+        Self {
+            ok: true,
+            family: FAMILY,
+            surface: None,
+            n: values.len(),
+            result: values,
+            error: None,
+            fault: None,
+        }
+    }
+
+    /// An answer of none, for a verb that does something rather than reporting something.
+    #[must_use]
+    pub fn done() -> Self {
+        Self::rows(Vec::new())
+    }
+
+    /// A no that costs a feature rather than a turn: `fault` stays absent, which means refused.
+    #[must_use]
+    pub fn refused(why: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            family: FAMILY,
+            surface: None,
+            n: 0,
+            result: Vec::new(),
+            error: Some(why.into()),
+            fault: None,
+        }
+    }
+
+    /// What a third party writes against. Set on `verbs` and nowhere else.
+    #[must_use]
+    pub fn on_surface(mut self, surface: u16) -> Self {
+        self.surface = Some(surface);
+        self
+    }
+
+    /// This reply as bytes. A reply that will not encode as CBOR goes out as JSON rather than as
+    /// nothing, since the caller is owed an answer either way.
+    #[must_use]
+    pub fn encode(&self, wire: crate::Wire) -> Vec<u8> {
+        wire.write(self)
+            .or_else(|_| crate::Wire::Json.write(self))
+            .unwrap_or_else(|_| b"{\"ok\":false,\"family\":1,\"n\":0,\"result\":[]}".to_vec())
+    }
+}
+
+/// How long a call waits for its answer. The same number the blocking half uses.
 const PATIENCE: std::time::Duration = std::time::Duration::from_millis(2000);
 
-/// Split a reply into its return values, or into the fault it names.
-///
-/// `fault` distinguishes the two refusals; its absence means `refused`, which is the answer that
-/// costs a feature rather than a turn.
+/// How long a call carrying the transcript waits. balthasar opens a session's store on the first
+/// call it is asked for it, which has been measured at ten seconds on a busy machine — and giving
+/// up on a write costs the exchange, where giving up on a recall costs a feature.
+pub const DURABLE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Split a reply into its return values, or into the fault it names. No `fault` field means
+/// `refused`, the answer that costs a feature rather than a turn.
 fn unwrap(reply: &serde_json::Value, verb: &str) -> Result<Vec<serde_json::Value>, Fault> {
     let Some(object) = reply.as_object() else {
         return Err(Fault::Malformed(format!("{verb}: reply is not an object")));
     };
 
-    // **A newer peer is refused by name, an older one is not.** There were four implementations
-    // of this wire and no version in any of them, already disagreeing about whether `n` is
-    // optional and whether `fault` exists — so a skew presented as a missing field at the point
-    // of use, which reads as the peer being broken. A reply with no `family` is from before this
-    // existed and is read as it always was; one from the future is refused here, where the
-    // reason is still known, rather than three layers up where it is not.
+    // A newer peer is refused by name here, where the reason is still known; a reply with no
+    // `family` predates the field and is read as it always was.
     let spoken = object
         .get("family")
         .and_then(serde_json::Value::as_u64)
@@ -239,83 +337,12 @@ fn unwrap(reply: &serde_json::Value, verb: &str) -> Result<Vec<serde_json::Value
     Ok(values.iter().take(n).cloned().collect())
 }
 
-/// The directory balthasar binds its sockets in.
-///
-/// `$XDG_RUNTIME_DIR/balthasar`, else a uid-suffixed temp directory, with
-/// `$MAGI_BALTHASAR_INSTANCE` selecting one when several are running.
-#[must_use]
-pub fn socket_dir() -> PathBuf {
-    let base = match std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
-        Some(runtime) => PathBuf::from(runtime).join("balthasar"),
-        None => {
-            std::env::temp_dir().join(format!("balthasar-{}", rustix::process::getuid().as_raw()))
-        }
-    };
-    match std::env::var("MAGI_BALTHASAR_INSTANCE") {
-        Ok(instance) if !instance.is_empty() => base.join(instance),
-        _ => base,
-    }
-}
-
-/// Every socket worth trying, newest first.
-///
-/// `$MAGI_API_SOCKET` alone when it is set: a program balthasar started inherits it and means
-/// *that* session, so there is nothing to guess.
-#[must_use]
-pub fn candidates(dir: Option<&Path>) -> Vec<PathBuf> {
-    if let Some(named) = std::env::var_os("MAGI_API_SOCKET").filter(|v| !v.is_empty()) {
-        return vec![PathBuf::from(named)];
-    }
-    listing(&dir.map_or_else(socket_dir, Path::to_path_buf))
-}
-
-/// Every `api@*.sock` in one directory, newest first.
-///
-/// The directory and nothing else — no `$MAGI_API_SOCKET`, no default location. [`candidates`]
-/// answers "which one should I talk to", which an inherited variable settles outright; this
-/// answers "which are there", which is what a sweep needs and what a test can check without
-/// setting a process-wide variable that Rust 2024 makes `unsafe` and this crate denies.
-#[must_use]
-pub fn sockets_in(dir: &Path) -> Vec<PathBuf> {
-    listing(dir)
-}
-
-/// Every `api@*.sock` in one directory, newest first.
-#[must_use]
-fn listing(dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-
-    let mut found: Vec<(std::time::SystemTime, PathBuf)> = entries
-        .flatten()
-        .filter(|e| {
-            let name = e.file_name();
-            let name = name.to_string_lossy();
-            name.starts_with("api@") && name.ends_with(".sock")
-        })
-        .map(|e| {
-            let when = e
-                .metadata()
-                .and_then(|m| m.modified())
-                .unwrap_or(std::time::UNIX_EPOCH);
-            (when, e.path())
-        })
-        .collect();
-
-    // Newest first, so `by_key` on the key alone would put it the wrong way round; reversing the
-    // key is what clippy asks for here and it says the same thing.
-    found.sort_by_key(|(when, _)| std::cmp::Reverse(*when));
-    found.into_iter().map(|(_, path)| path).collect()
-}
+mod looking;
+pub use looking::{candidates, legacy_socket_dir, socket_dir, socket_dirs, sockets_in};
 
 #[cfg(test)]
 mod tests {
     /// A peer from the future is refused by name; one from before versions is not.
-    ///
-    /// The whole value of the field. Without it a skew arrives as a missing key at the point of
-    /// use — "result is not a list" from three layers up — and the four implementations of this
-    /// wire already disagree about two fields with nothing to say so.
     #[test]
     fn a_reply_from_a_newer_wire_is_refused_and_says_why() {
         let ahead = serde_json::json!({
@@ -329,8 +356,7 @@ mod tests {
 
     #[test]
     fn a_reply_from_before_versions_is_read_as_it_always_was() {
-        // Every peer built before this field existed. Refusing them would be a flag day across
-        // four repositories that are deployed one at a time.
+        // Every peer built before this field existed.
         let old = serde_json::json!({ "ok": true, "n": 1, "result": ["hello"] });
         let values = super::unwrap(&old, "verbs").expect("an older peer still answers");
         assert_eq!(values, vec![serde_json::json!("hello")]);
@@ -398,44 +424,138 @@ mod tests {
         ));
     }
 
+    /// The shape FAMILY.md fixes, checked on the wire rather than on the struct.
     #[test]
-    fn a_directory_that_is_not_there_offers_nothing() {
-        assert!(listing(Path::new("/nonexistent/magi-family")).is_empty());
+    fn a_reply_carries_the_four_fields_every_answer_owes() {
+        let wire = serde_json::to_value(Reply::rows(vec![json!("a"), json!("b")])).expect("enc");
+        assert_eq!(wire["ok"], json!(true));
+        assert_eq!(wire["family"], json!(FAMILY));
+        assert_eq!(wire["n"], json!(2));
+        assert_eq!(wire["result"], json!(["a", "b"]));
+    }
+
+    /// `n` and `result` are owed even when there is nothing to report: a caller reading `result`
+    /// as a list must not have to tell absent from empty.
+    #[test]
+    fn an_answer_of_none_still_carries_an_empty_list() {
+        let wire = serde_json::to_value(Reply::done()).expect("enc");
+        assert_eq!(wire["n"], json!(0));
+        assert_eq!(wire["result"], json!([]));
+    }
+
+    /// A listing is the rows, not one row that is the list.
+    #[test]
+    fn a_listing_is_the_rows() {
+        let wire = serde_json::to_string(&Reply::rows(vec![json!({"verb": "verbs"})])).expect("e");
+        assert!(!wire.contains(r#""result":[["#), "{wire}");
     }
 
     #[test]
-    fn only_api_sockets_are_offered_and_the_newest_comes_first() {
-        // Named after this process. A fixed path under a shared directory is one collision away
-        // from two test binaries deleting each other's fixture.
-        let dir = magi_model::scratch::Scratch::new("magi-family-listing", "one");
-        for name in ["api@old.sock", "api@new.sock", "notes.txt", "api@x.other"] {
-            std::fs::write(dir.join(name), b"").expect("write");
-        }
-        // The gap is *set*, not hoped for. Writing one file after another and trusting the two
-        // mtimes to differ works on a laptop and fails on a fast machine, where both land in the
-        // same filesystem tick: the sort is stable, so equal times leave `read_dir` order, which
-        // is arbitrary. CI failed on exactly that.
-        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
-        std::fs::File::options()
-            .write(true)
-            .open(dir.join("api@old.sock"))
-            .expect("open")
-            .set_modified(old)
-            .expect("set mtime");
+    fn surface_is_on_verbs_and_nowhere_else() {
+        let plain = serde_json::to_value(Reply::of(json!("x"))).expect("enc");
+        assert!(plain.get("surface").is_none(), "{plain}");
+        let listing = serde_json::to_value(Reply::rows(Vec::new()).on_surface(7)).expect("enc");
+        assert_eq!(listing["surface"], json!(7));
+    }
 
-        let found = listing(&dir);
-        assert_eq!(found.len(), 2, "only api@*.sock: {found:?}");
-        assert!(
-            found[0].ends_with("api@new.sock"),
-            "newest first: {found:?}"
+    /// A refusal names why, and says nothing about `fault`: absent means refused.
+    #[test]
+    fn a_refusal_names_why_and_leaves_fault_absent() {
+        let wire = serde_json::to_value(Reply::refused("no such call: nope")).expect("enc");
+        assert_eq!(wire["ok"], json!(false));
+        assert_eq!(wire["error"], json!("no such call: nope"));
+        assert!(wire.get("fault").is_none(), "{wire}");
+        assert_eq!(wire["result"], json!([]));
+    }
+
+    #[test]
+    fn a_reply_that_failed_says_so_by_name() {
+        let mut failed = Reply::refused("disk full");
+        failed.fault = Some(Faulted::Failed);
+        let wire = serde_json::to_value(&failed).expect("enc");
+        assert_eq!(wire["fault"], json!("failed"));
+        // And it reads back as the fault that costs a turn.
+        assert!(matches!(unwrap(&wire, "observe"), Err(Fault::Failed(_))));
+    }
+
+    /// A peer built before `family` existed still parses, and reads as revision 0.
+    #[test]
+    fn a_reply_from_before_the_field_parses_with_a_default() {
+        let old: Reply = serde_json::from_value(json!({ "ok": true })).expect("parse");
+        assert_eq!(old.family, FAMILY);
+        assert!(old.result.is_empty());
+    }
+
+    #[test]
+    fn one_shape_survives_both_encodings() {
+        let reply = Reply::rows(vec![json!({"verb": "verbs"})]).on_surface(1);
+        for wire in [crate::Wire::Json, crate::Wire::Cbor] {
+            let back: Reply = crate::Wire::read(&reply.encode(wire)).expect("read");
+            assert_eq!(back.surface, Some(1), "{wire:?}");
+            assert_eq!(back.n, 1, "{wire:?}");
+        }
+    }
+
+    /// A caller that gives up on a call leaves its answer in the stream. Read as the next call's,
+    /// every answer after it belongs to the call before — a write is told it landed by somebody
+    /// else's reply, and the transcript goes missing without anything failing.
+    #[tokio::test]
+    async fn a_call_given_up_on_does_not_answer_the_next_one() {
+        let dir = magi_model::scratch::Scratch::new("magi-family-adrift", "one");
+        let path = dir.join("api@one.sock");
+        let served = echoing(&path);
+
+        let mut open = Family::dial(&path).await.expect("dial");
+        let abandoned = tokio::time::timeout(
+            std::time::Duration::from_millis(30),
+            open.call("plan", Vec::new()),
+        )
+        .await;
+        assert!(abandoned.is_err(), "the fixture answered too soon to test");
+
+        let answered = open.call("observe", Vec::new()).await.expect("observe");
+        assert_eq!(
+            answered,
+            vec![json!("observe")],
+            "the answer to the call before it came back as this one's"
         );
+        drop(open);
+        let _ = served.join();
+    }
+
+    /// A peer answering with the name of the verb it was asked, slowly the first time.
+    fn echoing(path: &Path) -> std::thread::JoinHandle<()> {
+        use std::io::{Read, Write};
+
+        let listener = std::os::unix::net::UnixListener::bind(path).expect("bind");
+        std::thread::spawn(move || {
+            for nth in 0..2 {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut head = [0_u8; 4];
+                if stream.read_exact(&mut head).is_err() {
+                    return;
+                }
+                let mut body = vec![0_u8; u32::from_be_bytes(head) as usize];
+                if stream.read_exact(&mut body).is_err() {
+                    return;
+                }
+                let asked: serde_json::Value = serde_json::from_slice(&body).expect("json");
+                let verb = asked["call"].as_str().unwrap_or_default().to_owned();
+                if nth == 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(300));
+                }
+                let reply = json!({ "ok": true, "n": 1, "result": [verb] }).to_string();
+                let mut framed = (reply.len() as u32).to_be_bytes().to_vec();
+                framed.extend_from_slice(reply.as_bytes());
+                let _ = stream.write_all(&framed);
+            }
+        })
     }
 }
 
-/// The same protocol, without a runtime.
-///
-/// The UI asks balthasar what sessions there are while drawing a picker, and that path is
-/// synchronous: a blocking dial is the honest shape for it rather than borrowing a runtime.
+/// The same protocol, without a runtime, for the synchronous paths such as the session picker.
 pub mod blocking {
     use super::{Fault, candidates, unwrap};
     use std::io::{Read, Write};
@@ -462,18 +582,9 @@ pub mod blocking {
             Ok(Self { stream })
         }
 
-        /// Connect to whichever socket answers first, newest tried first.
-        ///
-        /// **Answers, not accepts.** A socket file outlives the process that bound it, and the
-        /// kernel accepts on behalf of a listener whose owner has stopped reading — so a
-        /// balthasar that was killed, or one left over from an older build, takes the connection
-        /// and replies to nothing. This used to return that one and never try the rest, and the
-        /// caller waited out a timeout on a socket that was never going to answer. The copied
-        /// Lua stub had the same hole, for the same reason: connecting looks like a test and is
-        /// not one.
-        ///
-        /// The proof is one `verbs` call, which is read-only and is what a caller asks first
-        /// anyway.
+        /// Connect to whichever socket answers first, newest tried first. Answers, not accepts: the
+        /// kernel accepts on behalf of a listener whose owner has stopped reading, so each candidate
+        /// is proved with one `verbs` call before the rest are given up on.
         pub fn find() -> Result<Self, Fault> {
             let mut last = None;
             for path in candidates(None) {

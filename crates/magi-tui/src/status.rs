@@ -1,19 +1,12 @@
-//! The status line.
-//!
-//! Pi renders two lines while idle so the layout does not jump when work starts. The spinner
-//! is accent-coloured and the message muted, matching `WorkingStatusIndicator`.
+//! The status line: two lines while idle so the layout does not jump when work starts. Accent
+//! spinner, muted message.
 
 use crate::colour;
 use magi_proto::AgentStatus;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-/// The display, and nothing else.
-///
-/// Words used to stand beside it here and they have gone to the prompt box, where there is room
-/// for them and where you are already looking. What is left never changes width -- so nothing on
-/// the footer row moves when a turn starts or stops, which was the whole complaint about the
-/// line this replaced.
+/// The spinner, and nothing else. Fixed width, so nothing on the footer row moves when a turn starts.
 #[must_use]
 pub fn working(
     trace: &mut crate::beacon::Trace,
@@ -29,14 +22,8 @@ pub fn working(
     ))
 }
 
-/// What the prompt box says about the turn it is waiting on.
-///
-/// In the box rather than the footer because the box is where you are looking while you wait,
-/// and because it is the one place with room for a sentence. It takes the placeholder's slot --
-/// which means it shows while the prompt is empty and gets out of the way the moment you type,
-/// and typing during a turn is allowed and always was.
-///
-/// Empty when there is nothing to say, which is what the placeholder falls back to.
+/// What the prompt box says about the turn it is waiting on. It takes the placeholder's slot, so it
+/// shows while the prompt is empty and gets out of the way the moment you type.
 #[must_use]
 pub fn effort(status: &AgentStatus, elapsed: Option<std::time::Duration>) -> String {
     match status {
@@ -46,15 +33,13 @@ pub fn effort(status: &AgentStatus, elapsed: Option<std::time::Duration>) -> Str
             max_attempts,
             delay_ms,
         } => {
-            // No elapsed clock: the countdown already says how long, and two numbers that both
-            // look like seconds and mean different things is worse than one.
+            // No elapsed clock: the countdown already says how long.
             let seconds = delay_ms.div_ceil(1000);
             format!("retrying ({attempt}/{max_attempts}) in {seconds}s — esc to cancel")
         }
         AgentStatus::Working { label } => {
             let doing = label.to_lowercase();
-            // Only once there is something to say. A clock that appears reading `0s` on every
-            // turn is noise for the nine turns in ten that finish before anyone looks at it.
+            // Only once there is something to say; a clock reading `0s` on every turn is noise.
             match elapsed.filter(|e| e.as_secs() >= 1) {
                 Some(elapsed) => format!(
                     "{doing} for {} — esc to interrupt, or type ahead",
@@ -65,11 +50,8 @@ pub fn effort(status: &AgentStatus, elapsed: Option<std::time::Duration>) -> Str
         }
     }
 }
-/// The note shown while the session is away and work is waiting for it.
-///
-/// A prompt submitted while disconnected is not lost -- it sits in the command channel and
-/// goes out on reconnect -- but the box emptied and nothing appeared, so there was no way to
-/// tell a queued message from a swallowed one.
+/// The note shown while the session is away and work is waiting for it. A prompt submitted while
+/// disconnected sits in the command channel and goes out on reconnect rather than being lost.
 #[must_use]
 pub fn queued(count: usize) -> Vec<Span<'static>> {
     if count == 0 {
@@ -118,8 +100,7 @@ mod tests {
 
     #[test]
     fn the_row_is_the_display_and_no_words() {
-        // "waiting" was here and it is gone, and so is the label beside the spinner. Nothing on
-        // this row changes width when a turn starts, which was the whole complaint about it.
+        // Nothing on this row changes width when a turn starts.
         for mood in [Mood::Resting, Mood::Working, Mood::Asking, Mood::Away] {
             let out = said(mood, 40);
             assert!(all_braille(&out), "{mood:?}: {out:?}");
@@ -134,9 +115,8 @@ mod tests {
 
     #[test]
     fn a_lost_session_does_not_look_like_an_idle_session() {
-        // A UI with no socket looks exactly like an idle one: the prompt takes text and a
-        // submitted turn goes into a channel nobody is reading. Both are flat lines, so the
-        // gaps travelling through this one are the whole of what tells them apart.
+        // A UI with no socket looks exactly like an idle one, so the gaps travelling through the
+        // spinner are the whole of what tells them apart.
         assert_ne!(said(Mood::Away, 60), said(Mood::Resting, 60));
     }
 
@@ -158,8 +138,7 @@ mod elapsed_tests {
 
     #[test]
     fn a_running_turn_says_how_long_it_has_been_running() {
-        // A spinner alone makes ten seconds and thirty look the same, which is how a hung
-        // turn passes for a slow one.
+        // A spinner alone makes ten seconds and thirty look the same.
         let status = AgentStatus::Working {
             label: "Thinking".into(),
         };
@@ -221,8 +200,7 @@ mod queued_tests {
 
     #[test]
     fn one_waiting_message_is_singular() {
-        // An emptied prompt box with nothing on screen gave no way to tell a queued message
-        // from a swallowed one.
+        // An emptied box with nothing on screen gave no way to tell a queued message from a lost one.
         assert!(text(&queued(1)).contains("1 message waiting"));
     }
 
@@ -232,16 +210,8 @@ mod queued_tests {
     }
 }
 
-/// A dashed rule across an edge the transcript continues past.
-///
-/// The scroll note in the status line said how much was below, in words, in one place. That is
-/// the wrong shape for the question a reader actually has, which is "is this the end" — asked
-/// constantly, answered by glancing at the edge rather than by reading a number somewhere else.
-/// So the edge itself says it.
-///
-/// In the box's colour, not the quotation rule's. These two and the prompt box are the only
-/// lines magi draws around the whole width, and three edges in two colours reads as two kinds of
-/// edge when there is only one kind: here is where something stops.
+/// A dashed rule across an edge the transcript continues past. In the box's colour, not the
+/// quotation rule's: three full-width edges in two colours read as two kinds of edge.
 #[must_use]
 pub fn more(width: u16) -> Line<'static> {
     let dash = crate::glyph::more_rule();
@@ -279,8 +249,7 @@ mod more_tests {
 
     #[test]
     fn it_is_drawn_in_the_boxs_colour() {
-        // The prompt box and these two rules are the only full-width lines on the screen. In
-        // different colours they read as two kinds of edge, and there is only one kind.
+        // The prompt box and these two rules are the only full-width lines, and one kind of edge.
         let rule = more(20);
         assert_eq!(rule.spans[0].style.fg, Some(colour::border()));
     }

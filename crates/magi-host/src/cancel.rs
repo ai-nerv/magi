@@ -1,16 +1,11 @@
-//! The user's interrupt, as something a running turn can see.
-//!
-//! An interrupt arrives on a connection task and has to stop work happening on the worker
-//! thread, so it cannot be a return value or an error — it is shared state both sides hold.
-//! Two halves, because a turn waits in two different ways: a flag for the loop that checks
-//! between steps, and a notification for the provider call that would otherwise block until
-//! the model was finished having its say.
+//! The user's interrupt, as shared state a running turn can see: it crosses from a connection task
+//! to the worker thread. Two halves, because a turn waits in two ways — a flag for the loop between
+//! steps, a notification for the provider call that would otherwise block.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Notify;
 
-/// A shared interrupt.
 #[derive(Clone, Default)]
 pub struct Cancel {
     requested: Arc<AtomicBool>,
@@ -18,30 +13,24 @@ pub struct Cancel {
 }
 
 impl Cancel {
-    /// Ask the running turn to stop.
     pub fn request(&self) {
         self.requested.store(true, Ordering::SeqCst);
         self.woken.notify_waiters();
     }
 
-    /// Clear the request, so the next turn starts uninterrupted.
-    ///
-    /// An interrupt that outlived the turn it was meant for would cancel the prompt typed to
-    /// replace it, which reads as a session that has stopped accepting input.
+    /// Clear the request. An interrupt that outlived its turn would cancel the prompt typed to
+    /// replace the one just stopped.
     pub fn clear(&self) {
         self.requested.store(false, Ordering::SeqCst);
     }
 
-    /// Whether a stop has been asked for.
     #[must_use]
     pub fn is_requested(&self) -> bool {
         self.requested.load(Ordering::SeqCst)
     }
 
-    /// Resolve when a stop is asked for.
-    ///
-    /// Checks the flag first: a request that landed before the wait began has no notification
-    /// left to deliver, and waiting for one would sleep until the turn ended on its own.
+    /// Resolve when a stop is asked for. Checks the flag first: a request that landed before the
+    /// wait began has no notification left to deliver.
     pub async fn requested(&self) {
         if self.is_requested() {
             return;
@@ -51,9 +40,6 @@ impl Cancel {
 }
 
 /// A running tool asks the same question the turn loop does.
-///
-/// The daemon owns the interrupt and `magi-tools` owns the tools, so the two meet at a trait
-/// with one method. A tool can find out that it should stop, and can do nothing else with it.
 impl magi_tools::Cancel for Cancel {
     fn is_cancelled(&self) -> bool {
         self.is_requested()

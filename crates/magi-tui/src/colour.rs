@@ -1,135 +1,120 @@
-//! The colours, which are the terminal's own.
-//!
-//! There is no theme. There was one — Pi's `dark.json`, ported hex by hex — and every value in it
-//! was a decision about what somebody's terminal should look like, made by somebody who has never
-//! seen it. A person who has set their terminal's palette has already answered that question, and
-//! answering it again over the top is how a program ends up being the one window on the screen
-//! that does not match the others.
-//!
-//! So every colour here is an **index into the palette the terminal already has**, and what those
-//! indices actually look like is not this program's business.
-//!
-//! **The defaults assume nothing but a dark screen.** They are the ordinary xterm reading — 9 is
-//! bright red, 10 bright green, 14 bright cyan, and 232-255 the 24-step greyscale — taken from the
-//! bright half of each pair and the top fifth of that greyscale, because that is the half meant to
-//! be read *off* a dark background. The first pass took the dark half of both and the result was a
-//! UI you squint at.
-//!
-//! **Every one of them is settable**, by the name in the table below, from `magi.ui` in Lua. Roles
-//! that share a default are still separate names: `tool_output` and `md_quote` happen to be the
-//! same grey and are not the same decision, and a config that wants to move one should not have to
-//! move the other.
+//! The colours. Text hues are fixed RGB, bright enough to read off a dark screen and the same
+//! whatever a theme tool does to the terminal's sixteen. Greys, rules and surfaces are indices into
+//! the terminal's own palette — the top fifth of the 232-255 greyscale — so backgrounds follow the
+//! theme. Every one is settable by name from `magi.ui` in Lua, as an index or as `"#rrggbb"`.
 //!
 //! ```lua
-//! magi.ui.accent = 1
+//! magi.ui.accent = "#bd93f9"
 //! magi.ui.muted  = 8
 //! ```
 
 use ratatui::style::Color;
 use std::sync::OnceLock;
 
-/// Declare the palette once: the struct, the defaults, the accessors, and the names a config may
-/// set, all from one list so none of them can fall out of step with the others.
+/// The text hues: bright, and fixed, so a theme that repaints the terminal's sixteen leaves them be.
+const GREEN: Color = Color::Rgb(0x5a, 0xf7, 0x8e);
+const VIOLET: Color = Color::Rgb(0xbd, 0x93, 0xf9);
+const BLUE: Color = Color::Rgb(0x57, 0xc7, 0xff);
+const ORANGE: Color = Color::Rgb(0xff, 0xb8, 0x6c);
+const PINK: Color = Color::Rgb(0xff, 0x6a, 0xc1);
+const CYAN: Color = Color::Rgb(0x8b, 0xe9, 0xfd);
+const YELLOW: Color = Color::Rgb(0xf3, 0xf9, 0x9d);
+const RED: Color = Color::Rgb(0xff, 0x5c, 0x57);
+
+/// Declare the palette once — struct, defaults, accessors and the names a config may set — from one list.
 macro_rules! palette {
-    ($($name:ident = $default:literal, $doc:literal;)*) => {
-        /// Every colour the UI draws with, as palette indices.
+    ($($name:ident = $default:expr, $doc:literal;)*) => {
+        /// Every colour the UI draws with.
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub struct Palette {
-            $(#[doc = $doc] pub $name: u8,)*
+            $(#[doc = $doc] pub $name: Color,)*
         }
 
-        /// What a terminal nobody has configured looks like.
         pub const STOCK: Palette = Palette { $($name: $default,)* };
 
         impl Palette {
-            /// Every name `magi.ui` recognises as a colour.
             pub const NAMES: &'static [&'static str] = &[$(stringify!($name),)*];
 
-            /// Take whatever `given` answers for, and keep the rest.
-            ///
-            /// A name it has no answer for is left at the default rather than zeroed: a config
-            /// that sets three colours is setting three colours.
-            pub fn overlay(&mut self, given: &dyn Fn(&str) -> Option<u8>) {
+            /// Take whatever `given` answers for; a name it has no answer for keeps its default.
+            pub fn overlay(&mut self, given: &dyn Fn(&str) -> Option<Color>) {
                 $(if let Some(value) = given(stringify!($name)) { self.$name = value; })*
             }
         }
 
-        $(#[doc = $doc] #[must_use] pub fn $name() -> Color { at(palette().$name) })*
+        $(#[doc = $doc] #[must_use] pub fn $name() -> Color { palette().$name })*
     };
 }
 
-// The greyscale runs 232 (#080808) to 255 (#eeeeee), and the first pass sat far too low in it:
-// text at 252 but everything beside it at 241 and 244, on backgrounds of 234. Those are 38%,
-// 50% and 11% grey — a menu whose rows were barely above the screen and whose detail column was
-// half lit. Secondary text lives in the 246-251 band now and surfaces sit above 236, which is the
-// difference between quiet and unreadable.
-//
-// The hues moved to the bright six for the same reason. On most palettes 1, 2 and 3 are the dark
-// half of the pair and 9, 10 and 11 are the one meant to be read off a dark background.
+// Secondary text lives in the 246-251 band and surfaces sit above 236: below that a menu row is
+// barely above the screen.
 palette! {
-    // ---------------------------------------------------------------- hues
-    accent = 14, "Spinners, list cursors, markdown bullets.";
-    success = 10, "Success states.";
-    warning = 11, "Warnings and elevated context usage.";
-    error = 9, "Errors, and a tool that failed.";
-    typed = 13, "The characters you have already typed, wherever they appear in a candidate.";
+    accent = VIOLET, "Spinners, list cursors, markdown bullets.";
+    success = GREEN, "Success states.";
+    warning = ORANGE, "Warnings and elevated context usage.";
+    error = RED, "Errors, and a tool that failed.";
+    typed = YELLOW, "The characters you have already typed, wherever they appear in a candidate.";
+    spinning = VIOLET, "The status row's display while a turn runs; at rest it is `dim`.";
+    mode_normal = BLUE, "`NOR` on the prompt box: keys are commands.";
+    mode_insert = GREEN, "`INS` on the prompt box: keys are text.";
+    mode_command = ORANGE, "`CMD` on the prompt box: keys are a command line.";
 
-    // ------------------------------------------------------------ markdown
-    md_heading = 11, "Markdown headings.";
-    md_code = 14, "Inline code spans.";
-    md_code_block = 10, "Fenced code block contents.";
-    md_quote = 250, "Block quote text and its rule.";
+    code_command = BLUE, "The program a shell command runs, and each one after a pipe or `&&`.";
+    code_subcommand = VIOLET, "What a program like `git` or `cargo` is asked to do: `commit`, `build`.";
+    code_flag = CYAN, "A flag on a shell command: `-la`, `--oneline`.";
+    code_path = YELLOW, "A path on a shell command: `./src`, `~/x`, `a.rs`, a glob.";
+    code_number = ORANGE, "A number on a shell command.";
+    code_string = GREEN, "A quoted string in a shell command.";
+    code_variable = ORANGE, "`$NAME`, `${NAME}`, and `NAME=value` before a command.";
+    code_operator = PINK, "`|`, `&&`, `;`, `>` and the other joints between commands.";
+    code_comment = Color::Rgb(0x8a, 0x90, 0xa0), "A comment in code, or trailing a shell command.";
+    code_argument = Color::Rgb(0xd8, 0xd8, 0xd8), "Everything else on a shell command: its plain arguments.";
+    code_keyword = VIOLET, "A keyword in a code block: `fn`, `if`, `return`.";
+    code_type = CYAN, "A type or class name in a code block.";
 
-    // ---------------------------------------------------------------- diffs
-    diff_added = 40, "Added lines in a diff.";
-    diff_removed = 167, "Removed lines in a diff.";
-    diff_marker = 214, "A diff's file and hunk headers, which are neither added nor removed.";
-    diff_context = 245, "Unchanged context lines in a diff.";
+    md_heading = ORANGE, "Markdown headings.";
+    md_code = CYAN, "Inline code spans.";
+    md_code_block = GREEN, "Fenced code block contents.";
+    md_quote = at(250), "Block quote text and its rule.";
 
-    // ---------------------------------------------------------------- tools
-    tool_bg = 237, "Behind a tool block.";
-    tool_title = 255, "The tool's name, when it is still running.";
-    tool_ok = 10, "The tool's name, when it finished.";
-    tool_failed = 9, "The tool's name, when it failed.";
-    tool_output = 251, "A tool's output.";
-    tool_fold = 246, "The note saying how much of a result is not shown.";
-    tool_seam = 235, "The rule between what a call was asked and what it answered. A line rather than a surface, so it may sit below the floor a fill has to keep.";
-    block_frame = 237, "A transcript block's own frame. Not the prompt's border: a box in a scrolling record should sit further back than the thing you are typing into.";
+    diff_added = GREEN, "Added lines in a diff.";
+    diff_removed = RED, "Removed lines in a diff.";
+    diff_marker = VIOLET, "A diff's file and hunk headers, which are neither added nor removed.";
+    diff_context = Color::Rgb(0x9a, 0x9a, 0x9a), "Unchanged context lines in a diff.";
+    diff_added_bg = Color::Rgb(0x1f, 0x4a, 0x2c), "Behind a line an edit added. RGB, so no theme can hide it.";
+    diff_removed_bg = Color::Rgb(0x5e, 0x1f, 0x24), "Behind a line an edit removed.";
+    diff_changed_bg = Color::Rgb(0x5c, 0x42, 0x14), "Behind the new side of a changed line: added straight after removed ones.";
 
-    // ---------------------------------------------------------------- menus
-    menu_selected_bg = 241, "Behind the row you are on.";
-    menu_selected = 255, "The row you are on.";
-    menu_detail = 250, "What a row says about itself, beside its name.";
-    menu_detail_selected = 255, "The same, on the selected row.";
-    menu_meta = 247, "Counts and scroll markers on the heading.";
+    tool_bg = at(237), "Behind a tool block.";
+    tool_title = BLUE, "The tool's name, while the call is out.";
+    tool_ok = GREEN, "The tool's name, when it finished.";
+    tool_failed = RED, "The tool's name, when it failed.";
+    tool_output = at(251), "A tool's output.";
+    tool_fold = at(246), "The note saying how much of a result is not shown.";
+    tool_seam = at(235), "The rule between what a call was asked and what it answered. A line rather than a surface, so it may sit below the floor a fill has to keep.";
+    block_frame = at(237), "A transcript block's own frame. Not the prompt's border: a box in a scrolling record should sit further back than the thing you are typing into.";
 
-    // -------------------------------------------------------------- the box
-    //
-    // The one thing that is *not* brightened with the rest. A border is not text, it is what the
-    // light moves against, and the two are one gradient: the further apart they sit the more of
-    // a comet there is to see. Raised to 245 alongside everything else, the run was ten steps
-    // from an already-bright frame and the scan vanished into its own border.
-    border = 240, "The prompt's border with nothing lit, and the floor of its scan.";
-    scan = 255, "The brightest point of the light travelling along the border.";
-    hint = 241, "The empty prompt's placeholder. Well under the text, so it reads as a label rather than as something you wrote.";
-    rule = 245, "The rule above and below a quotation.";
+    menu_selected_bg = at(241), "Behind the row you are on.";
+    menu_selected = at(255), "The row you are on.";
+    menu_detail = at(250), "What a row says about itself, beside its name.";
+    menu_detail_selected = at(255), "The same, on the selected row.";
+    menu_meta = at(247), "Counts and scroll markers on the heading.";
+    pane_selected_bg = at(237), "Behind the entry a list float's cursor is on.";
 
-    // ------------------------------------------------------------ the rest
-    message_bg = 237, "Behind something you said.";
-    message_text = 255, "Something you said.";
-    // The tag on a message block, and why it is not one of the greys.
-    //
-    // A tool block wears a reversed chip too, and its colours are the outcome's: white while it
-    // runs, green when it finished, red when it failed. A message tag in white on a background
-    // three steps from the tool block's own made the two indistinguishable at a glance — and a
-    // tool block is the one that folds, so half the screen looked like it had a handle on it.
-    // These two are hues no tool state uses.
-    said_by_you = 13, "The `USER` tag on something you said.";
-    said_by_agent = 14, "The tag on a message from another instance.";
-    thinking = 249, "Reasoning blocks.";
-    text = 253, "Default foreground.";
-    muted = 250, "Secondary text.";
-    dim = 246, "Tertiary text; the footer lives here.";
+    // Two ends of one gradient: the scan walks the greyscale indices between them.
+    border = at(240), "The prompt's border with nothing lit, and the floor of its scan.";
+    scan = at(255), "The brightest point of the light travelling along the border.";
+    hint = at(241), "The empty prompt's placeholder. Well under the text, so it reads as a label rather than as something you wrote.";
+    shimmer_shadow = at(237), "What the working band darkens the words in the prompt box towards, where it passes.";
+    rule = at(245), "The rule above and below a quotation.";
+
+    message_bg = at(237), "Behind something you said.";
+    message_text = at(255), "Something you said.";
+    said_by_you = PINK, "The `USER` tag on something you said.";
+    said_by_agent = CYAN, "The tag on a message from another instance.";
+    thinking = at(249), "Reasoning blocks.";
+    text = at(253), "Default foreground.";
+    muted = at(250), "Secondary text.";
+    dim = at(246), "Tertiary text; the footer lives here.";
 }
 
 impl Default for Palette {
@@ -141,50 +126,124 @@ impl Default for Palette {
 /// The palette in force, set once before anything is drawn.
 static IN_FORCE: OnceLock<Palette> = OnceLock::new();
 
-/// Use `palette` for the life of the process.
-///
-/// Only the first call counts. A second one is a second opinion arriving after the screen has
-/// already been painted with the first, which is worse than being ignored.
+/// Use `palette` for the life of the process. Only the first call counts.
 pub fn adopt(palette: Palette) {
     let _ = IN_FORCE.set(palette);
 }
 
-/// The palette in force.
 #[must_use]
 pub fn palette() -> &'static Palette {
     IN_FORCE.get_or_init(Palette::default)
 }
 
-/// A palette index.
 const fn at(index: u8) -> Color {
     Color::Indexed(index)
 }
 
-/// `amount` of the way from the resting border to the brightest point of the scan.
-///
-/// A step along the run of indices between the two rather than a blend of them. Blending needs to
-/// know what the colours *are*, which is exactly what this design has given up knowing, and a
-/// contiguous run of palette indices is already a gradient — under a generated palette it may even
-/// be a gradient through the person's own accent. A palette whose scan is not above its border has
-/// no run to walk, and gets the border rather than an inverted one.
+/// A colour as a configuration writes one: a palette index, or `"#rrggbb"`. Anything else is
+/// `None`, so a mistake stays visible rather than being painted over.
+#[must_use]
+pub fn read(index: Option<u64>, text: Option<&str>) -> Option<Color> {
+    if let Some(index) = index {
+        return u8::try_from(index).ok().map(Color::Indexed);
+    }
+    let hex = text?.strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+    let byte = |from: usize| u8::from_str_radix(hex.get(from..from + 2)?, 16).ok();
+    Some(Color::Rgb(byte(0)?, byte(2)?, byte(4)?))
+}
+
+/// `from` moved `t` of the way to `to`. Only colours with a known RGB value blend — the fixed hues
+/// and the greyscale; anything else is whichever end `t` is nearer.
+#[must_use]
+pub fn blend(from: Color, to: Color, t: f32) -> Color {
+    let (Some(a), Some(b)) = (rgb_of(from), rgb_of(to)) else {
+        return if t < 0.5 { from } else { to };
+    };
+    let t = t.clamp(0.0, 1.0);
+    let mix = |x: u8, y: u8| {
+        let mixed = f32::from(x) + (f32::from(y) - f32::from(x)) * t;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "between two bytes"
+        )]
+        let byte = mixed.round() as u8;
+        byte
+    };
+    Color::Rgb(mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))
+}
+
+/// `from` taken `t` of the way to `to` without leaving the terminal's palette: two greyscale steps
+/// walk the indices between them, as the scan does the other way, so a theme's greys stay its own.
+/// RGB blends; any other index cannot be mixed, and past halfway is itself, dimmed.
+#[must_use]
+pub fn shade(from: Color, to: Color, t: f32) -> ratatui::style::Style {
+    let t = t.clamp(0.0, 1.0);
+    let style = ratatui::style::Style::default();
+    match (from, to) {
+        (Color::Indexed(a @ 232..=255), Color::Indexed(b @ 232..=255)) => {
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "at most 23 steps"
+            )]
+            let step = (f32::from(a.abs_diff(b)) * t).round() as u8;
+            style.fg(Color::Indexed(if b < a { a - step } else { a + step }))
+        }
+        _ if rgb_of(from).is_some() && rgb_of(to).is_some() => style.fg(blend(from, to, t)),
+        _ if t >= 0.5 => style.fg(from).add_modifier(ratatui::style::Modifier::DIM),
+        _ => style.fg(from),
+    }
+}
+
+/// The RGB a colour stands for, where that is fixed: an RGB hue, or a step of the 232-255 greyscale.
+fn rgb_of(colour: Color) -> Option<(u8, u8, u8)> {
+    match colour {
+        Color::Rgb(r, g, b) => Some((r, g, b)),
+        Color::Indexed(n @ 232..=255) => {
+            let grey = 8 + 10 * (n - 232);
+            Some((grey, grey, grey))
+        }
+        _ => None,
+    }
+}
+
+/// `amount` of the way from the resting border to the brightest point of the scan: a step along the
+/// run of greyscale indices between them. Two colours that are not both indices have no run to
+/// walk, and a palette whose scan is not above its border gets the border.
 #[must_use]
 pub fn scan_at(amount: f32) -> Color {
     let Palette { border, scan, .. } = *palette();
-    let Some(span) = scan.checked_sub(border) else {
-        return at(border);
+    let amount = amount.clamp(0.0, 1.0);
+    let (Color::Indexed(low), Color::Indexed(high)) = (border, scan) else {
+        return if amount >= 0.5 { scan } else { border };
+    };
+    let Some(span) = high.checked_sub(low) else {
+        return border;
     };
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         reason = "clamped to the run first"
     )]
-    let step = (f32::from(span) * amount.clamp(0.0, 1.0)).round() as u8;
-    at(border + step)
+    let step = (f32::from(span) * amount).round() as u8;
+    at(low + step)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A colour's place on the terminal's palette; a test asking this of an RGB hue is wrong.
+    fn index(colour: Color) -> u8 {
+        match colour {
+            Color::Indexed(n) => n,
+            other => panic!("{other:?} is not on the terminal's palette"),
+        }
+    }
 
     #[test]
     fn nothing_lit_is_the_resting_border() {
@@ -193,66 +252,89 @@ mod tests {
 
     #[test]
     fn fully_lit_is_the_top_of_the_run() {
-        assert_eq!(scan_at(1.0), at(palette().scan));
+        assert_eq!(scan_at(1.0), palette().scan);
     }
 
     #[test]
     fn the_scan_only_climbs() {
-        let seen: Vec<Color> = (0..=10u8).map(|n| scan_at(f32::from(n) / 10.0)).collect();
+        let seen: Vec<u8> = (0..=10u8)
+            .map(|n| index(scan_at(f32::from(n) / 10.0)))
+            .collect();
         for pair in seen.windows(2) {
-            let (Color::Indexed(a), Color::Indexed(b)) = (pair[0], pair[1]) else {
-                panic!("the run is indexed");
-            };
-            assert!(a <= b, "it only climbs: {a} then {b}");
+            assert!(pair[0] <= pair[1], "it only climbs: {pair:?}");
         }
     }
 
     #[test]
     fn an_amount_off_the_end_stays_on_the_run() {
         assert_eq!(scan_at(-1.0), border());
-        assert_eq!(scan_at(9.0), at(palette().scan));
+        assert_eq!(scan_at(9.0), palette().scan);
     }
 
     #[test]
     fn an_overlay_takes_what_it_is_given_and_nothing_else() {
         let mut chosen = STOCK;
-        chosen.overlay(&|name| (name == "accent").then_some(1));
-        assert_eq!(chosen.accent, 1);
+        chosen.overlay(&|name| (name == "accent").then_some(at(1)));
+        assert_eq!(chosen.accent, at(1));
         assert_eq!(chosen.muted, STOCK.muted, "and left the rest alone");
     }
 
     #[test]
     fn every_field_can_be_named() {
-        // The macro builds the struct, the defaults, the accessors and this list from one place,
-        // so a colour that exists is a colour a config can set. Counted rather than compared
-        // because there is nothing else to compare it against.
+        // The macro builds struct, defaults, accessors and this list from one place. Counted rather
+        // than compared because there is nothing else to compare it against.
         let mut all = STOCK;
-        all.overlay(&|_| Some(200));
-        assert_eq!(all.accent, 200);
-        assert_eq!(all.scan, 200);
+        all.overlay(&|_| Some(at(200)));
+        assert_eq!(all.accent, at(200));
+        assert_eq!(all.scan, at(200));
         assert!(Palette::NAMES.len() > 25, "{}", Palette::NAMES.len());
         assert!(Palette::NAMES.contains(&"tool_output"));
     }
 
     #[test]
-    fn nothing_that_sits_on_the_screen_is_lost_in_it() {
-        // A surface has to read as *on* the screen, and read as a surface rather than a shadow.
-        // 232-236 is the bottom fifth of the greyscale: a block painted there is a hole on a
-        // dark terminal, which is what the first pass at this drew.
+    fn a_colour_is_read_as_an_index_or_as_rgb() {
+        assert_eq!(read(Some(1), None), Some(at(1)));
+        assert_eq!(
+            read(None, Some("#ff8800")),
+            Some(Color::Rgb(0xff, 0x88, 0x00))
+        );
+        assert_eq!(read(Some(300), None), None, "past the palette");
+        assert_eq!(read(None, Some("grey")), None, "not a colour");
+        assert_eq!(read(None, Some("#ff880")), None, "one digit short");
+        assert_eq!(read(None, Some("#gg8800")), None, "not hex");
+    }
+
+    #[test]
+    fn the_hues_are_fixed_and_the_surfaces_follow_the_theme() {
+        // A theme tool rewrites the terminal's sixteen: text drawn from them changes colour under
+        // it, and a background that did not would sit wrong on the new screen.
+        for hue in [
+            STOCK.accent,
+            STOCK.success,
+            STOCK.warning,
+            STOCK.error,
+            STOCK.typed,
+            STOCK.spinning,
+            STOCK.mode_normal,
+            STOCK.tool_title,
+            STOCK.said_by_you,
+        ] {
+            assert!(matches!(hue, Color::Rgb(..)), "{hue:?} is not fixed");
+        }
         for surface in [
             STOCK.tool_bg,
             STOCK.menu_selected_bg,
             STOCK.message_bg,
+            STOCK.pane_selected_bg,
             STOCK.border,
         ] {
-            assert!(surface > 236, "{surface} is as good as black");
+            assert!(index(surface) > 236, "{surface:?} is as good as black");
         }
     }
 
     #[test]
     fn no_secondary_text_is_left_in_the_dark_half() {
-        // The complaint this answers: text at 241 and 244 on a 234 background is a menu you
-        // squint at. Everything a person actually reads sits in the top fifth of the greyscale.
+        // Everything a person actually reads sits in the top fifth of the greyscale.
         for weight in [
             STOCK.dim,
             STOCK.muted,
@@ -264,22 +346,22 @@ mod tests {
             STOCK.md_quote,
             STOCK.thinking,
         ] {
-            assert!(weight >= 246, "{weight} is too dark to read comfortably");
+            assert!(
+                index(weight) >= 246,
+                "{weight:?} is too dark to read comfortably"
+            );
         }
-        // `hint` is deliberately not in that list. Every other weight here is text somebody
-        // reads; the placeholder is a label they are meant to look past, and one as bright as
-        // what they type reads as something already in the box.
-        let hint = STOCK.hint;
+        // `hint` is deliberately not in that list: a placeholder as bright as what you type reads
+        // as something already in the box.
+        let hint = index(STOCK.hint);
         assert!(hint < 246, "the placeholder is as loud as the text: {hint}");
         assert!(hint > 236, "and not a hole in the screen: {hint}");
     }
 
     #[test]
     fn the_scan_has_a_run_long_enough_to_read_as_one() {
-        // The border and the scan are two ends of a gradient, so a border brightened towards the
-        // scan is a scan nobody can see. Twelve steps is the floor at which a comet still reads
-        // as a comet rather than as two slightly different greys.
-        let run = STOCK.scan.saturating_sub(STOCK.border);
+        // Twelve steps is the floor at which a comet reads as a comet rather than two greys.
+        let run = index(STOCK.scan).saturating_sub(index(STOCK.border));
         assert!(
             run >= 12,
             "only {run} steps between the border and the scan"
@@ -287,25 +369,12 @@ mod tests {
     }
 
     #[test]
-    fn the_stock_palette_reads_as_an_ordinary_terminal() {
-        // The bright half of each pair: on most palettes 1, 2 and 3 are the dark ones and 9, 10
-        // and 11 are the ones meant to be read off a dark background.
-        assert_eq!(STOCK.error, 9, "bright red");
-        assert_eq!(STOCK.success, 10, "bright green");
-        assert_eq!(STOCK.warning, 11, "bright yellow");
-        assert_eq!(STOCK.accent, 14, "bright cyan");
-    }
-
-    #[test]
-    #[expect(
-        clippy::assertions_on_constants,
-        reason = "the constants are the subject"
-    )]
     fn text_weights_are_ordered() {
-        assert!(STOCK.dim < STOCK.muted, "the footer is quieter than output");
-        assert!(STOCK.muted < STOCK.text, "output is quieter than prose");
+        let (dim, muted, text) = (index(STOCK.dim), index(STOCK.muted), index(STOCK.text));
+        assert!(dim < muted, "the footer is quieter than output");
+        assert!(muted < text, "output is quieter than prose");
         assert!(
-            STOCK.text < STOCK.menu_selected,
+            text < index(STOCK.menu_selected),
             "a selected row beats prose"
         );
     }

@@ -1,52 +1,40 @@
-//! `magi doctor` — what a session here would be made of, without starting one.
-//!
-//! **Everything below is answerable before a turn runs, and none of it was.** Which config files
-//! were read, which of their lines magi kept, what the registry ends up holding, and which
-//! siblings are actually there. A person whose tool is missing, whose setting did nothing, or
-//! whose memory layer is quietly absent had one way to find out: start a session and notice the
-//! absence of an effect.
-//!
-//! The composition is built by the same [`magi_lua::tool::assemble`] a session builds, for the
-//! reason that function exists at all: an answer assembled a second way is an answer about a
-//! different program. What differs is deliberate and stated — nobody to ask, no screen to lend,
-//! and the working directory rather than a gated root, because this runs nothing.
-//!
-//! Siblings are *asked*, not looked for. A program on `$PATH` is not a running one, and a socket
-//! that accepts is not one that answers — which is the failure this command would most often be
-//! run to diagnose.
+//! `magi doctor` — what a session here would be made of, without starting one: which config files
+//! were read, which of their lines magi kept, what the registry holds, and which siblings are
+//! there. The composition is built by the same [`magi_lua::tool::assemble`] a session uses, with
+//! nobody to ask, no screen to lend, and the working directory rather than a gated root.
 
-/// Print the composition of a session in this directory.
-///
-/// Never fails. A configuration that will not load is the loudest thing this can report, not a
-/// reason to stop: a machine where nothing is installed and a machine where `init.lua` has a
-/// syntax error are the two this command exists for, and both used to answer by refusing to say
-/// anything at all.
-pub fn print() {
-    // Everything below still holds when this fails. The builtins are compiled in and the
-    // siblings are on `$PATH` or are not, and neither depends on a configuration existing —
-    // which is exactly what somebody staring at a session that will not start needs told.
+use std::fmt::Write;
+
+/// The composition of a session in this directory. Never fails: a configuration that will not
+/// load is the loudest thing this can report, not a reason to stop.
+fn report() -> String {
+    let mut out = String::new();
+    // Everything below still holds when this fails: the builtins are compiled in and the siblings
+    // are on `$PATH` or are not.
     let (loaded, refused) = match crate::config::load() {
         Ok(loaded) => (loaded, None),
         Err(why) => (nothing_loaded(), Some(why.to_string())),
     };
 
-    heading("configuration");
+    heading(&mut out, "configuration");
     match crate::config::config_dir() {
-        Some(dir) => row("directory", &dir.display().to_string()),
+        Some(dir) => row(&mut out, "directory", &dir.display().to_string()),
         None => row(
+            &mut out,
             "directory",
             "none: neither $XDG_CONFIG_HOME nor $HOME is set",
         ),
     }
     if let Some(why) = &refused {
-        row("state", &format!("will not load: {why}"));
+        row(&mut out, "state", &format!("will not load: {why}"));
     }
-    row("tool files", &named(&loaded.tools));
-    row("client libraries", &named(&loaded.clients));
+    row(&mut out, "tool files", &named(&loaded.tools));
+    row(&mut out, "client libraries", &named(&loaded.clients));
 
-    heading("settings");
+    heading(&mut out, "settings");
     let environ = crate::config::environ(&loaded);
     row(
+        &mut out,
         "model",
         loaded
             .config
@@ -54,6 +42,7 @@ pub fn print() {
             .unwrap_or("(melchior's default)"),
     );
     row(
+        &mut out,
         "confine",
         if loaded.config.boolean("confine").unwrap_or(false) {
             "on"
@@ -61,11 +50,14 @@ pub fn print() {
             "off"
         },
     );
+    row(&mut out, "isolation", &isolation(&loaded));
     row(
+        &mut out,
         "standing grants",
         &crate::config::granted(&loaded).len().to_string(),
     );
     row(
+        &mut out,
         "environment",
         &if environ.is_empty() {
             "(none)".to_owned()
@@ -77,54 +69,67 @@ pub fn print() {
     // What a config said that magi did not keep. Printed here as well as at load, because this
     // is the command a person runs when something they wrote did nothing.
     if !loaded.config.unkept.is_empty() {
-        heading("not kept");
+        heading(&mut out, "not kept");
         for said in &loaded.config.unkept {
-            println!("  {said}");
+            let _ = writeln!(out, "  {said}");
         }
     }
 
-    heading("tools");
+    heading(&mut out, "tools");
     let mut engine = magi_lua::Engine::new();
     engine.install_clients(&loaded.clients);
     for (name, source) in &loaded.tools {
         if let Err(why) = engine.run(source, name) {
-            row(name, &format!("will not run: {why}"));
+            row(&mut out, name, &format!("will not run: {why}"));
         }
     }
     let declared = engine.tools();
     let engine = std::rc::Rc::new(std::cell::RefCell::new(engine));
-    let (registry, from_casper) = magi_lua::tool::assemble(
+    let tooling = crate::config::tooling(&loaded);
+    let (registry, supplied) = magi_lua::tool::assemble(
         std::rc::Rc::clone(&engine),
         std::sync::Arc::new(magi_tools::question::Unanswered),
         std::sync::Arc::new(magi_tools::holding::Screenless),
         &environ,
-        crate::config::casper_pin(&loaded).as_deref(),
+        &tooling,
     );
     registry.probe(&magi_tools::ops::Real::new(
         std::env::current_dir().unwrap_or_default(),
     ));
 
     for tool in registry.declarations() {
-        let source = if from_casper.contains(&tool.name) {
-            "casper".to_owned()
+        let source = if supplied.contains(&tool.name) {
+            tooling.program.clone()
         } else if declared.iter().any(|(name, _)| *name == tool.name) {
             "config".to_owned()
         } else {
             "builtin".to_owned()
         };
-        println!("  {:<10} {source}", tool.name);
+        let _ = writeln!(out, "  {:<10} {source}", tool.name);
         // Only a peer has anything more to say: a command line, and the environment it was built
         // with. That last one is where `magi tools` and a session used to disagree.
         if let Some(built) = registry.get(&tool.name) {
             for (what, said) in built.composition() {
-                println!("    {what:<10} {said}");
+                let _ = writeln!(out, "    {what:<10} {said}");
             }
         }
     }
 
-    heading("siblings");
-    for (name, what) in SIBLINGS {
-        row(name, &sibling(name, what));
+    heading(&mut out, "roles");
+    for (role, program) in crate::config::roles::filled(&loaded) {
+        row(&mut out, &role, &sibling(&role, &program));
+    }
+    out
+}
+
+/// Print the composition of a session in this directory. Framed, the whole report is the single
+/// value in `result`: it is a report rather than a listing, so its rows are not values.
+pub fn print(how: crate::verbs::As) {
+    let report = report();
+    if how.framed() {
+        crate::verbs::say(&magi_ipc::family::Reply::of(report.into()), how);
+    } else {
+        print!("{report}");
     }
 }
 
@@ -137,41 +142,34 @@ fn nothing_loaded() -> crate::config::Loaded {
     }
 }
 
-/// The programs a session reaches for, and what each is for.
-///
-/// Named rather than discovered: what magi expects to find is a fact about magi, and a list
-/// built by looking would answer "what is installed" instead of "what is missing".
-const SIBLINGS: &[(&str, &str)] = &[
-    ("casper", "tools"),
-    ("melchior", "the model"),
-    ("balthasar", "memory"),
-];
-
-/// Whether `name` is installed, and whether it actually answers.
-///
-/// Asked, not looked for. A program on `$PATH` is not a running one, a socket that accepts is
-/// not one that answers, and both of those are exactly what somebody runs this command to find
-/// out. The question is the one magi itself asks each of them, so an answer here means the
-/// session would work.
-fn sibling(name: &str, what: &str) -> String {
+/// Which program fills `role`, and whether it can do the job: a program on `$PATH` is not a running
+/// one, and a socket that accepts is not one that answers. Probed by role rather than by name —
+/// dialling a socket is how you check a memory layer, whatever the memory layer is called.
+fn sibling(role: &str, name: &str) -> String {
     let Some(path) = which(name) else {
-        return format!("not installed — no {what}");
+        return format!("{name} — not installed, so this session has no {role}");
     };
     let at = path.display().to_string();
-    match name {
+    // Before anything about whether it is answering: whether it is the right kind of program at
+    // all. A role pointed at something that cannot fill it otherwise finds out at the first call
+    // of a turn, which is the worst moment and the least legible message.
+    if let Some(missing) = cannot_fill(role, name) {
+        return format!("{name} — {at} — cannot fill {role}: it answers no {missing}");
+    }
+    match role {
         // Served on a socket, and the socket is the thing that lies.
-        "balthasar" => match magi_ipc::family::blocking::Family::find() {
-            Ok(_) => format!("{at} — answering"),
-            Err(why) => format!("{at} — installed, but {why}"),
+        "memory" => match magi_ipc::family::blocking::Family::find() {
+            Ok(_) => format!("{name} — {at} — answering"),
+            Err(why) => format!("{name} — {at} — installed, but {why}"),
         },
         // Asked the way magi asks them: one listing verb, whose emptiness is itself the answer.
-        "casper" => match magi_tools::casper::cards_from(name).len() {
-            0 => format!("{at} — installed, but offers no tools"),
-            n => format!("{at} — {n} tools"),
+        "tools" => match magi_tools::supplier::cards_from(name).len() {
+            0 => format!("{name} — {at} — installed, but offers no tools"),
+            n => format!("{name} — {at} — {n} tools"),
         },
         _ => match answers_models(name) {
-            Some(n) => format!("{at} — {n} models"),
-            None => format!("{at} — installed, but would not answer `models`"),
+            Some(n) => format!("{name} — {at} — {n} models"),
+            None => format!("{name} — {at} — installed, but would not answer `models`"),
         },
     }
 }
@@ -198,13 +196,27 @@ fn which(name: &str) -> Option<std::path::PathBuf> {
 }
 
 /// One `name: value` line, aligned.
-fn row(name: &str, value: &str) {
-    println!("  {name:<18} {value}");
+fn row(out: &mut String, name: &str, value: &str) {
+    let _ = writeln!(out, "  {name:<18} {value}");
+}
+
+/// Whether a tool command runs in a kernel jail, and what actually enforces it here. `off` unless
+/// `magi.isolation` is set; `on` names the layers in force, so a machine that cannot build one says
+/// so rather than reporting a wall it does not have.
+fn isolation(loaded: &crate::config::Loaded) -> String {
+    if !loaded.config.boolean("isolation").unwrap_or(false) {
+        return "off".to_owned();
+    }
+    match which("bwrap") {
+        Some(_) => "on — bubblewrap (filesystem, network, processes)".to_owned(),
+        None => "on, but weaker: no bubblewrap here, so the mount and network walls are absent"
+            .to_owned(),
+    }
 }
 
 /// A section title.
-fn heading(title: &str) {
-    println!("\n{title}");
+fn heading(out: &mut String, title: &str) {
+    let _ = writeln!(out, "\n{title}");
 }
 
 /// The names of a set of config files, or a note that there are none.
@@ -231,10 +243,88 @@ mod tests {
     #[test]
     fn a_file_is_named_by_its_basename() {
         let files = vec![
-            ("clients/balthasar.lua".to_owned(), String::new()),
+            ("clients/oslo.lua".to_owned(), String::new()),
             ("tools.lua".to_owned(), String::new()),
         ];
-        assert_eq!(named(&files), "balthasar.lua tools.lua");
+        assert_eq!(named(&files), "oslo.lua tools.lua");
         assert_eq!(named(&[]), "(none)");
+    }
+
+    #[test]
+    fn a_role_naming_a_program_that_is_not_there_says_which_program() {
+        // The failure this is for: `magi.memory` pointed at something that was never installed.
+        // "not installed" without the name sends a person looking for balthasar.
+        let said = super::sibling("memory", "magi-no-such-memory-anywhere");
+        assert!(
+            said.starts_with("magi-no-such-memory-anywhere — not installed"),
+            "{said}"
+        );
+        assert!(said.contains("no memory"), "{said}");
+    }
+}
+
+/// The core verbs of `role` that `name` does not advertise, or nothing when it fills the role.
+///
+/// The same question `scripts/gate-role.sh` asks, asked from here so `magi doctor` can answer it
+/// without a shell. Advertised rather than probed, for the reason that gate gives: a role verb
+/// takes arguments this has no business inventing, and `gate-family.sh` already holds a program to
+/// answering what it advertises.
+fn cannot_fill(role: &str, name: &str) -> Option<String> {
+    let core = crate::config::roles::of(role)?.core;
+    let out = std::process::Command::new(name)
+        .arg("verbs")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let said = String::from_utf8_lossy(&out.stdout);
+    // Nothing said is not a verdict: that is a program that would not answer at all, which the
+    // probes below report in their own words.
+    if said.trim().is_empty() {
+        return None;
+    }
+    let missing: Vec<&str> = core
+        .iter()
+        .filter(|verb| !said.contains(&format!("\"verb\":\"{verb}\"")))
+        .copied()
+        .collect();
+    (!missing.is_empty()).then(|| missing.join(", "))
+}
+
+/// A role names a program that cannot fill it.
+#[cfg(test)]
+mod filling {
+    use super::cannot_fill;
+
+    #[test]
+    fn a_program_that_answers_none_of_the_core_is_named_as_unable() {
+        // The failure this replaces: `magi.memory = "casper"` reported "installed, but not
+        // reachable", which reads as a daemon that is down rather than a program that was never
+        // a memory layer. `casper` is on PATH in this checkout and answers `verbs`.
+        let Some(missing) = cannot_fill("memory", "casper") else {
+            eprintln!("skipping: no casper on PATH to ask");
+            return;
+        };
+        for verb in ["observe", "replay", "sessions"] {
+            assert!(missing.contains(verb), "{verb} is core: {missing}");
+        }
+    }
+
+    #[test]
+    fn the_program_that_does_fill_it_is_not_accused() {
+        // The control. Without it the test above passes against a `cannot_fill` that always
+        // complains, which would report every role as unfillable.
+        assert_eq!(cannot_fill("memory", "balthasar"), None);
+        assert_eq!(cannot_fill("tools", "casper"), None);
+    }
+
+    #[test]
+    fn a_program_that_says_nothing_is_not_judged_here() {
+        // Silence is a program that would not answer at all, which the probes report in their own
+        // words. Reading it as "fills no role" would replace a precise message with a vague one.
+        assert_eq!(
+            cannot_fill("memory", "definitely-not-a-program-xyzzy"),
+            None
+        );
     }
 }

@@ -57,13 +57,41 @@ fn a_role_the_guesser_would_have_got_wrong_is_drawn_as_the_tool_meant_it() {
     let lines = block_of(Some(painted), "- not a diff at all", Detail::Full);
     assert_eq!(colour_of(&lines, "not a diff"), Some(colour::text()));
 
-    // And without the tool saying so, the guess still stands — which is what every tool
-    // that has no view relies on.
-    let guessed = block_of(None, "- not a diff at all", Detail::Full);
+    // And without the tool saying so, only output that is a diff is read as one: `ls -la` is not.
+    let plain = block_of(None, "- not a diff at all", Detail::Full);
+    assert_eq!(colour_of(&plain, "not a diff"), Some(colour::tool_output()));
+    let diff = block_of(None, "@@ -1 +1 @@\n-was\n+now", Detail::Full);
+    assert_eq!(colour_of(&diff, "-was"), Some(colour::diff_removed()));
+}
+
+#[test]
+fn an_edit_keeps_its_code_colours_on_the_ground_of_each_change() {
+    let back = |role, text: &str| Painted {
+        back: Some(role),
+        ..Painted::new(Role::Keyword, text)
+    };
+    let painted = Shown::Painted {
+        lines: vec![
+            vec![back(Role::Removed, "let was")],
+            vec![back(Role::Changed, "let now")],
+        ],
+    };
+    let lines = block_of(Some(painted), "-let was\n+let now", Detail::Full);
+    let span = |text: &str| {
+        lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .find(|s| s.content.contains(text))
+            .map(|s| s.style)
+            .expect("drawn")
+    };
     assert_eq!(
-        colour_of(&guessed, "not a diff"),
-        Some(colour::diff_removed())
+        span("let was").fg,
+        Some(colour::code_keyword()),
+        "still code"
     );
+    assert_eq!(span("let was").bg, Some(colour::diff_removed_bg()));
+    assert_eq!(span("let now").bg, Some(colour::diff_changed_bg()));
 }
 
 #[test]
@@ -78,8 +106,8 @@ fn a_painted_row_keeps_a_colour_per_span() {
         ]],
     };
     let lines = block_of(Some(painted), "fn main", Detail::Full);
-    assert_eq!(colour_of(&lines, "fn"), Some(colour::md_heading()));
-    assert_eq!(colour_of(&lines, "main"), Some(colour::accent()));
+    assert_eq!(colour_of(&lines, "fn"), Some(colour::code_keyword()));
+    assert_eq!(colour_of(&lines, "main"), Some(colour::code_command()));
 }
 
 #[test]

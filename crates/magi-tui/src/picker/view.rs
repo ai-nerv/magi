@@ -1,8 +1,4 @@
-//! Drawing a picker.
-//!
-//! Split from the state machine under THE RULE. The rows themselves are [`crate::menu`]'s, which
-//! the completion popup also uses: they are the same object seen twice and had drifted into two
-//! different-looking lists.
+//! Drawing a picker. The rows are [`crate::menu`]'s, which the completion popup also uses.
 
 use super::Picker;
 use ratatui::text::Line;
@@ -24,9 +20,7 @@ pub fn render(picker: &Picker, width: u16) -> Vec<Line<'static>> {
         .max()
         .unwrap_or(0);
 
-    // How much is out of view in each direction, not just where you are. A list of fifty-three
-    // in a window of eight gave no sign there was anything above or below the eight, so moving
-    // through it felt like the list was changing under you.
+    // How much is out of view in each direction, not just where you are.
     let above = window.start;
     let below = picker.choices.len().saturating_sub(window.end);
     let mut scroll = String::new();
@@ -45,8 +39,7 @@ pub fn render(picker: &Picker, width: u16) -> Vec<Line<'static>> {
             picker.choices.len()
         )
     } else {
-        // The query is shown in the heading rather than in the prompt, because the prompt is
-        // holding whatever it was holding and this is not an edit of it.
+        // Shown in the heading rather than the prompt: this is not an edit of the prompt.
         format!(
             "  {} of {}  ▸ {}{scroll}",
             picker.selected + 1,
@@ -56,9 +49,7 @@ pub fn render(picker: &Picker, width: u16) -> Vec<Line<'static>> {
     };
 
     let mut out = vec![crate::menu::heading(&picker.title, &note, width)];
-    // What is being decided about, before the answers. Above them because a person reads what
-    // they are being asked before they read what they may say, and a command underneath the
-    // options is a command they answer first and check second.
+    // What is being decided about, above the answers a person may give.
     out.extend(picker.asking_about().iter().map(|row| {
         ratatui::text::Line::from(ratatui::text::Span::styled(
             format!("  {row}"),

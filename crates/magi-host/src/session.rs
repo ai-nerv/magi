@@ -2,107 +2,83 @@
 
 use magi_journal::{Journal, JournalError};
 use magi_proto::{AgentStatus, Cursor, Entry, HarnessEvent, SessionId};
-use std::path::Path;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
-/// Events buffered for a consumer that has fallen behind.
-///
-/// A slow UI is dropped and reconnects with its cursor rather than being spooled for
-/// indefinitely. Tau declines to disconnect a lagging peer and accepts unbounded growth as the
-/// cost; with a durable journal behind us, a reattach costs a replay and nothing is lost.
+/// Events buffered for a consumer that has fallen behind. A slow UI is dropped and reconnects with
+/// its cursor rather than being spooled for indefinitely; a reattach costs a replay and loses nothing.
 const BROADCAST_CAPACITY: usize = 1024;
 
-/// A live session.
 pub struct Session {
     cancel: crate::cancel::Cancel,
-    /// Everything this session could switch to, for the picker.
     choices: Vec<magi_proto::ModelChoice>,
-    /// How much reasoning is being asked for, as a level name.
     thinking: String,
-    /// Which model answers here, when one is configured.
-    ///
-    /// Held by the session rather than looked up by the UI: a UI that read the configuration
-    /// for itself would report whatever is configured *now*, which after an edit is not what
-    /// the daemon is actually talking to.
+    /// Which of the model's providers serves it, by routing tag; `None` leaves it to the router.
+    provider: Option<String>,
+    /// Which model answers here, when one is configured. Held by the session rather than looked up
+    /// by the UI, which would report what is configured now rather than what the daemon is using.
     model: Option<magi_proto::ModelInfo>,
     journal: Journal,
     status: AgentStatus,
     events: broadcast::Sender<HarnessEvent>,
-    /// Messages from other instances that arrived while a turn was running.
-    ///
-    /// **Nothing another instance says interrupts a turn.** A main with ten subagents would
-    /// otherwise be answering the first one's question while the second, third and fourth
-    /// arrive, and a session that is mid-thought is the worst moment to hand it somebody else's.
-    /// So an arrival is held here and dealt with when the turn ends.
-    ///
-    /// Held rather than journalled on arrival, and that part is not politeness: committing a
-    /// message between an assistant's tool call and its result puts a user turn inside an
-    /// exchange, which is a conversation no provider accepts.
+    /// The current status, as a last-value channel: an observer that must not count as an attached
+    /// UI (a headless child reporting its own phase) reads this rather than subscribing to `events`,
+    /// which is what "is anybody here to approve" counts.
+    phase: watch::Sender<AgentStatus>,
+    /// Messages from other instances that arrived while a turn was running. Nothing another
+    /// instance says interrupts a turn. Held rather than journalled on arrival: committing one
+    /// between an assistant's tool call and its result is a conversation no provider accepts.
     waiting: Vec<Entry>,
-    /// Entries settled here and not yet handed to balthasar, by cursor.
-    ///
-    /// Keyed rather than appended, so a message amended once per delta batch is one write at the
-    /// end instead of one per batch. Drained by [`Self::take_pending`] under a short lock and
-    /// written outside it: a socket round trip held here would block every UI read behind
-    /// balthasar's `fsync`.
+    /// Entries settled here and not yet handed to balthasar, by cursor. Keyed rather than appended,
+    /// so an amended message is one write; drained under a short lock and written outside it.
     pending: std::collections::BTreeMap<u64, Entry>,
+    /// What each model has cost this session, a finished turn counted once under the model that
+    /// answered it; a last-value channel like `phase`, for whoever reports on this session.
+    spent: watch::Sender<Vec<(String, magi_proto::Usage)>>,
+    tallied: std::collections::BTreeMap<String, magi_proto::Usage>,
+    counted: std::collections::HashSet<magi_proto::MessageId>,
 }
 
 impl Session {
-    /// Open a session, restoring whatever its journal holds.
-    pub fn open(path: &Path, id: SessionId, cwd: &str, now: u64) -> Result<Self, JournalError> {
-        let journal = Journal::open(path, id, cwd, now)?;
-        let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
-        Ok(Self {
-            journal,
-            status: AgentStatus::Idle,
-            cancel: crate::cancel::Cancel::default(),
-            model: None,
-            choices: Vec::new(),
-            thinking: "off".to_owned(),
-            events,
-            waiting: Vec::new(),
-            pending: std::collections::BTreeMap::new(),
-        })
-    }
-
-    /// Open a session on what balthasar holds, keeping nothing on disk.
-    ///
-    /// The transcript still lives here — every read comes from it — but this session's copy of
-    /// record is balthasar's, and the entries it starts with are the ones balthasar replayed.
+    /// Open a session on what balthasar holds — the only constructor. The file journal is gone:
+    /// two stores is one store and a copy that goes stale. The transcript still lives here because
+    /// every read comes from it, but it is a window; the record is balthasar's.
     #[must_use]
     pub fn recorded(id: SessionId, entries: Vec<Entry>) -> Self {
         let (events, _) = broadcast::channel(BROADCAST_CAPACITY);
+        let (phase, _) = watch::channel(AgentStatus::Idle);
+        let (spent, _) = watch::channel(Vec::new());
         Self {
+            spent,
+            tallied: std::collections::BTreeMap::new(),
+            counted: std::collections::HashSet::new(),
             journal: Journal::recorded(id, entries),
             status: AgentStatus::Idle,
             cancel: crate::cancel::Cancel::default(),
             model: None,
             choices: Vec::new(),
             thinking: "off".to_owned(),
+            provider: None,
             events,
+            phase,
             waiting: Vec::new(),
             pending: std::collections::BTreeMap::new(),
         }
     }
 
-    /// Take up what balthasar holds for another session, keeping everyone attached.
-    ///
-    /// The counterpart to [`Self::resume`] for a store that is not a file. The journal is
-    /// swapped rather than the `Session` replaced, for the same reason: the broadcast channel is
-    /// what every attached UI holds, and building a new one would leave every subscriber quiet
-    /// on a resume that looked like it worked.
+    /// A last-value view of this session's status, for an observer that must not be counted as an
+    /// attached UI — subscribing to `events` would make a gated tool wait on it to approve.
+    #[must_use]
+    pub fn phase_watch(&self) -> watch::Receiver<AgentStatus> {
+        self.phase.subscribe()
+    }
+
+    /// Take up what balthasar holds for another session, keeping everyone attached. The journal is
+    /// swapped rather than the `Session` replaced: a new broadcast channel leaves every UI quiet.
     pub fn resume_recorded(&mut self, id: SessionId, entries: Vec<Entry>) {
         self.journal = Journal::recorded(id, entries);
         self.status = AgentStatus::Idle;
         self.pending.clear();
         let _ = self.events.send(self.snapshot(self.cursor()));
-    }
-
-    /// Whether this session's transcript is also being written to disk.
-    #[must_use]
-    pub fn is_kept(&self) -> bool {
-        self.journal.is_kept()
     }
 
     /// Whether nothing is running, so something new may start.
@@ -116,23 +92,27 @@ impl Session {
         self.waiting.push(entry);
     }
 
-    /// Take everything that was held, in the order it arrived.
-    ///
-    /// Emptied by the taking, so the same message cannot be dealt with twice — two turns ending
-    /// close together would otherwise both find it there.
+    /// Take everything that was held, in the order it arrived. Emptied by the taking, so two turns
+    /// ending close together cannot both deal with the same message.
     pub fn release(&mut self) -> Vec<Entry> {
         std::mem::take(&mut self.waiting)
     }
 
-    /// Take what has settled since the last time, in cursor order.
-    ///
-    /// Cheap and synchronous on purpose: the caller drains here and does the writing after it
-    /// has let the lock go.
+    /// Take what has settled since the last time, in cursor order. Cheap and synchronous: the
+    /// caller drains here and does the writing after it has let the lock go.
     pub fn take_pending(&mut self) -> Vec<(Cursor, Entry)> {
         std::mem::take(&mut self.pending)
             .into_iter()
             .map(|(cursor, entry)| (Cursor(cursor), entry))
             .collect()
+    }
+
+    /// Put back what a flush could not hand over. A cursor that has settled again since keeps the
+    /// newer entry: what is waiting to be written is the entry as it stands, not as it was taken.
+    pub fn keep_pending(&mut self, unsent: Vec<(Cursor, Entry)>) {
+        for (cursor, entry) in unsent {
+            self.pending.entry(cursor.0).or_insert(entry);
+        }
     }
 
     /// Whether anything is waiting to be written out.
@@ -141,45 +121,60 @@ impl Session {
         !self.pending.is_empty()
     }
 
-    /// Put this session onto a different journal, keeping everyone attached to it.
-    ///
-    /// The journal is swapped rather than the `Session` replaced, because the broadcast channel
-    /// is what every attached UI is holding: building a new `Session` would build a new channel,
-    /// and every subscriber would go quiet on a resume that looked like it worked.
-    ///
-    /// Nothing is carried over. The transcript, the cursor and the status all belong to the
-    /// journal, and a status left behind would have a fresh session claiming to be mid-turn.
-    ///
-    /// # Errors
-    /// When the journal will not open, in which case this session is left on the one it had.
-    pub fn resume(&mut self, path: &Path, cwd: &str, now: u64) -> Result<(), JournalError> {
-        let journal = Journal::open(path, self.journal.session().clone(), cwd, now)?;
-        self.journal = journal;
-        self.status = AgentStatus::Idle;
-        let _ = self.events.send(self.snapshot(self.cursor()));
-        Ok(())
-    }
-
-    /// The interrupt this session's turns watch.
-    ///
-    /// Handed out rather than acted on here: the turn runs on another thread, and the
-    /// session is the one thing both it and the connection task already share.
+    /// The interrupt this session's turns watch, handed out because the turn runs on another thread.
     #[must_use]
     pub fn cancel(&self) -> crate::cancel::Cancel {
         self.cancel.clone()
     }
 
-    /// Say which model this session talks to.
     pub fn set_model(&mut self, model: Option<magi_proto::ModelInfo>) {
         self.model = model;
+        // A resumed session's turns are counted once there is a model to count them under.
+        for entry in self.journal.entries().to_vec() {
+            self.tally(&entry);
+        }
     }
 
-    /// Say what it could switch to.
+    /// What each model has cost this session, as it changes.
+    #[must_use]
+    pub fn spent_watch(&self) -> watch::Receiver<Vec<(String, magi_proto::Usage)>> {
+        self.spent.subscribe()
+    }
+
+    /// Count a finished turn under the model answering now, and once: a turn is amended many times
+    /// as it streams, and only its ending carries what it cost.
+    fn tally(&mut self, entry: &Entry) {
+        let Entry::Assistant {
+            id,
+            stop_reason: Some(_),
+            usage,
+            ..
+        } = entry
+        else {
+            return;
+        };
+        let Some(model) = self.model_name() else {
+            return;
+        };
+        if usage.prompt_tokens() == 0 && usage.output == 0 && usage.cost_micros == 0 {
+            return;
+        }
+        if !self.counted.insert(id.clone()) {
+            return;
+        }
+        self.tallied.entry(model).or_default().add(*usage);
+        self.spent.send_replace(
+            self.tallied
+                .iter()
+                .map(|(name, used)| (name.clone(), *used))
+                .collect(),
+        );
+    }
+
     pub fn set_choices(&mut self, choices: Vec<magi_proto::ModelChoice>) {
         self.choices = choices;
     }
 
-    /// The model this session talks to, by name.
     #[must_use]
     pub fn model_name(&self) -> Option<String> {
         self.model.as_ref().map(|m| m.name.clone())
@@ -191,21 +186,26 @@ impl Session {
         self.model.clone()
     }
 
-    /// Say how much reasoning is being asked for.
     pub fn set_thinking(&mut self, level: String) {
         self.thinking = level;
     }
 
-    /// How much reasoning is being asked for.
     #[must_use]
     pub fn thinking(&self) -> &str {
         &self.thinking
     }
 
-    /// Every token this session has spent.
-    ///
-    /// Summed from the journal rather than counted as it goes, so a resumed session reports
-    /// what it actually accrued instead of starting again from zero.
+    pub fn set_provider(&mut self, provider: Option<String>) {
+        self.provider = provider;
+    }
+
+    #[must_use]
+    pub fn provider(&self) -> Option<&str> {
+        self.provider.as_deref()
+    }
+
+    /// Every token this session has spent, summed from the journal so a resumed session reports
+    /// what it accrued rather than starting again from zero.
     #[must_use]
     pub fn usage(&self) -> magi_proto::Usage {
         self.entries()
@@ -216,16 +216,14 @@ impl Session {
                     output: total.output + usage.output,
                     cache_read: total.cache_read + usage.cache_read,
                     cache_write: total.cache_write + usage.cache_write,
+                    cost_micros: total.cost_micros + usage.cost_micros,
                 },
                 _ => total,
             })
     }
 
-    /// A handle for publishing into this session from elsewhere.
-    ///
-    /// Handed out rather than reached through the lock, because the thing that needs it is a
-    /// turn running on another thread — and that thread is usually the one *holding* the lock,
-    /// so asking for it would deadlock or, with `try_lock`, silently drop the message.
+    /// A handle for publishing into this session from elsewhere. Handed out rather than reached
+    /// through the lock, because the thread that needs it is usually the one holding the lock.
     #[must_use]
     pub fn publisher(&self) -> broadcast::Sender<HarnessEvent> {
         self.events.clone()
@@ -237,35 +235,28 @@ impl Session {
         self.events.subscribe()
     }
 
-    /// The session's identity.
     #[must_use]
     pub fn id(&self) -> &SessionId {
         self.journal.session()
     }
 
-    /// What the agent is doing.
     #[must_use]
     pub fn status(&self) -> &AgentStatus {
         &self.status
     }
 
-    /// The position of the last entry.
     #[must_use]
     pub fn cursor(&self) -> Cursor {
         self.journal.cursor()
     }
 
-    /// The transcript.
     #[must_use]
     pub fn entries(&self) -> &[Entry] {
         self.journal.entries()
     }
 
-    /// The state a UI attaching at `from` needs before the live stream makes sense.
-    ///
-    /// Everything at or before `from` is history the UI has already seen, so it arrives as
-    /// entries; the live stream carries only what follows. A cold attach passes
-    /// [`Cursor::ZERO`] and gets nothing, because there is nothing it has seen.
+    /// The state a UI attaching at `from` needs before the live stream makes sense. Everything at
+    /// or before `from` arrives as entries; a cold attach passes [`Cursor::ZERO`] and gets nothing.
     #[must_use]
     pub fn snapshot(&self, from: Cursor) -> HarnessEvent {
         let kept = usize::try_from(from.0).unwrap_or(usize::MAX);
@@ -280,10 +271,7 @@ impl Session {
         }
     }
 
-    /// Everything after `from`, as the events that would have produced it.
-    ///
-    /// A reattaching UI folds these onto its snapshot and reaches the same transcript a cold
-    /// replay would, which is the property the attach tests pin down.
+    /// Everything after `from`, as the events that would have produced it, for a reattaching UI.
     #[must_use]
     pub fn replay(&self, from: Cursor) -> Vec<HarnessEvent> {
         let skip = usize::try_from(from.0).unwrap_or(usize::MAX);
@@ -305,33 +293,26 @@ impl Session {
             // A send with no subscribers is not a failure: the daemon outlives its UIs.
             let _ = self.events.send(event);
         }
+        self.tally(&entry);
         self.pending.insert(cursor.0, entry);
         Ok(cursor)
     }
 
-    /// Replace the last entry and publish what changed about it.
-    ///
-    /// What changed, not what it now is. Describing an entry from nothing is right for a cold
-    /// replay and wrong here: it opens with a `started` event, and a UI that takes that at face
-    /// value gets a second copy of a message it is already showing. It also reports the whole
-    /// body as a delta, which a UI appending deltas would then show twice over.
+    /// Replace the last entry and publish what changed about it — what changed, not what it now is:
+    /// a full description opens with a `started` event and reports the whole body as a delta.
     pub fn amend(&mut self, entry: Entry) -> Result<Cursor, JournalError> {
         let previous = self.journal.entries().last().cloned();
         let cursor = self.journal.amend(entry.clone())?;
         for event in amendment_events(cursor, previous.as_ref(), &entry) {
             let _ = self.events.send(event);
         }
+        self.tally(&entry);
         self.pending.insert(cursor.0, entry);
         Ok(cursor)
     }
 
-    /// The same, for an entry that is no longer the last one.
-    ///
-    /// A round of tool calls commits every call before running any of them, so by the time a
-    /// result arrives its entry has others after it. [`Session::amend`] replaces the *last*
-    /// entry, so every result but the last landed on the wrong one and was then overwritten —
-    /// leaving calls with `result: null` for the rest of the session, which is a call the model
-    /// made and never got an answer to.
+    /// The same, for an entry that is no longer the last one: a round commits every call before
+    /// running any, so a result's entry has others after it by the time it arrives.
     ///
     /// # Errors
     /// When the write fails.
@@ -342,52 +323,34 @@ impl Session {
         for event in amendment_events(cursor, previous.as_ref(), &entry) {
             let _ = self.events.send(event);
         }
+        self.tally(&entry);
         self.pending.insert(cursor.0, entry);
         Ok(())
     }
 
     /// The same, for a message that is still arriving: published, not written down.
-    ///
-    /// Every delta of an answer goes through here. [`Session::amend`] would be correct and
-    /// unusable — it appends a whole record and flushes, so a thousand-token answer would write
-    /// the message a thousand times, each copy longer than the last. The events are what a UI
-    /// renders from, and they are free; the writing waits for the `amend` that ends the message.
-    ///
-    /// The transcript stays current either way, so a UI attaching mid-answer sees what has
-    /// arrived rather than an empty message that fills in at the end.
+    /// [`Session::amend`] appends a whole record and flushes, so a thousand-token answer would
+    /// write the message a thousand times. The transcript stays current either way.
     pub fn revise(&mut self, entry: Entry) {
         let previous = self.journal.entries().last().cloned();
         let cursor = self.cursor();
         self.journal.revise(entry.clone());
         for event in amendment_events(cursor, previous.as_ref(), &entry) {
-            // **The ending is not published from the path that writes nothing.** A revision is
-            // an in-flight message: it updates memory and deliberately does not touch the disk.
-            // `AssistantEnded` says the opposite — that this message is final — and anything
-            // waiting for a turn to end acts on it. `magi -p` does exactly that: it prints and
-            // exits. So the last revision of a finished turn ended the process before the
-            // `amend` a few lines later could write the answer, and the journal kept the prompt
-            // and lost the answer. It was found by CI, where a loaded machine loses that race
-            // about one run in three; a laptop wins it and looks correct.
-            //
-            // `amend` publishes the ending, after the write and the flush. That is the only
-            // place that may.
+            // The ending is not published from the path that writes nothing. A revision updates
+            // memory and does not touch the disk; `AssistantEnded` says the message is final, and
+            // `magi -p` prints and exits on it. `amend` publishes it, after the write and flush.
             if matches!(event, HarnessEvent::AssistantEnded { .. }) {
                 continue;
             }
             let _ = self.events.send(event);
         }
-        // Queued like a commit, though nothing is written yet. The queue coalesces by cursor, so
-        // this costs no extra write — and without it a flush landing between the entry's first
-        // commit and its settling amendment records the empty message it started as. That is
-        // what a spawned balthasar exposed: the timing changed, and a turn came back blank.
+        // Queued like a commit, though nothing is written yet. Without it a flush landing between
+        // the entry's commit and its settling amendment records the empty message it started as.
         self.pending.insert(cursor.0, entry);
     }
 
-    /// Tell everyone which model is answering now.
-    ///
-    /// Its own event, because a UI learns the model from the snapshot it attached with and
-    /// there is otherwise nothing to change its mind. Republishing the status does not do it:
-    /// a status event carries a status and nothing else.
+    /// Tell everyone which model is answering now. Its own event: a UI learns the model from the
+    /// snapshot it attached with, and a status event carries a status and nothing else.
     pub fn announce_model(&mut self) {
         let _ = self.events.send(HarnessEvent::ModelChanged {
             cursor: self.cursor(),
@@ -395,12 +358,12 @@ impl Session {
         });
     }
 
-    /// Change what the agent is doing and tell everyone.
-    ///
-    /// Status is not journalled: it describes the daemon right now, and a session restored
-    /// tomorrow is idle whatever it was doing when the process died.
+    /// Change what the agent is doing and tell everyone. Status is not journalled: a session
+    /// restored tomorrow is idle whatever it was doing when the process died.
     pub fn set_status(&mut self, status: AgentStatus) {
         self.status = status.clone();
+        // The last-value view first, so a headless observer sees the change even with no UI here.
+        self.phase.send_replace(status.clone());
         let _ = self.events.send(HarnessEvent::StatusChanged {
             cursor: self.cursor(),
             status,
@@ -408,11 +371,8 @@ impl Session {
     }
 }
 
-/// The events describing how `entry` differs from `previous`.
-///
-/// Only the change is published, because every subscriber is already showing the entry as
-/// it was. A body grows by an increment; a tool call gains a result; nothing is started
-/// twice.
+/// The events describing how `entry` differs from `previous`. Only the change is published, because
+/// every subscriber is already showing the entry as it was.
 fn amendment_events(cursor: Cursor, previous: Option<&Entry>, entry: &Entry) -> Vec<HarnessEvent> {
     match (previous, entry) {
         (
@@ -431,10 +391,8 @@ fn amendment_events(cursor: Cursor, previous: Option<&Entry>, entry: &Entry) -> 
                 ..
             },
         ) => {
-            // A message that is not an extension of itself has been *retracted*, not continued:
-            // an attempt that streamed half an answer and then failed, whose retry starts from
-            // nothing. A delta is an append, so describing this as one would leave both copies
-            // on screen. Described in full instead, which begins the message again.
+            // A message that is not an extension of itself has been retracted, not continued. A
+            // delta is an append, so this is described in full instead, beginning the message again.
             if !text.starts_with(before) || !thinking.starts_with(thought) {
                 return events_for(cursor, entry);
             }
@@ -469,16 +427,13 @@ fn amendment_events(cursor: Cursor, previous: Option<&Entry>, entry: &Entry) -> 
             })
             .into_iter()
             .collect(),
-        // An amendment that changed the kind of entry, or arrived with no entry under it,
-        // is not an amendment. Describing it in full is the only honest answer.
+        // An amendment that changed the kind of entry is not one; describing it in full is honest.
         _ => events_for(cursor, entry),
     }
 }
 
-/// The part of `now` that was not already in `before`.
-///
-/// Falls back to the whole of `now` when it is not an extension, which happens when a turn
-/// is rewritten rather than continued -- an aborted message keeping what arrived, say.
+/// The part of `now` that was not already in `before`, or the whole of `now` when it is not an
+/// extension — an aborted message keeping what arrived, say.
 fn grown(before: &str, now: &str) -> String {
     now.strip_prefix(before).unwrap_or(now).to_owned()
 }
@@ -486,9 +441,7 @@ fn grown(before: &str, now: &str) -> String {
 /// The events that reconstruct one entry from nothing.
 fn events_for(cursor: Cursor, entry: &Entry) -> Vec<HarnessEvent> {
     match entry {
-        // The aside is deliberately not replayed: it is context for the model, the UI never
-        // renders it, and putting it on the wire would send every attach a copy of something
-        // nothing on that end reads.
+        // The aside is deliberately not replayed: it is context for the model and no UI renders it.
         Entry::User { id, text, .. } => vec![HarnessEvent::UserMessage {
             cursor,
             id: id.clone(),
@@ -526,8 +479,7 @@ fn events_for(cursor: Cursor, entry: &Entry) -> Vec<HarnessEvent> {
             }
             out
         }
-        // Never journalled, so never replayed. A UI makes its own and the session has none to
-        // give: this arm exists because the type allows one, not because one arrives.
+        // Never journalled, so never replayed; this arm exists because the type allows one.
         Entry::Notice { .. } => Vec::new(),
         Entry::From {
             who,
@@ -556,6 +508,9 @@ fn events_for(cursor: Cursor, entry: &Entry) -> Vec<HarnessEvent> {
             summary: summary.clone(),
             replaces: *replaces,
         }],
+        // Nothing on the wire. A mask changes only what the provider is sent — the transcript still
+        // shows what the tool said — so there is no decision an attached UI could act on or draw.
+        Entry::Masked { .. } => Vec::new(),
         Entry::Tool {
             id,
             name,
@@ -584,30 +539,18 @@ fn events_for(cursor: Cursor, entry: &Entry) -> Vec<HarnessEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use magi_model::scratch::{Scratch, ScratchFile};
     use magi_proto::{MessageId, StopReason};
 
-    fn temp(name: &str) -> ScratchFile {
-        Scratch::file("magi-session", name, "s.jsonl")
-    }
-
-    fn session(name: &str) -> (Session, ScratchFile) {
-        let path = temp(name);
-        let session = Session::open(&path, SessionId::new("s1"), "/tmp", 0).expect("open");
-        (session, path)
+    /// A session holding nothing, which is what balthasar replays for one that has not run.
+    fn session(_name: &str) -> Session {
+        Session::recorded(SessionId::new("s1"), Vec::new())
     }
 
     #[test]
     fn a_revision_never_announces_an_ending_it_has_not_written() {
-        // The invariant behind a durability bug CI found and a laptop hides. `revise` updates
-        // memory and writes nothing; `AssistantEnded` tells a listener the message is final, and
-        // `magi -p` acts on it by printing and exiting. While `revise` published it, the process
-        // could die before the `amend` that flushes, and the journal kept the prompt and lost
-        // the answer.
-        //
-        // Asserted here rather than through a turn, because in one process the `amend` always
-        // wins the race and any end-to-end test passes whether or not this holds.
-        let (mut session, _dir) = session("revise-ending");
+        // `revise` writes nothing, and `AssistantEnded` tells a listener the message is final —
+        // `magi -p` acts on it. Asserted here, because in one process the `amend` wins the race.
+        let mut session = session("revise-ending");
         let mut live = session.subscribe();
         let id = MessageId::new("a1");
         let started = Entry::Assistant {
@@ -662,7 +605,7 @@ mod tests {
 
     #[test]
     fn committing_publishes_to_subscribers() {
-        let (mut s, _dir) = session("publish");
+        let mut s = session("publish");
         let mut rx = s.subscribe();
         s.commit(user("hi")).expect("commit");
         let event = rx.try_recv().expect("an event");
@@ -671,7 +614,7 @@ mod tests {
 
     #[test]
     fn a_cold_snapshot_carries_nothing() {
-        let (mut s, _dir) = session("cold");
+        let mut s = session("cold");
         s.commit(user("hi")).expect("commit");
         match s.snapshot(Cursor::ZERO) {
             HarnessEvent::SessionSnapshot { entries, .. } => assert!(entries.is_empty()),
@@ -681,7 +624,7 @@ mod tests {
 
     #[test]
     fn a_resume_snapshot_carries_what_the_ui_already_saw() {
-        let (mut s, _dir) = session("resume");
+        let mut s = session("resume");
         s.commit(user("one")).expect("commit");
         s.commit(user("two")).expect("commit");
         match s.snapshot(Cursor(1)) {
@@ -692,7 +635,7 @@ mod tests {
 
     #[test]
     fn replay_covers_only_what_follows_the_cursor() {
-        let (mut s, _dir) = session("replay");
+        let mut s = session("replay");
         s.commit(user("one")).expect("commit");
         s.commit(user("two")).expect("commit");
         let events = s.replay(Cursor(1));
@@ -702,7 +645,7 @@ mod tests {
 
     #[test]
     fn an_unfinished_assistant_entry_replays_without_an_end_event() {
-        let (mut s, _dir) = session("unfinished");
+        let mut s = session("unfinished");
         s.commit(Entry::Assistant {
             id: MessageId::new("a1"),
             text: "partial".into(),
@@ -724,7 +667,7 @@ mod tests {
 
     #[test]
     fn a_finished_assistant_entry_replays_start_delta_and_end() {
-        let (mut s, _dir) = session("finished");
+        let mut s = session("finished");
         s.commit(Entry::Assistant {
             id: MessageId::new("a1"),
             text: "done".into(),
@@ -740,7 +683,7 @@ mod tests {
 
     #[test]
     fn status_is_published_but_not_journalled() {
-        let (mut s, _dir) = session("status");
+        let mut s = session("status");
         let mut rx = s.subscribe();
         s.set_status(AgentStatus::Working {
             label: "Thinking".into(),

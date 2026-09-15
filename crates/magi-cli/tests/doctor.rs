@@ -1,25 +1,18 @@
-//! `magi doctor`, against the real binary.
-//!
-//! Everything this command answers is decided at start-up and was previously discoverable only
-//! by starting a session and noticing an absence. The properties worth holding are that it
-//! answers without one, that it says where each tool came from, and that a sibling which is not
-//! there is reported as not there rather than omitted — an empty list and a missing program look
-//! identical, and telling them apart is most of why somebody runs this.
+//! `magi doctor`, against the real binary. It answers without starting a session, says where each
+//! tool came from, and reports a missing sibling as missing rather than omitting it.
 
 use magi_model::scratch::Scratch;
 
 use std::process::Command;
 
-/// `magi doctor` in a directory of its own, with `PATH` holding only what is passed.
-///
-/// `$XDG_CONFIG_HOME` points at an empty directory, so this is the machine where nothing is
-/// installed — the one somebody actually runs this on, and the one CI is. That case used to make
-/// the command exit non-zero having printed nothing, which is the least useful possible answer
-/// to "why will my session not start".
+/// `magi doctor` in a directory of its own, with `PATH` holding only what is passed and
+/// `$XDG_CONFIG_HOME` empty.
 fn doctor(path: &std::path::Path) -> String {
     let dir = Scratch::new("magi-doctor", "run");
     let config = Scratch::new("magi-doctor", "config");
-    let out = Command::new(env!("CARGO_BIN_EXE_magi"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_magi"));
+    magi_testkit::only_its_own_store(&mut command);
+    let out = command
         .arg("doctor")
         .env("PATH", path)
         .env("XDG_CONFIG_HOME", &*config)
@@ -35,64 +28,78 @@ fn doctor(path: &std::path::Path) -> String {
 }
 
 #[test]
-fn a_machine_with_no_siblings_says_so_for_each_of_them() {
-    // The case the command exists for. With none of them installed a session still starts, and
-    // silently has no tools, no model and no memory.
+fn a_machine_with_no_siblings_says_so_for_each_role() {
+    // With none of them installed a session still starts, and silently has no tools or model.
     let empty = Scratch::new("magi-doctor", "empty-path");
-    let said = doctor(&empty);
+    let whole = doctor(&empty);
+    // The section, not the report: `model` and `tools` are also a setting and a heading.
+    let said = whole
+        .split_once("\nroles\n")
+        .map(|(_, rest)| rest.to_owned())
+        .unwrap_or_else(|| panic!("no roles section:\n{whole}"));
 
-    for name in ["casper", "melchior", "balthasar"] {
+    for (role, program) in [
+        ("memory", "balthasar"),
+        ("tools", "casper"),
+        ("model", "melchior"),
+    ] {
+        // The role names the program, so the row is findable by both — `tools` is also a heading.
         let line = said
             .lines()
-            .find(|line| line.trim_start().starts_with(name))
-            .unwrap_or_else(|| panic!("{name} is not mentioned at all:\n{said}"));
+            .find(|line| line.trim_start().starts_with(role) && line.contains(program))
+            .unwrap_or_else(|| panic!("{role} is not reported as filled by {program}:\n{said}"));
         assert!(
             line.contains("not installed"),
-            "{name} is absent and not reported as absent: {line}"
+            "{role} is unfilled and not reported as unfilled: {line}"
         );
     }
 }
 
 #[test]
-fn the_builtins_are_listed_with_where_they_came_from() {
-    // The three that are compiled in are there whatever else is missing, and a listing that did
-    // not say where a tool came from could not distinguish those from a config's own.
+fn the_one_builtin_is_spawn_and_the_file_tools_are_not() {
+    // magi's only builtin is `spawn` — coordinating its own agent tree, not a tool in casper's
+    // sense. read/write/edit are the tools program's now, never magi's, so they are not listed as
+    // a magi builtin whether or not a tools program is installed here.
     let empty = Scratch::new("magi-doctor", "builtins");
     let said = doctor(&empty);
 
+    let line = said
+        .lines()
+        .find(|line| line.trim_start().starts_with("spawn"))
+        .unwrap_or_else(|| panic!("spawn is missing:\n{said}"));
+    assert!(line.contains("builtin"), "{line}");
+
     for name in ["read", "write", "edit"] {
-        let line = said
-            .lines()
-            .find(|line| line.trim_start().starts_with(name))
-            .unwrap_or_else(|| panic!("{name} is missing:\n{said}"));
-        assert!(line.contains("builtin"), "{line}");
+        assert!(
+            !said
+                .lines()
+                .any(|line| line.trim_start().starts_with(name) && line.contains("builtin")),
+            "{name} is still listed as a magi builtin:\n{said}"
+        );
     }
 }
 
 #[test]
 fn a_machine_with_no_configuration_still_gets_an_answer() {
-    // The case this command is most for, and the one it used to refuse: `config::load` reports
-    // "no configuration; run `make configs`" and the whole report went with it. What is compiled
-    // in and what is on `$PATH` do not depend on a configuration existing.
+    // `config::load` reports "no configuration; run `make configs`"; what is compiled in and what
+    // is on `$PATH` do not depend on a configuration existing.
     let empty = Scratch::new("magi-doctor", "no-config");
     let said = doctor(&empty);
     assert!(said.contains("will not load"), "it says so: {said}");
-    assert!(said.contains("siblings"), "and carries on: {said}");
+    assert!(said.contains("roles"), "and carries on: {said}");
     assert!(
         said.lines()
-            .any(|line| line.trim_start().starts_with("read")),
-        "the builtins are still listed: {said}"
+            .any(|line| line.trim_start().starts_with("spawn")),
+        "the one builtin is still listed: {said}"
     );
 }
 
 #[test]
 fn it_answers_without_starting_a_session() {
-    // No socket, no daemon, no model. If this ever needs one, the command has stopped being
-    // usable for the case it was written for: a machine where the session will not start.
     let empty = Scratch::new("magi-doctor", "cold");
     let said = doctor(&empty);
     assert!(said.contains("configuration"), "{said}");
     assert!(said.contains("settings"), "{said}");
     assert!(said.contains("tools"), "{said}");
-    assert!(said.contains("siblings"), "{said}");
+    assert!(said.contains("roles"), "{said}");
 }

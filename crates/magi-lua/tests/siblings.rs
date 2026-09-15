@@ -1,19 +1,14 @@
 //! Talking to a sibling that is actually running.
 //!
-//! Every discovery bug is invisible from inside the tool that owns it: a socket in the wrong
-//! directory, a lister that only sees its own host, a name that does not match its file — all
-//! of them work when a tool talks to itself. These run only when a sibling is live, and skip
-//! quietly otherwise, because a test that needs someone else's daemon must not fail a build on
-//! a machine that has none.
+//! Every discovery bug works when a tool talks to itself. These run only when a sibling is live,
+//! and skip quietly otherwise.
 
 use magi_lua::Engine;
 use magi_lua::peer::{SIBLINGS, call};
 use std::path::PathBuf;
 
-/// A sibling's client, if its checkout is beside ours.
 fn client_of(name: &str, relative: &str) -> Option<String> {
-    // Anchored to this crate, not the working directory: cargo runs a test from the package
-    // root, so `..` is `crates/` and every sibling lookup silently found nothing.
+    // Anchored to this crate, not the working directory: cargo runs a test from the package root.
     let tools = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
@@ -21,7 +16,6 @@ fn client_of(name: &str, relative: &str) -> Option<String> {
     std::fs::read_to_string(tools.join(name).join(relative)).ok()
 }
 
-/// Whether that sibling has a socket to answer on.
 fn is_live(name: &str) -> bool {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
@@ -54,11 +48,9 @@ fn a_live_sibling_answers_verbs() {
         )
         .expect("the call must run");
 
-        // Not running is not failing. `is_live` looks for any socket under the sibling's
-        // runtime directory; the client looks for the *particular* one it speaks to — `api@*` for
-        // hexe, `onix/oslo/*` for oslo. A mux that has exited leaves its pane sockets behind, so
-        // the two disagree, and treating that as a failure tests whose machine it ran on rather
-        // than whether the code works.
+        // Not running is not failing. `is_live` looks for any socket under the sibling's runtime
+        // directory; the client looks for the particular one it speaks to, and a mux that has
+        // exited leaves its pane sockets behind.
         if answer.contains("socket found") {
             eprintln!(
                 "{}: nothing listening for the client to talk to",
@@ -67,8 +59,7 @@ fn a_live_sibling_answers_verbs() {
             continue;
         }
 
-        // `verbs` ships from version one precisely so this question has an answer. A sibling
-        // that connects but cannot say what it does is one magi cannot use safely.
+        // A sibling that connects but cannot say what it does is one magi cannot use safely.
         assert!(
             !answer.starts_with("no: "),
             "{} is live but would not connect: {answer}",

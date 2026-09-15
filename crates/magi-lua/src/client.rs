@@ -1,11 +1,7 @@
 //! The client library other programs load to talk to a running magi.
 //!
-//! Plain Lua, and *copied* from the family rather than written: oslo ships `client.lua`, hexe
-//! ships `hexe.lua`, and this is the same file with magi's identity and magi's verbs. The
-//! framing, the reply shape and the discovery order are shared on purpose, so a fix to any of
-//! them reaches every sibling.
-//!
-//! What it cannot do itself is open a socket. That arrives as the chunk's argument:
+//! Copied from the family rather than written, so a fix to the framing, the reply shape or the
+//! discovery order reaches every sibling. Opening a socket arrives as the chunk's argument:
 //!
 //! ```lua
 //! load(src)(transport)   -- transport.connect(path, timeout_ms) -> handle
@@ -20,7 +16,6 @@ mod tests {
     use super::CLIENT;
     use crate::Engine;
 
-    /// Load the client in magi's own VM and ask it something.
     fn probe(script: &str) -> String {
         let mut engine = Engine::new();
         let source = format!(
@@ -43,8 +38,7 @@ mod tests {
 
     #[test]
     fn the_stub_loads_in_magis_own_vm() {
-        // The family's claim is that the file is copied, not ported. A client that only ran in
-        // the tool that wrote it would make that false the moment a sibling tried it.
+        // The family's claim is that the file is copied, not ported.
         assert_eq!(probe("magi_client._NAME"), "magi");
     }
 
@@ -55,8 +49,7 @@ mod tests {
 
     #[test]
     fn the_stub_offers_connect_and_fetch() {
-        // Two verbs, because a lifetime is not an implementation detail: `connect` is a channel
-        // you hold, `fetch` is one question with nothing held.
+        // Two verbs: `connect` is a channel you hold, `fetch` is one question with nothing held.
         assert_eq!(probe("type(magi_client.connect)"), "function");
         assert_eq!(probe("type(magi_client.fetch)"), "function");
     }
@@ -68,8 +61,7 @@ mod tests {
 
     #[test]
     fn the_exposed_surface_is_read_only() {
-        // A coding agent runs shell commands on the model's say-so, so a verb that hands it a
-        // prompt is remote code execution wearing a friendlier name.
+        // A verb that hands a coding agent a prompt is remote code execution under another name.
         let source = CLIENT;
         let start = source.find("local SURFACE = {").expect("a surface");
         let end = source[start..].find('}').expect("its end") + start;
@@ -93,7 +85,7 @@ mod tests {
     #[test]
     fn the_stub_answers_to_every_sibling_global() {
         // A lookup that knew only its own name would send discovery down the `io.popen` path on
-        // exactly the hosts that refuse it, which reads as "nothing is running".
+        // exactly the hosts that refuse it.
         for sibling in ["magi", "hexe", "oslo"] {
             assert!(
                 CLIENT.contains(&format!("\"{sibling}\"")),
@@ -112,8 +104,7 @@ mod tests {
 
     #[test]
     fn the_reply_shape_is_a_list_of_return_values() {
-        // Two tools disagreeing here fail silently: a client that unpacks reads a bare-value
-        // server as having returned nothing at all.
+        // A client that unpacks reads a bare-value server as having returned nothing at all.
         assert!(CLIENT.contains("reply.result"));
         assert!(CLIENT.contains("reply.n"));
     }

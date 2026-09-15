@@ -1,48 +1,26 @@
-//! Answering what a surface asks about the session.
-//!
-//! The other half of [`crate::holder`]. That one hands a tenant rows and forwards what the person
-//! does; this one answers what the tenant asks back. Together they are what makes a surface a
-//! participant: before this, everything a tenant knew it had been handed at open.
-//!
-//! **The awkward shape, a third time.** The tenant is a child process, the thing that asks is a
-//! tool on a blocking thread, and two of the three answers live behind an async connection to
-//! balthasar. So a question goes out on a channel and the answer comes back on one, exactly as a
-//! permission does — and the blocking side waits with a deadline, because a surface holding the
-//! screen on an answer that is never coming is the failure this whole layer exists to avoid.
-//!
-//! What is *not* here is as deliberate as what is. There is no verb that writes, none that names
-//! a path, and none that reaches the network: a surface is a picture somebody is looking at, and
-//! the things it may ask are the things already on the screen beside it.
+//! Answering what a surface asks about the session — the other half of [`crate::holder`], which
+//! hands a tenant rows and forwards what the person does. A question goes out on a channel and the
+//! answer comes back on one, and the blocking side waits with a deadline. Nothing here writes,
+//! names a path, or reaches the network.
 
 use magi_proto::wondering::{Answered, Wonder};
 
-/// How long a tenant waits for an answer before being told there is not one.
-///
-/// Short. Every question here is a lookup against something already open, so anything slower than
-/// this is a sibling in trouble — and the tenant is holding the screen while it waits.
+/// How long a tenant waits for an answer before being told there is not one. Short: it is holding
+/// the screen, and every question here is a lookup against something already open.
 const PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// One question on its way to the session, and the way back.
 pub struct Wondering {
-    /// What is being asked.
     pub wonder: Wonder,
-    /// What the verb was given.
     pub args: serde_json::Value,
     /// Where the answer goes. A std channel, because the waiting end is a blocking thread.
     pub back: std::sync::mpsc::Sender<Answered>,
 }
 
-/// What magi can say about itself, for a surface that asks.
-///
-/// Two kinds of answer, kept apart because they cost different things. What a session *is* — which
-/// one it is and where it runs — is fixed for its whole life and answered without leaving the
-/// thread. Everything else is live: the model changes when somebody runs `/model`, the memories
-/// are balthasar's, and both are read where they actually live rather than copied here and left
-/// to go stale.
+/// What magi can say about itself, for a surface that asks. What a session is answers without
+/// leaving the thread; everything live is read where it lives rather than copied and left to stale.
 pub struct Knows {
-    /// This session's id.
     session: String,
-    /// The directory it runs in.
     cwd: String,
     /// The way to anything that has to be awaited. `None` where nothing is listening.
     asking: Option<tokio::sync::mpsc::UnboundedSender<Wondering>>,
@@ -97,10 +75,7 @@ impl magi_tools::holding::Answers for Knows {
     }
 }
 
-/// A refusal that names the verb it refused.
-///
-/// Every refusal goes through here, so a tenant putting one on the screen always gets a sentence
-/// saying which of its questions went unanswered rather than a bare "no".
+/// A refusal that names the verb it refused, so a tenant never has to show a bare "no".
 #[must_use]
 pub fn refused(wonder: Wonder, because: &str) -> Answered {
     Answered::Refused {
@@ -108,11 +83,8 @@ pub fn refused(wonder: Wonder, because: &str) -> Answered {
     }
 }
 
-/// Serve questions from `asked` out of `scribe`, until nothing is asking any more.
-///
-/// The one thing on this side that has to be awaited. It runs as its own task rather than as an
-/// arm of a connection's loop, because a question belongs to the session and not to whichever UI
-/// happened to be attached when a tenant thought of it.
+/// Serve questions from `asked` out of `scribe`, until nothing is asking any more. Its own task,
+/// because a question belongs to the session and not to whichever UI was attached when it arrived.
 pub async fn serve(
     mut asked: tokio::sync::mpsc::UnboundedReceiver<Wondering>,
     scribe: std::sync::Arc<tokio::sync::Mutex<Option<crate::scribe::Scribe>>>,
@@ -122,18 +94,15 @@ pub async fn serve(
         let answered = match asking.wonder {
             Wonder::Memories => memories(&scribe, &asking.args).await,
             Wonder::Model => model(&session).await,
-            // Answered without leaving the thread that asked. One arriving here is a verb that
-            // grew a source and did not grow a case.
+            // One arriving here is a verb that grew a source and did not grow a case.
             other => refused(other, "nothing here answers that"),
         };
         let _ = asking.back.send(answered);
     }
 }
 
-/// The model answering here, read where it lives.
-///
-/// Not a copy taken when the session started: `/model` replaces it mid-session, and a surface told
-/// the model magi opened with would name one nothing is talking to.
+/// The model answering here, read where it lives: `/model` replaces it mid-session, and a copy
+/// taken at startup would name one nothing is talking to.
 async fn model(session: &tokio::sync::Mutex<crate::session::Session>) -> Answered {
     match session.lock().await.model() {
         Some(model) => Answered::Told {
@@ -162,14 +131,12 @@ async fn memories(
         .clamp(1, 100);
     let mut held = scribe.lock().await;
     let Some(scribe) = held.as_mut() else {
-        // The ordinary case on a machine without balthasar, and not an error. A surface is told
-        // so it can say "nothing remembers here" rather than draw an empty list that reads as
-        // "nothing was remembered".
+        // The ordinary case on a machine without balthasar, and not an error: a surface can say
+        // "nothing remembers here" rather than draw an empty list.
         return refused(Wonder::Memories, "there is no balthasar in this session");
     };
     match scribe.nearest(query, limit).await {
-        // The memories alone. A surface draws a list; the injection id is bookkeeping between
-        // magi and balthasar, and putting it on screen would spend a row on a handle.
+        // The memories alone; the injection id is bookkeeping between magi and balthasar.
         Ok(found) => Answered::Told {
             said: serde_json::Value::Array(found.memories),
         },
@@ -195,8 +162,6 @@ mod tests {
 
     #[test]
     fn a_question_with_nowhere_to_go_is_refused_rather_than_waited_on() {
-        // No listener, so `memories` has no source. Waiting out the deadline here would hold the
-        // screen for five seconds to arrive at the same answer.
         let knows = Knows::of(&magi_proto::SessionId::new("s-1"), "/tmp");
         let began = std::time::Instant::now();
         let Answered::Refused { because } = knows.answer(Wonder::Memories, &serde_json::json!({}))
@@ -237,8 +202,6 @@ mod tests {
 
     #[tokio::test]
     async fn the_model_answered_is_the_one_answering_now() {
-        // Read where it lives rather than copied at startup: `/model` replaces it mid-session, and
-        // a surface told the model magi opened with would name one nothing is talking to.
         let session = a_session();
         let (asking, asked) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(serve(

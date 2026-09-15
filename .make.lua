@@ -494,20 +494,29 @@ make.recipe{ name = "fmt-check", desc = "fail if anything is unformatted",
 make.recipe{
   name = "gates",
   desc = "the architectural gates",
+  -- Globbed, the way CI does it, and for the reason CI's own comment gives: *"a gate added to
+  -- `scripts/` and forgotten there would be invisible; a glob cannot forget."* This recipe named
+  -- six by hand and `scripts/` held nine, so `gate-one-store` — magi keeps no store of its own,
+  -- which is the whole architecture — ran on the runner and never once on a developer's machine.
+  -- The two that are skipped are skipped by name because each has a recipe of its own: one needs
+  -- a built binary, the other re-runs the entire suite.
   run = function()
-    local names = { "gate-cycles", "gate-file-size", "gate-modules", "gate-proto-size", "gate-reachable", "gate-wire" }
+    local elsewhere = { ["gate-family"] = true, ["gate-hermetic"] = true, ["gate-role"] = true }
     local failed = {}
-    for _, name in ipairs(names) do
-      -- Executed, not handed to `sh`. The shebang is the portability contract: these run on a
-      -- runner whose /bin/sh is dash, and `sh script` would silently use whatever shell is
-      -- lying around here instead of the one the script says it needs.
-      local result = oslo.run{ "scripts/" .. name .. ".sh", capture = true }
-      local mark = result.ok and oslo.ui.style("✓", { fg = "green" })
-                             or oslo.ui.style("✗", { fg = "red" })
-      print(("%s  %s"):format(mark, name))
-      if not result.ok then
-        failed[#failed + 1] = name
-        print(dim("   " .. ((result.out or "") .. (result.err or "")):gsub("\n", "\n   ")))
+    for _, path in ipairs(oslo.fs.glob("scripts/gate-*.sh")) do
+      local name = oslo.path.name(path):gsub("%.sh$", "")
+      if not elsewhere[name] then
+        -- Executed, not handed to `sh`. The shebang is the portability contract: these run on a
+        -- runner whose /bin/sh is dash, and `sh script` would silently use whatever shell is
+        -- lying around here instead of the one the script says it needs.
+        local result = oslo.run{ path, capture = true }
+        local mark = result.ok and oslo.ui.style("✓", { fg = "green" })
+                               or oslo.ui.style("✗", { fg = "red" })
+        print(("%s  %s"):format(mark, name))
+        if not result.ok then
+          failed[#failed + 1] = name
+          print(dim("   " .. ((result.out or "") .. (result.err or "")):gsub("\n", "\n   ")))
+        end
       end
     end
     assert(#failed == 0, ("%d gate(s) failed"):format(#failed))
@@ -563,6 +572,24 @@ make.recipe{
 make.recipe{
   name = "verify",
   desc = "the whole local gate",
-  deps = { "fmt-check", "check", "test", "clippy", "gates", "gate-hermetic", "machete", "rustdoc" },
+  deps = { "fmt-check", "check", "test", "clippy", "gates", "gate-hermetic", "gate-family", "machete", "rustdoc" },
 }
 make.alias("v", "verify")
+
+-- The family contract: does this binary answer what FAMILY.md says every family program answers?
+--
+-- Its own recipe because it needs a *built binary* rather than a grep over the source, and
+-- because it is the one gate that would equally catch a fifth program written by somebody else.
+-- The two rules a reader cannot check are the ones it exists for: everything advertised is
+-- dispatched, and everything dispatched is advertised.
+make.recipe{
+  name = "gate-family",
+  desc = "the binary answers the family contract",
+  deps = { "build" },
+  run = function()
+    local where = "target/x86_64-unknown-linux-musl/release/magi"
+    if not oslo.fs.exists(where) then where = "target/release/magi" end
+    local ran = oslo.run{ "scripts/gate-family.sh", where }
+    assert(ran.ok, "gate-family failed")
+  end,
+}

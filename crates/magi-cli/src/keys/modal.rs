@@ -356,6 +356,14 @@ fn shared(key: KeyEvent, editor: &mut Editor, busy: bool, ctrl: bool) -> Option<
         }
         KeyCode::Char('x') if ctrl => Action::ExternalEdit,
         KeyCode::Char('o') if ctrl => Action::ToggleDetail,
+        // Here as well as in insert mode, and by the same two keys: which agent you are reading
+        // is not a thing that should depend on which mode the prompt happens to be in.
+        KeyCode::Char(',') if key.modifiers.contains(KeyModifiers::ALT) => {
+            Action::Crew { forward: false }
+        }
+        KeyCode::Char('.') if key.modifiers.contains(KeyModifiers::ALT) => {
+            Action::Crew { forward: true }
+        }
         KeyCode::Char('d') if ctrl => Action::Scroll(Scroll::PageDown),
         KeyCode::Char('u') if ctrl => Action::Scroll(Scroll::PageUp),
         KeyCode::Char('r') if ctrl => {
@@ -390,6 +398,8 @@ mod modal_tests {
                 press(KeyCode::Char(c)),
                 &mut editor,
                 &mut None,
+                &mut None,
+                20,
                 false,
                 &mut modal,
             );
@@ -426,6 +436,8 @@ mod modal_tests {
                 press(KeyCode::Char(c)),
                 &mut editor,
                 &mut None,
+                &mut None,
+                20,
                 false,
                 &mut modal,
             );
@@ -443,6 +455,8 @@ mod modal_tests {
             press(KeyCode::Char('x')),
             &mut editor,
             &mut None,
+            &mut None,
+            20,
             false,
             &mut modal,
         );
@@ -452,6 +466,8 @@ mod modal_tests {
                 press(KeyCode::Char('d')),
                 &mut editor,
                 &mut None,
+                &mut None,
+                20,
                 false,
                 &mut modal,
             );
@@ -470,6 +486,8 @@ mod modal_tests {
             press(KeyCode::Char(':')),
             &mut editor,
             &mut None,
+            &mut None,
+            20,
             false,
             &mut modal,
         );
@@ -498,6 +516,8 @@ mod modal_tests {
             press(KeyCode::Left),
             &mut editor,
             &mut None,
+            &mut None,
+            20,
             false,
             &mut modal,
         );
@@ -514,6 +534,8 @@ mod modal_tests {
                 press(KeyCode::Char('j')),
                 &mut editor,
                 &mut None,
+                &mut None,
+                20,
                 false,
                 &mut modal
             ),
@@ -534,6 +556,8 @@ mod modal_tests {
             press(KeyCode::Esc),
             &mut editor,
             &mut None,
+            &mut None,
+            20,
             false,
             &mut modal,
         );
@@ -552,6 +576,8 @@ mod modal_tests {
             press(KeyCode::Char('h')),
             &mut editor,
             &mut overlay,
+            &mut None,
+            20,
             false,
             &mut modal,
         );
@@ -576,6 +602,8 @@ mod motion_tests {
                 KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
                 &mut editor,
                 &mut None,
+                &mut None,
+                20,
                 false,
                 &mut modal,
             );
@@ -604,6 +632,8 @@ mod motion_tests {
                 KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
                 &mut editor,
                 &mut None,
+                &mut None,
+                20,
                 false,
                 &mut modal,
             );

@@ -2,7 +2,7 @@
 //!
 //! No account and no network: a script on disk plays the part, so the path a real turn takes —
 //! ask built, melchior spawned, answer read a line at a time, deltas folded, entry amended,
-//! journal written — is exercised end to end.
+//! handed to the store — is exercised end to end.
 //!
 //! What is *not* here any more is retry policy and HTTP status classification. melchior owns
 //! both, and they have their own tests over there. What is left is the half magi still decides:
@@ -21,7 +21,7 @@ fn backend(mind: &Mind) -> Backend {
     Backend {
         tools: Vec::new(),
         clients: Vec::new(),
-        casper: None,
+        tooling: Default::default(),
         cwd: std::env::temp_dir(),
         model: "fake/one".to_owned(),
         mind: mind.program().display().to_string(),
@@ -29,6 +29,7 @@ fn backend(mind: &Mind) -> Backend {
         context_window: Some(200_000),
         system: None,
         confine: false,
+        isolate: false,
         grants: Vec::new(),
         environ: std::collections::BTreeMap::new(),
     }
@@ -36,8 +37,8 @@ fn backend(mind: &Mind) -> Backend {
 
 fn session(name: &str) -> (tokio::sync::Mutex<Session>, Scratch) {
     let dir = Scratch::new("magi-turn", name);
-    let path = dir.join("s.jsonl");
-    let session = Session::open(&path, SessionId::new("s"), "/tmp", 0).expect("session");
+
+    let session = Session::recorded(SessionId::new("s"), Vec::new());
     (tokio::sync::Mutex::new(session), dir)
 }
 
@@ -54,8 +55,8 @@ async fn turn(session: &tokio::sync::Mutex<Session>, backend: &Backend) {
 }
 
 #[tokio::test]
-async fn a_turn_streams_into_the_journal() {
-    let (session, dir) = session("ok");
+async fn a_turn_streams_into_the_transcript_and_is_queued_for_the_store() {
+    let (session, _dir) = session("ok");
     let mind = Mind::saying(
         "turn-ok",
         &[
@@ -68,7 +69,7 @@ async fn a_turn_streams_into_the_journal() {
     );
     turn(&session, &backend(&mind)).await;
 
-    let held = session.lock().await;
+    let mut held = session.lock().await;
     let entries = held.entries();
     assert_eq!(entries.len(), 1, "one assistant entry, amended in place");
     let Entry::Assistant {
@@ -90,9 +91,18 @@ async fn a_turn_streams_into_the_journal() {
     // the whole reason the wire between magi and melchior carries opaque strings intact.
     assert_eq!(signatures.thinking.as_deref(), Some("sig-abc"));
 
-    // The journal holds it too, not just the in-memory transcript.
-    let source = std::fs::read_to_string(dir.join("s.jsonl")).expect("journal");
-    assert!(source.contains("append-only"), "the turn reached the disk");
+    // **And it is queued for the store, not just held on screen.** This read the sentence back
+    // out of a JSONL file on disk; there is no file, because balthasar is the store and magi
+    // keeping a second copy was a copy that goes stale. What is queued is what the scribe hands
+    // over, so this is the same claim at the seam it now crosses.
+    let queued = held.take_pending();
+    assert!(
+        queued.iter().any(|(_, entry)| matches!(
+            entry,
+            Entry::Assistant { text, .. } if text.contains("append-only")
+        )),
+        "the turn was never handed to the store: {queued:?}"
+    );
 
     drop(held);
 }
@@ -215,108 +225,6 @@ async fn an_interrupt_stops_a_turn_the_model_has_not_finished() {
     assert!(error.is_none(), "{error:?}");
     assert_eq!(*held.status(), magi_proto::AgentStatus::Idle);
 
-    drop(held);
-}
-
-#[tokio::test]
-async fn an_overflow_is_compacted_and_the_turn_carries_on() {
-    // The failure that ends a long session, and the one refusal magi acts on rather than only
-    // reports. `Overflow` exists as a class of its own for exactly this: told "it failed, try
-    // later", a broker would give up on a turn a summary would have fixed.
-    let (session, _dir) = session("overflow");
-    // The refusal, then the summary the compaction asks for, then the answer. Two arms: the
-    // last stands for every ask after the first.
-    let mind = Mind::turns(
-        "turn-overflow",
-        &[
-            &[&failed_line(
-                "prompt is too long: 300000 tokens > 200000 maximum",
-                "overflow",
-            )],
-            &[&text_line("The journal is append-only."), &stop_line()],
-        ],
-    );
-
-    // Long enough to have something to summarise; `covers` declines below that.
-    {
-        let mut held = session.lock().await;
-        for i in 0..12 {
-            held.commit(Entry::User {
-                aside: String::new(),
-                id: magi_proto::MessageId::new(format!("u{i}")),
-                text: format!("message number {i}"),
-            })
-            .expect("commit");
-        }
-    }
-    turn(&session, &backend(&mind)).await;
-
-    let held = session.lock().await;
-    let entries = held.entries();
-    assert!(
-        entries
-            .iter()
-            .any(|e| matches!(e, Entry::Compaction { .. })),
-        "the conversation was compacted: {entries:?}"
-    );
-    let last = entries.last().expect("an entry");
-    let Entry::Assistant { text, .. } = last else {
-        panic!("expected the retried answer, got {last:?}");
-    };
-    assert_eq!(text, "The journal is append-only.");
-
-    // The refusal stays in the transcript. A reader noticing the model forget something needs
-    // to be able to see that this is why.
-    assert!(
-        entries.iter().any(|e| matches!(
-            e,
-            Entry::Assistant { error: Some(why), .. } if why.contains("too long")
-        )),
-        "{entries:?}"
-    );
-    drop(held);
-}
-
-#[tokio::test]
-async fn a_second_overflow_is_not_compacted_again() {
-    // A conversation that still will not fit after summarising is not one that is too long: it
-    // is one whose kept tail alone overflows, and compacting the summary would spend another
-    // request to fail the same way.
-    let (session, _dir) = session("twice");
-    // Refused, summarised successfully, and refused again. The last arm repeats, so a turn
-    // that went round a second time would keep asking rather than stop.
-    let overflow = failed_line("prompt is too long", "overflow");
-    let summary = text_line("The user is porting a journal.");
-    let stop = stop_line();
-    let mind = Mind::turns(
-        "turn-twice",
-        &[&[&overflow], &[&summary, &stop], &[&overflow]],
-    );
-    {
-        let mut held = session.lock().await;
-        for i in 0..12 {
-            held.commit(Entry::User {
-                aside: String::new(),
-                id: magi_proto::MessageId::new(format!("u{i}")),
-                text: format!("message number {i}"),
-            })
-            .expect("commit");
-        }
-    }
-    turn(&session, &backend(&mind)).await;
-
-    // The refused round, the summary that was asked for, and the round that refused again.
-    // A fourth ask would be the second compaction this guards against.
-    assert_eq!(mind.asked(), 3, "it kept trying to compact");
-    let held = session.lock().await;
-    assert_eq!(
-        held.entries()
-            .iter()
-            .filter(|e| matches!(e, Entry::Compaction { .. }))
-            .count(),
-        1,
-        "summarised once"
-    );
     drop(held);
 }
 
