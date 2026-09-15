@@ -44,6 +44,10 @@ struct Cli {
     #[arg(short, long, global = true)]
     resume: bool,
 
+    /// Continue one run by its id, as `--resume` continues the newest.
+    #[arg(long, global = true, value_name = "RUN")]
+    resume_run: Option<String>,
+
     /// Open on another agent in this project, by its id — e.g. a `--headless` one — and drive it:
     /// what you type goes to it. `alt+.` / the agents panel move on. Same as starting here and
     /// stepping onto it.
@@ -258,7 +262,7 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
             // Reaped even when it will not serve: `start` refuses after convening balthasar.
             let _phase = match host::start(
                 &socket,
-                cli.resume,
+                resuming(cli.resume, cli.resume_run.clone()),
                 &cwd,
                 loaded.as_ref(),
                 &environ,
@@ -308,7 +312,7 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
             // Reaped even when it will not serve: `start` refuses after convening balthasar.
             let (phase_watch, spent_watch) = match host::start(
                 &socket,
-                cli.resume,
+                resuming(cli.resume, cli.resume_run.clone()),
                 &cwd,
                 loaded.as_ref(),
                 &environ,
@@ -392,11 +396,17 @@ fn inherited(
 /// thing that cannot be sent as a bare prompt — clap spends that namespace on the subcommands. So
 /// every other case stays a prompt: `-p`, anything naming a session, and any word with a space, a
 /// capital or punctuation in it.
+/// Which run to continue: a named one, else the newest when `--resume` asks, else none.
+fn resuming(resume: bool, run: Option<String>) -> Option<Option<String>> {
+    run.map(Some).or(resume.then_some(None))
+}
+
 fn unknown_verb(cli: &Cli) -> Option<&str> {
     let word = cli.prompt.as_deref()?;
     let bare = cli.command.is_none()
         && !cli.print
         && !cli.resume
+        && cli.resume_run.is_none()
         && !cli.headless
         && cli.tied.is_none()
         && cli.role.is_none()
@@ -455,6 +465,14 @@ mod naming {
     fn attach_and_print_do_not_go_together() {
         assert!(Cli::try_parse_from(["magi", "--attach", "psi", "-p", "hi"]).is_err());
         assert!(Cli::try_parse_from(["magi", "--attach", "psi"]).is_ok());
+    }
+
+    #[test]
+    fn a_named_run_is_resumed_over_the_newest() {
+        assert_eq!(super::resuming(false, None), None);
+        assert_eq!(super::resuming(true, None), Some(None));
+        let named = Some("delta-rho-1".to_owned());
+        assert_eq!(super::resuming(true, named.clone()), Some(named));
     }
 
     #[test]
