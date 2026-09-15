@@ -16,6 +16,7 @@ mod history;
 mod host;
 mod keying;
 mod keys;
+mod logging;
 mod melchior;
 mod models;
 mod opening;
@@ -82,6 +83,15 @@ struct Cli {
     #[arg(long, global = true)]
     cbor: bool,
 
+    /// Write every step this session and every sibling it starts take into one file. Named, that
+    /// file; alone, one under `$XDG_STATE_HOME/nerv/logs`, said on start.
+    #[arg(long, global = true, value_name = "FILE", num_args = 0..=1, default_missing_value = "")]
+    logs: Option<PathBuf>,
+
+    /// The same as `--logs` with no file named.
+    #[arg(short, long, global = true)]
+    verbose: bool,
+
     /// What to ask. Submitted on start; without it the UI opens empty.
     prompt: Option<String>,
 
@@ -138,6 +148,7 @@ enum Command {
 /// taken from that name, so it is settled before balthasar is spawned.
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    logging::begin(cli.logs.as_deref(), cli.verbose)?;
     // A verb this program does not have is a refusal like any other: on stdout, in the reply
     // shape, at exit 0, naming what was asked for. See FAMILY.md.
     if let Some(word) = unknown_verb(&cli) {

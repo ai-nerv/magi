@@ -231,6 +231,7 @@ pub async fn notes(
     if !ASKABLE.contains(&verb) {
         return vec![refusal(format!("`{verb}` is not a question about notes"))];
     }
+    magi_model::noted!("notes: a screen asked for {verb}");
     let mut asks = vec![(verb.to_owned(), arg)];
     if !matches!(verb, "note_open" | "changes") {
         if verb != "notes" {

@@ -135,6 +135,12 @@ pub async fn work(
         {
             Err("the helpers' budget for this prompt is spent".to_owned())
         } else {
+            magi_model::noted!(
+                "helpers: {} job {} for {} starting",
+                job.kind,
+                job.id,
+                job.role
+            );
             run(job, backend).await
         };
         let done = match answered {

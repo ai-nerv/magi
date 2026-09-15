@@ -30,6 +30,13 @@ async fn one_turn(
     let mut retries_seen: Vec<(u32, u32, u64)> = Vec::new();
 
     session.lock().await.commit(assistant(&id, &turn))?;
+    magi_model::noted!(
+        "ask: {} with {} messages and {} tools",
+        backend.model,
+        context.messages.len(),
+        context.tools.len()
+    );
+    let asked_at = std::time::Instant::now();
 
     // One channel for both: a delta from the second attempt arriving before the retry that
     // discarded the first would be thrown away with it.
@@ -69,6 +76,7 @@ async fn one_turn(
                         }
                         Arrival::Retrying { attempt, max_attempts, delay_ms } => {
                             retries_seen.push((attempt, max_attempts, delay_ms));
+                            magi_model::noted!("ask: attempt {attempt} of {max_attempts} failed; again in {delay_ms}ms");
                             // What the attempt published has to be taken back, to nothing.
                             turn = Turn::new();
                             let mut held = session.lock().await;
@@ -114,6 +122,7 @@ async fn one_turn(
 
     // Whatever arrived before the interrupt is kept: the model said it.
     if cancel.is_requested() {
+        magi_model::noted!("ask: {} interrupted", backend.model);
         turn.abort(StopReason::Aborted);
         let mut held = session.lock().await;
         held.amend(Entry::Assistant {
@@ -141,6 +150,7 @@ async fn one_turn(
         // An error is a value, not an exception: the transcript stays well-formed.
         let refused = error.why;
         let said = error.message.clone();
+        magi_model::noted!("ask: {} failed ({refused:?}): {said}", backend.model);
         turn.abort(StopReason::Error);
         let mut held = session.lock().await;
         held.amend(Entry::Assistant {
@@ -163,7 +173,23 @@ async fn one_turn(
 
     // Before the entry is finished, not after: `magi -p` exits the moment it is, and the report that
     // corrects balthasar's estimate would go with it.
-    crate::laying::applied(scribe, prompt, turn.usage()).await;
+    let used = turn.usage();
+    magi_model::noted!(
+        "ask: {} {} in {}ms: {} in ({} from cache), {} out, ${}.{:06}",
+        backend.model,
+        if matches!(turn.state(), magi_core::TurnState::ToolsPending) {
+            "asked for tools"
+        } else {
+            "answered"
+        },
+        asked_at.elapsed().as_millis(),
+        used.prompt_tokens(),
+        used.cache_read,
+        used.output,
+        used.cost_micros / 1_000_000,
+        used.cost_micros % 1_000_000
+    );
+    crate::laying::applied(scribe, prompt, used).await;
     let mut held = session.lock().await;
 
     held.amend(assistant(&id, &turn))?;
@@ -253,6 +279,7 @@ async fn permissions(
             noted.about,
             if noted.allowed { "allowed" } else { "refused" }
         );
+        magi_model::noted!("permit: {said}");
         let mut open = scribe.lock().await;
         if let Some(scribe) = open.as_mut()
             && let Err(why) = scribe.noticed(cursor, "permission", &said).await
@@ -394,6 +421,7 @@ pub async fn run(
         permissions(registry, ops, scribe, session.lock().await.cursor()).await;
 
         for ((call, prepared), at) in calls.iter().zip(prepared).zip(at) {
+            let began = std::time::Instant::now();
             // Checked per call: the entry is committed, so a stop leaves a result, not a bare call.
             let output = match prepared {
                 // A call in flight is collected even after an interrupt: the peer runs it either way.
@@ -402,6 +430,20 @@ pub async fn run(
                 }
                 _ => magi_tools::Output::error("cancelled before this tool ran"),
             };
+            magi_model::noted!(
+                "tool: {} {} {} in {}ms, {} bytes{}",
+                call.name,
+                trimmed(&call.arguments),
+                if output.is_error { "failed" } else { "ok" },
+                began.elapsed().as_millis(),
+                output.content.len(),
+                output
+                    .hints
+                    .brief
+                    .as_deref()
+                    .map(|brief| format!(", stub `{brief}`"))
+                    .unwrap_or_default()
+            );
             // The other half of the loop: what the turn did with what it was given, the only signal
             // balthasar has. After the tool, before the entry is amended, and off with no ledger.
             if let Some(injection) = &prompt.injection {
@@ -449,6 +491,15 @@ pub async fn run(
     })?;
     held.set_status(AgentStatus::Idle);
     Ok(())
+}
+
+/// Arguments as a log line shows them: one line, and not all of a long one.
+fn trimmed(text: &str) -> String {
+    let flat = text.replace('\n', " ");
+    match flat.char_indices().nth(100) {
+        Some((cut, _)) => format!("{}…", &flat[..cut]),
+        None => flat,
+    }
 }
 
 /// The calls a finished turn is waiting on, if any.

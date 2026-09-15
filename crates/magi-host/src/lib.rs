@@ -157,6 +157,17 @@ pub async fn serve_on(
         }
     }));
     let _ = DRAINING.set((Arc::clone(&session), Arc::clone(&scribe)));
+    magi_model::noted!(
+        "session: {} serving in {}, model {}, memory {}",
+        session.lock().await.id(),
+        catalog.cwd.display(),
+        backend.as_ref().map_or("none", |b| b.model.as_str()),
+        if scribe.lock().await.is_some() {
+            "reached"
+        } else {
+            "absent"
+        }
+    );
     // Named for the VM, so a tool can say which session it is asking about.
     magi_lua::name_session(session.lock().await.id().as_str(), told.as_deref());
 
@@ -372,6 +383,9 @@ async fn connection(
     loop {
         tokio::select! {
             command = incoming.recv() => {
+                if let Some(asked) = &command {
+                    magi_model::noted!("ui: {}", format!("{asked:?}").split([' ', '{', '(']).next().unwrap_or_default());
+                }
                 match command {
                     Some(UiCommand::SubmitPrompt { text, aside }) => {
                         let held = worker.read().await.clone();

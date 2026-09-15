@@ -468,6 +468,7 @@ pub async fn flush(
             .zip(beside)
             .collect::<std::collections::VecDeque<_>>()
     };
+    magi_model::noted!("scribe: handing {} entries to balthasar", settled.len());
     while let Some(((cursor, entry), beside)) = settled.pop_front() {
         // A mask is not news to the layer that ordered it: balthasar marks a turn masked as it
         // hands the plan over, and streaming it back would file its decision as a fresh turn.

@@ -30,6 +30,7 @@ pub async fn settle(loaded: &crate::config::Loaded) {
         }
         match driving::configure(program, &source).await {
             Ok(applied) => {
+                magi_model::noted!("configure: {program} took {:?}", applied.set);
                 for refused in applied.refused {
                     eprintln!(
                         "magi: {program} would not take {}: {}",

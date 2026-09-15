@@ -372,6 +372,12 @@ pub async fn lay(
         magi_model::noted!("layout: the transcript could not be handed over: {why}");
     }
     let asked = request(&*session.lock().await, backend, tools, prompt.round);
+    magi_model::noted!(
+        "layout: asking for round {} of {} live entries in a {} window",
+        prompt.round,
+        asked["live"].as_array().map_or(0, Vec::len),
+        asked["window"]
+    );
     let mut layout = if backend.context_window.is_some() {
         ask(scribe, asked.clone()).await
     } else {
