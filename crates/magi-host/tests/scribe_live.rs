@@ -244,3 +244,38 @@ async fn what_a_session_commits_reaches_balthasar_when_it_is_flushed() {
         "the amendment must win"
     );
 }
+
+/// Two agents of one run record under one session id, and each keeps its own transcript: the
+/// second's first entry once replaced the first's, cursor for cursor.
+#[tokio::test]
+async fn agents_of_one_run_do_not_overwrite_each_others_transcript() {
+    let Some((mut lead, held)) = scribe("run").await else {
+        return;
+    };
+    let family = Family::dial(held.0.socket())
+        .await
+        .expect("dial the balthasar that just answered");
+    let id = SessionId::new(format!("magi-scribe-{}-run", std::process::id()));
+    let mut child = Scribe::over(family, Some(held.0.socket().to_owned()), &id)
+        .recording_as(format!("{id}@child"));
+    let said = |text: &str| Entry::User {
+        id: MessageId::new("u1"),
+        text: text.into(),
+        aside: String::new(),
+    };
+    lead.observe(Cursor(1), &said("the lead's prompt"), &Default::default())
+        .await
+        .expect("the lead records");
+    child
+        .observe(Cursor(1), &said("the child's prompt"), &Default::default())
+        .await
+        .expect("the child records");
+    assert_eq!(
+        lead.replay().await.expect("replay")[0].1,
+        said("the lead's prompt")
+    );
+    assert_eq!(
+        child.replay().await.expect("replay")[0].1,
+        said("the child's prompt")
+    );
+}
