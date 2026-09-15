@@ -47,7 +47,8 @@ struct Cli {
     /// Open on another agent in this project, by its id — e.g. a `--headless` one — and drive it:
     /// what you type goes to it. `alt+.` / the agents panel move on. Same as starting here and
     /// stepping onto it.
-    #[arg(long, value_name = "ID")]
+    /// Not with `-p`, which would start a session of its own rather than drive this one.
+    #[arg(long, value_name = "ID", conflicts_with = "print")]
     attach: Option<String>,
 
     /// With `--attach`: watch only. Nothing typed or clicked changes a session, so the agents are
@@ -447,6 +448,13 @@ mod naming {
     fn the_encoding_flags_do_not_make_it_a_prompt() {
         assert_eq!(asked(&["nope", "--json"]).as_deref(), Some("nope"));
         assert_eq!(asked(&["nope", "--cbor"]).as_deref(), Some("nope"));
+    }
+
+    /// `-p` opens a session of its own, so pointing it at another agent is refused, not ignored.
+    #[test]
+    fn attach_and_print_do_not_go_together() {
+        assert!(Cli::try_parse_from(["magi", "--attach", "psi", "-p", "hi"]).is_err());
+        assert!(Cli::try_parse_from(["magi", "--attach", "psi"]).is_ok());
     }
 
     #[test]
