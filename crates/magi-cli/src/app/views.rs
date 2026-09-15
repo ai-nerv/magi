@@ -296,7 +296,7 @@ impl App {
         let rows = self
             .laid
             .as_ref()
-            .map(|laid| magi_tui::laid::view(laid, card_width()).rows)
+            .map(|laid| magi_tui::laid::view(laid, &self.helped, card_width()).rows)
             .unwrap_or_default();
         self.pane =
             Some(magi_tui::pane::Pane::new("context", rows).saying(magi_tui::laid::empty()));

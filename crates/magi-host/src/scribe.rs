@@ -353,7 +353,7 @@ impl Scribe {
 
     /// Where balthasar thinks this session left off, and how much of it it holds. A cross-check,
     /// not a source: magi's journal is the copy of record, and a balthasar holding fewer turns has
-    /// an incomplete scrollback that `plan`, `replay` and `scroll` all answer from.
+    /// an incomplete scrollback that `layout`, `replay` and `scroll` all answer from.
     pub async fn resumes(&mut self) -> Result<u64, Fault> {
         let values = self
             .family
@@ -369,12 +369,8 @@ impl Scribe {
             .unwrap_or(0))
     }
 
-    /// Say which model this session talks to, and how much it holds. balthasar does the compacting,
-    /// so it has to know what it is compacting for, and that cannot be guessed from the turns. Told
-    /// at startup and again whenever `:model` switches; without it every plan fell back to 200,000.
-    ///
-    /// # Errors
-    /// Whatever balthasar answered. A balthasar keeping no scrollback refuses this.
+    /// Say which model this session talks to, and how much it holds: told at startup and whenever
+    /// `:model` switches, so the store knows which model produced a run.
     pub async fn note_model(&mut self, name: &str, window: u64) -> Result<(), Fault> {
         let args = vec![
             serde_json::Value::String(self.session.clone()),

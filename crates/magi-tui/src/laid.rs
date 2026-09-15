@@ -56,9 +56,9 @@ pub fn empty() -> String {
     "nothing laid out yet — this fills in with the next request".to_owned()
 }
 
-/// The whole view, top to bottom.
+/// The whole view, top to bottom, with the helper jobs this session has run beneath it.
 #[must_use]
-pub fn view(laid: &Laid, width: u16) -> Rendered {
+pub fn view(laid: &Laid, jobs: &[crate::cost::Helper], width: u16) -> Rendered {
     let ink = crate::model_card::ink();
     let width = width.max(20);
     let mut out = Rendered::default();
@@ -96,8 +96,29 @@ pub fn view(laid: &Laid, width: u16) -> Rendered {
             out.say(line.to_string(), ink.dim);
         }
     }
+
+    if !jobs.is_empty() {
+        out.section("Helper jobs", "the newest last", width);
+        for job in jobs.iter().rev().take(JOBS).rev() {
+            let used = job.usage;
+            out.fact(
+                &job.role,
+                format!(
+                    "{} · {} in, {} out · {}",
+                    job.model,
+                    format_tokens(used.prompt_tokens()),
+                    format_tokens(used.output),
+                    crate::cost::dollars(used.cost_micros)
+                ),
+                &ink,
+            );
+        }
+    }
     out
 }
+
+/// How many helper jobs the view lists.
+const JOBS: usize = 8;
 
 /// How the window was shared out, each part a bar against the whole of it.
 fn budget(out: &mut Rendered, laid: &Laid, width: u16) {
@@ -198,7 +219,12 @@ mod tests {
 
     #[test]
     fn the_view_shows_the_budget_the_counts_and_the_reason() {
-        let drawn: Vec<String> = view(&laid(), 60)
+        let jobs = [crate::cost::Helper {
+            role: "memory".into(),
+            model: "p/small".into(),
+            usage: magi_proto::Usage::default(),
+        }];
+        let drawn: Vec<String> = view(&laid(), &jobs, 60)
             .rows
             .iter()
             .map(ToString::to_string)
@@ -210,6 +236,8 @@ mod tests {
             "Left out",
             "×1.08",
             "the conversation is long",
+            "Helper jobs",
+            "p/small",
         ] {
             assert!(all.contains(wanted), "{wanted} is missing:\n{all}");
         }
@@ -221,7 +249,7 @@ mod tests {
             id: String::new(),
             ..laid()
         };
-        let all: String = view(&mine, 60)
+        let all: String = view(&mine, &[], 60)
             .rows
             .iter()
             .map(ToString::to_string)
