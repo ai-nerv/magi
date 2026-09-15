@@ -23,6 +23,19 @@ pub async fn needs(program: &str) -> Vec<Need> {
         .collect()
 }
 
+/// Names the directory a sibling keeps what this session told it in.
+pub const GIVEN: &str = "NERV_GIVEN";
+
+/// This session's own: what it tells a sibling governs the sibling it starts, and no other session's.
+#[must_use]
+pub fn given_dir() -> std::path::PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map_or_else(std::env::temp_dir, std::path::PathBuf::from)
+        .join("magi")
+        .join("given")
+        .join(std::process::id().to_string())
+}
+
 /// Hand a sibling a chunk of its own config Lua.
 ///
 /// # Errors
@@ -32,6 +45,7 @@ pub async fn configure(program: &str, source: &str) -> Result<Applied, String> {
     let mut child = tokio::process::Command::new(program)
         .arg("configure")
         .arg("--json")
+        .env(GIVEN, given_dir())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())

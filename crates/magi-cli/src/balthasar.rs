@@ -76,6 +76,8 @@ pub async fn start(program: &str, instance: &str, project: &Path, agent: Option<
             spawning.env(named, agent);
         }
     }
+    // What this session told it at `configure`, and nothing another session said.
+    spawning.env(magi_host::driving::GIVEN, magi_host::driving::given_dir());
     let child = spawning
         .arg("serve")
         .arg("--instance")
