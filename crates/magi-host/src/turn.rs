@@ -16,6 +16,7 @@ async fn one_turn(
     backend: &Backend,
     context: magi_model::Context,
     cancel: &crate::cancel::Cancel,
+    (scribe, prompt): (&crate::scribe::Held, &crate::laying::Prompt),
 ) -> Result<Round, crate::HostError> {
     {
         let mut held = session.lock().await;
@@ -160,6 +161,9 @@ async fn one_turn(
         });
     }
 
+    // Before the entry is finished, not after: `magi -p` exits the moment it is, and the report that
+    // corrects balthasar's estimate would go with it.
+    crate::laying::applied(scribe, prompt, turn.usage()).await;
     let mut held = session.lock().await;
 
     held.amend(assistant(&id, &turn))?;
@@ -292,7 +296,7 @@ pub async fn run(
         };
         context.tools.clone_from(&tools);
         context.system.clone_from(&backend.system);
-        let round = one_turn(session, backend, context, &cancel).await?;
+        let round = one_turn(session, backend, context, &cancel, (scribe, &prompt)).await?;
 
         for (attempt, of, delay_ms) in &round.retries {
             registry.saw(&magi_tools::Event::Retried {
@@ -315,9 +319,6 @@ pub async fn run(
         {
             tighter = Some(context);
             continue;
-        }
-        if round.failed.is_none() && !cancel.is_requested() {
-            crate::laying::applied(scribe, &prompt, round.turn.usage()).await;
         }
         prompt.round += 1;
         let turn = round.turn;

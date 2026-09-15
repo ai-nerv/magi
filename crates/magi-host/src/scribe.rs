@@ -161,9 +161,17 @@ impl Scribe {
 
     /// The helper jobs balthasar has waiting.
     pub async fn jobs(&mut self) -> Result<Vec<serde_json::Value>, Fault> {
-        let answer = self.ask("jobs", serde_json::json!({})).await?;
-        let list = answer.get("jobs").cloned().unwrap_or(answer);
-        Ok(list.as_array().cloned().unwrap_or_default())
+        let rows = self.ask_all("jobs", serde_json::json!({})).await?;
+        Ok(rows
+            .into_iter()
+            .flat_map(|row| match row {
+                serde_json::Value::Array(list) => list,
+                serde_json::Value::Object(ref map) if map.contains_key("jobs") => {
+                    map["jobs"].as_array().cloned().unwrap_or_default()
+                }
+                one => vec![one],
+            })
+            .collect())
     }
 
     /// Hand back what a helper job came to.

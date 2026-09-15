@@ -166,6 +166,75 @@ async fn a_balthasar_that_dies_mid_session_only_degrades_the_layout() {
     assert!(last.contains("what is magi"), "and what came before it");
 }
 
+/// The first of what the memory layer answered for `verb`, from a screen's ask.
+async fn answered(live: &Live, verb: &str, arg: serde_json::Value) -> serde_json::Value {
+    magi_host::knowing::notes(&live.scribe, verb, arg)
+        .await
+        .into_iter()
+        .find_map(|event| match event {
+            HarnessEvent::MemoryAnswered { verb: said, answer } if said == verb => Some(answer),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn a_correction_becomes_a_pinned_note_that_can_be_undone() {
+    let Some(live) = live("remembers").await else {
+        return;
+    };
+    let session = std::sync::Arc::new(tokio::sync::Mutex::new(Session::recorded(
+        live.id.clone(),
+        Vec::new(),
+    )));
+    session
+        .lock()
+        .await
+        .commit(user("u1", "we always use uv here, never pip"))
+        .expect("commit");
+    // Every ask gets this, so the turn's answer is the extract job's answer too; only the job's matters.
+    let ops = r#"{"ops":[{"op":"add","title":"tooling","text":"use uv, never pip","description":"the package manager","pinned":true}]}"#;
+    let mind = Mind::answering("ll-remembers", ops);
+    let mut backend = backend(&mind, 200_000);
+    backend
+        .helpers
+        .roles
+        .insert("memory".to_owned(), "fake/one".to_owned());
+    let mut events = session.lock().await.subscribe();
+    prompt(&session, &backend, &live).await;
+
+    magi_host::helping::between(
+        std::sync::Arc::clone(&session),
+        backend.clone(),
+        std::sync::Arc::clone(&live.scribe),
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        while !matches!(events.recv().await, Ok(HarnessEvent::HelperSpent { .. })) {}
+    })
+    .await
+    .expect("the extract job ran after the turn");
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let notes = answered(&live, "notes", serde_json::json!({})).await;
+    assert!(
+        notes.to_string().contains("use uv, never pip"),
+        "the note was not kept: {notes}"
+    );
+    let changes = answered(&live, "changes", serde_json::json!({ "limit": 5 })).await;
+    let change = changes[0]["id"]
+        .as_str()
+        .expect("a change was logged")
+        .to_owned();
+    assert_eq!(changes[0]["state"], "applied", "{changes}");
+
+    answered(&live, "undo", serde_json::json!({ "change": change })).await;
+    let after = answered(&live, "notes", serde_json::json!({})).await;
+    assert!(
+        !after.to_string().contains("use uv, never pip"),
+        "undo left the note in place: {after}"
+    );
+}
+
 #[tokio::test]
 async fn a_screen_is_told_the_notes_and_their_change_log() {
     let Some(live) = live("notes").await else {
