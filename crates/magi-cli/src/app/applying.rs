@@ -249,6 +249,26 @@ impl App {
                     self.entries.push(Entry::Branch { id, keeps });
                 }
             }
+            // How the request just sent was built, for the model's card and the `:context` view.
+            HarnessEvent::ContextLaid {
+                id,
+                budget,
+                counts,
+                why,
+            } => {
+                self.laid = Some(magi_tui::laid::Laid {
+                    id,
+                    budget,
+                    counts,
+                    why,
+                });
+                self.refresh_views();
+            }
+            HarnessEvent::HelperSpent { role, model, usage } => {
+                self.helped
+                    .push(magi_tui::cost::Helper { role, model, usage });
+                self.refresh_views();
+            }
             HarnessEvent::Compacted {
                 id,
                 summary,

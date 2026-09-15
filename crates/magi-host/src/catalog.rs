@@ -1,9 +1,46 @@
 //! Every model this session could talk to, as melchior described them, beside the parts a
-//! [`crate::turn::Backend`] does not vary. Held by the session rather than re-read on each switch,
-//! so `/model` picks among what this session actually started with.
+//! [`Backend`] does not vary. Held by the session rather than re-read on each switch, so `/model`
+//! picks among what this session actually started with.
 
-use crate::turn::Backend;
 use magi_proto::ask::Card;
+
+/// What the daemon needs to reach a model. Plain data, and sendable: the protocol it names is built
+/// on the worker's own thread, because a Lua VM is neither `Send` nor `Sync`.
+#[derive(Debug, Clone)]
+pub struct Backend {
+    pub tools: Vec<(String, String)>,
+    pub clients: Vec<(String, String)>,
+    /// Which program fills the `tools` role, and what this session tells it.
+    pub tooling: magi_tools::supplier::Tooling,
+    pub cwd: std::path::PathBuf,
+    /// Permissions a configuration granted in advance; they go into the ledger at startup.
+    pub grants: Vec<magi_proto::permit::Grant>,
+    pub environ: std::collections::BTreeMap<String, String>,
+    /// Whether the file tools refuse paths outside `cwd`. See [`magi_tools::ops::Real`].
+    pub confine: bool,
+    /// Whether a tool command runs inside a kernel jail — `magi.isolation`.
+    pub isolate: bool,
+    /// Which model to ask for, as melchior names it: `provider/model`. A name and nothing else.
+    pub model: String,
+    /// The program that owns the model, found on `PATH`. Named per backend, not compiled in.
+    pub mind: String,
+    pub wants: magi_proto::ask::Wants,
+    /// How much this model will read, as melchior's card reported it. Carried rather than looked up.
+    pub context_window: Option<u64>,
+    /// What the model is told it is. Assembled once, when the daemon starts.
+    pub system: Option<String>,
+    /// The small models that run jobs on balthasar's behalf — `magi.helpers`.
+    pub helpers: Helpers,
+}
+
+/// Which models help, and within what: a model per role, how long a job may take (zero is the
+/// default), and the most one prompt may spend on them in millionths. Running one is `helping`'s.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Helpers {
+    pub roles: std::collections::BTreeMap<String, String>,
+    pub timeout_ms: u64,
+    pub per_prompt_micros: Option<u64>,
+}
 
 #[derive(Debug, Clone)]
 pub struct Catalog {
@@ -31,6 +68,8 @@ pub struct Catalog {
     pub environ: std::collections::BTreeMap<String, String>,
     /// What the configuration asked for, kept so a refusal can name it rather than the fallback.
     pub chosen: Option<String>,
+    /// The small models that run jobs for balthasar and questions for surfaces — `magi.helpers`.
+    pub helpers: Helpers,
 }
 
 impl Catalog {
@@ -49,6 +88,7 @@ impl Catalog {
             wants: magi_proto::ask::Wants::default(),
             system: None,
             chosen: None,
+            helpers: Helpers::default(),
             confine: false,
             isolate: false,
             grants: Vec::new(),
@@ -74,6 +114,7 @@ impl Catalog {
             confine: self.confine,
             isolate: self.isolate,
             grants: self.grants.clone(),
+            helpers: self.helpers.clone(),
         })
     }
 

@@ -120,6 +120,7 @@ impl Tool for LuaTool {
                     .get("shown")
                     .and_then(|shown| serde_json::from_value(shown.clone()).ok()),
                 unlocks: Vec::new(),
+                hints: serde_json::from_value(value.clone()).unwrap_or_default(),
             },
             // A description that raised, returned nothing, or has no `run` at all. Reported as
             // a result rather than a fault: the model asked for it and needs to be told.

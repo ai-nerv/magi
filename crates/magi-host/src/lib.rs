@@ -6,18 +6,17 @@ pub mod asking;
 pub mod broker;
 pub mod cancel;
 pub mod catalog;
-pub mod compact;
 pub mod context;
 pub mod declaring;
 pub mod driving;
+pub mod helping;
 pub mod holder;
-pub mod injecting;
 pub mod knowing;
+pub mod laying;
 pub mod paths;
 pub mod remember;
 pub mod scribe;
 pub mod session;
-pub mod supplying;
 pub mod system;
 pub mod turn;
 pub mod worker;
@@ -239,6 +238,7 @@ pub async fn serve_on(
             asked,
             Arc::clone(&scribe),
             Arc::clone(&session),
+            backend.clone(),
         ));
         let held = session.lock().await;
         let cwd = catalog.cwd.display().to_string();

@@ -56,6 +56,7 @@ impl App {
         let drawn = magi_tui::cost::view(&magi_tui::cost::Report {
             turns: &turns,
             agents: &agents,
+            helpers: &self.helped,
             width: card_width(),
         });
         self.pane =
@@ -246,6 +247,7 @@ impl App {
             Some((_, Err(why))) => magi_tui::model_card::Known::Missing(why),
             None => magi_tui::model_card::Known::Asking,
         };
+        let sent = self.laid.as_ref().map(magi_tui::laid::Laid::composition);
         let drawn = magi_tui::model_card::view(&magi_tui::model_card::Card {
             model: &name,
             context_window: self.model.as_ref().map_or(0, |model| model.context_window),
@@ -254,6 +256,7 @@ impl App {
             provider: self.provider.as_deref(),
             turns: &turns,
             details,
+            sent: sent.as_deref(),
             width: card_width(),
         });
         let mut pane = magi_tui::pane::Pane::new("model", drawn.rows).selectable(drawn.picks);
@@ -284,6 +287,28 @@ impl App {
         self.details = Some(answer);
         self.details_rx = None;
         if self.pane_titled("model") {
+            self.show_model();
+        }
+    }
+
+    /// Open how the last request was laid out: the budget, what went whole and what did not, why.
+    pub fn show_context(&mut self) {
+        let rows = self
+            .laid
+            .as_ref()
+            .map(|laid| magi_tui::laid::view(laid, card_width()).rows)
+            .unwrap_or_default();
+        self.pane =
+            Some(magi_tui::pane::Pane::new("context", rows).saying(magi_tui::laid::empty()));
+    }
+
+    /// Redraw whichever view is open that a new layout or a helper's spend changes.
+    pub(super) fn refresh_views(&mut self) {
+        if self.pane_titled("context") {
+            self.show_context();
+        } else if self.pane_titled("cost") {
+            self.show_cost();
+        } else if self.pane_titled("model") {
             self.show_model();
         }
     }

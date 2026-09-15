@@ -27,8 +27,27 @@ fn report<'a>(turns: &'a [Turn], agents: &'a [Agent]) -> Report<'a> {
     Report {
         turns,
         agents,
+        helpers: &[],
         width: 70,
     }
+}
+
+#[test]
+fn helper_jobs_get_a_section_and_count_toward_the_heading() {
+    let turns = [turn(1, "p/big", used(1000, 100, 20_000))];
+    let helpers = [Helper {
+        role: "memory".into(),
+        model: "p/small".into(),
+        usage: used(800, 50, 1_000),
+    }];
+    let shown = Report {
+        helpers: &helpers,
+        ..report(&turns, &[])
+    };
+    let all = text(&view(&shown)).join("\n");
+    assert!(all.contains("Helpers"), "{all}");
+    assert!(all.contains("memory · p/small"), "{all}");
+    assert!(all.contains("helpers $0.0010"), "{all}");
 }
 
 /// Whether any row carries a braille cell: a line chart was drawn.

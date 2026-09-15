@@ -130,6 +130,13 @@ impl Worker {
                         Work::Turn => {
                             let _ =
                                 turn::run(&job.session, &backend, &registry, &*ops, &scribe).await;
+                            job.session.lock().await.rest();
+                            // What balthasar wants done between turns runs beside the next one.
+                            crate::helping::between(
+                                Arc::clone(&job.session),
+                                backend.clone(),
+                                Arc::clone(&scribe),
+                            );
                         }
                         Work::TakeOn(grants) => ops.take_on(grants),
                         Work::Declare => {

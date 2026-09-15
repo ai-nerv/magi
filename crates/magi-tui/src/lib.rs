@@ -15,6 +15,7 @@ pub mod fold;
 pub mod footer;
 pub mod fuzzy;
 pub mod glyph;
+pub mod laid;
 pub mod markdown;
 pub mod menu;
 pub mod metric;

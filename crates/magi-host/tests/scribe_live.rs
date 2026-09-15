@@ -41,7 +41,10 @@ async fn an_entry_survives_the_round_trip_unaltered() {
         aside: "context nobody is shown".into(),
     };
 
-    scribe.observe(Cursor(1), &entry).await.expect("observe");
+    scribe
+        .observe(Cursor(1), &entry, &Default::default())
+        .await
+        .expect("observe");
     let back = scribe.replay().await.expect("replay");
 
     assert_eq!(back.len(), 1, "one turn in, one turn out: {back:?}");
@@ -69,7 +72,10 @@ async fn the_fields_no_projection_carries_come_back() {
         },
     };
 
-    scribe.observe(Cursor(1), &entry).await.expect("observe");
+    scribe
+        .observe(Cursor(1), &entry, &Default::default())
+        .await
+        .expect("observe");
     let back = scribe.replay().await.expect("replay");
     assert_eq!(back[0].1, entry, "an unrecomputable field was lost");
 }
@@ -91,7 +97,10 @@ async fn a_tool_signature_is_not_flattened_into_the_projection() {
         thought_signature: Some("opaque-provider-state".into()),
     };
 
-    scribe.observe(Cursor(1), &entry).await.expect("observe");
+    scribe
+        .observe(Cursor(1), &entry, &Default::default())
+        .await
+        .expect("observe");
     assert_eq!(scribe.replay().await.expect("replay")[0].1, entry);
 }
 
@@ -111,15 +120,15 @@ async fn amending_replaces_the_turn_rather_than_appending_one() {
     };
 
     scribe
-        .observe(Cursor(1), &growing("par"))
+        .observe(Cursor(1), &growing("par"), &Default::default())
         .await
         .expect("observe");
     scribe
-        .amend(Cursor(1), &growing("partial"))
+        .amend(Cursor(1), &growing("partial"), &Default::default())
         .await
         .expect("amend");
     scribe
-        .amend(Cursor(1), &growing("partial answer"))
+        .amend(Cursor(1), &growing("partial answer"), &Default::default())
         .await
         .expect("amend");
 
@@ -144,9 +153,19 @@ async fn cursor_order_is_what_comes_back_not_arrival_order() {
     };
 
     // Written out of order on purpose.
-    scribe.observe(Cursor(3), &at(3)).await.expect("observe 3");
-    scribe.observe(Cursor(1), &at(1)).await.expect("observe 1");
-    scribe.observe(Cursor(2), &at(2)).await.expect("observe 2");
+    let none = magi_host::scribe::Beside::default();
+    scribe
+        .observe(Cursor(3), &at(3), &none)
+        .await
+        .expect("observe 3");
+    scribe
+        .observe(Cursor(1), &at(1), &none)
+        .await
+        .expect("observe 1");
+    scribe
+        .observe(Cursor(2), &at(2), &none)
+        .await
+        .expect("observe 2");
 
     let back = scribe.replay().await.expect("replay");
     let cursors: Vec<u64> = back.iter().map(|(c, _)| c.0).collect();

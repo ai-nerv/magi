@@ -150,6 +150,7 @@ fn fold(mut entries: Vec<Entry>, events: &[HarnessEvent]) -> Vec<Entry> {
             // and rows a tool held for a while are on the screen rather than in the record.
             HarnessEvent::Asked { .. } => {}
             HarnessEvent::PermissionAsked { .. } => {}
+            HarnessEvent::ContextLaid { .. } | HarnessEvent::HelperSpent { .. } => {}
             HarnessEvent::Surfaced { .. }
             | HarnessEvent::Drew { .. }
             | HarnessEvent::Unsurfaced { .. }

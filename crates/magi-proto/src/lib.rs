@@ -19,6 +19,7 @@
 
 pub mod ask;
 mod ids;
+pub mod laying;
 pub mod permit;
 pub mod setup;
 pub mod surfacing;
@@ -382,6 +383,35 @@ pub enum HarnessEvent {
         class: ErrorClass,
         message: String,
     },
+    /// What the memory layer laid out for a request that went out, for the model card's gauge and
+    /// the `:context` view. Not part of the log.
+    ContextLaid {
+        id: String,
+        #[serde(default)]
+        budget: serde_json::Value,
+        #[serde(default)]
+        counts: Laid,
+        #[serde(default)]
+        why: String,
+    },
+    /// What one helper-model job cost, for the cost view. Not part of the log.
+    HelperSpent {
+        role: String,
+        model: String,
+        usage: Usage,
+    },
+}
+
+/// How many of each kind of slot a layout held.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Laid {
+    pub items: usize,
+    pub stubs: usize,
+    pub dropped: usize,
+    pub summary: usize,
+    pub memory: usize,
+    pub pinned: usize,
+    pub notes: usize,
 }
 
 impl HarnessEvent {
@@ -409,7 +439,7 @@ impl HarnessEvent {
             | Self::Branched { cursor, .. }
             | Self::Error { cursor, .. } => *cursor,
             // A frame occupies no place in the log; nothing replays it.
-            Self::Drew { .. } => Cursor::ZERO,
+            Self::Drew { .. } | Self::ContextLaid { .. } | Self::HelperSpent { .. } => Cursor::ZERO,
         }
     }
 }

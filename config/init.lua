@@ -39,6 +39,17 @@ magi.model = "openrouter/deepseek/deepseek-v4-flash-0731"
 -- magi.melchior  = { max_tokens = 8192 }
 -- magi.balthasar = { promote_floor = 0.6 }
 
+-- Small, fast models that run jobs on the others' behalf: balthasar asks for a summary or a tidy
+-- of its notes, a surface asks whether something is safe. A role named here runs on that model;
+-- one not named is skipped, or run on the session's own model when the job asks for that. The
+-- budget caps what they may spend on one prompt, in dollars, and `:cost` shows what they spent.
+--
+-- magi.helpers = {
+--   memory     = "openrouter/google/gemini-2.5-flash",
+--   timeout_ms = 20000,
+--   budget     = { per_prompt = 0.05 },
+-- }
+
 -- Whether `read`, `write` and `edit` refuse paths outside the session's directory. Off: it
 -- moved work to the shell, which has no confinement at all. `bwrap` in front of the shell peer
 -- is what actually contains anything.

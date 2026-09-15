@@ -71,6 +71,7 @@ pub fn commands() -> Vec<Candidate> {
         (":permissions", "ask the model what it needs, and decide"),
         (":resume", "continue a session from this directory"),
         (":trace", "what this session has done, as it happened"),
+        (":context", "what the last request was built from, and why"),
         (":agents", "the run's agents, as a tree"),
         (":rewind", "undo the last exchange, or :rewind N"),
         (":think", "how much reasoning to ask for"),

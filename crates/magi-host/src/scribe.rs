@@ -17,9 +17,39 @@ pub const BALTHASAR: &str = "balthasar";
 /// Every verb the memory role names, from `ROLES.md`. Here so [`Scribe::raw`] cannot reach past the
 /// contract: an escape hatch taking any verb makes the contract advisory.
 const ROLE: &[&str] = &[
-    "observe", "replay", "amend", "recall", "remember", "forget", "why", "scroll", "plan", "used",
-    "outcome", "model", "resume", "sessions",
+    "observe",
+    "replay",
+    "amend",
+    "recall",
+    "remember",
+    "forget",
+    "why",
+    "scroll",
+    "used",
+    "outcome",
+    "model",
+    "resume",
+    "sessions",
+    "layout",
+    "applied",
+    "overflowed",
+    "jobs",
+    "job_done",
+    "notes",
+    "note_open",
+    "changes",
+    "undo",
+    "approve",
+    "reject",
 ];
+
+/// What travels with an entry that the entry cannot say about itself: the assistant message a tool
+/// row belongs to (a group is kept, stubbed or summarised whole), and what its tool said about it.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Beside {
+    pub group: Option<u64>,
+    pub hints: magi_proto::tooling::Hints,
+}
 
 pub struct Scribe {
     family: Family,
@@ -65,8 +95,61 @@ impl Scribe {
     }
 
     /// Record a settled entry. Durable when this returns.
-    pub async fn observe(&mut self, cursor: Cursor, entry: &Entry) -> Result<(), Fault> {
-        self.write("observe", cursor, entry).await
+    pub async fn observe(
+        &mut self,
+        cursor: Cursor,
+        entry: &Entry,
+        beside: &Beside,
+    ) -> Result<(), Fault> {
+        self.write("observe", cursor, entry, beside).await
+    }
+
+    /// Call a verb of the role for this session with one argument, and hand back its first answer.
+    pub async fn ask(
+        &mut self,
+        verb: &str,
+        arg: serde_json::Value,
+    ) -> Result<serde_json::Value, Fault> {
+        if !ROLE.contains(&verb) {
+            return Err(Fault::Refused(format!(
+                "`{verb}` is not one of the memory role's verbs; see ROLES.md"
+            )));
+        }
+        let args = vec![serde_json::Value::String(self.session.clone()), arg];
+        let values = self.family.call(verb, args).await?;
+        Ok(values.into_iter().next().unwrap_or(serde_json::Value::Null))
+    }
+
+    /// How to lay out the next request. One that does not lay out refuses, and everything is sent.
+    pub async fn layout(&mut self, asked: serde_json::Value) -> Result<serde_json::Value, Fault> {
+        self.ask("layout", asked).await
+    }
+
+    /// Say that the provider took the request built from layout `id`, and what it counted.
+    pub async fn applied(&mut self, id: &str, usage: magi_proto::Usage) -> Result<(), Fault> {
+        let arg = serde_json::json!({ "id": id, "usage": {
+            "input": usage.input, "cache_read": usage.cache_read,
+            "cache_write": usage.cache_write, "output": usage.output,
+        }});
+        self.ask("applied", arg).await.map(|_| ())
+    }
+
+    /// Say that the provider refused layout `id` as too long, and get a tighter one.
+    pub async fn overflowed(&mut self, id: &str, said: &str) -> Result<serde_json::Value, Fault> {
+        self.ask("overflowed", serde_json::json!({ "id": id, "said": said }))
+            .await
+    }
+
+    /// The helper jobs balthasar has waiting.
+    pub async fn jobs(&mut self) -> Result<Vec<serde_json::Value>, Fault> {
+        let answer = self.ask("jobs", serde_json::json!({})).await?;
+        let list = answer.get("jobs").cloned().unwrap_or(answer);
+        Ok(list.as_array().cloned().unwrap_or_default())
+    }
+
+    /// Hand back what a helper job came to.
+    pub async fn job_done(&mut self, done: serde_json::Value) -> Result<(), Fault> {
+        self.ask("job_done", done).await.map(|_| ())
     }
 
     /// Record something that happened that is not a transcript entry — a permission, a provider
@@ -101,21 +184,37 @@ impl Scribe {
     }
 
     /// Revise the entry already at this cursor.
-    pub async fn amend(&mut self, cursor: Cursor, entry: &Entry) -> Result<(), Fault> {
-        self.write("amend", cursor, entry).await
+    pub async fn amend(
+        &mut self,
+        cursor: Cursor,
+        entry: &Entry,
+        beside: &Beside,
+    ) -> Result<(), Fault> {
+        self.write("amend", cursor, entry, beside).await
     }
 
     /// Record it, saying `amend` when this cursor has gone over before.
-    pub async fn settle(&mut self, cursor: Cursor, entry: &Entry) -> Result<(), Fault> {
+    pub async fn settle(
+        &mut self,
+        cursor: Cursor,
+        entry: &Entry,
+        beside: &Beside,
+    ) -> Result<(), Fault> {
         if self.sent.contains(&cursor.0) {
-            self.amend(cursor, entry).await
+            self.amend(cursor, entry, beside).await
         } else {
-            self.observe(cursor, entry).await
+            self.observe(cursor, entry, beside).await
         }
     }
 
-    async fn write(&mut self, verb: &str, cursor: Cursor, entry: &Entry) -> Result<(), Fault> {
-        let turn = turn(cursor, entry)?;
+    async fn write(
+        &mut self,
+        verb: &str,
+        cursor: Cursor,
+        entry: &Entry,
+        beside: &Beside,
+    ) -> Result<(), Fault> {
+        let turn = turn(cursor, entry, beside)?;
         let args = vec![serde_json::Value::String(self.session.clone()), turn];
         // On the durable clock, not a feature's: the store a session writes to is opened by this
         // very call the first time, and what is not handed over is not anywhere else either.
@@ -284,19 +383,6 @@ impl Scribe {
         self.family.call("model", args).await.map(|_| ())
     }
 
-    pub async fn plan_for(&mut self, window: u64) -> Result<serde_json::Value, Fault> {
-        let values = self
-            .family
-            .call(
-                "plan",
-                vec![
-                    serde_json::Value::String(self.session.clone()),
-                    serde_json::json!({ "window": window }),
-                ],
-            )
-            .await?;
-        Ok(values.first().cloned().unwrap_or(serde_json::Value::Null))
-    }
 
     /// Keep something durably, and answer by the id it landed under. Separate from
     /// [`Self::observe`], which writes a run's scratch — the run's own until balthasar's ladder
@@ -344,19 +430,30 @@ pub async fn flush(
         if !held.has_pending() {
             return Ok(());
         }
-        std::collections::VecDeque::from(held.take_pending())
+        let taken = held.take_pending();
+        let beside: Vec<Beside> = taken
+            .iter()
+            .map(|(cursor, entry)| beside(&held, *cursor, entry))
+            .collect();
+        taken
+            .into_iter()
+            .zip(beside)
+            .collect::<std::collections::VecDeque<_>>()
     };
-    while let Some((cursor, entry)) = settled.pop_front() {
+    while let Some(((cursor, entry), beside)) = settled.pop_front() {
         // A mask is not news to the layer that ordered it: balthasar marks a turn masked as it
         // hands the plan over, and streaming it back would file its decision as a fresh turn.
         if matches!(entry, Entry::Masked { .. }) {
             continue;
         }
-        if let Err(why) = scribe.settle(cursor, &entry).await {
+        if let Err(why) = scribe.settle(cursor, &entry, &beside).await {
             // Back where it was taken from, rather than dropped: this is the only copy, and the
             // next flush — the one [`crate::drain`] makes on the way out — is its second chance.
-            settled.push_front((cursor, entry));
-            session.lock().await.keep_pending(settled.into());
+            settled.push_front(((cursor, entry), beside));
+            session
+                .lock()
+                .await
+                .keep_pending(settled.into_iter().map(|(row, _)| row).collect());
             return Err(why);
         }
     }
@@ -423,8 +520,30 @@ fn rebuild(row: &serde_json::Value) -> Result<(Cursor, Entry), Fault> {
     }
 }
 
+/// What travels beside the entry at `cursor`. A tool row's group is the message that called it.
+fn beside(session: &crate::session::Session, cursor: Cursor, entry: &Entry) -> Beside {
+    match entry {
+        Entry::Assistant { .. } => Beside {
+            group: Some(cursor.0),
+            ..Beside::default()
+        },
+        Entry::Tool { id, .. } => {
+            let at = usize::try_from(cursor.0).unwrap_or(0).saturating_sub(1);
+            let before = &session.entries()[..at.min(session.entries().len())];
+            Beside {
+                group: before
+                    .iter()
+                    .rposition(|e| matches!(e, Entry::Assistant { .. }))
+                    .map(|i| i as u64 + 1),
+                hints: session.hints(id.as_str()),
+            }
+        }
+        _ => Beside::default(),
+    }
+}
+
 /// The wire shape of one settled entry.
-fn turn(cursor: Cursor, entry: &Entry) -> Result<serde_json::Value, Fault> {
+fn turn(cursor: Cursor, entry: &Entry, beside: &Beside) -> Result<serde_json::Value, Fault> {
     let record = Record::Entry {
         cursor,
         entry: entry.clone(),
@@ -437,11 +556,44 @@ fn turn(cursor: Cursor, entry: &Entry) -> Result<serde_json::Value, Fault> {
     turn.insert("role".into(), serde_json::Value::from(role(entry)));
     turn.insert("kind".into(), serde_json::Value::from(kind(entry)));
     turn.insert("text".into(), serde_json::Value::from(text(entry)));
-    if let Entry::Tool { name, .. } = entry {
+    turn.insert("tokens".into(), serde_json::Value::from(tokens(entry)));
+    if let Some(group) = beside.group {
+        turn.insert("group".into(), serde_json::Value::from(group));
+    }
+    if let Entry::Tool { name, result, .. } = entry {
         turn.insert("tool".into(), serde_json::Value::from(name.clone()));
+        let failed = result.as_ref().is_some_and(|r| r.is_error);
+        turn.insert("error".into(), serde_json::Value::from(failed));
+        turn.insert(
+            "keep".into(),
+            serde_json::Value::from(beside.hints.keep || failed),
+        );
+        if let Some(brief) = &beside.hints.brief {
+            turn.insert("stub".into(), serde_json::Value::from(brief.clone()));
+        }
+        if let Some(back) = &beside.hints.back {
+            turn.insert("handle".into(), serde_json::Value::from(back.clone()));
+        }
     }
     turn.insert("raw".into(), raw);
     Ok(serde_json::Value::Object(turn))
+}
+
+/// What sending this entry costs: a token per four characters of everything the model is shown.
+fn tokens(entry: &Entry) -> u64 {
+    let chars = match entry {
+        Entry::User { text, aside, .. } => text.chars().count() + aside.chars().count(),
+        Entry::Assistant { text, thinking, .. } => text.chars().count() + thinking.chars().count(),
+        Entry::Tool {
+            name, args, result, ..
+        } => {
+            name.chars().count()
+                + args.chars().count()
+                + result.as_ref().map_or(0, |r| r.output.chars().count())
+        }
+        other => text(other).chars().count(),
+    };
+    (chars as u64).div_ceil(4)
 }
 
 fn role(entry: &Entry) -> &'static str {
@@ -493,143 +645,8 @@ fn text(entry: &Entry) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::Recalled;
-
-    /// Both shapes balthasar answers `recall` in. The setting that decides is balthasar's, and both
-    /// are the ordinary case on somebody's machine.
-    #[test]
-    fn a_recall_with_no_ledger_is_a_list_of_memories() {
-        let answered = Recalled::of(&[serde_json::json!([
-            { "id": "m1", "text": "one" },
-            { "id": "m2", "text": "two" },
-        ])]);
-        assert_eq!(answered.memories.len(), 2);
-        assert_eq!(answered.injection, None, "there is no ledger to belong to");
-    }
-
-    #[test]
-    fn a_recall_with_a_ledger_carries_the_id_that_makes_an_outcome_attributable() {
-        let answered = Recalled::of(&[serde_json::json!({
-            "injection": "inject-1700-abc",
-            "memories": [{ "id": "m1", "text": "one" }],
-        })]);
-        assert_eq!(answered.memories.len(), 1);
-        assert_eq!(answered.injection.as_deref(), Some("inject-1700-abc"));
-    }
-
-    #[test]
-    fn a_recall_that_found_nothing_is_neither() {
-        assert_eq!(Recalled::of(&[]), Recalled::default());
-        assert!(Recalled::of(&[serde_json::json!([])]).memories.is_empty());
-    }
-
-    use super::*;
-    use magi_proto::{MessageId, ToolCallId, ToolResult};
-
-    fn assistant(text: &str, thinking: &str) -> Entry {
-        Entry::Assistant {
-            id: MessageId::new("a1"),
-            text: text.into(),
-            thinking: thinking.into(),
-            stop_reason: None,
-            error: None,
-            signatures: Default::default(),
-            usage: Default::default(),
-        }
-    }
-
-    #[test]
-    fn every_variant_gets_a_kind_of_its_own_where_it_needs_one() {
-        let user = Entry::User {
-            id: MessageId::new("u1"),
-            text: "hi".into(),
-            aside: String::new(),
-        };
-        let from = Entry::From {
-            who: "p/x".into(),
-            kin: "sibling".into(),
-            sort: "question".into(),
-            text: "hi".into(),
-        };
-        assert_eq!(kind(&user), "user");
-        assert_eq!(kind(&from), "from");
-        assert_ne!(kind(&user), kind(&from), "a sibling is not the person");
-    }
-
-    #[test]
-    fn a_tool_changes_kind_when_its_result_lands() {
-        let mut call = Entry::Tool {
-            id: ToolCallId::new("t1"),
-            name: "shell".into(),
-            args: "{}".into(),
-            result: None,
-            thought_signature: None,
-        };
-        assert_eq!(kind(&call), "tool_call");
-        if let Entry::Tool { result, .. } = &mut call {
-            *result = Some(ToolResult {
-                output: "done".into(),
-                is_error: false,
-                shown: None,
-            });
-        }
-        assert_eq!(kind(&call), "tool_result");
-    }
-
-    #[test]
-    fn a_message_that_is_only_reasoning_is_thinking_rather_than_prose() {
-        assert_eq!(kind(&assistant("", "mulling")), "thinking");
-        assert_eq!(kind(&assistant("said", "mulling")), "prose");
-    }
-
-    #[test]
-    fn the_raw_record_is_what_travels_and_it_round_trips() {
-        let entry = assistant("said", "mulling");
-        let wire = turn(Cursor(7), &entry).expect("turn");
-        assert_eq!(wire["cursor"], serde_json::json!(7));
-
-        let (cursor, back) = rebuild(&wire).expect("rebuild");
-        assert_eq!(cursor, Cursor(7));
-        assert_eq!(back, entry, "the entry must survive the wire unaltered");
-    }
-
-    #[test]
-    fn a_row_whose_raw_is_a_string_rebuilds_the_same_as_one_that_is_an_object() {
-        let entry = assistant("said", "");
-        let wire = turn(Cursor(2), &entry).expect("turn");
-        let as_text = serde_json::json!({
-            "raw": serde_json::to_string(&wire["raw"]).expect("stringify"),
-        });
-        assert_eq!(rebuild(&as_text).expect("rebuild"), (Cursor(2), entry));
-    }
-
-    #[test]
-    fn a_row_with_no_raw_is_malformed_rather_than_an_empty_entry() {
-        let row = serde_json::json!({ "cursor": 1, "text": "hi", "kind": "user" });
-        assert!(matches!(rebuild(&row), Err(Fault::Malformed(_))));
-    }
-
-    #[test]
-    fn the_projection_never_stands_in_for_the_record() {
-        // A signature is in `raw` and nowhere else; rebuilding from `text` would be a 400.
-        let entry = Entry::Tool {
-            id: ToolCallId::new("t1"),
-            name: "shell".into(),
-            args: "{\"command\":\"ls\"}".into(),
-            result: None,
-            thought_signature: Some("opaque-signature".into()),
-        };
-        let wire = turn(Cursor(3), &entry).expect("turn");
-        let shown = wire["text"].as_str().expect("text is a string");
-        assert!(
-            !shown.contains("opaque-signature"),
-            "the signature leaked into the projection"
-        );
-        let (_, back) = rebuild(&wire).expect("rebuild");
-        assert_eq!(back, entry);
-    }
-}
+#[path = "scribe/tests.rs"]
+mod tests;
 
 #[cfg(test)]
 mod role {

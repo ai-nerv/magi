@@ -32,6 +32,7 @@ fn backend(mind: &Mind) -> Backend {
         isolate: false,
         grants: Vec::new(),
         environ: std::collections::BTreeMap::new(),
+        helpers: Default::default(),
     }
 }
 

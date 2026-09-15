@@ -121,7 +121,10 @@ impl Recording {
                 }),
                 // Not part of the transcript: a refusal is an answer to something the UI
                 // asked, and a replay is rebuilding what the session *is*.
-                HarnessEvent::Refused { .. } | HarnessEvent::ModelChanged { .. } => {}
+                HarnessEvent::Refused { .. }
+                | HarnessEvent::ModelChanged { .. }
+                | HarnessEvent::ContextLaid { .. }
+                | HarnessEvent::HelperSpent { .. } => {}
                 HarnessEvent::MessageArrived {
                     who,
                     kin,

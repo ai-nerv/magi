@@ -120,6 +120,10 @@ pub struct App {
     /// Started with `--view-only`: nothing this screen sends may change a session.
     pub view_only: bool,
     pub corner: magi_tui::corner::Corner,
+    /// How the last request was laid out, as the session last said.
+    pub laid: Option<magi_tui::laid::Laid>,
+    /// Every helper job this screen has seen finish, for the cost view.
+    pub helped: Vec<magi_tui::cost::Helper>,
 }
 
 impl Default for App {
@@ -185,6 +189,8 @@ impl App {
             attach_wanted: None,
             view_only: false,
             corner: magi_tui::corner::Corner::default(),
+            laid: None,
+            helped: Vec::new(),
             pending_notice: None,
             no_model: None,
             asking_about: magi_proto::permit::Action::Read {
@@ -240,7 +246,9 @@ impl App {
             HarnessEvent::MessageArrived { .. } => (true, true, false),
             HarnessEvent::UserMessage { .. }
             | HarnessEvent::AssistantEnded { .. }
+            | HarnessEvent::ContextLaid { .. }
             | HarnessEvent::Compacted { .. } => (false, true, false),
+            HarnessEvent::HelperSpent { .. } => (true, true, false),
             HarnessEvent::ToolCallStarted { name, .. } => (false, memory(name), !memory(name)),
             HarnessEvent::ToolCallEnded { id, .. } => {
                 let remembered = self

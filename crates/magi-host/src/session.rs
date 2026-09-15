@@ -36,6 +36,13 @@ pub struct Session {
     spent: watch::Sender<Vec<(String, magi_proto::Usage)>>,
     tallied: std::collections::BTreeMap<String, magi_proto::Usage>,
     counted: std::collections::HashSet<magi_proto::MessageId>,
+    /// What each tool's supplier said about its result, by call id: the stub to send instead of it,
+    /// how to get it back, whether it must stay. Beside the entry, because it is balthasar's input.
+    hints: std::collections::BTreeMap<String, magi_proto::tooling::Hints>,
+    /// The layout the last request was built from, for a request balthasar cannot answer.
+    laid: Option<magi_proto::laying::Layout>,
+    /// When the last turn ended, so balthasar can tell a quick follow-up from a return.
+    rested: Option<std::time::Instant>,
 }
 
 impl Session {
@@ -62,7 +69,45 @@ impl Session {
             phase,
             waiting: Vec::new(),
             pending: std::collections::BTreeMap::new(),
+            hints: std::collections::BTreeMap::new(),
+            laid: None,
+            rested: None,
         }
+    }
+
+    /// Keep what a tool's supplier said about the result of call `id`.
+    pub fn hint(&mut self, id: &str, hints: magi_proto::tooling::Hints) {
+        if !hints.is_empty() {
+            self.hints.insert(id.to_owned(), hints);
+        }
+    }
+
+    /// What the supplier of call `id` said about its result; nothing when it said nothing.
+    #[must_use]
+    pub fn hints(&self, id: &str) -> magi_proto::tooling::Hints {
+        self.hints.get(id).cloned().unwrap_or_default()
+    }
+
+    /// Remember the layout a request was built from.
+    pub fn lay(&mut self, layout: magi_proto::laying::Layout) {
+        self.laid = Some(layout);
+    }
+
+    /// The layout the last request was built from.
+    #[must_use]
+    pub fn laid(&self) -> Option<&magi_proto::laying::Layout> {
+        self.laid.as_ref()
+    }
+
+    /// Say that a turn has ended.
+    pub fn rest(&mut self) {
+        self.rested = Some(std::time::Instant::now());
+    }
+
+    /// How long since a turn last ended, in whole seconds. `None` before the first.
+    #[must_use]
+    pub fn idle_for(&self) -> Option<u64> {
+        self.rested.map(|at| at.elapsed().as_secs())
     }
 
     /// A last-value view of this session's status, for an observer that must not be counted as an

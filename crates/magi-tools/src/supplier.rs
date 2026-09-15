@@ -548,6 +548,7 @@ fn finished(ran: Ran) -> Output {
         is_error: ran.failed,
         shown: ran.shown,
         unlocks: ran.unlocks,
+        hints: ran.hints,
     }
 }
 

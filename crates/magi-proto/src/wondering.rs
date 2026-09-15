@@ -18,9 +18,17 @@ pub enum Wonder {
     /// What this session remembers, nearest first. Answered by balthasar, and refused where there
     /// is no balthasar, which is not an error.
     Memories,
+    /// A question for one of magi's helper models — `{role, instruction, input, schema?}` — answered
+    /// as `{text}`. The surface never learns which model answered.
+    Helper,
 }
 
-pub const EVERY: &[Wonder] = &[Wonder::Session, Wonder::Model, Wonder::Memories];
+pub const EVERY: &[Wonder] = &[
+    Wonder::Session,
+    Wonder::Model,
+    Wonder::Memories,
+    Wonder::Helper,
+];
 
 impl Wonder {
     #[must_use]
@@ -29,6 +37,7 @@ impl Wonder {
             Self::Session => "session",
             Self::Model => "model",
             Self::Memories => "memories",
+            Self::Helper => "helper",
         }
     }
 

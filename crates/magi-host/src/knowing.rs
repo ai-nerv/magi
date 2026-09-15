@@ -45,7 +45,12 @@ impl Knows {
     }
 
     /// Put a question to whatever is listening, and wait for the answer.
-    fn ask_along(&self, wonder: Wonder, args: &serde_json::Value) -> Answered {
+    fn ask_along(
+        &self,
+        wonder: Wonder,
+        args: &serde_json::Value,
+        patience: std::time::Duration,
+    ) -> Answered {
         let Some(asking) = &self.asking else {
             return refused(wonder, "this session has nothing to ask");
         };
@@ -59,10 +64,13 @@ impl Knows {
             return refused(wonder, "the session is no longer listening");
         }
         answer
-            .recv_timeout(PATIENCE)
+            .recv_timeout(patience)
             .unwrap_or_else(|_| refused(wonder, "nothing answered in time"))
     }
 }
+
+/// How long a surface waits for a helper model. A model answering, not a lookup.
+const HELPING: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl magi_tools::holding::Answers for Knows {
     fn answer(&self, wonder: Wonder, args: &serde_json::Value) -> Answered {
@@ -70,7 +78,8 @@ impl magi_tools::holding::Answers for Knows {
             Wonder::Session => Answered::Told {
                 said: serde_json::json!({ "id": self.session, "cwd": self.cwd }),
             },
-            Wonder::Model | Wonder::Memories => self.ask_along(wonder, args),
+            Wonder::Model | Wonder::Memories => self.ask_along(wonder, args, PATIENCE),
+            Wonder::Helper => self.ask_along(wonder, args, HELPING),
         }
     }
 }
@@ -89,15 +98,78 @@ pub async fn serve(
     mut asked: tokio::sync::mpsc::UnboundedReceiver<Wondering>,
     scribe: std::sync::Arc<tokio::sync::Mutex<Option<crate::scribe::Scribe>>>,
     session: std::sync::Arc<tokio::sync::Mutex<crate::session::Session>>,
+    backend: Option<crate::turn::Backend>,
 ) {
     while let Some(asking) = asked.recv().await {
         let answered = match asking.wonder {
             Wonder::Memories => memories(&scribe, &asking.args).await,
             Wonder::Model => model(&session).await,
+            // Answered on a task of its own: a model takes seconds, and the next question should not
+            // queue behind it.
+            Wonder::Helper => {
+                let session = std::sync::Arc::clone(&session);
+                let backend = backend.clone();
+                tokio::spawn(async move {
+                    let answered = helper(&session, backend, &asking.args).await;
+                    let _ = asking.back.send(answered);
+                });
+                continue;
+            }
             // One arriving here is a verb that grew a source and did not grow a case.
             other => refused(other, "nothing here answers that"),
         };
         let _ = asking.back.send(answered);
+    }
+}
+
+/// Put a surface's question to the helper model for the role it named. The session's own model
+/// stands in only when the question says `fallback: "main"`.
+async fn helper(
+    session: &tokio::sync::Mutex<crate::session::Session>,
+    backend: Option<crate::turn::Backend>,
+    args: &serde_json::Value,
+) -> Answered {
+    let Some(mut backend) = backend else {
+        return refused(Wonder::Helper, "this session has no model to help with");
+    };
+    let text = |key: &str| {
+        args.get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let job = crate::helping::Job {
+        id: String::new(),
+        kind: "helper".to_owned(),
+        role: text("role"),
+        fallback: text("fallback"),
+        instruction: text("instruction"),
+        input: text("input"),
+        schema: args.get("schema").cloned(),
+        max_tokens: args.get("max_tokens").and_then(serde_json::Value::as_u64),
+        blocking: true,
+        timeout_ms: args.get("timeout_ms").and_then(serde_json::Value::as_u64),
+    };
+    let events = {
+        let held = session.lock().await;
+        // `/model` replaces the model mid-session; the fallback is the one answering now.
+        if let Some(name) = held.model_name() {
+            backend.model = name;
+        }
+        held.publisher()
+    };
+    match crate::helping::run(&job, &backend).await {
+        Ok(answer) => {
+            let _ = events.send(magi_proto::HarnessEvent::HelperSpent {
+                role: job.role.clone(),
+                model: answer.model.clone(),
+                usage: answer.usage,
+            });
+            Answered::Told {
+                said: serde_json::json!({ "text": answer.text, "model": answer.model }),
+            }
+        }
+        Err(why) => refused(Wonder::Helper, &why),
     }
 }
 
@@ -187,6 +259,7 @@ mod tests {
             asked,
             std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             a_session(),
+            None,
         ));
         let knows = Knows::of(&magi_proto::SessionId::new("s-1"), "/tmp").asking(asking);
         let answered = tokio::task::spawn_blocking(move || {
@@ -208,6 +281,7 @@ mod tests {
             asked,
             std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             std::sync::Arc::clone(&session),
+            None,
         ));
         let knows = std::sync::Arc::new(
             Knows::of(&magi_proto::SessionId::new("s-1"), "/tmp").asking(asking),

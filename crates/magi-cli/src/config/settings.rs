@@ -135,6 +135,54 @@ pub fn options(loaded: &Loaded) -> magi_proto::ask::Wants {
     }
 }
 
+/// The small models that run jobs for balthasar and questions for surfaces: a model per role, and
+/// the limits they run under. A role with no model here is skipped, or run on the session's own
+/// model when the job asks for that.
+/// ```lua
+/// magi.helpers = {
+///   memory = "openrouter/google/gemini-2.5-flash",
+///   timeout_ms = 20000,
+///   budget = { per_prompt = 0.05 },  -- dollars
+/// }
+/// ```
+#[must_use]
+pub fn helpers(loaded: &Loaded) -> magi_host::helping::Helpers {
+    let mut helpers = magi_host::helping::Helpers::default();
+    let Some(table) = loaded.config.get("helpers").and_then(|v| v.as_object()) else {
+        return helpers;
+    };
+    for (key, value) in table {
+        match (key.as_str(), value) {
+            ("timeout_ms", value) => helpers.timeout_ms = whole(value).unwrap_or(0),
+            ("budget", value) => {
+                let dollars = value.get("per_prompt").and_then(serde_json::Value::as_f64);
+                helpers.per_prompt_micros = dollars
+                    .filter(|usd| *usd >= 0.0)
+                    .and_then(|usd| whole(&serde_json::json!((usd * 1_000_000.0).round())));
+            }
+            (role, serde_json::Value::String(model)) => {
+                helpers.roles.insert(role.to_owned(), model.clone());
+            }
+            _ => {}
+        }
+    }
+    helpers
+}
+
+/// A count, whether Lua handed it over as an integer or as a float.
+fn whole(value: &serde_json::Value) -> Option<u64> {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "checked non-negative and finite; milliseconds and micro-dollars"
+    )]
+    let from_float = value
+        .as_f64()
+        .filter(|f| f.is_finite() && *f >= 0.0)
+        .map(|f| f as u64);
+    value.as_u64().or(from_float)
+}
+
 /// Everything `magi.ui` says about how the screen looks. The names come from the colour, glyph and
 /// metric modules themselves; one that is not any of theirs is ignored rather than refused.
 /// ```lua
