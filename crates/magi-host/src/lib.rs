@@ -158,8 +158,12 @@ pub async fn serve_on(
     }));
     let _ = DRAINING.set((Arc::clone(&session), Arc::clone(&scribe)));
     magi_model::noted!(
-        "session: {} serving in {}, model {}, memory {}",
+        "session: {} as agent {} serving in {}, model {}, memory {}",
         session.lock().await.id(),
+        backend
+            .as_ref()
+            .and_then(|b| b.environ.get("MAGI_MELCHIOR_ID"))
+            .map_or("-", String::as_str),
         catalog.cwd.display(),
         backend.as_ref().map_or("none", |b| b.model.as_str()),
         if scribe.lock().await.is_some() {

@@ -56,25 +56,7 @@ pub async fn run(job: &Job, backend: &Backend) -> Result<Answer, String> {
         messages: vec![magi_model::Message::user(job.input.clone())],
         tools: Vec::new(),
     };
-    let wants =
-        magi_proto::ask::Wants {
-            thinking: None,
-            max_tokens: Some(job.max_tokens.unwrap_or(MAX_TOKENS)),
-            schema: job.schema.clone().filter(|s| !s.is_null()).map(|schema| {
-                magi_proto::ask::Schema {
-                    name: if job.kind.is_empty() {
-                        "answer".to_owned()
-                    } else {
-                        job.kind.clone()
-                    },
-                    schema,
-                }
-            }),
-            // The routing chosen for the session's model means nothing to another one.
-            provider: (model == backend.model)
-                .then(|| backend.wants.provider.clone())
-                .flatten(),
-        };
+    let wants = wants(job, backend, &model);
     let patience = backend.helpers.patience(job);
 
     let mut turn = magi_core::Turn::new();
@@ -107,7 +89,12 @@ pub async fn run(job: &Job, backend: &Backend) -> Result<Answer, String> {
                 args.trim().to_owned()
             };
             if text.is_empty() {
-                return Err(format!("{model} answered nothing"));
+                let thought = turn.thinking().chars().count();
+                return Err(if thought > 0 {
+                    format!("{model} spent its tokens thinking ({thought} chars) and said nothing")
+                } else {
+                    format!("{model} answered nothing")
+                });
             }
             Ok(Answer {
                 text,
@@ -115,6 +102,31 @@ pub async fn run(job: &Job, backend: &Backend) -> Result<Answer, String> {
                 usage: turn.usage(),
             })
         }
+    }
+}
+
+/// What a job asks its model for. No reasoning: a helper is there to be quick and cheap, and one
+/// left to reason spent a whole budget thinking and answered nothing.
+fn wants(job: &Job, backend: &Backend, model: &str) -> magi_proto::ask::Wants {
+    magi_proto::ask::Wants {
+        thinking: Some(magi_model::ThinkingLevel::Off),
+        max_tokens: Some(job.max_tokens.unwrap_or(MAX_TOKENS)),
+        schema: job
+            .schema
+            .clone()
+            .filter(|s| !s.is_null())
+            .map(|schema| magi_proto::ask::Schema {
+                name: if job.kind.is_empty() {
+                    "answer".to_owned()
+                } else {
+                    job.kind.clone()
+                },
+                schema,
+            }),
+        // The routing chosen for the session's model means nothing to another one.
+        provider: (model == backend.model)
+            .then(|| backend.wants.provider.clone())
+            .flatten(),
     }
 }
 
@@ -326,6 +338,14 @@ mod tests {
         })
         .await;
         matches!(heard.try_recv(), Ok(HarnessEvent::HelperSpent { .. }))
+    }
+
+    #[test]
+    fn a_helper_is_asked_not_to_reason() {
+        let mind = magi_testkit::Mind::answering("helping-thinking", "done");
+        let asked = wants(&Job::default(), &backend(&mind, helpers()), "local/small");
+        assert_eq!(asked.thinking, Some(magi_model::ThinkingLevel::Off));
+        assert_eq!(asked.max_tokens, Some(MAX_TOKENS));
     }
 
     #[tokio::test]
