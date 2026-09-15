@@ -328,10 +328,24 @@ async fn settle(
         prompt.injection = Some(injection);
     }
     let context = render(held.entries(), &layout);
+    let counted = counts(&layout, &live);
+    magi_model::noted!(
+        "layout: {} — {} whole, {} stubbed, {} left out, {} summary — {}",
+        if layout.id.is_empty() {
+            "magi's"
+        } else {
+            &layout.id
+        },
+        counted.items,
+        counted.stubs,
+        counted.dropped,
+        counted.summary,
+        layout.why
+    );
     let _ = held.publisher().send(HarnessEvent::ContextLaid {
         id: layout.id.clone(),
         budget: layout.budget.clone(),
-        counts: counts(&layout, &live),
+        counts: counted,
         why: layout.why.clone(),
     });
     held.lay(layout);

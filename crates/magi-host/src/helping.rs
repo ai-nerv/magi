@@ -135,6 +135,14 @@ pub async fn work(
         };
         let done = match answered {
             Ok(answer) => {
+                magi_model::noted!(
+                    "helpers: {} job {} ran on {}, {} in, {} out",
+                    job.kind,
+                    job.id,
+                    answer.model,
+                    answer.usage.prompt_tokens(),
+                    answer.usage.output
+                );
                 *spent += answer.usage.cost_micros;
                 let _ = events.send(HarnessEvent::HelperSpent {
                     role: job.role.clone(),
