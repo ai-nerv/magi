@@ -43,6 +43,8 @@ pub struct Session {
     laid: Option<magi_proto::laying::Layout>,
     /// When the last turn ended, so balthasar can tell a quick follow-up from a return.
     rested: Option<std::time::Instant>,
+    /// Helper jobs a layout handed out that nothing waited for: run once the turn is over.
+    deferred: Vec<magi_proto::laying::Job>,
 }
 
 impl Session {
@@ -72,7 +74,18 @@ impl Session {
             hints: std::collections::BTreeMap::new(),
             laid: None,
             rested: None,
+            deferred: Vec::new(),
         }
+    }
+
+    /// Keep helper jobs to run when the turn is over.
+    pub fn defer(&mut self, jobs: Vec<magi_proto::laying::Job>) {
+        self.deferred.extend(jobs);
+    }
+
+    /// Take the helper jobs kept for after the turn.
+    pub fn take_deferred(&mut self) -> Vec<magi_proto::laying::Job> {
+        std::mem::take(&mut self.deferred)
     }
 
     /// Keep what a tool's supplier said about the result of call `id`.

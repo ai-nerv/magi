@@ -177,6 +177,8 @@ pub fn between(
             magi_model::noted!("helpers: the transcript could not be handed over: {why}");
             return;
         }
+        // What the turn's layouts handed out first, then whatever else balthasar has waiting.
+        let mut jobs = session.lock().await.take_deferred();
         let waiting = {
             let mut open = scribe.lock().await;
             match open.as_mut() {
@@ -184,10 +186,14 @@ pub fn between(
                 None => return,
             }
         };
-        let jobs: Vec<Job> = waiting
+        for job in waiting
             .into_iter()
-            .filter_map(|job| serde_json::from_value(job).ok())
-            .collect();
+            .filter_map(|job| serde_json::from_value::<Job>(job).ok())
+        {
+            if !jobs.iter().any(|known| known.id == job.id) {
+                jobs.push(job);
+            }
+        }
         if jobs.is_empty() {
             return;
         }

@@ -135,53 +135,165 @@ async fn every_request_is_one_balthasar_laid_out() {
 }
 
 #[tokio::test]
-async fn a_result_too_big_for_the_window_is_not_sent_whole() {
+async fn a_long_conversation_is_summarised_by_a_helper_and_the_summary_is_sent() {
+    let Some(live) = live("summary").await else {
+        return;
+    };
+    // Twelve exchanges of three thousand tokens in a forty-thousand window: past where balthasar
+    // asks for a summary, with nothing it could stub instead.
+    let session = std::sync::Arc::new(tokio::sync::Mutex::new(Session::recorded(
+        live.id.clone(),
+        Vec::new(),
+    )));
+    {
+        let mut held = session.lock().await;
+        for n in 0..12 {
+            let long = format!("PART{n} ").repeat(900);
+            held.commit(user(&format!("u{n}"), &long)).expect("commit");
+            held.commit(said(&format!("a{n}"), &long, StopReason::EndTurn))
+                .expect("commit");
+        }
+        held.commit(user("u12", "and the next thing"))
+            .expect("commit");
+    }
+    let mind = Mind::answering("ll-summary", "SUMMARY-OF-EARLIER");
+    let backend = backend(&mind, 40_000);
+    let mut events = session.lock().await.subscribe();
+    prompt(&session, &backend, &live).await;
+
+    // The summary is a background job, run once the turn is over, on the session's own model: no
+    // helper is configured and the job falls back to it.
+    magi_host::helping::between(
+        std::sync::Arc::clone(&session),
+        backend.clone(),
+        std::sync::Arc::clone(&live.scribe),
+    );
+    let helped = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        loop {
+            if let Ok(HarnessEvent::HelperSpent { role, .. }) = events.recv().await {
+                return role;
+            }
+        }
+    })
+    .await
+    .expect("a helper job ran after the turn");
+    assert_eq!(helped, "memory");
+    // `job_done` follows the spend on the same task.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    session
+        .lock()
+        .await
+        .commit(user("u13", "what came before?"))
+        .expect("commit");
+    let laid = prompt(&session, &backend, &live).await;
+    let (_, counts) = laid.first().expect("a layout");
+    assert_eq!(counts.summary, 1, "the summary is a slot: {counts:?}");
+    let last = mind.asks().pop().unwrap_or_default();
+    assert!(
+        last.contains("SUMMARY-OF-EARLIER"),
+        "the summary was not sent"
+    );
+    assert!(
+        !last.contains(&"PART0 ".repeat(50)),
+        "what it covers went too"
+    );
+}
+
+#[tokio::test]
+async fn a_request_refused_as_too_long_is_laid_out_again_and_retried() {
+    let Some(live) = live("over").await else {
+        return;
+    };
+    let session = tokio::sync::Mutex::new(Session::recorded(live.id.clone(), Vec::new()));
+    session
+        .lock()
+        .await
+        .commit(user("u1", "what is magi"))
+        .expect("commit");
+    let refused = magi_testkit::mind::failed_line(
+        "prompt is too long: 250000 tokens > 200000 maximum",
+        "overflow",
+    );
+    let answered = [
+        magi_testkit::mind::text_line("a harness"),
+        magi_testkit::mind::stop_line(),
+    ];
+    let mind = Mind::turns(
+        "ll-over",
+        &[
+            &[refused.as_str()],
+            &[answered[0].as_str(), answered[1].as_str()],
+        ],
+    );
+
+    let laid = prompt(&session, &backend(&mind, 200_000), &live).await;
+    assert_eq!(mind.asked(), 2, "refused once, then answered");
+    assert_eq!(laid.len(), 2, "one layout, then a tighter one: {laid:?}");
+    assert!(!laid[1].0.is_empty(), "balthasar answered the overflow");
+    assert_ne!(laid[0].0, laid[1].0, "a new layout, not the same one");
+}
+
+#[tokio::test]
+async fn an_old_result_too_big_for_the_window_goes_as_its_stub() {
     let Some(live) = live("big").await else {
         return;
     };
-    let whole = "BIGLINE ".repeat(8_000);
+    // Four reads of seven thousand tokens each: past where balthasar prunes in a forty-thousand
+    // window, with the oldest outside the last three results it keeps word for word.
+    let output = |n: usize| format!("RESULT{n} ").repeat(3_500);
     let session = tokio::sync::Mutex::new(Session::recorded(live.id.clone(), Vec::new()));
     {
         let mut held = session.lock().await;
-        held.commit(user("u1", "read big.txt")).expect("commit");
-        held.commit(said("a2", "", StopReason::ToolUse))
+        held.commit(user("u0", "read the four parts"))
             .expect("commit");
-        held.commit(Entry::Tool {
-            id: ToolCallId::new("c1"),
-            name: "read".into(),
-            args: "{\"path\":\"big.txt\"}".into(),
-            result: Some(ToolResult {
-                output: whole.clone(),
-                is_error: false,
-                shown: None,
-            }),
-            thought_signature: None,
-        })
-        .expect("commit");
-        held.hint(
-            "c1",
-            magi_proto::tooling::Hints {
-                brief: Some("read big.txt (1000 lines)".into()),
-                back: Some("read big.txt".into()),
-                keep: false,
-            },
-        );
-        held.commit(said("a4", "it is big", StopReason::EndTurn))
+        for n in 1..=4 {
+            let id = format!("c{n}");
+            held.commit(said(&format!("a{n}"), "", StopReason::ToolUse))
+                .expect("commit");
+            held.commit(Entry::Tool {
+                id: ToolCallId::new(&id),
+                name: "read".into(),
+                args: format!("{{\"path\":\"part{n}.txt\"}}"),
+                result: Some(ToolResult {
+                    output: output(n),
+                    is_error: false,
+                    shown: None,
+                }),
+                thought_signature: None,
+            })
             .expect("commit");
-        held.commit(user("u5", "now summarise it")).expect("commit");
+            held.hint(
+                &id,
+                magi_proto::tooling::Hints {
+                    brief: Some(format!("read part{n}.txt (3000 lines)")),
+                    back: Some(format!("read part{n}.txt")),
+                    keep: false,
+                },
+            );
+        }
+        held.commit(said("a9", "all four are read", StopReason::EndTurn))
+            .expect("commit");
+        held.commit(user("u10", "now summarise them"))
+            .expect("commit");
     }
     let mind = Mind::answering("ll-big", "short");
 
-    let laid = prompt(&session, &backend(&mind, 12_000), &live).await;
+    let laid = prompt(&session, &backend(&mind, 40_000), &live).await;
     let (_, counts) = laid.first().expect("a layout was reported");
     let heard = mind.heard();
-    assert!(heard.contains("now summarise it"), "{heard}");
+    assert!(heard.contains("now summarise them"), "{heard}");
+    assert!(counts.stubs > 0, "nothing was stubbed: {counts:?}");
     assert!(
-        !heard.contains(&whole[..800]),
-        "sixteen thousand tokens went whole into a twelve-thousand window: {counts:?}"
+        heard.contains("read part1.txt (3000 lines)"),
+        "the stub is not casper's words"
     );
-    assert!(counts.stubs + counts.dropped > 0, "{counts:?}");
-    if counts.stubs > 0 {
-        assert!(heard.contains("read big.txt (1000 lines)"), "{heard}");
-    }
+    assert!(
+        !heard.contains(&output(1)[..800]),
+        "the oldest result went whole: {counts:?}"
+    );
+    assert!(
+        heard.contains(&output(4)[..800]),
+        "the newest result is kept word for word"
+    );
 }

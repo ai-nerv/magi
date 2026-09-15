@@ -257,9 +257,13 @@ pub async fn lay(
         None
     };
 
-    // A blocking job changes the answer, so it runs and the question is put once more.
-    if let Some(first) = &layout {
-        let blocking: Vec<_> = first.jobs.iter().filter(|j| j.blocking).cloned().collect();
+    // A blocking job changes the answer, so it runs and the question is put once more. The rest were
+    // handed out with it, and run once the turn is over.
+    if let Some(first) = layout.as_mut() {
+        let (blocking, background): (Vec<_>, Vec<_>) = std::mem::take(&mut first.jobs)
+            .into_iter()
+            .partition(|j| j.blocking);
+        session.lock().await.defer(background);
         if !blocking.is_empty() {
             let events = session.lock().await.publisher();
             crate::helping::work(&blocking, backend, scribe, &events, &mut prompt.spent).await;
@@ -304,7 +308,7 @@ async fn settle(
 ) -> Context {
     let mut held = session.lock().await;
     let live = live(held.entries());
-    let layout = match layout {
+    let mut layout = match layout {
         Some(layout) if sound(&layout, &live) => layout,
         Some(layout) => {
             magi_model::noted!(
@@ -316,6 +320,7 @@ async fn settle(
         None => fallback(held.laid(), &live),
     };
     prompt.id.clone_from(&layout.id);
+    held.defer(std::mem::take(&mut layout.jobs));
     if let Some(injection) = layout.slots.iter().find_map(|slot| match slot {
         Slot::Memory { injection, .. } => injection.clone(),
         _ => None,
