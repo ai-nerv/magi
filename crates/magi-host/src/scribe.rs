@@ -383,7 +383,6 @@ impl Scribe {
         self.family.call("model", args).await.map(|_| ())
     }
 
-
     /// Keep something durably, and answer by the id it landed under. Separate from
     /// [`Self::observe`], which writes a run's scratch — the run's own until balthasar's ladder
     /// carries it across, and a recall does not return it.
