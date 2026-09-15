@@ -45,6 +45,8 @@ pub struct Session {
     rested: Option<std::time::Instant>,
     /// Helper jobs a layout handed out that nothing waited for: run once the turn is over.
     deferred: Vec<magi_proto::laying::Job>,
+    /// What the current prompt's helper jobs have cost, for the ones that run after its turn.
+    helpers_spent: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Session {
@@ -75,6 +77,7 @@ impl Session {
             laid: None,
             rested: None,
             deferred: Vec::new(),
+            helpers_spent: std::sync::Arc::default(),
         }
     }
 
@@ -86,6 +89,17 @@ impl Session {
     /// Take the helper jobs kept for after the turn.
     pub fn take_deferred(&mut self) -> Vec<magi_proto::laying::Job> {
         std::mem::take(&mut self.deferred)
+    }
+
+    /// The current prompt's helper budget, shared with whoever charges it.
+    #[must_use]
+    pub fn helpers_spent(&self) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+        std::sync::Arc::clone(&self.helpers_spent)
+    }
+
+    /// A new prompt's helper budget.
+    pub fn set_helpers_spent(&mut self, spent: std::sync::Arc<std::sync::atomic::AtomicU64>) {
+        self.helpers_spent = spent;
     }
 
     /// Keep what a tool's supplier said about the result of call `id`.

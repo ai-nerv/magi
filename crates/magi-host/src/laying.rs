@@ -34,8 +34,8 @@ pub struct Prompt {
     pub id: String,
     /// The ledger entry the memory in this prompt was served under, for the outcome report.
     pub injection: Option<String>,
-    /// What helper jobs have cost this prompt, in millionths.
-    pub spent: u64,
+    /// What helper jobs have cost this prompt, in millionths, shared with every job it started.
+    pub spent: crate::helping::Spend,
 }
 
 /// The cursors a request could send: what is live, less what is never sent. Cursor `c` is entry
@@ -401,9 +401,10 @@ pub async fn lay(
             backend.clone(),
             std::sync::Arc::clone(scribe),
             events.clone(),
+            std::sync::Arc::clone(&prompt.spent),
         );
         if !blocking.is_empty() {
-            crate::helping::work(&blocking, backend, scribe, &events, &mut prompt.spent).await;
+            crate::helping::work(&blocking, backend, scribe, &events, &prompt.spent).await;
             if let Some(again) = ask(scribe, asked).await {
                 layout = Some(again);
             }

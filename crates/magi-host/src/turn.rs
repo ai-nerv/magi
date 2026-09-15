@@ -305,7 +305,16 @@ pub async fn run(
     let cancel = session.lock().await.cancel();
 
     // What goes into each request is balthasar's to say, asked afresh every round.
-    let mut prompt = crate::laying::Prompt::default();
+    // One budget for every helper job this prompt starts, and the session holds it for the ones after.
+    let spent = crate::helping::Spend::default();
+    session
+        .lock()
+        .await
+        .set_helpers_spent(std::sync::Arc::clone(&spent));
+    let mut prompt = crate::laying::Prompt {
+        spent,
+        ..crate::laying::Prompt::default()
+    };
     let tools = registry.declarations();
     // A request already laid out, because the provider refused the last one as too long.
     let mut tighter: Option<magi_model::Context> = None;

@@ -8,6 +8,34 @@ use magi_proto::HarnessEvent;
 pub use crate::catalog::Helpers;
 pub use magi_proto::laying::Job;
 
+pub use crate::catalog::Spend;
+
+/// Helper tasks still running, so a session on its way out can wait for them.
+static IN_FLIGHT: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn track(task: tokio::task::JoinHandle<()>) {
+    if let Ok(mut held) = IN_FLIGHT.lock() {
+        held.retain(|t| !t.is_finished());
+        held.push(task);
+    }
+}
+
+/// Wait, up to `patience`, for the helper jobs this process started: one cut off by the exit is
+/// left for some later session to retry, and a note it would have taken is lost until then.
+pub async fn settled(patience: std::time::Duration) {
+    let waiting = async {
+        loop {
+            let next = IN_FLIGHT.lock().ok().and_then(|mut held| held.pop());
+            let Some(task) = next else {
+                break;
+            };
+            let _ = task.await;
+        }
+    };
+    let _ = tokio::time::timeout(patience, waiting).await;
+}
+
 /// How long a job may take when neither it nor the configuration says.
 const TIMEOUT_MS: u64 = 20_000;
 
@@ -144,13 +172,13 @@ pub async fn work(
     backend: &Backend,
     scribe: &crate::scribe::Held,
     events: &tokio::sync::broadcast::Sender<HarnessEvent>,
-    spent: &mut u64,
+    spent: &std::sync::atomic::AtomicU64,
 ) {
     for job in jobs {
         let answered = if backend
             .helpers
             .per_prompt_micros
-            .is_some_and(|cap| *spent >= cap)
+            .is_some_and(|cap| spent.load(std::sync::atomic::Ordering::Relaxed) >= cap)
         {
             Err("the helpers' budget for this prompt is spent".to_owned())
         } else {
@@ -172,7 +200,10 @@ pub async fn work(
                     answer.usage.prompt_tokens(),
                     answer.usage.output
                 );
-                *spent += answer.usage.cost_micros;
+                spent.fetch_add(
+                    answer.usage.cost_micros,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
                 let _ = events.send(HarnessEvent::HelperSpent {
                     role: job.role.clone(),
                     model: answer.model.clone(),
@@ -208,13 +239,14 @@ pub fn alongside(
     backend: Backend,
     scribe: crate::scribe::Held,
     events: tokio::sync::broadcast::Sender<HarnessEvent>,
+    spent: Spend,
 ) {
     if jobs.is_empty() {
         return;
     }
-    tokio::spawn(async move {
-        work(&jobs, &backend, &scribe, &events, &mut 0).await;
-    });
+    track(tokio::spawn(async move {
+        work(&jobs, &backend, &scribe, &events, &spent).await;
+    }));
 }
 
 /// Between turns: hand balthasar what settled, and run the background jobs it has waiting. Spawned,
@@ -224,7 +256,7 @@ pub fn between(
     backend: Backend,
     scribe: crate::scribe::Held,
 ) {
-    tokio::spawn(async move {
+    track(tokio::spawn(async move {
         if let Err(why) = crate::scribe::flush(&session, &mut *scribe.lock().await).await {
             magi_model::noted!("helpers: the transcript could not be handed over: {why}");
             return;
@@ -249,9 +281,12 @@ pub fn between(
         if jobs.is_empty() {
             return;
         }
-        let events = session.lock().await.publisher();
-        work(&jobs, &backend, &scribe, &events, &mut 0).await;
-    });
+        let (events, spent) = {
+            let held = session.lock().await;
+            (held.publisher(), held.helpers_spent())
+        };
+        work(&jobs, &backend, &scribe, &events, &spent).await;
+    }));
 }
 
 #[cfg(test)]
@@ -297,7 +332,11 @@ mod tests {
             ..Job::default()
         };
         assert_eq!(set.model_for(&job, "big").as_deref(), Some("big"));
-        assert_eq!(set.model_for(&job, ""), None, "no model of its own to run on");
+        assert_eq!(
+            set.model_for(&job, ""),
+            None,
+            "no model of its own to run on"
+        );
     }
 
     #[test]
@@ -367,11 +406,47 @@ mod tests {
             role: "memory".into(),
             ..Job::default()
         };
-        work(&[job], &backend(&mind, capped), &none, &events, &mut {
-            spent
-        })
+        work(
+            &[job],
+            &backend(&mind, capped),
+            &none,
+            &events,
+            &std::sync::atomic::AtomicU64::new(spent),
+        )
         .await;
         matches!(heard.try_recv(), Ok(HarnessEvent::HelperSpent { .. }))
+    }
+
+    /// One memory job beside a turn, against a fake model, with the prompt's budget at `spent`.
+    async fn beside(label: &str, spent: u64) -> bool {
+        let mind = magi_testkit::Mind::answering(label, "done");
+        let capped = Helpers {
+            per_prompt_micros: Some(5),
+            ..helpers()
+        };
+        let none: crate::scribe::Held = std::sync::Arc::new(tokio::sync::Mutex::new(None));
+        let (events, mut heard) = tokio::sync::broadcast::channel(8);
+        let job = Job {
+            id: "J-1".into(),
+            role: "memory".into(),
+            ..Job::default()
+        };
+        let budget = Spend::new(std::sync::atomic::AtomicU64::new(spent));
+        alongside(vec![job], backend(&mind, capped), none, events, budget);
+        settled(std::time::Duration::from_secs(10)).await;
+        matches!(heard.try_recv(), Ok(HarnessEvent::HelperSpent { .. }))
+    }
+
+    #[tokio::test]
+    async fn a_job_beside_the_turn_is_waited_for_and_held_to_the_budget() {
+        assert!(
+            beside("helping-beside-free", 0).await,
+            "settled did not wait for it"
+        );
+        assert!(
+            !beside("helping-beside-spent", 5).await,
+            "a job beside the turn ran on a prompt that had spent its budget"
+        );
     }
 
     #[test]
@@ -384,7 +459,10 @@ mod tests {
         let asked = wants(&shaped, &backend(&mind, helpers()), "local/small");
         assert_eq!(asked.thinking, Some(magi_model::ThinkingLevel::Off));
         assert_eq!(asked.max_tokens, Some(MAX_TOKENS));
-        assert_eq!(asked.schema, None, "the shape is asked for in words, not forced");
+        assert_eq!(
+            asked.schema, None,
+            "the shape is asked for in words, not forced"
+        );
     }
 
     #[test]
@@ -397,7 +475,11 @@ mod tests {
         let said = instructed(&shaped).expect("an instruction");
         assert!(said.starts_with("Keep notes."), "{said}");
         assert!(said.contains(r#""required":["ops"]"#), "{said}");
-        assert_eq!(instructed(&Job::default()), None, "nothing to say is nothing sent");
+        assert_eq!(
+            instructed(&Job::default()),
+            None,
+            "nothing to say is nothing sent"
+        );
     }
 
     #[tokio::test]

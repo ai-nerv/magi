@@ -50,12 +50,13 @@ static DRAINING: std::sync::OnceLock<Draining> = std::sync::OnceLock::new();
 /// after the last turn and before the socket goes. A failure is logged rather than returned: the
 /// last exchange is then missing from the store, and the next run's `--resume` comes back short.
 pub async fn drain() {
-    let Some((session, scribe)) = DRAINING.get() else {
-        return;
-    };
-    if let Err(why) = crate::scribe::flush(session, &mut *scribe.lock().await).await {
+    if let Some((session, scribe)) = DRAINING.get()
+        && let Err(why) = crate::scribe::flush(session, &mut *scribe.lock().await).await
+    {
         magi_model::noted!("drain: the last turn did not reach balthasar: {why}");
     }
+    // A note or a summary still being made is waited for, briefly, rather than cut off by the exit.
+    crate::helping::settled(std::time::Duration::from_secs(30)).await;
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -45,6 +45,10 @@ pub struct Helpers {
     pub no_notes: bool,
 }
 
+/// What one prompt's helper jobs have cost, in millionths: shared by every job it started, whether
+/// blocking, beside the turn or after it, so the per-prompt cap holds for all of them.
+pub type Spend = std::sync::Arc<std::sync::atomic::AtomicU64>;
+
 #[derive(Debug, Clone)]
 pub struct Catalog {
     /// Tool descriptions, as `(name, source)`.
