@@ -138,6 +138,10 @@ pub enum Said {
         seconds: f64,
         why: String,
     },
+    /// Which of a router's upstreams answered: asking it first next time finds the prompt cached.
+    Served {
+        provider: String,
+    },
     Stop {
         reason: StopReason,
     },
@@ -218,6 +222,9 @@ mod tests {
             },
             Said::Spent {
                 usage: Usage::default(),
+            },
+            Said::Served {
+                provider: "StreamLake".into(),
             },
             Said::Stop {
                 reason: StopReason::EndTurn,

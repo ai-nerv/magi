@@ -20,6 +20,23 @@ impl std::fmt::Display for Trouble {
     }
 }
 
+/// Which of a router's upstreams last answered each model in this session. Asked first next time,
+/// since a prompt's cache lives with the upstream that read it; the router still falls back.
+static SERVED: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// What to ask for: the person's own choice of upstream, else the one that answered this model last.
+fn sticky(model: &str, wants: &Wants) -> Wants {
+    let mut wants = wants.clone();
+    if wants.provider.is_none() {
+        wants.provider = SERVED
+            .lock()
+            .ok()
+            .and_then(|served| served.get(model).cloned());
+    }
+    wants
+}
+
 /// A wait melchior is taking before trying again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Retry {
@@ -88,7 +105,7 @@ pub async fn ask_through(
     let asking = Ask {
         model: model.to_owned(),
         context: context.clone(),
-        wants: wants.clone(),
+        wants: sticky(model, wants),
         about: String::new(),
     };
     let body = serde_json::to_vec(&asking).map_err(|why| Trouble {
@@ -161,6 +178,11 @@ pub async fn ask_through(
                 // Milliseconds, because that is what the status line shows.
                 delay_ms: (seconds * 1000.0) as u64,
             }),
+            Said::Served { provider } => {
+                if let Ok(mut served) = SERVED.lock() {
+                    served.insert(model.to_owned(), provider);
+                }
+            }
             other => on_delta(carried(other)),
         }
     }
@@ -187,7 +209,9 @@ fn carried(said: Said) -> Delta {
         Said::Spent { usage } => Delta::Usage(usage),
         // Unreachable by construction: the caller takes both before this is called.
         Said::Stop { reason } => Delta::Stop(reason),
-        Said::Failed { .. } | Said::Retrying { .. } => Delta::Stop(magi_model::StopReason::Error),
+        Said::Failed { .. } | Said::Retrying { .. } | Said::Served { .. } => {
+            Delta::Stop(magi_model::StopReason::Error)
+        }
     }
 }
 
@@ -310,6 +334,25 @@ mod tests {
             }),
             Delta::Stop(StopReason::Error)
         );
+    }
+
+    #[test]
+    fn the_upstream_that_answered_is_asked_first_unless_the_person_chose_one() {
+        SERVED
+            .lock()
+            .expect("lock")
+            .insert("fake/sticky".into(), "StreamLake".into());
+        let plain = sticky("fake/sticky", &Wants::default());
+        assert_eq!(plain.provider.as_deref(), Some("StreamLake"));
+        let chosen = Wants {
+            provider: Some("Baidu".into()),
+            ..Wants::default()
+        };
+        assert_eq!(
+            sticky("fake/sticky", &chosen).provider.as_deref(),
+            Some("Baidu")
+        );
+        assert!(sticky("fake/other", &Wants::default()).provider.is_none());
     }
 
     #[tokio::test]
