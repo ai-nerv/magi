@@ -264,12 +264,17 @@ async fn flush_wake(
     }
 }
 
-/// Give this session a turn, on its own socket, without staying attached — the same brief connection
-/// [`ask`] makes. Best effort: a wake that cannot land is a coordinator that stays parked, not a crash.
+/// Give this session a turn, on its own socket, as a message from melchior rather than a prompt:
+/// recorded as the person's, a notice read as what they asked for. Best effort: a wake that cannot
+/// land is a coordinator that stays parked, not a crash.
 async fn wake(socket: &Path, occasion: &str) {
-    if let Err(why) = ask(socket, occasion.to_owned(), String::new()).await {
-        eprintln!("magi: a signal could not wake this session: {why}");
-    }
+    let notice = UiCommand::Arrived {
+        who: "melchior".to_owned(),
+        kin: "signal".to_owned(),
+        sort: "attention".to_owned(),
+        text: occasion.to_owned(),
+    };
+    tell(socket, notice).await;
 }
 
 /// Hand what other instances said to the host once this session is idle. The host decides from
