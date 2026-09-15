@@ -22,6 +22,10 @@ fn workspace(name: &str) -> Scratch {
     let init = dir.join("config/magi/init.lua");
     let mut source = std::fs::read_to_string(&init).expect("the installed entry point");
     source.push_str(&format!("\nmagi.model = \"{MODEL}\"\n"));
+    // These count and script what the model is asked; a note taken on it would be an ask they never wrote.
+    source.push_str("magi.helpers = { memory = false }\n");
+    // The shipped config pre-authorises spawning; what an unattended run refuses is under test here.
+    source.push_str("magi.may_spawn = false\n");
     std::fs::write(&init, source).expect("write init");
     dir
 }

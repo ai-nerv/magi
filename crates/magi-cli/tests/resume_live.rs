@@ -32,6 +32,8 @@ fn workspace(name: &str) -> Scratch {
     source.push_str(&format!(
         "\nmagi.model = \"{MODEL}\"\nmagi.project = \"p\"\n"
     ));
+    // These count and read what the model is asked; a note taken on it would be an ask they never wrote.
+    source.push_str("magi.helpers = { memory = false }\n");
     std::fs::write(&init, source).expect("write init");
     dir
 }
