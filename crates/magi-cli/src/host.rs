@@ -68,7 +68,7 @@ pub async fn start(
         .map_err(|why| anyhow::anyhow!("{}", unreachable(&memory, "reach", &why.to_string())))?;
     let mut scribe = magi_host::scribe::Scribe::over(family, ours.clone(), &id);
     // A child records its own transcript; a run's agents share the id their memory is filed under.
-    let child = environ.contains_key("MAGI_MELCHIOR_PARENT");
+    let child = std::env::var_os("MAGI_MELCHIOR_PARENT").is_some();
     if let (true, Some(agent)) = (child, agent) {
         scribe = scribe.recording_as(format!("{id}@{agent}"));
     }
