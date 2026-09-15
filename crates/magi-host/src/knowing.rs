@@ -216,6 +216,48 @@ async fn memories(
     }
 }
 
+/// What the memory layer says about its notes, for a screen that asked. After anything that
+/// changes them, the notes and their log follow as they now stand, so one ask redraws the view.
+pub async fn notes(
+    scribe: &crate::scribe::Held,
+    verb: &str,
+    arg: serde_json::Value,
+) -> Vec<magi_proto::HarnessEvent> {
+    const ASKABLE: &[&str] = &["notes", "changes", "note_open", "undo", "approve", "reject"];
+    let refusal = |message: String| magi_proto::HarnessEvent::Refused {
+        cursor: magi_proto::Cursor::ZERO,
+        message,
+    };
+    if !ASKABLE.contains(&verb) {
+        return vec![refusal(format!("`{verb}` is not a question about notes"))];
+    }
+    let mut asks = vec![(verb.to_owned(), arg)];
+    if !matches!(verb, "note_open" | "changes") {
+        if verb != "notes" {
+            asks.push(("notes".to_owned(), serde_json::json!({})));
+        }
+        asks.push(("changes".to_owned(), serde_json::json!({ "limit": 50 })));
+    }
+    let mut open = scribe.lock().await;
+    let Some(open) = open.as_mut() else {
+        return vec![refusal("there is no balthasar in this session".to_owned())];
+    };
+    let mut out = Vec::new();
+    for (verb, arg) in asks {
+        out.push(
+            match tokio::time::timeout(PATIENCE, open.ask_all(&verb, arg)).await {
+                Ok(Ok(rows)) => magi_proto::HarnessEvent::MemoryAnswered {
+                    verb,
+                    answer: serde_json::Value::Array(rows),
+                },
+                Ok(Err(why)) => refusal(format!("{verb}: {why}")),
+                Err(_) => refusal(format!("{verb}: balthasar did not answer in time")),
+            },
+        );
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -314,5 +356,15 @@ mod tests {
         };
         assert_eq!(said["name"], "haiku");
         assert_eq!(said["context_window"], 200_000);
+    }
+
+    #[tokio::test]
+    async fn a_screen_may_ask_only_about_notes_and_hears_when_nothing_keeps_them() {
+        let none: crate::scribe::Held = std::sync::Arc::new(tokio::sync::Mutex::new(None));
+        let refused = |events: &[magi_proto::HarnessEvent], wanted: &str| matches!(events, [magi_proto::HarnessEvent::Refused { message, .. }] if message.contains(wanted));
+        let odd = notes(&none, "observe", serde_json::json!({})).await;
+        assert!(refused(&odd, "not a question about notes"), "{odd:?}");
+        let asked = notes(&none, "notes", serde_json::json!({})).await;
+        assert!(refused(&asked, "no balthasar"), "{asked:?}");
     }
 }

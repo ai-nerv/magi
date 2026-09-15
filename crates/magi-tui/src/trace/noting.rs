@@ -35,6 +35,7 @@ fn every_layout_and_every_helper_job_is_a_row() {
             ..magi_proto::Laid::default()
         },
         why: "the window is filling".to_owned(),
+        slots: Vec::new(),
     });
     trace.note(&HarnessEvent::HelperSpent {
         role: "memory".to_owned(),

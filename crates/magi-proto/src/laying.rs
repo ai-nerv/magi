@@ -25,17 +25,22 @@ const fn fits() -> bool {
     true
 }
 
-/// One place in a request. `item` and `stub` name entries; the rest are text balthasar wrote.
+/// One place in a request. `item` and `stub` name entries; the rest are text balthasar wrote, with
+/// what balthasar reckons it costs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Slot {
     Pinned {
         #[serde(default)]
         text: String,
+        #[serde(default)]
+        tokens: u64,
     },
     Summary {
         #[serde(default)]
         text: String,
+        #[serde(default)]
+        tokens: u64,
     },
     Item {
         cursor: u64,
@@ -48,10 +53,14 @@ pub enum Slot {
     Note {
         #[serde(default)]
         text: String,
+        #[serde(default)]
+        tokens: u64,
     },
     Memory {
         #[serde(default)]
         text: String,
+        #[serde(default)]
+        tokens: u64,
         #[serde(default)]
         injection: Option<String>,
     },
@@ -69,6 +78,18 @@ impl Slot {
             _ => None,
         }
     }
+}
+
+/// One slot as a screen shows it: which kind, which entry, what it costs, and a line of what it is.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LaidSlot {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<u64>,
+    #[serde(default)]
+    pub tokens: u64,
+    #[serde(default)]
+    pub text: String,
 }
 
 /// One piece of helper work. Generic: magi never reads what it is for, only how to run it.

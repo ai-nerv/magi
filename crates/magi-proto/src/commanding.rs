@@ -94,5 +94,11 @@ pub enum UiCommand {
     Resume {
         id: String,
     },
+    /// Ask the memory layer about its notes; answered with [`crate::HarnessEvent::MemoryAnswered`].
+    Memory {
+        verb: String,
+        #[serde(default)]
+        arg: serde_json::Value,
+    },
     Detach,
 }

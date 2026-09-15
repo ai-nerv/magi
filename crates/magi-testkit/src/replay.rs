@@ -124,7 +124,8 @@ impl Recording {
                 HarnessEvent::Refused { .. }
                 | HarnessEvent::ModelChanged { .. }
                 | HarnessEvent::ContextLaid { .. }
-                | HarnessEvent::HelperSpent { .. } => {}
+                | HarnessEvent::HelperSpent { .. }
+                | HarnessEvent::MemoryAnswered { .. } => {}
                 HarnessEvent::MessageArrived {
                     who,
                     kin,

@@ -397,8 +397,8 @@ pub async fn run(
                                 }
                             }
                             // On the model's card, Enter takes a setting and ←/→ step it.
-                            Action::Attach(id) if app.pane_titled("model") => {
-                                if let Some(command) = app.choose_on_model(&id) {
+                            Action::Attach(id) if app.chooses() => {
+                                if let Some(command) = app.choose_on_pane(&id) {
                                     direct(&mut app, &command_tx, command).await;
                                 }
                                 dirty = true;

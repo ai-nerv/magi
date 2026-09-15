@@ -124,6 +124,9 @@ pub struct App {
     pub laid: Option<magi_tui::laid::Laid>,
     /// Every helper job this screen has seen finish, for the cost view.
     pub helped: Vec<magi_tui::cost::Helper>,
+    /// The project's notes and their change log, as the memory layer last answered.
+    pub notes: Option<serde_json::Value>,
+    pub changes: Vec<serde_json::Value>,
 }
 
 impl Default for App {
@@ -191,6 +194,8 @@ impl App {
             corner: magi_tui::corner::Corner::default(),
             laid: None,
             helped: Vec::new(),
+            notes: None,
+            changes: Vec::new(),
             pending_notice: None,
             no_model: None,
             asking_about: magi_proto::permit::Action::Read {

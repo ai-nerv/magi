@@ -255,15 +255,18 @@ impl App {
                 budget,
                 counts,
                 why,
+                slots,
             } => {
                 self.laid = Some(magi_tui::laid::Laid {
                     id,
                     budget,
                     counts,
                     why,
+                    slots,
                 });
                 self.refresh_views();
             }
+            HarnessEvent::MemoryAnswered { verb, answer } => self.remembered(&verb, &answer),
             HarnessEvent::HelperSpent { role, model, usage } => {
                 self.helped
                     .push(magi_tui::cost::Helper { role, model, usage });

@@ -77,6 +77,7 @@ drawn wrong, and only running a program against it found out.
 | `why` | `(id) -> { confidence, witnesses }` | The model's `why` tool is not declared. |
 | `scroll` | `(session, opts) -> { turns, next }` | The model's `history` tool is not declared, and an elided tool result cannot be read back. |
 | `layout` | `(session, { round, window, reply, fixed, live, query, idle_s, helpers }) -> { id, budget, slots, jobs, fits, why }` | magi sends every live entry whole, every round. An over-budget context goes to the provider and is refused there. This is the most expensive extension to lack. |
+| `plan` | `(session, { window }) -> { keep, mask, drop, summarise, why }` | Asked only when `layout` is refused: what it masks goes as a stub and what it drops is left out. Without either, everything live is sent. |
 | `applied` | `(session, { id, usage }) -> ok` | The store never learns how far its estimate was from what the provider counted. |
 | `overflowed` | `(session, { id, said }) -> layout` | A request refused as too long is not retried tighter. |
 | `jobs` | `(session, {}) -> [job]` | No helper work runs between turns: no background summaries, no memory curation. |

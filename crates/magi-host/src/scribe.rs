@@ -30,6 +30,7 @@ const ROLE: &[&str] = &[
     "model",
     "resume",
     "sessions",
+    "plan",
     "layout",
     "applied",
     "overflowed",
@@ -115,9 +116,27 @@ impl Scribe {
                 "`{verb}` is not one of the memory role's verbs; see ROLES.md"
             )));
         }
+        Ok(self
+            .ask_all(verb, arg)
+            .await?
+            .into_iter()
+            .next()
+            .unwrap_or(serde_json::Value::Null))
+    }
+
+    /// The same, handing back every row of the answer.
+    pub async fn ask_all(
+        &mut self,
+        verb: &str,
+        arg: serde_json::Value,
+    ) -> Result<Vec<serde_json::Value>, Fault> {
+        if !ROLE.contains(&verb) {
+            return Err(Fault::Refused(format!(
+                "`{verb}` is not one of the memory role's verbs; see ROLES.md"
+            )));
+        }
         let args = vec![serde_json::Value::String(self.session.clone()), arg];
-        let values = self.family.call(verb, args).await?;
-        Ok(values.into_iter().next().unwrap_or(serde_json::Value::Null))
+        self.family.call(verb, args).await
     }
 
     /// How to lay out the next request. One that does not lay out refuses, and everything is sent.
@@ -369,6 +388,12 @@ impl Scribe {
             .unwrap_or(0))
     }
 
+    /// What a memory layer that does not lay out would do with a window this size.
+    pub async fn plan_for(&mut self, window: u64) -> Result<serde_json::Value, Fault> {
+        self.ask("plan", serde_json::json!({ "window": window }))
+            .await
+    }
+
     /// Say which model this session talks to, and how much it holds: told at startup and whenever
     /// `:model` switches, so the store knows which model produced a run.
     pub async fn note_model(&mut self, name: &str, window: u64) -> Result<(), Fault> {
@@ -575,7 +600,7 @@ fn turn(cursor: Cursor, entry: &Entry, beside: &Beside) -> Result<serde_json::Va
 }
 
 /// What sending this entry costs: a token per four characters of everything the model is shown.
-fn tokens(entry: &Entry) -> u64 {
+pub(crate) fn tokens(entry: &Entry) -> u64 {
     let chars = match entry {
         Entry::User { text, aside, .. } => text.chars().count() + aside.chars().count(),
         Entry::Assistant { text, thinking, .. } => text.chars().count() + thinking.chars().count(),

@@ -114,11 +114,11 @@ pub fn render(entries: &[Entry], layout: &Layout) -> Context {
                     stub.or_else(|| view.masks.get(&at).map(String::as_str)),
                 );
             }
-            (Slot::Pinned { text }, _) if !text.is_empty() => {
+            (Slot::Pinned { text, .. }, _) if !text.is_empty() => {
                 built.user(format!("Pinned notes for this project:\n\n{text}"));
             }
-            (Slot::Summary { text }, _) if !text.is_empty() => built.user(summarised(text)),
-            (Slot::Note { text }, _) if !text.is_empty() => built.user(text.clone()),
+            (Slot::Summary { text, .. }, _) if !text.is_empty() => built.user(summarised(text)),
+            (Slot::Note { text, .. }, _) if !text.is_empty() => built.user(text.clone()),
             (Slot::Memory { text, .. }, _) if !text.is_empty() => {
                 built.user(format!(
                     "From memory — what this project recorded before; check it before relying \
@@ -211,23 +211,144 @@ pub fn counts(layout: &Layout, live: &[u64]) -> Laid {
     laid
 }
 
-/// Ask balthasar for a layout, on the clock. `None` for no balthasar, a refusal, or no answer.
+/// Ask balthasar for a layout, on the clock. One that refuses to lay out is asked for its `plan`
+/// instead. `None` for no balthasar, no answer, or nothing usable.
 async fn ask(scribe: &crate::scribe::Held, asked: serde_json::Value) -> Option<Layout> {
-    let answered = tokio::time::timeout(PATIENCE, async {
+    tokio::time::timeout(PATIENCE, async {
         let mut open = scribe.lock().await;
-        open.as_mut()?
-            .layout(asked)
-            .await
-            .inspect_err(|why| magi_model::noted!("layout: balthasar refused: {why}"))
-            .ok()
+        let open = open.as_mut()?;
+        match open.layout(asked.clone()).await {
+            Ok(answer) => serde_json::from_value(answer)
+                .inspect_err(|why| magi_model::noted!("layout: the answer was not a layout: {why}"))
+                .ok(),
+            Err(magi_ipc::family::Fault::Refused(why)) => {
+                magi_model::noted!("layout: refused ({why}); asking for a plan instead");
+                let window = asked["window"].as_u64().unwrap_or(0);
+                let plan = open.plan_for(window).await.ok()?;
+                Some(from_plan(&plan, &cursors(&asked["live"])))
+            }
+            Err(why) => {
+                magi_model::noted!("layout: balthasar could not be asked: {why}");
+                None
+            }
+        }
     })
     .await
     .inspect_err(|_| magi_model::noted!("layout: balthasar did not answer within {PATIENCE:?}"))
     .ok()
-    .flatten()?;
-    serde_json::from_value(answered)
-        .inspect_err(|why| magi_model::noted!("layout: the answer was not a layout: {why}"))
-        .ok()
+    .flatten()
+}
+
+/// Cursors, as a list of numbers or of rows that carry one.
+fn cursors(list: &serde_json::Value) -> Vec<u64> {
+    list.as_array()
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| row.as_u64().or_else(|| row.get("cursor")?.as_u64()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A `plan`, from a memory layer that does not lay out, as a layout: what it masks goes as its
+/// stub, what it drops is left out, everything else is sent. The summary a plan may want is not
+/// written: summaries are helper jobs, and a plan has no way to hand one out.
+#[must_use]
+pub fn from_plan(plan: &serde_json::Value, live: &[u64]) -> Layout {
+    let masks: std::collections::BTreeMap<u64, String> = plan["mask"]
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| Some((row["cursor"].as_u64()?, row["as"].as_str()?.to_owned())))
+                .collect()
+        })
+        .unwrap_or_default();
+    let dropped: std::collections::BTreeSet<u64> = cursors(&plan["drop"]).into_iter().collect();
+    let slots = live
+        .iter()
+        .filter(|cursor| !dropped.contains(cursor))
+        .map(|&cursor| match masks.get(&cursor) {
+            Some(text) => Slot::Stub {
+                cursor,
+                text: text.clone(),
+            },
+            None => Slot::Item { cursor },
+        })
+        .collect();
+    Layout {
+        id: String::new(),
+        budget: serde_json::Value::Null,
+        slots,
+        jobs: Vec::new(),
+        fits: plan["fits"].as_bool().unwrap_or(true),
+        why: format!(
+            "balthasar does not lay out; its plan: {}",
+            plan["why"].as_str().unwrap_or("no reason given")
+        ),
+    }
+}
+
+/// Each slot as a screen lists it: its kind, its entry, what it costs, and a line of what it is.
+#[must_use]
+pub fn listed(entries: &[Entry], layout: &Layout) -> Vec<magi_proto::laying::LaidSlot> {
+    let line = |text: &str| -> String {
+        text.lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or_default()
+            .chars()
+            .take(90)
+            .collect()
+    };
+    let costs = |said: u64, text: &str| {
+        if said > 0 {
+            said
+        } else {
+            tokens(text.chars().count())
+        }
+    };
+    layout
+        .slots
+        .iter()
+        .filter_map(|slot| {
+            let (kind, cursor, spent, text) = match slot {
+                Slot::Item { cursor } => {
+                    let entry = entries.get(usize::try_from(*cursor).ok()?.checked_sub(1)?)?;
+                    let spent = crate::scribe::tokens(entry);
+                    ("item", Some(*cursor), spent, line(&described(entry)))
+                }
+                Slot::Stub { cursor, text } => ("stub", Some(*cursor), costs(0, text), line(text)),
+                Slot::Pinned { text, tokens } => ("pinned", None, costs(*tokens, text), line(text)),
+                Slot::Summary { text, tokens } => {
+                    ("summary", None, costs(*tokens, text), line(text))
+                }
+                Slot::Note { text, tokens } => ("note", None, costs(*tokens, text), line(text)),
+                Slot::Memory { text, tokens, .. } => {
+                    ("memory", None, costs(*tokens, text), line(text))
+                }
+                Slot::Other => return None,
+            };
+            Some(magi_proto::laying::LaidSlot {
+                kind: kind.to_owned(),
+                cursor,
+                tokens: spent,
+                text,
+            })
+        })
+        .collect()
+}
+
+/// Who said an entry, and the start of what.
+fn described(entry: &Entry) -> String {
+    match entry {
+        Entry::User { text, .. } => format!("you: {text}"),
+        Entry::From { who, text, .. } => format!("{who}: {text}"),
+        Entry::Assistant { text, thinking, .. } if text.trim().is_empty() => {
+            format!("model thinking: {thinking}")
+        }
+        Entry::Assistant { text, .. } => format!("model: {text}"),
+        Entry::Tool { name, args, .. } => format!("{name} {args}"),
+        _ => String::new(),
+    }
 }
 
 /// Lay out the next request of a prompt: hand balthasar everything settled, ask it, run whatever it
@@ -347,6 +468,7 @@ async fn settle(
         budget: layout.budget.clone(),
         counts: counted,
         why: layout.why.clone(),
+        slots: listed(held.entries(), &layout),
     });
     held.lay(layout);
     context

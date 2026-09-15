@@ -27,6 +27,7 @@ fn card<'a>(reasons: bool, turns: &'a [Usage], details: Known<'a>) -> Card<'a> {
         turns,
         details,
         sent: None,
+        split: None,
         width: 70,
     }
 }
@@ -36,6 +37,7 @@ fn a_laid_out_request_is_said_under_the_context_gauge() {
     let turns = [turn(64_000, 10, 0)];
     let mut shown = card(false, &turns, Known::Asking);
     shown.sent = Some("9 whole · 2 stubbed");
+    shown.split = Some("conversation 62% · summary 8% · fixed 11k");
     let all = text(&view(&shown)).join("\n");
     assert!(all.contains("9 whole · 2 stubbed"), "{all}");
 }

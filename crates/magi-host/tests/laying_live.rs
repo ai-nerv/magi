@@ -16,7 +16,8 @@ static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(())
 struct Live {
     scribe: magi_host::scribe::Held,
     id: SessionId,
-    _serving: Serving,
+    /// Taken to kill it, for the test of a balthasar that dies mid-session.
+    serving: Option<Serving>,
     _dir: Scratch,
     _alone: tokio::sync::MutexGuard<'static, ()>,
 }
@@ -45,7 +46,7 @@ async fn live(name: &str) -> Option<Live> {
     Some(Live {
         scribe: std::sync::Arc::new(tokio::sync::Mutex::new(Some(scribe))),
         id,
-        _serving: serving,
+        serving: Some(serving),
         _dir: dir,
         _alone: alone,
     })
@@ -132,6 +133,53 @@ async fn every_request_is_one_balthasar_laid_out() {
     assert!(!id.is_empty(), "balthasar laid it out, not magi's fallback");
     assert_eq!(counts.items, 1, "{counts:?}");
     assert!(mind.heard().contains("what is magi"), "{}", mind.heard());
+}
+
+#[tokio::test]
+async fn a_balthasar_that_dies_mid_session_only_degrades_the_layout() {
+    let Some(mut live) = live("dies").await else {
+        return;
+    };
+    let session = tokio::sync::Mutex::new(Session::recorded(live.id.clone(), Vec::new()));
+    session
+        .lock()
+        .await
+        .commit(user("u1", "what is magi"))
+        .expect("commit");
+    let mind = Mind::answering("ll-dies", "still here");
+    let backend = backend(&mind, 200_000);
+    let first = prompt(&session, &backend, &live).await;
+    assert!(!first[0].0.is_empty(), "balthasar laid out the first");
+
+    drop(live.serving.take());
+    session
+        .lock()
+        .await
+        .commit(user("u3", "are you still there?"))
+        .expect("commit");
+    let second = prompt(&session, &backend, &live).await;
+    let (id, counts) = second.first().expect("a layout was still reported");
+    assert!(id.is_empty(), "made by magi: nobody was left to ask");
+    assert_eq!(counts.items, 3, "the last layout and everything since");
+    let last = mind.asks().pop().unwrap_or_default();
+    assert!(last.contains("are you still there?"), "the prompt went");
+    assert!(last.contains("what is magi"), "and what came before it");
+}
+
+#[tokio::test]
+async fn a_screen_is_told_the_notes_and_their_change_log() {
+    let Some(live) = live("notes").await else {
+        return;
+    };
+    let said = magi_host::knowing::notes(&live.scribe, "notes", serde_json::json!({})).await;
+    let verbs: Vec<&str> = said
+        .iter()
+        .filter_map(|event| match event {
+            HarnessEvent::MemoryAnswered { verb, .. } => Some(verb.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(verbs, ["notes", "changes"], "{said:?}");
 }
 
 #[tokio::test]

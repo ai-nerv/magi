@@ -75,6 +75,8 @@ pub struct Card<'a> {
     pub details: Known<'a>,
     /// What the last request was made of, in a line, once one has been laid out.
     pub sent: Option<&'a str>,
+    /// How that request divided by cost, in a line.
+    pub split: Option<&'a str>,
     /// Columns the card may take.
     pub width: u16,
 }
@@ -259,6 +261,9 @@ fn context(out: &mut Rendered, card: &Card<'_>, width: u16) {
     if let Some(sent) = card.sent {
         out.blank();
         out.fact("Sent", sent, &ink());
+        if let Some(split) = card.split {
+            out.fact("Split", split, &ink());
+        }
         out.say("  :context shows how it was laid out", ink().dim);
     }
 }

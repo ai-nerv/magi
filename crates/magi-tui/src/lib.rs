@@ -21,6 +21,7 @@ pub mod menu;
 pub mod metric;
 pub mod model_card;
 pub mod motion;
+pub mod notes;
 pub mod overlay;
 pub mod painted;
 pub mod pane;

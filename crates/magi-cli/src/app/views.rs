@@ -248,6 +248,7 @@ impl App {
             None => magi_tui::model_card::Known::Asking,
         };
         let sent = self.laid.as_ref().map(magi_tui::laid::Laid::composition);
+        let split = self.laid.as_ref().and_then(magi_tui::laid::Laid::split);
         let drawn = magi_tui::model_card::view(&magi_tui::model_card::Card {
             model: &name,
             context_window: self.model.as_ref().map_or(0, |model| model.context_window),
@@ -257,6 +258,7 @@ impl App {
             turns: &turns,
             details,
             sent: sent.as_deref(),
+            split: split.as_deref(),
             width: card_width(),
         });
         let mut pane = magi_tui::pane::Pane::new("model", drawn.rows).selectable(drawn.picks);
@@ -300,6 +302,69 @@ impl App {
             .unwrap_or_default();
         self.pane =
             Some(magi_tui::pane::Pane::new("context", rows).saying(magi_tui::laid::empty()));
+    }
+
+    /// Open the project's notes and their change log. Drawn empty until the memory layer answers
+    /// the ask that goes out with it; redrawn with the cursor where it was.
+    pub fn show_notes(&mut self) {
+        let drawn = magi_tui::notes::view(self.notes.as_ref(), &self.changes, card_width());
+        let on = self
+            .pane
+            .as_ref()
+            .filter(|open| open.title == "notes")
+            .and_then(|open| open.chosen().map(ToOwned::to_owned));
+        let mut pane = magi_tui::pane::Pane::new("notes", drawn.rows)
+            .selectable(drawn.picks)
+            .saying(magi_tui::notes::empty());
+        if !on.is_some_and(|id| pane.point_at(&id)) {
+            pane.first();
+        }
+        self.pane = Some(pane);
+    }
+
+    /// What the memory layer answered about its notes.
+    pub(super) fn remembered(&mut self, verb: &str, answer: &serde_json::Value) {
+        let rows = answer.as_array().cloned().unwrap_or_default();
+        match verb {
+            "notes" => self.notes = rows.into_iter().next(),
+            "changes" => self.changes = rows,
+            "note_open" => {
+                if let Some(note) = rows.first() {
+                    let said = |key: &str| note[key].as_str().unwrap_or_default().to_owned();
+                    self.show_notice(format!("{}: {}", said("title"), said("text")));
+                }
+            }
+            done => {
+                let what = rows.first().map(ToString::to_string).unwrap_or_default();
+                self.show_notice(format!("{done}: {what}"));
+            }
+        }
+        if self.pane_titled("notes") {
+            self.show_notes();
+        }
+    }
+
+    /// Whether the float open takes a row with Enter.
+    #[must_use]
+    pub fn chooses(&self) -> bool {
+        self.pane_titled("model") || self.pane_titled("notes")
+    }
+
+    /// Take the row under the cursor of whichever float is open.
+    pub fn choose_on_pane(&mut self, id: &str) -> Option<magi_proto::UiCommand> {
+        if !self.pane_titled("notes") {
+            return self.choose_on_model(id);
+        }
+        let (verb, change) = id.split_once(':')?;
+        let arg = match verb {
+            "undo" => serde_json::json!({ "change": change }),
+            "approve" | "reject" => serde_json::json!({ "changes": [change] }),
+            _ => return None,
+        };
+        Some(magi_proto::UiCommand::Memory {
+            verb: verb.to_owned(),
+            arg,
+        })
     }
 
     /// Redraw whichever view is open that a new layout or a helper's spend changes.

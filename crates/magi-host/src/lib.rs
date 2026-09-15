@@ -457,6 +457,12 @@ async fn connection(
                                 .await?;
                         }
                     }
+                    // To the screen that asked, not every screen: a view of notes is one person's.
+                    Some(UiCommand::Memory { verb, arg }) => {
+                        for answer in crate::knowing::notes(scribe, &verb, arg).await {
+                            writer.write(&answer).await?;
+                        }
+                    }
                     Some(UiCommand::Resume { id }) => {
                         // One place to ask: balthasar is the store, and a session it does not know
                         // does not exist.

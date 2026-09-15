@@ -40,6 +40,14 @@ pub(super) fn run_command(input: &str, app: &mut App) -> Control {
             app.show_context();
             Control::Continue
         }
+        // Opened at once and filled when the memory layer answers; the notes are the session's to ask.
+        ":notes" => {
+            app.show_notes();
+            Control::Send(UiCommand::Memory {
+                verb: "notes".to_owned(),
+                arg: serde_json::json!({}),
+            })
+        }
         ":agents" => {
             app.show_agents();
             Control::Continue

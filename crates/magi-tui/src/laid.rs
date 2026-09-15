@@ -5,7 +5,7 @@ use crate::footer::format_tokens;
 use crate::model_card::Rendered;
 use crate::model_card::charts::{self, Item};
 use ratatui::style::{Color, Modifier};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 
 /// One layout, as the session reported it.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -15,9 +15,42 @@ pub struct Laid {
     pub budget: serde_json::Value,
     pub counts: magi_proto::Laid,
     pub why: String,
+    pub slots: Vec<magi_proto::laying::LaidSlot>,
 }
 
 impl Laid {
+    /// How the request divided by what each part cost: `conversation 62% · summary 8% · fixed 11k`.
+    #[must_use]
+    pub fn split(&self) -> Option<String> {
+        let sum = |kinds: &[&str]| -> u64 {
+            self.slots
+                .iter()
+                .filter(|slot| kinds.contains(&slot.kind.as_str()))
+                .map(|slot| slot.tokens)
+                .sum()
+        };
+        let parts = [
+            ("conversation", sum(&["item", "stub"])),
+            ("summary", sum(&["summary"])),
+            ("memory", sum(&["memory"])),
+            ("notes", sum(&["pinned", "note"])),
+        ];
+        let fixed = self.number("fixed");
+        let total = parts.iter().map(|(_, n)| n).sum::<u64>() + fixed;
+        if self.slots.is_empty() || total == 0 {
+            return None;
+        }
+        let mut out: Vec<String> = parts
+            .iter()
+            .filter(|(_, n)| *n > 0)
+            .map(|(name, n)| format!("{name} {}%", n * 100 / total))
+            .collect();
+        if fixed > 0 {
+            out.push(format!("fixed {}", format_tokens(fixed)));
+        }
+        Some(out.join(" · "))
+    }
+
     /// What the request held, in a line.
     #[must_use]
     pub fn composition(&self) -> String {
@@ -71,7 +104,26 @@ pub fn view(laid: &Laid, jobs: &[crate::cost::Helper], width: u16) -> Rendered {
         },
         ink.dim,
     );
+    if let Some(split) = laid.split() {
+        out.say(split, ink.dim);
+    }
     budget(&mut out, laid, width);
+
+    if !laid.slots.is_empty() {
+        out.section("Slots", "in the order they were sent", width);
+        for slot in &laid.slots {
+            let at = slot.cursor.map(|c| c.to_string()).unwrap_or_default();
+            out.push(
+                Line::from(vec![
+                    Span::styled(format!("{:<9}", slot.kind), ink.label),
+                    Span::styled(format!("{at:>6} "), ink.dim),
+                    Span::raw(format!("{:>6}  ", format_tokens(slot.tokens))),
+                    Span::raw(slot.text.clone()),
+                ]),
+                None,
+            );
+        }
+    }
 
     out.section("Sent", "what went into the last request", width);
     let counted = laid.counts;
@@ -206,7 +258,47 @@ mod tests {
                 ..magi_proto::Laid::default()
             },
             why: "the conversation is long".into(),
+            slots: vec![
+                slot("summary", None, 2_000, "they read four files"),
+                slot("stub", Some(5), 12, "read part1.txt (3000 lines)"),
+                slot("item", Some(9), 6_000, "you: now summarise them"),
+            ],
         }
+    }
+
+    fn slot(
+        kind: &str,
+        cursor: Option<u64>,
+        tokens: u64,
+        text: &str,
+    ) -> magi_proto::laying::LaidSlot {
+        magi_proto::laying::LaidSlot {
+            kind: kind.into(),
+            cursor,
+            tokens,
+            text: text.into(),
+        }
+    }
+
+    #[test]
+    fn the_split_is_what_each_part_cost_against_the_whole() {
+        // 6,012 conversation, 2,000 summary and 11,000 fixed: 19,012 in all.
+        assert_eq!(
+            laid().split().as_deref(),
+            Some("conversation 31% · summary 10% · fixed 11k")
+        );
+    }
+
+    #[test]
+    fn every_slot_is_listed_with_its_cost() {
+        let all: String = view(&laid(), &[], 80)
+            .rows
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(all.contains("read part1.txt (3000 lines)"), "{all}");
+        assert!(all.contains("they read four files"), "{all}");
     }
 
     #[test]

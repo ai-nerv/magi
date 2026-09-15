@@ -191,3 +191,76 @@ fn everything_live_is_what_goes_when_there_was_never_a_layout() {
     let everything = render(&entries, &whole(&live(&entries)));
     assert_eq!(everything, crate::context::of_entries(&entries));
 }
+
+#[test]
+fn a_plan_from_a_memory_that_does_not_lay_out_is_sent_as_one() {
+    let plan = serde_json::json!({
+        "mask": [{ "cursor": 3, "as": "read a.rs (400 lines)" }],
+        "drop": [1],
+        "why": "over budget",
+    });
+    let laid = from_plan(&plan, &[1, 2, 3, 4, 5]);
+    assert!(
+        laid.id.is_empty(),
+        "a plan has nothing to report back against"
+    );
+    let named: Vec<u64> = laid.slots.iter().filter_map(Slot::cursor).collect();
+    assert_eq!(named, [2, 3, 4, 5], "what it drops is left out");
+    assert!(matches!(&laid.slots[1], Slot::Stub { text, .. } if text == "read a.rs (400 lines)"));
+    assert!(laid.why.contains("over budget"), "{}", laid.why);
+}
+
+#[test]
+fn every_slot_is_listed_with_what_it_costs() {
+    let laid = layout(serde_json::json!([
+        {"kind":"summary","text":"they read a file","tokens":900},
+        {"kind":"stub","cursor":3,"text":"read a.rs (400 lines)"},
+        {"kind":"item","cursor":5},
+    ]));
+    let listed = listed(&transcript(), &laid);
+    let kinds: Vec<&str> = listed.iter().map(|s| s.kind.as_str()).collect();
+    assert_eq!(kinds, ["summary", "stub", "item"]);
+    assert_eq!(
+        listed[0].tokens, 900,
+        "balthasar's own count, when it gave one"
+    );
+    assert_eq!(listed[1].cursor, Some(3));
+    assert_eq!(listed[2].text, "you: second");
+}
+
+/// The rule that keeps a helper off the person's time: a layout's background jobs are held for after
+/// the turn, and nothing is run or spent while the request is being built.
+#[tokio::test]
+async fn background_jobs_are_held_for_after_the_turn_not_run_inside_it() {
+    let session = tokio::sync::Mutex::new(Session::recorded(
+        magi_proto::SessionId::new("s"),
+        transcript(),
+    ));
+    let mut heard = session.lock().await.subscribe();
+    let mut laid = layout(serde_json::json!([{"kind":"item","cursor":5}]));
+    laid.jobs = vec![crate::helping::Job {
+        id: "J-1".into(),
+        kind: "summarise".into(),
+        ..Default::default()
+    }];
+    let mut prompt = Prompt::default();
+    settle(&session, Some(laid), &mut prompt).await;
+
+    let deferred = session.lock().await.take_deferred();
+    assert_eq!(deferred.len(), 1, "the job waits for the turn to end");
+    let mut spent = false;
+    let mut reported = None;
+    while let Ok(event) = heard.try_recv() {
+        match event {
+            HarnessEvent::HelperSpent { .. } => spent = true,
+            HarnessEvent::ContextLaid { slots, .. } => reported = Some(slots),
+            _ => {}
+        }
+    }
+    assert!(!spent, "nothing ran while the request was built");
+    assert_eq!(
+        reported.map(|s| s.len()),
+        Some(1),
+        "the slots go to the screen"
+    );
+}

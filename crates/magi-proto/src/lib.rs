@@ -393,12 +393,21 @@ pub enum HarnessEvent {
         counts: Laid,
         #[serde(default)]
         why: String,
+        /// Every slot, in the order it was sent.
+        #[serde(default)]
+        slots: Vec<laying::LaidSlot>,
     },
     /// What one helper-model job cost, for the cost view. Not part of the log.
     HelperSpent {
         role: String,
         model: String,
         usage: Usage,
+    },
+    /// What the memory layer answered a [`UiCommand::Memory`] with: its notes, its change log, or
+    /// what an undo or a review did. Not part of the log.
+    MemoryAnswered {
+        verb: String,
+        answer: serde_json::Value,
     },
 }
 
@@ -439,7 +448,10 @@ impl HarnessEvent {
             | Self::Branched { cursor, .. }
             | Self::Error { cursor, .. } => *cursor,
             // A frame occupies no place in the log; nothing replays it.
-            Self::Drew { .. } | Self::ContextLaid { .. } | Self::HelperSpent { .. } => Cursor::ZERO,
+            Self::Drew { .. }
+            | Self::ContextLaid { .. }
+            | Self::HelperSpent { .. }
+            | Self::MemoryAnswered { .. } => Cursor::ZERO,
         }
     }
 }

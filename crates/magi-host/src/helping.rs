@@ -26,6 +26,10 @@ impl Helpers {
     /// The model to run `job` with, or `None` when nothing should.
     #[must_use]
     pub fn model_for(&self, job: &Job, main: &str) -> Option<String> {
+        // `main` is the session's own model by name: a review is the main model's to make.
+        if job.role == "main" && !main.is_empty() {
+            return Some(main.to_owned());
+        }
         self.roles
             .get(&job.role)
             .cloned()
@@ -266,5 +270,61 @@ mod tests {
         .expect("a job");
         assert!(job.blocking);
         assert_eq!(job.schema, None);
+    }
+
+    #[test]
+    fn a_review_is_the_session_models_to_make() {
+        let job = Job {
+            role: "main".into(),
+            fallback: "skip".into(),
+            ..Job::default()
+        };
+        assert_eq!(helpers().model_for(&job, "big").as_deref(), Some("big"));
+    }
+
+    fn backend(mind: &magi_testkit::Mind, helpers: Helpers) -> Backend {
+        Backend {
+            tools: Vec::new(),
+            clients: Vec::new(),
+            tooling: magi_tools::supplier::Tooling::default(),
+            cwd: std::env::temp_dir(),
+            grants: Vec::new(),
+            environ: std::collections::BTreeMap::new(),
+            confine: false,
+            isolate: false,
+            model: "main/model".into(),
+            mind: mind.program().display().to_string(),
+            wants: magi_proto::ask::Wants::default(),
+            context_window: None,
+            system: None,
+            helpers,
+        }
+    }
+
+    /// Run one memory job against a fake model with `spent` already gone, and say whether it ran.
+    async fn ran(cap: u64, spent: u64) -> bool {
+        let mind = magi_testkit::Mind::answering(&format!("helping-cap-{cap}-{spent}"), "done");
+        let capped = Helpers {
+            per_prompt_micros: Some(cap),
+            ..helpers()
+        };
+        let none: crate::scribe::Held = std::sync::Arc::new(tokio::sync::Mutex::new(None));
+        let (events, mut heard) = tokio::sync::broadcast::channel(8);
+        let job = Job {
+            id: "J-1".into(),
+            role: "memory".into(),
+            ..Job::default()
+        };
+        work(&[job], &backend(&mind, capped), &none, &events, &mut {
+            spent
+        })
+        .await;
+        matches!(heard.try_recv(), Ok(HarnessEvent::HelperSpent { .. }))
+    }
+
+    #[tokio::test]
+    async fn a_prompt_whose_helper_budget_is_spent_runs_no_more_jobs() {
+        assert!(ran(1_000, 0).await, "under the cap, the job runs");
+        assert!(!ran(1_000, 1_000).await, "at the cap, it is not started");
     }
 }

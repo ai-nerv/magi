@@ -80,6 +80,7 @@ pub fn commands() -> Vec<Candidate> {
             ":quitall",
             "exit, taking anything this session started — :qa for the same",
         ),
+        (":notes", "what memory has learnt, and every change to it"),
     ]
     .iter()
     .map(|(value, detail)| Candidate {
