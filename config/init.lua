@@ -43,6 +43,8 @@ magi.model = "openrouter/deepseek/deepseek-v4-flash-0731"
 -- of its notes, a surface asks whether something is safe. A role named here runs on that model;
 -- one not named is skipped, or run on the session's own model when the job asks for that. The
 -- budget caps what they may spend on one prompt, in dollars, and `:cost` shows what they spent.
+-- Notes are kept with no line here: `memory` runs on the session's own model ("main") until one
+-- is named, and `memory = false` keeps none.
 --
 -- magi.helpers = {
 --   memory     = "openrouter/google/gemini-2.5-flash",

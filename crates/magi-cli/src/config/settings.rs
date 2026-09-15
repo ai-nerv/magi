@@ -138,7 +138,7 @@ pub fn options(loaded: &Loaded) -> magi_proto::ask::Wants {
 
 /// The small models that run jobs for balthasar and questions for surfaces: a model per role, and
 /// the limits they run under. A role with no model here is skipped, or run on the session's own
-/// model when the job asks for that.
+/// model when the job asks for that. `memory` is on, on that model, until named or set `false`.
 /// ```lua
 /// magi.helpers = {
 ///   memory = "openrouter/google/gemini-2.5-flash",
@@ -149,6 +149,10 @@ pub fn options(loaded: &Loaded) -> magi_proto::ask::Wants {
 #[must_use]
 pub fn helpers(loaded: &Loaded) -> magi_host::helping::Helpers {
     let mut helpers = magi_host::helping::Helpers::default();
+    // Notes are kept unless a machine says otherwise, on the session's own model until one is named.
+    helpers
+        .roles
+        .insert("memory".to_owned(), magi_host::helping::MAIN.to_owned());
     let Some(table) = loaded.config.get("helpers").and_then(|v| v.as_object()) else {
         return helpers;
     };
@@ -163,6 +167,9 @@ pub fn helpers(loaded: &Loaded) -> magi_host::helping::Helpers {
             }
             (role, serde_json::Value::String(model)) => {
                 helpers.roles.insert(role.to_owned(), model.clone());
+            }
+            (role, serde_json::Value::Bool(false)) => {
+                helpers.roles.remove(role);
             }
             _ => {}
         }
@@ -252,6 +259,17 @@ mod ui_tests {
             tools: Vec::new(),
             clients: Vec::new(),
         }
+    }
+
+    #[test]
+    fn notes_are_kept_on_the_sessions_model_until_told_otherwise() {
+        let memory = |source: &str| helpers(&from_lua(source)).roles.get("memory").cloned();
+        assert_eq!(memory("").as_deref(), Some(magi_host::helping::MAIN));
+        assert_eq!(
+            memory("magi.helpers = { memory = \"a/small\" }").as_deref(),
+            Some("a/small")
+        );
+        assert_eq!(memory("magi.helpers = { memory = false }"), None);
     }
 
     /// The palette a config would produce, without adopting it process-wide.

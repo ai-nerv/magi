@@ -22,6 +22,9 @@ pub struct Answer {
     pub usage: magi_proto::Usage,
 }
 
+/// A helper role set to this runs on the session's own model.
+pub const MAIN: &str = "main";
+
 impl Helpers {
     /// The model to run `job` with, or `None` when nothing should.
     #[must_use]
@@ -30,10 +33,11 @@ impl Helpers {
         if job.role == "main" && !main.is_empty() {
             return Some(main.to_owned());
         }
-        self.roles
-            .get(&job.role)
-            .cloned()
-            .or_else(|| (job.fallback == "main" && !main.is_empty()).then(|| main.to_owned()))
+        match self.roles.get(&job.role).map(String::as_str) {
+            Some(MAIN) => Some(main.to_owned()).filter(|m| !m.is_empty()),
+            Some(model) => Some(model.to_owned()),
+            None => (job.fallback == "main" && !main.is_empty()).then(|| main.to_owned()),
+        }
     }
 
     fn patience(&self, job: &Job) -> std::time::Duration {
@@ -198,6 +202,21 @@ pub async fn work(
     }
 }
 
+/// Background jobs a layout handed out, run beside the turn that asked for them.
+pub fn alongside(
+    jobs: Vec<Job>,
+    backend: Backend,
+    scribe: crate::scribe::Held,
+    events: tokio::sync::broadcast::Sender<HarnessEvent>,
+) {
+    if jobs.is_empty() {
+        return;
+    }
+    tokio::spawn(async move {
+        work(&jobs, &backend, &scribe, &events, &mut 0).await;
+    });
+}
+
 /// Between turns: hand balthasar what settled, and run the background jobs it has waiting. Spawned,
 /// so the person is never waiting on a summary somebody else asked for.
 pub fn between(
@@ -267,6 +286,18 @@ mod tests {
         assert_eq!(helpers().model_for(&job, "big"), None, "skipped by default");
         job.fallback = "main".into();
         assert_eq!(helpers().model_for(&job, "big").as_deref(), Some("big"));
+    }
+
+    #[test]
+    fn a_role_set_to_main_runs_on_the_sessions_model() {
+        let mut set = helpers();
+        set.roles.insert("memory".into(), MAIN.into());
+        let job = Job {
+            role: "memory".into(),
+            ..Job::default()
+        };
+        assert_eq!(set.model_for(&job, "big").as_deref(), Some("big"));
+        assert_eq!(set.model_for(&job, ""), None, "no model of its own to run on");
     }
 
     #[test]
