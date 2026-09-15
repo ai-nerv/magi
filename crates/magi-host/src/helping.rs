@@ -52,7 +52,7 @@ pub async fn run(job: &Job, backend: &Backend) -> Result<Answer, String> {
         .model_for(job, &backend.model)
         .ok_or_else(|| format!("no helper is configured for `{}`", job.role))?;
     let context = magi_model::Context {
-        system: Some(job.instruction.clone()).filter(|s| !s.is_empty()),
+        system: instructed(job),
         messages: vec![magi_model::Message::user(job.input.clone())],
         tools: Vec::new(),
     };
@@ -111,23 +111,26 @@ fn wants(job: &Job, backend: &Backend, model: &str) -> magi_proto::ask::Wants {
     magi_proto::ask::Wants {
         thinking: Some(magi_model::ThinkingLevel::Off),
         max_tokens: Some(job.max_tokens.unwrap_or(MAX_TOKENS)),
-        schema: job
-            .schema
-            .clone()
-            .filter(|s| !s.is_null())
-            .map(|schema| magi_proto::ask::Schema {
-                name: if job.kind.is_empty() {
-                    "answer".to_owned()
-                } else {
-                    job.kind.clone()
-                },
-                schema,
-            }),
+        // Asked for in words rather than forced: a small model held to a schema from the first token
+        // has nowhere to think but inside the strings, and wrote its reasoning into a note's title.
+        schema: None,
         // The routing chosen for the session's model means nothing to another one.
         provider: (model == backend.model)
             .then(|| backend.wants.provider.clone())
             .flatten(),
     }
+}
+
+/// A job's instruction, with the shape its answer must take said in words when it has one.
+fn instructed(job: &Job) -> Option<String> {
+    let shape = job.schema.as_ref().filter(|schema| !schema.is_null());
+    let mut said = job.instruction.clone();
+    if let Some(shape) = shape {
+        said.push_str(&format!(
+            "\n\nAnswer with one JSON value matching this JSON Schema, and nothing else:\n{shape}"
+        ));
+    }
+    Some(said).filter(|s| !s.trim().is_empty())
 }
 
 /// Run each job, tell balthasar how each went, and tell whoever watches what each cost. One at a
@@ -343,9 +346,27 @@ mod tests {
     #[test]
     fn a_helper_is_asked_not_to_reason() {
         let mind = magi_testkit::Mind::answering("helping-thinking", "done");
-        let asked = wants(&Job::default(), &backend(&mind, helpers()), "local/small");
+        let shaped = Job {
+            schema: Some(serde_json::json!({ "type": "object", "required": ["ops"] })),
+            ..Job::default()
+        };
+        let asked = wants(&shaped, &backend(&mind, helpers()), "local/small");
         assert_eq!(asked.thinking, Some(magi_model::ThinkingLevel::Off));
         assert_eq!(asked.max_tokens, Some(MAX_TOKENS));
+        assert_eq!(asked.schema, None, "the shape is asked for in words, not forced");
+    }
+
+    #[test]
+    fn the_shape_an_answer_takes_is_said_in_the_instruction() {
+        let shaped = Job {
+            instruction: "Keep notes.".into(),
+            schema: Some(serde_json::json!({ "required": ["ops"] })),
+            ..Job::default()
+        };
+        let said = instructed(&shaped).expect("an instruction");
+        assert!(said.starts_with("Keep notes."), "{said}");
+        assert!(said.contains(r#""required":["ops"]"#), "{said}");
+        assert_eq!(instructed(&Job::default()), None, "nothing to say is nothing sent");
     }
 
     #[tokio::test]
