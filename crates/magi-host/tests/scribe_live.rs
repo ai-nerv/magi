@@ -279,3 +279,30 @@ async fn agents_of_one_run_do_not_overwrite_each_others_transcript() {
         said("the child's prompt")
     );
 }
+
+#[tokio::test]
+async fn a_run_past_one_frame_comes_back_whole() {
+    // 12 MB of turns: one reply with all of it was past the memory layer's frame limit, and the
+    // resume that asked for it started over with nothing.
+    let Some((mut scribe, _held)) = scribe("long").await else {
+        return;
+    };
+    for n in 1..=12 {
+        let entry = Entry::User {
+            id: MessageId::new(format!("u{n}")),
+            text: "x".repeat(1_000_000),
+            aside: String::new(),
+        };
+        scribe
+            .observe(Cursor(n), &entry, &Default::default())
+            .await
+            .expect("observe");
+    }
+    let back = scribe.replay().await.expect("replay");
+    let cursors: Vec<u64> = back.iter().map(|(cursor, _)| cursor.0).collect();
+    assert_eq!(
+        cursors,
+        (1..=12).collect::<Vec<_>>(),
+        "not all of it came back"
+    );
+}

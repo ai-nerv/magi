@@ -295,16 +295,39 @@ impl Scribe {
     }
 
     async fn replay_at(&mut self, id: &str) -> Result<Vec<(Cursor, Entry)>, Fault> {
-        // Durable: resuming is the first call a fresh store gets, and that call opens it.
-        let values = self
-            .family
-            .call_within(
-                "replay",
-                vec![serde_json::Value::String(id.to_owned())],
-                magi_ipc::family::DURABLE,
-            )
-            .await?;
-        values.iter().flat_map(rows).map(rebuild).collect()
+        // A page at a time: a long run in one reply was past the memory layer's frame limit, and
+        // the resume that asked for it started over from nothing. Durable: resuming is the first
+        // call a fresh store gets, and that call opens it.
+        let mut out = Vec::new();
+        let mut from = 0_u64;
+        loop {
+            let values = self
+                .family
+                .call_within(
+                    "replay",
+                    vec![
+                        serde_json::Value::String(id.to_owned()),
+                        serde_json::json!({ "from": from, "bytes": REPLAY_PAGE }),
+                    ],
+                    magi_ipc::family::DURABLE,
+                )
+                .await?;
+            let page: Vec<&serde_json::Value> = values.iter().flat_map(rows).collect();
+            let first = page.first().and_then(|row| row["cursor"].as_u64());
+            // One that does not page answers the whole run every time: its first answer was it.
+            if page.is_empty() || (from > 0 && first.is_some_and(|c| c < from)) {
+                break;
+            }
+            let last = page.iter().filter_map(|row| row["cursor"].as_u64()).max();
+            for row in page {
+                out.push(rebuild(row)?);
+            }
+            match last {
+                Some(last) => from = last + 1,
+                None => break,
+            }
+        }
+        Ok(out)
     }
 
     /// The runs this project has had. Durable, for the reason `replay` is.
@@ -531,6 +554,9 @@ impl Recalled {
         }
     }
 }
+
+/// How much of a replay one reply may carry, well inside the memory layer's frame limit.
+const REPLAY_PAGE: u64 = 4 * 1024 * 1024;
 
 /// A reply value that is a list of rows, or the single row it is.
 fn rows(value: &serde_json::Value) -> Vec<&serde_json::Value> {

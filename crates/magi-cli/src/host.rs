@@ -71,7 +71,7 @@ pub async fn start(
     let child = std::env::var_os("MAGI_MELCHIOR_PARENT").is_some();
     let transcript = agent.filter(|_| child).map(|agent| format!("{id}@{agent}"));
     let (resumed, carried) = match resume {
-        Some(run) => resumable(&mut scribe, run.as_deref()).await,
+        Some(run) => resumable(&mut scribe, run.as_deref()).await?,
         None => (None, Vec::new()),
     };
     // A resumed run goes on in its own transcript, so the memory layer counts what it carries.
@@ -363,17 +363,23 @@ fn unreachable(memory: &str, what: &str, why: &str) -> String {
 async fn resumable(
     scribe: &mut magi_host::scribe::Scribe,
     wanted: Option<&str>,
-) -> (Option<String>, Vec<magi_proto::Entry>) {
+) -> Result<(Option<String>, Vec<magi_proto::Entry>)> {
     // Both failures below used to return an empty conversation and say nothing, so `--resume`
     // against a memory layer that could not answer looked exactly like a session with nothing to
-    // resume — a fresh start, at exit 0, having quietly dropped everything.
+    // resume — a fresh start, at exit 0, having quietly dropped everything. A run named outright
+    // is not started over at all: going on without it is not what was asked.
     let rows = match scribe.sessions().await {
         Ok(rows) => rows,
         Err(why) => {
+            if let Some(wanted) = wanted {
+                anyhow::bail!(
+                    "--resume-run {wanted}: the memory layer would not list its runs: {why}"
+                );
+            }
             eprintln!(
                 "magi: --resume found nothing: the memory layer would not list its runs: {why}"
             );
-            return (None, Vec::new());
+            return Ok((None, Vec::new()));
         }
     };
     let mut ids = rows
@@ -391,7 +397,7 @@ async fn resumable(
         Some(wanted) => {
             let found = ids.find(|id| id == wanted);
             if found.is_none() {
-                eprintln!("magi: --resume-run found no run `{wanted}` in this project's memory");
+                anyhow::bail!("--resume-run found no run `{wanted}` in this project's memory");
             }
             found
         }
@@ -400,12 +406,15 @@ async fn resumable(
     };
     match newest {
         Some(id) => match scribe.replay_of(&id).await {
-            Ok(entries) => (Some(id), entries),
+            Ok(entries) => Ok((Some(id), entries)),
+            Err(why) if wanted.is_some() => {
+                anyhow::bail!("--resume-run found `{id}` but could not read it back: {why}")
+            }
             Err(why) => {
                 eprintln!("magi: --resume found `{id}` but could not read it back: {why}");
-                (None, Vec::new())
+                Ok((None, Vec::new()))
             }
         },
-        None => (None, Vec::new()),
+        None => Ok((None, Vec::new())),
     }
 }

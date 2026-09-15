@@ -308,3 +308,30 @@ fn the_memory_verbs_reach_the_model_when_balthasar_is_there() {
         );
     }
 }
+
+#[test]
+fn a_named_run_that_cannot_be_read_is_an_error_not_a_fresh_start() {
+    // A resume that could not read its run back carried on as a new session, and the prompt meant
+    // for the old one was answered with no memory of it.
+    if !installed() {
+        eprintln!("skipping: no balthasar on PATH");
+        return;
+    }
+    let dir = workspace("gone");
+    let mind = Mind::answering("resume-gone", "noted");
+    let run = magi(
+        &dir,
+        &mind,
+        &["--resume-run", "no-such-run", "-p", "and now?"],
+    );
+    assert!(
+        !run.status.success(),
+        "a missing run started a fresh session"
+    );
+    let said = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        said.contains("no-such-run"),
+        "the run was not named: {said}"
+    );
+    assert!(mind.asks().is_empty(), "the model was asked anyway");
+}
