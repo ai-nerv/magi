@@ -70,10 +70,12 @@ pub async fn start(
     // A child records its own transcript; a run's agents share the id their memory is filed under.
     let child = std::env::var_os("MAGI_MELCHIOR_PARENT").is_some();
     let transcript = agent.filter(|_| child).map(|agent| format!("{id}@{agent}"));
-    let carried = match resume {
+    let (resumed, carried) = match resume {
         Some(run) => resumable(&mut scribe, run.as_deref()).await,
-        None => Vec::new(),
+        None => (None, Vec::new()),
     };
+    // A resumed run goes on in its own transcript, so the memory layer counts what it carries.
+    let transcript = transcript.or(resumed);
     let session = magi_host::session::Session::recorded(id, carried);
     // Nothing outlives its process, so a stale socket here was left by a crash and is cleared.
     if let Some(parent) = socket.parent() {
@@ -361,7 +363,7 @@ fn unreachable(memory: &str, what: &str, why: &str) -> String {
 async fn resumable(
     scribe: &mut magi_host::scribe::Scribe,
     wanted: Option<&str>,
-) -> Vec<magi_proto::Entry> {
+) -> (Option<String>, Vec<magi_proto::Entry>) {
     // Both failures below used to return an empty conversation and say nothing, so `--resume`
     // against a memory layer that could not answer looked exactly like a session with nothing to
     // resume — a fresh start, at exit 0, having quietly dropped everything.
@@ -371,7 +373,7 @@ async fn resumable(
             eprintln!(
                 "magi: --resume found nothing: the memory layer would not list its runs: {why}"
             );
-            return Vec::new();
+            return (None, Vec::new());
         }
     };
     let mut ids = rows
@@ -398,12 +400,12 @@ async fn resumable(
     };
     match newest {
         Some(id) => match scribe.replay_of(&id).await {
-            Ok(entries) => entries,
+            Ok(entries) => (Some(id), entries),
             Err(why) => {
                 eprintln!("magi: --resume found `{id}` but could not read it back: {why}");
-                Vec::new()
+                (None, Vec::new())
             }
         },
-        None => Vec::new(),
+        None => (None, Vec::new()),
     }
 }

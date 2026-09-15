@@ -178,6 +178,20 @@ fn a_second_run_picks_up_the_conversation_balthasar_kept() {
         "and so did the answer to it: {}",
         asks[1]
     );
+
+    // Resumed again: the second run went on in the first one's transcript, so nothing is lost.
+    let third = magi(&dir, &mind, &["--resume", "-p", "and then?"]);
+    assert!(
+        third.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&third.stderr)
+    );
+    let asks = mind.asks();
+    assert!(
+        asks[2].contains("remember gerbil") && asks[2].contains("and now?"),
+        "the second resume lost a run: {}",
+        asks[2]
+    );
 }
 
 #[test]
