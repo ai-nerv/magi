@@ -1,5 +1,8 @@
 //! One session: its transcript, its journal, and the log every consumer reads.
 
+mod fitting;
+
+use fitting::{SNAPSHOT_BUDGET, newest_within};
 use magi_journal::{Journal, JournalError};
 use magi_proto::{AgentStatus, Cursor, Entry, HarnessEvent, SessionId};
 use tokio::sync::{broadcast, watch};
@@ -329,13 +332,15 @@ impl Session {
 
     /// The state a UI attaching at `from` needs before the live stream makes sense. Everything at
     /// or before `from` arrives as entries; a cold attach passes [`Cursor::ZERO`] and gets nothing.
+    /// The newest entries that fit come back: a frame past the wire's limit is refused whole, which
+    /// takes the connection and whatever the client was about to say with it.
     #[must_use]
     pub fn snapshot(&self, from: Cursor) -> HarnessEvent {
         let kept = usize::try_from(from.0).unwrap_or(usize::MAX);
         HarnessEvent::SessionSnapshot {
             cursor: from,
             session: self.id().clone(),
-            entries: self.entries().iter().take(kept).cloned().collect(),
+            entries: newest_within(self.entries().iter().take(kept), SNAPSHOT_BUDGET),
             status: self.status.clone(),
             model: self.model.clone(),
             choices: self.choices.clone(),
