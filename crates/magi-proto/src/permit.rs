@@ -120,7 +120,10 @@ pub struct Grant {
 impl Grant {
     #[must_use]
     pub fn covers(&self, action: &Action) -> bool {
-        if self.verb != action.verb() {
+        // Leave to write somewhere is leave to read it: whoever may replace a file has nothing
+        // left to be kept from in it. Never the other way round.
+        let reads_under_write = self.verb == "write" && matches!(action, Action::Read { .. });
+        if self.verb != action.verb() && !reads_under_write {
             return false;
         }
         match &self.scope {
@@ -155,7 +158,8 @@ impl Grant {
     /// (`Once`, `Exact`): a parent cannot be shown to cover them, so they are not handed down.
     #[must_use]
     pub fn allows(&self, other: &Grant) -> bool {
-        if self.verb != other.verb {
+        // As in `covers`: whoever may write somewhere may hand down leave to read it.
+        if self.verb != other.verb && !(self.verb == "write" && other.verb == "read") {
             return false;
         }
         match (&self.scope, &other.scope) {
@@ -299,6 +303,42 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_parent_that_may_write_can_hand_down_leave_to_read() {
+        let dir = |verb: &str, path: &str| Grant {
+            verb: verb.to_owned(),
+            scope: Scope::Directory {
+                path: path.to_owned(),
+            },
+        };
+        assert!(dir("write", "/w").allows(&dir("read", "/w/src")));
+        assert!(!dir("read", "/w").allows(&dir("write", "/w/src")));
+        assert!(!dir("write", "/w").allows(&dir("read", "/elsewhere")));
+    }
+    #[test]
+    fn leave_to_write_a_directory_is_leave_to_read_it() {
+        // A child handed `write` on its project and nothing else could overwrite any file in it
+        // and read none, and being headless had nobody to ask.
+        let grant = Grant {
+            verb: "write".to_owned(),
+            scope: Scope::Directory {
+                path: "/home/x/work".to_owned(),
+            },
+        };
+        assert!(grant.covers(&read("/home/x/work/src/lib.rs")));
+        assert!(!grant.covers(&read("/home/x/elsewhere/lib.rs")));
+        assert!(!grant.covers(&run("ls")));
+        // The other way round stays shut: reading is not leave to change anything.
+        let reading = Grant {
+            verb: "read".to_owned(),
+            scope: Scope::Directory {
+                path: "/home/x/work".to_owned(),
+            },
+        };
+        assert!(!reading.covers(&Action::Write {
+            path: "/home/x/work/src/lib.rs".to_owned(),
+        }));
+    }
     #[test]
     fn a_directory_grant_covers_what_is_under_it() {
         let grant = Grant {

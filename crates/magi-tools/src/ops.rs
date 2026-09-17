@@ -294,7 +294,8 @@ impl Ops for Real {
         match decision {
             magi_proto::permit::Decision::Allow { .. } => Ok(()),
             magi_proto::permit::Decision::Deny => Err(format!(
-                "not permitted: {} {}. The person at the keyboard declined.",
+                "not permitted: {} {}. No standing grant covers it, and asking got no leave: \
+                 either it was declined, or nobody is attached to this session to be asked.",
                 action.verb(),
                 action.subject()
             )),
