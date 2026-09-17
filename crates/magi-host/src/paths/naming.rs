@@ -28,3 +28,19 @@ fn two_sessions_started_in_the_same_second_are_still_told_apart() {
 fn an_unqualified_id_is_just_the_time() {
     assert_eq!(session_id(7, ""), "00000000000000000007");
 }
+
+#[test]
+fn a_childs_own_transcript_is_not_offered_to_resume() {
+    // `run@agent` is what a subagent wrote. Only a run is resumed, and it brings its agents back
+    // itself; offering each of them turned the picker into a list of every child ever spawned.
+    let rows = [
+        serde_json::json!({"id": "psi-lambda-1@chi-omega", "title": "an audit"}),
+        serde_json::json!({"id": "psi-lambda-1", "title": "hi"}),
+    ];
+    let offered: Vec<String> = rows
+        .iter()
+        .filter_map(super::summary_of)
+        .map(|found| found.id)
+        .collect();
+    assert_eq!(offered, ["psi-lambda-1"]);
+}

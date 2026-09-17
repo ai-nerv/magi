@@ -50,11 +50,13 @@ pub fn recorded() -> Vec<Summary> {
         .collect()
 }
 
-/// One of balthasar's session rows, as a picker needs it.
+/// One of balthasar's session rows, as a picker needs it. A child's own transcript is `run@agent`
+/// and is never offered: a run is what is resumed, and it brings its agents back itself.
 fn summary_of(row: &serde_json::Value) -> Option<Summary> {
     let id = row
         .get("id")
-        .and_then(serde_json::Value::as_str)?
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.contains('@'))?
         .to_owned();
     let title = row
         .get("title")
