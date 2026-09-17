@@ -55,6 +55,8 @@ pub struct App {
     /// Recorded from the start whether or not anybody looks, in one bounded ring.
     pub timeline: magi_tui::trace::Trace,
     pub picking: Option<Picking>,
+    /// Every question the session has open, oldest first; `picking` is the one on screen.
+    pub asks: Vec<HarnessEvent>,
     /// One at a time: a turn runs its tool calls in order.
     pub surface: Option<surfacing::Surfacing>,
     pub detail: magi_tui::transcript::Detail,
@@ -155,6 +157,7 @@ impl App {
             choices: Vec::new(),
             overlay: None,
             picking: None,
+            asks: Vec::new(),
             // Folded; the handle at the foot of each block opens the one you care about.
             detail: magi_tui::transcript::Detail::Preview,
             named: String::new(),
@@ -522,6 +525,7 @@ mod picking;
 pub use picking::Picking;
 mod applying;
 mod asked;
+mod asks;
 mod folding;
 #[cfg(test)]
 mod retracting;

@@ -390,6 +390,12 @@ async fn connection(
     for event in backlog {
         writer.write(&event).await?;
     }
+    // A question is an event and is in no journal, so the backlog cannot carry one. Whatever is
+    // still waiting is asked again of the screen that has just arrived: one that stepped onto
+    // another agent and came back would otherwise find a turn stuck on a prompt it never saw.
+    for asked in pending.open() {
+        writer.write(&asked).await?;
+    }
 
     // Commands are read in their own task because `FrameReader::read` is not cancel-safe: it takes
     // a length then a body, and a `select!` dropping it between the two parses body as a length.

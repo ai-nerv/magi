@@ -160,6 +160,11 @@ pub(crate) fn on_the_screen(
             }
             // Copy first: both chips sit in the same edge, and a press that fell through to the fold
             // would open the block a person meant to take a copy of.
+            // A tool waiting on an answer: a press on its row brings that question up, whichever
+            // one was showing, so they can be taken in any order.
+            if app.ask_at(mouse.row) {
+                return Pointing::Redraw;
+            }
             if let Some(text) = app.copy_at(mouse.row, mouse.column, width) {
                 crate::clipboard::put(&text);
             } else if !app.toggle_at(mouse.row, mouse.column, width) {

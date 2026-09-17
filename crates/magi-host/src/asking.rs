@@ -18,6 +18,9 @@ const PATIENCE: Duration = Duration::from_secs(300);
 pub struct Pending {
     waiting: Mutex<HashMap<ToolCallId, std::sync::mpsc::Sender<Decision>>>,
     choosing: Mutex<HashMap<ToolCallId, std::sync::mpsc::Sender<String>>>,
+    /// Each open question as it was published, in the order asked. A question is an event and is
+    /// never journalled, so this is the only place a screen that attaches later can learn of it.
+    asked: Mutex<Vec<(ToolCallId, HarnessEvent)>>,
 }
 
 impl Pending {
@@ -26,9 +29,32 @@ impl Pending {
         Self::default()
     }
 
+    /// Every question still waiting for an answer, oldest first, for a screen that has just
+    /// attached: without this a turn waits on a prompt nobody was ever shown.
+    #[must_use]
+    pub fn open(&self) -> Vec<HarnessEvent> {
+        self.asked
+            .lock()
+            .map(|asked| asked.iter().map(|(_, event)| event.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    fn opened(&self, id: &ToolCallId, event: HarnessEvent) {
+        if let Ok(mut asked) = self.asked.lock() {
+            asked.push((id.clone(), event));
+        }
+    }
+
+    fn closed(&self, id: &ToolCallId) {
+        if let Ok(mut asked) = self.asked.lock() {
+            asked.retain(|(open, _)| open != id);
+        }
+    }
+
     /// Deliver an answer to whoever is waiting for it. An id nobody is waiting on is dropped: the
     /// turn it belonged to is over.
     pub fn answer(&self, id: &ToolCallId, decision: Decision) {
+        self.closed(id);
         let Ok(mut waiting) = self.waiting.lock() else {
             return;
         };
@@ -38,14 +64,20 @@ impl Pending {
     }
 
     /// Register a question and hand back the end to wait on.
-    fn register(&self, id: ToolCallId) -> Option<std::sync::mpsc::Receiver<Decision>> {
+    fn register(
+        &self,
+        id: ToolCallId,
+        event: HarnessEvent,
+    ) -> Option<std::sync::mpsc::Receiver<Decision>> {
         let (sender, receiver) = std::sync::mpsc::channel();
-        self.waiting.lock().ok()?.insert(id, sender);
+        self.waiting.lock().ok()?.insert(id.clone(), sender);
+        self.opened(&id, event);
         Some(receiver)
     }
 
     /// Deliver a chosen option to whoever is waiting for it; an id nobody waits on is dropped.
     pub fn chose(&self, id: &ToolCallId, choice: String) {
+        self.closed(id);
         let Ok(mut choosing) = self.choosing.lock() else {
             return;
         };
@@ -55,14 +87,20 @@ impl Pending {
     }
 
     /// Register a general question and hand back the end to wait on.
-    fn awaiting(&self, id: ToolCallId) -> Option<std::sync::mpsc::Receiver<String>> {
+    fn awaiting(
+        &self,
+        id: ToolCallId,
+        event: HarnessEvent,
+    ) -> Option<std::sync::mpsc::Receiver<String>> {
         let (sender, receiver) = std::sync::mpsc::channel();
-        self.choosing.lock().ok()?.insert(id, sender);
+        self.choosing.lock().ok()?.insert(id.clone(), sender);
+        self.opened(&id, event);
         Some(receiver)
     }
 
     /// Forget a chosen-option question.
     fn drop_choice(&self, id: &ToolCallId) {
+        self.closed(id);
         if let Ok(mut choosing) = self.choosing.lock() {
             choosing.remove(id);
         }
@@ -70,6 +108,7 @@ impl Pending {
 
     /// Forget a question, so a timed-out one does not sit in the map for the session.
     fn forget(&self, id: &ToolCallId) {
+        self.closed(id);
         if let Ok(mut waiting) = self.waiting.lock() {
             waiting.remove(id);
         }
@@ -141,17 +180,17 @@ impl magi_tools::approve::Approver for Asker {
         }
         let n = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let id = ToolCallId::new(format!("p{n}"));
-        let Some(receiver) = self.pending.register(id.clone()) else {
-            return Decision::Deny;
-        };
-
-        (self.publish)(HarnessEvent::PermissionAsked {
+        let asked = HarnessEvent::PermissionAsked {
             cursor: (self.cursor)(),
             id: id.clone(),
             tool: tool.to_owned(),
             action: action.clone(),
             offers: magi_tools::permit::Ledger::offers(action),
-        });
+        };
+        let Some(receiver) = self.pending.register(id.clone(), asked.clone()) else {
+            return Decision::Deny;
+        };
+        (self.publish)(asked);
 
         let answer = receiver.recv_timeout(PATIENCE).unwrap_or(Decision::Deny);
         self.pending.forget(&id);
@@ -251,16 +290,16 @@ impl magi_tools::question::Asks for Asker {
         }
         let n = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let id = ToolCallId::new(format!("q{n}"));
-        let receiver = self.pending.awaiting(id.clone())?;
-
-        (self.publish)(HarnessEvent::Asked {
+        let asked = HarnessEvent::Asked {
             cursor: (self.cursor)(),
             id: id.clone(),
             tool: tool.to_owned(),
             question: ask.question.clone(),
             options: ask.options.clone(),
             detail: ask.detail.clone(),
-        });
+        };
+        let receiver = self.pending.awaiting(id.clone(), asked.clone())?;
+        (self.publish)(asked);
 
         // The same patience a permission gets. An unanswered question is not a refusal — the tool decides.
         let answer = receiver.recv_timeout(PATIENCE).ok();
@@ -300,6 +339,40 @@ impl Person {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_question_still_open_is_told_to_whoever_attaches_next() {
+        // Asked once, as an event, and never journalled: a screen that stepped onto another agent
+        // and came back was never told, and the turn waited out its five minutes unseen.
+        let pending = Pending::new();
+        let ask = |n: u8| HarnessEvent::Asked {
+            cursor: Cursor::ZERO,
+            id: ToolCallId::new(format!("q{n}")),
+            tool: "read".into(),
+            question: format!("question {n}"),
+            options: Vec::new(),
+            detail: Vec::new(),
+        };
+        let _first = pending
+            .awaiting(ToolCallId::new("q1"), ask(1))
+            .expect("registered");
+        let _second = pending
+            .awaiting(ToolCallId::new("q2"), ask(2))
+            .expect("registered");
+        assert_eq!(
+            pending.open(),
+            vec![ask(1), ask(2)],
+            "both, in the order asked"
+        );
+        pending.chose(&ToolCallId::new("q1"), "yes".into());
+        assert_eq!(
+            pending.open(),
+            vec![ask(2)],
+            "an answered one is not asked again"
+        );
+        pending.drop_choice(&ToolCallId::new("q2"));
+        assert!(pending.open().is_empty());
+    }
     use magi_tools::approve::Approver;
 
     fn asker(attached: bool) -> (Arc<Pending>, Asker, Arc<Mutex<Vec<HarnessEvent>>>) {

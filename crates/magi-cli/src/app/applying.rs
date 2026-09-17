@@ -157,52 +157,11 @@ impl App {
             // Said in the transcript, once the conversation has started. Which model answered
             // is part of the record, and a switch that changes only two dim words in the
             // footer leaves no mark on the place a reader actually reads.
-            // The turn is blocked until this is answered, so it takes the screen: a picker
-            // opened over whatever else was there, with the narrowest answer under the cursor.
-            HarnessEvent::PermissionAsked {
-                id,
-                tool,
-                action,
-                offers,
-                ..
-            } => {
-                let choices = offers
-                    .iter()
-                    .map(|scope| magi_tui::picker::Choice {
-                        value: scope.label(&action),
-                        detail: String::new(),
-                        ready: true,
-                    })
-                    .chain(std::iter::once(magi_tui::picker::Choice {
-                        value: "no".to_owned(),
-                        detail: "refuse, and tell the model".to_owned(),
-                        ready: true,
-                    }))
-                    .collect();
-                // The call on its own rows, not in the title. A long command clipped into a
-                // heading is clipped in the middle of the very thing being decided about.
-                let about = magi_tui::wrap::hard(action.subject(), 60);
-                self.overlay = Some(
-                    magi_tui::picker::Picker::new(
-                        format!("{tool} wants to {}", action.verb()),
-                        choices,
-                        None,
-                    )
-                    .about(about)
-                    .into(),
-                );
-                self.asking_about = action;
-                self.picking = Some(Picking::Permission { id, offers });
+            // The turn is blocked until this is answered. Kept with every other question still
+            // open rather than put straight on screen: see `asks`.
+            asked @ (HarnessEvent::PermissionAsked { .. } | HarnessEvent::Asked { .. }) => {
+                self.ask_arrived(asked);
             }
-            // The general question, drawn with the same picker a permission is — see `asked`.
-            HarnessEvent::Asked {
-                id,
-                tool,
-                question,
-                options,
-                detail,
-                ..
-            } => self.asked(id, &tool, &question, options, detail),
             // Rows a tool asked for. Nothing here reads what goes in them — see `surfacing`.
             HarnessEvent::Surfaced {
                 id,

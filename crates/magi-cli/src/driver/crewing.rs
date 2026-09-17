@@ -16,7 +16,17 @@ pub(super) async fn direct(app: &mut App, to: &mpsc::Sender<UiCommand>, command:
     if app.attached.is_some() && crate::app::for_screen(&command) {
         return;
     }
+    // An answer that was really sent closes its question, and the next one still open takes the
+    // screen. Only here, past the refusals above: a question a view-only screen could not answer
+    // is still open.
+    let settled = match &command {
+        UiCommand::Permit { id, .. } | UiCommand::Answered { id, .. } => Some(id.clone()),
+        _ => None,
+    };
     let _ = to.send(command).await;
+    if let Some(id) = settled {
+        app.ask_settled(&id);
+    }
 }
 
 /// Point the screen at the next agent along, and tell the connection loop where to dial. `own` is
