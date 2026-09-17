@@ -1,6 +1,8 @@
 //! One session: its transcript, its journal, and the log every consumer reads.
 
+pub(crate) mod admission;
 mod fitting;
+mod resuming;
 
 use fitting::{SNAPSHOT_BUDGET, newest_within};
 use magi_journal::{Journal, JournalError};
@@ -12,6 +14,8 @@ use tokio::sync::{broadcast, watch};
 const BROADCAST_CAPACITY: usize = 1024;
 
 pub struct Session {
+    helpers: crate::settling::Tasks,
+    admission: admission::Admission,
     cancel: crate::cancel::Cancel,
     choices: Vec<magi_proto::ModelChoice>,
     thinking: String,
@@ -27,12 +31,7 @@ pub struct Session {
     /// UI (a headless child reporting its own phase) reads this rather than subscribing to `events`,
     /// which is what "is anybody here to approve" counts.
     phase: watch::Sender<AgentStatus>,
-    /// Messages from other instances that arrived while a turn was running. Nothing another
-    /// instance says interrupts a turn. Held rather than journalled on arrival: committing one
-    /// between an assistant's tool call and its result is a conversation no provider accepts.
-    waiting: Vec<Entry>,
-    /// Entries settled here and not yet handed to balthasar, by cursor. Keyed rather than appended,
-    /// so an amended message is one write; drained under a short lock and written outside it.
+    /// Entries awaiting persistence, keyed by cursor and acknowledged after successful writes.
     pending: std::collections::BTreeMap<u64, Entry>,
     /// What each model has cost this session, a finished turn counted once under the model that
     /// answered it; a last-value channel like `phase`, for whoever reports on this session.
@@ -62,6 +61,8 @@ impl Session {
         let (phase, _) = watch::channel(AgentStatus::Idle);
         let (spent, _) = watch::channel(Vec::new());
         Self {
+            helpers: crate::settling::Tasks::default(),
+            admission: admission::Admission::default(),
             spent,
             tallied: std::collections::BTreeMap::new(),
             counted: std::collections::HashSet::new(),
@@ -74,7 +75,6 @@ impl Session {
             provider: None,
             events,
             phase,
-            waiting: Vec::new(),
             pending: std::collections::BTreeMap::new(),
             hints: std::collections::BTreeMap::new(),
             laid: None,
@@ -147,30 +147,10 @@ impl Session {
         self.phase.subscribe()
     }
 
-    /// Take up what balthasar holds for another session, keeping everyone attached. The journal is
-    /// swapped rather than the `Session` replaced: a new broadcast channel leaves every UI quiet.
-    pub fn resume_recorded(&mut self, id: SessionId, entries: Vec<Entry>) {
-        self.journal = Journal::recorded(id, entries);
-        self.status = AgentStatus::Idle;
-        self.pending.clear();
-        let _ = self.events.send(self.snapshot(self.cursor()));
-    }
-
     /// Whether nothing is running, so something new may start.
     #[must_use]
     pub fn idle(&self) -> bool {
-        matches!(self.status, AgentStatus::Idle)
-    }
-
-    /// Keep this until the session has finished what it is doing.
-    pub fn hold(&mut self, entry: Entry) {
-        self.waiting.push(entry);
-    }
-
-    /// Take everything that was held, in the order it arrived. Emptied by the taking, so two turns
-    /// ending close together cannot both deal with the same message.
-    pub fn release(&mut self) -> Vec<Entry> {
-        std::mem::take(&mut self.waiting)
+        !self.busy() && matches!(self.status, AgentStatus::Idle)
     }
 
     /// Take what has settled since the last time, in cursor order. Cheap and synchronous: the
@@ -336,7 +316,12 @@ impl Session {
     /// takes the connection and whatever the client was about to say with it.
     #[must_use]
     pub fn snapshot(&self, from: Cursor) -> HarnessEvent {
-        let kept = usize::try_from(from.0).unwrap_or(usize::MAX);
+        let kept = self
+            .entries()
+            .iter()
+            .enumerate()
+            .take_while(|(i, _)| self.cursor_at(*i).is_some_and(|c| c <= from))
+            .count();
         HarnessEvent::SessionSnapshot {
             cursor: from,
             session: self.id().clone(),
@@ -351,13 +336,12 @@ impl Session {
     /// Everything after `from`, as the events that would have produced it, for a reattaching UI.
     #[must_use]
     pub fn replay(&self, from: Cursor) -> Vec<HarnessEvent> {
-        let skip = usize::try_from(from.0).unwrap_or(usize::MAX);
         self.entries()
             .iter()
             .enumerate()
-            .skip(skip)
+            .filter(|(i, _)| self.cursor_at(*i).is_some_and(|c| c > from))
             .flat_map(|(index, entry)| {
-                let cursor = Cursor(index as u64 + 1);
+                let cursor = self.cursor_at(index).expect("journal cursor");
                 events_for(cursor, entry)
             })
             .collect()
@@ -394,13 +378,37 @@ impl Session {
     /// # Errors
     /// When the write fails.
     pub fn amend_at(&mut self, cursor: Cursor, entry: Entry) -> Result<(), JournalError> {
-        let at = usize::try_from(cursor.0).unwrap_or(0).saturating_sub(1);
-        let previous = self.journal.entries().get(at).cloned();
+        let previous = self.amendment_target(cursor, &entry)?;
         self.journal.amend_at(cursor, entry.clone())?;
-        for event in amendment_events(cursor, previous.as_ref(), &entry) {
+        for event in amendment_events(cursor, Some(&previous), &entry) {
             let _ = self.events.send(event);
         }
         self.tally(&entry);
+        self.pending.insert(cursor.0, entry);
+        Ok(())
+    }
+
+    fn amendment_target(&self, cursor: Cursor, entry: &Entry) -> Result<Entry, JournalError> {
+        let previous = self.position(cursor).and_then(|at| self.entries().get(at));
+        let same = match (previous, entry) {
+            (Some(Entry::Assistant { id: old, .. }), Entry::Assistant { id, .. }) => old == id,
+            (Some(Entry::Tool { id: old, .. }), Entry::Tool { id, .. }) => old == id,
+            _ => false,
+        };
+        previous.filter(|_| same).cloned().ok_or_else(|| {
+            JournalError::Refused(format!("entry identity does not match cursor {}", cursor.0))
+        })
+    }
+
+    /// Update an identified streaming entry without publishing its terminal event.
+    pub fn revise_at(&mut self, cursor: Cursor, entry: Entry) -> Result<(), JournalError> {
+        let previous = self.amendment_target(cursor, &entry)?;
+        self.journal.amend_at(cursor, entry.clone())?;
+        for event in amendment_events(cursor, Some(&previous), &entry) {
+            if !matches!(event, HarnessEvent::AssistantEnded { .. }) {
+                let _ = self.events.send(event);
+            }
+        }
         self.pending.insert(cursor.0, entry);
         Ok(())
     }
@@ -438,6 +446,7 @@ impl Session {
     /// Change what the agent is doing and tell everyone. Status is not journalled: a session
     /// restored tomorrow is idle whatever it was doing when the process died.
     pub fn set_status(&mut self, status: AgentStatus) {
+        let status = self.admitted_status(status);
         self.status = status.clone();
         // The last-value view first, so a headless observer sees the change even with no UI here.
         self.phase.send_replace(status.clone());

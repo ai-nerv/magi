@@ -628,11 +628,13 @@ version = "0.2.0"
 dependencies = [
  "luna",
  "magi-model",
+ "magi-testkit",
  "magi-tools",
  "serde",
  "serde_json",
  "sha2",
  "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]

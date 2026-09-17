@@ -178,18 +178,20 @@ impl Real {
         Some(dir)
     }
 
-    /// What the jail may write, from this session's grants — a write grant on a directory makes it
-    /// writable — and that it keeps the network: the jail contains the filesystem, not the network,
-    /// which is essential and stays open. Read into the tools-program profile [`Self::jail`] sends.
+    /// Writable directories and unrestricted network permission from the session ledger.
     fn jail_reach(&self) -> (Vec<PathBuf>, bool) {
         use magi_proto::permit::Scope;
         let mut write = Vec::new();
+        let mut reach = false;
         for grant in self.grants() {
             if let ("write", Scope::Directory { path }) = (grant.verb.as_str(), &grant.scope) {
                 write.push(PathBuf::from(path));
             }
+            if grant.verb == "reach" && grant.scope == Scope::Anything {
+                reach = true;
+            }
         }
-        (write, true)
+        (write, reach)
     }
 
     /// Resolve a path against the root, refusing anything that escapes it when confined. Checked
@@ -349,6 +351,34 @@ mod tests {
             None,
             "a session that did not ask for a jail gets none"
         );
+    }
+
+    #[test]
+    fn an_empty_or_host_specific_grant_never_opens_all_networks() {
+        use magi_proto::permit::{Grant, Scope};
+        for grants in [
+            vec![],
+            vec![Grant {
+                verb: "reach".to_owned(),
+                scope: Scope::Directory {
+                    path: "example.test".to_owned(),
+                },
+            }],
+        ] {
+            let dir = Scratch::new("magi-ops", "network-floor");
+            let ops = Real::gated(
+                dir.to_path_buf(),
+                crate::permit::Ledger::with(grants),
+                std::sync::Arc::new(crate::approve::AllowAll),
+            )
+            .isolating(true);
+            let profile: serde_json::Value =
+                serde_json::from_str(&ops.jail().expect("profile")).expect("json");
+            assert_eq!(profile["reach"], false);
+            if let Some(tmp) = ops.shared_tmp() {
+                let _ = std::fs::remove_dir_all(tmp);
+            }
+        }
     }
 
     #[test]

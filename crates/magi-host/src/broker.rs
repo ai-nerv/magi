@@ -182,12 +182,15 @@ pub async fn ask_through(
                 of,
                 seconds,
                 ..
-            } => on_retry(Retry {
-                attempt,
-                max_attempts: of,
-                // Milliseconds, because that is what the status line shows.
-                delay_ms: (seconds * 1000.0) as u64,
-            }),
+            } => {
+                ended = None;
+                on_retry(Retry {
+                    attempt,
+                    max_attempts: of,
+                    // Milliseconds, because that is what the status line shows.
+                    delay_ms: (seconds * 1000.0) as u64,
+                });
+            }
             Said::Served { provider } => {
                 if let Ok(mut served) = SERVED.lock() {
                     served.insert(stream.clone(), provider);
@@ -231,17 +234,25 @@ fn carried(said: Said) -> Delta {
 /// # Errors
 /// Whatever [`ask`] would return, and [`Refusal::Invalid`] when the answer will not parse.
 pub async fn value(
+    program: &str,
     model: &str,
     context: &Context,
     wants: &Wants,
 ) -> Result<serde_json::Value, Trouble> {
     let mut text = String::new();
     let mut args = String::new();
-    ask(model, context, wants, |delta| match delta {
-        Delta::Text(chunk) => text.push_str(&chunk),
-        Delta::ToolCallArgs(chunk) => args.push_str(&chunk),
-        _ => {}
-    })
+    ask_through(
+        program,
+        model,
+        context,
+        wants,
+        |delta| match delta {
+            Delta::Text(chunk) => text.push_str(&chunk),
+            Delta::ToolCallArgs(chunk) => args.push_str(&chunk),
+            _ => {}
+        },
+        |_| {},
+    )
     .await?;
 
     // A call is preferred over prose: Anthropic answers a schema by calling a forced tool.

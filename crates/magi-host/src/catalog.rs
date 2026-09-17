@@ -27,6 +27,8 @@ pub struct Backend {
     pub wants: magi_proto::ask::Wants,
     /// How much this model will read, as melchior's card reported it. Carried rather than looked up.
     pub context_window: Option<u64>,
+    /// The longest answer it can give, from the same card.
+    pub max_output: Option<u64>,
     /// What the model is told it is. Assembled once, when the daemon starts.
     pub system: Option<String>,
     /// The small models that run jobs on balthasar's behalf — `magi.helpers`.
@@ -121,6 +123,7 @@ impl Catalog {
             tooling: self.tooling.clone(),
             wants: self.wants.clone(),
             context_window: card.context_window,
+            max_output: card.max_output,
             system: self.system.clone(),
             confine: self.confine,
             isolate: self.isolate,

@@ -19,7 +19,7 @@ async fn scribe(name: &str) -> Option<(Scribe, Held)> {
     let dir = Scratch::new("sl", name);
     let instance = format!("s{}-{name}", std::process::id());
     let Some(serving) = Serving::start(&dir, &instance).await else {
-        eprintln!("skipping: no balthasar is installed");
+        magi_testkit::live::unavailable("no balthasar is installed");
         return None;
     };
     let family = Family::dial(serving.socket())

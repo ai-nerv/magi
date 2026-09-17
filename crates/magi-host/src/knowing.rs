@@ -75,9 +75,16 @@ const HELPING: std::time::Duration = std::time::Duration::from_secs(60);
 impl magi_tools::holding::Answers for Knows {
     fn answer(&self, wonder: Wonder, args: &serde_json::Value) -> Answered {
         match wonder {
-            Wonder::Session => Answered::Told {
+            Wonder::Session if self.asking.is_none() => Answered::Told {
                 said: serde_json::json!({ "id": self.session, "cwd": self.cwd }),
             },
+            Wonder::Session => {
+                let mut answer = self.ask_along(wonder, args, PATIENCE);
+                if let Answered::Told { said } = &mut answer {
+                    said["cwd"] = serde_json::json!(self.cwd);
+                }
+                answer
+            }
             Wonder::Model | Wonder::Memories => self.ask_along(wonder, args, PATIENCE),
             Wonder::Helper => self.ask_along(wonder, args, HELPING),
         }
@@ -102,21 +109,27 @@ pub async fn serve(
 ) {
     while let Some(asking) = asked.recv().await {
         let answered = match asking.wonder {
+            Wonder::Session => {
+                let held = session.lock().await;
+                Answered::Told {
+                    said: serde_json::json!({ "id": held.id() }),
+                }
+            }
             Wonder::Memories => memories(&scribe, &asking.args).await,
             Wonder::Model => model(&session).await,
             // Answered on a task of its own: a model takes seconds, and the next question should not
             // queue behind it.
             Wonder::Helper => {
+                let tasks = session.lock().await.helpers();
                 let session = std::sync::Arc::clone(&session);
                 let backend = backend.clone();
-                tokio::spawn(async move {
+                let _ = tasks.spawn(async move {
                     let answered = helper(&session, backend, &asking.args).await;
                     let _ = asking.back.send(answered);
+                    Ok(())
                 });
                 continue;
             }
-            // One arriving here is a verb that grew a source and did not grow a case.
-            other => refused(other, "nothing here answers that"),
         };
         let _ = asking.back.send(answered);
     }
@@ -158,7 +171,7 @@ async fn helper(
         }
         held.publisher()
     };
-    match crate::helping::run(&job, &backend).await {
+    match crate::helping::run_accounted(&job, &backend).await {
         Ok(answer) => {
             let _ = events.send(magi_proto::HarnessEvent::HelperSpent {
                 role: job.role.clone(),
@@ -169,7 +182,16 @@ async fn helper(
                 said: serde_json::json!({ "text": answer.text, "model": answer.model }),
             }
         }
-        Err(why) => refused(Wonder::Helper, &why),
+        Err(why) => {
+            if why.usage != magi_proto::Usage::default() {
+                let _ = events.send(magi_proto::HarnessEvent::HelperSpent {
+                    role: job.role.clone(),
+                    model: why.model,
+                    usage: why.usage,
+                });
+            }
+            refused(Wonder::Helper, &why.message)
+        }
     }
 }
 
@@ -293,6 +315,35 @@ mod tests {
             magi_proto::SessionId::new("s-1"),
             Vec::new(),
         )))
+    }
+
+    #[tokio::test]
+    async fn a_connected_surface_reads_the_resumed_session_instead_of_its_cached_id() {
+        let (asking, asked) = tokio::sync::mpsc::unbounded_channel();
+        let session = a_session();
+        let serving = tokio::spawn(serve(
+            asked,
+            std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+            std::sync::Arc::clone(&session),
+            None,
+        ));
+        session
+            .lock()
+            .await
+            .resume_prepared(magi_journal::Journal::recorded(
+                magi_proto::SessionId::new("B"),
+                Vec::new(),
+            ));
+        let knows = Knows::of(&magi_proto::SessionId::new("s-1"), "/tmp/project").asking(asking);
+        let answered = tokio::task::spawn_blocking(move || {
+            knows.answer(Wonder::Session, &serde_json::Value::Null)
+        })
+        .await
+        .expect("answer task");
+        assert!(
+            matches!(answered, Answered::Told {said} if said["id"] == "B" && said["cwd"] == "/tmp/project")
+        );
+        serving.await.expect("surface server stopped");
     }
 
     #[tokio::test]

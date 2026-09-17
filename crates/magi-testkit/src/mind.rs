@@ -51,6 +51,38 @@ impl Mind {
         Self::saying(name, &[&text_line(text), &stop_line()])
     }
 
+    /// Emit a numbered prefix, wait for `release`, then finish the answer.
+    #[must_use]
+    pub fn controlled(name: &str) -> Self {
+        written(
+            name,
+            &format!(
+                "if ! mkdir \"$here/active\" 2>/dev/null; then\n\
+             old=$(cat \"$here/active/pid\" 2>/dev/null)\n\
+             if [ -z \"$old\" ] || kill -0 \"$old\" 2>/dev/null; then touch \"$here/overlap\"; fi\n\
+             fi\n\
+             echo $$ > \"$here/active/pid\"\n\
+             trap 'rm -f \"$here/active/pid\"; rmdir \"$here/active\" 2>/dev/null' EXIT\n\
+             printf '{{\"event\":\"text\",\"text\":\"part-%s\"}}\\n' \"$n\"\n\
+             while [ -d \"$here\" ] && [ ! -f \"$here/release.$n\" ]; do sleep 0.01; done\n\
+             printf '%s\\n' '{}' '{}'\n",
+                quoted(&text_line("-done")),
+                quoted(&stop_line()),
+            ),
+        )
+    }
+
+    /// Allow the numbered controlled request to finish.
+    pub fn release(&self, nth: usize) {
+        std::fs::write(self.dir.join(format!("release.{nth}")), b"").expect("release request");
+    }
+
+    /// Whether controlled requests overlapped inside the provider.
+    #[must_use]
+    pub fn overlapped(&self) -> bool {
+        self.dir.join("overlap").exists()
+    }
+
     /// A melchior that takes the ask and never answers it. It sleeps rather than exiting, because
     /// one that closed its pipe would end the turn by itself.
     #[must_use]
@@ -58,6 +90,27 @@ impl Mind {
         // `exec`, so the shell becomes the sleep. The broker kills this child when an interrupted
         // turn drops it; a `sleep` below the shell is reparented to init and outlives the suite.
         written(name, "exec sleep 30\n")
+    }
+
+    /// Emit these lines, record the child's PID, then wait without closing stdout.
+    #[must_use]
+    pub fn stalling(name: &str, lines: &[&str]) -> Self {
+        let mut body = String::new();
+        for line in lines {
+            body.push_str(&format!("printf '%s\\n' '{}'\n", quoted(line)));
+        }
+        body.push_str("echo $$ > \"$here/stalled\"\nexec sleep 30\n");
+        written(name, &body)
+    }
+
+    /// The stalling child's PID, once it has emitted its lines.
+    #[must_use]
+    pub fn stalled_pid(&self) -> Option<u32> {
+        std::fs::read_to_string(self.dir.join("stalled"))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
     }
 
     /// Every ask this melchior was given, in order, as it arrived. An unread file is an ask that

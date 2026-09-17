@@ -9,6 +9,7 @@ use magi_proto::{Cursor, Entry, SessionId};
 /// The one connection to balthasar, as the session shares it. Named here rather than beside either
 /// of its users, which would put `worker` and `turn` in a cycle.
 pub type Held = std::sync::Arc<tokio::sync::Mutex<Option<Scribe>>>;
+mod resuming;
 
 /// The program that filled the `memory` role before it was a role, and the default when nothing
 /// names another.
@@ -198,6 +199,7 @@ impl Scribe {
     /// As any other write: a balthasar that is not there costs the trace and nothing else.
     pub async fn noticed(&mut self, cursor: Cursor, kind: &str, text: &str) -> Result<(), Fault> {
         let turn = serde_json::json!({
+            "run": self.session,
             "cursor": cursor.0,
             "role": "trace",
             "kind": kind,
@@ -253,7 +255,8 @@ impl Scribe {
         entry: &Entry,
         beside: &Beside,
     ) -> Result<(), Fault> {
-        let turn = turn(cursor, entry, beside)?;
+        let mut turn = turn(cursor, entry, beside)?;
+        turn["run"] = serde_json::Value::String(self.session.clone());
         let args = vec![serde_json::Value::String(self.transcript.clone()), turn];
         // On the durable clock, not a feature's: the store a session writes to is opened by this
         // very call the first time, and what is not handed over is not anywhere else either.
@@ -285,13 +288,32 @@ impl Scribe {
     }
 
     /// The same, for a session this scribe is not bound to, which is what resuming reads.
-    pub async fn replay_of(&mut self, id: &str) -> Result<Vec<Entry>, Fault> {
-        Ok(self
-            .replay_at(id)
-            .await?
-            .into_iter()
-            .map(|(_, entry)| entry)
-            .collect())
+    pub async fn replay_of(&mut self, id: &str) -> Result<Vec<(Cursor, Entry)>, Fault> {
+        self.replay_at(id).await
+    }
+
+    /// The durable scratch run of a transcript, defaulting to its key without the extension.
+    pub async fn run_of(&mut self, id: &str) -> Result<SessionId, Fault> {
+        let values = match self
+            .family
+            .call_within(
+                "resume",
+                vec![serde_json::Value::String(id.to_owned())],
+                magi_ipc::family::DURABLE,
+            )
+            .await
+        {
+            Ok(values) => values,
+            Err(Fault::Refused(_)) => return Ok(SessionId::new(id)),
+            Err(why) => return Err(why),
+        };
+        Ok(SessionId::new(
+            values
+                .first()
+                .and_then(|value| value.get("run"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(id),
+        ))
     }
 
     async fn replay_at(&mut self, id: &str) -> Result<Vec<(Cursor, Entry)>, Fault> {
@@ -313,18 +335,23 @@ impl Scribe {
                 )
                 .await?;
             let page: Vec<&serde_json::Value> = values.iter().flat_map(rows).collect();
-            let first = page.first().and_then(|row| row["cursor"].as_u64());
-            // One that does not page answers the whole run every time: its first answer was it.
-            if page.is_empty() || (from > 0 && first.is_some_and(|c| c < from)) {
+            if page.is_empty() {
                 break;
             }
-            let last = page.iter().filter_map(|row| row["cursor"].as_u64()).max();
-            for row in page {
-                out.push(rebuild(row)?);
+            let page = page
+                .into_iter()
+                .map(rebuild)
+                .collect::<Result<Vec<_>, _>>()?;
+            // Non-paging peers repeat the complete, unchanged transcript.
+            if from > 0 && page == out {
+                break;
             }
-            match last {
-                Some(last) => from = last + 1,
-                None => break,
+            for (cursor, entry) in page {
+                if cursor.0 == 0 || cursor.0 < from || cursor.0 == u64::MAX {
+                    return Err(Fault::Malformed("invalid replay cursor ordering".into()));
+                }
+                from = cursor.0 + 1;
+                out.push((cursor, entry));
             }
         }
         Ok(out)
@@ -475,9 +502,8 @@ impl Scribe {
     }
 }
 
-/// Hand everything a session has settled to balthasar. The lock is taken to drain and released
-/// before a byte is written, so a UI reading the transcript is never queued behind `fsync`.
-/// Draining first also means a failure does not re-send what already landed.
+/// Snapshot settled entries under the session lock, then write without holding it.
+/// Acknowledge each unchanged version only after its write succeeds.
 ///
 /// # Errors
 /// Whatever balthasar answered. [`Fault::is_fatal`] says whether continuing would build on a hole.
@@ -489,11 +515,11 @@ pub async fn flush(
         return Ok(());
     };
     let mut settled = {
-        let mut held = session.lock().await;
+        let held = session.lock().await;
         if !held.has_pending() {
             return Ok(());
         }
-        let taken = held.take_pending();
+        let taken = held.pending_batch();
         let beside: Vec<Beside> = taken
             .iter()
             .map(|(cursor, entry)| beside(&held, *cursor, entry))
@@ -508,18 +534,11 @@ pub async fn flush(
         // A mask is not news to the layer that ordered it: balthasar marks a turn masked as it
         // hands the plan over, and streaming it back would file its decision as a fresh turn.
         if matches!(entry, Entry::Masked { .. }) {
+            session.lock().await.acknowledge_pending(cursor, &entry);
             continue;
         }
-        if let Err(why) = scribe.settle(cursor, &entry, &beside).await {
-            // Back where it was taken from, rather than dropped: this is the only copy, and the
-            // next flush — the one [`crate::drain`] makes on the way out — is its second chance.
-            settled.push_front(((cursor, entry), beside));
-            session
-                .lock()
-                .await
-                .keep_pending(settled.into_iter().map(|(row, _)| row).collect());
-            return Err(why);
-        }
+        scribe.settle(cursor, &entry, &beside).await?;
+        session.lock().await.acknowledge_pending(cursor, &entry);
     }
     Ok(())
 }
@@ -580,7 +599,16 @@ fn rebuild(row: &serde_json::Value) -> Result<(Cursor, Entry), Fault> {
     .map_err(|e| Fault::Malformed(format!("raw is not a record: {e}")))?;
 
     match record {
-        Record::Entry { cursor, entry } => Ok((cursor, entry)),
+        Record::Entry { cursor, entry } => {
+            if let Some(advertised) = row.get("cursor")
+                && advertised.as_u64() != Some(cursor.0)
+            {
+                return Err(Fault::Malformed(
+                    "replay cursor differs from raw record".into(),
+                ));
+            }
+            Ok((cursor, entry))
+        }
         Record::Meta { version, .. } => Err(Fault::Malformed(format!(
             "a meta record replayed as an entry (version {version}, this build writes {JOURNAL_VERSION})"
         ))),
@@ -595,13 +623,13 @@ fn beside(session: &crate::session::Session, cursor: Cursor, entry: &Entry) -> B
             ..Beside::default()
         },
         Entry::Tool { id, .. } => {
-            let at = usize::try_from(cursor.0).unwrap_or(0).saturating_sub(1);
+            let at = session.position(cursor).unwrap_or(0);
             let before = &session.entries()[..at.min(session.entries().len())];
             Beside {
                 group: before
                     .iter()
                     .rposition(|e| matches!(e, Entry::Assistant { .. }))
-                    .map(|i| i as u64 + 1),
+                    .and_then(|i| session.cursor_at(i).map(|c| c.0)),
                 hints: session.hints(id.as_str()),
             }
         }

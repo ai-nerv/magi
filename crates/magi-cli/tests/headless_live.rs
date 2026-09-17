@@ -48,11 +48,11 @@ fn names_a_role() -> bool {
 /// walking up for a `.git`; short names, because a unix socket path may not exceed `SUN_LEN`.
 fn workspace(name: &str) -> Option<Scratch> {
     if !installed("melchior") || !installed("balthasar") {
-        eprintln!("skipping: melchior and balthasar are not both on PATH");
+        magi_testkit::live::unavailable("melchior and balthasar are not both on PATH");
         return None;
     }
     if !names_a_role() {
-        eprintln!("skipping: the melchior on PATH is older than roles — `oslo make install`");
+        magi_testkit::live::unavailable("the melchior on PATH is older than roles");
         return None;
     }
     let dir = Scratch::new("mh", name).settling();
@@ -81,7 +81,7 @@ impl Headless {
     /// three streams are redirected. The name is printed after the socket is bound, melchior has
     /// answered and balthasar has been convened. No `--tied`: this session is a root.
     fn start(dir: &Path, role: &str, prompt: &str) -> Self {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_magi"));
+        let mut command = Command::new(magi_testkit::live::binary(env!("CARGO_BIN_EXE_magi")));
         // Or it records into the store of whichever session the suite was started from.
         magi_testkit::only_its_own_store(&mut command);
         let mut process = command

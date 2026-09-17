@@ -35,6 +35,46 @@ fn the_first_entry_is_at_cursor_one() {
     assert_eq!(held.entries().len(), 1);
 }
 
+#[test]
+fn restored_cursors_remain_sparse_when_amending_and_appending() {
+    let mut held = Journal::restore(
+        SessionId::new("s"),
+        vec![(Cursor(7), user("one")), (Cursor(13), assistant("two"))],
+    )
+    .expect("restore");
+    assert_eq!(held.cursor_at(0), Some(Cursor(7)));
+    assert_eq!(held.position(Cursor(13)), Some(1));
+    assert_eq!(held.position(Cursor(2)), None);
+    held.amend_at(Cursor(7), user("changed")).expect("amend");
+    assert_eq!(held.entries()[0], user("changed"));
+    assert_eq!(held.entries()[1], assistant("two"));
+    assert_eq!(held.append(user("three")).expect("append"), Cursor(14));
+}
+
+#[test]
+fn invalid_restored_cursors_are_refused_and_exhaustion_cannot_wrap() {
+    for cursors in [vec![0], vec![1, 1], vec![7, 3], vec![u64::MAX]] {
+        assert!(
+            Journal::restore(
+                SessionId::new("s"),
+                cursors
+                    .into_iter()
+                    .map(|c| (Cursor(c), user("entry")))
+                    .collect()
+            )
+            .is_err()
+        );
+    }
+    let mut held = Journal::restore(
+        SessionId::new("s"),
+        vec![(Cursor(u64::MAX - 1), user("last"))],
+    )
+    .expect("restore");
+    assert!(held.append(user("overflow")).is_err());
+    assert_eq!(held.cursor(), Cursor(u64::MAX - 1));
+    assert_eq!(held.entries(), &[user("last")]);
+}
+
 /// **What replaced the file.** A resumed session picks up balthasar's entries and numbers on from
 /// the end of them, rather than starting again at one and writing over its own history.
 #[test]

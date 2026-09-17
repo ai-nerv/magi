@@ -72,6 +72,8 @@ pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
                 text.clear();
                 started = true;
                 awaiting_tools = false;
+                // A fresh attempt: what the last one failed with is no longer the outcome.
+                error = None;
             }
             HarnessEvent::AssistantDelta { text: chunk, .. } => text.push_str(&chunk),
             HarnessEvent::AssistantEnded {
@@ -81,11 +83,16 @@ pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
             } => {
                 stop_reason = Some(reason);
                 error = failure;
-                // A turn that stopped to run tools has not answered yet; anything else has.
-                if reason != StopReason::ToolUse {
-                    break;
+                // A turn that stopped to run tools has not answered yet. One that failed may be
+                // asked again with a tighter layout, so it is the session going idle that ends it.
+                match reason {
+                    StopReason::ToolUse => awaiting_tools = true,
+                    StopReason::Error => {
+                        started = true;
+                        awaiting_tools = false;
+                    }
+                    _ => break,
                 }
-                awaiting_tools = true;
             }
             HarnessEvent::ToolCallStarted { name, .. } => eprintln!("· {name}"),
             // Nobody is at the keyboard, and the daemon waits for an answer, so a `-p` run that

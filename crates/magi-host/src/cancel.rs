@@ -32,10 +32,13 @@ impl Cancel {
     /// Resolve when a stop is asked for. Checks the flag first: a request that landed before the
     /// wait began has no notification left to deliver.
     pub async fn requested(&self) {
+        let notified = self.woken.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
         if self.is_requested() {
             return;
         }
-        self.woken.notified().await;
+        notified.await;
     }
 }
 

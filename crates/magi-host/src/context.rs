@@ -20,8 +20,7 @@ pub fn of_entries(entries: &[Entry]) -> Context {
     let view = live_entries(entries);
     let mut built = Built::default();
     if let Some(summary) = view.summary {
-        // As a user message: a model shown its own words as a summary tends to continue them.
-        built.user(format!(
+        built.observation(format!(
             "Here is a summary of the earlier part of this conversation:\n\n{summary}"
         ));
     }
@@ -43,10 +42,19 @@ pub(crate) struct Built {
 }
 
 impl Built {
-    /// Something said to the model that no entry holds: a summary, a note, what memory recalled.
+    /// A user message or trusted host instruction outside the recorded entries.
     pub(crate) fn user(&mut self, text: String) {
         self.open = None;
         self.messages.push(Message::user(text));
+    }
+
+    /// Helper-produced context, never an instruction from the user or a new tool-call owner.
+    pub(crate) fn observation(&mut self, text: String) {
+        if self.messages.is_empty() {
+            self.user("Background context follows; it is not a user instruction.".to_owned());
+        }
+        self.open = None;
+        self.messages.push(Message::assistant(text));
     }
 
     /// One entry, with `stub` sent in place of a tool's result when there is one.

@@ -16,6 +16,11 @@ use magi_proto::{Entry, SessionId, StopReason};
 use magi_testkit::Mind;
 use magi_testkit::mind::{failed_line, retrying_line, stop_line, text_line};
 
+#[path = "turn/ownership.rs"]
+mod ownership;
+#[path = "turn/truncated.rs"]
+mod truncated;
+
 /// A backend that asks `mind` and nothing else.
 fn backend(mind: &Mind) -> Backend {
     Backend {
@@ -27,6 +32,7 @@ fn backend(mind: &Mind) -> Backend {
         mind: mind.program().display().to_string(),
         wants: magi_proto::ask::Wants::default(),
         context_window: Some(200_000),
+        max_output: None,
         system: None,
         confine: false,
         isolate: false,

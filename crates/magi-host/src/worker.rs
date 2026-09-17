@@ -11,7 +11,7 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 struct Job {
     session: Arc<Mutex<Session>>,
     kind: Work,
-    done: oneshot::Sender<()>,
+    done: oneshot::Sender<Result<(), String>>,
 }
 
 enum Work {
@@ -112,23 +112,30 @@ impl Worker {
             registry.probe(&*ops);
 
             runtime.block_on(async {
-                // Said once, when the worker first has a session in hand: the earliest point where
-                // both the session and the registry the watchers live in exist. Resumed is read off
-                // the session — one that already has entries was carried in from a journal.
-                let mut announced = false;
+                let mut announced = None;
                 while let Some(job) = queue.recv().await {
-                    if !announced {
-                        announced = true;
+                    let (id, resumed) = {
                         let held = job.session.lock().await;
+                        (held.id().clone(), !held.entries().is_empty())
+                    };
+                    let socket = scribe
+                        .lock()
+                        .await
+                        .as_ref()
+                        .map(|open| open.socket().to_owned());
+                    engine
+                        .borrow_mut()
+                        .bind_session(id.as_str(), socket.as_deref());
+                    if announced.as_ref() != Some(&id) {
                         registry.saw(&magi_tools::Event::Session {
-                            id: held.id().as_str(),
-                            resumed: !held.entries().is_empty(),
+                            id: id.as_str(),
+                            resumed,
                         });
+                        announced = Some(id);
                     }
-                    match job.kind {
-                        // A failed turn is already journalled as an error entry by `turn::run`.
+                    let outcome = match job.kind {
                         Work::Turn => {
-                            let _ =
+                            let outcome =
                                 turn::run(&job.session, &backend, &registry, &*ops, &scribe).await;
                             job.session.lock().await.rest();
                             // What balthasar wants done between turns runs beside the next one.
@@ -136,29 +143,39 @@ impl Worker {
                                 Arc::clone(&job.session),
                                 backend.clone(),
                                 Arc::clone(&scribe),
-                            );
+                            )
+                            .await;
+                            outcome.map_err(|why| why.to_string())
                         }
-                        Work::TakeOn(grants) => ops.take_on(grants),
+                        Work::TakeOn(grants) => {
+                            ops.take_on(grants);
+                            Ok(())
+                        }
                         Work::Declare => {
-                            declare(&job.session, &backend, &*ops).await;
+                            let cancel = job.session.lock().await.cancel();
+                            tokio::select! {
+                                biased;
+                                () = cancel.requested() => {},
+                                () = declare(&job.session, &backend, &*ops) => {},
+                            }
+                            Ok(())
                         }
-                    }
-                    let _ = job.done.send(());
+                    };
+                    let _ = job.done.send(outcome);
                 }
             });
         });
         Self { jobs }
     }
 
-    /// Run a turn for this session, and wait for it. Waiting is what makes a second prompt queue
-    /// behind the first; deltas are published from the worker, so the UI is not blocked by it.
-    pub async fn run(&self, session: Arc<Mutex<Session>>) {
-        self.queue(session, Work::Turn).await;
+    /// Run a turn on this worker and wait for completion.
+    pub async fn run(&self, session: Arc<Mutex<Session>>) -> Result<(), String> {
+        self.queue(session, Work::Turn).await
     }
 
     /// Ask the model what the work ahead needs, and put each answer to the person.
-    pub async fn declare(&self, session: Arc<Mutex<Session>>) {
-        self.queue(session, Work::Declare).await;
+    pub async fn declare(&self, session: Arc<Mutex<Session>>) -> Result<(), String> {
+        self.queue(session, Work::Declare).await
     }
 
     /// Take on grants this session's parent holds.
@@ -166,11 +183,11 @@ impl Worker {
         &self,
         session: Arc<Mutex<Session>>,
         grants: Vec<magi_proto::permit::Grant>,
-    ) {
-        self.queue(session, Work::TakeOn(grants)).await;
+    ) -> Result<(), String> {
+        self.queue(session, Work::TakeOn(grants)).await
     }
 
-    async fn queue(&self, session: Arc<Mutex<Session>>, kind: Work) {
+    async fn queue(&self, session: Arc<Mutex<Session>>, kind: Work) -> Result<(), String> {
         let (done, finished) = oneshot::channel();
         if self
             .jobs
@@ -182,9 +199,11 @@ impl Worker {
             .await
             .is_err()
         {
-            return;
+            return Err("session worker stopped before accepting the request".into());
         }
-        let _ = finished.await;
+        finished
+            .await
+            .map_err(|_| "session worker stopped before finishing the request".to_owned())?
     }
 }
 
@@ -231,7 +250,7 @@ async fn declare(session: &Arc<Mutex<Session>>, backend: &Backend, ops: &dyn mag
     // Bounded: a mind that never answers must not hold the worker thread for the life of the daemon.
     let asked = tokio::time::timeout(
         std::time::Duration::from_secs(120),
-        crate::broker::value(&backend.model, &context, &wants),
+        crate::broker::value(&backend.mind, &backend.model, &context, &wants),
     );
     let answer = match asked.await {
         Err(_) => {
@@ -300,7 +319,10 @@ mod tests {
         let session = Arc::new(Mutex::new(session));
 
         // Returns rather than hanging: the send fails and there is nothing to wait for.
-        worker.run(Arc::clone(&session)).await;
+        worker
+            .run(Arc::clone(&session))
+            .await
+            .expect_err("stopped worker reports failure");
         assert!(session.lock().await.entries().is_empty());
     }
 
@@ -314,7 +336,10 @@ mod tests {
         let session = Session::recorded(SessionId::new("s"), Vec::new());
         let session = Arc::new(Mutex::new(session));
 
-        worker.run(Arc::clone(&session)).await;
+        worker
+            .run(Arc::clone(&session))
+            .await
+            .expect_err("stopped worker reports failure");
         session
             .lock()
             .await

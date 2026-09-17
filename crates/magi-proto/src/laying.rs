@@ -30,6 +30,19 @@ const fn fits() -> bool {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Slot {
+    Rules {
+        #[serde(default)]
+        text: String,
+        #[serde(default)]
+        tokens: u64,
+    },
+    Observations {
+        #[serde(default)]
+        text: String,
+        #[serde(default)]
+        tokens: u64,
+    },
+    /// Legacy mixed rule/observation text, without a verified authority boundary.
     Pinned {
         #[serde(default)]
         text: String,

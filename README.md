@@ -155,6 +155,28 @@ stops being answered.
 
 ## Talking to other sessions
 
+### Concurrent clients
+
+All attached clients share one session queue. Prompts, incoming messages, permission
+declarations and inherited grants are admitted in order. Prompts received during a turn
+wait for its completion and persistence attempt; they do not interrupt it. Consecutive
+incoming-agent messages at a boundary are read together. Up to 256 requests may wait;
+additional requests receive an explicit refusal instead of being silently dropped.
+
+Interrupt requests cancellation of the active operation only. Queued prompts retain their order and receive
+fresh cancellation state. Model, provider, thinking, branch and resume changes are refused
+while work is active or queued. Disconnecting a client does not cancel work already accepted
+by the running host. The queue is in memory, not crash-durable; terminating the host loses
+requests that have not reached the transcript. A stopped worker produces a transcript error
+for each accepted prompt rather than leaving the queue stuck.
+
+Idle resume flushes the current transcript, waits up to 30 seconds for its tracked helpers,
+and prepares the selected transcript before publishing a replacement snapshot. Failed storage,
+unsettled helpers, and missing or malformed replay leave the current session selected. A successful
+switch preserves attached clients, rebinds persistence and Lua/surface identity, and resets
+session-local layout, accounting and cancellation state. Stored cursors and child-transcript
+ownership survive both in-process and startup resume.
+
 With `melchior` installed, a session can reach the other sessions in the same project. The
 model calls one `agent` tool — `list`, `send`, `inbox`, `reply` — and magi's whole knowledge of
 the layer is one file, `magi-cli/src/melchior.rs`, that spawns it and reads lines.
@@ -166,8 +188,9 @@ default and `instance` or `project` when you mean otherwise.
 
 A message carries a **sort**, and the sort decides what it may interrupt. `question`, `answer`,
 `attention`, `trouble` and `handoff` wake an idle session; only `attention` and `trouble` may
-reach one mid-turn. Anything arriving during a turn waits, and the whole waiting room is
-answered together by one turn at idle — so ten notes cost one reply, not ten.
+reach one mid-turn. Anything arriving during a turn waits. Consecutive arrivals are
+committed together at their queue boundary; they start one reply only when at least one
+has a waking sort. Notes alone do not start a reply.
 
 One main may ask another to **adopt** it. Consent is a person's: the request surfaces as a
 prompt on the other side, and accepting hands down exactly the grants the parent already holds

@@ -302,7 +302,7 @@ mod filling {
         // reachable", which reads as a daemon that is down rather than a program that was never
         // a memory layer. `casper` is on PATH in this checkout and answers `verbs`.
         let Some(missing) = cannot_fill("memory", "casper") else {
-            eprintln!("skipping: no casper on PATH to ask");
+            magi_testkit::live::unavailable("no casper on PATH to ask");
             return;
         };
         for verb in ["observe", "replay", "sessions"] {

@@ -213,6 +213,7 @@ async fn start_with_mind(name: &str, mind: &Mind) -> (Scratch, PathBuf) {
         mind: mind.program().display().to_string(),
         wants: magi_proto::ask::Wants::default(),
         context_window: Some(200_000),
+        max_output: None,
         system: Some("You are magi.".to_owned()),
         confine: false,
         isolate: false,

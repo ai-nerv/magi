@@ -33,7 +33,7 @@ impl Laid {
             ("conversation", sum(&["item", "stub"])),
             ("summary", sum(&["summary"])),
             ("memory", sum(&["memory"])),
-            ("notes", sum(&["pinned", "note"])),
+            ("notes", sum(&["pinned", "rules", "observations", "note"])),
         ];
         let fixed = self.number("fixed");
         let total = parts.iter().map(|(_, n)| n).sum::<u64>() + fixed;
@@ -186,7 +186,7 @@ fn budget(out: &mut Rendered, laid: &Laid, width: u16) {
         ("conversation", "conversation", crate::colour::accent()),
         ("summary", "summary", crate::colour::success()),
         ("memory", "memory", crate::colour::said_by_agent()),
-        ("pinned", "pinned", crate::colour::code_operator()),
+        ("pinned", "project notes", crate::colour::code_operator()),
     ];
     let items: Vec<Item> = parts
         .iter()
@@ -278,6 +278,22 @@ mod tests {
             tokens,
             text: text.into(),
         }
+    }
+
+    #[test]
+    fn split_counts_verified_rules_and_observations_as_project_notes() {
+        let view = Laid {
+            slots: vec![
+                slot("rules", None, 20, "Rule"),
+                slot("observations", None, 30, "Observation"),
+                slot("item", Some(1), 50, "User"),
+            ],
+            ..Laid::default()
+        };
+        assert_eq!(
+            view.split().as_deref(),
+            Some("conversation 50% · notes 50%")
+        );
     }
 
     #[test]

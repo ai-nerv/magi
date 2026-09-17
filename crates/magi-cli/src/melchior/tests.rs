@@ -292,7 +292,7 @@ fn a_session_keeps_hearing_after_the_line_that_named_it() {
         &a_screen(&project),
         Role::default(),
     ) else {
-        eprintln!("melchior is not installed; skipping");
+        magi_testkit::live::unavailable("melchior is not installed");
         return;
     };
     let me = layer.named.clone();
@@ -303,7 +303,7 @@ fn a_session_keeps_hearing_after_the_line_that_named_it() {
         .expect("the pipe is gone after start: nothing could ever arrive");
 
     let Some((them, theirs)) = a_sibling(&project) else {
-        eprintln!("melchior is not installed; skipping");
+        magi_testkit::live::unavailable("melchior is not installed");
         return;
     };
     let _them = Sibling(them);

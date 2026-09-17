@@ -1,92 +1,98 @@
-//! Starting a turn for something addressed to this session, and what happens after it. [`submit`]
-//! journals what opened a turn and runs it; [`after`] flushes to balthasar and answers arrivals.
+//! Session-wide admission and turn-boundary persistence.
 
 use super::*;
+use crate::session::admission::Request;
 
-/// Journal what opened a turn, and run it. Journalled before the provider is called, so an
-/// interrupted turn still shows what was asked; without a backend the refusal is a well-formed
-/// assistant entry rather than an error out of band.
 pub(super) async fn submit(
     session: &Arc<Mutex<Session>>,
-    opening: Entry,
-    worker: Option<Arc<worker::Worker>>,
+    request: Request,
+    workers: &tokio::sync::RwLock<Option<Arc<worker::Worker>>>,
     catalog: &crate::catalog::Catalog,
-    scribe: &Arc<Mutex<Option<crate::scribe::Scribe>>>,
-) -> Result<(), HostError> {
-    {
-        let mut held = session.lock().await;
-        // A stop belongs to the turn it interrupted, or it cancels the replacement prompt.
-        held.cancel().clear();
-        held.commit(opening)?;
+    scribe: &crate::scribe::Held,
+) -> Result<(), String> {
+    let worker = workers.read().await;
+    let admitted = session.lock().await.admit(request)?;
+    if let Some(admitted) = admitted {
+        let session = Arc::clone(session);
+        let worker = worker.clone();
+        let scribe = Arc::clone(scribe);
+        let missing = no_model(catalog);
+        tokio::spawn(async move { after(session, admitted, worker, scribe, missing).await });
     }
-
-    let Some(worker) = worker else {
-        let mut held = session.lock().await;
-        let id = MessageId::new(format!("a{}", held.cursor().next().0));
-        held.commit(Entry::Assistant {
-            id,
-            text: String::new(),
-            thinking: String::new(),
-            stop_reason: Some(StopReason::Error),
-            error: Some(no_model(catalog)),
-            signatures: magi_proto::Signatures::default(),
-            usage: magi_proto::Usage::default(),
-        })?;
-        held.set_status(AgentStatus::Idle);
-        return Ok(());
-    };
-
-    // Spawned, not awaited: this task also forwards events to the attached UI, so awaiting would
-    // hold the whole streaming response back until the turn ended. The worker takes one job at a time.
-    let session = Arc::clone(session);
-    let scribe = Arc::clone(scribe);
-    tokio::spawn(async move { after(session, worker, scribe).await });
     Ok(())
 }
 
-/// Run a turn, then deal with whatever arrived while it was running. An arrival during a turn is
-/// held — see [`session::Session::waiting`] — and comes back out here. Loops, because more can
-/// arrive during that turn.
+fn error(held: &mut Session, message: String) {
+    let id = MessageId::new(format!("a{}", held.cursor().next().0));
+    let _ = held.commit(Entry::Assistant {
+        id,
+        text: String::new(),
+        thinking: String::new(),
+        stop_reason: Some(StopReason::Error),
+        error: Some(message),
+        signatures: Default::default(),
+        usage: Default::default(),
+    });
+}
+
+async fn opening(session: &Arc<Mutex<Session>>, mut entry: Entry) -> Result<bool, String> {
+    let mut held = session.lock().await;
+    let mut answer = matches!(entry, Entry::User { .. }) || wants_answering(&entry);
+    if let Entry::User { id, .. } = &mut entry {
+        *id = MessageId::new(format!("u{}", held.cursor().next().0));
+    }
+    let arrivals = if matches!(entry, Entry::From { .. }) {
+        held.take_arrivals()
+    } else {
+        Vec::new()
+    };
+    held.commit(entry).map_err(|why| why.to_string())?;
+    for arrived in arrivals {
+        answer |= wants_answering(&arrived);
+        held.commit(arrived).map_err(|why| why.to_string())?;
+    }
+    Ok(answer)
+}
+
 async fn after(
     session: Arc<Mutex<Session>>,
-    worker: Arc<worker::Worker>,
-    scribe: Arc<Mutex<Option<crate::scribe::Scribe>>>,
+    mut admitted: (u64, Request),
+    worker: Option<Arc<worker::Worker>>,
+    scribe: crate::scribe::Held,
+    missing: String,
 ) {
     loop {
-        worker.run(Arc::clone(&session)).await;
-
-        // The turn boundary, which is where durability is owed.
-        if let Err(fault) = crate::scribe::flush(&session, &mut *scribe.lock().await).await {
-            let mut held = session.lock().await;
-            let id = MessageId::new(format!("n{}", held.cursor().next().0));
-            let _ = held.commit(Entry::Assistant {
-                id,
-                text: String::new(),
-                thinking: String::new(),
-                stop_reason: Some(StopReason::Error),
-                error: Some(format!("this turn was not recorded: {fault}")),
-                signatures: magi_proto::Signatures::default(),
-                usage: magi_proto::Usage::default(),
-            });
+        let (owner, request) = admitted;
+        let outcome = match request {
+            Request::Opening(entry) => match opening(&session, entry).await {
+                Ok(true) => match &worker {
+                    Some(worker) => worker.run(Arc::clone(&session)).await,
+                    None => Err(missing.clone()),
+                },
+                Ok(false) => Ok(()),
+                Err(why) => Err(why),
+            },
+            Request::Declare => match &worker {
+                Some(worker) => worker.declare(Arc::clone(&session)).await,
+                None => Err(missing.clone()),
+            },
+            Request::Grants(grants) => match &worker {
+                Some(worker) => worker.take_on(Arc::clone(&session), grants).await,
+                None => Err(missing.clone()),
+            },
+        };
+        if let Err(why) = outcome {
+            error(&mut *session.lock().await, why);
         }
-
-        let arrived = session.lock().await.release();
-        if arrived.is_empty() {
+        if let Err(why) = crate::scribe::flush(&session, &mut *scribe.lock().await).await {
+            error(
+                &mut *session.lock().await,
+                format!("this turn was not recorded: {why}"),
+            );
+        }
+        let Some(next) = session.lock().await.finish(owner) else {
             return;
-        }
-        // Committed together and answered once: waking per message would spend a turn on each.
-        let mut answer = false;
-        {
-            let mut held = session.lock().await;
-            for entry in arrived {
-                answer |= wants_answering(&entry);
-                if held.commit(entry).is_err() {
-                    return;
-                }
-            }
-        }
-        if !answer {
-            return;
-        }
+        };
+        admitted = next;
     }
 }

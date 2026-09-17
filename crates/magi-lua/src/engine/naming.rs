@@ -55,4 +55,21 @@ fn a_vm_learns_which_session_it_is_once_somebody_says() {
         Some("00000000001788901214-410e6230cb3b5"),
         "the first name stands"
     );
+    after.bind_session("resumed", Some(std::path::Path::new("/tmp/resumed.sock")));
+    after
+        .run(
+            "assert(magi.session == 'resumed'); assert(magi.balthasar_at == '/tmp/resumed.sock')",
+            "resumed binding",
+        )
+        .expect("VM rebound");
+    before
+        .run("assert(magi.session == nil)", "independent VM")
+        .expect("other VM unchanged");
+    after.bind_session("without-store", None);
+    after
+        .run(
+            "assert(magi.session == 'without-store'); assert(magi.balthasar_at == nil)",
+            "unbound store",
+        )
+        .expect("stale socket cleared");
 }

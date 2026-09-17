@@ -52,6 +52,26 @@ pub struct Engine {
     lent: crate::fs::Lent,
 }
 
+impl Engine {
+    /// Set this VM's current session and memory socket.
+    pub fn bind_session(&mut self, id: &str, socket: Option<&std::path::Path>) {
+        self.lua.enter(|ctx| {
+            if let Value::Table(magi) = ctx.get_global_value("magi") {
+                magi.set(
+                    ctx,
+                    "session",
+                    luna::String::from_slice(&ctx, id.as_bytes()),
+                )
+                .ok();
+                let at = socket.map(|path| {
+                    luna::String::from_slice(&ctx, path.as_os_str().as_encoded_bytes())
+                });
+                magi.set(ctx, "balthasar_at", at).ok();
+            }
+        });
+    }
+}
+
 /// Which session this process is, and which balthasar holds it. Process-global because a magi is
 /// one session; there is nothing to disambiguate.
 static SESSION: std::sync::OnceLock<(String, Option<String>)> = std::sync::OnceLock::new();

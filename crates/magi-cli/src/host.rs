@@ -74,9 +74,13 @@ pub async fn start(
         Some(run) => resumable(&mut scribe, run.as_deref()).await?,
         None => (None, Vec::new()),
     };
+    let id = match &resumed {
+        Some(transcript) => scribe.run_of(transcript).await?,
+        None => id,
+    };
     // A resumed run goes on in its own transcript, so the memory layer counts what it carries.
     let transcript = transcript.or(resumed);
-    let session = magi_host::session::Session::recorded(id, carried);
+    let session = magi_host::session::Session::restored(id, carried)?;
     // Nothing outlives its process, so a stale socket here was left by a crash and is cleared.
     if let Some(parent) = socket.parent() {
         tokio::fs::create_dir_all(parent).await?;
@@ -363,7 +367,7 @@ fn unreachable(memory: &str, what: &str, why: &str) -> String {
 async fn resumable(
     scribe: &mut magi_host::scribe::Scribe,
     wanted: Option<&str>,
-) -> Result<(Option<String>, Vec<magi_proto::Entry>)> {
+) -> Result<(Option<String>, Vec<(magi_proto::Cursor, magi_proto::Entry)>)> {
     // Both failures below used to return an empty conversation and say nothing, so `--resume`
     // against a memory layer that could not answer looked exactly like a session with nothing to
     // resume — a fresh start, at exit 0, having quietly dropped everything. A run named outright

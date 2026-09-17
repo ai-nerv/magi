@@ -60,7 +60,13 @@ impl Holder {
 }
 
 impl magi_tools::holding::Holds for Holder {
-    fn hold(&self, tool: &str, surface: &Surface, args: &serde_json::Value) -> Option<String> {
+    fn hold(
+        &self,
+        tool: &str,
+        surface: &Surface,
+        args: &serde_json::Value,
+        context: &magi_tools::holding::Context,
+    ) -> Option<String> {
         // Nobody is looking, or nobody looking can draw. Reserving rows on a screen that does not
         // exist holds the turn open until the surface times out, on a keypress that never comes.
         if !(self.attached)() || !self.held.on_a_screen() {
@@ -82,7 +88,9 @@ impl magi_tools::holding::Holds for Holder {
             place: surface.place,
         });
 
-        let answered = self.pump(&id, tool, surface, granted, args, &keys);
+        let answered = self
+            .spawn(tool, surface, context)
+            .and_then(|child| self.pump(child, &id, surface, granted, args, &keys));
 
         self.held.close(&id);
         (self.publish)(HarnessEvent::Unsurfaced {
@@ -94,17 +102,15 @@ impl magi_tools::holding::Holds for Holder {
 }
 
 impl Holder {
-    /// Spawn the tenant and exchange frames until it is done.
-    fn pump(
+    fn spawn(
         &self,
-        id: &ToolCallId,
         tool: &str,
         surface: &Surface,
-        granted: u16,
-        args: &serde_json::Value,
-        nudges: &std::sync::mpsc::Receiver<Nudge>,
-    ) -> Option<String> {
-        let mut child = std::process::Command::new(&self.program)
+        context: &magi_tools::holding::Context,
+    ) -> Option<std::process::Child> {
+        let mut command = std::process::Command::new(&self.program);
+        context.apply(&mut command);
+        command
             .arg("surface")
             // The tenant, where the one that asked handed the screen on to another tool.
             .arg(surface.tenant.as_deref().unwrap_or(tool))
@@ -115,7 +121,19 @@ impl Holder {
             .inspect_err(|why| {
                 magi_model::noted!("holder: {} surface {tool}: {why}", self.program);
             })
-            .ok()?;
+            .ok()
+    }
+
+    /// Exchange frames with the tenant until it is done.
+    fn pump(
+        &self,
+        mut child: std::process::Child,
+        id: &ToolCallId,
+        surface: &Surface,
+        granted: u16,
+        args: &serde_json::Value,
+        nudges: &std::sync::mpsc::Receiver<Nudge>,
+    ) -> Option<String> {
         let mut writing = child.stdin.take()?;
         let mut reading = std::io::BufReader::new(child.stdout.take()?);
 
@@ -252,6 +270,59 @@ mod tests {
     use std::sync::Mutex;
 
     #[test]
+    fn a_surface_receives_coordinator_settings_not_tool_arguments() {
+        use magi_tools::holding::{Context, Holds};
+        use std::os::unix::fs::PermissionsExt;
+        let dir = magi_model::scratch::Scratch::new("magi-holder", "policy");
+        let script = dir.join("tenant");
+        std::fs::write(&script, concat!(
+            "#!/bin/sh\nread -r opening\n",
+            "printf '%s\\n' \"$CASPER_JAIL\" \"$MAGI_TOOLS_CONFIGURE\" \"$CASPER_CONFIGURE\" \"$PWD\" > report\n",
+            "printf '%s\\n' '{\"event\":\"done\",\"answered\":\"ok\"}'\n",
+        )).expect("tenant script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
+            .expect("executable");
+        let (_held, mut holder, _) = on_a_screen_of(8);
+        holder.program = script.display().to_string();
+        let surface = Surface {
+            rows: 4,
+            about: "probe".into(),
+            tick: None,
+            place: magi_proto::tooling::Place::Prompt,
+            tenant: Some("probe".into()),
+        };
+        for jail in [None, Some(r#"{"reach":false,"write":[]}"#.to_owned())] {
+            let context = Context {
+                configure: "trusted-config".into(),
+                jail,
+                cwd: Some(dir.to_path_buf()),
+            };
+            assert_eq!(
+                holder
+                    .hold(
+                        "probe",
+                        &surface,
+                        &serde_json::json!({
+                            "CASPER_JAIL": "", "cwd": "/", "configure": "forged", "reach": true,
+                        }),
+                        &context
+                    )
+                    .as_deref(),
+                Some("ok")
+            );
+            let report = std::fs::read_to_string(dir.join("report")).expect("spawn report");
+            assert_eq!(
+                report,
+                format!(
+                    "{}\ntrusted-config\ntrusted-config\n{}\n",
+                    context.jail.as_deref().unwrap_or(""),
+                    dir.display()
+                )
+            );
+        }
+    }
+
+    #[test]
     fn nobody_attached_reserves_nothing() {
         use magi_tools::holding::Holds;
         let holder = Holder::new(
@@ -268,7 +339,12 @@ mod tests {
             tenant: None,
         };
         assert_eq!(
-            holder.hold("dino", &surface, &serde_json::Value::Null),
+            holder.hold(
+                "dino",
+                &surface,
+                &serde_json::Value::Null,
+                &magi_tools::holding::Context::default()
+            ),
             None
         );
     }
@@ -303,7 +379,12 @@ mod tests {
             place: magi_proto::tooling::Place::Prompt,
             tenant: None,
         };
-        let _ = holder.hold("dino", &surface, &serde_json::Value::Null);
+        let _ = holder.hold(
+            "dino",
+            &surface,
+            &serde_json::Value::Null,
+            &magi_tools::holding::Context::default(),
+        );
         let granted = seen
             .lock()
             .expect("nothing panicked")
@@ -327,7 +408,12 @@ mod tests {
             tenant: None,
         };
         assert_eq!(
-            holder.hold("dino", &surface, &serde_json::Value::Null),
+            holder.hold(
+                "dino",
+                &surface,
+                &serde_json::Value::Null,
+                &magi_tools::holding::Context::default()
+            ),
             None
         );
         assert!(seen.lock().expect("nothing panicked").is_empty());

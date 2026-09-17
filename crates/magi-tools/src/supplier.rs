@@ -8,6 +8,7 @@
 //! `serve` at spawn, not one the call named. [`magi_proto::tooling::Ran`] carries `said` for the
 //! model and `shown` for the screen; this module keeps `said`, because a [`Tool`] returns text.
 
+use crate::holding::{CONFIGURE, CONFIGURE_WAS};
 use crate::question::Asks;
 use crate::{Cancel, Ops, Output, Tool};
 use magi_proto::tooling::{Call, Card, Ran, Shown};
@@ -16,19 +17,11 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
+#[cfg(test)]
+mod containment;
+
 /// The program that fills the `tools` role when no configuration names one, found on `PATH`.
 pub const CASPER: &str = "casper";
-
-/// The variable a tools program reads its settings out of. Named here as well as there because it
-/// is a wire between two repositories that cannot depend on each other.
-pub const CONFIGURE: &str = "MAGI_TOOLS_CONFIGURE";
-
-/// The same variable under casper's own name, which is the one casper reads.
-pub const CONFIGURE_WAS: &str = "CASPER_CONFIGURE";
-
-/// What the tools program reads its jail profile out of — casper's `CASPER_JAIL`, set only when
-/// `magi.isolation` is on.
-pub const JAIL: &str = "CASPER_JAIL";
 
 /// Which door magi reaches the tools program on: `command` (the default) spawns one process per
 /// call; `library` connects to one `serve` it keeps running for the session. Mirrors the agent and
@@ -139,7 +132,7 @@ pub fn run_configured(program: &str, call: &Call, configured: &str) -> Result<Ra
     run_jailed(program, call, configured, None)
 }
 
-/// The same, inside the jail `jail` describes when `Some`, carried in the [`JAIL`] env.
+/// The same, inside the jail `jail` describes when `Some`, carried in [`crate::holding::JAIL`].
 ///
 /// # Errors
 /// A refusal — the program could not be started, or would not take the call.
@@ -150,10 +143,15 @@ pub fn run_jailed(
     jail: Option<&str>,
 ) -> Result<Ran, String> {
     use std::io::Write;
+    let context = crate::holding::Context {
+        configure: configured.to_owned(),
+        jail: jail.map(str::to_owned),
+        cwd: (!call.cwd.is_empty()).then(|| PathBuf::from(&call.cwd)),
+    };
     // The library door, when it is asked for and a session daemon can be reached. A socket that
     // fails falls through to a spawn rather than failing the call.
     if library_door()
-        && let Some(path) = serving(program, configured, jail)
+        && let Some(path) = serving(program, &context)
     {
         match over_socket(&path, call) {
             Ok(ran) => return Ok(ran),
@@ -166,13 +164,8 @@ pub fn run_jailed(
         serde_json::to_vec(call).map_err(|why| format!("this call will not encode: {why}"))?;
 
     let mut spawning = std::process::Command::new(program);
-    spawning
-        .arg("run")
-        .env(CONFIGURE, configured)
-        .env(CONFIGURE_WAS, configured);
-    if let Some(jail) = jail {
-        spawning.env(JAIL, jail);
-    }
+    spawning.arg("run");
+    context.apply(&mut spawning);
     let mut child = spawning
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -219,10 +212,11 @@ fn daemons() -> &'static Mutex<HashMap<String, PathBuf>> {
 /// The socket of a running `program serve` for this session's settings and jail, spawned the first
 /// time and reused after. The daemon ties itself to magi and dies with it; magi keeps only its
 /// path. `None` when it cannot start, and the caller falls back to a spawn.
-fn serving(program: &str, configured: &str, jail: Option<&str>) -> Option<PathBuf> {
+fn serving(program: &str, context: &crate::holding::Context) -> Option<PathBuf> {
     // casper binds only under `$XDG_RUNTIME_DIR/casper`; with none, the library door is unavailable.
     let dir = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?).join("casper");
-    let key = format!("{program}\u{0}{configured}\u{0}{}", jail.unwrap_or(""));
+    let key =
+        serde_json::to_string(&(program, &context.configure, &context.jail, &context.cwd)).ok()?;
     let mut running = daemons().lock().ok()?;
     if let Some(path) = running.get(&key) {
         if UnixStream::connect(path).is_ok() {
@@ -240,14 +234,10 @@ fn serving(program: &str, configured: &str, jail: Option<&str>) -> Option<PathBu
         .arg("serve")
         .arg("--at")
         .arg(&path)
-        .env(CONFIGURE, configured)
-        .env(CONFIGURE_WAS, configured)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
-    if let Some(jail) = jail {
-        spawning.env(JAIL, jail);
-    }
+    context.apply(&mut spawning);
     let mut child = spawning.spawn().ok()?;
     // The bind is announced on stdout; connecting before it would race the socket into existence.
     let announced = child.stdout.take().is_some_and(|out| {
@@ -410,6 +400,11 @@ impl Tool for SuppliedTool {
             return Output::error(why);
         }
         let jail = ops.jail();
+        let context = crate::holding::Context {
+            configure: self.configured.clone(),
+            jail: jail.clone(),
+            cwd: Some(PathBuf::from(&call.cwd)),
+        };
         // A call may stop and ask, and then go on. Bounded, because a tool that asked forever would
         // hold the turn open forever; two questions is as far as anything has needed to go.
         for _ in 0..3 {
@@ -421,7 +416,10 @@ impl Tool for SuppliedTool {
             // Rows a tool fills itself, the general form of a question: magi reserves the space and
             // drives the surface, and the answer comes back as an id and resumes the call.
             if let Some(Shown::Surface(surface)) = &ran.shown {
-                let Some(chosen) = self.holds.hold(&self.card.name, surface, arguments) else {
+                let Some(chosen) = self
+                    .holds
+                    .hold(&self.card.name, surface, arguments, &context)
+                else {
                     return Output::error(format!(
                         "{} wanted the screen for {} and there was none",
                         self.card.name, surface.about

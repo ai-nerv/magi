@@ -39,7 +39,7 @@ fn installed(program: &str) -> bool {
 /// new enough: probed rather than read off a version, because none of them carries one.
 fn ready(name: &str) -> Option<Scratch> {
     if !installed("melchior") || !installed("balthasar") {
-        eprintln!("skipping: melchior and balthasar are not both on PATH");
+        magi_testkit::live::unavailable("melchior and balthasar are not both on PATH");
         return None;
     }
     let dir = workspace(name);
@@ -48,7 +48,7 @@ fn ready(name: &str) -> Option<Scratch> {
         .1
         .contains("not one of agent's verbs")
     {
-        eprintln!("skipping: the installed melchior predates the run-scoped `crew`");
+        magi_testkit::live::unavailable("melchior predates the run-scoped crew");
         return None;
     }
     Some(dir)
@@ -69,7 +69,7 @@ fn workspace(name: &str) -> Scratch {
 /// The binary under test, in this workspace, with nothing of the developer's machine in it.
 /// `MAGI_API_SOCKET` outranks the three `XDG_` variables — see [`magi_testkit::only_its_own_store`].
 fn magi(dir: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_magi"));
+    let mut command = Command::new(magi_testkit::live::binary(env!("CARGO_BIN_EXE_magi")));
     magi_testkit::only_its_own_store(&mut command);
     command
         .current_dir(dir.join("p"))
@@ -231,7 +231,7 @@ fn until(what: &str, mut look: impl FnMut() -> bool) {
 /// `<project>/balthasar/magi/<run>/<agent>/memory.db`.
 fn scratches(dir: &Path) -> Vec<(String, String)> {
     let mut found = Vec::new();
-    let runs = std::fs::read_dir(dir.join("p/balthasar/magi"));
+    let runs = std::fs::read_dir(dir.join("p/.balthasar/magi"));
     for run in runs.into_iter().flatten().flatten() {
         let Ok(name) = run.file_name().into_string() else {
             continue;
@@ -327,13 +327,7 @@ fn a_forked_child_files_its_scratch_beside_its_parents_and_not_in_it() {
     until("the child to finish", || !running(theirs));
     parent.end();
 
-    // A balthasar that predates per-agent scratch files leaves none where there should be two, which
-    // is how it is told apart from the failure being looked for: sharing an agent leaves one.
     let found = scratches(&dir);
-    if found.is_empty() {
-        eprintln!("skipping: the installed balthasar does not key scratch by agent");
-        return;
-    }
     assert_eq!(
         found.len(),
         2,

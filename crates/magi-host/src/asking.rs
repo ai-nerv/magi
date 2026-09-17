@@ -84,6 +84,7 @@ const PROMPT: &str = "permission";
 pub struct Asker {
     pending: Arc<Pending>,
     holds: Option<Arc<dyn magi_tools::holding::Holds>>,
+    context: magi_tools::holding::Context,
     publish: Box<dyn Fn(HarnessEvent) + Send + Sync>,
     cursor: Box<dyn Fn() -> Cursor + Send + Sync>,
     attached: Box<dyn Fn() -> bool + Send + Sync>,
@@ -102,6 +103,7 @@ impl Asker {
         Self {
             pending,
             holds: None,
+            context: magi_tools::holding::Context::default(),
             publish,
             cursor,
             attached,
@@ -114,6 +116,13 @@ impl Asker {
     #[must_use]
     pub fn drawn_by(mut self, holds: Arc<dyn magi_tools::holding::Holds>) -> Self {
         self.holds = Some(holds);
+        self
+    }
+
+    /// Use the session's conservative spawn settings for permission surfaces.
+    #[must_use]
+    pub fn in_context(mut self, context: magi_tools::holding::Context) -> Self {
+        self.context = context;
         self
     }
 }
@@ -198,6 +207,7 @@ impl Asker {
                 "subject": action.subject(),
                 "offers": rows_json,
             }),
+            &self.context,
         )?;
         // An id, mapped here. Anything that is not an offer's index is a refusal, which covers "no",
         // a surface that ended without answering, and a casper offering what this build cannot name.
@@ -383,6 +393,7 @@ mod permitting {
             _tool: &str,
             _surface: &magi_proto::tooling::Surface,
             args: &serde_json::Value,
+            _context: &magi_tools::holding::Context,
         ) -> Option<String> {
             self.shown.lock().expect("held").push(args.clone());
             self.chosen.clone()

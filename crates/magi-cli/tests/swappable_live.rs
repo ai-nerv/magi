@@ -80,7 +80,7 @@ fn install_config(into: &Path) {
 /// Run the binary in `dir`, with the fake melchior and the shim in front of a real `PATH`.
 fn magi(dir: &Path, mind: &Mind, bin: &Path, args: &[&str]) -> std::process::Output {
     let inherited = std::env::var("PATH").unwrap_or_default();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_magi"));
+    let mut command = Command::new(magi_testkit::live::binary(env!("CARGO_BIN_EXE_magi")));
     magi_testkit::only_its_own_store(&mut command);
     command
         .current_dir(dir)
@@ -112,7 +112,7 @@ fn kept_by_the_shim(dir: &Path) -> Vec<PathBuf> {
 fn a_session_runs_against_a_memory_layer_that_is_not_balthasar() {
     let dir = workspace("run");
     let Some(bin) = shim(&dir) else {
-        eprintln!("skipping: no rustc to build the shim with");
+        magi_testkit::live::unavailable("no rustc to build the shim with");
         return;
     };
     let mind = Mind::answering("swap-run", "noted");
@@ -137,7 +137,7 @@ fn a_session_runs_against_a_memory_layer_that_is_not_balthasar() {
 fn a_second_run_picks_up_the_conversation_the_shim_kept() {
     let dir = workspace("res");
     let Some(bin) = shim(&dir) else {
-        eprintln!("skipping: no rustc to build the shim with");
+        magi_testkit::live::unavailable("no rustc to build the shim with");
         return;
     };
     let mind = Mind::answering("swap-resume", "noted");
@@ -188,7 +188,7 @@ fn a_memory_layer_that_lends_no_library_declares_no_memory_tools() {
     // model tools aimed at a program this session never convened.
     let dir = workspace("tls");
     let Some(bin) = shim(&dir) else {
-        eprintln!("skipping: no rustc to build the shim with");
+        magi_testkit::live::unavailable("no rustc to build the shim with");
         return;
     };
     let mind = Mind::answering("swap-tools", "noted");
@@ -216,7 +216,7 @@ fn a_memory_layer_that_lends_no_library_declares_no_memory_tools() {
 fn the_shim_fills_the_role_by_the_gate_that_says_so() {
     let dir = Scratch::new("ms", "gate");
     let Some(bin) = shim(&dir) else {
-        eprintln!("skipping: no rustc to build the shim with");
+        magi_testkit::live::unavailable("no rustc to build the shim with");
         return;
     };
     let gate = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/gate-role.sh");
@@ -249,7 +249,7 @@ fn tooled(name: &str) -> Option<(Scratch, PathBuf)> {
 #[test]
 fn a_turn_runs_the_tool_a_tools_program_that_is_not_casper_offered() {
     let Some((dir, bin)) = tooled("tcall") else {
-        eprintln!("skipping: no rustc to build the shims with");
+        magi_testkit::live::unavailable("no rustc to build the shims with");
         return;
     };
     let call = magi_testkit::mind::call_lines("c1", "backwards", r#"{"text":"gerbil"}"#);
@@ -292,7 +292,7 @@ fn the_listing_names_the_program_that_supplies_each_tool() {
     // The failure this is for: `magi tools` and `magi doctor` labelled every peer tool `casper`,
     // and the session behind them spawned casper whatever `magi.tools` said.
     let Some((dir, bin)) = tooled("tlist") else {
-        eprintln!("skipping: no rustc to build the shims with");
+        magi_testkit::live::unavailable("no rustc to build the shims with");
         return;
     };
     let mind = Mind::answering("swap-list", "noted");
@@ -313,7 +313,7 @@ fn the_listing_names_the_program_that_supplies_each_tool() {
 fn the_tools_shim_fills_the_role_by_the_gate_that_says_so() {
     let dir = Scratch::new("ms", "tgate");
     let Some(bin) = example(&dir, "workbench") else {
-        eprintln!("skipping: no rustc to build the shim with");
+        magi_testkit::live::unavailable("no rustc to build the shim with");
         return;
     };
     let gate = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/gate-role.sh");

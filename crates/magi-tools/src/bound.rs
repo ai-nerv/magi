@@ -76,6 +76,10 @@ fn take<'a>(lines: &[&'a str], max_lines: usize, max_bytes: usize, end: End) -> 
     };
     for line in ordered {
         if taken.len() >= max_lines || bytes + line.len() + 1 > max_bytes {
+            // Not even one whole line fits: an end of it, rather than nothing of the result.
+            if taken.is_empty() && max_lines > 0 {
+                taken.push(piece(line, max_bytes.saturating_sub(1), &end));
+            }
             break;
         }
         bytes += line.len() + 1;
@@ -85,6 +89,29 @@ fn take<'a>(lines: &[&'a str], max_lines: usize, max_bytes: usize, end: End) -> 
         taken.reverse();
     }
     taken
+}
+
+/// At most `most` bytes from one end of a line, cut where a character begins.
+fn piece<'a>(line: &'a str, most: usize, end: &End) -> &'a str {
+    if line.len() <= most {
+        return line;
+    }
+    match end {
+        End::Head => {
+            let mut at = most;
+            while !line.is_char_boundary(at) {
+                at -= 1;
+            }
+            &line[..at]
+        }
+        End::Tail => {
+            let mut at = line.len() - most;
+            while !line.is_char_boundary(at) {
+                at += 1;
+            }
+            &line[at..]
+        }
+    }
 }
 
 /// How long a spilled result is kept. Without it the directory grows for the life of the machine,
@@ -137,6 +164,17 @@ fn expire(dir: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_line_too_long_to_keep_still_shows_both_of_its_ends() {
+        // What `history` and any minified output return: one line, past the byte budget. Whole
+        // lines only meant the model was shown the note and nothing of the result.
+        let line = format!("HEAD-MARK{}TAIL-MARK", "x".repeat(MAX_BYTES * 2));
+        let out = apply("history", line);
+        assert!(out.contains("HEAD-MARK"), "{out:.120}");
+        assert!(out.contains("TAIL-MARK"));
+        assert!(out.len() < MAX_BYTES + 400, "{}", out.len());
+    }
 
     /// Run `apply` and delete whatever it spilled; the spill directory is shared.
     fn applied(tool: &str, content: String) -> String {

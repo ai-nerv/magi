@@ -61,7 +61,7 @@ fn install_config(into: &Path) {
 /// Run the binary in `dir`, with the fake melchior in front of a real `PATH`.
 fn magi(dir: &Path, mind: &Mind, args: &[&str]) -> std::process::Output {
     let inherited = std::env::var("PATH").unwrap_or_default();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_magi"));
+    let mut command = Command::new(magi_testkit::live::binary(env!("CARGO_BIN_EXE_magi")));
     magi_testkit::only_its_own_store(&mut command);
     command
         .current_dir(dir)
@@ -138,7 +138,7 @@ fn lying_around() -> String {
 #[test]
 fn a_second_run_picks_up_the_conversation_balthasar_kept() {
     if !installed() {
-        eprintln!("skipping: no balthasar on PATH");
+        magi_testkit::live::unavailable("no balthasar on PATH");
         return;
     }
     let dir = workspace("kept");
@@ -197,7 +197,7 @@ fn a_second_run_picks_up_the_conversation_balthasar_kept() {
 #[test]
 fn with_balthasar_holding_it_there_is_no_journal_on_disk() {
     if !installed() {
-        eprintln!("skipping: no balthasar on PATH");
+        magi_testkit::live::unavailable("no balthasar on PATH");
         return;
     }
     // Were a journal still being written, a resume could be reading that file and balthasar doing
@@ -221,7 +221,7 @@ fn with_balthasar_holding_it_there_is_no_journal_on_disk() {
 #[test]
 fn resuming_where_nothing_was_kept_starts_a_session_rather_than_failing() {
     if !installed() {
-        eprintln!("skipping: no balthasar on PATH");
+        magi_testkit::live::unavailable("no balthasar on PATH");
         return;
     }
     // An ordinary first session, not an error. Worth pinning, because "resume found nothing" and
@@ -246,7 +246,7 @@ fn resuming_where_nothing_was_kept_starts_a_session_rather_than_failing() {
 #[test]
 fn a_finished_run_leaves_no_socket_behind() {
     if !installed() {
-        eprintln!("skipping: no balthasar on PATH");
+        magi_testkit::live::unavailable("no balthasar on PATH");
         return;
     }
     // The file as well as the process. Here rather than against a stand-in, because a stand-in binds
@@ -280,7 +280,7 @@ fn the_memory_verbs_reach_the_model_when_balthasar_is_there() {
     //
     // Asserted against what actually reached the model, because that is the only place it shows.
     if !installed() {
-        eprintln!("skipping: no balthasar on PATH");
+        magi_testkit::live::unavailable("no balthasar on PATH");
         return;
     }
     let dir = workspace("verbs");
@@ -314,7 +314,7 @@ fn a_named_run_that_cannot_be_read_is_an_error_not_a_fresh_start() {
     // A resume that could not read its run back carried on as a new session, and the prompt meant
     // for the old one was answered with no memory of it.
     if !installed() {
-        eprintln!("skipping: no balthasar on PATH");
+        magi_testkit::live::unavailable("no balthasar on PATH");
         return;
     }
     let dir = workspace("gone");

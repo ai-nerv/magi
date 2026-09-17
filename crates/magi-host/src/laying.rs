@@ -20,6 +20,15 @@ const REPORT: std::time::Duration = std::time::Duration::from_millis(500);
 /// The answer a request leaves room for when nothing configured says how long one may be.
 const REPLY: u64 = 32_000;
 
+/// What to set aside for the reply: what was asked for, else the default, and never more than the
+/// model can say. Room reserved for an answer that cannot be given is room taken from the
+/// conversation, and on a small window it was all of it.
+fn reserved(wanted: Option<u64>, cap: Option<u64>) -> u64 {
+    let asked = wanted.unwrap_or(REPLY);
+    cap.filter(|cap| *cap > 0)
+        .map_or(asked, |cap| asked.min(cap))
+}
+
 /// How many tighter layouts one prompt may ask for after the provider refused one as too long.
 pub const OVERFLOWS: u8 = 3;
 
@@ -38,10 +47,10 @@ pub struct Prompt {
     pub spent: crate::helping::Spend,
 }
 
-/// The cursors a request could send: what is live, less what is never sent. Cursor `c` is entry
-/// `c - 1`, as everywhere balthasar is spoken to.
+/// The stored cursors of live entries eligible for a provider request.
 #[must_use]
-pub fn live(entries: &[Entry]) -> Vec<u64> {
+pub fn live(session: &Session) -> Vec<u64> {
+    let entries = session.entries();
     crate::context::live_entries(entries)
         .live
         .into_iter()
@@ -52,7 +61,7 @@ pub fn live(entries: &[Entry]) -> Vec<u64> {
             } => error.is_none() && *stop_reason != Some(magi_model::StopReason::Error),
             _ => true,
         })
-        .map(|at| at as u64 + 1)
+        .filter_map(|at| session.cursor_at(at).map(|c| c.0))
         .collect()
 }
 
@@ -74,9 +83,9 @@ pub fn request(
     serde_json::json!({
         "round": round,
         "window": backend.context_window.unwrap_or(0),
-        "reply": backend.wants.max_tokens.unwrap_or(REPLY),
+        "reply": reserved(backend.wants.max_tokens, backend.max_output),
         "fixed": { "system": tokens(system), "tools": tokens(tooling) },
-        "live": live(session.entries()),
+        "live": live(session),
         "query": crate::context::last_asked(session).unwrap_or_default(),
         "idle_s": session.idle_for().unwrap_or(0),
         "helpers": backend
@@ -91,7 +100,8 @@ pub fn request(
 /// Build the provider conversation a layout describes. A slot naming an entry that is not live is
 /// skipped, and a summary the transcript holds from before layouts is kept if balthasar gave none.
 #[must_use]
-pub fn render(entries: &[Entry], layout: &Layout) -> Context {
+pub fn render(session: &Session, layout: &Layout) -> Context {
+    let entries = session.entries();
     let view = crate::context::live_entries(entries);
     let alive: std::collections::BTreeSet<usize> = view.live.iter().copied().collect();
     let mut built = Built::default();
@@ -101,12 +111,12 @@ pub fn render(entries: &[Entry], layout: &Layout) -> Context {
             .iter()
             .any(|slot| matches!(slot, Slot::Summary { .. }))
     {
-        built.user(summarised(summary));
+        built.observation(summarised(summary));
     }
     for slot in &layout.slots {
         let at = slot
             .cursor()
-            .and_then(|cursor| usize::try_from(cursor).ok()?.checked_sub(1))
+            .and_then(|cursor| session.position(magi_proto::Cursor(cursor)))
             .filter(|at| alive.contains(at));
         match (slot, at) {
             (Slot::Item { .. }, Some(at)) => {
@@ -119,13 +129,20 @@ pub fn render(entries: &[Entry], layout: &Layout) -> Context {
                     stub.or_else(|| view.masks.get(&at).map(String::as_str)),
                 );
             }
-            (Slot::Pinned { text, .. }, _) if !text.is_empty() => {
-                built.user(format!("Pinned notes for this project:\n\n{text}"));
+            (Slot::Rules { text, .. }, _) if !text.is_empty() => {
+                built.user(text.clone());
             }
-            (Slot::Summary { text, .. }, _) if !text.is_empty() => built.user(summarised(text)),
+            (Slot::Observations { text, .. } | Slot::Pinned { text, .. }, _)
+                if !text.is_empty() =>
+            {
+                built.observation(text.clone());
+            }
+            (Slot::Summary { text, .. }, _) if !text.is_empty() => {
+                built.observation(summarised(text))
+            }
             (Slot::Note { text, .. }, _) if !text.is_empty() => built.user(text.clone()),
             (Slot::Memory { text, .. }, _) if !text.is_empty() => {
-                built.user(format!(
+                built.observation(format!(
                     "From memory — what this project recorded before; check it before relying \
                      on it:\n\n{text}"
                 ));
@@ -207,7 +224,8 @@ pub fn counts(layout: &Layout, live: &[u64]) -> Laid {
             }
             Slot::Summary { .. } => laid.summary += 1,
             Slot::Memory { .. } => laid.memory += 1,
-            Slot::Pinned { .. } => laid.pinned += 1,
+            Slot::Rules { .. } => laid.pinned += 1,
+            Slot::Observations { .. } | Slot::Pinned { .. } => laid.notes += 1,
             Slot::Note { .. } => laid.notes += 1,
             Slot::Other => {}
         }
@@ -295,7 +313,8 @@ pub fn from_plan(plan: &serde_json::Value, live: &[u64]) -> Layout {
 
 /// Each slot as a screen lists it: its kind, its entry, what it costs, and a line of what it is.
 #[must_use]
-pub fn listed(entries: &[Entry], layout: &Layout) -> Vec<magi_proto::laying::LaidSlot> {
+pub fn listed(session: &Session, layout: &Layout) -> Vec<magi_proto::laying::LaidSlot> {
+    let entries = session.entries();
     let line = |text: &str| -> String {
         text.lines()
             .find(|l| !l.trim().is_empty())
@@ -317,12 +336,15 @@ pub fn listed(entries: &[Entry], layout: &Layout) -> Vec<magi_proto::laying::Lai
         .filter_map(|slot| {
             let (kind, cursor, spent, text) = match slot {
                 Slot::Item { cursor } => {
-                    let entry = entries.get(usize::try_from(*cursor).ok()?.checked_sub(1)?)?;
+                    let entry = entries.get(session.position(magi_proto::Cursor(*cursor))?)?;
                     let spent = crate::scribe::tokens(entry);
                     ("item", Some(*cursor), spent, line(&described(entry)))
                 }
                 Slot::Stub { cursor, text } => ("stub", Some(*cursor), costs(0, text), line(text)),
-                Slot::Pinned { text, tokens } => ("pinned", None, costs(*tokens, text), line(text)),
+                Slot::Rules { text, tokens } => ("rules", None, costs(*tokens, text), line(text)),
+                Slot::Observations { text, tokens } | Slot::Pinned { text, tokens } => {
+                    ("observations", None, costs(*tokens, text), line(text))
+                }
                 Slot::Summary { text, tokens } => {
                     ("summary", None, costs(*tokens, text), line(text))
                 }
@@ -396,7 +418,9 @@ pub async fn lay(
             .into_iter()
             .partition(|j| j.blocking);
         let events = session.lock().await.publisher();
+        let helpers = session.lock().await.helpers();
         crate::helping::alongside(
+            &helpers,
             background,
             backend.clone(),
             std::sync::Arc::clone(scribe),
@@ -404,7 +428,11 @@ pub async fn lay(
             std::sync::Arc::clone(&prompt.spent),
         );
         if !blocking.is_empty() {
-            crate::helping::work(&blocking, backend, scribe, &events, &prompt.spent).await;
+            if let Err(why) =
+                crate::helping::work(&blocking, backend, scribe, &events, &prompt.spent).await
+            {
+                magi_model::noted!("helpers: {why}");
+            }
             if let Some(again) = ask(scribe, asked).await {
                 layout = Some(again);
             }
@@ -445,7 +473,7 @@ async fn settle(
     prompt: &mut Prompt,
 ) -> Context {
     let mut held = session.lock().await;
-    let live = live(held.entries());
+    let live = live(&held);
     let mut layout = match layout {
         Some(layout) if sound(&layout, &live) => layout,
         Some(layout) => {
@@ -465,7 +493,7 @@ async fn settle(
     }) {
         prompt.injection = Some(injection);
     }
-    let context = render(held.entries(), &layout);
+    let context = render(&held, &layout);
     let counted = counts(&layout, &live);
     magi_model::noted!(
         "layout: {} — {} whole, {} stubbed, {} left out, {} summary — {}",
@@ -485,7 +513,7 @@ async fn settle(
         budget: layout.budget.clone(),
         counts: counted,
         why: layout.why.clone(),
-        slots: listed(held.entries(), &layout),
+        slots: listed(&held, &layout),
     });
     held.lay(layout);
     context

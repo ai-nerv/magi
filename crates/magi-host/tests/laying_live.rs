@@ -9,6 +9,12 @@ use magi_proto::{Entry, HarnessEvent, MessageId, SessionId, StopReason, ToolCall
 use magi_testkit::Mind;
 use magi_testkit::memory::Serving;
 
+#[path = "laying_live/helper_retries.rs"]
+mod helper_retries;
+
+#[path = "laying_live/projection.rs"]
+mod projection;
+
 /// One live balthasar at a time, as the other live suites take.
 static ONE_AT_A_TIME: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -27,7 +33,7 @@ async fn live(name: &str) -> Option<Live> {
     let dir = Scratch::new("ll", name);
     let instance = format!("l{}-{name}", std::process::id());
     let Some(serving) = Serving::start(&dir, &instance).await else {
-        eprintln!("skipping: no balthasar is installed");
+        magi_testkit::live::unavailable("no balthasar is installed");
         return None;
     };
     let mut family = magi_ipc::family::Family::dial(serving.socket())
@@ -38,7 +44,7 @@ async fn live(name: &str) -> Option<Live> {
         .to_string()
         .contains("\"layout\"")
     {
-        eprintln!("skipping: this balthasar does not lay out");
+        magi_testkit::live::unavailable("this balthasar does not lay out");
         return None;
     }
     let id = SessionId::new(&instance);
@@ -65,6 +71,7 @@ fn backend(mind: &Mind, window: u64) -> Backend {
             ..Default::default()
         },
         context_window: Some(window),
+        max_output: None,
         system: None,
         confine: false,
         isolate: false,
@@ -190,7 +197,7 @@ async fn a_correction_becomes_a_pinned_note_that_can_be_undone() {
     session
         .lock()
         .await
-        .commit(user("u1", "we always use uv here, never pip"))
+        .commit(user("u1", "use uv, never pip"))
         .expect("commit");
     // Every ask gets this, so the turn's answer is the extract job's answer too; only the job's matters.
     let ops = r#"{"ops":[{"op":"add","title":"tooling","text":"use uv, never pip","description":"the package manager","pinned":true}]}"#;
@@ -207,7 +214,8 @@ async fn a_correction_becomes_a_pinned_note_that_can_be_undone() {
         std::sync::Arc::clone(&session),
         backend.clone(),
         std::sync::Arc::clone(&live.scribe),
-    );
+    )
+    .await;
     tokio::time::timeout(std::time::Duration::from_secs(20), async {
         while !matches!(events.recv().await, Ok(HarnessEvent::HelperSpent { .. })) {}
     })
@@ -284,7 +292,8 @@ async fn a_long_conversation_is_summarised_by_a_helper_and_the_summary_is_sent()
         std::sync::Arc::clone(&session),
         backend.clone(),
         std::sync::Arc::clone(&live.scribe),
-    );
+    )
+    .await;
     let helped = tokio::time::timeout(std::time::Duration::from_secs(20), async {
         loop {
             if let Ok(HarnessEvent::HelperSpent { role, .. }) = events.recv().await {

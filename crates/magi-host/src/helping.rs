@@ -5,36 +5,14 @@
 use crate::catalog::Backend;
 use magi_proto::HarnessEvent;
 
+mod attempt;
+#[cfg(test)]
+mod retrying;
+
 pub use crate::catalog::Helpers;
 pub use magi_proto::laying::Job;
 
 pub use crate::catalog::Spend;
-
-/// Helper tasks still running, so a session on its way out can wait for them.
-static IN_FLIGHT: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>> =
-    std::sync::Mutex::new(Vec::new());
-
-fn track(task: tokio::task::JoinHandle<()>) {
-    if let Ok(mut held) = IN_FLIGHT.lock() {
-        held.retain(|t| !t.is_finished());
-        held.push(task);
-    }
-}
-
-/// Wait, up to `patience`, for the helper jobs this process started: one cut off by the exit is
-/// left for some later session to retry, and a note it would have taken is lost until then.
-pub async fn settled(patience: std::time::Duration) {
-    let waiting = async {
-        loop {
-            let next = IN_FLIGHT.lock().ok().and_then(|mut held| held.pop());
-            let Some(task) = next else {
-                break;
-            };
-            let _ = task.await;
-        }
-    };
-    let _ = tokio::time::timeout(patience, waiting).await;
-}
 
 /// How long a job may take when neither it nor the configuration says.
 const TIMEOUT_MS: u64 = 20_000;
@@ -48,6 +26,13 @@ pub struct Answer {
     pub text: String,
     pub model: String,
     pub usage: magi_proto::Usage,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct Failure {
+    pub(crate) message: String,
+    pub(crate) model: String,
+    pub(crate) usage: magi_proto::Usage,
 }
 
 /// A helper role set to this runs on the session's own model.
@@ -79,10 +64,19 @@ impl Helpers {
 /// # Errors
 /// Why there is no answer: no model for the role, a refusal, silence, or nothing said.
 pub async fn run(job: &Job, backend: &Backend) -> Result<Answer, String> {
+    run_accounted(job, backend)
+        .await
+        .map_err(|failure| failure.message)
+}
+
+pub(crate) async fn run_accounted(job: &Job, backend: &Backend) -> Result<Answer, Failure> {
     let model = backend
         .helpers
         .model_for(job, &backend.model)
-        .ok_or_else(|| format!("no helper is configured for `{}`", job.role))?;
+        .ok_or_else(|| Failure {
+            message: format!("no helper is configured for `{}`", job.role),
+            ..Failure::default()
+        })?;
     let context = magi_model::Context {
         system: instructed(job),
         messages: vec![magi_model::Message::user(job.input.clone())],
@@ -91,8 +85,7 @@ pub async fn run(job: &Job, backend: &Backend) -> Result<Answer, String> {
     let wants = wants(job, backend, &model);
     let patience = backend.helpers.patience(job);
 
-    let mut turn = magi_core::Turn::new();
-    let mut args = String::new();
+    let attempt = std::sync::Mutex::new(attempt::Attempt::default());
     let asked = tokio::time::timeout(
         patience,
         crate::broker::ask_through(
@@ -101,40 +94,35 @@ pub async fn run(job: &Job, backend: &Backend) -> Result<Answer, String> {
             &context,
             &wants,
             |delta| {
-                // Anthropic answers a schema by calling a forced tool, so its arguments are the text.
-                if let magi_model::Delta::ToolCallArgs(chunk) = &delta {
-                    args.push_str(chunk);
-                }
-                turn.apply(delta);
+                attempt
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .apply(delta);
             },
-            |_| {},
+            |_| {
+                attempt
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .retry();
+            },
         ),
     )
     .await;
-    match asked {
+    let attempt = attempt
+        .into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let usage = attempt.usage();
+    let text = match asked {
         Err(_) => Err(format!("{model} did not answer within {patience:?}")),
         Ok(Err(trouble)) => Err(trouble.message),
-        Ok(Ok(())) => {
-            let text = if args.trim().is_empty() {
-                turn.text().trim().to_owned()
-            } else {
-                args.trim().to_owned()
-            };
-            if text.is_empty() {
-                let thought = turn.thinking().chars().count();
-                return Err(if thought > 0 {
-                    format!("{model} spent its tokens thinking ({thought} chars) and said nothing")
-                } else {
-                    format!("{model} answered nothing")
-                });
-            }
-            Ok(Answer {
-                text,
-                model,
-                usage: turn.usage(),
-            })
-        }
+        Ok(Ok(())) => attempt.text(job.schema.as_ref().is_some_and(|schema| !schema.is_null())),
     }
+    .map_err(|message| Failure {
+        message,
+        model: model.clone(),
+        usage,
+    })?;
+    Ok(Answer { text, model, usage })
 }
 
 /// What a job asks its model for. No reasoning: a helper is there to be quick and cheap, and one
@@ -173,14 +161,17 @@ pub async fn work(
     scribe: &crate::scribe::Held,
     events: &tokio::sync::broadcast::Sender<HarnessEvent>,
     spent: &std::sync::atomic::AtomicU64,
-) {
+) -> Result<(), String> {
     for job in jobs {
         let answered = if backend
             .helpers
             .per_prompt_micros
             .is_some_and(|cap| spent.load(std::sync::atomic::Ordering::Relaxed) >= cap)
         {
-            Err("the helpers' budget for this prompt is spent".to_owned())
+            Err(Failure {
+                message: "the helpers' budget for this prompt is spent".to_owned(),
+                ..Failure::default()
+            })
         } else {
             magi_model::noted!(
                 "helpers: {} job {} for {} starting",
@@ -188,7 +179,7 @@ pub async fn work(
                 job.id,
                 job.role
             );
-            run(job, backend).await
+            run_accounted(job, backend).await
         };
         let done = match answered {
             Ok(answer) => {
@@ -220,21 +211,37 @@ pub async fn work(
                 })
             }
             Err(why) => {
-                magi_model::noted!("helpers: {} job {} failed: {why}", job.kind, job.id);
-                serde_json::json!({ "id": job.id, "failed": why })
+                if why.usage != magi_proto::Usage::default() {
+                    spent.fetch_add(why.usage.cost_micros, std::sync::atomic::Ordering::Relaxed);
+                    let _ = events.send(HarnessEvent::HelperSpent {
+                        role: job.role.clone(),
+                        model: why.model.clone(),
+                        usage: why.usage,
+                    });
+                }
+                magi_model::noted!(
+                    "helpers: {} job {} failed: {}",
+                    job.kind,
+                    job.id,
+                    why.message
+                );
+                serde_json::json!({ "id": job.id, "failed": why.message,
+                    "model": why.model, "usage": why.usage })
             }
         };
         let mut open = scribe.lock().await;
-        if let Some(open) = open.as_mut()
-            && let Err(why) = open.job_done(done).await
-        {
-            magi_model::noted!("helpers: job_done was refused: {why}");
+        if let Some(open) = open.as_mut() {
+            open.job_done(done)
+                .await
+                .map_err(|why| format!("helper completion was not recorded: {why}"))?;
         }
     }
+    Ok(())
 }
 
 /// Background jobs a layout handed out, run beside the turn that asked for them.
-pub fn alongside(
+pub(crate) fn alongside(
+    tasks: &crate::settling::Tasks,
     jobs: Vec<Job>,
     backend: Backend,
     scribe: crate::scribe::Held,
@@ -244,30 +251,42 @@ pub fn alongside(
     if jobs.is_empty() {
         return;
     }
-    track(tokio::spawn(async move {
-        work(&jobs, &backend, &scribe, &events, &spent).await;
-    }));
+    if let Err(why) =
+        tasks.spawn(async move { work(&jobs, &backend, &scribe, &events, &spent).await })
+    {
+        magi_model::noted!("helpers: {why}");
+    }
 }
 
 /// Between turns: hand balthasar what settled, and run the background jobs it has waiting. Spawned,
 /// so the person is never waiting on a summary somebody else asked for.
-pub fn between(
+pub async fn between(
     session: std::sync::Arc<tokio::sync::Mutex<crate::session::Session>>,
     backend: Backend,
     scribe: crate::scribe::Held,
 ) {
-    track(tokio::spawn(async move {
-        if let Err(why) = crate::scribe::flush(&session, &mut *scribe.lock().await).await {
-            magi_model::noted!("helpers: the transcript could not be handed over: {why}");
-            return;
-        }
-        // What the turn's layouts handed out first, then whatever else balthasar has waiting.
-        let mut jobs = session.lock().await.take_deferred();
+    let (tasks, mut jobs, events, spent) = {
+        let mut held = session.lock().await;
+        (
+            held.helpers(),
+            held.take_deferred(),
+            held.publisher(),
+            held.helpers_spent(),
+        )
+    };
+    if let Err(why) = tasks.spawn(async move {
+        crate::scribe::flush(&session, &mut *scribe.lock().await)
+            .await
+            .map_err(|why| why.to_string())?;
         let waiting = {
             let mut open = scribe.lock().await;
             match open.as_mut() {
-                Some(open) => open.jobs().await.unwrap_or_default(),
-                None => return,
+                Some(open) => match open.jobs().await {
+                    Ok(jobs) => jobs,
+                    Err(magi_ipc::family::Fault::Refused(_)) => Vec::new(),
+                    Err(why) => return Err(why.to_string()),
+                },
+                None => return Ok(()),
             }
         };
         for job in waiting
@@ -279,21 +298,19 @@ pub fn between(
             }
         }
         if jobs.is_empty() {
-            return;
+            return Ok(());
         }
-        let (events, spent) = {
-            let held = session.lock().await;
-            (held.publisher(), held.helpers_spent())
-        };
-        work(&jobs, &backend, &scribe, &events, &spent).await;
-    }));
+        work(&jobs, &backend, &scribe, &events, &spent).await
+    }) {
+        magi_model::noted!("helpers: {why}");
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn helpers() -> Helpers {
+    pub(super) fn helpers() -> Helpers {
         Helpers {
             roles: [("memory".to_owned(), "local/small".to_owned())].into(),
             ..Helpers::default()
@@ -373,7 +390,7 @@ mod tests {
         assert_eq!(helpers().model_for(&job, "big").as_deref(), Some("big"));
     }
 
-    fn backend(mind: &magi_testkit::Mind, helpers: Helpers) -> Backend {
+    pub(super) fn backend(mind: &magi_testkit::Mind, helpers: Helpers) -> Backend {
         Backend {
             tools: Vec::new(),
             clients: Vec::new(),
@@ -387,6 +404,7 @@ mod tests {
             mind: mind.program().display().to_string(),
             wants: magi_proto::ask::Wants::default(),
             context_window: None,
+            max_output: None,
             system: None,
             helpers,
         }
@@ -413,7 +431,8 @@ mod tests {
             &events,
             &std::sync::atomic::AtomicU64::new(spent),
         )
-        .await;
+        .await
+        .expect("helper work settled");
         matches!(heard.try_recv(), Ok(HarnessEvent::HelperSpent { .. }))
     }
 
@@ -432,8 +451,21 @@ mod tests {
             ..Job::default()
         };
         let budget = Spend::new(std::sync::atomic::AtomicU64::new(spent));
-        alongside(vec![job], backend(&mind, capped), none, events, budget);
-        settled(std::time::Duration::from_secs(10)).await;
+        let tasks = crate::settling::Tasks::default();
+        alongside(
+            &tasks,
+            vec![job],
+            backend(&mind, capped),
+            none,
+            events,
+            budget,
+        );
+        tasks
+            .pause()
+            .expect("pause helpers")
+            .drain(std::time::Duration::from_secs(10))
+            .await
+            .expect("helpers settled");
         matches!(heard.try_recv(), Ok(HarnessEvent::HelperSpent { .. }))
     }
 

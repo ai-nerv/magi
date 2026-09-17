@@ -25,11 +25,14 @@ async fn one_turn(
         });
     }
 
-    let id = MessageId::new(format!("a{}", session.lock().await.cursor().next().0));
     let mut turn = Turn::new();
     let mut retries_seen: Vec<(u32, u32, u64)> = Vec::new();
-
-    session.lock().await.commit(assistant(&id, &turn))?;
+    let (id, cursor) = {
+        let mut held = session.lock().await;
+        let id = MessageId::new(format!("a{}", held.cursor().next().0));
+        let cursor = held.commit(assistant(&id, &turn))?;
+        (id, cursor)
+    };
     magi_model::noted!(
         "ask: {} with {} messages and {} tools",
         backend.model,
@@ -72,7 +75,7 @@ async fn one_turn(
                         // Revised rather than amended: an amendment writes to disk and flushes.
                         Arrival::Delta(delta) => {
                             turn.apply(delta);
-                            session.lock().await.revise(assistant(&id, &turn));
+                            session.lock().await.revise_at(cursor, assistant(&id, &turn))?;
                         }
                         Arrival::Retrying { attempt, max_attempts, delay_ms } => {
                             retries_seen.push((attempt, max_attempts, delay_ms));
@@ -80,7 +83,7 @@ async fn one_turn(
                             // What the attempt published has to be taken back, to nothing.
                             turn = Turn::new();
                             let mut held = session.lock().await;
-                            held.revise(assistant(&id, &turn));
+                            held.revise_at(cursor, assistant(&id, &turn))?;
                             // Nothing ever set this, so an overload showed "Thinking" for a minute.
                             held.set_status(AgentStatus::Retrying {
                                 attempt,
@@ -109,7 +112,7 @@ async fn one_turn(
                 retries_seen.push((attempt, max_attempts, delay_ms));
                 turn = Turn::new();
                 let mut held = session.lock().await;
-                held.revise(assistant(&id, &turn));
+                held.revise_at(cursor, assistant(&id, &turn))?;
                 held.set_status(AgentStatus::Retrying {
                     attempt,
                     max_attempts,
@@ -118,25 +121,31 @@ async fn one_turn(
             }
         }
     }
-    session.lock().await.revise(assistant(&id, &turn));
+    session
+        .lock()
+        .await
+        .revise_at(cursor, assistant(&id, &turn))?;
 
     // Whatever arrived before the interrupt is kept: the model said it.
     if cancel.is_requested() {
         magi_model::noted!("ask: {} interrupted", backend.model);
         turn.abort(StopReason::Aborted);
         let mut held = session.lock().await;
-        held.amend(Entry::Assistant {
-            id,
-            text: turn.text().to_owned(),
-            thinking: turn.thinking().to_owned(),
-            stop_reason: Some(StopReason::Aborted),
-            error: None,
-            signatures: magi_proto::Signatures {
-                text: None,
-                thinking: turn.signature().map(str::to_owned),
+        held.amend_at(
+            cursor,
+            Entry::Assistant {
+                id,
+                text: turn.text().to_owned(),
+                thinking: turn.thinking().to_owned(),
+                stop_reason: Some(StopReason::Aborted),
+                error: None,
+                signatures: magi_proto::Signatures {
+                    text: None,
+                    thinking: turn.signature().map(str::to_owned),
+                },
+                usage: magi_proto::Usage::default(),
             },
-            usage: magi_proto::Usage::default(),
-        })?;
+        )?;
         held.set_status(AgentStatus::Idle);
         return Ok(Round {
             turn,
@@ -153,16 +162,23 @@ async fn one_turn(
         magi_model::noted!("ask: {} failed ({refused:?}): {said}", backend.model);
         turn.abort(StopReason::Error);
         let mut held = session.lock().await;
-        held.amend(Entry::Assistant {
-            id,
-            text: turn.text().to_owned(),
-            thinking: turn.thinking().to_owned(),
-            stop_reason: Some(StopReason::Error),
-            error: Some(error.message),
-            signatures: magi_proto::Signatures::default(),
-            usage: magi_proto::Usage::default(),
-        })?;
-        held.set_status(AgentStatus::Idle);
+        held.amend_at(
+            cursor,
+            Entry::Assistant {
+                id,
+                text: turn.text().to_owned(),
+                thinking: turn.thinking().to_owned(),
+                stop_reason: Some(StopReason::Error),
+                error: Some(error.message),
+                signatures: magi_proto::Signatures::default(),
+                usage: magi_proto::Usage::default(),
+            },
+        )?;
+        // An overflow is not the end of the turn: `run` may yet be handed a tighter layout, and
+        // `magi -p` leaves the moment a session says it is idle.
+        if refused != magi_proto::ask::Refusal::Overflow {
+            held.set_status(AgentStatus::Idle);
+        }
         return Ok(Round {
             turn,
             failed: Some(refused),
@@ -192,7 +208,7 @@ async fn one_turn(
     crate::laying::applied(scribe, prompt, used).await;
     let mut held = session.lock().await;
 
-    held.amend(assistant(&id, &turn))?;
+    held.amend_at(cursor, assistant(&id, &turn))?;
     // Idle only when the turn is over; a round that stopped for tools is followed by another round.
     if !matches!(turn.state(), magi_core::TurnState::ToolsPending) {
         held.set_status(AgentStatus::Idle);
@@ -349,12 +365,15 @@ pub async fn run(
         });
 
         // The estimate was balthasar's; this is the provider's own answer. The failed round stays.
-        if round.failed == Some(magi_proto::ask::Refusal::Overflow)
-            && let Some(context) =
+        if round.failed == Some(magi_proto::ask::Refusal::Overflow) {
+            if let Some(context) =
                 crate::laying::overflowed(session, scribe, &mut prompt, &round.said).await
-        {
-            tighter = Some(context);
-            continue;
+            {
+                tighter = Some(context);
+                continue;
+            }
+            // Nobody had a tighter layout, so the refusal stands and the turn is over.
+            session.lock().await.set_status(AgentStatus::Idle);
         }
         prompt.round += 1;
         let turn = round.turn;
@@ -368,7 +387,7 @@ pub async fn run(
         let poisoned = turn.poisoned_results();
         if !poisoned.is_empty() {
             let mut held = session.lock().await;
-            for (call, _) in turn_calls(&turn).into_iter().zip(poisoned) {
+            for (call, _) in turn.attempted_calls().iter().zip(poisoned) {
                 held.commit(Entry::Tool {
                     id: ToolCallId::new(call.id.clone()),
                     name: call.name.clone(),
