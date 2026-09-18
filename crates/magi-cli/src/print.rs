@@ -84,10 +84,12 @@ pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
                 stop_reason = Some(reason);
                 error = failure;
                 // A turn that stopped to run tools has not answered yet. One that failed may be
-                // asked again with a tighter layout, so it is the session going idle that ends it.
+                // asked again with a tighter layout, and one cut off at the length limit may have
+                // had a tool call in it, which the session still has to record as failed. For both
+                // it is the session going idle that ends it, not the entry.
                 match reason {
                     StopReason::ToolUse => awaiting_tools = true,
-                    StopReason::Error => {
+                    StopReason::Error | StopReason::Length => {
                         started = true;
                         awaiting_tools = false;
                     }
