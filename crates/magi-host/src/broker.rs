@@ -37,6 +37,14 @@ fn sticky(stream: &str, wants: &Wants) -> Wants {
     wants
 }
 
+/// Forget which upstream answered a run last. Asking first for the one that has just failed asks
+/// it again on every retry, and a router told an order does not look past it for a timeout.
+fn let_go(stream: &str) {
+    if let Ok(mut served) = SERVED.lock() {
+        served.remove(stream);
+    }
+}
+
 /// A run of asks: one model with one system prompt, so a helper's short ask never moves the turn
 /// off the upstream holding its long prompt.
 fn stream_of(model: &str, context: &Context) -> String {
@@ -171,6 +179,7 @@ pub async fn ask_through(
         };
         match said {
             Said::Failed { message, why } => {
+                let_go(&stream);
                 ended = Some(Err(Trouble { message, why }));
             }
             Said::Stop { reason } => {
@@ -184,6 +193,7 @@ pub async fn ask_through(
                 ..
             } => {
                 ended = None;
+                let_go(&stream);
                 on_retry(Retry {
                     attempt,
                     max_attempts: of,
@@ -355,6 +365,16 @@ mod tests {
             }),
             Delta::Stop(StopReason::Error)
         );
+    }
+
+    #[test]
+    fn an_upstream_that_failed_is_not_asked_first_again() {
+        SERVED
+            .lock()
+            .expect("lock")
+            .insert("fake/failing".into(), "Novita".into());
+        let_go("fake/failing");
+        assert_eq!(sticky("fake/failing", &Wants::default()).provider, None);
     }
 
     #[test]
