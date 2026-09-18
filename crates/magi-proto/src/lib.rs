@@ -403,6 +403,13 @@ pub enum HarnessEvent {
         model: String,
         usage: Usage,
     },
+    /// Something the person has to be told that is not part of the conversation and that no
+    /// model sees: the memory layer has stopped answering, so nothing said from here on is being
+    /// recorded. Said once when it happens and once when it is over, not on every turn.
+    Noticed {
+        cursor: Cursor,
+        text: String,
+    },
     /// What the memory layer answered a [`UiCommand::Memory`] with: its notes, its change log, or
     /// what an undo or a review did. Not part of the log.
     MemoryAnswered {
@@ -446,6 +453,7 @@ impl HarnessEvent {
             | Self::Refused { cursor, .. }
             | Self::ModelChanged { cursor, .. }
             | Self::Branched { cursor, .. }
+            | Self::Noticed { cursor, .. }
             | Self::Error { cursor, .. } => *cursor,
             // A frame occupies no place in the log; nothing replays it.
             Self::Drew { .. }

@@ -152,7 +152,8 @@ fn fold(mut entries: Vec<Entry>, events: &[HarnessEvent]) -> Vec<Entry> {
             HarnessEvent::PermissionAsked { .. } => {}
             HarnessEvent::ContextLaid { .. }
             | HarnessEvent::HelperSpent { .. }
-            | HarnessEvent::MemoryAnswered { .. } => {}
+            | HarnessEvent::MemoryAnswered { .. }
+            | HarnessEvent::Noticed { .. } => {}
             HarnessEvent::Surfaced { .. }
             | HarnessEvent::Drew { .. }
             | HarnessEvent::Unsurfaced { .. }

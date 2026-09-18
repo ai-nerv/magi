@@ -63,7 +63,9 @@ impl Recording {
             match event.clone() {
                 // A recording is a transcript, not a session: a question nobody is there to
                 // answer has no place in one.
-                HarnessEvent::PermissionAsked { .. } | HarnessEvent::Asked { .. } => {}
+                HarnessEvent::PermissionAsked { .. }
+                | HarnessEvent::Asked { .. }
+                | HarnessEvent::Noticed { .. } => {}
                 HarnessEvent::UserMessage { id, text, .. } => {
                     entries.push(Entry::User {
                         id,

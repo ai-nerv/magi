@@ -182,6 +182,8 @@ impl App {
             // holds to a child, and this one was decided on the tool thread without passing
             // through the loop that usually notices.
             HarnessEvent::Granted { grant, .. } => self.was_granted(grant),
+            // Said by the session about itself, to the person and to no model.
+            HarnessEvent::Noticed { text, .. } => self.show_notice(text),
             HarnessEvent::ModelChanged { model, .. } => {
                 let before = self.model.as_ref().map(|m| m.name.clone());
                 let after = model.as_ref().map(|m| m.name.clone());

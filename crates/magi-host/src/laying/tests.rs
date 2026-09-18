@@ -442,3 +442,22 @@ fn a_reply_is_never_reserved_beyond_what_the_model_can_say() {
     assert_eq!(reserved(None, None), REPLY);
     assert_eq!(reserved(None, Some(0)), REPLY);
 }
+
+#[test]
+fn losing_the_memory_layer_is_said_once_and_so_is_getting_it_back() {
+    // A session that went on answering with nothing recording it told the person nothing at all:
+    // the only trace was a line in a debug log. Said once, or it is said on every turn.
+    let mut told = false;
+    assert!(said_about(&mut told, false).is_some_and(|t| t.contains("not being recorded")));
+    assert_eq!(
+        said_about(&mut told, false),
+        None,
+        "and not again while it lasts"
+    );
+    assert!(said_about(&mut told, true).is_some_and(|t| t.contains("recorded again")));
+    assert_eq!(
+        said_about(&mut told, true),
+        None,
+        "and a session that never lost it says nothing"
+    );
+}

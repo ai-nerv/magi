@@ -97,6 +97,8 @@ pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
                 }
             }
             HarnessEvent::ToolCallStarted { name, .. } => eprintln!("· {name}"),
+            // About the session and not from the model, so beside the answer rather than in it.
+            HarnessEvent::Noticed { text, .. } => eprintln!("· {text}"),
             // Nobody is at the keyboard, and the daemon waits for an answer, so a `-p` run that
             // ignored this would hang. Denied rather than allowed: `magi.allow` is how a person
             // says in advance what an unattended run may do, and anything else is refused here.

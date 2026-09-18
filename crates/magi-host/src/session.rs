@@ -49,6 +49,8 @@ pub struct Session {
     deferred: Vec<magi_proto::laying::Job>,
     /// What the current prompt's helper jobs have cost, for the ones that run after its turn.
     helpers_spent: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Whether the person has been told that nothing is being recorded, so it is said once.
+    pub unrecorded: bool,
 }
 
 impl Session {
@@ -81,6 +83,7 @@ impl Session {
             rested: None,
             deferred: Vec::new(),
             helpers_spent: std::sync::Arc::default(),
+            unrecorded: false,
         }
     }
 
