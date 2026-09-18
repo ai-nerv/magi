@@ -110,6 +110,20 @@ pub(super) fn footer_data(app: &App) -> FooterData {
     }
 }
 
+/// The line, if any, a watched agent's phase change is worth putting in front of a person. Only the
+/// edges that end a wait — `finished`, `blocked` and `lost` — the rest is left to the panel.
+pub(super) fn signal_notice(from: &str, kind: &str, cause: Option<&str>) -> Option<String> {
+    match kind {
+        "finished" => Some(format!("`{from}` finished.")),
+        "lost" => Some(format!("`{from}` is gone without finishing.")),
+        "blocked" => Some(match cause {
+            Some(why) => format!("`{from}` is blocked: {why}"),
+            None => format!("`{from}` is blocked."),
+        }),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 #[path = "crewing/tests.rs"]
 mod tests;

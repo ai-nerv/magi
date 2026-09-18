@@ -230,6 +230,12 @@ pub(crate) fn wake_prompt(
              conversation — and if one sent nothing, say so rather than inventing, recalling, or \
              guessing its findings. Do nothing your task did not ask for, and change no roles."
         )),
+        "lost" => Some(format!(
+            "{whose}, `{from}`, is gone: it ended without finishing, and will send nothing more. \
+             Do not wait on it. Read its report if it handed one in (`agent`, verb `report`), then \
+             either do its part yourself, start another, or say plainly that the part is missing. \
+             Do not invent what it would have found."
+        )),
         "blocked" => Some(format!(
             "{whose}, `{from}`, is blocked{}. Say in one line what should happen next. Do not spawn \
              new agents or change roles.",
@@ -613,6 +619,8 @@ mod tests {
         assert!(wake_prompt("child", "finished", "psi", None).is_some());
         assert!(wake_prompt("child", "blocked", "psi", Some("declined")).is_some());
         assert!(wake_prompt("watched", "finished", "far", None).is_some());
+        assert!(wake_prompt("child", "lost", "psi", None).is_some());
+        assert!(wake_prompt("child", "gone", "psi", None).is_none());
         assert!(wake_prompt("child", "working", "psi", None).is_none());
         assert!(wake_prompt("child", "idle", "psi", None).is_none());
         assert!(wake_prompt("parent", "finished", "lead", None).is_none());

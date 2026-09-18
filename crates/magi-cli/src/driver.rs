@@ -766,26 +766,13 @@ pub(super) fn float_room() -> (u16, u16) {
     (inside.height, inside.width)
 }
 
-/// The line, if any, a watched agent's phase change is worth putting in front of a person. Only the
-/// edges that end a wait — `finished` and `blocked` — the rest is left to the panel to show quietly.
-fn signal_notice(from: &str, kind: &str, cause: Option<&str>) -> Option<String> {
-    match kind {
-        "finished" => Some(format!("`{from}` finished.")),
-        "blocked" => Some(match cause {
-            Some(why) => format!("`{from}` is blocked: {why}"),
-            None => format!("`{from}` is blocked."),
-        }),
-        _ => None,
-    }
-}
-
 /// The socket to the session, and redialling one that dropped.
 mod connecting;
 use connecting::connection_loop;
 
 /// Which agent the screen is pointed at, and what may be sent to one that is not ours.
 mod crewing;
-use crewing::{dial, direct, footer_data, ours, walk};
+use crewing::{dial, direct, footer_data, ours, signal_notice, walk};
 
 /// The pointer, and which of two readers it belongs to.
 mod pointing;
