@@ -655,8 +655,16 @@ fn turn(cursor: Cursor, entry: &Entry, beside: &Beside) -> Result<serde_json::Va
     if let Some(group) = beside.group {
         turn.insert("group".into(), serde_json::Value::from(group));
     }
-    if let Entry::Tool { name, result, .. } = entry {
+    if let Entry::Tool {
+        name, args, result, ..
+    } = entry
+    {
         turn.insert("tool".into(), serde_json::Value::from(name.clone()));
+        // What was asked for, beside what came back: a failure means little without it, and it is
+        // what a summary carries of a call that failed.
+        let asked =
+            serde_json::from_str(args).unwrap_or_else(|_| serde_json::Value::from(args.clone()));
+        turn.insert("args".into(), asked);
         let failed = result.as_ref().is_some_and(|r| r.is_error);
         turn.insert("error".into(), serde_json::Value::from(failed));
         turn.insert(
