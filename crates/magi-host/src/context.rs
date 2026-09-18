@@ -77,10 +77,14 @@ impl Built {
             // Somebody addressed this session, so it is a user turn — but not the user. Named
             // rather than dropped: swallowing a message another agent sent is worth no tidiness.
             Entry::From { who, kin, text, .. } => {
-                self.user(format!(
-                    "[message from {}::{who}]\n{text}",
-                    kin.to_uppercase()
-                ));
+                // Named as the screen names it: role and id, and the whole name from elsewhere.
+                let id = who.rsplit('/').next().unwrap_or(who);
+                let name = match kin.as_str() {
+                    "elsewhere" => who.clone(),
+                    "myself" | "" => id.to_owned(),
+                    role => format!("{role}/{id}"),
+                };
+                self.user(format!("[message from {name}]\n{text}"));
             }
             Entry::Assistant {
                 text,
