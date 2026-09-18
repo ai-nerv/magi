@@ -31,7 +31,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     writer
         .write(&UiCommand::Attach {
             session: None,
-            from_cursor: Cursor(0),
+            from_cursor: Cursor(if flags.contains_key("from-end") {
+                u64::MAX
+            } else {
+                0
+            }),
             draws: false,
         })
         .await?;
@@ -57,6 +61,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         while ended < answers {
             let event: HarnessEvent = reader.read().await?;
             println!("{}", serde_json::to_string(&event)?);
+            // Nobody is here to answer, and the session waits: what was not granted in advance
+            // is refused, as `magi -p` does.
+            if let HarnessEvent::PermissionAsked { id, .. } = &event {
+                writer
+                    .write(&UiCommand::Permit {
+                        id: id.clone(),
+                        decision: magi_proto::permit::Decision::Deny,
+                    })
+                    .await?;
+            }
             if let HarnessEvent::AssistantEnded { stop_reason, .. } = &event
                 && *stop_reason != StopReason::ToolUse
             {
