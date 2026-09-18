@@ -294,23 +294,15 @@ pub async fn serve_on(
     let asker = {
         let events = session.lock().await.publisher();
         let watched = events.clone();
-        Arc::new(
-            crate::asking::Asker::new(
-                Arc::clone(&pending),
-                Box::new(move |event| {
-                    let _ = events.send(event);
-                }),
-                // Transient rather than journalled, and the UI tracks the highest cursor with a max.
-                Box::new(|| Cursor::ZERO),
-                Box::new(move || watched.receiver_count() > 0),
-            )
-            .drawn_by(Arc::clone(&holds))
-            .in_context(magi_tools::holding::Context {
-                configure: catalog.tooling.configure.clone(),
-                jail: catalog.isolate.then(|| "1".to_owned()),
-                cwd: Some(catalog.cwd.clone()),
+        Arc::new(crate::asking::Asker::new(
+            Arc::clone(&pending),
+            Box::new(move |event| {
+                let _ = events.send(event);
             }),
-        )
+            // Transient rather than journalled, and the UI tracks the highest cursor with a max.
+            Box::new(|| Cursor::ZERO),
+            Box::new(move || watched.receiver_count() > 0),
+        ))
     };
     let person = crate::asking::Person::of(asker, holds, Arc::clone(&holding));
     let worker = Arc::new(tokio::sync::RwLock::new(
