@@ -5,6 +5,7 @@
 //! `thought_signature` on [`Content::ToolCall`], carry whatever a provider needs to accept its own
 //! reasoning back; without them, changing model mid-session corrupts reasoning continuity.
 
+pub mod estimate;
 pub mod noted;
 pub mod scratch;
 mod usage;

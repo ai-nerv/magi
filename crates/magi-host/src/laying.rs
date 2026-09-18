@@ -85,11 +85,6 @@ pub fn live(session: &Session) -> Vec<u64> {
         .collect()
 }
 
-/// A token per four characters, the estimate balthasar corrects against.
-fn tokens(chars: usize) -> u64 {
-    (chars as u64).div_ceil(4)
-}
-
 /// The question put to balthasar before a request.
 #[must_use]
 pub fn request(
@@ -98,13 +93,16 @@ pub fn request(
     tools: &[magi_model::Tool],
     round: usize,
 ) -> serde_json::Value {
-    let system = backend.system.as_deref().map_or(0, |s| s.chars().count());
-    let tooling = serde_json::to_string(tools).map_or(0, |t| t.chars().count());
+    let system = backend
+        .system
+        .as_deref()
+        .map_or(0, magi_model::estimate::tokens);
+    let tooling = serde_json::to_string(tools).map_or(0, |t| magi_model::estimate::tokens(&t));
     serde_json::json!({
         "round": round,
         "window": backend.context_window.unwrap_or(0),
         "reply": reserved(backend.wants.max_tokens, backend.max_output),
-        "fixed": { "system": tokens(system), "tools": tokens(tooling) },
+        "fixed": { "system": system, "tools": tooling },
         "live": live(session),
         "query": crate::context::last_asked(session).unwrap_or_default(),
         "idle_s": session.idle_for().unwrap_or(0),
@@ -347,7 +345,7 @@ pub fn listed(session: &Session, layout: &Layout) -> Vec<magi_proto::laying::Lai
         if said > 0 {
             said
         } else {
-            tokens(text.chars().count())
+            magi_model::estimate::tokens(text)
         }
     };
     layout

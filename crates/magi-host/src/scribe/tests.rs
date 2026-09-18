@@ -160,8 +160,8 @@ fn a_tool_row_carries_its_group_its_cost_and_what_its_tool_said() {
     assert_eq!(wire["group"], 4);
     assert_eq!(wire["stub"], "read a (1 line)");
     assert_eq!(wire["handle"], "read a");
-    // `read`, `{}` and eight characters of output: fourteen, so four tokens.
-    assert_eq!(wire["tokens"], 4);
+    // A word, two marks and eight digits in groups of three: one, two and three.
+    assert_eq!(wire["tokens"], 6);
     assert_eq!(wire["keep"], false);
     assert_eq!(wire["error"], false);
 }

@@ -674,21 +674,17 @@ fn turn(cursor: Cursor, entry: &Entry, beside: &Beside) -> Result<serde_json::Va
     Ok(serde_json::Value::Object(turn))
 }
 
-/// What sending this entry costs: a token per four characters of everything the model is shown.
+/// What sending this entry costs: an estimate of everything the model is shown of it.
 pub(crate) fn tokens(entry: &Entry) -> u64 {
-    let chars = match entry {
-        Entry::User { text, aside, .. } => text.chars().count() + aside.chars().count(),
-        Entry::Assistant { text, thinking, .. } => text.chars().count() + thinking.chars().count(),
+    use magi_model::estimate::tokens as of;
+    match entry {
+        Entry::User { text, aside, .. } => of(text) + of(aside),
+        Entry::Assistant { text, thinking, .. } => of(text) + of(thinking),
         Entry::Tool {
             name, args, result, ..
-        } => {
-            name.chars().count()
-                + args.chars().count()
-                + result.as_ref().map_or(0, |r| r.output.chars().count())
-        }
-        other => text(other).chars().count(),
-    };
-    (chars as u64).div_ceil(4)
+        } => of(name) + of(args) + result.as_ref().map_or(0, |r| of(&r.output)),
+        other => of(&text(other)),
+    }
 }
 
 fn role(entry: &Entry) -> &'static str {
