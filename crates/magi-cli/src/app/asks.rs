@@ -149,6 +149,26 @@ impl App {
             .cloned()
     }
 
+    /// The tool calls with a question open, so their rows can say so: a row that is waiting on
+    /// the person reads the same as one that is merely slow until something marks it.
+    #[must_use]
+    pub fn waiting_calls(&self) -> Vec<ToolCallId> {
+        if self.asks.is_empty() {
+            return Vec::new();
+        }
+        self.entries
+            .iter()
+            .filter_map(|entry| match entry {
+                Entry::Tool {
+                    id, result: None, ..
+                } => Some(id),
+                _ => None,
+            })
+            .filter(|call| self.ask_of(call).is_some())
+            .cloned()
+            .collect()
+    }
+
     /// A press on the row of a tool that is waiting for an answer brings its question up, whichever
     /// one was showing. Anywhere on the row: the whole line is what is waiting.
     pub fn ask_at(&mut self, row: u16) -> bool {
@@ -161,6 +181,56 @@ impl App {
         };
         self.ask_of(&call).is_some_and(|ask| self.present(&ask))
     }
+}
+
+/// What a waiting row says, longest first: whichever fits in the padding the row ends with.
+const MARKS: &[&str] = &[
+    "◀ waiting on you — click to answer ",
+    "◀ waiting — click ",
+    "◀ ",
+];
+
+/// Say on a tool's row that it is waiting on the person. A row is padded to the full width, so
+/// the words take the place of padding rather than following it off the edge of the screen.
+pub fn marked(row: &mut ratatui::text::Line<'static>) {
+    // The padding may be several spans: whole ones that are nothing but space, and the tail of
+    // the one before them.
+    let mut padding = 0;
+    for span in row.spans.iter().rev() {
+        let spaces = span.content.chars().rev().take_while(|c| *c == ' ').count();
+        padding += spaces;
+        if spaces < span.content.chars().count() {
+            break;
+        }
+    }
+    let Some(mark) = MARKS.iter().find(|mark| mark.chars().count() < padding) else {
+        return;
+    };
+    let mut take = mark.chars().count();
+    while take > 0 {
+        let Some(last) = row.spans.last_mut() else {
+            return;
+        };
+        let held = last.content.chars().count();
+        if held <= take {
+            take -= held;
+            row.spans.pop();
+        } else {
+            last.content = last
+                .content
+                .chars()
+                .take(held - take)
+                .collect::<String>()
+                .into();
+            take = 0;
+        }
+    }
+    row.spans.push(ratatui::text::Span::styled(
+        *mark,
+        ratatui::style::Style::default()
+            .fg(magi_tui::colour::warning())
+            .add_modifier(ratatui::style::Modifier::BOLD),
+    ));
 }
 
 #[cfg(test)]
@@ -258,6 +328,13 @@ mod tests {
             Some("p2"),
             "and the second is the second's"
         );
+        // Only the calls that are asking are marked, and a finished one never is.
+        let waiting: Vec<String> = app
+            .waiting_calls()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(waiting, ["c1", "c2", "c3"]);
         // Taken out of order: the last one first.
         assert!(app.present(&ToolCallId::new("p2")));
         assert_eq!(showing(&app).as_deref(), Some("p2"));
@@ -266,5 +343,67 @@ mod tests {
             3,
             "the one it replaced on screen is still open"
         );
+    }
+}
+
+#[cfg(test)]
+mod marking {
+    use ratatui::text::{Line, Span};
+
+    fn width(row: &Line<'static>) -> usize {
+        row.spans.iter().map(|s| s.content.chars().count()).sum()
+    }
+
+    #[test]
+    fn a_waiting_row_says_so_inside_the_width_it_already_had() {
+        // A tool's row is padded out to the edge, so words added after it were drawn off screen.
+        let mut row = Line::from(vec![
+            Span::raw("  · [ read ] /w/PLAN.md"),
+            Span::raw(" ".repeat(47)),
+        ]);
+        let before = width(&row);
+        super::marked(&mut row);
+        let text: String = row.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("waiting on you"), "{text}");
+        assert_eq!(width(&row), before, "no wider than it was: {text}");
+    }
+
+    #[test]
+    fn the_row_the_renderer_really_draws_takes_the_words() {
+        // Against what is actually drawn, not a row made up here: the padding is its own spans.
+        let mut rows = magi_tui::transcript::entry_lines(
+            &magi_proto::Entry::Tool {
+                id: magi_proto::ToolCallId::new("t1"),
+                name: "read".into(),
+                args: r#"{"path":"/home/x/PLAN.md"}"#.into(),
+                result: None,
+                thought_signature: None,
+            },
+            90,
+            magi_tui::transcript::Detail::Preview,
+        );
+        let row = rows.iter_mut().find(|row| width(row) > 0).expect("a row");
+        let before = width(row);
+        super::marked(row);
+        let text: String = row.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("waiting on you"), "{text}");
+        assert!(text.contains("PLAN.md"), "the call is still there: {text}");
+        assert_eq!(width(row), before, "{text}");
+    }
+
+    #[test]
+    fn a_row_with_little_room_says_it_shorter_and_one_with_none_is_left_alone() {
+        let mut tight = Line::from(vec![
+            Span::raw("  · [ shell ] ls"),
+            Span::raw(" ".repeat(6)),
+        ]);
+        super::marked(&mut tight);
+        let text: String = tight.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains('◀') && !text.contains("waiting"), "{text}");
+
+        let mut full = Line::from(vec![Span::raw("  · [ shell ] a very long command")]);
+        let before = full.clone();
+        super::marked(&mut full);
+        assert_eq!(full, before);
     }
 }

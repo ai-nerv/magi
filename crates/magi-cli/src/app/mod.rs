@@ -519,6 +519,7 @@ impl App {
 
 mod crewing;
 mod kin;
+pub use asks::marked;
 pub use crewing::{Seat, changes, for_screen};
 pub(crate) use kin::relation;
 mod picking;
