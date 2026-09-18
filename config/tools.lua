@@ -92,8 +92,9 @@ do -- the memory role
     },
     remember = {
       args = { "text" },
-      about = "Keep something for later sessions: a decision, a convention, or a fact about " ..
-        "this project that was not obvious.",
+      about = "Keep a fact for later sessions: something you found out about this project that " ..
+        "was not obvious. Not a rule: what the person tells you to do is kept from their own " ..
+        "words, where they can review and undo it, and a rule written here is refused.",
       parameters = {
         type = "object",
         properties = {
