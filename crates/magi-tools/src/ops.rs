@@ -297,7 +297,9 @@ impl Ops for Real {
         };
         // Against the resolved path, as `read`/`write` act, or a relative one never meets a grant.
         let action = &self.resolved_action(action);
-        if gate.ledger.lock().is_ok_and(|ledger| ledger.allows(action)) {
+        if !gate.approver.overrides(action)
+            && gate.ledger.lock().is_ok_and(|ledger| ledger.allows(action))
+        {
             return Ok(());
         }
         let decision = gate.approver.ask(tool, action);
@@ -311,12 +313,19 @@ impl Ops for Real {
         });
         match decision {
             magi_proto::permit::Decision::Allow { .. } => Ok(()),
-            magi_proto::permit::Decision::Deny => Err(format!(
-                "not permitted: {} {}. No standing grant covers it, and asking got no leave: \
-                 either it was declined, or nobody is attached to this session to be asked.",
-                action.verb(),
-                action.subject()
-            )),
+            magi_proto::permit::Decision::Deny => Err(match gate.approver.why(action) {
+                Some(why) => format!(
+                    "not permitted: {} {}. {why}",
+                    action.verb(),
+                    action.subject()
+                ),
+                None => format!(
+                    "not permitted: {} {}. No standing grant covers it, and asking got no leave: \
+                     either it was declined, or nobody is attached to this session to be asked.",
+                    action.verb(),
+                    action.subject()
+                ),
+            }),
         }
     }
 

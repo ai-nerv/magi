@@ -66,6 +66,9 @@ pub struct Catalog {
     /// Whether a tool command runs inside a kernel jail — `magi.isolation`.
     pub isolate: bool,
     pub grants: Vec<magi_proto::permit::Grant>,
+    /// Who is asked about what no grant covers, and the rules no mode overrides.
+    pub mode: magi_proto::judging::Mode,
+    pub rules: magi_proto::judging::Rules,
     /// Which program fills the `tools` role, and what this session tells it. Beside [`Self::mind`]
     /// and [`Self::memory`] because it is the third of the same thing: a role, and who is doing it.
     pub tooling: magi_tools::supplier::Tooling,
@@ -105,6 +108,8 @@ impl Catalog {
             confine: false,
             isolate: false,
             grants: Vec::new(),
+            mode: magi_proto::judging::Mode::default(),
+            rules: magi_proto::judging::Rules::default(),
         }
     }
 

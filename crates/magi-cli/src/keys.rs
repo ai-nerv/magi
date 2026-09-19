@@ -284,6 +284,8 @@ pub fn handle(
     }
 
     match key.code {
+        // Who is asked about what no rule covers, cycled the way it is elsewhere.
+        KeyCode::BackTab => Action::Command(":mode next".to_owned()),
         KeyCode::PageUp => Action::Scroll(Scroll::PageUp),
         KeyCode::PageDown => Action::Scroll(Scroll::PageDown),
         // Shift separates "move the transcript" from "move within the prompt".

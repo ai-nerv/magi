@@ -86,6 +86,15 @@ pub(super) async fn ours(
     let _ = to.send(command).await;
 }
 
+/// The model's name, with the mode beside it when it is not the one a session starts in: asking
+/// every time is what nobody needs telling, and anything else is what they should see at a glance.
+fn moded(app: &App, model: String) -> String {
+    match app.mode {
+        magi_proto::judging::Mode::Ask => model,
+        mode => format!("{model} · {}", mode.name()),
+    }
+}
+
 pub(super) fn footer_data(app: &App) -> FooterData {
     let window = app.model.as_ref().map_or(0, |m| m.context_window);
     FooterData {
@@ -95,9 +104,12 @@ pub(super) fn footer_data(app: &App) -> FooterData {
         own: app.attached.is_none(),
         name_hover: app.name_hover,
         model_hover: app.model_hover,
-        model: app.model.as_ref().map_or_else(
-            || magi_tui::glyph::no_model().to_owned(),
-            |model| model.name.clone(),
+        model: moded(
+            app,
+            app.model.as_ref().map_or_else(
+                || magi_tui::glyph::no_model().to_owned(),
+                |model| model.name.clone(),
+            ),
         ),
         input_tokens: app.usage().prompt_tokens(),
         output_tokens: app.usage().output,

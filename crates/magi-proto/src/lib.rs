@@ -19,6 +19,7 @@
 
 pub mod ask;
 mod ids;
+pub mod judging;
 pub mod laying;
 pub mod permit;
 pub mod setup;
@@ -258,6 +259,8 @@ pub enum HarnessEvent {
         choices: Vec<ModelChoice>,
         #[serde(default)]
         thinking: String,
+        #[serde(default)]
+        mode: crate::judging::Mode,
     },
     UserMessage {
         cursor: Cursor,
@@ -305,6 +308,11 @@ pub enum HarnessEvent {
         cursor: Cursor,
         status: AgentStatus,
     },
+    /// Who is asked about what no rule covers has changed.
+    ModeChanged {
+        cursor: Cursor,
+        mode: crate::judging::Mode,
+    },
     ModelChanged {
         cursor: Cursor,
         model: Option<ModelInfo>,
@@ -318,6 +326,9 @@ pub enum HarnessEvent {
         action: crate::permit::Action,
         /// The widths this may be answered at, narrowest first.
         offers: Vec<crate::permit::Scope>,
+        /// What a second model made of it, when one is configured to say.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        advice: Option<crate::judging::Advice>,
     },
     /// A tool is asking the person something: the general form of [`Self::PermissionAsked`], with
     /// the tool's own options. The turn stops until [`UiCommand::Answered`].
@@ -452,6 +463,7 @@ impl HarnessEvent {
             | Self::Granted { cursor, .. }
             | Self::Refused { cursor, .. }
             | Self::ModelChanged { cursor, .. }
+            | Self::ModeChanged { cursor, .. }
             | Self::Branched { cursor, .. }
             | Self::Noticed { cursor, .. }
             | Self::Error { cursor, .. } => *cursor,

@@ -2,6 +2,57 @@
 
 use super::Loaded;
 
+/// The rules under `key`, in the one shape `magi.allow`, `magi.ask` and `magi.deny` share: a verb
+/// and one width. A rule naming no width is no rule.
+#[must_use]
+pub fn rules(loaded: &Loaded, key: &str) -> Vec<magi_proto::permit::Grant> {
+    use magi_proto::permit::{Grant, Scope};
+    let width = |rule: &serde_json::Value| {
+        if rule.get("anything").and_then(serde_json::Value::as_bool) == Some(true) {
+            return Some(Scope::Anything);
+        }
+        let named = |field: &str| rule.get(field).and_then(|v| v.as_str()).map(str::to_owned);
+        named("program")
+            .map(|program| Scope::Program { program })
+            .or_else(|| named("directory").map(|path| Scope::Directory { path }))
+    };
+    loaded
+        .config
+        .get(key)
+        .and_then(|v| v.as_array())
+        .map(|rules| {
+            rules
+                .iter()
+                .filter_map(|rule| {
+                    Some(Grant {
+                        verb: rule.get("verb")?.as_str()?.to_owned(),
+                        scope: width(rule)?,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Who is asked about what no rule covers, and the two kinds of rule no mode overrides.
+/// ```lua
+/// magi.mode = "auto"    -- ask | edits | auto | locked
+/// ```
+#[must_use]
+pub fn judging(loaded: &Loaded) -> (magi_proto::judging::Mode, magi_host::judging::Rules) {
+    let mode = loaded
+        .config
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .and_then(magi_proto::judging::Mode::named)
+        .unwrap_or_default();
+    let rules = magi_host::judging::Rules {
+        ask: rules(loaded, "ask"),
+        deny: rules(loaded, "deny"),
+    };
+    (mode, rules)
+}
+
 /// Permissions the configuration granted outright: `magi.allow` rules go into the ledger at startup
 /// rather than being prompted for. Anything not listed is asked about the first time it comes up.
 /// ```lua
@@ -14,36 +65,7 @@ use super::Loaded;
 #[must_use]
 pub fn grants(loaded: &Loaded) -> Vec<magi_proto::permit::Grant> {
     use magi_proto::permit::{Grant, Scope};
-    let mut out: Vec<Grant> = loaded
-        .config
-        .get("allow")
-        .and_then(|v| v.as_array())
-        .map(|rules| {
-            rules
-                .iter()
-                .filter_map(|rule| {
-                    let verb = rule.get("verb")?.as_str()?.to_owned();
-                    let scope = if rule.get("anything").and_then(serde_json::Value::as_bool)
-                        == Some(true)
-                    {
-                        Scope::Anything
-                    } else if let Some(program) = rule.get("program").and_then(|v| v.as_str()) {
-                        Scope::Program {
-                            program: program.to_owned(),
-                        }
-                    } else if let Some(path) = rule.get("directory").and_then(|v| v.as_str()) {
-                        Scope::Directory {
-                            path: path.to_owned(),
-                        }
-                    } else {
-                        // A rule naming no width grants nothing; a typo widened to `Anything` would.
-                        return None;
-                    };
-                    Some(Grant { verb, scope })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut out = rules(loaded, "allow");
     // `magi.may_spawn` pre-authorises starting children: `spawn` runs this very binary with `fork`,
     // gated as a `run` of its own path. Granted by the path the process runs from, so it needs no
     // machine-specific rule and survives a config reinstall — which a hand-written path does not.

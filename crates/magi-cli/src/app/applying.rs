@@ -24,8 +24,10 @@ impl App {
                 model,
                 choices,
                 thinking,
+                mode,
                 ..
             } => {
+                self.mode = mode;
                 let unconfigured = model.is_none();
                 self.model = model;
                 self.model_reasons = self.model.as_ref().is_some_and(|chosen| {
@@ -184,6 +186,16 @@ impl App {
             HarnessEvent::Granted { grant, .. } => self.was_granted(grant),
             // Said by the session about itself, to the person and to no model.
             HarnessEvent::Noticed { text, .. } => self.show_notice(text),
+            HarnessEvent::ModeChanged { mode, .. } => {
+                if self.started() && self.mode != mode {
+                    self.show_notice(format!(
+                        "Mode is now `{}`: {}.",
+                        mode.name(),
+                        crate::app::asks::said_of(mode)
+                    ));
+                }
+                self.mode = mode;
+            }
             HarnessEvent::ModelChanged { model, .. } => {
                 let before = self.model.as_ref().map(|m| m.name.clone());
                 let after = model.as_ref().map(|m| m.name.clone());

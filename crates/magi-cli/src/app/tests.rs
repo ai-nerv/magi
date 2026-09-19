@@ -147,6 +147,7 @@ mod reduction {
             model: None,
             choices: Vec::new(),
             thinking: String::new(),
+            mode: magi_proto::judging::Mode::default(),
         });
         assert_eq!(app.entries().len(), 2);
     }
@@ -166,6 +167,7 @@ mod reduction {
             model: None,
             choices: Vec::new(),
             thinking: String::new(),
+            mode: magi_proto::judging::Mode::default(),
         });
         assert_eq!(app.entries().len(), 1);
     }
@@ -307,6 +309,7 @@ mod usage_tests {
             model: None,
             choices: Vec::new(),
             thinking: String::new(),
+            mode: magi_proto::judging::Mode::default(),
         });
         rejoined.apply(ended("a1", 1, spent(100, 20)));
         assert_eq!(rejoined.usage().input, 100, "counted once, not twice");
@@ -360,6 +363,7 @@ mod usage_tests {
             }),
             choices: Vec::new(),
             thinking: String::new(),
+            mode: magi_proto::judging::Mode::default(),
         });
         assert_eq!(app.model.expect("a model").name, "p/m");
     }
@@ -384,6 +388,7 @@ mod onboarding_tests {
                 reasoning: false,
             }],
             thinking: String::new(),
+            mode: magi_proto::judging::Mode::default(),
         }
     }
 
@@ -460,6 +465,7 @@ mod picking {
                 reasoning: true,
             }],
             thinking: "off".into(),
+            mode: magi_proto::judging::Mode::default(),
         });
         app
     }
@@ -513,6 +519,7 @@ mod picking {
                 reasoning: false,
             }],
             thinking: "off".into(),
+            mode: magi_proto::judging::Mode::default(),
         });
         app.open_thinking_picker();
         let picker = app

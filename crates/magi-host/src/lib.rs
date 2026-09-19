@@ -11,6 +11,7 @@ pub mod declaring;
 pub mod driving;
 pub mod helping;
 pub mod holder;
+pub mod judging;
 pub mod knowing;
 pub mod laying;
 pub mod paths;
@@ -262,8 +263,10 @@ pub async fn serve_on(
     // would be two ids counting from zero into one map. Built after the holding it draws on.
     let holding = Arc::new(crate::holder::Holding::new());
     // Questions a surface cannot answer itself go to a task of the session's own, not a connection's.
+    // The same channel a surface asks down: the second model is one more thing to ask it for.
+    let (asking, asked) = tokio::sync::mpsc::unbounded_channel();
+    let judge_asks = asking.clone();
     let knows = {
-        let (asking, asked) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(crate::knowing::serve(
             asked,
             Arc::clone(&scribe),
@@ -305,6 +308,7 @@ pub async fn serve_on(
         ))
     };
     let person = crate::asking::Person::of(asker, holds, Arc::clone(&holding));
+    let person = guard(person, judge_asks, &catalog, &session).await;
     let worker = Arc::new(tokio::sync::RwLock::new(
         backend
             .map(|backend| {
@@ -469,6 +473,12 @@ async fn connection(
                                 .await?;
                         }
                     }
+                    Some(UiCommand::SetMode { mode }) => {
+                        if let Err(message) = judging::switch(&session, &person.standing, &mode).await {
+                            let cursor = session.lock().await.cursor();
+                            writer.write(&HarnessEvent::Refused { cursor, message }).await?;
+                        }
+                    }
                     // To the screen that asked, not every screen: a view of notes is one person's.
                     Some(UiCommand::Memory { verb, arg }) => {
                         let _boundary = worker.read().await;
@@ -600,6 +610,37 @@ pub fn open_session(now: u64, whose: &str) -> Session {
         magi_proto::SessionId::new(paths::session_id(now, whose)),
         Vec::new(),
     )
+}
+
+/// Put the rules, the mode and the second model in front of whoever a session's tools ask. The
+/// person is still there behind them, and is who every doubt comes back to.
+async fn guard(
+    mut person: crate::asking::Person,
+    asking: tokio::sync::mpsc::UnboundedSender<crate::knowing::Wondering>,
+    catalog: &crate::catalog::Catalog,
+    session: &tokio::sync::Mutex<crate::session::Session>,
+) -> crate::asking::Person {
+    let events = {
+        let mut held = session.lock().await;
+        held.mode = catalog.mode;
+        held.publisher()
+    };
+    let standing = Arc::new(judging::Standing::starting(catalog.mode));
+    person.approver = Arc::new(judging::Judged::new(
+        Arc::clone(&person.approver),
+        Arc::new(judging::Helper::new(asking, &catalog.cwd)),
+        Arc::clone(&standing),
+        catalog.rules.clone(),
+        &catalog.cwd,
+        Box::new(move |text| {
+            let _ = events.send(magi_proto::HarnessEvent::Noticed {
+                cursor: magi_proto::Cursor::ZERO,
+                text,
+            });
+        }),
+    ));
+    person.standing = standing;
+    person
 }
 
 #[cfg(test)]

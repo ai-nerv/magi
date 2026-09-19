@@ -51,6 +51,8 @@ pub struct Session {
     helpers_spent: std::sync::Arc<std::sync::atomic::AtomicU64>,
     /// Whether the person has been told that nothing is being recorded, so it is said once.
     pub unrecorded: bool,
+    /// Who is asked about what no rule covers; the gate reads its own copy, this one is shown.
+    pub mode: magi_proto::judging::Mode,
 }
 
 impl Session {
@@ -84,6 +86,7 @@ impl Session {
             deferred: Vec::new(),
             helpers_spent: std::sync::Arc::default(),
             unrecorded: false,
+            mode: magi_proto::judging::Mode::default(),
         }
     }
 
@@ -333,6 +336,7 @@ impl Session {
             model: self.model.clone(),
             choices: self.choices.clone(),
             thinking: self.thinking.clone(),
+            mode: self.mode,
         }
     }
 

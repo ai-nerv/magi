@@ -248,6 +248,8 @@ pub fn catalog(loaded: &Loaded, cards: Vec<magi_proto::ask::Card>) -> magi_host:
         wants: options(loaded),
         system: system(loaded),
         grants: grants(loaded),
+        mode: settings::judging(loaded).0,
+        rules: settings::judging(loaded).1,
         environ: environ(loaded),
         chosen: None,
         transcript: None,
@@ -388,7 +390,16 @@ pub struct Trusted {
 
 /// Settings a project's own file may not assign: `confine` is the wall, `allow` is what may happen
 /// without asking, and a file that could set `trusted` could exempt itself.
-const PRIVILEGED_SETTINGS: &[&str] = &["confine", "allow", "trusted", "isolation", "may_spawn"];
+const PRIVILEGED_SETTINGS: &[&str] = &[
+    "confine",
+    "allow",
+    "trusted",
+    "isolation",
+    "may_spawn",
+    "mode",
+    "ask",
+    "deny",
+];
 
 impl Trusted {
     /// Record what has been declared so far.

@@ -43,6 +43,8 @@ pub struct App {
     /// As the daemon reported it, not read from the config here — after an edit the two differ.
     pub model: Option<magi_proto::ModelInfo>,
     pub thinking: String,
+    /// Who is asked about what no rule covers, as the session last said.
+    pub mode: magi_proto::judging::Mode,
     /// Which provider serves the model, by routing tag, as chosen on its card; `None` is the router's.
     pub provider: Option<String>,
     /// Which model answered each finished turn, as it was when the turn ended.
@@ -151,6 +153,7 @@ impl App {
             connected: false,
             model: None,
             thinking: "off".to_owned(),
+            mode: magi_proto::judging::Mode::default(),
             provider: None,
             turn_models: std::collections::HashMap::new(),
             model_reasons: false,

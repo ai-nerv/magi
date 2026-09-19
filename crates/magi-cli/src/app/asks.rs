@@ -51,6 +51,7 @@ impl App {
                 tool,
                 action,
                 offers,
+                advice,
                 ..
             } => {
                 let choices = offers
@@ -68,7 +69,8 @@ impl App {
                     .collect();
                 // The call on its own rows, not in the title. A long command clipped into a
                 // heading is clipped in the middle of the very thing being decided about.
-                let about = magi_tui::wrap::hard(action.subject(), 60);
+                let mut about = advice.as_ref().map(advised).unwrap_or_default();
+                about.extend(magi_tui::wrap::hard(action.subject(), 60));
                 self.overlay = Some(
                     magi_tui::picker::Picker::new(
                         format!("{tool} wants to {}{}", action.verb(), self.others_waiting()),
@@ -233,6 +235,34 @@ pub fn marked(row: &mut ratatui::text::Line<'static>) {
     ));
 }
 
+/// What a mode means, in the words a person is told it in when it changes.
+pub(crate) fn said_of(mode: magi_proto::judging::Mode) -> &'static str {
+    use magi_proto::judging::Mode;
+    match mode {
+        Mode::Ask => "you are asked about anything no rule allows",
+        Mode::Edits => "edits inside this directory go ahead, and you are asked about the rest",
+        Mode::Auto => {
+            "a second model decides what no rule covers, and you are asked when it cannot; \
+             `magi.deny` and `magi.ask` hold as ever"
+        }
+        Mode::Locked => "anything no rule allows is refused, not asked about",
+    }
+}
+
+/// The second model's view of an action, as the rows shown above the choices.
+fn advised(advice: &magi_proto::judging::Advice) -> Vec<String> {
+    let verdict = if advice.safe {
+        "looks safe"
+    } else {
+        "advises against"
+    };
+    let head = format!("safety check {verdict} [{}]", advice.rule);
+    std::iter::once(head)
+        .chain(magi_tui::wrap::hard(&advice.reason, 60))
+        .chain(std::iter::once(String::new()))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::{App, Picking};
@@ -246,6 +276,7 @@ mod tests {
             tool: tool.into(),
             action: Action::Read { path: path.into() },
             offers: vec![Scope::Once],
+            advice: None,
         }
     }
 

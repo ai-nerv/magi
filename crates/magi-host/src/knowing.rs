@@ -163,14 +163,20 @@ async fn helper(
         blocking: true,
         timeout_ms: args.get("timeout_ms").and_then(serde_json::Value::as_u64),
     };
-    let events = {
+    let (events, asked_for) = {
         let held = session.lock().await;
         // `/model` replaces the model mid-session; the fallback is the one answering now.
         if let Some(name) = held.model_name() {
             backend.model = name;
         }
-        held.publisher()
+        (held.publisher(), said_by_the_person(held.entries()))
     };
+    // What the person said, and only that, for a question that asks for it: what a tool printed
+    // is what such a question must not be swayed by.
+    let mut job = job;
+    if args.get("said").and_then(serde_json::Value::as_bool) == Some(true) {
+        job.input = format!("{asked_for}\n{}", job.input);
+    }
     match crate::helping::run_accounted(&job, &backend).await {
         Ok(answer) => {
             let _ = events.send(magi_proto::HarnessEvent::HelperSpent {
@@ -193,6 +199,25 @@ async fn helper(
             refused(Wonder::Helper, &why.message)
         }
     }
+}
+
+/// The newest things the person said, oldest first, within a bound: what they asked for, and any
+/// line they drew. Nothing an assistant wrote or a tool printed.
+fn said_by_the_person(entries: &[magi_proto::Entry]) -> String {
+    const KEPT: usize = 8;
+    const OF_EACH: usize = 600;
+    let said: Vec<String> = entries
+        .iter()
+        .filter_map(|entry| match entry {
+            magi_proto::Entry::User { text, .. } => Some(text.chars().take(OF_EACH).collect()),
+            _ => None,
+        })
+        .collect();
+    let mut out = String::from("What the person has said, oldest first:\n");
+    for text in &said[said.len().saturating_sub(KEPT)..] {
+        out.push_str(&format!("- {text}\n"));
+    }
+    out
 }
 
 /// The model answering here, read where it lives: `/model` replaces it mid-session, and a copy

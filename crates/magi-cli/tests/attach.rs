@@ -196,7 +196,9 @@ fn fold(mut entries: Vec<Entry>, events: &[HarnessEvent]) -> Vec<Entry> {
                     *err = error;
                 }
             }
-            HarnessEvent::Refused { .. } | HarnessEvent::ModelChanged { .. } => {}
+            HarnessEvent::Refused { .. }
+            | HarnessEvent::ModelChanged { .. }
+            | HarnessEvent::ModeChanged { .. } => {}
             HarnessEvent::MessageArrived {
                 who,
                 kin,

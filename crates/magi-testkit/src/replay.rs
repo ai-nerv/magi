@@ -125,6 +125,7 @@ impl Recording {
                 // asked, and a replay is rebuilding what the session *is*.
                 HarnessEvent::Refused { .. }
                 | HarnessEvent::ModelChanged { .. }
+                | HarnessEvent::ModeChanged { .. }
                 | HarnessEvent::ContextLaid { .. }
                 | HarnessEvent::HelperSpent { .. }
                 | HarnessEvent::MemoryAnswered { .. } => {}
@@ -246,6 +247,7 @@ impl FakeHarness {
                 model: None,
                 choices: Vec::new(),
                 thinking: String::new(),
+                mode: magi_proto::judging::Mode::default(),
             })
             .await?;
 

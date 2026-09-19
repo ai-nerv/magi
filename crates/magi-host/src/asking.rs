@@ -145,6 +145,15 @@ impl Asker {
 
 impl magi_tools::approve::Approver for Asker {
     fn ask(&self, tool: &str, action: &Action) -> Decision {
+        self.ask_advised(tool, action, None)
+    }
+
+    fn ask_advised(
+        &self,
+        tool: &str,
+        action: &Action,
+        advice: Option<&magi_proto::judging::Advice>,
+    ) -> Decision {
         if !(self.attached)() {
             // Nobody is looking. Saying yes here would make the gate a formality on unwatched runs.
             return Decision::Deny;
@@ -157,6 +166,7 @@ impl magi_tools::approve::Approver for Asker {
             tool: tool.to_owned(),
             action: action.clone(),
             offers: magi_tools::permit::Ledger::offers(action),
+            advice: advice.cloned(),
         };
         let Some(receiver) = self.pending.register(id.clone(), asked.clone()) else {
             return Decision::Deny;
@@ -204,6 +214,8 @@ pub struct Person {
     pub holds: Arc<dyn magi_tools::holding::Holds>,
     /// The surfaces currently on screen, so a keypress reaches the one holding the rows.
     pub surfaces: Arc<crate::holder::Holding>,
+    /// Who is asked about what no rule covers, and how the second model has been doing.
+    pub standing: Arc<crate::judging::Standing>,
 }
 
 impl Person {
@@ -219,6 +231,7 @@ impl Person {
             asks: asker as Arc<_>,
             holds,
             surfaces,
+            standing: Arc::new(crate::judging::Standing::default()),
         }
     }
 }

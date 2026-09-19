@@ -48,6 +48,9 @@ pub enum UiCommand {
     SetThinking {
         level: String,
     },
+    SetMode {
+        mode: String,
+    },
     /// Which provider serves the model, by routing tag; `None` lets the router choose.
     SetProvider {
         provider: Option<String>,

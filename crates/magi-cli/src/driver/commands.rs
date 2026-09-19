@@ -48,6 +48,10 @@ pub(super) fn run_command(input: &str, app: &mut App) -> Control {
                 arg: serde_json::json!({}),
             })
         }
+        // The session's to change: the gate is there, and every screen is told.
+        ":mode" => Control::Send(UiCommand::SetMode {
+            mode: input.split_whitespace().nth(1).unwrap_or("next").to_owned(),
+        }),
         ":agents" => {
             app.show_agents();
             Control::Continue
