@@ -303,7 +303,8 @@ async fn a_long_conversation_is_summarised_by_a_helper_and_the_summary_is_sent()
     })
     .await
     .expect("a helper job ran after the turn");
-    assert_eq!(helped, "memory");
+    // The role balthasar asks for, which is `memory`'s model until one is named for it.
+    assert_eq!(helped, "summary");
     // `job_done` follows the spend on the same task.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 

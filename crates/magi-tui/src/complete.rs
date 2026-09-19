@@ -75,6 +75,10 @@ pub fn commands() -> Vec<Candidate> {
         (":agents", "the run's agents, as a tree"),
         (":rewind", "undo the last exchange, or :rewind N"),
         (":think", "how much reasoning to ask for"),
+        (
+            ":mode",
+            "who is asked about what no rule allows: ask, edits, auto or locked",
+        ),
         (":quit", "exit magi, and :q for the same"),
         (
             ":quitall",
