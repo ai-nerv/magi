@@ -181,6 +181,16 @@ impl Judged {
     }
 }
 
+/// A rule's width, as it is written in a configuration.
+fn of(scope: &Scope) -> String {
+    match scope {
+        Scope::Program { program } => format!("`{program}`"),
+        Scope::Directory { path } => format!("under {path}"),
+        Scope::Anything => "anything".to_owned(),
+        Scope::Once | Scope::Exact => "this".to_owned(),
+    }
+}
+
 fn key(action: &Action) -> String {
     format!("{} {}", action.verb(), action.subject())
 }
@@ -191,9 +201,10 @@ impl magi_tools::approve::Approver for Judged {
             return self.refuse(
                 action,
                 format!(
-                    "`magi.deny` forbids it ({} {:?}), in every mode. It is not to be done another \
+                    "`magi.deny` forbids it ({} {}), in every mode. It is not to be done another \
                      way either.",
-                    rule.verb, rule.scope
+                    rule.verb,
+                    of(&rule.scope)
                 ),
             );
         }

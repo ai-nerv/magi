@@ -280,6 +280,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_second_models_view_is_set_out_above_what_is_being_decided() {
+        let against = super::advised(&magi_proto::judging::Advice {
+            safe: false,
+            rule: "exfiltrate secrets".into(),
+            reason: "sends an ssh key to a host nobody named".into(),
+        });
+        assert_eq!(
+            against[0],
+            "safety check advises against [exfiltrate secrets]"
+        );
+        assert!(against[1].contains("ssh key"), "{against:?}");
+        assert_eq!(
+            against.last().map(String::as_str),
+            Some(""),
+            "a gap before the command"
+        );
+        let safe = super::advised(&magi_proto::judging::Advice {
+            safe: true,
+            rule: "read-only".into(),
+            reason: "counts lines".into(),
+        });
+        assert!(safe[0].starts_with("safety check looks safe"), "{safe:?}");
+    }
+
     fn showing(app: &App) -> Option<String> {
         match app.picking.as_ref()? {
             Picking::Permission { id, .. } | Picking::Asked { id, .. } => Some(id.to_string()),
