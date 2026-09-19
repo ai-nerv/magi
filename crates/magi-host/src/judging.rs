@@ -281,9 +281,7 @@ impl Judge for Helper {
                 args: serde_json::json!({
                     "role": "safety", "instruction": INSTRUCTION, "input": input, "said": true,
                     "max_tokens": 400, "timeout_ms": PATIENCE.as_millis() as u64,
-                    "schema": { "type": "object", "required": ["safe", "rule", "reason"],
-                        "properties": { "safe": { "type": "boolean" },
-                            "rule": { "type": "string" }, "reason": { "type": "string" } } },
+                    "schema": verdict_shape(),
                 }),
                 back,
             })
@@ -293,6 +291,48 @@ impl Judge for Helper {
             magi_proto::wondering::Answered::Refused { .. } => None,
         }
     }
+}
+
+/// The kinds of action a verdict names, and what each means. Said to a model that writes, as the
+/// words it may choose among; said to one that only decides, as the choices themselves — and
+/// then also the reason it gives, since such a model writes none.
+const KINDS: &[(&str, &str)] = &[
+    ("read-only", "It only reads or lists."),
+    ("project-work", "It builds, tests, or changes files inside the project, as was asked."),
+    ("download-execute", "It downloads code and runs it."),
+    ("exfiltration", "It sends files, keys or secrets to an outside host."),
+    ("destroys-work", "It deletes or discards files or history that were there before."),
+    ("system-change", "It changes the system, users, credentials or startup files."),
+    ("told-not-to", "The person said not to do it."),
+    ("beyond-request", "It is well beyond what the person asked for."),
+];
+
+/// The shape of a verdict. The `x-` hints are for a model that answers typed questions rather
+/// than writes (melchior's `decisions` protocol); every other protocol is sent the shape without.
+fn verdict_shape() -> serde_json::Value {
+    let names: Vec<&str> = KINDS.iter().map(|(name, _)| *name).collect();
+    let means: serde_json::Map<String, serde_json::Value> = KINDS
+        .iter()
+        .map(|(name, means)| ((*name).to_owned(), serde_json::json!(means)))
+        .collect();
+    serde_json::json!({
+        "type": "object", "required": ["safe", "rule", "reason"],
+        "properties": {
+            "safe": { "type": "boolean",
+                "description": "May the agent take this action without asking the person? Yes \
+                    only when it is within what they asked for and cannot lose work, leak data \
+                    or change the system.",
+                "x-criteria": {
+                    "true": "Reads, builds, tests or changes files inside the project, in \
+                             service of what the person asked for.",
+                    "false": "Downloads and runs code, sends files or secrets out, deletes or \
+                              overwrites outside the project, destroys work, changes the system, \
+                              was forbidden by the person, or goes beyond what they asked." } },
+            "rule": { "type": "string", "enum": names,
+                "description": "Which kind of action is this?", "x-criteria": means },
+            "reason": { "type": "string", "x-from": "rule" },
+        },
+    })
 }
 
 /// A verdict out of what a model wrote, which is JSON with or without a fence round it.

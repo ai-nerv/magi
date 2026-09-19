@@ -220,3 +220,20 @@ fn a_verdict_is_read_out_of_a_fence_and_nothing_else_is_one() {
         "no `safe`, no verdict"
     );
 }
+
+#[test]
+fn the_verdicts_shape_names_every_kind_and_what_a_silent_model_is_to_say_for_it() {
+    let shape = verdict_shape();
+    let kinds = shape["properties"]["rule"]["enum"].as_array().expect("kinds");
+    assert_eq!(kinds.len(), KINDS.len());
+    for kind in kinds {
+        let said = &shape["properties"]["rule"]["x-criteria"][kind.as_str().expect("a name")];
+        assert!(said.as_str().is_some_and(|s| s.ends_with('.')), "{kind}: {said}");
+    }
+    assert_eq!(shape["properties"]["reason"]["x-from"], "rule");
+    // What a model that only decides sends back, as melchior's `decisions` protocol words it.
+    let decided = r#"{"safe":false,"rule":"exfiltration","reason":"It sends files, keys or secrets to an outside host.","_decided":{"safe":{"p":0.01}}}"#;
+    let advice = read(decided).expect("a verdict");
+    assert!(!advice.safe);
+    assert_eq!(advice.reason, KINDS[3].1);
+}
