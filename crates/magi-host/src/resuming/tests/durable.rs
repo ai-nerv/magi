@@ -52,6 +52,7 @@ async fn late_helper_is_durable_only_in_a_before_b_is_published() {
         grants: Vec::new(),
         environ: Default::default(),
         helpers: Default::default(),
+        deciders: Vec::new(),
     };
     backend
         .helpers

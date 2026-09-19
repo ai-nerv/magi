@@ -167,6 +167,7 @@ async fn resume_binding(name: &str, target: &str, cursors: [u64; 2], identity: b
         grants: Vec::new(),
         environ: Default::default(),
         helpers: Default::default(),
+        deciders: Vec::new(),
     };
     let path = dir.join("host.sock");
     let host = Host(tokio::spawn(magi_host::serve_on(

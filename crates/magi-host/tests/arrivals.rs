@@ -28,6 +28,7 @@ fn backend(mind: &Mind) -> Backend {
         grants: Vec::new(),
         environ: std::collections::BTreeMap::new(),
         helpers: Default::default(),
+        deciders: Vec::new(),
     }
 }
 

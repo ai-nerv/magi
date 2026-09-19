@@ -129,4 +129,9 @@ pub struct Job {
     pub blocking: bool,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    /// Whether the schema may go to the provider as a schema rather than in words, for a model
+    /// that reads nothing else. Off by default: a model that writes is told it in words, since
+    /// one held to a schema from the first token has nowhere to think but inside the strings.
+    #[serde(default)]
+    pub structured: bool,
 }

@@ -162,6 +162,7 @@ async fn helper(
         max_tokens: args.get("max_tokens").and_then(serde_json::Value::as_u64),
         blocking: true,
         timeout_ms: args.get("timeout_ms").and_then(serde_json::Value::as_u64),
+        structured: args.get("structured").and_then(serde_json::Value::as_bool) == Some(true),
     };
     let (events, asked_for) = {
         let held = session.lock().await;

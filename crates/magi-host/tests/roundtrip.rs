@@ -220,6 +220,7 @@ async fn start_with_mind(name: &str, mind: &Mind) -> (Scratch, PathBuf) {
         grants: Vec::new(),
         environ: std::collections::BTreeMap::new(),
         helpers: Default::default(),
+        deciders: Vec::new(),
     };
     let listener = magi_ipc::bind(&socket).await.expect("bind");
     tokio::spawn(async move { serve(listener, session, Some(backend)).await });

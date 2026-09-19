@@ -75,6 +75,7 @@ async fn configured(name: &str, mind: &Mind, broken: bool) -> Fixture {
         grants: Vec::new(),
         environ: Default::default(),
         helpers: Default::default(),
+        deciders: Vec::new(),
     };
     let serving = tokio::spawn(magi_host::serve_on(
         listener,

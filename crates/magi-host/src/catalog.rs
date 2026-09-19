@@ -15,6 +15,9 @@ pub struct Backend {
     pub cwd: std::path::PathBuf,
     /// Permissions a configuration granted in advance; they go into the ledger at startup.
     pub grants: Vec<magi_proto::permit::Grant>,
+    /// Which models answer typed questions rather than writing, by id. Read from the catalog,
+    /// since a helper may run on any of them and a backend carries no cards.
+    pub deciders: Vec<String>,
     pub environ: std::collections::BTreeMap<String, String>,
     /// Whether the file tools refuse paths outside `cwd`. See [`magi_tools::ops::Real`].
     pub confine: bool,
@@ -87,6 +90,15 @@ pub struct Catalog {
     pub transcript: Option<String>,
 }
 
+impl Backend {
+    /// Whether `model` answers typed questions rather than writing, and so is sent a schema as a
+    /// schema rather than in words.
+    #[must_use]
+    pub fn decides(&self, model: &str) -> bool {
+        self.deciders.iter().any(|id| id == model)
+    }
+}
+
 impl Catalog {
     /// A catalog with nothing in it, for a session that has no model.
     #[must_use]
@@ -133,6 +145,12 @@ impl Catalog {
             confine: self.confine,
             isolate: self.isolate,
             grants: self.grants.clone(),
+            deciders: self
+                .cards
+                .iter()
+                .filter(|card| card.api == "decisions")
+                .map(|card| card.id.clone())
+                .collect(),
             helpers: self.helpers.clone(),
         })
     }

@@ -88,12 +88,13 @@ pub(crate) async fn run_accounted(job: &Job, backend: &Backend) -> Result<Answer
             message: format!("no helper is configured for `{}`", job.role),
             ..Failure::default()
         })?;
+    let decides = backend.decides(&model);
     let context = magi_model::Context {
-        system: instructed(job),
+        system: instructed(job, decides),
         messages: vec![magi_model::Message::user(job.input.clone())],
         tools: Vec::new(),
     };
-    let wants = wants(job, backend, &model);
+    let wants = wants(job, backend, &model, decides);
     let patience = backend.helpers.patience(job);
 
     let attempt = std::sync::Mutex::new(attempt::Attempt::default());
@@ -138,13 +139,14 @@ pub(crate) async fn run_accounted(job: &Job, backend: &Backend) -> Result<Answer
 
 /// What a job asks its model for. No reasoning: a helper is there to be quick and cheap, and one
 /// left to reason spent a whole budget thinking and answered nothing.
-fn wants(job: &Job, backend: &Backend, model: &str) -> magi_proto::ask::Wants {
+fn wants(job: &Job, backend: &Backend, model: &str, decides: bool) -> magi_proto::ask::Wants {
     magi_proto::ask::Wants {
         thinking: Some(magi_model::ThinkingLevel::Off),
         max_tokens: Some(job.max_tokens.unwrap_or(MAX_TOKENS)),
-        // Asked for in words rather than forced: a small model held to a schema from the first token
-        // has nowhere to think but inside the strings, and wrote its reasoning into a note's title.
-        schema: None,
+        // In words, unless the job allows a schema and the model answers a schema and nothing
+        // else: one that writes and is held to a schema from the first token has nowhere to
+        // think but inside the strings, and wrote its reasoning into a note's title.
+        schema: (job.structured && decides).then(|| shaped(job)).flatten(),
         // The routing chosen for the session's model means nothing to another one.
         provider: (model == backend.model)
             .then(|| backend.wants.provider.clone())
@@ -152,9 +154,22 @@ fn wants(job: &Job, backend: &Backend, model: &str) -> magi_proto::ask::Wants {
     }
 }
 
+/// The schema as a provider takes one, for a job that asked for it that way.
+fn shaped(job: &Job) -> Option<magi_proto::ask::Schema> {
+    let schema = job.schema.clone().filter(|schema| !schema.is_null())?;
+    Some(magi_proto::ask::Schema {
+        name: job.kind.clone(),
+        schema,
+    })
+}
+
 /// A job's instruction, with the shape its answer must take said in words when it has one.
-fn instructed(job: &Job) -> Option<String> {
-    let shape = job.schema.as_ref().filter(|schema| !schema.is_null());
+fn instructed(job: &Job, decides: bool) -> Option<String> {
+    // In words only where it does not go as a schema; both at once is one thing said twice.
+    let shape = job
+        .schema
+        .as_ref()
+        .filter(|schema| !(schema.is_null() || job.structured && decides));
     let mut said = job.instruction.clone();
     if let Some(shape) = shape {
         said.push_str(&format!(
@@ -450,6 +465,7 @@ mod tests {
             max_output: None,
             system: None,
             helpers,
+            deciders: Vec::new(),
         }
     }
 
@@ -531,7 +547,7 @@ mod tests {
             schema: Some(serde_json::json!({ "type": "object", "required": ["ops"] })),
             ..Job::default()
         };
-        let asked = wants(&shaped, &backend(&mind, helpers()), "local/small");
+        let asked = wants(&shaped, &backend(&mind, helpers()), "local/small", false);
         assert_eq!(asked.thinking, Some(magi_model::ThinkingLevel::Off));
         assert_eq!(asked.max_tokens, Some(MAX_TOKENS));
         assert_eq!(
@@ -541,17 +557,56 @@ mod tests {
     }
 
     #[test]
+    fn a_model_that_only_decides_is_sent_the_shape_and_one_that_writes_is_told_it() {
+        let mind = magi_testkit::Mind::answering("helping-shape", "done");
+        let job = Job {
+            kind: "verdict".into(),
+            instruction: "Is it safe?".into(),
+            schema: Some(serde_json::json!({ "type": "object", "required": ["safe"] })),
+            structured: true,
+            ..Job::default()
+        };
+        let backend = backend(&mind, helpers());
+        // One that writes: in words, as every other helper job has it.
+        assert_eq!(wants(&job, &backend, "local/small", false).schema, None);
+        assert!(
+            instructed(&job, false)
+                .expect("an instruction")
+                .contains("JSON Schema"),
+        );
+        // One that only decides: as a schema, and then not also in words.
+        let sent = wants(&job, &backend, "deciding/one", true)
+            .schema
+            .expect("a schema");
+        assert_eq!(sent.name, "verdict");
+        assert_eq!(sent.schema["required"], serde_json::json!(["safe"]));
+        let mut decides = job.clone();
+        decides.structured = true;
+        assert_eq!(
+            instructed(&decides, true).as_deref(),
+            Some("Is it safe?"),
+            "one thing twice is one too many"
+        );
+        // A job that did not ask is never sent one, whatever answers it.
+        let plain = Job {
+            structured: false,
+            ..job
+        };
+        assert_eq!(wants(&plain, &backend, "deciding/one", true).schema, None);
+    }
+
+    #[test]
     fn the_shape_an_answer_takes_is_said_in_the_instruction() {
         let shaped = Job {
             instruction: "Keep notes.".into(),
             schema: Some(serde_json::json!({ "required": ["ops"] })),
             ..Job::default()
         };
-        let said = instructed(&shaped).expect("an instruction");
+        let said = instructed(&shaped, false).expect("an instruction");
         assert!(said.starts_with("Keep notes."), "{said}");
         assert!(said.contains(r#""required":["ops"]"#), "{said}");
         assert_eq!(
-            instructed(&Job::default()),
+            instructed(&Job::default(), false),
             None,
             "nothing to say is nothing sent"
         );
