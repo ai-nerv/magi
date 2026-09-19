@@ -41,15 +41,24 @@ magi.model = "openrouter/deepseek/deepseek-v4-flash-0731"
 -- magi.melchior  = { max_tokens = 8192 }
 -- magi.balthasar = { promote_floor = 0.6 }
 
--- Small, fast models that run jobs on the others' behalf: balthasar asks for a summary or a tidy
--- of its notes, a surface asks whether something is safe. A role named here runs on that model;
+-- Small, fast models that run jobs on the others' behalf. A role named here runs on that model;
 -- one not named is skipped, or run on the session's own model when the job asks for that. The
 -- budget caps what they may spend on one prompt, in dollars, and `:cost` shows what they spent.
+--
+--   memory   everything balthasar asks for, unless one of the three below is named
+--   summary  the running summary of a long conversation: what the session still knows once the
+--            turns themselves are gone, so the one role a stronger model most plausibly pays for
+--   notes    keeping and tidying project notes from what the person said: many, and cheap is right
+--   curate   choosing what to remind the model of before a prompt: it waits on this, so fast
+--   safety   judging an action no rule covers, for `magi.mode = "auto"`: see below
+--
 -- Notes are kept with no line here: `memory` runs on the session's own model ("main") until one
 -- is named, and `memory = false` keeps none.
 --
 -- magi.helpers = {
 --   memory     = "openrouter/google/gemini-2.5-flash",
+--   summary    = "openrouter/deepseek/deepseek-v4-flash-0731",
+--   safety     = "openrouter/deepseek/deepseek-v4-flash-0731",
 --   timeout_ms = 20000,
 --   budget     = { per_prompt = 0.05 },
 -- }

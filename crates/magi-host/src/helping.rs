@@ -38,6 +38,11 @@ pub(crate) struct Failure {
 /// A helper role set to this runs on the session's own model.
 pub const MAIN: &str = "main";
 
+/// The roles balthasar's jobs ask for, each of which is `memory`'s when nobody named it: one line
+/// in a configuration keeps working, and a person who wants a stronger model for summaries than
+/// for notes says so for that role alone.
+const OF_MEMORY: &[&str] = &["summary", "notes", "curate"];
+
 impl Helpers {
     /// The model to run `job` with, or `None` when nothing should.
     #[must_use]
@@ -46,7 +51,13 @@ impl Helpers {
         if job.role == "main" && !main.is_empty() {
             return Some(main.to_owned());
         }
-        match self.roles.get(&job.role).map(String::as_str) {
+        let named = self.roles.get(&job.role).or_else(|| {
+            OF_MEMORY
+                .contains(&job.role.as_str())
+                .then(|| self.roles.get("memory"))
+                .flatten()
+        });
+        match named.map(String::as_str) {
             Some(MAIN) => Some(main.to_owned()).filter(|m| !m.is_empty()),
             Some(model) => Some(model.to_owned()),
             None => (job.fallback == "main" && !main.is_empty()).then(|| main.to_owned()),
@@ -327,6 +338,38 @@ mod tests {
             helpers().model_for(&job, "big").as_deref(),
             Some("local/small")
         );
+    }
+
+    #[test]
+    fn a_role_of_memorys_is_memorys_until_somebody_names_it() {
+        let asks = |role: &str| Job {
+            role: role.into(),
+            ..Job::default()
+        };
+        let mut set = helpers();
+        for role in ["summary", "notes", "curate"] {
+            assert_eq!(
+                set.model_for(&asks(role), "big").as_deref(),
+                Some("local/small")
+            );
+        }
+        set.roles.insert("summary".into(), "strong/one".into());
+        assert_eq!(
+            set.model_for(&asks("summary"), "big").as_deref(),
+            Some("strong/one")
+        );
+        assert_eq!(
+            set.model_for(&asks("notes"), "big").as_deref(),
+            Some("local/small")
+        );
+        // A role that is not memory's borrows nothing from it.
+        assert_eq!(set.model_for(&asks("safety"), "big"), None);
+        // With memory off, a summary still has the fallback its job asks for, and notes have none.
+        set.roles.clear();
+        let mut summary = asks("summary");
+        summary.fallback = "main".into();
+        assert_eq!(set.model_for(&summary, "big").as_deref(), Some("big"));
+        assert_eq!(set.model_for(&asks("notes"), "big"), None);
     }
 
     #[test]
