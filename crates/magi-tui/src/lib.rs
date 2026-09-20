@@ -25,6 +25,7 @@ pub mod notes;
 pub mod overlay;
 pub mod painted;
 pub mod pane;
+pub mod permission;
 pub mod pick;
 pub mod picker;
 pub mod prompt;

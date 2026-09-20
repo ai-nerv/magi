@@ -247,7 +247,7 @@ impl FakeHarness {
                 model: None,
                 choices: Vec::new(),
                 thinking: String::new(),
-                mode: magi_proto::judging::Mode::default(),
+                judging: magi_proto::judging::Judging::default(),
             })
             .await?;
 

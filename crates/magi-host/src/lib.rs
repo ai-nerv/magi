@@ -473,6 +473,9 @@ async fn connection(
                                 .await?;
                         }
                     }
+                    Some(UiCommand::SetUnsure { band }) => {
+                        judging::widen(&session, &person.standing, band).await;
+                    }
                     Some(UiCommand::SetMode { mode }) => {
                         if let Err(message) = judging::switch(&session, &person.standing, &mode).await {
                             let cursor = session.lock().await.cursor();
@@ -620,12 +623,12 @@ async fn guard(
     catalog: &crate::catalog::Catalog,
     session: &tokio::sync::Mutex<crate::session::Session>,
 ) -> crate::asking::Person {
+    let standing = Arc::new(judging::Standing::starting(catalog.mode));
     let events = {
         let mut held = session.lock().await;
-        held.mode = catalog.mode;
+        held.judging = judging::described_by(catalog, &standing);
         held.publisher()
     };
-    let standing = Arc::new(judging::Standing::starting(catalog.mode));
     person.approver = Arc::new(judging::Judged::new(
         Arc::clone(&person.approver),
         Arc::new(judging::Helper::new(asking, &catalog.cwd)),

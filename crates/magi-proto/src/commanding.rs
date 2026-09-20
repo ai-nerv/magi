@@ -51,6 +51,10 @@ pub enum UiCommand {
     SetMode {
         mode: String,
     },
+    /// How sure a second model has to be for its verdict to be acted on.
+    SetUnsure {
+        band: (f64, f64),
+    },
     /// Which provider serves the model, by routing tag; `None` lets the router choose.
     SetProvider {
         provider: Option<String>,

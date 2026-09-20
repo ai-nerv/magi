@@ -371,6 +371,7 @@ mod tests {
                 safe: false,
                 rule: "exfiltration".into(),
                 reason: "sends an ssh key to a host nobody named".into(),
+                sure: None,
             }),
         );
         let rows = said(&against);
@@ -393,6 +394,7 @@ mod tests {
                 safe: true,
                 rule: "read-only".into(),
                 reason: "counts lines".into(),
+                sure: None,
             }),
         );
         assert!(
@@ -433,6 +435,7 @@ mod tests {
             safe: false,
             rule: "download-execute".into(),
             reason: "runs what it downloads".into(),
+            sure: None,
         };
         assert_eq!(opens_on(Some(warned.clone())).as_deref(), Some(super::NO));
         // Said safe, or nobody asked: the usual first answer, which is the narrowest one.

@@ -52,6 +52,11 @@ pub(super) fn run_command(input: &str, app: &mut App) -> Control {
         ":mode" => Control::Send(UiCommand::SetMode {
             mode: input.split_whitespace().nth(1).unwrap_or("next").to_owned(),
         }),
+        // What it shows is the session's, and arrives with every snapshot: opened here.
+        ":permission" | ":perm" => {
+            app.show_permission();
+            Control::Continue
+        }
         ":agents" => {
             app.show_agents();
             Control::Continue

@@ -50,7 +50,7 @@ impl Mode {
 }
 
 /// What the second model said of one action: shown in `ask`, acted on in `auto`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Advice {
     pub safe: bool,
     /// The rule it went by, in a word or two: `read-only`, `data-exfiltration`, `destroys-work`.
@@ -59,6 +59,108 @@ pub struct Advice {
     /// One line on what the action does and why that is or is not within what was asked for.
     #[serde(default)]
     pub reason: String,
+    /// How sure it is: 1.0 certainly safe, 0.0 certainly not. A model that writes leaves it
+    /// empty, and is taken at its word.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sure: Option<f64>,
+}
+
+impl Advice {
+    /// Whether this is too near the middle to act on, which is the person's to settle.
+    #[must_use]
+    pub fn unsure(&self, band: (f64, f64)) -> bool {
+        self.sure
+            .is_some_and(|sure| sure >= band.0 && sure <= band.1)
+    }
+}
+
+/// What the second model is, where there is one. Only one that decides answers with a number,
+/// which is what a band can be drawn across.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    /// Nobody is configured for the `safety` role.
+    #[default]
+    None,
+    /// A model that writes: melchior's chat dialects.
+    Writes,
+    /// A model that decides: melchior's `decisions` dialect.
+    Decides,
+}
+
+impl Kind {
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Writes => "writes",
+            Self::Decides => "decides",
+        }
+    }
+}
+
+/// Who is asked about what no rule covers, and on what terms. What `:permission` shows and sets.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Judging {
+    pub mode: Mode,
+    /// The model in the `safety` role, and what kind it is.
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub kind: Kind,
+    /// How sure a verdict must be to be acted on: what falls between goes to the person.
+    #[serde(default = "Judging::band")]
+    pub unsure: (f64, f64),
+    /// What `magi.deny` and `magi.ask` name, as a person wrote them.
+    #[serde(default)]
+    pub denied: Vec<String>,
+    #[serde(default)]
+    pub always_asked: Vec<String>,
+    /// How the second model has been doing this session.
+    #[serde(default)]
+    pub judged: u32,
+    #[serde(default)]
+    pub refused: u32,
+    #[serde(default)]
+    pub in_a_row: u32,
+}
+
+impl Judging {
+    /// Measured rather than chosen: over 62 labelled commands every dangerous one scored 0.22 or
+    /// under and every safe one 0.24 or over.
+    #[must_use]
+    pub const fn band() -> (f64, f64) {
+        (0.2, 0.8)
+    }
+
+    /// The band moved by a step, kept apart and inside nought and one.
+    #[must_use]
+    pub fn widened(self, by: f64) -> (f64, f64) {
+        const STEP: f64 = 0.05;
+        let (low, high) = self.unsure;
+        let low = (low + by * STEP).clamp(0.0, 0.45);
+        let high = (high - by * STEP).clamp(0.55, 1.0);
+        (
+            (low * 100.0).round() / 100.0,
+            (high * 100.0).round() / 100.0,
+        )
+    }
+}
+
+impl Default for Judging {
+    fn default() -> Self {
+        Self {
+            mode: Mode::default(),
+            model: None,
+            kind: Kind::default(),
+            unsure: Self::band(),
+            denied: Vec::new(),
+            always_asked: Vec::new(),
+            judged: 0,
+            refused: 0,
+            in_a_row: 0,
+        }
+    }
 }
 
 /// What `magi.ask` and `magi.deny` said, which no mode overrides.

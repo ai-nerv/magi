@@ -260,7 +260,7 @@ pub enum HarnessEvent {
         #[serde(default)]
         thinking: String,
         #[serde(default)]
-        mode: crate::judging::Mode,
+        judging: crate::judging::Judging,
     },
     UserMessage {
         cursor: Cursor,
@@ -308,10 +308,10 @@ pub enum HarnessEvent {
         cursor: Cursor,
         status: AgentStatus,
     },
-    /// Who is asked about what no rule covers has changed.
+    /// Who is asked about what no rule covers, and on what terms, as it stands now.
     ModeChanged {
         cursor: Cursor,
-        mode: crate::judging::Mode,
+        judging: crate::judging::Judging,
     },
     ModelChanged {
         cursor: Cursor,

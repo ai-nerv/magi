@@ -45,6 +45,21 @@ impl Judge for Says {
             safe,
             rule: "fixture".into(),
             reason: "because the fixture says so".into(),
+            sure: None,
+        })
+    }
+}
+
+/// One that says how sure it is, which is the thing being decided by.
+struct Sure(f64);
+
+impl Judge for Sure {
+    fn judge(&self, _: &str, _: &Action) -> Option<Advice> {
+        Some(Advice {
+            safe: self.0 >= 0.5,
+            rule: "fixture".into(),
+            reason: "because the fixture says so".into(),
+            sure: Some(self.0),
         })
     }
 }
@@ -115,6 +130,32 @@ fn auto_takes_the_second_model_at_its_word_and_never_asks() {
         why.contains("fixture") && why.contains("another way"),
         "{why}"
     );
+}
+
+#[test]
+fn a_verdict_too_near_the_middle_is_the_persons_to_make() {
+    let asked = |p: f64, allows: bool| {
+        let person = Person::who(allows);
+        let gate = Judged::new(
+            Arc::clone(&person) as Arc<dyn Approver>,
+            Arc::new(Sure(p)),
+            Arc::new(Standing::starting(Mode::Auto)),
+            Rules::default(),
+            std::path::Path::new("/w/project"),
+            Box::new(|_| {}),
+        );
+        let decision = gate.ask("shell", &run("git push origin work"));
+        (person.times(), allowed(&decision))
+    };
+    // Sure either way: decided without the person, as before.
+    assert_eq!(asked(0.02, false), (0, false), "sure it is not safe");
+    assert_eq!(asked(0.95, false), (0, true), "sure it is");
+    // In between: asked, and the person's answer is the answer.
+    assert_eq!(asked(0.46, true), (1, true), "unsure, and they allowed it");
+    assert_eq!(asked(0.55, false), (1, false), "unsure, and they did not");
+    // The edges of the band belong to the person, not to the model.
+    assert_eq!(asked(0.2, true), (1, true));
+    assert_eq!(asked(0.8, true), (1, true));
 }
 
 #[test]

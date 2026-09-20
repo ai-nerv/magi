@@ -50,6 +50,11 @@ pub struct Standing {
     mode: AtomicU8,
     in_a_row: AtomicU32,
     in_all: AtomicU32,
+    judged: AtomicU32,
+    /// How sure a verdict must be to be acted on, in hundredths: an atomic pair, since the gate
+    /// reads it on a blocking thread and `:permission` writes it from the session's.
+    low: AtomicU32,
+    high: AtomicU32,
 }
 
 impl Standing {
@@ -57,7 +62,34 @@ impl Standing {
     pub fn starting(mode: Mode) -> Self {
         let standing = Self::default();
         standing.set(mode);
+        standing.widen(magi_proto::judging::Judging::band());
         standing
+    }
+
+    /// How sure a verdict must be to be acted on.
+    #[must_use]
+    pub fn band(&self) -> (f64, f64) {
+        let of = |held: &AtomicU32| f64::from(held.load(Ordering::Relaxed)) / 100.0;
+        (of(&self.low), of(&self.high))
+    }
+
+    pub fn widen(&self, (low, high): (f64, f64)) {
+        let at = |v: f64| (v.clamp(0.0, 1.0) * 100.0).round() as u32;
+        self.low.store(at(low), Ordering::Relaxed);
+        self.high.store(at(high), Ordering::Relaxed);
+    }
+
+    /// What every screen is shown, over what the configuration settled at startup.
+    #[must_use]
+    pub fn as_shown(&self, over: &magi_proto::judging::Judging) -> magi_proto::judging::Judging {
+        magi_proto::judging::Judging {
+            mode: self.mode(),
+            unsure: self.band(),
+            judged: self.judged.load(Ordering::Relaxed),
+            refused: self.in_all.load(Ordering::Relaxed),
+            in_a_row: self.in_a_row.load(Ordering::Relaxed),
+            ..over.clone()
+        }
     }
 
     #[must_use]
@@ -145,6 +177,11 @@ impl Judged {
         let Some(advice) = self.judge.judge(tool, action) else {
             return self.person.ask(tool, action);
         };
+        // Too near the middle to be a verdict: the person is asked, and shown what it did say.
+        self.standing.judged.fetch_add(1, Ordering::Relaxed);
+        if advice.unsure(self.standing.band()) {
+            return self.person.ask_advised(tool, action, Some(&advice));
+        }
         if advice.safe {
             self.standing.in_a_row.store(0, Ordering::Relaxed);
             return Self::once();
@@ -357,10 +394,14 @@ fn verdict_shape() -> serde_json::Value {
 fn read(text: &str) -> Option<Advice> {
     let from = text.find('{')?;
     let to = text.rfind('}')?;
-    serde_json::from_str(text.get(from..=to)?).ok()
+    let said: serde_json::Value = serde_json::from_str(text.get(from..=to)?).ok()?;
+    let mut advice: Advice = serde_json::from_value(said.clone()).ok()?;
+    // A model that decides says how sure it was, beside the answer it gave.
+    advice.sure = said["_decided"]["safe"]["p"].as_f64();
+    Some(advice)
 }
 
-/// Change who is asked, for the gate and for what every screen is shown. `next` cycles.
+/// Change who is asked, and tell every screen. `next` cycles the mode; a band moves on its own.
 ///
 /// # Errors
 /// When `named` is no mode.
@@ -369,21 +410,80 @@ pub async fn switch(
     standing: &Standing,
     named: &str,
 ) -> Result<(), String> {
-    let mut held = session.lock().await;
-    let mode = if named.trim() == "next" {
-        held.mode.next()
-    } else {
-        Mode::named(named).ok_or_else(|| {
-            format!("`{named}` is no mode: ask, edits, auto or locked, or `next` to cycle")
-        })?
+    let mode = {
+        let held = session.lock().await;
+        if named.trim() == "next" {
+            held.judging.mode.next()
+        } else {
+            Mode::named(named).ok_or_else(|| {
+                format!("`{named}` is no mode: ask, edits, auto or locked, or `next` to cycle")
+            })?
+        }
     };
-    held.mode = mode;
     standing.set(mode);
+    told(session, standing).await;
+    Ok(())
+}
+
+/// Move the band a verdict has to fall outside of to be acted on.
+pub async fn widen(
+    session: &tokio::sync::Mutex<crate::session::Session>,
+    standing: &Standing,
+    band: (f64, f64),
+) {
+    standing.widen(band);
+    told(session, standing).await;
+}
+
+/// Keep what the gate now does on the session, and say so once.
+async fn told(session: &tokio::sync::Mutex<crate::session::Session>, standing: &Standing) {
+    let mut held = session.lock().await;
+    held.judging = standing.as_shown(&held.judging);
     let cursor = held.cursor();
+    let judging = held.judging.clone();
     let _ = held
         .publisher()
-        .send(magi_proto::HarnessEvent::ModeChanged { cursor, mode });
-    Ok(())
+        .send(magi_proto::HarnessEvent::ModeChanged { cursor, judging });
+}
+
+/// What a configuration settled before anything ran, as the gate now stands.
+pub(crate) fn described_by(
+    catalog: &crate::catalog::Catalog,
+    standing: &Standing,
+) -> magi_proto::judging::Judging {
+    standing.as_shown(&described(catalog))
+}
+
+/// What a configuration settled before anything ran: the rules, and who fills the `safety` role.
+fn described(catalog: &crate::catalog::Catalog) -> magi_proto::judging::Judging {
+    use magi_proto::judging::Kind;
+    let named = |rules: &[magi_proto::permit::Grant]| {
+        rules
+            .iter()
+            .map(|rule| format!("{} {}", rule.verb, of(&rule.scope)))
+            .collect()
+    };
+    let model = catalog.helpers.roles.get("safety").cloned();
+    let kind = match &model {
+        None => Kind::None,
+        Some(model)
+            if catalog
+                .cards
+                .iter()
+                .any(|c| &c.id == model && c.api == "decisions") =>
+        {
+            Kind::Decides
+        }
+        Some(_) => Kind::Writes,
+    };
+    magi_proto::judging::Judging {
+        mode: catalog.mode,
+        model,
+        kind,
+        denied: named(&catalog.rules.deny),
+        always_asked: named(&catalog.rules.ask),
+        ..magi_proto::judging::Judging::default()
+    }
 }
 
 #[cfg(test)]

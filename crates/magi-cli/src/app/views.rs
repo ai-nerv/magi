@@ -344,6 +344,52 @@ impl App {
         }
     }
 
+    /// Open who is asked about what no rule allows, and on what terms.
+    pub fn show_permission(&mut self) {
+        let drawn = magi_tui::permission::view(&self.judging, card_width());
+        let on = self
+            .pane
+            .as_ref()
+            .filter(|open| open.title == "permission")
+            .and_then(|open| open.chosen().map(ToOwned::to_owned));
+        let mut pane = magi_tui::pane::Pane::new("permission", drawn.rows)
+            .selectable(drawn.picks)
+            .saying("nothing to show");
+        if let Some(id) = on {
+            pane.point_at(&id);
+        }
+        self.pane = Some(pane);
+    }
+
+    /// Step what the permission card's cursor is on: the mode cycles, the band widens and
+    /// narrows. `None` off a row that steps, which leaves the keys to the pane.
+    pub fn adjust_permission(&mut self, forward: bool) -> Option<magi_proto::UiCommand> {
+        match self.pane.as_ref()?.chosen()? {
+            "mode" => {
+                // One way round only: a mode is a short ring, and `locked` is never cycled into.
+                let mode = if forward {
+                    self.judging.mode.next()
+                } else {
+                    magi_proto::judging::Mode::ALL
+                        .into_iter()
+                        .find(|m| m.next() == self.judging.mode)?
+                };
+                Some(magi_proto::UiCommand::SetMode {
+                    mode: mode.name().to_owned(),
+                })
+            }
+            // Right widens what comes back to the person, left narrows it.
+            "band" => {
+                let band = self
+                    .judging
+                    .clone()
+                    .widened(if forward { 1.0 } else { -1.0 });
+                (band != self.judging.unsure).then_some(magi_proto::UiCommand::SetUnsure { band })
+            }
+            _ => None,
+        }
+    }
+
     /// Whether the float open takes a row with Enter.
     #[must_use]
     pub fn chooses(&self) -> bool {
@@ -375,6 +421,8 @@ impl App {
             self.show_cost();
         } else if self.pane_titled("model") {
             self.show_model();
+        } else if self.pane_titled("permission") {
+            self.show_permission();
         }
     }
 

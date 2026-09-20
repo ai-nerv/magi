@@ -409,6 +409,13 @@ pub async fn run(
                                 }
                                 dirty = true;
                             }
+                            // The same on the permission card: ←/→ step whatever the cursor is on.
+                            Action::Fold { open } if app.pane_titled("permission") => {
+                                if let Some(command) = app.adjust_permission(open) {
+                                    direct(&mut app, &command_tx, command).await;
+                                }
+                                dirty = true;
+                            }
                             // Enter on an entry in the agents view: the same as a click on it.
                             Action::Attach(id) => {
                                 if let Some(seat) = app.attach_id(&id) {

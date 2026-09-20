@@ -89,7 +89,7 @@ pub(super) async fn ours(
 /// The model's name, with the mode beside it when it is not the one a session starts in: asking
 /// every time is what nobody needs telling, and anything else is what they should see at a glance.
 fn moded(app: &App, model: String) -> String {
-    match app.mode {
+    match app.judging.mode {
         magi_proto::judging::Mode::Ask => model,
         mode => format!("{model} · {}", mode.name()),
     }
