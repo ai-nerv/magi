@@ -18,7 +18,10 @@ async fn queued(live: &Live) -> Job {
     let jobs = family
         .call(
             "jobs",
-            vec![json!(live.id.to_string()), json!({"helpers":["memory"]})],
+            vec![
+                json!(live.id.to_string()),
+                json!({"helpers":["notes","curate"]}),
+            ],
         )
         .await
         .expect("jobs");

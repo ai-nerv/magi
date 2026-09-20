@@ -49,7 +49,10 @@ async fn stored_observations_never_acquire_the_rule_channel_after_restart() {
     let jobs = family
         .call(
             "jobs",
-            vec![json!(live.id.to_string()), json!({"helpers":["memory"]})],
+            vec![
+                json!(live.id.to_string()),
+                json!({"helpers":["notes","curate"]}),
+            ],
         )
         .await
         .expect("jobs");

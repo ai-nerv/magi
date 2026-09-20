@@ -16,7 +16,10 @@ async fn late_helper_is_durable_only_in_a_before_b_is_published() {
         family.call("observe", vec![json!(id), json!({"cursor":1,"run":id,"raw":raw,"role":"user","kind":"user","text":format!("Only {id} uses Rust.")})]).await.expect("seed");
     }
     let jobs = family
-        .call("jobs", vec![json!("A"), json!({"helpers":["memory"]})])
+        .call(
+            "jobs",
+            vec![json!("A"), json!({"helpers":["notes","curate"]})],
+        )
         .await
         .expect("jobs");
     let job: crate::helping::Job = serde_json::from_value(
