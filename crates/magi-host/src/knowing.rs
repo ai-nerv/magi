@@ -163,6 +163,10 @@ async fn helper(
         blocking: true,
         timeout_ms: args.get("timeout_ms").and_then(serde_json::Value::as_u64),
         structured: args.get("structured").and_then(serde_json::Value::as_bool) == Some(true),
+        thinking: args
+            .get("thinking")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
     };
     let (events, asked_for) = {
         let held = session.lock().await;

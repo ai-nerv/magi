@@ -167,11 +167,21 @@ pub(crate) async fn run_accounted(job: &Job, backend: &Backend) -> Result<Answer
     Ok(Answer { text, model, usage })
 }
 
-/// What a job asks its model for. No reasoning: a helper is there to be quick and cheap, and one
-/// left to reason spent a whole budget thinking and answered nothing.
+/// How much a job may reason. None unless it asked, because a helper is there to be quick and
+/// cheap and one left to reason spent a whole budget thinking and answered nothing — measured,
+/// on the sweep for contradictions: 999 of 1000 tokens reasoned, no answer. The other half is
+/// measured too: extraction with nothing to think with returned an empty list every time.
+fn thinking(job: &Job) -> magi_model::ThinkingLevel {
+    job.thinking
+        .as_deref()
+        .and_then(|level| serde_json::from_value(serde_json::Value::String(level.to_owned())).ok())
+        .unwrap_or(magi_model::ThinkingLevel::Off)
+}
+
+/// What a job asks its model for.
 fn wants(job: &Job, backend: &Backend, model: &str, decides: bool) -> magi_proto::ask::Wants {
     magi_proto::ask::Wants {
-        thinking: Some(magi_model::ThinkingLevel::Off),
+        thinking: Some(thinking(job)),
         max_tokens: Some(job.max_tokens.unwrap_or(MAX_TOKENS)),
         // In words, unless the job allows a schema and the model answers a schema and nothing
         // else: one that writes and is held to a schema from the first token has nowhere to
@@ -613,6 +623,28 @@ mod tests {
         assert_eq!(
             asked.schema, None,
             "the shape is asked for in words, not forced"
+        );
+    }
+
+    /// Both halves were measured, and they disagree, so the job settles it. A narrow question
+    /// left to reason spent 999 of 1000 tokens on it and answered nothing; extraction with
+    /// nothing to think with answered `{"ops": []}` in six tokens, every time.
+    #[test]
+    fn a_job_that_has_to_work_something_out_may_say_so() {
+        let mind = magi_testkit::Mind::answering("helping-thinking-asked", "done");
+        let asking = |level: Option<&str>| {
+            let job = Job {
+                thinking: level.map(str::to_owned),
+                ..Job::default()
+            };
+            wants(&job, &backend(&mind, helpers()), "local/small", false).thinking
+        };
+        assert_eq!(asking(None), Some(magi_model::ThinkingLevel::Off));
+        assert_eq!(asking(Some("low")), Some(magi_model::ThinkingLevel::Low));
+        assert_eq!(
+            asking(Some("nonsense")),
+            Some(magi_model::ThinkingLevel::Off),
+            "an unreadable level is no reason to let a helper reason without limit"
         );
     }
 

@@ -134,4 +134,12 @@ pub struct Job {
     /// one held to a schema from the first token has nowhere to think but inside the strings.
     #[serde(default)]
     pub structured: bool,
+    /// How much this job needs the model to reason, when it needs any.
+    ///
+    /// Absent means none, which is what a helper wants: quick and cheap, and one left to reason
+    /// can spend a whole budget thinking and answer nothing. A job that has to work something
+    /// out rather than answer a narrow question says so — extraction reads a whole transcript
+    /// and returns nothing at all without it.
+    #[serde(default)]
+    pub thinking: Option<String>,
 }
