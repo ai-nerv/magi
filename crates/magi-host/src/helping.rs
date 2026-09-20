@@ -41,7 +41,7 @@ pub const MAIN: &str = "main";
 /// The roles balthasar's jobs ask for, each of which is `memory`'s when nobody named it: one line
 /// in a configuration keeps working, and a person who wants a stronger model for summaries than
 /// for notes says so for that role alone.
-const OF_MEMORY: &[&str] = &["summary", "notes", "curate"];
+const OF_MEMORY: &[&str] = &["summary", "notes", "curate", "contradict"];
 
 impl Helpers {
     /// The model to run `job` with, or `None` when nothing should.
@@ -71,8 +71,15 @@ impl Helpers {
     /// cannot run the ones that write them, which is how that promise is kept.
     #[must_use]
     pub fn runnable(&self, main: &str) -> Vec<String> {
-        const ASKED_ABOUT: &[&str] = &["memory", "summary", "notes", "curate", "safety"];
-        const WRITES_NOTES: &[&str] = &["memory", "notes", "curate"];
+        const ASKED_ABOUT: &[&str] = &[
+            "memory",
+            "summary",
+            "notes",
+            "curate",
+            "contradict",
+            "safety",
+        ];
+        const WRITES_NOTES: &[&str] = &["memory", "notes", "curate", "contradict"];
         ASKED_ABOUT
             .iter()
             .filter(|role| !(self.no_notes && WRITES_NOTES.contains(role)))
@@ -386,7 +393,7 @@ mod tests {
         let mut set = helpers();
         assert_eq!(
             set.runnable("big"),
-            ["memory", "summary", "notes", "curate"],
+            ["memory", "summary", "notes", "curate", "contradict"],
             "and not `safety`, which nothing named"
         );
         set.roles.insert("safety".into(), "judge/one".into());
@@ -415,7 +422,7 @@ mod tests {
             ..Job::default()
         };
         let mut set = helpers();
-        for role in ["summary", "notes", "curate"] {
+        for role in ["summary", "notes", "curate", "contradict"] {
             assert_eq!(
                 set.model_for(&asks(role), "big").as_deref(),
                 Some("local/small")
