@@ -33,6 +33,8 @@ pub struct App {
     pending_notice: Option<String>,
     /// Overrides the fixed "nothing is configured" sentence when only the provider key is unset.
     pub no_model: Option<String>,
+    /// Which run this is, as the session last said. `:rename` needs it, and nothing else does.
+    pub session_id: Option<String>,
     /// A scope's label is written in terms of the action, so turning one back needs that action.
     pub asking_about: magi_proto::permit::Action,
     /// Submitted but not yet handed to a daemon: a prompt sent while it is away waits here.
@@ -204,6 +206,7 @@ impl App {
             changes: Vec::new(),
             pending_notice: None,
             no_model: None,
+            session_id: None,
             asking_about: magi_proto::permit::Action::Read {
                 path: String::new(),
             },

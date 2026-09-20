@@ -56,6 +56,19 @@ pub fn put_away(id: &str) -> bool {
         .is_ok()
 }
 
+/// Name this run, for good: nothing renames it afterwards but a person.
+pub fn rename(id: &str, title: &str) -> Result<(), String> {
+    let mut family = magi_ipc::family::blocking::Family::find()
+        .map_err(|why| format!("balthasar is not reachable: {why}"))?;
+    family
+        .call(
+            "rename",
+            vec![serde_json::json!(id), serde_json::json!(title)],
+        )
+        .map(|_| ())
+        .map_err(|why| why.to_string())
+}
+
 /// Every session balthasar holds, newest first.
 #[must_use]
 pub fn recorded() -> Vec<Summary> {

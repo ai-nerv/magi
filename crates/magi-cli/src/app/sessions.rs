@@ -37,6 +37,26 @@ impl App {
         );
     }
 
+    /// Name this run, and stop anything renaming it.
+    ///
+    /// The title is otherwise the first thing asked, and a model improves on that every so
+    /// often. Both stop here: a name somebody typed is the answer, not a guess.
+    pub fn rename_session(&mut self, name: &str) {
+        if name.is_empty() {
+            self.show_notice("`:rename <name>` — what should this session be called?".to_owned());
+            return;
+        }
+        let Some(id) = self.session_id.clone() else {
+            self.show_notice("This session has no id yet; nothing to name.".to_owned());
+            return;
+        };
+        let said = match magi_host::paths::rename(&id, name) {
+            Ok(()) => format!("This session is “{name}” now, and stays it."),
+            Err(why) => format!("Could not rename it: {why}"),
+        };
+        self.show_notice(said);
+    }
+
     /// Act on the row a question was just answered *yes* for.
     ///
     /// Which list is open is what says what that means, and the two are deliberately different

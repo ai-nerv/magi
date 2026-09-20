@@ -25,8 +25,10 @@ impl App {
                 choices,
                 thinking,
                 judging,
+                session,
                 ..
             } => {
+                self.session_id = Some(session.to_string());
                 self.judging = judging;
                 let unconfigured = model.is_none();
                 self.model = model;

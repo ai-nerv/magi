@@ -74,6 +74,7 @@ pub fn commands() -> Vec<Candidate> {
             ":archives",
             "sessions put away, and where they are removed for good",
         ),
+        (":rename", "name this session, and stop it being retitled"),
         (":trace", "what this session has done, as it happened"),
         (":context", "what the last request was built from, and why"),
         (":agents", "the run's agents, as a tree"),
