@@ -106,12 +106,7 @@ pub fn request(
         "live": live(session),
         "query": crate::context::last_asked(session).unwrap_or_default(),
         "idle_s": session.idle_for().unwrap_or(0),
-        "helpers": backend
-            .helpers
-            .roles
-            .keys()
-            .filter(|role| !(backend.helpers.no_notes && role.as_str() == "memory"))
-            .collect::<Vec<_>>(),
+        "helpers": backend.helpers.runnable(&backend.model),
     })
 }
 

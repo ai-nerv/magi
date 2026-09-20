@@ -64,6 +64,29 @@ impl Helpers {
         }
     }
 
+    /// Which roles this session can actually run a job for, as balthasar asks about them by name.
+    /// Derived rather than listed: `memory` alone can run every job balthasar has, through the
+    /// fallbacks above, and a harness that named only what was written down would say it could
+    /// run none of them. A session whose conversation stays out of the project's notes says it
+    /// cannot run the ones that write them, which is how that promise is kept.
+    #[must_use]
+    pub fn runnable(&self, main: &str) -> Vec<String> {
+        const ASKED_ABOUT: &[&str] = &["memory", "summary", "notes", "curate", "safety"];
+        const WRITES_NOTES: &[&str] = &["memory", "notes", "curate"];
+        ASKED_ABOUT
+            .iter()
+            .filter(|role| !(self.no_notes && WRITES_NOTES.contains(role)))
+            .filter(|role| {
+                let job = Job {
+                    role: (*role).to_string(),
+                    ..Job::default()
+                };
+                self.model_for(&job, main).is_some()
+            })
+            .map(|role| (*role).to_owned())
+            .collect()
+    }
+
     fn patience(&self, job: &Job) -> std::time::Duration {
         let configured = Some(self.timeout_ms).filter(|&ms| ms > 0);
         std::time::Duration::from_millis(job.timeout_ms.or(configured).unwrap_or(TIMEOUT_MS))
@@ -353,6 +376,36 @@ mod tests {
             helpers().model_for(&job, "big").as_deref(),
             Some("local/small")
         );
+    }
+
+    #[test]
+    fn what_a_session_says_it_can_run_is_what_it_can_actually_run() {
+        // One line naming `memory` runs every job balthasar has, so it says so for all of them:
+        // it is the name balthasar gates note-keeping on, and a session that listed only what
+        // was written down would have said it could keep none.
+        let mut set = helpers();
+        assert_eq!(
+            set.runnable("big"),
+            ["memory", "summary", "notes", "curate"],
+            "and not `safety`, which nothing named"
+        );
+        set.roles.insert("safety".into(), "judge/one".into());
+        assert!(set.runnable("big").contains(&"safety".to_owned()));
+        // Named alone, without `memory`, it is still run: a person who named a notes model
+        // meant it to be used.
+        let only_notes = Helpers {
+            roles: [("notes".to_owned(), "cheap/one".to_owned())].into(),
+            ..Helpers::default()
+        };
+        assert_eq!(only_notes.runnable("big"), ["notes"]);
+        // Nothing named and no model: nothing is claimed.
+        assert!(Helpers::default().runnable("").is_empty());
+        // A session whose conversation stays out of the notes cannot run what writes them.
+        let child = Helpers {
+            no_notes: true,
+            ..helpers()
+        };
+        assert_eq!(child.runnable("big"), ["summary"]);
     }
 
     #[test]
