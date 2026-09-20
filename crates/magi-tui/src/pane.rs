@@ -310,20 +310,20 @@ impl Pane {
         // Padded out to the full page rather than shrunk to fit, so the window does not jump size.
         let content = page + 2;
         body.resize(content, Line::from(String::new()));
-        let (top, bottom) = crate::border::edges(width, content, tick, scan);
+        let (top, bottom) = crate::border::edges(width, tick, scan);
         let mut out = Vec::with_capacity(content + 2);
         out.push(top);
-        let room = usize::from(width).saturating_sub(3);
-        for (row, line) in body.into_iter().enumerate() {
-            let (left, right) = crate::border::side(width, content, row, tick, scan);
+        // One column of margin and the rest is the row's: with no sides drawn there are two more
+        // columns of it than there were.
+        let room = usize::from(width).saturating_sub(1);
+        for line in body {
             let fill = line.style;
             let (kept, used) = clipped(line.spans, room);
-            let mut spans = vec![left, Span::raw(" ")];
+            let mut spans = vec![Span::raw(" ")];
             spans.extend(kept);
             if used < room {
                 spans.push(Span::styled(" ".repeat(room - used), fill));
             }
-            spans.push(right);
             out.push(Line::from(spans));
         }
         out.push(bottom);

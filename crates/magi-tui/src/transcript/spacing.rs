@@ -45,7 +45,7 @@ mod spacing {
         let rows = shown(&[user("one"), user("two")]);
         let second = rows
             .iter()
-            .rposition(|l| l.starts_with('┌'))
+            .rposition(|l| l.starts_with(crate::glyph::block_edge()))
             .expect("a second block");
         assert!(rows[second - 1].is_empty(), "{rows:#?}");
     }
@@ -67,7 +67,7 @@ mod spacing {
     fn every_block_after_the_first_has_a_gap_above_it() {
         let rows = shown(&[user("one"), call("t1"), user("two"), call("t2")]);
         for (at, line) in rows.iter().enumerate() {
-            if at > 0 && line.starts_with('┌') {
+            if at > 0 && line.starts_with(crate::glyph::block_edge()) {
                 assert!(rows[at - 1].is_empty(), "no gap above row {at}: {rows:#?}");
             }
         }
@@ -77,7 +77,7 @@ mod spacing {
     fn nothing_is_wasted_above_the_first() {
         // A gap at the very top separates a block from nothing.
         let rows = shown(&[user("one")]);
-        assert!(rows[0].starts_with('┌'), "{rows:#?}");
+        assert!(rows[0].starts_with(crate::glyph::block_edge()), "{rows:#?}");
     }
 
     #[test]
@@ -94,7 +94,9 @@ mod spacing {
         let top = laid
             .lines
             .iter()
-            .rposition(|l| text_of(std::slice::from_ref(l))[0].starts_with('┌'))
+            .rposition(|l| {
+                text_of(std::slice::from_ref(l))[0].starts_with(crate::glyph::block_edge())
+            })
             .expect("the call");
         assert!(
             laid.owners[top].is_some(),

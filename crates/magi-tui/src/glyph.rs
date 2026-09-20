@@ -2,7 +2,7 @@
 //! is the caller's problem: a glyph two columns wide draws two columns wide, and nothing measures.
 //!
 //! ```lua
-//! magi.ui.corner_top_left = "┌"
+//! magi.ui.edge_horizontal = "─"
 //! magi.ui.marker          = "▶ "
 //! magi.ui.spinner         = { "◐", "◓", "◑", "◒" }
 //! ```
@@ -52,24 +52,13 @@ macro_rules! glyphs {
 const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 glyphs! {
-    corner_top_left = "╭", "The prompt box's top-left corner.";
-    corner_top_right = "╮", "The prompt box's top-right corner.";
-    corner_bottom_left = "╰", "The prompt box's bottom-left corner.";
-    corner_bottom_right = "╯", "The prompt box's bottom-right corner.";
-    edge_horizontal = "─", "The prompt box's top and bottom edges.";
-    edge_vertical = "│", "The prompt box's sides.";
-    divider_left = "├", "Where the rule between the prompt and its menu meets the left side.";
-    divider_right = "┤", "The same, on the right.";
+    edge_horizontal = "─", "The rule above the prompt and the rule below it.";
     marker = "❯ ", "In front of the row of a list you are on.";
     no_marker = "  ", "In front of every other row, so the names stay in one column.";
     ellipsis = "…", "Where something was cut to fit.";
     bullet = "• ", "A markdown list item.";
     more_rule = "─ ", "Repeated along an edge the transcript continues past.";
-    block_top_left = "┌", "Where a transcript block's top edge starts.";
-    block_top_right = "┐", "Where it ends.";
-    block_bottom_left = "└", "Where its bottom edge starts.";
-    block_bottom_right = "┘", "Where it ends.";
-    block_edge = "─", "Repeated along a transcript block's top and bottom edges.";
+    block_edge = "─", "The rule a transcript block opens on, and the one it closes on.";
     expand = "▸", "On the top edge of a folded tool block: click to open it.";
     collapse = "▾", "On the top edge of an open tool block: click to fold it.";
     copy = "⧉", "On the top edge of a block: click to put what it says on the clipboard.";    running = "·", "Beside a call that has been made and has not come back.";
@@ -133,10 +122,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_defaults_are_the_box_this_has_always_drawn() {
+    fn the_defaults_are_the_rules_this_draws() {
         let g = Glyphs::default();
-        assert_eq!(g.corner_top_left, "╭");
         assert_eq!(g.edge_horizontal, "─");
+        assert_eq!(g.block_edge, "─");
         assert_eq!(g.marker, "❯ ");
     }
 

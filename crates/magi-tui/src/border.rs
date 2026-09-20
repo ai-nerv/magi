@@ -1,8 +1,12 @@
-//! The prompt's box, and the light that runs around it. The border is addressed as a ring — every
-//! cell has one index, running clockwise from the top-left corner — and a cell near a scan head is
-//! lit some fraction of the way from border colour to scan colour; two heads take the brighter. Only
+//! The prompt's two rules, and the light that runs along them. The box has no corners and no
+//! sides: what is drawn is a rule above the text and a rule below it, and the text between them
+//! has the full width to itself.
+//!
+//! They are still addressed as a ring — left to right along the top, then right to left along the
+//! bottom, so the light circulates rather than jumping back — and a cell near a scan head is lit
+//! some fraction of the way from border colour to scan colour; two heads take the brighter. Only
 //! the heads move: a step along this ramp is a step towards the accent, so a base colour that moved
-//! recoloured the whole box. The mode is the state: drifting at rest, shuttling the long edges with
+//! recoloured the whole box. The mode is the state: drifting at rest, shuttling the two rules with
 //! something typed, and while a turn runs no heads at all — a dim band sweeps across the box.
 
 use crate::colour;
@@ -57,133 +61,51 @@ fn pace(scan: Scan) -> (usize, usize) {
     (usize::from(hundredths), 100)
 }
 
-/// A box `width` wide holding `rows` of content. Answers the top and bottom edges; the sides are
-/// [`side`], because the caller owns what goes between them and has to interleave.
+/// The rule above the text and the rule below it, each `width` across.
+///
+/// `rows` is what the box holds, and no longer reaches the light: with nothing drawn down the
+/// sides, how tall the box is says nothing about how far the light has to travel.
 #[must_use]
-pub fn edges(width: u16, rows: usize, tick: usize, scan: Scan) -> (Line<'static>, Line<'static>) {
-    let width = usize::from(width).max(2);
-    let inner = width - 2;
-    let ring = walk_length(inner, rows);
-    let heads = heads(scan, tick, inner, rows, ring);
-    let walk = |at: usize| walk_of(at, inner, rows);
-    // Working sweeps one band across by column, so the top and bottom edges dim in step.
+pub fn edges(width: u16, tick: usize, scan: Scan) -> (Line<'static>, Line<'static>) {
+    let width = usize::from(width).max(1);
+    let ring = ring_length(width);
+    // Working sweeps one band across by column, so both rules dim in step.
     if matches!(scan, Scan::Working) {
-        let edge = |left: &str, right: &str| {
-            let mut cells = vec![shaded(left, 0, width, tick)];
-            for i in 0..inner {
-                cells.push(shaded(glyph::edge_horizontal(), 1 + i, width, tick));
-            }
-            cells.push(shaded(right, 1 + inner, width, tick));
-            Line::from(cells)
+        let rule = || {
+            Line::from(
+                (0..width)
+                    .map(|i| shaded(glyph::edge_horizontal(), i, width, tick))
+                    .collect::<Vec<_>>(),
+            )
         };
-        return (
-            edge(glyph::corner_top_left(), glyph::corner_top_right()),
-            edge(glyph::corner_bottom_left(), glyph::corner_bottom_right()),
-        );
+        return (rule(), rule());
     }
-    let bright = |at: usize| from_heads(walk(at), &heads, ring);
+    let heads = heads(scan, tick, width, ring);
+    let bright = |at: usize| from_heads(at, &heads, ring);
 
-    let mut top = Vec::with_capacity(width);
-    top.push(paint(glyph::corner_top_left(), bright(0)));
-    for i in 0..inner {
-        top.push(paint(glyph::edge_horizontal(), bright(1 + i)));
-    }
-    top.push(paint(glyph::corner_top_right(), bright(1 + inner)));
-
-    // Anticlockwise along the bottom: the ring runs clockwise, so bottom-right comes before bottom-left.
-    let bottom_right = 1 + inner + 1 + rows;
-    let mut bottom = Vec::with_capacity(width);
-    bottom.push(paint(
-        glyph::corner_bottom_left(),
-        bright(bottom_right + inner + 1),
-    ));
-    for i in 0..inner {
-        bottom.push(paint(
-            glyph::edge_horizontal(),
-            bright(bottom_right + inner - i),
-        ));
-    }
-    bottom.push(paint(glyph::corner_bottom_right(), bright(bottom_right)));
+    let top = (0..width)
+        .map(|i| paint(glyph::edge_horizontal(), bright(i)))
+        .collect::<Vec<_>>();
+    // Right to left along the bottom, so the light comes back the way a circuit would.
+    let bottom = (0..width)
+        .map(|i| paint(glyph::edge_horizontal(), bright(bottom_at(i, width))))
+        .collect::<Vec<_>>();
 
     (Line::from(top), Line::from(bottom))
 }
 
-/// The two side cells for content row `row`, counted from the top.
-#[must_use]
-pub fn side(
-    width: u16,
-    rows: usize,
-    row: usize,
-    tick: usize,
-    scan: Scan,
-) -> (Span<'static>, Span<'static>) {
-    let inner = usize::from(width).max(2) - 2;
-    let ring = walk_length(inner, rows);
-    // Right edge runs down after the top-right corner; left edge runs up before the top-left.
-    let right = 1 + inner + 1 + row;
-    let left = ring_length(inner, rows) - 1 - row;
-    if matches!(scan, Scan::Working) {
-        // The sides are the band's first and last columns.
-        let across = inner + 2;
-        return (
-            shaded(glyph::edge_vertical(), 0, across, tick),
-            shaded(glyph::edge_vertical(), across - 1, across, tick),
-        );
-    }
-    let heads = heads(scan, tick, inner, rows, ring);
-    (
-        cell(
-            glyph::edge_vertical(),
-            walk_of(left, inner, rows),
-            &heads,
-            ring,
-        ),
-        cell(
-            glyph::edge_vertical(),
-            walk_of(right, inner, rows),
-            &heads,
-            ring,
-        ),
-    )
-}
-/// How much taller a terminal cell is than it is wide. A ring counted in cells accelerates the light
-/// into the corners, since a step along the top covers half the glass a step down the side does.
-const TALL: usize = 2;
-
-/// How far round the border a cell sits, in what the eye sees rather than in cells: the cumulative
-/// sum of earlier cells' widths, clockwise from the top-left. A side cell counts [`TALL`], the rest one.
-fn walk_of(at: usize, inner: usize, rows: usize) -> usize {
-    let top_right = 1 + inner;
-    let bottom_right = top_right + 1 + rows;
-    let bottom_left = bottom_right + inner + 1;
-
-    if at <= top_right {
-        return at;
-    }
-    if at < bottom_right {
-        return (top_right + 1) + (at - top_right - 1) * TALL;
-    }
-    let after_right = (top_right + 1) + rows * TALL;
-    // The bottom-right corner, then the bottom edge walked anticlockwise.
-    if at <= bottom_left {
-        return after_right + (at - bottom_right);
-    }
-    let after_bottom = after_right + (bottom_left - bottom_right) + 1;
-    after_bottom + (at - bottom_left - 1) * TALL
+/// Where column `column` of the bottom rule sits on the ring.
+fn bottom_at(column: usize, width: usize) -> usize {
+    width + (width - 1 - column.min(width - 1))
 }
 
-fn walk_length(inner: usize, rows: usize) -> usize {
-    4 + inner * 2 + rows * 2 * TALL
-}
-
-/// How many cells the border has, walking all the way round.
-fn ring_length(inner: usize, rows: usize) -> usize {
-    // Four corners, two horizontal runs, two vertical runs.
-    4 + inner * 2 + rows * 2
+/// How many cells the light travels: the top rule, then the bottom one.
+fn ring_length(width: usize) -> usize {
+    width * 2
 }
 
 /// Where the light is, in ring coordinates. Always two: one head reads as a stray highlight.
-fn heads(scan: Scan, tick: usize, inner: usize, rows: usize, ring: usize) -> Vec<Head> {
+fn heads(scan: Scan, tick: usize, width: usize, ring: usize) -> Vec<Head> {
     if ring == 0 {
         return Vec::new();
     }
@@ -202,23 +124,17 @@ fn heads(scan: Scan, tick: usize, inner: usize, rows: usize, ring: usize) -> Vec
         Scan::Focused => (0..4)
             .map(|nth| forward((step + ring * nth / 4) % ring))
             .collect(),
-        // The two long edges, swept in step and reversing at the ends: a shuttle, not a circuit.
-        // The bottom edge is walked anticlockwise, so its leftmost cell is its *highest* index and
-        // column `at` on the bottom is `bottom_right + inner - at`.
+        // The two rules, swept in step and reversing at the ends: a shuttle, not a circuit. The
+        // bottom is walked right to left, so mirrored directions put both heads in the same
+        // screen column while they travel opposite ways round the ring.
         Scan::Holding => {
-            let span = inner.max(1);
-            let walk = |at: usize| walk_of(at, inner, rows);
-            let at = bounce(step, span).min(inner.saturating_sub(1));
+            let span = width.max(1);
+            let at = bounce(step, span).min(width.saturating_sub(1));
             let out = rising(step, span);
-            let bottom_right = 1 + inner + 1 + rows;
-            // Mirrored directions: the two walk the same screen columns from opposite ends of the ring.
             vec![
+                Head { at, forward: out },
                 Head {
-                    at: walk(1 + at),
-                    forward: out,
-                },
-                Head {
-                    at: walk(bottom_right + inner - at),
+                    at: bottom_at(at, width),
                     forward: !out,
                 },
             ]
@@ -280,11 +196,6 @@ fn paint(glyph: &str, best: f32) -> Span<'static> {
     )
 }
 
-/// One border cell, lit by whichever head is nearest.
-fn cell(glyph: &str, at: usize, heads: &[Head], ring: usize) -> Span<'static> {
-    paint(glyph, from_heads(at, heads, ring))
-}
-
 /// The working border at `column` of a box `width` across: the resting border colour, only ever
 /// darkened, where the band is — the same band the words in the box carry.
 fn shaded(glyph: &str, column: usize, width: usize, tick: usize) -> Span<'static> {
@@ -312,17 +223,10 @@ mod tests {
     }
 
     #[test]
-    fn the_box_is_rounded_and_spans_the_width() {
-        let (top, bottom) = edges(20, 1, 0, Scan::Off);
-        assert_eq!(text(&top), "╭──────────────────╮");
-        assert_eq!(text(&bottom), "╰──────────────────╯");
-    }
-
-    #[test]
-    fn the_sides_are_bars() {
-        let (l, r) = side(20, 1, 0, 0, Scan::Off);
-        assert_eq!(l.content.as_ref(), "│");
-        assert_eq!(r.content.as_ref(), "│");
+    fn the_box_is_two_rules_across_the_whole_width() {
+        let (top, bottom) = edges(20, 0, Scan::Off);
+        assert_eq!(text(&top), "────────────────────");
+        assert_eq!(text(&bottom), "────────────────────");
     }
 
     #[test]
@@ -330,9 +234,9 @@ mod tests {
         // One band across the box: the top and bottom edges match column for column, and it moves.
         let width = 24u16;
         let colours = |line: &Line<'_>| line.spans.iter().map(|s| s.style.fg).collect::<Vec<_>>();
-        let top_at = |tick| colours(&edges(width, 1, tick, Scan::Working).0);
+        let top_at = |tick| colours(&edges(width, tick, Scan::Working).0);
         for tick in 0..60 {
-            let (top, bottom) = edges(width, 1, tick, Scan::Working);
+            let (top, bottom) = edges(width, tick, Scan::Working);
             assert_eq!(colours(&top), colours(&bottom), "out of step at {tick}");
         }
         assert!(
@@ -354,7 +258,7 @@ mod tests {
             panic!("and so is its shadow");
         };
         for tick in 0..60 {
-            let (top, bottom) = edges(24, 1, tick, Scan::Working);
+            let (top, bottom) = edges(24, tick, Scan::Working);
             for cell in top.spans.iter().chain(&bottom.spans) {
                 let Some(Color::Indexed(n)) = cell.style.fg else {
                     panic!("left the palette: {cell:?}");
@@ -377,7 +281,7 @@ mod tests {
 
     #[test]
     fn with_the_scan_off_every_cell_is_the_border_colour() {
-        let (top, _) = edges(20, 1, 7, Scan::Off);
+        let (top, _) = edges(20, 7, Scan::Off);
         assert!(
             top.spans
                 .iter()
@@ -389,7 +293,7 @@ mod tests {
     #[test]
     fn every_running_mode_has_two_heads() {
         for scan in [Scan::Resting, Scan::Holding] {
-            let (top, bottom) = edges(40, 1, 0, scan);
+            let (top, bottom) = edges(40, 0, scan);
             let peaks = top
                 .spans
                 .iter()
@@ -404,8 +308,8 @@ mod tests {
     fn resting_is_two_comets_opposite_on_the_ring() {
         // The figure is asserted rather than a tick, because the pace is a setting. Working is no
         // longer this figure — it sweeps the edges (see the working tests), so only rest is checked.
-        let ring = 44;
-        let heads = heads(Scan::Resting, 30, 20, 1, ring);
+        let ring = ring_length(20);
+        let heads = heads(Scan::Resting, 30, 20, ring);
         assert_eq!(heads.len(), 2);
         assert_eq!(
             heads[1].at.abs_diff(heads[0].at),
@@ -472,7 +376,7 @@ mod tests {
         // The border does not move on its own: a base colour that moved would walk towards the accent.
         let quiet: Vec<_> = (0..40)
             .map(|tick| {
-                let (top, _) = edges(60, 1, tick, Scan::Resting);
+                let (top, _) = edges(60, tick, Scan::Resting);
                 top.spans[30].style.fg
             })
             .collect();
@@ -484,8 +388,8 @@ mod tests {
 
     #[test]
     fn the_scan_moves_with_the_tick() {
-        let a = text_colours(&edges(30, 1, 0, Scan::Resting).0);
-        let b = text_colours(&edges(30, 1, 12, Scan::Resting).0);
+        let a = text_colours(&edges(30, 0, Scan::Resting).0);
+        let b = text_colours(&edges(30, 12, Scan::Resting).0);
         assert_ne!(a, b, "it travels");
     }
 
@@ -496,7 +400,7 @@ mod tests {
     #[test]
     fn holding_lights_both_long_edges() {
         // Two heads sweeping in step: the shape of something waiting to be sent.
-        let (top, bottom) = edges(30, 1, 0, Scan::Holding);
+        let (top, bottom) = edges(30, 0, Scan::Holding);
         assert!(
             top.spans
                 .iter()
@@ -519,23 +423,26 @@ mod tests {
     #[test]
     fn a_narrow_box_does_not_panic() {
         for width in 0..6_u16 {
-            let _ = edges(width, 1, 3, Scan::Working);
-            let _ = side(width, 1, 0, 3, Scan::Working);
+            for scan in [Scan::Working, Scan::Resting, Scan::Holding, Scan::Focused] {
+                let _ = edges(width, 3, scan);
+            }
         }
     }
 
     #[test]
-    fn a_tall_box_lights_its_sides_too() {
-        // The ring modes go round, not just along the top — checked on `Resting`; `Working` has no
-        // ring at all, its band sweeps by column.
-        let lit = (0..120)
-            .flat_map(|tick| (0..6).map(move |row| (tick, row)))
-            .filter(|&(tick, row)| {
-                let (l, r) = side(30, 6, row, tick, Scan::Resting);
-                l.style.fg != Some(colour::border()) || r.style.fg != Some(colour::border())
+    fn the_light_reaches_the_bottom_rule_as_well_as_the_top() {
+        // The ring circulates: along the top, then back along the bottom. Checked on `Resting`;
+        // `Working` has no ring at all, its band sweeps by column.
+        let lit = (0..200)
+            .filter(|&tick| {
+                let (_, bottom) = edges(30, tick, Scan::Resting);
+                bottom
+                    .spans
+                    .iter()
+                    .any(|s| s.style.fg != Some(colour::border()))
             })
             .count();
-        assert!(lit > 0, "the scan goes round, not just along the top");
+        assert!(lit > 0, "the scan comes back along the bottom");
     }
 }
 
@@ -553,7 +460,7 @@ mod holding_tests {
     fn the_two_lights_stay_in_the_same_column() {
         // The bottom edge is walked anticlockwise, so its leftmost cell is its highest ring index.
         for tick in 0..60 {
-            let (top, bottom) = edges(40, 1, tick, Scan::Holding);
+            let (top, bottom) = edges(40, tick, Scan::Holding);
             let (Some(t), Some(b)) = (peak(&top), peak(&bottom)) else {
                 continue;
             };
@@ -563,25 +470,35 @@ mod holding_tests {
 
     #[test]
     fn both_lights_are_present_from_the_first_tick() {
-        let (top, bottom) = edges(40, 1, 0, Scan::Holding);
+        let (top, bottom) = edges(40, 0, Scan::Holding);
         assert!(peak(&top).is_some(), "top lit at rest");
         assert!(peak(&bottom).is_some(), "and so is the bottom");
     }
 
     #[test]
-    fn the_sweep_turns_round_inside_the_edge() {
-        // It must not walk onto a corner and wrap: this is a shuttle, not a circuit.
+    fn the_sweep_uses_the_whole_rule_and_turns_round_at_the_ends() {
+        // With no corners to avoid, the shuttle owns every column — and still reverses rather
+        // than wrapping, which is what makes it a shuttle and not a circuit.
         let width = 20u16;
+        let mut seen = Vec::new();
         for tick in 0..80 {
-            let (top, _) = edges(width, 1, tick, Scan::Holding);
+            let (top, _) = edges(width, tick, Scan::Holding);
             if let Some(at) = peak(&top) {
-                assert!(at >= 1, "tick {tick}: on the left corner");
-                assert!(
-                    at <= usize::from(width) - 2,
-                    "tick {tick}: on the right corner"
-                );
+                assert!(at < usize::from(width), "tick {tick}: off the end");
+                seen.push(at);
             }
         }
+        // Within a cell of each end: the pace is a setting and steps more than one cell a tick,
+        // so which exact column it lands on is not the point. The corners used to cost it two.
+        let (first, last) = (
+            seen.iter().min().copied().expect("lit somewhere"),
+            seen.iter().max().copied().expect("lit somewhere"),
+        );
+        assert!(first <= 1, "never reached the left end: {first}");
+        assert!(
+            last >= usize::from(width) - 2,
+            "never reached the right end: {last}"
+        );
     }
 
     #[test]
@@ -601,58 +518,46 @@ mod holding_tests {
 }
 
 #[cfg(test)]
-mod walking {
+mod ring {
     use super::*;
 
-    fn ring(inner: usize, rows: usize) -> Vec<usize> {
-        (0..ring_length(inner, rows)).collect()
-    }
-
     #[test]
-    fn a_side_cell_is_worth_two_of_a_top_one() {
-        // A cell is not a square: one step down the side covers about twice the glass one along the top does.
-        let (inner, rows) = (10, 4);
-        let walk: Vec<usize> = ring(inner, rows)
-            .iter()
-            .map(|&at| walk_of(at, inner, rows))
-            .collect();
-
-        // Along the top: one apiece.
-        assert_eq!(walk[1] - walk[0], 1);
-        assert_eq!(walk[2] - walk[1], 1);
-        // Down the right-hand side: two.
-        let first_side = 1 + inner + 1;
-        assert_eq!(walk[first_side + 1] - walk[first_side], TALL);
-    }
-
-    #[test]
-    fn the_walk_runs_forward_all_the_way_round_and_closes() {
-        // Strictly increasing, or two cells share a position; and the loop has to close exactly.
-        for (inner, rows) in [(1_usize, 1_usize), (10, 4), (78, 20), (200, 2)] {
-            let walk: Vec<usize> = ring(inner, rows)
-                .iter()
-                .map(|&at| walk_of(at, inner, rows))
-                .collect();
-            assert_eq!(walk[0], 0, "{inner}x{rows}");
-            for pair in walk.windows(2) {
-                assert!(pair[1] > pair[0], "{inner}x{rows}: {pair:?}");
-            }
-            let last = *walk.last().expect("a ring");
-            let weight = TALL; // the last cell is on the left-hand side
-            assert_eq!(
-                last + weight,
-                walk_length(inner, rows),
-                "{inner}x{rows}: the loop must close"
-            );
+    fn the_ring_is_the_two_rules_and_nothing_else() {
+        // No corners and no sides, so the light travels exactly twice the width.
+        for width in [1_usize, 10, 78, 200] {
+            assert_eq!(ring_length(width), width * 2, "{width}");
         }
+    }
+
+    #[test]
+    fn the_bottom_is_walked_right_to_left_so_the_circuit_closes() {
+        let width = 10;
+        // The top runs 0..width left to right; the bottom picks up where it left off, at the
+        // right-hand end, and runs back — so stepping off the end of one lands on the start of
+        // the other rather than jumping the width of the box.
+        assert_eq!(
+            bottom_at(width - 1, width),
+            width,
+            "just after the top ends"
+        );
+        assert_eq!(
+            bottom_at(0, width),
+            ring_length(width) - 1,
+            "and the last cell is the bottom-left"
+        );
+        let walked: Vec<usize> = (0..width).map(|c| bottom_at(c, width)).collect();
+        let mut sorted = walked.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), width, "every column has its own cell");
     }
 
     #[test]
     fn a_focused_border_wears_four_lights_evenly_spaced() {
         // Four rather than two: a pane is a bigger box, and two heads would leave most of it dark.
-        let (inner, rows) = (78, 20);
-        let ring = walk_length(inner, rows);
-        let lights = heads(Scan::Focused, 0, inner, rows, ring);
+        let width = 78;
+        let ring = ring_length(width);
+        let lights = heads(Scan::Focused, 0, width, ring);
         assert_eq!(lights.len(), 4);
         let gaps: Vec<usize> = lights.windows(2).map(|p| p[1].at - p[0].at).collect();
         for gap in &gaps {
@@ -665,11 +570,11 @@ mod walking {
 
     #[test]
     fn the_prompt_still_wears_two() {
-        let ring = walk_length(20, 3);
-        assert_eq!(heads(Scan::Resting, 0, 20, 3, ring).len(), 2);
-        assert_eq!(heads(Scan::Holding, 0, 20, 3, ring).len(), 2);
-        // Working rides no heads: its band sweeps by column, drawn by `shadowed`, not the ring.
-        assert!(heads(Scan::Working, 0, 20, 3, ring).is_empty());
-        assert!(heads(Scan::Off, 0, 20, 3, ring).is_empty());
+        let ring = ring_length(20);
+        assert_eq!(heads(Scan::Resting, 0, 20, ring).len(), 2);
+        assert_eq!(heads(Scan::Holding, 0, 20, ring).len(), 2);
+        // Working rides no heads: its band sweeps by column, drawn by `shaded`, not the ring.
+        assert!(heads(Scan::Working, 0, 20, ring).is_empty());
+        assert!(heads(Scan::Off, 0, 20, ring).is_empty());
     }
 }

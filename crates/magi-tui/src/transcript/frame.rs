@@ -1,12 +1,13 @@
 //! The edges of a block: where it starts, where it stops, and what is set into them.
 //!
 //! ```text
-//! ┌──[ TOOL ]───────────────────────────────[ v ]──┐
+//! ───[ TOOL ]───────────────────────────────[ v ]───
 //!    …the block's own rows, one column further in…
-//! └───────────────────────────────────────────────┘
+//! ─────────────────────────────────────────────────
 //! ```
 //!
-//! No sides: they would cost two columns of every row, taken out of the text on a narrow terminal.
+//! No corners and no sides: a rule opens the block and a rule closes it. Sides would cost two
+//! columns of every row, taken out of the text on a narrow terminal.
 
 use crate::colour;
 use crate::glyph;
@@ -38,7 +39,7 @@ pub(super) fn top(
     let edge = Style::default().fg(colour::block_frame());
     // The brackets belong to the frame, not to the name; only the name carries a colour of its own.
     let mut spans = vec![
-        Span::styled(glyph::block_top_left().to_owned(), edge),
+        Span::styled(glyph::block_edge().to_owned(), edge),
         Span::styled(glyph::block_edge().repeat(2), edge),
     ];
     // No name, no chip. An empty label drew `[  ]`, a bracket around nothing.
@@ -82,7 +83,7 @@ pub(super) fn top(
         spans.push(Span::styled(format!("[ {handle} ]"), edge));
         spans.push(Span::styled(glyph::block_edge().repeat(2), edge));
     }
-    spans.push(Span::styled(glyph::block_top_right().to_owned(), edge));
+    spans.push(Span::styled(glyph::block_edge().to_owned(), edge));
     Line::from(spans)
 }
 
@@ -91,12 +92,12 @@ pub(super) fn top(
 pub(super) fn bottom(width: u16) -> Line<'static> {
     let edge = Style::default().fg(colour::block_frame());
     Line::from(vec![
-        Span::styled(glyph::block_bottom_left().to_owned(), edge),
+        Span::styled(glyph::block_edge().to_owned(), edge),
         Span::styled(
             glyph::block_edge().repeat(usize::from(width).saturating_sub(2)),
             edge,
         ),
-        Span::styled(glyph::block_bottom_right().to_owned(), edge),
+        Span::styled(glyph::block_edge().to_owned(), edge),
     ])
 }
 
@@ -129,15 +130,16 @@ mod framing {
 
     #[test]
     fn a_block_is_a_top_edge_a_body_and_a_bottom_edge() {
+        let rule = crate::glyph::block_edge();
         let shown = tool(Detail::Full, 60);
         let top = shown
             .iter()
-            .position(|l| l.starts_with('┌'))
+            .position(|l| l.starts_with(rule))
             .expect("a top");
-        assert!(shown[top].ends_with('┐'), "{shown:#?}");
+        assert!(shown[top].ends_with(rule), "{shown:#?}");
         let bottom = shown.last().expect("a bottom");
         assert!(
-            bottom.starts_with('└') && bottom.ends_with('┘'),
+            bottom.starts_with(rule) && bottom.ends_with(rule),
             "{shown:#?}"
         );
     }
@@ -211,24 +213,38 @@ mod framing {
 
 /// One of a block's own rows: the coloured box, shrunk to sit inside the frame. The fill spans
 /// `1..width-1`, leaving the corners' two columns as the terminal's own; the gap puts it inside.
+/// How far past the frame's margin the fill reaches, on each side.
+///
+/// The colour stands one column wider than anything that has to line up with it, so a filled
+/// block reads as a block rather than as a highlighter drawn over the words.
+pub(super) const BLEED: usize = 1;
+
+/// Where a filled row starts, and how wide the colour is: the margin less the bleed, and the
+/// block's room plus it at both ends. One place, because the fill, the blank rows that breathe
+/// around it and the seam through it all have to end in the same column.
+pub(super) fn fill_of(width: u16) -> (usize, usize) {
+    let outer = MARGIN.saturating_sub(BLEED);
+    (outer, usize::from(held(width)) + (MARGIN - outer) * 2)
+}
+
 pub(super) fn inside(line: Line<'static>, width: u16, style: Style, lead: usize) -> Line<'static> {
-    let room = usize::from(held(width));
+    let (outer, room) = fill_of(width);
     let used: usize = line
         .spans
         .iter()
         .map(|s| crate::wrap::columns(&s.content))
         .sum();
-    // `lead` counts from the block's left edge and the first `MARGIN` are outside the fill.
-    let pad = lead.saturating_sub(MARGIN).min(room);
+    // `lead` counts from the block's left edge, and everything before `outer` is outside the fill.
+    let pad = lead.saturating_sub(outer).min(room);
     let trailing = room.saturating_sub(used + pad);
 
     let mut spans = vec![
-        Span::raw(" ".repeat(MARGIN)),
+        Span::raw(" ".repeat(outer)),
         Span::styled(" ".repeat(pad), style),
     ];
     spans.extend(line.spans);
     spans.push(Span::styled(" ".repeat(trailing), style));
-    spans.push(Span::raw(" ".repeat(MARGIN)));
+    spans.push(Span::raw(" ".repeat(outer)));
     Line::from(spans)
 }
 
@@ -240,15 +256,15 @@ pub(super) fn breath(width: u16, style: Style) -> Line<'static> {
 
 /// The seam between what a call was asked and what it answered, inside the fill rather than across it.
 pub(super) fn rule(width: u16, style: Style) -> Line<'static> {
-    let room = usize::from(held(width));
+    let (outer, room) = fill_of(width);
     // One column of fill at each end, or the rule meets the frame and makes two boxes.
     let span = room.saturating_sub(2);
     Line::from(vec![
-        Span::raw(" ".repeat(MARGIN)),
+        Span::raw(" ".repeat(outer)),
         Span::styled(" ", style),
         Span::styled("─".repeat(span), style.fg(crate::colour::tool_seam())),
         Span::styled(" ", style),
-        Span::raw(" ".repeat(MARGIN)),
+        Span::raw(" ".repeat(outer)),
     ])
 }
 
@@ -285,18 +301,17 @@ mod nesting {
     }
 
     #[test]
-    fn the_fill_stops_short_of_the_frame() {
-        // Painted to the full width, the background ran out past the corners the edges had drawn.
+    fn the_fill_stands_one_column_inside_the_rule() {
+        // It reaches a column further out on each side than anything that lines up with it, so it
+        // reads as a block rather than as a highlighter drawn over the words — but not the whole
+        // width, or it would meet the rule and the block would lose its shape. See [`BLEED`].
         let rows = filled(30);
         let body = &rows[1];
+        assert!(!body[0], "the fill reaches the very first column");
+        assert!(!body[29], "and the very last");
         assert!(
-            !body[0] && !body[1],
-            "the fill runs into the frame's margin"
-        );
-        assert!(!body[28] && !body[29], "and out the other side");
-        assert!(
-            body[2] && body[27],
-            "the fill should span everything between"
+            body[1] && body[28],
+            "the fill should stand one column inside each end"
         );
     }
 
@@ -385,7 +400,9 @@ mod emptiness {
         // A call stopped on a prompt has produced nothing, and framing it drew an empty box.
         let shown = call(None);
         assert!(
-            shown.iter().all(|l| !l.contains('┌') && !l.contains('└')),
+            shown
+                .iter()
+                .all(|l| !l.starts_with(crate::glyph::block_edge())),
             "an empty box was drawn: {shown:#?}"
         );
         assert!(
@@ -415,7 +432,12 @@ mod emptiness {
             is_error: false,
             shown: None,
         }));
-        assert!(shown.iter().all(|l| !l.contains('┌')), "{shown:#?}");
+        assert!(
+            shown
+                .iter()
+                .all(|l| !l.starts_with(crate::glyph::block_edge())),
+            "{shown:#?}"
+        );
     }
 
     #[test]
@@ -425,8 +447,12 @@ mod emptiness {
             is_error: false,
             shown: None,
         }));
-        assert!(shown.iter().any(|l| l.contains('┌')), "{shown:#?}");
-        assert!(shown.iter().any(|l| l.contains('└')), "{shown:#?}");
+        // Two rules, which is what a box is now: one to open it and one to close it.
+        let rules = shown
+            .iter()
+            .filter(|l| l.starts_with(crate::glyph::block_edge()))
+            .count();
+        assert!(rules >= 2, "{shown:#?}");
         assert!(shown.iter().any(|l| l.contains("one line")), "{shown:#?}");
     }
 }
@@ -486,7 +512,8 @@ mod alignment {
     fn prose_stops_where_a_block_stops() {
         // The right margin too. The edges are exempt: a frame spans the whole width.
         let long = "word ".repeat(40);
-        let framing = |line: &str| line.starts_with('┌') || line.starts_with('└');
+        // A frame row is one that opens on the rule: there are no corners to look for now.
+        let framing = |line: &str| line.starts_with(crate::glyph::block_edge());
         for line in said(&long)
             .iter()
             .filter(|l| !l.trim().is_empty() && !framing(l))
@@ -517,7 +544,7 @@ mod alignment {
             Detail::Full,
         ));
         for line in shown.iter().filter(|l| !l.trim().is_empty()) {
-            let edge = line.starts_with('┌') || line.starts_with('└');
+            let edge = line.starts_with(crate::glyph::block_edge());
             if !edge {
                 let first = line.chars().next().expect("a column");
                 assert_eq!(first, ' ', "{line:?} starts in the frame's column");
