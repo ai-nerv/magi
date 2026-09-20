@@ -234,7 +234,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
         magi_proto::tooling::Place::Prompt => Rect {
             x: prompt_area.x + prompt::INSET,
             y: prompt_area.y + u16::try_from(prompt_lines.menu.start).unwrap_or(u16::MAX),
-            width: area.width.saturating_sub(prompt::INSET),
+            width: area.width.saturating_sub(prompt::INSET + 1),
             height: u16::try_from(prompt_lines.menu.len()).unwrap_or(u16::MAX),
         },
     });
@@ -400,7 +400,7 @@ mod continues_past_the_edge {
     use ratatui::backend::TestBackend;
 
     /// A 60x16 screen holding a conversation `turns` long, scrolled up by `lines`.
-    pub(super) fn drawn(turns: usize, lines: usize) -> Vec<String> {
+    fn drawn(turns: usize, lines: usize) -> Vec<String> {
         let mut app = App::new();
         for n in 0..turns {
             app.apply(HarnessEvent::UserMessage {
@@ -476,24 +476,20 @@ mod continues_past_the_edge {
             lower - last <= 2,
             "the rule drifted off the transcript: {rows:#?}"
         );
-        assert!(lower < opens_the_prompt(&rows), "{rows:#?}");
-    }
-
-    /// Which row the prompt opens on. Its rule is the one wearing the mode, and there are no
-    /// corners left to look for.
-    fn opens_the_prompt(rows: &[String]) -> usize {
-        let tag = format!(" {} ", magi_tui::vim::Mode::Normal.tag());
-        rows.iter()
-            .position(|row| {
-                row.starts_with(magi_tui::glyph::edge_horizontal()) && row.contains(&tag)
-            })
-            .expect("the prompt is on screen")
+        let box_top = rows
+            .iter()
+            .position(|row| row.contains(char::from_u32(0x256D).expect("box corner")))
+            .expect("the prompt is on screen");
+        assert!(lower < box_top, "{rows:#?}");
     }
 
     #[test]
     fn a_rule_never_lands_on_the_prompt() {
         let rows = drawn(30, 20);
-        let box_top = opens_the_prompt(&rows);
+        let box_top = rows
+            .iter()
+            .position(|row| row.contains('╭'))
+            .expect("the prompt is on screen");
         for at in rules(&rows) {
             assert!(at < box_top, "a rule landed on the prompt: {rows:#?}");
         }
@@ -508,7 +504,7 @@ mod inside_the_box {
     use ratatui::backend::TestBackend;
 
     /// A screen with `/mo` typed and the menu that opens on it.
-    pub(super) fn drawn() -> Vec<String> {
+    fn drawn() -> Vec<String> {
         let mut app = App::new();
         app.modal.open_command(&mut app.editor);
         app.editor.insert_str("mo");
@@ -530,23 +526,14 @@ mod inside_the_box {
             .collect()
     }
 
-    /// A row that is rule and nothing else: the divider, and the rule the box closes on.
-    fn all_rule(row: &str) -> bool {
-        let bare = row.trim_end();
-        !bare.is_empty() && bare.chars().all(|c| c == '─')
-    }
-
     #[test]
-    fn every_row_of_the_menu_starts_one_column_in() {
-        // Nothing is drawn down either side now, so what says a row belongs to the box is its
-        // inset and that it runs the whole width.
+    fn every_row_of_the_menu_is_between_the_sides() {
         let rows = drawn();
         let menu: Vec<&String> = rows.iter().filter(|row| row.contains(":model")).collect();
         assert!(!menu.is_empty(), "nothing was offered: {rows:#?}");
         for row in menu {
-            assert!(row.starts_with(' '), "{row:?} is not inset");
-            assert!(!row.contains('│'), "{row:?} grew a side");
-            assert_eq!(row.chars().count(), 60, "{row:?} is not the full width");
+            assert!(row.starts_with('│'), "{row:?} is outside the box");
+            assert!(row.trim_end().ends_with('│'), "{row:?} is outside the box");
         }
     }
 
@@ -555,7 +542,7 @@ mod inside_the_box {
         let rows = drawn();
         let divider = rows
             .iter()
-            .position(|row| all_rule(row))
+            .position(|row| row.starts_with('├'))
             .expect("a divider");
         let typed = rows
             .iter()
@@ -573,7 +560,7 @@ mod inside_the_box {
         let rows = drawn();
         let bottom = rows
             .iter()
-            .rposition(|row| all_rule(row))
+            .position(|row| row.starts_with('╰'))
             .expect("the box closes");
         let offered = rows
             .iter()

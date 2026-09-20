@@ -101,25 +101,20 @@ fn the_bottom_is_the_newest_end() {
 }
 
 #[test]
-fn the_frame_is_the_same_two_rules_the_prompt_box_wears() {
+fn the_frame_is_the_same_ring_the_prompt_box_wears() {
     // Not a box drawn by hand beside another box: the same `border` module, so the two are
-    // parts of one program rather than two people's idea of where a line goes.
+    // parts of one program rather than two people's idea of a rounded corner.
     let pane = Pane::new("trace", rows(3));
-    let width = 40usize;
-    let drawn = pane.framed(
-        u16::try_from(width).expect("a width"),
-        10,
-        0,
-        crate::border::Scan::Resting,
-    );
+    let drawn = pane.framed(40, 10, 0, crate::border::Scan::Resting);
     let text: Vec<String> = drawn.iter().map(ToString::to_string).collect();
-    let rule = crate::glyph::edge_horizontal().repeat(width);
-    assert_eq!(text[0], rule, "{text:?}");
-    assert_eq!(text[text.len() - 1], rule, "{text:?}");
-    // And nothing down the sides: every content row is the pane's own, start to finish.
-    for row in &text[1..text.len() - 1] {
-        assert!(!row.contains('│'), "a side crept back: {row:?}");
-    }
+    assert!(
+        text[0].starts_with(crate::glyph::corner_top_left()),
+        "{text:?}"
+    );
+    assert!(
+        text[text.len() - 1].starts_with(crate::glyph::corner_bottom_left()),
+        "{text:?}"
+    );
 }
 
 #[test]

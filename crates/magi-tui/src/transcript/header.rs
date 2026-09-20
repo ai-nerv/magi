@@ -171,13 +171,9 @@ mod tests {
         // Between the two halves and nowhere else: a block draws what it was given, the seam,
         // then the result.
         let shown = rows(Detail::Full);
-        // Interior rows only: the block opens and closes on a rule of its own, and neither of
-        // those is a seam.
         let at: Vec<usize> = shown
             .iter()
             .enumerate()
-            .skip(1)
-            .take(shown.len().saturating_sub(2))
             .filter(|(_, l)| l.starts_with('─'))
             .map(|(nth, _)| nth)
             .collect();

@@ -120,8 +120,8 @@ pub struct Boxed {
     pub badge: Option<(usize, std::ops::Range<u16>)>,
 }
 
-/// How far in from the left edge a menu row's text starts: one space, and nothing drawn before it.
-pub const INSET: u16 = 1;
+/// How far in from the left edge a menu row's text starts: the side, then a space.
+pub const INSET: u16 = 2;
 
 /// Render the prompt as a box, with `menu` inside it under a divider. Inside rather than beneath,
 /// so the box is what says where the rows are; `menu` is already `width - 3` wide — see
@@ -154,7 +154,7 @@ pub fn render(
     let shown = if blank { 1 } else { end - offset };
     // The divider is a content row, so the scan runs past it rather than round a hole in the box.
     let content = shown + if menu.is_empty() { 0 } else { 1 + menu.len() };
-    let (top, bottom) = crate::border::edges(width, tick, scan);
+    let (top, bottom) = crate::border::edges(width, content, tick, scan);
 
     // What sits on the border dims with it while a turn runs, by the column it sits in: the mode
     // near the left, the usage near the right.
@@ -187,6 +187,10 @@ pub fn render(
         out.push(framed(
             body,
             width,
+            content,
+            row,
+            tick,
+            scan,
             &crate::fold::strip(badge, shown, row, saying.badge_open, badge_dim),
         ));
     }
@@ -200,11 +204,20 @@ pub fn render(
 
     let mut opened = 0..0;
     if !menu.is_empty() {
-        out.push(divider(width));
+        out.push(divider(width, content, shown, tick, scan));
         opened = out.len()..out.len() + menu.len();
-        for line in menu {
-            // No strip: the badge belongs to the box you type in, and a list under it is not that.
-            out.push(framed(line.spans.clone(), width, &[]));
+        for (row, line) in menu.iter().enumerate() {
+            let at = shown + 1 + row;
+            out.push(framed(
+                line.spans.clone(),
+                width,
+                content,
+                at,
+                tick,
+                scan,
+                // No strip: the badge belongs to the box you type in, and a list under it is not that.
+                &[],
+            ));
         }
     }
 
@@ -217,29 +230,48 @@ pub fn render(
     }
 }
 
-/// One content row. Nothing is drawn down either side, so the row keeps all but its left margin.
-fn framed(body: Vec<Span<'static>>, width: u16, tail: &[Span<'static>]) -> Line<'static> {
+/// One content row between its two side bars.
+fn framed(
+    body: Vec<Span<'static>>,
+    width: u16,
+    content: usize,
+    row: usize,
+    tick: usize,
+    scan: crate::border::Scan,
+    tail: &[Span<'static>],
+) -> Line<'static> {
+    let (left, right) = crate::border::side(width, content, row, tick, scan);
     let worn: usize = tail.iter().map(|s| s.content.chars().count()).sum();
-    let mut spans = vec![Span::raw(" ")];
+    let mut spans = vec![left, Span::raw(" ")];
     spans.extend(pad(
         body,
         width
-            .saturating_sub(1)
+            .saturating_sub(3)
             .saturating_sub(u16::try_from(worn).unwrap_or(0)),
     ));
     spans.extend(tail.iter().cloned());
+    spans.push(right);
     Line::from(spans)
 }
 
-/// The rule between the text and the menu: the full width, like the two it sits between.
-fn divider(width: u16) -> Line<'static> {
-    Line::from(Span::styled(
-        glyph::edge_horizontal().repeat(usize::from(width)),
-        Style::default().fg(colour::border()),
-    ))
+/// The rule between the text and the menu, teed into the sides so the box reads as one frame.
+fn divider(
+    width: u16,
+    content: usize,
+    row: usize,
+    tick: usize,
+    scan: crate::border::Scan,
+) -> Line<'static> {
+    let (left, right) = crate::border::side(width, content, row, tick, scan);
+    let rule = glyph::edge_horizontal().repeat(usize::from(width.saturating_sub(2)));
+    Line::from(vec![
+        Span::styled(glyph::divider_left().to_owned(), left.style),
+        Span::styled(rule, Style::default().fg(colour::border())),
+        Span::styled(glyph::divider_right().to_owned(), right.style),
+    ])
 }
 
-/// Pad a row out so what follows it lands at the edge.
+/// Pad a row out so the right-hand bar lands at the edge.
 fn pad(mut spans: Vec<Span<'static>>, width: u16) -> Vec<Span<'static>> {
     // A folded row keeps the space it broke on, so it can stand one column past the width it was
     // folded at and shove the badge off the end.
@@ -421,14 +453,14 @@ mod tests {
         ));
         assert!(!rendered[1].contains("commands"), "{:?}", rendered[1]);
         assert!(
-            rendered[1].starts_with(" h"),
-            "one column in, with nothing drawn before it: {:?}",
+            rendered[1].starts_with("│ h"),
+            "inside the box: {:?}",
             rendered[1]
         );
     }
 
     #[test]
-    fn the_text_sits_one_column_in_and_the_row_is_its_own() {
+    fn the_text_sits_one_column_inside_the_box() {
         let rendered = rows_of(&render(
             &editor_with("hello"),
             20,
@@ -439,8 +471,8 @@ mod tests {
             crate::tease::Saying::default(),
         ));
         assert_eq!(
-            rendered[1], " hello              ",
-            "one column of padding, and nothing down either side"
+            rendered[1], "│ hello            │",
+            "one column of padding, bars at both edges"
         );
     }
 

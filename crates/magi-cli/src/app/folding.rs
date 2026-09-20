@@ -360,9 +360,8 @@ fn said_by(
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
-        // The edges are the block, not what it says. Both of them open on the rule, where every
-        // row of the block's own words opens on its inset.
-        if text.trim_start().starts_with(magi_tui::glyph::block_edge()) {
+        // The edges are the block, not what it says.
+        if text.trim_start().starts_with('┌') || text.trim_start().starts_with('└') {
             continue;
         }
         rows.push(text.trim_end().to_owned());

@@ -353,11 +353,10 @@ mod tests {
             5,
             "an edge, a row of fill, the body, a row of fill, an edge"
         );
-        // Inside the frame and not pressed against the rule above it.
+        // Inside the frame, not under the corner, and not pressed against the edge above it.
         assert_eq!(rendered[2], "    hello           ");
-        let rule = crate::glyph::block_edge();
-        assert!(rendered[0].starts_with(rule) && rendered[0].ends_with(rule));
-        assert!(rendered[4].starts_with(rule) && rendered[4].ends_with(rule));
+        assert!(rendered[0].starts_with('┌') && rendered[0].ends_with('┐'));
+        assert!(rendered[4].starts_with('└') && rendered[4].ends_with('┘'));
         // No sides: two columns of every row taken off the text where they are least affordable.
         assert!(!rendered[2].contains('│'), "{rendered:?}");
         assert!(rendered.iter().all(|l| l.chars().count() == 20));
@@ -376,7 +375,7 @@ mod tests {
         // Five: the two edges, a row of fill inside each, and the text. The tag is not one of them.
         assert_eq!(rendered.len(), 5, "the tag grew a row: {rendered:?}");
         assert!(
-            rendered[0].starts_with(crate::glyph::block_edge()),
+            rendered[0].starts_with('┌'),
             "the tag rides the top edge: {rendered:?}"
         );
     }

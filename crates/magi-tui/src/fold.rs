@@ -16,7 +16,7 @@ pub fn text_room(width: u16, badge: &str) -> usize {
     } else {
         badge.chars().count() + 3
     };
-    usize::from(width).saturating_sub(1 + strip)
+    usize::from(width).saturating_sub(3 + strip)
 }
 
 /// Line `row` with anything typed a moment ago still on its way to being itself. A character arrives
@@ -282,9 +282,11 @@ mod badge_tests {
         let wide = NAME.chars().count() + 3;
         let worn = format!(" {NAME}  ");
         for row in &rows[1..rows.len() - 1] {
-            // The strip is the last `wide` columns of the row: nothing is drawn outboard of it.
+            // The strip is the last `wide` columns before the right border.
             let cells: Vec<char> = row.chars().collect();
-            let strip: String = cells[cells.len() - wide..].iter().collect();
+            let strip: String = cells[cells.len() - 1 - wide..cells.len() - 1]
+                .iter()
+                .collect();
             assert!(
                 strip == worn || strip.chars().all(|c| c == ' '),
                 "{strip:?} is neither the badge nor empty"
@@ -307,7 +309,7 @@ mod badge_tests {
         let with = text_room(50, NAME);
         let without = text_room(50, "");
         assert!(with < without);
-        assert_eq!(without, 49, "the left margin, and nothing else");
+        assert_eq!(without, 47, "the sides and the padding, and nothing else");
     }
 
     #[test]
