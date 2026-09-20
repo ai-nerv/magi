@@ -51,6 +51,9 @@ pub struct Picker {
     /// too long for a title. Crammed into the heading it was clipped, and clipped in the middle
     /// of a command is exactly where a person needs to read it.
     about: Vec<String>,
+    /// The same, already painted, for a caller that has something to say in more than one colour.
+    /// Drawn in place of `about` when it is set.
+    painted: Vec<ratatui::text::Line<'static>>,
 }
 
 impl Picker {
@@ -74,6 +77,7 @@ impl Picker {
             selected,
             notice: None,
             about: Vec::new(),
+            painted: Vec::new(),
         }
     }
 
@@ -82,6 +86,31 @@ impl Picker {
     pub fn about(mut self, rows: Vec<String>) -> Self {
         self.about = rows;
         self
+    }
+
+    /// The same, in the caller's own colours: a warning is not the command it warns about, and
+    /// one muted grey for both says neither.
+    #[must_use]
+    pub fn painted(mut self, rows: Vec<ratatui::text::Line<'static>>) -> Self {
+        self.painted = rows;
+        self
+    }
+
+    /// What is drawn under the heading, painted where the caller painted it.
+    #[must_use]
+    pub fn drawn_about(&self) -> Vec<ratatui::text::Line<'static>> {
+        if !self.painted.is_empty() {
+            return self.painted.clone();
+        }
+        self.about
+            .iter()
+            .map(|row| {
+                ratatui::text::Line::from(ratatui::text::Span::styled(
+                    row.clone(),
+                    ratatui::style::Style::default().fg(crate::colour::muted()),
+                ))
+            })
+            .collect()
     }
 
     /// What this list is deciding about.

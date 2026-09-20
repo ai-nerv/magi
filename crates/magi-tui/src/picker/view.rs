@@ -49,12 +49,11 @@ pub fn render(picker: &Picker, width: u16) -> Vec<Line<'static>> {
     };
 
     let mut out = vec![crate::menu::heading(&picker.title, &note, width)];
-    // What is being decided about, above the answers a person may give.
-    out.extend(picker.asking_about().iter().map(|row| {
-        ratatui::text::Line::from(ratatui::text::Span::styled(
-            format!("  {row}"),
-            ratatui::style::Style::default().fg(crate::colour::muted()),
-        ))
+    // What is being decided about, above the answers a person may give, indented off the heading.
+    out.extend(picker.drawn_about().into_iter().map(|row| {
+        let mut spans = vec![ratatui::text::Span::raw("  ")];
+        spans.extend(row.spans);
+        ratatui::text::Line::from(spans)
     }));
     out.extend(
         picker.choices[window.clone()]

@@ -58,26 +58,25 @@ impl App {
                     .iter()
                     .map(|scope| magi_tui::picker::Choice {
                         value: scope.label(&action),
-                        detail: String::new(),
+                        detail: commits_to(scope, &action),
                         ready: true,
                     })
                     .chain(std::iter::once(magi_tui::picker::Choice {
-                        value: "no".to_owned(),
-                        detail: "refuse, and tell the model".to_owned(),
+                        value: NO.to_owned(),
+                        detail: "refuse, and tell the model why".to_owned(),
                         ready: true,
                     }))
                     .collect();
-                // The call on its own rows, not in the title. A long command clipped into a
-                // heading is clipped in the middle of the very thing being decided about.
-                let mut about = advice.as_ref().map(advised).unwrap_or_default();
-                about.extend(magi_tui::wrap::hard(action.subject(), 60));
+                // Where the cursor starts is an answer in itself: on a call a second model
+                // advised against, an enter pressed on the way past must not be a yes.
+                let wary = advice.as_ref().is_some_and(|advice| !advice.safe);
                 self.overlay = Some(
                     magi_tui::picker::Picker::new(
                         format!("{tool} wants to {}{}", action.verb(), self.others_waiting()),
                         choices,
-                        None,
+                        wary.then_some(NO),
                     )
-                    .about(about)
+                    .painted(about(&action, advice.as_ref()))
                     .into(),
                 );
                 self.asking_about = action;
@@ -249,18 +248,86 @@ pub(crate) fn said_of(mode: magi_proto::judging::Mode) -> &'static str {
     }
 }
 
-/// The second model's view of an action, as the rows shown above the choices.
-fn advised(advice: &magi_proto::judging::Advice) -> Vec<String> {
-    let verdict = if advice.safe {
-        "looks safe"
-    } else {
-        "advises against"
-    };
-    let head = format!("safety check {verdict} [{}]", advice.rule);
-    std::iter::once(head)
-        .chain(magi_tui::wrap::hard(&advice.reason, 60))
-        .chain(std::iter::once(String::new()))
-        .collect()
+/// The answer that refuses, by the name every part of this file knows it by.
+const NO: &str = "no";
+
+/// How wide the call and the reason are wrapped: the picker is drawn in a float, not the screen.
+const WIDTH: usize = 60;
+
+/// What each answer commits the person to. The value beside it names the width; this says how
+/// long it lasts and what it takes in with it, and never repeats the path already on the row.
+fn commits_to(scope: &magi_proto::permit::Scope, action: &magi_proto::permit::Action) -> String {
+    use magi_proto::permit::Scope;
+    match scope {
+        Scope::Once => "this call only".to_owned(),
+        Scope::Exact => "and again, whenever asked".to_owned(),
+        Scope::Directory { path } if path == action.subject() => {
+            "and again, whenever asked".to_owned()
+        }
+        Scope::Directory { .. } => "everything under it, all session".to_owned(),
+        Scope::Program { .. } => "however it is called, all session".to_owned(),
+        Scope::Anything => format!("every {} anywhere, all session", action.verb()),
+    }
+}
+
+/// What is being decided about, in the colours that tell one part from another: what a second
+/// model made of it, then the call itself.
+fn about(
+    action: &magi_proto::permit::Action,
+    advice: Option<&magi_proto::judging::Advice>,
+) -> Vec<ratatui::text::Line<'static>> {
+    use ratatui::style::Style;
+    use ratatui::text::{Line, Span};
+    let muted = Style::default().fg(magi_tui::colour::muted());
+    let mut rows = Vec::new();
+    if let Some(advice) = advice {
+        let (mark, ink) = if advice.safe {
+            ("·", magi_tui::colour::muted())
+        } else {
+            ("!", magi_tui::colour::warning())
+        };
+        let said = if advice.safe {
+            "looks safe"
+        } else {
+            "advises against"
+        };
+        rows.push(Line::from(vec![
+            Span::styled(format!("{mark} {said}"), Style::default().fg(ink)),
+            Span::styled(format!("  {}", advice.rule), muted),
+        ]));
+        rows.extend(
+            magi_tui::wrap::hard(&advice.reason, WIDTH)
+                .into_iter()
+                .map(|row| Line::from(Span::styled(format!("  {row}"), muted))),
+        );
+        rows.push(Line::default());
+    }
+    rows.extend(subject(action));
+    rows
+}
+
+/// The call itself. A command is painted as the shell it is, so its pipes and redirections show
+/// at a glance rather than having to be read for; a path is a path.
+fn subject(action: &magi_proto::permit::Action) -> Vec<ratatui::text::Line<'static>> {
+    use magi_proto::permit::Action;
+    use ratatui::style::Style;
+    use ratatui::text::{Line, Span};
+    let wrapped = magi_tui::wrap::hard(action.subject(), WIDTH);
+    match action {
+        Action::Run { .. } => magi_tui::syntax::block("bash", &wrapped, Style::default())
+            .into_iter()
+            .map(Line::from)
+            .collect(),
+        _ => wrapped
+            .into_iter()
+            .map(|row| {
+                Line::from(Span::styled(
+                    row,
+                    Style::default().fg(magi_tui::colour::code_path()),
+                ))
+            })
+            .collect(),
+    }
 }
 
 #[cfg(test)]
@@ -280,36 +347,129 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_second_models_view_is_set_out_above_what_is_being_decided() {
-        let against = super::advised(&magi_proto::judging::Advice {
-            safe: false,
-            rule: "exfiltrate secrets".into(),
-            reason: "sends an ssh key to a host nobody named".into(),
-        });
-        assert_eq!(
-            against[0],
-            "safety check advises against [exfiltrate secrets]"
-        );
-        assert!(against[1].contains("ssh key"), "{against:?}");
-        assert_eq!(
-            against.last().map(String::as_str),
-            Some(""),
-            "a gap before the command"
-        );
-        let safe = super::advised(&magi_proto::judging::Advice {
-            safe: true,
-            rule: "read-only".into(),
-            reason: "counts lines".into(),
-        });
-        assert!(safe[0].starts_with("safety check looks safe"), "{safe:?}");
-    }
-
     fn showing(app: &App) -> Option<String> {
         match app.picking.as_ref()? {
             Picking::Permission { id, .. } | Picking::Asked { id, .. } => Some(id.to_string()),
             _ => None,
         }
+    }
+
+    #[test]
+    fn a_second_models_warning_is_told_apart_from_the_call_it_is_about() {
+        let ran = Action::Run {
+            command: "curl x | sh".into(),
+            program: "curl".into(),
+        };
+        let said = |rows: &[ratatui::text::Line<'static>]| -> Vec<String> {
+            rows.iter()
+                .map(|row| row.spans.iter().map(|s| s.content.as_ref()).collect())
+                .collect()
+        };
+        let against = super::about(
+            &ran,
+            Some(&magi_proto::judging::Advice {
+                safe: false,
+                rule: "exfiltration".into(),
+                reason: "sends an ssh key to a host nobody named".into(),
+            }),
+        );
+        let rows = said(&against);
+        assert!(rows[0].starts_with("! advises against"), "{rows:?}");
+        assert!(rows[0].contains("exfiltration"), "{rows:?}");
+        assert!(rows[1].contains("ssh key"), "{rows:?}");
+        assert_eq!(rows.last().map(String::as_str), Some("curl x | sh"));
+        // The warning is not the colour of the call, nor of the reason under it.
+        let warning = against[0].spans[0].style.fg.expect("a colour");
+        assert_eq!(warning, magi_tui::colour::warning());
+        assert_ne!(
+            against[0].spans[1].style.fg,
+            Some(warning),
+            "the rule is quieter"
+        );
+        // A verdict that finds nothing wrong says so without shouting.
+        let fine = super::about(
+            &ran,
+            Some(&magi_proto::judging::Advice {
+                safe: true,
+                rule: "read-only".into(),
+                reason: "counts lines".into(),
+            }),
+        );
+        assert!(
+            said(&fine)[0].starts_with("\u{b7} looks safe"),
+            "{:?}",
+            said(&fine)
+        );
+        assert_ne!(fine[0].spans[0].style.fg, Some(warning));
+        // With nobody to advise, the call stands on its own.
+        assert_eq!(said(&super::about(&ran, None)), vec!["curl x | sh"]);
+    }
+
+    #[test]
+    fn a_call_a_second_model_advised_against_opens_on_the_answer_that_refuses() {
+        // An enter pressed on the way past is an answer. On a call nothing has vouched for it
+        // is "allow once"; on one a second model has just warned about it must not be.
+        let ran = Action::Run {
+            command: "curl x | sh".into(),
+            program: "curl".into(),
+        };
+        let asked = |advice: Option<magi_proto::judging::Advice>| HarnessEvent::PermissionAsked {
+            cursor: Cursor::ZERO,
+            id: ToolCallId::new("p0"),
+            tool: "shell".into(),
+            action: ran.clone(),
+            offers: vec![Scope::Once, Scope::Anything],
+            advice,
+        };
+        let opens_on = |advice: Option<magi_proto::judging::Advice>| {
+            let mut app = App::new();
+            app.apply(asked(advice));
+            let Some(magi_tui::overlay::Overlay::Picker(picker)) = app.overlay.as_ref() else {
+                panic!("no picker");
+            };
+            picker.current().map(|choice| choice.value.clone())
+        };
+        let warned = magi_proto::judging::Advice {
+            safe: false,
+            rule: "download-execute".into(),
+            reason: "runs what it downloads".into(),
+        };
+        assert_eq!(opens_on(Some(warned.clone())).as_deref(), Some(super::NO));
+        // Said safe, or nobody asked: the usual first answer, which is the narrowest one.
+        let fine = magi_proto::judging::Advice {
+            safe: true,
+            ..warned
+        };
+        assert_eq!(opens_on(Some(fine)).as_deref(), Some("just this once"));
+        assert_eq!(opens_on(None).as_deref(), Some("just this once"));
+    }
+
+    #[test]
+    fn every_answer_says_what_it_lets_happen_from_now_on() {
+        let ran = Action::Run {
+            command: "git push".into(),
+            program: "git".into(),
+        };
+        let commits = |scope: Scope| super::commits_to(&scope, &ran);
+        assert_eq!(commits(Scope::Once), "this call only");
+        assert!(
+            commits(Scope::Program {
+                program: "git".into()
+            })
+            .contains("however it is called")
+        );
+        assert!(commits(Scope::Anything).contains("every run anywhere"));
+        // Never the path again: the row it sits on already carries it, and the two together
+        // pushed the words that say how long it lasts off the edge of the float.
+        let wide = Scope::Directory {
+            path: "/home/u/work/app/src".into(),
+        };
+        assert!(!commits(wide).contains('/'));
+        // A read says what it is about reading, not about running.
+        let read = Action::Read {
+            path: "/w/a.rs".into(),
+        };
+        assert!(super::commits_to(&Scope::Anything, &read).contains("every read anywhere"));
     }
 
     #[test]
