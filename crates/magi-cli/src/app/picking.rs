@@ -11,6 +11,10 @@ pub enum Picking {
     Session {
         rows: Vec<(String, String)>,
     },
+    /// The runs already put away. Taking one resumes it; Delete removes it for good.
+    Archived {
+        rows: Vec<(String, String)>,
+    },
     Asked {
         id: ToolCallId,
         rows: Vec<(String, String)>,

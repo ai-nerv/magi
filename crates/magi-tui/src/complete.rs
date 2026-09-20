@@ -70,6 +70,10 @@ pub fn commands() -> Vec<Candidate> {
         (":model", "the model, or :model <name> to switch"),
         (":permissions", "ask the model what it needs, and decide"),
         (":resume", "continue a session from this directory"),
+        (
+            ":archives",
+            "sessions put away, and where they are removed for good",
+        ),
         (":trace", "what this session has done, as it happened"),
         (":context", "what the last request was built from, and why"),
         (":agents", "the run's agents, as a tree"),

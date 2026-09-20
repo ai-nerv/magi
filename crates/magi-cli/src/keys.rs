@@ -46,6 +46,9 @@ pub enum Action {
     /// A selection list was left without taking a row. Distinct from [`Action::Accepted`] because a
     /// permission question closed with no reply leaves the turn that asked it blocked.
     Dismissed,
+    /// A row was answered *yes* to being taken away. What that means is the list's own: which
+    /// list is open is what says whether this puts a run out of reach or removes it.
+    Forget(String),
     Submit(String),
     Command(String),
     Interrupt,
@@ -163,11 +166,50 @@ pub fn handle(
         .as_mut()
         .and_then(magi_tui::overlay::Overlay::picker)
     {
+        // While a question is up it owns the keyboard: anything else typed would narrow a list
+        // you cannot see, and Enter would mean two things at once.
+        if let Some(asking) = open.asking() {
+            let yes = asking.yes;
+            match key.code {
+                KeyCode::Left | KeyCode::Right | KeyCode::Tab | KeyCode::BackTab => {
+                    open.swap();
+                    return Action::Accepted;
+                }
+                KeyCode::Enter => {
+                    return match open.answer(yes) {
+                        Some(value) => Action::Forget(value),
+                        None => Action::Accepted,
+                    };
+                }
+                // **Delete again means yes.** The key that asked is already under the finger,
+                // and pressing it twice is how somebody who knows gets through the guard.
+                KeyCode::Delete => {
+                    return match open.answer(true) {
+                        Some(value) => Action::Forget(value),
+                        None => Action::Accepted,
+                    };
+                }
+                // Esc answers *no* rather than leaving: you asked to remove something and
+                // changed your mind, which is not the same as wanting the list gone.
+                _ => {
+                    open.answer(false);
+                    return Action::Accepted;
+                }
+            }
+        }
         match key.code {
             KeyCode::Esc => {
                 // One escape closes the whole list, not one character of the query.
                 *overlay = None;
                 return Action::Dismissed;
+            }
+            // Ask about the row under the cursor, on a list whose caller allows it.
+            KeyCode::Delete => {
+                return if open.ask() {
+                    Action::Accepted
+                } else {
+                    Action::Redraw
+                };
             }
             // Typing narrows the list rather than reaching the prompt.
             KeyCode::Char(c) if !ctrl && !alt => {

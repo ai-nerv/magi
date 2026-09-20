@@ -90,6 +90,10 @@ pub(super) fn run_command(input: &str, app: &mut App) -> Control {
             app.open_session_picker();
             Control::Continue
         }
+        ":archives" | ":archive" => {
+            app.open_archive_picker();
+            Control::Continue
+        }
         ":rewind" => match input.split_whitespace().nth(1) {
             None => Control::Send(UiCommand::Branch { keeps: None }),
             Some(n) => match n.parse() {

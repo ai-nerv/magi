@@ -51,9 +51,9 @@ fn the_command_palette_marks_the_selection_and_shows_details() {
             "  :model        the model, or :model <name> to swi",
             "  :permissions  ask the model what it needs, and d",
             "  :resume       continue a session from this direc",
+            "  :archives     sessions put away, and where they",
             "  :trace        what this session has done, as it",
             "  :context      what the last request was built fr",
-            "  :agents       the run's agents, as a tree",
         ]
     );
 }

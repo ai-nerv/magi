@@ -1,7 +1,7 @@
 //! The UI event loop. Three sources feed one `select!`: the socket, the terminal, and a spinner
 //! timer. State lives in [`App`], drawing lives in [`ui`], and this file owns only the wiring.
 
-use crate::app::App;
+use crate::app::{App, Picking};
 use crate::keys;
 use crate::keys::{Action, Scroll};
 use crate::terminal::Session;
@@ -340,6 +340,10 @@ pub async fn run(
                         // Noted before the match consumes it; the rule lives in `keys::recomputes`.
                         let accepted = !keys::recomputes(&action);
                         match action {
+                            Action::Forget(value) => {
+                                app.forget_row(&value);
+                                dirty = true;
+                            }
                             Action::Submit(text) if app.view_only => {
                                 app.refuse_view_only();
                                 app.editor.insert_str(&text);
@@ -453,7 +457,8 @@ pub async fn run(
                                     }
                                     // Matched back by position: a row is labelled for a person to
                                     // read, and none of that is the id the session needs.
-                                    Some(crate::app::Picking::Session { rows }) => {
+                                    // Archived resumes the same way: away is about what is offered.
+                                    Some(Picking::Session { rows } | Picking::Archived { rows }) => {
                                         let found = rows
                                             .iter()
                                             .find(|(label, _)| *label == value)
