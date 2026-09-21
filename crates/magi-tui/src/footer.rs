@@ -186,10 +186,14 @@ pub fn siblings(up: [bool; 3], open: Option<usize>, stirred: [f32; 3]) -> Vec<Sp
         if nth > 0 {
             spans.push(Span::styled(" ", dim));
         }
-        // Under the pointer it wears its own colour rather than an inversion: three segments a
-        // few cells apart all invert the same way, and the colour says which one this is.
+        // Under the pointer the whole segment inverts in that sibling's own colour: reversed, the
+        // hue becomes the ground, so it reads as a pressed block and says which sibling at once.
         let here = open == Some(nth);
-        let lit = Modifier::empty();
+        let lit = if here {
+            Modifier::REVERSED
+        } else {
+            Modifier::empty()
+        };
         let dim = if here {
             Style::default().fg(hue(nth))
         } else {
@@ -241,16 +245,31 @@ mod siblings_tests {
     }
 
     #[test]
-    fn the_segment_under_the_pointer_wears_its_own_colour() {
-        // Three segments a few cells apart invert identically; the colour is what says which of
-        // them the pointer is on, and it is the same colour that sibling flashes and borders with.
+    fn the_segment_under_the_pointer_inverts_in_its_own_colour() {
+        // Reversed, so the hue is the ground and the segment reads as a pressed block; and the
+        // colour is that sibling's, which is what says which of the three the pointer is on.
         for nth in 0..SIBLINGS.len() {
             let lit = siblings([true; 3], Some(nth), [0.0; 3]);
             // Three spans a segment, and a separator before all but the first.
             let at = nth * 4;
             for piece in lit.iter().skip(at).take(3) {
                 assert_eq!(piece.style.fg, Some(hue(nth)), "segment {nth}: {piece:?}");
+                assert!(
+                    piece.style.add_modifier.contains(Modifier::REVERSED),
+                    "segment {nth} is coloured but not inverted: {piece:?}"
+                );
             }
+        }
+    }
+
+    #[test]
+    fn a_segment_the_pointer_is_not_on_is_not_inverted() {
+        let rest = siblings([true; 3], Some(0), [0.0; 3]);
+        for piece in rest.iter().skip(4).take(3) {
+            assert!(
+                !piece.style.add_modifier.contains(Modifier::REVERSED),
+                "{piece:?}"
+            );
         }
     }
 
