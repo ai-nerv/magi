@@ -40,9 +40,12 @@ pub const MAIN: &str = "main";
 
 /// The roles that fall back to `memory` when nobody named them: one line in a configuration keeps
 /// working, and a person who wants a stronger model for summaries than for notes says so for that
-/// role alone. Four are balthasar's jobs; `search` is a tool's, and is here because it is the same
-/// kind of work — a small model reading text it is handed and saying something short about it.
-const OF_MEMORY: &[&str] = &["summary", "notes", "curate", "contradict", "search"];
+/// role alone. All four are balthasar's jobs.
+///
+/// `search` is not among them. It ranks rather than writes, and a model that writes answers it by
+/// writing its way there: on a helper's budget it spends the lot reasoning and returns nothing.
+/// It runs on the model named for deciding or it does not run.
+const OF_MEMORY: &[&str] = &["summary", "notes", "curate", "contradict"];
 
 impl Helpers {
     /// The model to run `job` with, or `None` when nothing should.

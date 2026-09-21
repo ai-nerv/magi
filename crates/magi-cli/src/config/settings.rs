@@ -175,6 +175,26 @@ pub fn helpers(loaded: &Loaded) -> magi_host::helping::Helpers {
     helpers
         .roles
         .insert("memory".to_owned(), magi_host::helping::MAIN.to_owned());
+    // Every role `magi.model.helper` names: the one place a helper model is named. A role set to
+    // `false` there runs nowhere, which is how notes are turned off.
+    if let Some(named) = loaded
+        .config
+        .get("model")
+        .and_then(|model| model.get("helper"))
+        .and_then(serde_json::Value::as_object)
+    {
+        for (role, value) in named {
+            match value {
+                serde_json::Value::String(model) => {
+                    helpers.roles.insert(role.clone(), model.clone());
+                }
+                serde_json::Value::Bool(false) => {
+                    helpers.roles.remove(role);
+                }
+                _ => {}
+            }
+        }
+    }
     let Some(table) = loaded.config.get("helpers").and_then(|v| v.as_object()) else {
         return helpers;
     };

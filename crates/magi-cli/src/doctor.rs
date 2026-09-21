@@ -36,7 +36,7 @@ fn report() -> String {
     // What will actually run, not what the file asked for. A model switched in a session is
     // remembered for that directory and outranks `magi.model`, so printing the configuration alone
     // says a session here is one thing while it is about to be another.
-    let configured = loaded.config.string("model");
+    let configured = crate::config::main_model(&loaded);
     match crate::config::remembered().model {
         Some(here) if Some(here.as_str()) != configured => {
             row(&mut out, "model", &format!("{here}  (remembered here)"));
@@ -64,6 +64,9 @@ fn report() -> String {
             "off"
         },
     );
+    for (role, named) in crate::config::helper_models(&loaded) {
+        row(&mut out, &format!("{role} model"), &named);
+    }
     row(&mut out, "isolation", &isolation(&loaded));
     row(
         &mut out,

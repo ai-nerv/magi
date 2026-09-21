@@ -13,7 +13,28 @@ magi.load("tools.lua")
 -- Which model to use, as `magi models` prints it.
 -- magi.model = "openrouter/stealth/union-alpha"
 -- magi.model = "openrouter/deepseek/deepseek-v4.1-flash"
-magi.model = "openrouter/z-ai/glm-5.3-flash"
+magi.model = {
+  -- What writes and answers. One model.
+  main = "openrouter/z-ai/glm-5.3-flash",
+
+  -- The smaller models that work on its behalf, one per kind of work. Open: a role named here is
+  -- a role this session can run, a role named nowhere does not run, and `false` turns one off.
+  --
+  --   decision  judging rather than writing: ranking `sese`'s passages, choosing between things.
+  --             A model that writes answers these by writing its way there, slowly and dearly
+  --   memory    everything balthasar asks for, unless one of the three below is named. Runs on
+  --             `main` until named here; `memory = false` keeps no notes at all
+  --   summary   the running summary of a long conversation: what the session still knows once the
+  --             turns are gone, so the one role a stronger model most plausibly pays for
+  --   notes     keeping and tidying project notes from what was said: many, and cheap is right
+  --   curate    choosing what to put in front of the model before a prompt: it waits on this
+  --   safety    judging an action no rule covers, for `magi.mode = "auto"`: see below
+  helper = {
+    decision = "decisions/typesafe/jev-1.13",
+    -- summary = "openrouter/deepseek/deepseek-v4-flash-0731",
+    -- safety  = "openrouter/deepseek/deepseek-v4-flash-0731",
+  },
+}
 
 -- Which program fills each role -- what a program is *for*, as `ROLES.md` sets it out. Named
 -- rather than assumed: magi does not know its memory is called balthasar, only that whatever
@@ -41,24 +62,11 @@ magi.model = "openrouter/z-ai/glm-5.3-flash"
 -- magi.melchior  = { max_tokens = 8192 }
 -- magi.balthasar = { promote_floor = 0.6 }
 
--- Small, fast models that run jobs on the others' behalf. A role named here runs on that model;
--- one not named is skipped, or run on the session's own model when the job asks for that. The
--- budget caps what they may spend on one prompt, in dollars, and `:cost` shows what they spent.
---
---   memory   everything balthasar asks for, unless one of the three below is named
---   summary  the running summary of a long conversation: what the session still knows once the
---            turns themselves are gone, so the one role a stronger model most plausibly pays for
---   notes    keeping and tidying project notes from what the person said: many, and cheap is right
---   curate   choosing what to remind the model of before a prompt: it waits on this, so fast
---   safety   judging an action no rule covers, for `magi.mode = "auto"`: see below
---
--- Notes are kept with no line here: `memory` runs on the session's own model ("main") until one
--- is named, and `memory = false` keeps none.
+-- What the helper models above may spend and how long they may take. Which model runs a role is
+-- `magi.model.helper`'s, not this table's: one place names a model. The budget caps what a helper
+-- may spend on one prompt, in dollars, and `:cost` shows what they spent.
 --
 -- magi.helpers = {
---   memory     = "openrouter/google/gemini-2.5-flash",
---   summary    = "openrouter/deepseek/deepseek-v4-flash-0731",
---   safety     = "openrouter/deepseek/deepseek-v4-flash-0731",
 --   timeout_ms = 20000,
 --   budget     = { per_prompt = 0.05 },
 -- }

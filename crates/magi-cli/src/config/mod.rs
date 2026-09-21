@@ -227,6 +227,51 @@ pub fn mind(loaded: &Loaded) -> String {
     roles::fills(loaded, "model")
 }
 
+/// The model a conversation runs on. `magi.model` is either that name on its own, or a table
+/// naming the main model and the smaller ones that work on its behalf:
+///
+/// ```lua
+/// magi.model = "openrouter/z-ai/glm-5.3-flash"      -- the conversation, and nothing else
+/// magi.model = {
+///   main   = "openrouter/z-ai/glm-5.3-flash",       -- what writes and answers: one model
+///   helper = {
+///     decision = "decisions/typesafe/jev-1.13",     -- what judges, ranks and chooses
+///     memory   = "openrouter/google/gemini-2.5-flash",
+///   },
+/// }
+/// ```
+///
+/// The helper table is open: a role named there is a role this session can run, and nothing here
+/// has to know about it beforehand.
+#[must_use]
+pub fn main_model(loaded: &Loaded) -> Option<&str> {
+    match loaded.config.get("model") {
+        Some(serde_json::Value::String(name)) => Some(name.as_str()),
+        Some(table) => table.get("main").and_then(serde_json::Value::as_str),
+        None => None,
+    }
+}
+
+/// The model named for each kind of work done on the main model's behalf, from
+/// `magi.model.helper`. Read as a plain table so a role added later needs no change here.
+#[must_use]
+pub fn helper_models(loaded: &Loaded) -> std::collections::BTreeMap<String, String> {
+    loaded
+        .config
+        .get("model")
+        .and_then(|model| model.get("helper"))
+        .and_then(serde_json::Value::as_object)
+        .map(|table| {
+            table
+                .iter()
+                .filter_map(|(role, named)| {
+                    named.as_str().map(|name| (role.clone(), name.to_owned()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Which program offers the tools — the `tools` role, as `magi.tools` named it.
 #[must_use]
 pub fn tooling_program(loaded: &Loaded) -> String {
