@@ -11,7 +11,8 @@
 use crate::holding::{CONFIGURE, CONFIGURE_WAS};
 use crate::question::Asks;
 use crate::{Cancel, Ops, Output, Tool};
-use magi_proto::tooling::{Call, Card, Ran, Shown};
+use magi_proto::tooling::{Call, Card, Ran, Shown, Wondering};
+use magi_proto::wondering::Answered;
 use std::collections::HashMap;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -19,6 +20,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 #[cfg(test)]
 mod containment;
+#[cfg(test)]
+mod wondering;
 
 /// The program that fills the `tools` role when no configuration names one, found on `PATH`.
 pub const CASPER: &str = "casper";
@@ -295,6 +298,8 @@ pub struct SuppliedTool {
     program: String,
     asks: Arc<dyn Asks>,
     holds: Arc<dyn crate::holding::Holds>,
+    /// What answers a question the tool puts to magi rather than to the person.
+    knows: Arc<dyn crate::holding::Answers>,
     /// What this session told the program to be, carried on every spawn. See [`cards_configured`].
     configured: String,
 }
@@ -309,6 +314,7 @@ impl SuppliedTool {
         tooling: &Tooling,
         asks: Arc<dyn Asks>,
         holds: Arc<dyn crate::holding::Holds>,
+        knows: Arc<dyn crate::holding::Answers>,
     ) -> Vec<Self> {
         let program = tooling.program.as_str();
         if let Some(pinned) = &tooling.pin {
@@ -327,7 +333,7 @@ impl SuppliedTool {
                 }
             }
         }
-        Self::all(tooling, asks, holds)
+        Self::all(tooling, asks, holds, knows)
     }
 
     /// Every tool the role's program offers, ready to register. `asks` is how a question reaches
@@ -337,6 +343,7 @@ impl SuppliedTool {
         tooling: &Tooling,
         asks: Arc<dyn Asks>,
         holds: Arc<dyn crate::holding::Holds>,
+        knows: Arc<dyn crate::holding::Answers>,
     ) -> Vec<Self> {
         cards_configured(&tooling.program, &tooling.configure)
             .into_iter()
@@ -345,6 +352,7 @@ impl SuppliedTool {
                 program: tooling.program.clone(),
                 asks: Arc::clone(&asks),
                 holds: Arc::clone(&holds),
+                knows: Arc::clone(&knows),
                 configured: tooling.configure.clone(),
             })
             .collect()
@@ -406,8 +414,9 @@ impl Tool for SuppliedTool {
             cwd: Some(PathBuf::from(&call.cwd)),
         };
         // A call may stop and ask, and then go on. Bounded, because a tool that asked forever would
-        // hold the turn open forever; two questions is as far as anything has needed to go.
-        for _ in 0..3 {
+        // hold the turn open forever. Wider than the two a person is ever asked, because a question
+        // put to magi costs patience rather than attention: a search scores a batch at a time.
+        for _ in 0..8 {
             let ran = match run_jailed(&self.program, &call, &self.configured, jail.as_deref()) {
                 // A refusal is still something the model reads, and it can try another way round.
                 Err(why) => return Output::error(why),
@@ -426,6 +435,14 @@ impl Tool for SuppliedTool {
                     ));
                 };
                 call.answered = Some(chosen);
+                continue;
+            }
+            // A question for magi rather than for the person: answered out of the session and
+            // handed straight back, so nothing is drawn and nobody is interrupted. A refusal
+            // resumes the call too — a tool that asked for a model there is none of should say so
+            // itself rather than have the call fail underneath it.
+            if let Some(Shown::Wonder(wondering)) = &ran.shown {
+                call.answered = Some(answered(&self.knows, wondering));
                 continue;
             }
             let Some(Shown::Ask(ask)) = &ran.shown else {
@@ -448,6 +465,25 @@ impl Tool for SuppliedTool {
     }
 }
 
+/// Answer one [`Wondering`], as the JSON the call resumes with. A verb magi does not know is
+/// refused here rather than guessed at, and a refusal reads the same either way.
+fn answered(knows: &Arc<dyn crate::holding::Answers>, wondering: &Wondering) -> String {
+    let answer = magi_proto::wondering::EVERY
+        .iter()
+        .find(|wonder| wonder.verb() == wondering.wonder)
+        .map_or_else(
+            || Answered::Refused {
+                because: format!("no such question: {}", wondering.wonder),
+            },
+            |wonder| knows.answer(*wonder, &wondering.args),
+        );
+    let said = match answer {
+        Answered::Told { said } => serde_json::json!({ "told": said }),
+        Answered::Refused { because } => serde_json::json!({ "refused": because }),
+    };
+    said.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     /// A pinned casper that is not the pinned program supplies nothing.
@@ -455,6 +491,7 @@ mod tests {
     fn a_pinned_casper_that_is_not_the_pinned_program_supplies_no_tools() {
         let asks: Arc<dyn Asks> = Arc::new(crate::question::Unanswered);
         let holds: Arc<dyn crate::holding::Holds> = Arc::new(crate::holding::Screenless);
+        let knows: Arc<dyn crate::holding::Answers> = Arc::new(crate::holding::Incurious);
 
         let wrong = SuppliedTool::pinned(
             &Tooling {
@@ -465,6 +502,7 @@ mod tests {
             },
             Arc::clone(&asks),
             Arc::clone(&holds),
+            Arc::clone(&knows),
         );
         assert!(wrong.is_empty(), "a substituted casper supplied tools");
 
@@ -477,6 +515,7 @@ mod tests {
                 },
                 asks,
                 holds,
+                knows,
             );
             assert_eq!(
                 right.len(),
@@ -484,6 +523,7 @@ mod tests {
                     &Tooling::default(),
                     Arc::new(crate::question::Unanswered),
                     Arc::new(crate::holding::Screenless),
+                    Arc::new(crate::holding::Incurious),
                 )
                 .len(),
                 "pinning the right program changed what it offers"

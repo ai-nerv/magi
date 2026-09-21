@@ -39,6 +39,7 @@ fn a_tool_and_its_surface_receive_the_same_captured_policy() {
             program: script.display().to_string(),
             asks: Arc::new(crate::question::Unanswered),
             holds: recorded.clone(),
+            knows: Arc::new(crate::holding::Incurious),
             configured: "coordinator-settings".into(),
         };
         let ops = crate::ops::Real::new(dir.to_path_buf()).isolating(isolation);

@@ -40,6 +40,7 @@ impl Worker {
             None,
             std::sync::Arc::new(magi_tools::question::Unanswered),
             std::sync::Arc::new(magi_tools::holding::Screenless),
+            std::sync::Arc::new(magi_tools::holding::Incurious),
             // And no memory layer: the worker a test or a one-shot builds.
             std::sync::Arc::new(tokio::sync::Mutex::new(None)),
         )
@@ -52,6 +53,7 @@ impl Worker {
         approver: Option<std::sync::Arc<dyn magi_tools::approve::Approver>>,
         asks: std::sync::Arc<dyn magi_tools::question::Asks>,
         holds: std::sync::Arc<dyn magi_tools::holding::Holds>,
+        knows: std::sync::Arc<dyn magi_tools::holding::Answers>,
         scribe: crate::scribe::Held,
     ) -> Self {
         let (jobs, mut queue) = mpsc::channel::<Job>(32);
@@ -83,6 +85,7 @@ impl Worker {
                 std::rc::Rc::clone(&engine),
                 std::sync::Arc::clone(&asks),
                 std::sync::Arc::clone(&holds),
+                std::sync::Arc::clone(&knows),
                 &backend.environ,
                 &backend.tooling,
             );

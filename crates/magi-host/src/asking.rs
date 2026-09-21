@@ -212,6 +212,8 @@ pub struct Person {
     pub approver: Arc<dyn magi_tools::approve::Approver>,
     pub asks: Arc<dyn magi_tools::question::Asks>,
     pub holds: Arc<dyn magi_tools::holding::Holds>,
+    /// What answers a question a tool puts to the session rather than to the person.
+    pub knows: Arc<dyn magi_tools::holding::Answers>,
     /// The surfaces currently on screen, so a keypress reaches the one holding the rows.
     pub surfaces: Arc<crate::holder::Holding>,
     /// Who is asked about what no rule covers, and how the second model has been doing.
@@ -224,12 +226,14 @@ impl Person {
     pub fn of(
         asker: Arc<Asker>,
         holds: Arc<dyn magi_tools::holding::Holds>,
+        knows: Arc<dyn magi_tools::holding::Answers>,
         surfaces: Arc<crate::holder::Holding>,
     ) -> Self {
         Self {
             approver: Arc::clone(&asker) as Arc<_>,
             asks: asker as Arc<_>,
             holds,
+            knows,
             surfaces,
             standing: Arc::new(crate::judging::Standing::default()),
         }

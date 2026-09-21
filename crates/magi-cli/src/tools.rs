@@ -58,6 +58,7 @@ fn registry() -> Result<Vec<Listed>, magi_lua::LuaError> {
         std::rc::Rc::clone(&engine),
         std::sync::Arc::new(magi_tools::question::Unanswered),
         std::sync::Arc::new(magi_tools::holding::Screenless),
+        std::sync::Arc::new(magi_tools::holding::Incurious),
         &crate::config::environ(&loaded),
         &tooling,
     );

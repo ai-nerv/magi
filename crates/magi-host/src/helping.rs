@@ -38,10 +38,11 @@ pub(crate) struct Failure {
 /// A helper role set to this runs on the session's own model.
 pub const MAIN: &str = "main";
 
-/// The roles balthasar's jobs ask for, each of which is `memory`'s when nobody named it: one line
-/// in a configuration keeps working, and a person who wants a stronger model for summaries than
-/// for notes says so for that role alone.
-const OF_MEMORY: &[&str] = &["summary", "notes", "curate", "contradict"];
+/// The roles that fall back to `memory` when nobody named them: one line in a configuration keeps
+/// working, and a person who wants a stronger model for summaries than for notes says so for that
+/// role alone. Four are balthasar's jobs; `search` is a tool's, and is here because it is the same
+/// kind of work — a small model reading text it is handed and saying something short about it.
+const OF_MEMORY: &[&str] = &["summary", "notes", "curate", "contradict", "search"];
 
 impl Helpers {
     /// The model to run `job` with, or `None` when nothing should.

@@ -307,7 +307,12 @@ pub async fn serve_on(
             Box::new(move || watched.receiver_count() > 0),
         ))
     };
-    let person = crate::asking::Person::of(asker, holds, Arc::clone(&holding));
+    let person = crate::asking::Person::of(
+        asker,
+        holds,
+        Arc::clone(&knows) as Arc<dyn magi_tools::holding::Answers>,
+        Arc::clone(&holding),
+    );
     let person = guard(person, judge_asks, &catalog, &session).await;
     let worker = Arc::new(tokio::sync::RwLock::new(
         backend
@@ -317,6 +322,7 @@ pub async fn serve_on(
                     Some(Arc::clone(&person.approver)),
                     Arc::clone(&person.asks),
                     Arc::clone(&person.holds),
+                    Arc::clone(&person.knows),
                     Arc::clone(&scribe),
                 )
             })

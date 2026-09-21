@@ -46,6 +46,7 @@ pub(super) async fn switch_model(
         Some(Arc::clone(&person.approver)),
         Arc::clone(&person.asks),
         Arc::clone(&person.holds),
+        Arc::clone(&person.knows),
         Arc::clone(scribe),
     ));
     *boundary = Some(fresh);
@@ -119,6 +120,7 @@ pub(super) async fn switch_thinking(
         Some(Arc::clone(&person.approver)),
         Arc::clone(&person.asks),
         Arc::clone(&person.holds),
+        Arc::clone(&person.knows),
         Arc::clone(scribe),
     ));
     *boundary = Some(fresh);
@@ -155,6 +157,7 @@ pub(super) async fn switch_provider(
         Some(Arc::clone(&person.approver)),
         Arc::clone(&person.asks),
         Arc::clone(&person.holds),
+        Arc::clone(&person.knows),
         Arc::clone(scribe),
     ));
     *boundary = Some(fresh);
