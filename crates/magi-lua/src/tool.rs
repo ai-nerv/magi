@@ -120,6 +120,7 @@ impl Tool for LuaTool {
                     .get("shown")
                     .and_then(|shown| serde_json::from_value(shown.clone()).ok()),
                 unlocks: Vec::new(),
+                hints: serde_json::from_value(value.clone()).unwrap_or_default(),
             },
             // A description that raised, returned nothing, or has no `run` at all. Reported as
             // a result rather than a fault: the model asked for it and needs to be told.
@@ -137,6 +138,7 @@ pub fn assemble(
     engine: Rc<RefCell<Engine>>,
     asker: std::sync::Arc<dyn magi_tools::question::Asks>,
     holder: std::sync::Arc<dyn magi_tools::holding::Holds>,
+    knows: std::sync::Arc<dyn magi_tools::holding::Answers>,
     environ: &std::collections::BTreeMap<String, String>,
     tooling: &magi_tools::supplier::Tooling,
 ) -> (magi_tools::Registry, std::collections::BTreeSet<String>) {
@@ -147,7 +149,7 @@ pub fn assemble(
     // Nothing when the program is not installed, so a session then has no tools at all, which
     // `ROLES.md` says is legal.
     let mut supplied = std::collections::BTreeSet::new();
-    for tool in magi_tools::supplier::SuppliedTool::pinned(tooling, asker, holder) {
+    for tool in magi_tools::supplier::SuppliedTool::pinned(tooling, asker, holder, knows) {
         supplied.insert(tool.name().to_owned());
         registry.register(Box::new(tool));
     }

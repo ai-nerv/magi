@@ -72,6 +72,8 @@ pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
                 text.clear();
                 started = true;
                 awaiting_tools = false;
+                // A fresh attempt: what the last one failed with is no longer the outcome.
+                error = None;
             }
             HarnessEvent::AssistantDelta { text: chunk, .. } => text.push_str(&chunk),
             HarnessEvent::AssistantEnded {
@@ -81,13 +83,22 @@ pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
             } => {
                 stop_reason = Some(reason);
                 error = failure;
-                // A turn that stopped to run tools has not answered yet; anything else has.
-                if reason != StopReason::ToolUse {
-                    break;
+                // A turn that stopped to run tools has not answered yet. One that failed may be
+                // asked again with a tighter layout, and one cut off at the length limit may have
+                // had a tool call in it, which the session still has to record as failed. For both
+                // it is the session going idle that ends it, not the entry.
+                match reason {
+                    StopReason::ToolUse => awaiting_tools = true,
+                    StopReason::Error | StopReason::Length => {
+                        started = true;
+                        awaiting_tools = false;
+                    }
+                    _ => break,
                 }
-                awaiting_tools = true;
             }
             HarnessEvent::ToolCallStarted { name, .. } => eprintln!("· {name}"),
+            // About the session and not from the model, so beside the answer rather than in it.
+            HarnessEvent::Noticed { text, .. } => eprintln!("· {text}"),
             // Nobody is at the keyboard, and the daemon waits for an answer, so a `-p` run that
             // ignored this would hang. Denied rather than allowed: `magi.allow` is how a person
             // says in advance what an unattended run may do, and anything else is refused here.

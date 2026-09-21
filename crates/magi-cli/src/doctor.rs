@@ -33,14 +33,28 @@ fn report() -> String {
 
     heading(&mut out, "settings");
     let environ = crate::config::environ(&loaded);
-    row(
-        &mut out,
-        "model",
-        loaded
-            .config
-            .string("model")
-            .unwrap_or("(melchior's default)"),
-    );
+    // What will actually run, not what the file asked for. A model switched in a session is
+    // remembered for that directory and outranks `magi.model`, so printing the configuration alone
+    // says a session here is one thing while it is about to be another.
+    let configured = crate::config::main_model(&loaded);
+    match crate::config::remembered().model {
+        Some(here) if Some(here.as_str()) != configured => {
+            row(&mut out, "model", &format!("{here}  (remembered here)"));
+            row(
+                &mut out,
+                "",
+                &format!(
+                    "magi.model says {} — switch the model in a session to change it back",
+                    configured.unwrap_or("nothing")
+                ),
+            );
+        }
+        _ => row(
+            &mut out,
+            "model",
+            configured.unwrap_or("(melchior's default)"),
+        ),
+    }
     row(
         &mut out,
         "confine",
@@ -50,6 +64,9 @@ fn report() -> String {
             "off"
         },
     );
+    for (role, named) in crate::config::helper_models(&loaded) {
+        row(&mut out, &format!("{role} model"), &named);
+    }
     row(&mut out, "isolation", &isolation(&loaded));
     row(
         &mut out,
@@ -90,6 +107,7 @@ fn report() -> String {
         std::rc::Rc::clone(&engine),
         std::sync::Arc::new(magi_tools::question::Unanswered),
         std::sync::Arc::new(magi_tools::holding::Screenless),
+        std::sync::Arc::new(magi_tools::holding::Incurious),
         &environ,
         &tooling,
     );
@@ -302,7 +320,7 @@ mod filling {
         // reachable", which reads as a daemon that is down rather than a program that was never
         // a memory layer. `casper` is on PATH in this checkout and answers `verbs`.
         let Some(missing) = cannot_fill("memory", "casper") else {
-            eprintln!("skipping: no casper on PATH to ask");
+            magi_testkit::live::unavailable("no casper on PATH to ask");
             return;
         };
         for verb in ["observe", "replay", "sessions"] {

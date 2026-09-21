@@ -22,3 +22,5 @@ workspace = true
 
 [dev-dependencies]
 magi-model.workspace = true
+magi-testkit.workspace = true
+tokio.workspace = true

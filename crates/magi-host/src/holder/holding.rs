@@ -396,7 +396,12 @@ mod screens {
             tenant: None,
         };
         assert_eq!(
-            holder.hold("dino", &surface, &serde_json::Value::Null),
+            holder.hold(
+                "dino",
+                &surface,
+                &serde_json::Value::Null,
+                &magi_tools::holding::Context::default()
+            ),
             None
         );
     }

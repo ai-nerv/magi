@@ -19,7 +19,7 @@ async fn scribe(name: &str) -> Option<(Scribe, Held)> {
     let dir = Scratch::new("sl", name);
     let instance = format!("s{}-{name}", std::process::id());
     let Some(serving) = Serving::start(&dir, &instance).await else {
-        eprintln!("skipping: no balthasar is installed");
+        magi_testkit::live::unavailable("no balthasar is installed");
         return None;
     };
     let family = Family::dial(serving.socket())
@@ -41,7 +41,10 @@ async fn an_entry_survives_the_round_trip_unaltered() {
         aside: "context nobody is shown".into(),
     };
 
-    scribe.observe(Cursor(1), &entry).await.expect("observe");
+    scribe
+        .observe(Cursor(1), &entry, &Default::default())
+        .await
+        .expect("observe");
     let back = scribe.replay().await.expect("replay");
 
     assert_eq!(back.len(), 1, "one turn in, one turn out: {back:?}");
@@ -69,7 +72,10 @@ async fn the_fields_no_projection_carries_come_back() {
         },
     };
 
-    scribe.observe(Cursor(1), &entry).await.expect("observe");
+    scribe
+        .observe(Cursor(1), &entry, &Default::default())
+        .await
+        .expect("observe");
     let back = scribe.replay().await.expect("replay");
     assert_eq!(back[0].1, entry, "an unrecomputable field was lost");
 }
@@ -91,7 +97,10 @@ async fn a_tool_signature_is_not_flattened_into_the_projection() {
         thought_signature: Some("opaque-provider-state".into()),
     };
 
-    scribe.observe(Cursor(1), &entry).await.expect("observe");
+    scribe
+        .observe(Cursor(1), &entry, &Default::default())
+        .await
+        .expect("observe");
     assert_eq!(scribe.replay().await.expect("replay")[0].1, entry);
 }
 
@@ -111,15 +120,15 @@ async fn amending_replaces_the_turn_rather_than_appending_one() {
     };
 
     scribe
-        .observe(Cursor(1), &growing("par"))
+        .observe(Cursor(1), &growing("par"), &Default::default())
         .await
         .expect("observe");
     scribe
-        .amend(Cursor(1), &growing("partial"))
+        .amend(Cursor(1), &growing("partial"), &Default::default())
         .await
         .expect("amend");
     scribe
-        .amend(Cursor(1), &growing("partial answer"))
+        .amend(Cursor(1), &growing("partial answer"), &Default::default())
         .await
         .expect("amend");
 
@@ -144,9 +153,19 @@ async fn cursor_order_is_what_comes_back_not_arrival_order() {
     };
 
     // Written out of order on purpose.
-    scribe.observe(Cursor(3), &at(3)).await.expect("observe 3");
-    scribe.observe(Cursor(1), &at(1)).await.expect("observe 1");
-    scribe.observe(Cursor(2), &at(2)).await.expect("observe 2");
+    let none = magi_host::scribe::Beside::default();
+    scribe
+        .observe(Cursor(3), &at(3), &none)
+        .await
+        .expect("observe 3");
+    scribe
+        .observe(Cursor(1), &at(1), &none)
+        .await
+        .expect("observe 1");
+    scribe
+        .observe(Cursor(2), &at(2), &none)
+        .await
+        .expect("observe 2");
 
     let back = scribe.replay().await.expect("replay");
     let cursors: Vec<u64> = back.iter().map(|(c, _)| c.0).collect();
@@ -223,5 +242,67 @@ async fn what_a_session_commits_reaches_balthasar_when_it_is_flushed() {
             usage: Usage::default(),
         },
         "the amendment must win"
+    );
+}
+
+/// Two agents of one run record under one session id, and each keeps its own transcript: the
+/// second's first entry once replaced the first's, cursor for cursor.
+#[tokio::test]
+async fn agents_of_one_run_do_not_overwrite_each_others_transcript() {
+    let Some((mut lead, held)) = scribe("run").await else {
+        return;
+    };
+    let family = Family::dial(held.0.socket())
+        .await
+        .expect("dial the balthasar that just answered");
+    let id = SessionId::new(format!("magi-scribe-{}-run", std::process::id()));
+    let mut child = Scribe::over(family, Some(held.0.socket().to_owned()), &id)
+        .recording_as(format!("{id}@child"));
+    let said = |text: &str| Entry::User {
+        id: MessageId::new("u1"),
+        text: text.into(),
+        aside: String::new(),
+    };
+    lead.observe(Cursor(1), &said("the lead's prompt"), &Default::default())
+        .await
+        .expect("the lead records");
+    child
+        .observe(Cursor(1), &said("the child's prompt"), &Default::default())
+        .await
+        .expect("the child records");
+    assert_eq!(
+        lead.replay().await.expect("replay")[0].1,
+        said("the lead's prompt")
+    );
+    assert_eq!(
+        child.replay().await.expect("replay")[0].1,
+        said("the child's prompt")
+    );
+}
+
+#[tokio::test]
+async fn a_run_past_one_frame_comes_back_whole() {
+    // 12 MB of turns: one reply with all of it was past the memory layer's frame limit, and the
+    // resume that asked for it started over with nothing.
+    let Some((mut scribe, _held)) = scribe("long").await else {
+        return;
+    };
+    for n in 1..=12 {
+        let entry = Entry::User {
+            id: MessageId::new(format!("u{n}")),
+            text: "x".repeat(1_000_000),
+            aside: String::new(),
+        };
+        scribe
+            .observe(Cursor(n), &entry, &Default::default())
+            .await
+            .expect("observe");
+    }
+    let back = scribe.replay().await.expect("replay");
+    let cursors: Vec<u64> = back.iter().map(|(cursor, _)| cursor.0).collect();
+    assert_eq!(
+        cursors,
+        (1..=12).collect::<Vec<_>>(),
+        "not all of it came back"
     );
 }

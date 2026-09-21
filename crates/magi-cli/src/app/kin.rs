@@ -11,10 +11,27 @@ impl App {
         self.waiting += 1;
         magi_proto::UiCommand::Arrived {
             who: who.to_owned(),
-            kin: relation(who, &self.named),
+            kin: self.role_of(who),
             sort: sort.to_owned(),
             text: text.to_owned(),
         }
+    }
+
+    /// What the sender is, as the roster has it: a child is filed under its parent's `main` and
+    /// its own name does not say it is an explorer. Failing that, what its name says.
+    fn role_of(&self, who: &str) -> String {
+        let id = who.rsplit('/').next().unwrap_or(who);
+        let known = relation(who, &self.named);
+        if known == "myself" || known == "elsewhere" {
+            return known;
+        }
+        self.reachable
+            .iter()
+            .find(|them| them.id == id)
+            .and_then(|them| them.role.lines().next())
+            .map(str::trim)
+            .filter(|role| !role.is_empty())
+            .map_or(known, str::to_owned)
     }
 
     #[must_use]
@@ -36,7 +53,12 @@ pub(crate) fn relation(who: &str, me: &str) -> String {
     if project(who) != project(me) {
         return "elsewhere".to_owned();
     }
-    "main".to_owned()
+    // `project/role/id`: the role is the sender's own, and `main` only when that is what it is.
+    let mut parts = who.split('/');
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(_), Some(role), Some(_)) if !role.is_empty() => role.to_owned(),
+        _ => "main".to_owned(),
+    }
 }
 
 /// An arrival becomes a command, and is counted once.
@@ -87,6 +109,21 @@ mod tests {
         assert_eq!(kin, "elsewhere");
     }
 
+    #[test]
+    fn a_child_is_known_by_the_role_the_roster_gives_it() {
+        // Filed under its parent's `main`, so its name alone called every child `main`.
+        let mut app = app();
+        app.reachable = vec![crate::melchior::Peer {
+            id: "delta-kappa".to_owned(),
+            role: "explorer\nReads code and docs; changes nothing.".to_owned(),
+            ..Default::default()
+        }];
+        let command = app.received("magi/main/delta-kappa", "note", "done");
+        let magi_proto::UiCommand::Arrived { kin, .. } = command else {
+            panic!("an arrival");
+        };
+        assert_eq!(kin, "explorer");
+    }
     #[test]
     fn a_session_talking_to_itself_is_labelled_as_itself() {
         let mut app = app();

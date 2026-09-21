@@ -16,8 +16,10 @@ mod history;
 mod host;
 mod keying;
 mod keys;
+mod logging;
 mod melchior;
 mod models;
+mod offered;
 mod opening;
 mod paths;
 mod print;
@@ -43,10 +45,15 @@ struct Cli {
     #[arg(short, long, global = true)]
     resume: bool,
 
+    /// Continue one run by its id, as `--resume` continues the newest.
+    #[arg(long, global = true, value_name = "RUN")]
+    resume_run: Option<String>,
+
     /// Open on another agent in this project, by its id — e.g. a `--headless` one — and drive it:
     /// what you type goes to it. `alt+.` / the agents panel move on. Same as starting here and
     /// stepping onto it.
-    #[arg(long, value_name = "ID")]
+    /// Not with `-p`, which would start a session of its own rather than drive this one.
+    #[arg(long, value_name = "ID", conflicts_with = "print")]
     attach: Option<String>,
 
     /// With `--attach`: watch only. Nothing typed or clicked changes a session, so the agents are
@@ -81,6 +88,15 @@ struct Cli {
     /// Answer in CBOR rather than JSON.
     #[arg(long, global = true)]
     cbor: bool,
+
+    /// Write every step this session and every sibling it starts take into one file. Named, that
+    /// file; alone, one under `$XDG_STATE_HOME/nerv/logs`, said on start.
+    #[arg(long, global = true, value_name = "FILE", num_args = 0..=1, default_missing_value = "")]
+    logs: Option<PathBuf>,
+
+    /// The same as `--logs` with no file named.
+    #[arg(short, long, global = true)]
+    verbose: bool,
 
     /// What to ask. Submitted on start; without it the UI opens empty.
     prompt: Option<String>,
@@ -138,6 +154,7 @@ enum Command {
 /// taken from that name, so it is settled before balthasar is spawned.
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    logging::begin(cli.logs.as_deref(), cli.verbose)?;
     // A verb this program does not have is a refusal like any other: on stdout, in the reply
     // shape, at exit 0, naming what was asked for. See FAMILY.md.
     if let Some(word) = unknown_verb(&cli) {
@@ -246,7 +263,7 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
             // Reaped even when it will not serve: `start` refuses after convening balthasar.
             let _phase = match host::start(
                 &socket,
-                cli.resume,
+                resuming(cli.resume, cli.resume_run.clone()),
                 &cwd,
                 loaded.as_ref(),
                 &environ,
@@ -296,7 +313,7 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
             // Reaped even when it will not serve: `start` refuses after convening balthasar.
             let (phase_watch, spent_watch) = match host::start(
                 &socket,
-                cli.resume,
+                resuming(cli.resume, cli.resume_run.clone()),
                 &cwd,
                 loaded.as_ref(),
                 &environ,
@@ -380,11 +397,17 @@ fn inherited(
 /// thing that cannot be sent as a bare prompt — clap spends that namespace on the subcommands. So
 /// every other case stays a prompt: `-p`, anything naming a session, and any word with a space, a
 /// capital or punctuation in it.
+/// Which run to continue: a named one, else the newest when `--resume` asks, else none.
+fn resuming(resume: bool, run: Option<String>) -> Option<Option<String>> {
+    run.map(Some).or(resume.then_some(None))
+}
+
 fn unknown_verb(cli: &Cli) -> Option<&str> {
     let word = cli.prompt.as_deref()?;
     let bare = cli.command.is_none()
         && !cli.print
         && !cli.resume
+        && cli.resume_run.is_none()
         && !cli.headless
         && cli.tied.is_none()
         && cli.role.is_none()
@@ -436,6 +459,21 @@ mod naming {
     fn the_encoding_flags_do_not_make_it_a_prompt() {
         assert_eq!(asked(&["nope", "--json"]).as_deref(), Some("nope"));
         assert_eq!(asked(&["nope", "--cbor"]).as_deref(), Some("nope"));
+    }
+
+    /// `-p` opens a session of its own, so pointing it at another agent is refused, not ignored.
+    #[test]
+    fn attach_and_print_do_not_go_together() {
+        assert!(Cli::try_parse_from(["magi", "--attach", "psi", "-p", "hi"]).is_err());
+        assert!(Cli::try_parse_from(["magi", "--attach", "psi"]).is_ok());
+    }
+
+    #[test]
+    fn a_named_run_is_resumed_over_the_newest() {
+        assert_eq!(super::resuming(false, None), None);
+        assert_eq!(super::resuming(true, None), Some(None));
+        let named = Some("delta-rho-1".to_owned());
+        assert_eq!(super::resuming(true, named.clone()), Some(named));
     }
 
     #[test]

@@ -2,12 +2,17 @@
 
 use super::App;
 
+/// What each sibling's float is titled; the dot and every redraw agree through these.
+pub(super) const MEMORY: &str = "balthasar";
+pub(super) const CREW: &str = "melchior";
+pub(super) const TOOLING: &str = "casper";
+
 /// What melchior said about a model, by the model's name.
 pub type Answered = (String, Result<magi_tui::model_card::Details, String>);
 
 /// How wide the model card's charts may be: the float's width on this terminal, less its border,
 /// its padding and the list's gutter.
-fn card_width() -> u16 {
+pub(super) fn card_width() -> u16 {
     let (width, height) = crossterm::terminal::size().unwrap_or((80, 24));
     let float = magi_tui::pane::Pane::area(ratatui::layout::Rect::new(0, 0, width, height));
     float.width.saturating_sub(6)
@@ -56,6 +61,7 @@ impl App {
         let drawn = magi_tui::cost::view(&magi_tui::cost::Report {
             turns: &turns,
             agents: &agents,
+            helpers: &self.helped,
             width: card_width(),
         });
         self.pane =
@@ -246,6 +252,8 @@ impl App {
             Some((_, Err(why))) => magi_tui::model_card::Known::Missing(why),
             None => magi_tui::model_card::Known::Asking,
         };
+        let sent = self.laid.as_ref().map(magi_tui::laid::Laid::composition);
+        let split = self.laid.as_ref().and_then(magi_tui::laid::Laid::split);
         let drawn = magi_tui::model_card::view(&magi_tui::model_card::Card {
             model: &name,
             context_window: self.model.as_ref().map_or(0, |model| model.context_window),
@@ -254,6 +262,8 @@ impl App {
             provider: self.provider.as_deref(),
             turns: &turns,
             details,
+            sent: sent.as_deref(),
+            split: split.as_deref(),
             width: card_width(),
         });
         let mut pane = magi_tui::pane::Pane::new("model", drawn.rows).selectable(drawn.picks);
@@ -285,6 +295,276 @@ impl App {
         self.details_rx = None;
         if self.pane_titled("model") {
             self.show_model();
+        }
+    }
+
+    /// Open how the last request was laid out: the budget, what went whole and what did not, why.
+    pub fn show_context(&mut self) {
+        let rows = self
+            .laid
+            .as_ref()
+            .map(|laid| magi_tui::laid::view(laid, &self.helped, card_width()).rows)
+            .unwrap_or_default();
+        self.pane =
+            Some(magi_tui::pane::Pane::new("context", rows).saying(magi_tui::laid::empty()));
+    }
+
+    /// Open balthasar's float on `tab`, drawn from whatever the layer has answered so far and
+    /// redrawn as the rest arrives. The cursor and the scroll are kept across a redraw; stepping to
+    /// another tab starts that one at its top, being a different list.
+    pub fn show_memory(&mut self, tab: usize) {
+        let held = magi_tui::memory::Held {
+            laid: self.laid.as_ref(),
+            jobs: &self.helped,
+            memories: self.memories.as_deref(),
+            chosen: self.worth_of.as_deref(),
+            utility: self.utility.as_ref(),
+            why: self.why_of.as_ref(),
+            sessions: self.runs.as_deref(),
+            width: card_width(),
+        };
+        let drawn = magi_tui::memory::view(&held, tab);
+        let saying = magi_tui::memory::empty(tab, self.replied(tab));
+        self.pane = Some(self.sibling_pane(MEMORY, drawn, tab, saying, 1));
+    }
+
+    /// Whether the layer has answered for `tab` yet, so an empty one can say which it is.
+    #[must_use]
+    fn replied(&self, tab: usize) -> bool {
+        match magi_tui::memory::TABS.get(tab) {
+            Some(&"memories") => self.memories.is_some(),
+            Some(&"sessions") => self.runs.is_some(),
+            _ => true,
+        }
+    }
+
+    /// What the tab now showing needs asked of the memory layer. `None` for one drawn from what
+    /// this session already holds.
+    #[must_use]
+    pub fn memory_ask(&self, tab: usize) -> Option<magi_proto::UiCommand> {
+        let (verb, arg) = match *magi_tui::memory::TABS.get(tab)? {
+            "memories" => ("recall", serde_json::json!({ "limit": 200, "query": "" })),
+            "sessions" => ("sessions", serde_json::json!({})),
+            "evidence" => ("why", serde_json::json!(self.worth_of.clone()?)),
+            _ => return None,
+        };
+        Some(magi_proto::UiCommand::Memory {
+            verb: verb.to_owned(),
+            arg,
+        })
+    }
+
+    /// What the memory float needs asked for the tab it just opened on; `None` when the press
+    /// opened something else.
+    #[must_use]
+    pub fn memory_opened(&self) -> Option<magi_proto::UiCommand> {
+        let tab = self.pane.as_ref().filter(|o| o.title == MEMORY)?.tab;
+        self.memory_ask(tab)
+    }
+
+    /// Put the cursor's memory in front of the utility tab, and ask what it has been worth. Called
+    /// when a row is chosen, so the tab is about something by the time it is stepped to.
+    pub fn weigh(&mut self, id: &str) -> Option<magi_proto::UiCommand> {
+        if self.worth_of.as_deref() == Some(id) {
+            return None;
+        }
+        self.worth_of = Some(id.to_owned());
+        self.utility = None;
+        self.why_of = None;
+        Some(magi_proto::UiCommand::Memory {
+            verb: "why".to_owned(),
+            arg: serde_json::json!(id),
+        })
+    }
+
+    /// A press on the open float's tab strip: move to that tab and say what it needs. The outer
+    /// `None` means the press was not on a tab at all.
+    pub fn press_pane_tab(
+        &mut self,
+        row: u16,
+        column: u16,
+    ) -> Option<Option<magi_proto::UiCommand>> {
+        let at = self.pane_rect?;
+        let open = self.pane.as_ref()?;
+        let tab = open.tab_at(row.saturating_sub(at.y), column.saturating_sub(at.x))?;
+        if tab == open.tab {
+            return Some(None);
+        }
+        match open.title.as_str() {
+            CREW => {
+                self.show_crew(tab);
+                Some(None)
+            }
+            TOOLING => {
+                self.show_tooling(tab);
+                Some(None)
+            }
+            MEMORY => {
+                self.show_memory(tab);
+                Some(self.memory_ask(tab))
+            }
+            _ => {
+                self.pane.as_mut()?.tab = tab;
+                Some(None)
+            }
+        }
+    }
+
+    /// Step to the tab that says what a memory has been worth, which is where Enter on one goes.
+    pub fn show_worth(&mut self) {
+        let Some(tab) = magi_tui::memory::TABS.iter().position(|t| *t == "evidence") else {
+            return;
+        };
+        self.show_memory(tab);
+    }
+
+    /// Step the open sibling float's strip, and say what the tab it landed on needs asked.
+    pub fn step_memory(&mut self, forward: bool) -> Option<magi_proto::UiCommand> {
+        let open = self.pane.as_mut()?;
+        let title = open.title.clone();
+        if !matches!(title.as_str(), MEMORY | CREW | TOOLING) || !open.step_tab(forward) {
+            return None;
+        }
+        let tab = open.tab;
+        match title.as_str() {
+            CREW => self.show_crew(tab),
+            TOOLING => self.show_tooling(tab),
+            _ => self.show_memory(tab),
+        }
+        (title == MEMORY).then(|| self.memory_ask(tab)).flatten()
+    }
+
+    /// Open the project's notes and their change log. Drawn empty until the memory layer answers
+    /// the ask that goes out with it; redrawn with the cursor where it was.
+    pub fn show_notes(&mut self) {
+        let drawn = magi_tui::notes::view(self.notes.as_ref(), &self.changes, card_width());
+        let on = self
+            .pane
+            .as_ref()
+            .filter(|open| open.title == "notes")
+            .and_then(|open| open.chosen().map(ToOwned::to_owned));
+        let mut pane = magi_tui::pane::Pane::new("notes", drawn.rows)
+            .selectable(drawn.picks)
+            .saying(magi_tui::notes::empty());
+        if !on.is_some_and(|id| pane.point_at(&id)) {
+            pane.first();
+        }
+        self.pane = Some(pane);
+    }
+
+    /// What the memory layer answered about its notes.
+    pub(super) fn remembered(&mut self, verb: &str, answer: &serde_json::Value) {
+        let rows = answer.as_array().cloned().unwrap_or_default();
+        match verb {
+            "notes" => self.notes = rows.into_iter().next(),
+            "changes" => self.changes = rows,
+            "recall" => self.memories = Some(rows),
+            "sessions" => self.runs = Some(rows),
+            "utility" => self.utility = rows.into_iter().next(),
+            "why" => self.why_of = rows.into_iter().next(),
+            "note_open" => {
+                if let Some(note) = rows.first() {
+                    let said = |key: &str| note[key].as_str().unwrap_or_default().to_owned();
+                    self.show_notice(format!("{}: {}", said("title"), said("text")));
+                }
+            }
+            done => {
+                let what = rows.first().map(ToString::to_string).unwrap_or_default();
+                self.show_notice(format!("{done}: {what}"));
+            }
+        }
+        if self.pane_titled("notes") {
+            self.show_notes();
+        }
+        if let Some(tab) = self
+            .pane
+            .as_ref()
+            .filter(|o| o.title == MEMORY)
+            .map(|o| o.tab)
+        {
+            self.show_memory(tab);
+        }
+    }
+
+    /// Open who is asked about what no rule allows, and on what terms.
+    pub fn show_permission(&mut self) {
+        let drawn = magi_tui::permission::view(&self.judging, card_width());
+        let on = self
+            .pane
+            .as_ref()
+            .filter(|open| open.title == "permission")
+            .and_then(|open| open.chosen().map(ToOwned::to_owned));
+        let mut pane = magi_tui::pane::Pane::new("permission", drawn.rows)
+            .selectable(drawn.picks)
+            .saying("nothing to show");
+        if let Some(id) = on {
+            pane.point_at(&id);
+        }
+        self.pane = Some(pane);
+    }
+
+    /// Step what the permission card's cursor is on: the mode cycles, the band widens and
+    /// narrows. `None` off a row that steps, which leaves the keys to the pane.
+    pub fn adjust_permission(&mut self, forward: bool) -> Option<magi_proto::UiCommand> {
+        match self.pane.as_ref()?.chosen()? {
+            "mode" => {
+                // One way round only: a mode is a short ring, and `locked` is never cycled into.
+                let mode = if forward {
+                    self.judging.mode.next()
+                } else {
+                    magi_proto::judging::Mode::ALL
+                        .into_iter()
+                        .find(|m| m.next() == self.judging.mode)?
+                };
+                Some(magi_proto::UiCommand::SetMode {
+                    mode: mode.name().to_owned(),
+                })
+            }
+            // Right widens what comes back to the person, left narrows it.
+            "band" => {
+                let band = self
+                    .judging
+                    .clone()
+                    .widened(if forward { 1.0 } else { -1.0 });
+                (band != self.judging.unsure).then_some(magi_proto::UiCommand::SetUnsure { band })
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether the float open takes a row with Enter.
+    #[must_use]
+    pub fn chooses(&self) -> bool {
+        self.pane_titled("model") || self.pane_titled("notes")
+    }
+
+    /// Take the row under the cursor of whichever float is open.
+    pub fn choose_on_pane(&mut self, id: &str) -> Option<magi_proto::UiCommand> {
+        if !self.pane_titled("notes") {
+            return self.choose_on_model(id);
+        }
+        let (verb, change) = id.split_once(':')?;
+        let arg = match verb {
+            "undo" => serde_json::json!({ "change": change }),
+            "approve" | "reject" => serde_json::json!({ "changes": [change] }),
+            _ => return None,
+        };
+        Some(magi_proto::UiCommand::Memory {
+            verb: verb.to_owned(),
+            arg,
+        })
+    }
+
+    /// Redraw whichever view is open that a new layout or a helper's spend changes.
+    pub(super) fn refresh_views(&mut self) {
+        if self.pane_titled("context") {
+            self.show_context();
+        } else if self.pane_titled("cost") {
+            self.show_cost();
+        } else if self.pane_titled("model") {
+            self.show_model();
+        } else if self.pane_titled("permission") {
+            self.show_permission();
         }
     }
 
@@ -398,6 +678,11 @@ impl App {
             self.pane = None;
             return;
         }
-        self.pane = Some(magi_tui::pane::Pane::new(*name, Vec::new()).saying("nothing here yet"));
+        match *name {
+            MEMORY => self.show_memory(0),
+            CREW => self.show_crew(0),
+            TOOLING => self.show_tooling(0),
+            _ => {}
+        }
     }
 }

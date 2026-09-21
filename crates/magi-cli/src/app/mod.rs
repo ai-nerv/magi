@@ -33,6 +33,8 @@ pub struct App {
     pending_notice: Option<String>,
     /// Overrides the fixed "nothing is configured" sentence when only the provider key is unset.
     pub no_model: Option<String>,
+    /// Which run this is, as the session last said. `:rename` needs it, and nothing else does.
+    pub session_id: Option<String>,
     /// A scope's label is written in terms of the action, so turning one back needs that action.
     pub asking_about: magi_proto::permit::Action,
     /// Submitted but not yet handed to a daemon: a prompt sent while it is away waits here.
@@ -43,6 +45,8 @@ pub struct App {
     /// As the daemon reported it, not read from the config here — after an edit the two differ.
     pub model: Option<magi_proto::ModelInfo>,
     pub thinking: String,
+    /// Who is asked about what no rule covers, and on what terms, as the session last said.
+    pub judging: magi_proto::judging::Judging,
     /// Which provider serves the model, by routing tag, as chosen on its card; `None` is the router's.
     pub provider: Option<String>,
     /// Which model answered each finished turn, as it was when the turn ended.
@@ -55,6 +59,8 @@ pub struct App {
     /// Recorded from the start whether or not anybody looks, in one bounded ring.
     pub timeline: magi_tui::trace::Trace,
     pub picking: Option<Picking>,
+    /// Every question the session has open, oldest first; `picking` is the one on screen.
+    pub asks: Vec<HarnessEvent>,
     /// One at a time: a turn runs its tool calls in order.
     pub surface: Option<surfacing::Surfacing>,
     pub detail: magi_tui::transcript::Detail,
@@ -111,6 +117,8 @@ pub struct App {
     pub about: std::collections::BTreeMap<String, String>,
     /// Which program owns the model, asked for a model's card.
     pub mind: String,
+    /// Which program offers the tools, asked for casper's float.
+    pub tools_program: String,
     /// What the provider published about a model, by its name, once asked; and an answer on its way.
     pub details: Option<(String, Result<magi_tui::model_card::Details, String>)>,
     pub details_rx: Option<std::sync::mpsc::Receiver<crate::app::views::Answered>>,
@@ -120,6 +128,25 @@ pub struct App {
     /// Started with `--view-only`: nothing this screen sends may change a session.
     pub view_only: bool,
     pub corner: magi_tui::corner::Corner,
+    /// How the last request was laid out, as the session last said.
+    pub laid: Option<magi_tui::laid::Laid>,
+    /// Every helper job this screen has seen finish, for the cost view.
+    pub helped: Vec<magi_tui::cost::Helper>,
+    /// The project's notes and their change log, as the memory layer last answered.
+    pub notes: Option<serde_json::Value>,
+    pub changes: Vec<serde_json::Value>,
+    /// What the tools program says it offers, as casper's float draws it. `None` until it has been
+    /// asked, which happens once when that float is first opened.
+    pub tools: Option<Vec<magi_tui::tooling::Tool>>,
+    pub tools_rx: Option<std::sync::mpsc::Receiver<Vec<magi_tui::tooling::Tool>>>,
+    /// The memory float's tabs, each as the layer last answered: what it holds, the runs it has
+    /// seen, and — for whichever memory the cursor is on — what that one has been worth.
+    pub memories: Option<Vec<serde_json::Value>>,
+    pub runs: Option<Vec<serde_json::Value>>,
+    pub utility: Option<serde_json::Value>,
+    pub why_of: Option<serde_json::Value>,
+    /// Which memory `utility` and `why_of` are about, so a stale pair is not drawn under a new one.
+    pub worth_of: Option<String>,
 }
 
 impl Default for App {
@@ -142,12 +169,14 @@ impl App {
             connected: false,
             model: None,
             thinking: "off".to_owned(),
+            judging: magi_proto::judging::Judging::default(),
             provider: None,
             turn_models: std::collections::HashMap::new(),
             model_reasons: false,
             choices: Vec::new(),
             overlay: None,
             picking: None,
+            asks: Vec::new(),
             // Folded; the handle at the foot of each block opens the one you care about.
             detail: magi_tui::transcript::Detail::Preview,
             named: String::new(),
@@ -180,13 +209,26 @@ impl App {
             folded: std::collections::BTreeSet::new(),
             about: std::collections::BTreeMap::new(),
             mind: "melchior".to_owned(),
+            tools_program: "casper".to_owned(),
             details: None,
             details_rx: None,
             attach_wanted: None,
             view_only: false,
             corner: magi_tui::corner::Corner::default(),
+            laid: None,
+            helped: Vec::new(),
+            notes: None,
+            tools: None,
+            tools_rx: None,
+            memories: None,
+            runs: None,
+            utility: None,
+            why_of: None,
+            worth_of: None,
+            changes: Vec::new(),
             pending_notice: None,
             no_model: None,
+            session_id: None,
             asking_about: magi_proto::permit::Action::Read {
                 path: String::new(),
             },
@@ -240,7 +282,9 @@ impl App {
             HarnessEvent::MessageArrived { .. } => (true, true, false),
             HarnessEvent::UserMessage { .. }
             | HarnessEvent::AssistantEnded { .. }
+            | HarnessEvent::ContextLaid { .. }
             | HarnessEvent::Compacted { .. } => (false, true, false),
+            HarnessEvent::HelperSpent { .. } => (true, true, false),
             HarnessEvent::ToolCallStarted { name, .. } => (false, memory(name), !memory(name)),
             HarnessEvent::ToolCallEnded { id, .. } => {
                 let remembered = self
@@ -503,16 +547,20 @@ impl App {
 
 mod crewing;
 mod kin;
+pub use asks::marked;
 pub use crewing::{Seat, changes, for_screen};
 pub(crate) use kin::relation;
 mod picking;
 pub use picking::Picking;
 mod applying;
 mod asked;
+mod asks;
 mod folding;
+mod resetting;
 #[cfg(test)]
 mod retracting;
 mod sessions;
+mod siblings;
 pub mod surfacing;
 #[cfg(test)]
 mod tests;

@@ -92,8 +92,9 @@ do -- the memory role
     },
     remember = {
       args = { "text" },
-      about = "Keep something for later sessions: a decision, a convention, or a fact about " ..
-        "this project that was not obvious.",
+      about = "Keep a fact for later sessions: something you found out about this project that " ..
+        "was not obvious. Not a rule: what the person tells you to do is kept from their own " ..
+        "words, where they can review and undo it, and a rule written here is refused.",
       parameters = {
         type = "object",
         properties = {
@@ -224,6 +225,24 @@ do -- the memory role
           terms = args.terms,
           tokens = tokens,
         })
+        if not answer then return { content = tostring(why), is_error = true } end
+        return { content = magi.json.encode(answer) }
+      end,
+    })
+
+    -- The project's notes: the pinned ones are in every request whole, the rest only by id and a
+    -- line saying what each is. This is how the model reads one of those in full.
+    magi.tool("note", {
+      description =
+        "Open one of this project's notes in full, by the id the list of other notes gives it.",
+      parameters = {
+        type = "object",
+        properties = { id = { type = "string", description = "Which note." } },
+        required = { "id" },
+      },
+      transport = { kind = "lua" },
+      run = function(args)
+        local answer, why = memory.fetch(OURS, "note_open", magi.session, { id = (args or {}).id })
         if not answer then return { content = tostring(why), is_error = true } end
         return { content = magi.json.encode(answer) }
       end,

@@ -178,23 +178,17 @@ impl Finished {
         if !self.out.is_empty() {
             return Output {
                 content: self.out,
-                is_error: false,
-                shown: None,
-                unlocks: Vec::new(),
+                ..Output::default()
             };
         }
         match self.code {
             Some(0) => Output {
                 content: String::new(),
-                is_error: false,
-                shown: None,
-                unlocks: Vec::new(),
+                ..Output::default()
             },
             Some(code) if self.err.is_empty() => Output {
                 content: format!("{program} exited {code} with no output"),
-                is_error: false,
-                shown: None,
-                unlocks: Vec::new(),
+                ..Output::default()
             },
             Some(code) => Output::error(format!("{program} exited {code}: {}", self.err.trim())),
             None => Output::error(format!("{program} was killed: {}", self.err.trim())),

@@ -154,7 +154,7 @@ pub fn render(
     let shown = if blank { 1 } else { end - offset };
     // The divider is a content row, so the scan runs past it rather than round a hole in the box.
     let content = shown + if menu.is_empty() { 0 } else { 1 + menu.len() };
-    let (top, bottom) = crate::border::edges(width, content, tick, scan);
+    let (top, bottom) = crate::border::edges(width, content, tick, scan, None);
 
     // What sits on the border dims with it while a turn runs, by the column it sits in: the mode
     // near the left, the usage near the right.
@@ -240,7 +240,7 @@ fn framed(
     scan: crate::border::Scan,
     tail: &[Span<'static>],
 ) -> Line<'static> {
-    let (left, right) = crate::border::side(width, content, row, tick, scan);
+    let (left, right) = crate::border::side(width, content, row, tick, scan, None);
     let worn: usize = tail.iter().map(|s| s.content.chars().count()).sum();
     let mut spans = vec![left, Span::raw(" ")];
     spans.extend(pad(
@@ -262,7 +262,7 @@ fn divider(
     tick: usize,
     scan: crate::border::Scan,
 ) -> Line<'static> {
-    let (left, right) = crate::border::side(width, content, row, tick, scan);
+    let (left, right) = crate::border::side(width, content, row, tick, scan, None);
     let rule = glyph::edge_horizontal().repeat(usize::from(width.saturating_sub(2)));
     Line::from(vec![
         Span::styled(glyph::divider_left().to_owned(), left.style),

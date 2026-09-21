@@ -58,6 +58,8 @@ impl App {
         self.overlay = None;
         self.pane = None;
         self.picking = None;
+        // Nothing here was answered: the session still has them open, and says so on the way back.
+        self.asks.clear();
         self.surface = None;
         self.model = None;
         self.choices.clear();

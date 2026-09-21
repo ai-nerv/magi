@@ -27,6 +27,23 @@ pub fn of(cwd: &str) -> Chosen {
     all().remove(cwd).unwrap_or_default()
 }
 
+/// Drop what `cwd` chose, leaving every other directory's choice alone. A directory with no row
+/// falls back to the configuration, which is what `:reset model` is for.
+pub fn forget(cwd: &str) {
+    let mut everything = all();
+    if everything.remove(cwd).is_none() {
+        return;
+    }
+    let Ok(text) = serde_json::to_string_pretty(&everything) else {
+        return;
+    };
+    let path = path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, text);
+}
+
 /// Remember `chosen` for `cwd`, keeping what every other directory chose. Read-modify-write, so two
 /// daemons in two directories do not forget each other.
 pub fn keep(cwd: &str, chosen: &Chosen) {

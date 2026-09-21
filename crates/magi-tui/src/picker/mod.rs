@@ -51,6 +51,27 @@ pub struct Picker {
     /// too long for a title. Crammed into the heading it was clipped, and clipped in the middle
     /// of a command is exactly where a person needs to read it.
     about: Vec<String>,
+    /// The same, already painted, for a caller that has something to say in more than one colour.
+    /// Drawn in place of `about` when it is set.
+    painted: Vec<ratatui::text::Line<'static>>,
+    /// What this list asks before taking a row away, or `None` where nothing may be taken.
+    asks: Option<String>,
+    /// What a row is asked before it is taken away, and which answer is highlighted.
+    ///
+    /// `None` while nothing is being asked. Only a list whose caller set [`Picker::askable`]
+    /// ever has one: a list of models has nothing to remove.
+    confirm: Option<Confirm>,
+}
+
+/// A question standing between a row and its removal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Confirm {
+    /// The row it is about, by value.
+    pub value: String,
+    /// What is being asked, in the caller's words.
+    pub question: String,
+    /// Whether *yes* is the highlighted answer. Starts false, so a stray Enter answers safely.
+    pub yes: bool,
 }
 
 impl Picker {
@@ -74,7 +95,58 @@ impl Picker {
             selected,
             notice: None,
             about: Vec::new(),
+            painted: Vec::new(),
+            confirm: None,
+            asks: None,
         }
+    }
+
+    /// The same list, where a row may be taken away — `question` is what is asked before it is,
+    /// with the row's own value put where `{}` is.
+    ///
+    /// Off unless a caller says so: most lists offer a choice and have nothing to remove.
+    #[must_use]
+    pub fn askable(mut self, question: impl Into<String>) -> Self {
+        self.asks = Some(question.into());
+        self
+    }
+
+    /// What is being asked, if anything.
+    #[must_use]
+    pub fn asking(&self) -> Option<&Confirm> {
+        self.confirm.as_ref()
+    }
+
+    /// Ask about the highlighted row, answering whether anything is now being asked. *No* is
+    /// highlighted first: a stray Enter has to answer the safe way.
+    pub fn ask(&mut self) -> bool {
+        let Some(question) = self.asks.clone() else {
+            return false;
+        };
+        let Some(choice) = self.current().cloned() else {
+            return false;
+        };
+        self.notice = None;
+        self.confirm = Some(Confirm {
+            question: question.replace("{}", &choice.value),
+            value: choice.value,
+            yes: false,
+        });
+        true
+    }
+
+    /// Put the highlight on the other answer.
+    pub fn swap(&mut self) {
+        if let Some(asking) = self.confirm.as_mut() {
+            asking.yes = !asking.yes;
+        }
+    }
+
+    /// Take the question down. `Some(value)` when the answer was yes, and that row is the one to
+    /// act on; `None` when it was no or nothing was being asked.
+    pub fn answer(&mut self, yes: bool) -> Option<String> {
+        let asking = self.confirm.take()?;
+        yes.then_some(asking.value)
     }
 
     /// The same list, with what it is deciding about set out under the heading.
@@ -82,6 +154,31 @@ impl Picker {
     pub fn about(mut self, rows: Vec<String>) -> Self {
         self.about = rows;
         self
+    }
+
+    /// The same, in the caller's own colours: a warning is not the command it warns about, and
+    /// one muted grey for both says neither.
+    #[must_use]
+    pub fn painted(mut self, rows: Vec<ratatui::text::Line<'static>>) -> Self {
+        self.painted = rows;
+        self
+    }
+
+    /// What is drawn under the heading, painted where the caller painted it.
+    #[must_use]
+    pub fn drawn_about(&self) -> Vec<ratatui::text::Line<'static>> {
+        if !self.painted.is_empty() {
+            return self.painted.clone();
+        }
+        self.about
+            .iter()
+            .map(|row| {
+                ratatui::text::Line::from(ratatui::text::Span::styled(
+                    row.clone(),
+                    ratatui::style::Style::default().fg(crate::colour::muted()),
+                ))
+            })
+            .collect()
     }
 
     /// What this list is deciding about.
@@ -213,6 +310,14 @@ impl Picker {
 mod view;
 
 pub use view::render;
+
+/// Rows shown at once, as `magi.ui.menu_rows` left it.
+fn max_visible() -> usize {
+    usize::from(crate::metric::menu_rows())
+}
+
+#[cfg(test)]
+mod behaving;
 
 #[cfg(test)]
 mod tests {
@@ -676,9 +781,4 @@ mod fluidity_tests {
             "and the bar on the row above it"
         );
     }
-}
-
-/// Rows shown at once, as `magi.ui.menu_rows` left it.
-fn max_visible() -> usize {
-    usize::from(crate::metric::menu_rows())
 }

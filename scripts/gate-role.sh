@@ -25,7 +25,7 @@ command -v "$prog" >/dev/null 2>&1 || [ -x "$prog" ] || {
 case "$role" in
   memory)
     core="observe replay sessions"
-    extra="amend recall remember forget why scroll plan used outcome model resume" ;;
+    extra="amend recall remember forget why scroll plan layout applied overflowed jobs job_done notes note_open changes undo approve reject used outcome model resume" ;;
   tools)
     core="tools run"
     extra="surface acknowledge" ;;

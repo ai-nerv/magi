@@ -70,14 +70,42 @@ pub fn commands() -> Vec<Candidate> {
         (":model", "the model, or :model <name> to switch"),
         (":permissions", "ask the model what it needs, and decide"),
         (":resume", "continue a session from this directory"),
+        (
+            ":archives",
+            "sessions put away, and where they are removed for good",
+        ),
+        (":rename", "name this session, and stop it being retitled"),
         (":trace", "what this session has done, as it happened"),
+        (":context", "what the last request was built from, and why"),
         (":agents", "the run's agents, as a tree"),
         (":rewind", "undo the last exchange, or :rewind N"),
         (":think", "how much reasoning to ask for"),
+        (":mode", "switch who is asked: ask, edits, auto or locked"),
+        (
+            ":permission",
+            "who is asked about what no rule allows, and on what terms",
+        ),
         (":quit", "exit magi, and :q for the same"),
         (
             ":quitall",
             "exit, taking anything this session started — :qa for the same",
+        ),
+        (
+            ":memory",
+            "balthasar: what it holds, what it is telling this model, and what it rests on",
+        ),
+        (":notes", "what memory has learnt, and every change to it"),
+        (
+            ":reset",
+            "clear what this directory remembers: model, memory, sessions",
+        ),
+        (
+            ":crew",
+            "melchior: who is in this run, the models reached, what each spent",
+        ),
+        (
+            ":tools",
+            "casper: what it offers, and what this session has called",
         ),
     ]
     .iter()

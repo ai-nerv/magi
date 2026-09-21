@@ -202,9 +202,7 @@ impl Tool for Spawn {
         match command.output() {
             Ok(out) if out.status.success() => Output {
                 content: String::from_utf8_lossy(&out.stdout).trim().to_owned(),
-                is_error: false,
-                shown: None,
-                unlocks: Vec::new(),
+                ..Output::default()
             },
             Ok(out) => Output::error(format!(
                 "the child could not be started: {}",

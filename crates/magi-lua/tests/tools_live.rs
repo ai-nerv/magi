@@ -1,7 +1,6 @@
 //! The shipped Lua tools, against siblings that are actually running.
 //!
-//! Skips quietly when nothing is listening. When one is running, this is the only thing that
-//! proves the client, the socket primitive and the tool declaration line up.
+//! Each memory connection uses a disposable server owned by this test.
 
 use magi_lua::Engine;
 use magi_tools::Registry;
@@ -114,12 +113,12 @@ fn the_agent_tool_reaches_another_session_through_melchior() {
     // directory removed while a melchior is still running comes straight back.
     let project = Project(format!("magi-test-{}", std::process::id()));
     let Some((a, _hears_a, me)) = a_session(&project) else {
-        eprintln!("melchior is not installed; skipping");
+        magi_testkit::live::unavailable("melchior did not start a session");
         return;
     };
     let _a = Running(a);
     let Some((b, mut hears_b, them)) = a_session(&project) else {
-        eprintln!("melchior is not installed; skipping");
+        magi_testkit::live::unavailable("melchior did not start a session");
         return;
     };
     let _b = Running(b);
@@ -280,21 +279,19 @@ fn what_the_model_sends_arrives_as_what_it_meant() {
     assert!(argv.contains(&"--about=m1".to_owned()), "{argv:?}");
 }
 
-#[test]
-fn the_memory_tools_register_and_answer_when_balthasar_is_running() {
+#[tokio::test]
+async fn the_memory_tools_register_and_answer_when_balthasar_is_running() {
     // The client library is borrowed rather than vendored: a copy that had fallen behind silently
     // removed every memory tool from every session on a machine. The declarations are magi's own.
     let Some(client) = borrowed("balthasar") else {
-        eprintln!("skipping: balthasar is not installed");
+        magi_testkit::live::unavailable("balthasar has no client library");
         return;
     };
-    // Where to dial, told before the VM is built, the way a session tells it. Without a named
-    // socket the client finds none in here: `magi.fs` lends no lister to a VM with no `Ops`, and
-    // the sandbox took `io` away, so its own discovery has nothing to list a directory with.
-    let serving = serving("balthasar");
-    if let Some(at) = serving.as_deref() {
-        magi_lua::name_session("tools-live", Some(at));
-    }
+    let dir = magi_testkit::Scratch::new("lt", "memory");
+    let Some(serving) = magi_testkit::memory::Serving::start(&dir, "tools-live").await else {
+        return;
+    };
+    magi_lua::name_session("tools-live", Some(serving.socket()));
     let mut engine = Engine::new();
     engine.install_clients(&[("balthasar".to_owned(), client)]);
     engine
@@ -309,11 +306,6 @@ fn the_memory_tools_register_and_answer_when_balthasar_is_running() {
     for verb in ["recall", "remember", "forget", "why"] {
         assert!(registry.get(verb).is_some(), "{verb} did not register");
     }
-    if serving.is_none() {
-        eprintln!("skipping the wire: no balthasar is serving");
-        return;
-    }
-
     let ops = magi_tools::ops::Real::new(std::env::temp_dir());
     let phrase = format!("the wire held at {}", std::process::id());
 
@@ -337,52 +329,6 @@ fn the_memory_tools_register_and_answer_when_balthasar_is_running() {
         &found.content[..found.content.len().min(200)]
     );
 }
-
-/// A sibling's socket that is actually serving, rather than one merely left behind.
-///
-/// A socket file outlives the process that bound it, and connecting is not enough either: the
-/// kernel's backlog accepts for a listener whose owner has stopped reading. So it asks — one
-/// `verbs` call, framed the way the family frames everything, answered within a moment.
-fn serving(name: &str) -> Option<std::path::PathBuf> {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    std::fs::read_dir(runtime.join(name))
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|path| {
-            path.file_name()
-                .is_some_and(|name| name.to_string_lossy().starts_with("api@"))
-        })
-        .find(|path| replies(path))
-}
-
-fn replies(socket: &std::path::Path) -> bool {
-    use std::io::{Read, Write};
-
-    let Ok(mut stream) = std::os::unix::net::UnixStream::connect(socket) else {
-        return false;
-    };
-    if stream.set_read_timeout(Some(PATIENCE)).is_err()
-        || stream.set_write_timeout(Some(PATIENCE)).is_err()
-    {
-        return false;
-    }
-    let body = br#"{"call":"verbs"}"#;
-    let mut framed = (body.len() as u32).to_be_bytes().to_vec();
-    framed.extend_from_slice(body);
-    if stream.write_all(&framed).is_err() {
-        return false;
-    }
-    // The length alone: that four bytes came back at all is what says somebody is reading.
-    let mut head = [0_u8; 4];
-    stream.read_exact(&mut head).is_ok() && u32::from_be_bytes(head) > 0
-}
-
-/// How long a live sibling gets to answer one question. Generous: a local socket, answered from
-/// memory, and still short enough that a wedged sibling does not hold the suite.
-const PATIENCE: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// A sibling's client library, from the sibling. `None` when it is not installed or has none to
 /// lend, which is a skip rather than a failure.

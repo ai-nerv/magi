@@ -1,9 +1,58 @@
 //! Every model this session could talk to, as melchior described them, beside the parts a
-//! [`crate::turn::Backend`] does not vary. Held by the session rather than re-read on each switch,
-//! so `/model` picks among what this session actually started with.
+//! [`Backend`] does not vary. Held by the session rather than re-read on each switch, so `/model`
+//! picks among what this session actually started with.
 
-use crate::turn::Backend;
 use magi_proto::ask::Card;
+
+/// What the daemon needs to reach a model. Plain data, and sendable: the protocol it names is built
+/// on the worker's own thread, because a Lua VM is neither `Send` nor `Sync`.
+#[derive(Debug, Clone)]
+pub struct Backend {
+    pub tools: Vec<(String, String)>,
+    pub clients: Vec<(String, String)>,
+    /// Which program fills the `tools` role, and what this session tells it.
+    pub tooling: magi_tools::supplier::Tooling,
+    pub cwd: std::path::PathBuf,
+    /// Permissions a configuration granted in advance; they go into the ledger at startup.
+    pub grants: Vec<magi_proto::permit::Grant>,
+    /// Which models answer typed questions rather than writing, by id. Read from the catalog,
+    /// since a helper may run on any of them and a backend carries no cards.
+    pub deciders: Vec<String>,
+    pub environ: std::collections::BTreeMap<String, String>,
+    /// Whether the file tools refuse paths outside `cwd`. See [`magi_tools::ops::Real`].
+    pub confine: bool,
+    /// Whether a tool command runs inside a kernel jail — `magi.isolation`.
+    pub isolate: bool,
+    /// Which model to ask for, as melchior names it: `provider/model`. A name and nothing else.
+    pub model: String,
+    /// The program that owns the model, found on `PATH`. Named per backend, not compiled in.
+    pub mind: String,
+    pub wants: magi_proto::ask::Wants,
+    /// How much this model will read, as melchior's card reported it. Carried rather than looked up.
+    pub context_window: Option<u64>,
+    /// The longest answer it can give, from the same card.
+    pub max_output: Option<u64>,
+    /// What the model is told it is. Assembled once, when the daemon starts.
+    pub system: Option<String>,
+    /// The small models that run jobs on balthasar's behalf — `magi.helpers`.
+    pub helpers: Helpers,
+}
+
+/// Which models help, and within what: a model per role, how long a job may take (zero is the
+/// default), and the most one prompt may spend on them in millionths. Running one is `helping`'s.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Helpers {
+    pub roles: std::collections::BTreeMap<String, String>,
+    pub timeout_ms: u64,
+    pub per_prompt_micros: Option<u64>,
+    /// Whether this session's conversation stays out of the project's notes: a child's prompts
+    /// are its lead's instructions for one task, not what the person wants kept.
+    pub no_notes: bool,
+}
+
+/// What one prompt's helper jobs have cost, in millionths: shared by every job it started, whether
+/// blocking, beside the turn or after it, so the per-prompt cap holds for all of them.
+pub type Spend = std::sync::Arc<std::sync::atomic::AtomicU64>;
 
 #[derive(Debug, Clone)]
 pub struct Catalog {
@@ -20,6 +69,9 @@ pub struct Catalog {
     /// Whether a tool command runs inside a kernel jail — `magi.isolation`.
     pub isolate: bool,
     pub grants: Vec<magi_proto::permit::Grant>,
+    /// Who is asked about what no grant covers, and the rules no mode overrides.
+    pub mode: magi_proto::judging::Mode,
+    pub rules: magi_proto::judging::Rules,
     /// Which program fills the `tools` role, and what this session tells it. Beside [`Self::mind`]
     /// and [`Self::memory`] because it is the third of the same thing: a role, and who is doing it.
     pub tooling: magi_tools::supplier::Tooling,
@@ -31,6 +83,20 @@ pub struct Catalog {
     pub environ: std::collections::BTreeMap<String, String>,
     /// What the configuration asked for, kept so a refusal can name it rather than the fallback.
     pub chosen: Option<String>,
+    /// The small models that run jobs for balthasar and questions for surfaces — `magi.helpers`.
+    pub helpers: Helpers,
+    /// The key this session's transcript is recorded under, when not the session's own: a child
+    /// of a run records `run@agent`, or the run's agents overwrite each other.
+    pub transcript: Option<String>,
+}
+
+impl Backend {
+    /// Whether `model` answers typed questions rather than writing, and so is sent a schema as a
+    /// schema rather than in words.
+    #[must_use]
+    pub fn decides(&self, model: &str) -> bool {
+        self.deciders.iter().any(|id| id == model)
+    }
 }
 
 impl Catalog {
@@ -49,9 +115,13 @@ impl Catalog {
             wants: magi_proto::ask::Wants::default(),
             system: None,
             chosen: None,
+            helpers: Helpers::default(),
+            transcript: None,
             confine: false,
             isolate: false,
             grants: Vec::new(),
+            mode: magi_proto::judging::Mode::default(),
+            rules: magi_proto::judging::Rules::default(),
         }
     }
 
@@ -70,10 +140,18 @@ impl Catalog {
             tooling: self.tooling.clone(),
             wants: self.wants.clone(),
             context_window: card.context_window,
+            max_output: card.max_output,
             system: self.system.clone(),
             confine: self.confine,
             isolate: self.isolate,
             grants: self.grants.clone(),
+            deciders: self
+                .cards
+                .iter()
+                .filter(|card| card.api == "decisions")
+                .map(|card| card.id.clone())
+                .collect(),
+            helpers: self.helpers.clone(),
         })
     }
 

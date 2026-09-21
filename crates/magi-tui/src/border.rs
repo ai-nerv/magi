@@ -8,7 +8,7 @@
 use crate::colour;
 use crate::glyph;
 use crate::metric;
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
 /// How bright a cell is `n` steps ahead of a head, and `n` steps behind one. A short nose and a long
@@ -60,7 +60,13 @@ fn pace(scan: Scan) -> (usize, usize) {
 /// A box `width` wide holding `rows` of content. Answers the top and bottom edges; the sides are
 /// [`side`], because the caller owns what goes between them and has to interleave.
 #[must_use]
-pub fn edges(width: u16, rows: usize, tick: usize, scan: Scan) -> (Line<'static>, Line<'static>) {
+pub fn edges(
+    width: u16,
+    rows: usize,
+    tick: usize,
+    scan: Scan,
+    tint: Option<Color>,
+) -> (Line<'static>, Line<'static>) {
     let width = usize::from(width).max(2);
     let inner = width - 2;
     let ring = walk_length(inner, rows);
@@ -69,11 +75,11 @@ pub fn edges(width: u16, rows: usize, tick: usize, scan: Scan) -> (Line<'static>
     // Working sweeps one band across by column, so the top and bottom edges dim in step.
     if matches!(scan, Scan::Working) {
         let edge = |left: &str, right: &str| {
-            let mut cells = vec![shaded(left, 0, width, tick)];
+            let mut cells = vec![shaded(left, 0, width, tick, tint)];
             for i in 0..inner {
-                cells.push(shaded(glyph::edge_horizontal(), 1 + i, width, tick));
+                cells.push(shaded(glyph::edge_horizontal(), 1 + i, width, tick, tint));
             }
-            cells.push(shaded(right, 1 + inner, width, tick));
+            cells.push(shaded(right, 1 + inner, width, tick, tint));
             Line::from(cells)
         };
         return (
@@ -84,11 +90,11 @@ pub fn edges(width: u16, rows: usize, tick: usize, scan: Scan) -> (Line<'static>
     let bright = |at: usize| from_heads(walk(at), &heads, ring);
 
     let mut top = Vec::with_capacity(width);
-    top.push(paint(glyph::corner_top_left(), bright(0)));
+    top.push(paint(glyph::corner_top_left(), bright(0), tint));
     for i in 0..inner {
-        top.push(paint(glyph::edge_horizontal(), bright(1 + i)));
+        top.push(paint(glyph::edge_horizontal(), bright(1 + i), tint));
     }
-    top.push(paint(glyph::corner_top_right(), bright(1 + inner)));
+    top.push(paint(glyph::corner_top_right(), bright(1 + inner), tint));
 
     // Anticlockwise along the bottom: the ring runs clockwise, so bottom-right comes before bottom-left.
     let bottom_right = 1 + inner + 1 + rows;
@@ -96,14 +102,20 @@ pub fn edges(width: u16, rows: usize, tick: usize, scan: Scan) -> (Line<'static>
     bottom.push(paint(
         glyph::corner_bottom_left(),
         bright(bottom_right + inner + 1),
+        tint,
     ));
     for i in 0..inner {
         bottom.push(paint(
             glyph::edge_horizontal(),
             bright(bottom_right + inner - i),
+            tint,
         ));
     }
-    bottom.push(paint(glyph::corner_bottom_right(), bright(bottom_right)));
+    bottom.push(paint(
+        glyph::corner_bottom_right(),
+        bright(bottom_right),
+        tint,
+    ));
 
     (Line::from(top), Line::from(bottom))
 }
@@ -116,6 +128,7 @@ pub fn side(
     row: usize,
     tick: usize,
     scan: Scan,
+    tint: Option<Color>,
 ) -> (Span<'static>, Span<'static>) {
     let inner = usize::from(width).max(2) - 2;
     let ring = walk_length(inner, rows);
@@ -126,8 +139,8 @@ pub fn side(
         // The sides are the band's first and last columns.
         let across = inner + 2;
         return (
-            shaded(glyph::edge_vertical(), 0, across, tick),
-            shaded(glyph::edge_vertical(), across - 1, across, tick),
+            shaded(glyph::edge_vertical(), 0, across, tick, tint),
+            shaded(glyph::edge_vertical(), across - 1, across, tick, tint),
         );
     }
     let heads = heads(scan, tick, inner, rows, ring);
@@ -137,12 +150,14 @@ pub fn side(
             walk_of(left, inner, rows),
             &heads,
             ring,
+            tint,
         ),
         cell(
             glyph::edge_vertical(),
             walk_of(right, inner, rows),
             &heads,
             ring,
+            tint,
         ),
     )
 }
@@ -272,26 +287,38 @@ fn from_heads(at: usize, heads: &[Head], ring: usize) -> f32 {
         .fold(0.0_f32, |best, &head| best.max(lit(at, head, ring)))
 }
 
-/// A glyph painted a fraction of the way from border colour to scan colour.
-fn paint(glyph: &str, best: f32) -> Span<'static> {
-    Span::styled(
-        glyph.to_string(),
-        Style::default().fg(colour::scan_at(best)),
-    )
+/// A glyph painted a fraction of the way from the resting colour to the scan colour. `tint`
+/// stands in for the resting one, which is how a float says whose it is without a second border.
+fn paint(glyph: &str, best: f32, tint: Option<Color>) -> Span<'static> {
+    let ink = match tint {
+        Some(base) => colour::blend(base, colour::scan_at(1.0), best),
+        None => colour::scan_at(best),
+    };
+    Span::styled(glyph.to_string(), Style::default().fg(ink))
 }
 
 /// One border cell, lit by whichever head is nearest.
-fn cell(glyph: &str, at: usize, heads: &[Head], ring: usize) -> Span<'static> {
-    paint(glyph, from_heads(at, heads, ring))
+fn cell(glyph: &str, at: usize, heads: &[Head], ring: usize, tint: Option<Color>) -> Span<'static> {
+    paint(glyph, from_heads(at, heads, ring), tint)
 }
 
 /// The working border at `column` of a box `width` across: the resting border colour, only ever
 /// darkened, where the band is — the same band the words in the box carry.
-fn shaded(glyph: &str, column: usize, width: usize, tick: usize) -> Span<'static> {
+fn shaded(
+    glyph: &str,
+    column: usize,
+    width: usize,
+    tick: usize,
+    tint: Option<Color>,
+) -> Span<'static> {
     let dimmed = dimming(column, width, tick);
     Span::styled(
         glyph.to_owned(),
-        colour::shade(colour::border(), colour::shimmer_shadow(), dimmed),
+        colour::shade(
+            tint.unwrap_or_else(colour::border),
+            colour::shimmer_shadow(),
+            dimmed,
+        ),
     )
 }
 
@@ -313,14 +340,14 @@ mod tests {
 
     #[test]
     fn the_box_is_rounded_and_spans_the_width() {
-        let (top, bottom) = edges(20, 1, 0, Scan::Off);
+        let (top, bottom) = edges(20, 1, 0, Scan::Off, None);
         assert_eq!(text(&top), "╭──────────────────╮");
         assert_eq!(text(&bottom), "╰──────────────────╯");
     }
 
     #[test]
     fn the_sides_are_bars() {
-        let (l, r) = side(20, 1, 0, 0, Scan::Off);
+        let (l, r) = side(20, 1, 0, 0, Scan::Off, None);
         assert_eq!(l.content.as_ref(), "│");
         assert_eq!(r.content.as_ref(), "│");
     }
@@ -330,9 +357,9 @@ mod tests {
         // One band across the box: the top and bottom edges match column for column, and it moves.
         let width = 24u16;
         let colours = |line: &Line<'_>| line.spans.iter().map(|s| s.style.fg).collect::<Vec<_>>();
-        let top_at = |tick| colours(&edges(width, 1, tick, Scan::Working).0);
+        let top_at = |tick| colours(&edges(width, 1, tick, Scan::Working, None).0);
         for tick in 0..60 {
-            let (top, bottom) = edges(width, 1, tick, Scan::Working);
+            let (top, bottom) = edges(width, 1, tick, Scan::Working, None);
             assert_eq!(colours(&top), colours(&bottom), "out of step at {tick}");
         }
         assert!(
@@ -354,7 +381,7 @@ mod tests {
             panic!("and so is its shadow");
         };
         for tick in 0..60 {
-            let (top, bottom) = edges(24, 1, tick, Scan::Working);
+            let (top, bottom) = edges(24, 1, tick, Scan::Working, None);
             for cell in top.spans.iter().chain(&bottom.spans) {
                 let Some(Color::Indexed(n)) = cell.style.fg else {
                     panic!("left the palette: {cell:?}");
@@ -377,7 +404,7 @@ mod tests {
 
     #[test]
     fn with_the_scan_off_every_cell_is_the_border_colour() {
-        let (top, _) = edges(20, 1, 7, Scan::Off);
+        let (top, _) = edges(20, 1, 7, Scan::Off, None);
         assert!(
             top.spans
                 .iter()
@@ -389,7 +416,7 @@ mod tests {
     #[test]
     fn every_running_mode_has_two_heads() {
         for scan in [Scan::Resting, Scan::Holding] {
-            let (top, bottom) = edges(40, 1, 0, scan);
+            let (top, bottom) = edges(40, 1, 0, scan, None);
             let peaks = top
                 .spans
                 .iter()
@@ -472,7 +499,7 @@ mod tests {
         // The border does not move on its own: a base colour that moved would walk towards the accent.
         let quiet: Vec<_> = (0..40)
             .map(|tick| {
-                let (top, _) = edges(60, 1, tick, Scan::Resting);
+                let (top, _) = edges(60, 1, tick, Scan::Resting, None);
                 top.spans[30].style.fg
             })
             .collect();
@@ -484,8 +511,8 @@ mod tests {
 
     #[test]
     fn the_scan_moves_with_the_tick() {
-        let a = text_colours(&edges(30, 1, 0, Scan::Resting).0);
-        let b = text_colours(&edges(30, 1, 12, Scan::Resting).0);
+        let a = text_colours(&edges(30, 1, 0, Scan::Resting, None).0);
+        let b = text_colours(&edges(30, 1, 12, Scan::Resting, None).0);
         assert_ne!(a, b, "it travels");
     }
 
@@ -496,7 +523,7 @@ mod tests {
     #[test]
     fn holding_lights_both_long_edges() {
         // Two heads sweeping in step: the shape of something waiting to be sent.
-        let (top, bottom) = edges(30, 1, 0, Scan::Holding);
+        let (top, bottom) = edges(30, 1, 0, Scan::Holding, None);
         assert!(
             top.spans
                 .iter()
@@ -519,8 +546,8 @@ mod tests {
     #[test]
     fn a_narrow_box_does_not_panic() {
         for width in 0..6_u16 {
-            let _ = edges(width, 1, 3, Scan::Working);
-            let _ = side(width, 1, 0, 3, Scan::Working);
+            let _ = edges(width, 1, 3, Scan::Working, None);
+            let _ = side(width, 1, 0, 3, Scan::Working, None);
         }
     }
 
@@ -531,7 +558,7 @@ mod tests {
         let lit = (0..120)
             .flat_map(|tick| (0..6).map(move |row| (tick, row)))
             .filter(|&(tick, row)| {
-                let (l, r) = side(30, 6, row, tick, Scan::Resting);
+                let (l, r) = side(30, 6, row, tick, Scan::Resting, None);
                 l.style.fg != Some(colour::border()) || r.style.fg != Some(colour::border())
             })
             .count();
@@ -553,7 +580,7 @@ mod holding_tests {
     fn the_two_lights_stay_in_the_same_column() {
         // The bottom edge is walked anticlockwise, so its leftmost cell is its highest ring index.
         for tick in 0..60 {
-            let (top, bottom) = edges(40, 1, tick, Scan::Holding);
+            let (top, bottom) = edges(40, 1, tick, Scan::Holding, None);
             let (Some(t), Some(b)) = (peak(&top), peak(&bottom)) else {
                 continue;
             };
@@ -563,7 +590,7 @@ mod holding_tests {
 
     #[test]
     fn both_lights_are_present_from_the_first_tick() {
-        let (top, bottom) = edges(40, 1, 0, Scan::Holding);
+        let (top, bottom) = edges(40, 1, 0, Scan::Holding, None);
         assert!(peak(&top).is_some(), "top lit at rest");
         assert!(peak(&bottom).is_some(), "and so is the bottom");
     }
@@ -573,7 +600,7 @@ mod holding_tests {
         // It must not walk onto a corner and wrap: this is a shuttle, not a circuit.
         let width = 20u16;
         for tick in 0..80 {
-            let (top, _) = edges(width, 1, tick, Scan::Holding);
+            let (top, _) = edges(width, 1, tick, Scan::Holding, None);
             if let Some(at) = peak(&top) {
                 assert!(at >= 1, "tick {tick}: on the left corner");
                 assert!(

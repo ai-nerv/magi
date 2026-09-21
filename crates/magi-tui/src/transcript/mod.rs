@@ -165,12 +165,16 @@ fn user(text: &str, width: u16) -> Vec<Line<'static>> {
     said("USER", colour::said_by_you(), text, width)
 }
 
-/// The same box, labelled with who sent it and how they stand to this session. `PARENT::alpha-rho`
-/// says who and what they are to you, which is what decides whether it can be ignored.
+/// The same box, labelled with the name its sender goes by: its role and its id, as the footer
+/// shows an agent. One from another project keeps its whole name, since the id alone is not it.
 fn from(who: &str, kin: &str, sort: &str, text: &str, width: u16) -> Vec<Line<'static>> {
     // The id alone: the project is this session's own, so printing it repeats a word every message.
     let id = who.rsplit('/').next().unwrap_or(who);
-    let label = format!("{}::{id}", kin.to_uppercase());
+    let label = match kin {
+        "elsewhere" => who.to_owned(),
+        "myself" | "" => id.to_owned(),
+        role => format!("{role}/{id}"),
+    };
     // The sort only when it is not the ordinary one, and into the name rather than behind it.
     let label = if sort != "note" && !sort.is_empty() {
         format!("{label} · {sort}")
@@ -349,10 +353,11 @@ mod tests {
             5,
             "an edge, a row of fill, the body, a row of fill, an edge"
         );
-        // Inside the frame, not under the corner, and not pressed against the edge above it.
+        // Inside the frame and not pressed against the rule above it.
         assert_eq!(rendered[2], "    hello           ");
-        assert!(rendered[0].starts_with('┌') && rendered[0].ends_with('┐'));
-        assert!(rendered[4].starts_with('└') && rendered[4].ends_with('┘'));
+        let rule = crate::glyph::block_edge();
+        assert!(rendered[0].starts_with(rule) && rendered[0].ends_with(rule));
+        assert!(rendered[4].starts_with(rule) && rendered[4].ends_with(rule));
         // No sides: two columns of every row taken off the text where they are least affordable.
         assert!(!rendered[2].contains('│'), "{rendered:?}");
         assert!(rendered.iter().all(|l| l.chars().count() == 20));
@@ -371,7 +376,7 @@ mod tests {
         // Five: the two edges, a row of fill inside each, and the text. The tag is not one of them.
         assert_eq!(rendered.len(), 5, "the tag grew a row: {rendered:?}");
         assert!(
-            rendered[0].starts_with('┌'),
+            rendered[0].starts_with(crate::glyph::block_edge()),
             "the tag rides the top edge: {rendered:?}"
         );
     }
@@ -384,10 +389,7 @@ mod tests {
             40,
             Detail::Preview,
         ));
-        assert!(
-            rendered[0].contains("[ PARENT::alpha-rho ]"),
-            "{rendered:?}"
-        );
+        assert!(rendered[0].contains("[ parent/alpha-rho ]"), "{rendered:?}");
         assert!(
             rendered
                 .iter()
@@ -407,6 +409,18 @@ mod tests {
         assert!(!rendered[0].contains("magi/"), "{rendered:?}");
     }
 
+    #[test]
+    fn a_message_is_labelled_with_the_name_of_who_sent_it() {
+        // `MAIN::delta-kappa` told nobody what the sender was: `main` was a fixed word, not a
+        // relation. The name an agent goes by is its role and its id, as the footer shows it.
+        let rendered = text_of(&entry_lines(
+            &from("molla/main/delta-kappa", "explorer", "note"),
+            60,
+            Detail::Preview,
+        ));
+        assert!(rendered[0].contains("explorer/delta-kappa"), "{rendered:?}");
+        assert!(!rendered[0].contains("::"), "{rendered:?}");
+    }
     #[test]
     fn an_ordinary_note_says_nothing_about_its_sort_and_an_urgent_one_does() {
         // `note` beside every message is noise. `attention` beside one is the point of sorts.

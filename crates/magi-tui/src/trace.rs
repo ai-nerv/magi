@@ -144,6 +144,32 @@ impl Trace {
                 what: format!("{class:?}").to_lowercase(),
                 detail: message.clone(),
             },
+            // Every request's layout, and why balthasar laid it out that way.
+            HarnessEvent::ContextLaid {
+                id, counts, why, ..
+            } => Row {
+                kind: Kind::Context,
+                what: if id.is_empty() {
+                    "laid out by magi".to_owned()
+                } else {
+                    format!("laid out {id}")
+                },
+                detail: format!(
+                    "{} whole, {} stubbed, {} left out — {why}",
+                    counts.items, counts.stubs, counts.dropped
+                ),
+            },
+            HarnessEvent::HelperSpent { role, model, usage } => Row {
+                kind: Kind::Model,
+                what: format!("{role} job on {model}"),
+                detail: format!(
+                    "{} in, {} out, ${}.{:06}",
+                    usage.prompt_tokens(),
+                    usage.output,
+                    usage.cost_micros / 1_000_000,
+                    usage.cost_micros % 1_000_000
+                ),
+            },
             _ => return,
         };
         self.push(row);

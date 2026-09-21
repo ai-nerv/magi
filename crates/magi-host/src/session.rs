@@ -1,5 +1,10 @@
 //! One session: its transcript, its journal, and the log every consumer reads.
 
+pub(crate) mod admission;
+mod fitting;
+mod resuming;
+
+use fitting::{SNAPSHOT_BUDGET, newest_within};
 use magi_journal::{Journal, JournalError};
 use magi_proto::{AgentStatus, Cursor, Entry, HarnessEvent, SessionId};
 use tokio::sync::{broadcast, watch};
@@ -9,6 +14,8 @@ use tokio::sync::{broadcast, watch};
 const BROADCAST_CAPACITY: usize = 1024;
 
 pub struct Session {
+    helpers: crate::settling::Tasks,
+    admission: admission::Admission,
     cancel: crate::cancel::Cancel,
     choices: Vec<magi_proto::ModelChoice>,
     thinking: String,
@@ -24,18 +31,29 @@ pub struct Session {
     /// UI (a headless child reporting its own phase) reads this rather than subscribing to `events`,
     /// which is what "is anybody here to approve" counts.
     phase: watch::Sender<AgentStatus>,
-    /// Messages from other instances that arrived while a turn was running. Nothing another
-    /// instance says interrupts a turn. Held rather than journalled on arrival: committing one
-    /// between an assistant's tool call and its result is a conversation no provider accepts.
-    waiting: Vec<Entry>,
-    /// Entries settled here and not yet handed to balthasar, by cursor. Keyed rather than appended,
-    /// so an amended message is one write; drained under a short lock and written outside it.
+    /// Entries awaiting persistence, keyed by cursor and acknowledged after successful writes.
     pending: std::collections::BTreeMap<u64, Entry>,
     /// What each model has cost this session, a finished turn counted once under the model that
     /// answered it; a last-value channel like `phase`, for whoever reports on this session.
     spent: watch::Sender<Vec<(String, magi_proto::Usage)>>,
     tallied: std::collections::BTreeMap<String, magi_proto::Usage>,
     counted: std::collections::HashSet<magi_proto::MessageId>,
+    /// What each tool's supplier said about its result, by call id: the stub to send instead of it,
+    /// how to get it back, whether it must stay. Beside the entry, because it is balthasar's input.
+    hints: std::collections::BTreeMap<String, magi_proto::tooling::Hints>,
+    /// The layout the last request was built from, for a request balthasar cannot answer.
+    laid: Option<magi_proto::laying::Layout>,
+    /// When the last turn ended, so balthasar can tell a quick follow-up from a return.
+    rested: Option<std::time::Instant>,
+    /// Helper jobs a layout handed out that nothing waited for: run once the turn is over.
+    deferred: Vec<magi_proto::laying::Job>,
+    /// What the current prompt's helper jobs have cost, for the ones that run after its turn.
+    helpers_spent: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Whether the person has been told that nothing is being recorded, so it is said once.
+    pub unrecorded: bool,
+    /// Who is asked about what no rule covers, and on what terms; the gate keeps its own copy of
+    /// what it acts on, and this is what every screen is shown.
+    pub judging: magi_proto::judging::Judging,
 }
 
 impl Session {
@@ -48,6 +66,8 @@ impl Session {
         let (phase, _) = watch::channel(AgentStatus::Idle);
         let (spent, _) = watch::channel(Vec::new());
         Self {
+            helpers: crate::settling::Tasks::default(),
+            admission: admission::Admission::default(),
             spent,
             tallied: std::collections::BTreeMap::new(),
             counted: std::collections::HashSet::new(),
@@ -60,9 +80,71 @@ impl Session {
             provider: None,
             events,
             phase,
-            waiting: Vec::new(),
             pending: std::collections::BTreeMap::new(),
+            hints: std::collections::BTreeMap::new(),
+            laid: None,
+            rested: None,
+            deferred: Vec::new(),
+            helpers_spent: std::sync::Arc::default(),
+            unrecorded: false,
+            judging: magi_proto::judging::Judging::default(),
         }
+    }
+
+    /// Keep helper jobs to run when the turn is over.
+    pub fn defer(&mut self, jobs: Vec<magi_proto::laying::Job>) {
+        self.deferred.extend(jobs);
+    }
+
+    /// Take the helper jobs kept for after the turn.
+    pub fn take_deferred(&mut self) -> Vec<magi_proto::laying::Job> {
+        std::mem::take(&mut self.deferred)
+    }
+
+    /// The current prompt's helper budget, shared with whoever charges it.
+    #[must_use]
+    pub fn helpers_spent(&self) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+        std::sync::Arc::clone(&self.helpers_spent)
+    }
+
+    /// A new prompt's helper budget.
+    pub fn set_helpers_spent(&mut self, spent: std::sync::Arc<std::sync::atomic::AtomicU64>) {
+        self.helpers_spent = spent;
+    }
+
+    /// Keep what a tool's supplier said about the result of call `id`.
+    pub fn hint(&mut self, id: &str, hints: magi_proto::tooling::Hints) {
+        if !hints.is_empty() {
+            self.hints.insert(id.to_owned(), hints);
+        }
+    }
+
+    /// What the supplier of call `id` said about its result; nothing when it said nothing.
+    #[must_use]
+    pub fn hints(&self, id: &str) -> magi_proto::tooling::Hints {
+        self.hints.get(id).cloned().unwrap_or_default()
+    }
+
+    /// Remember the layout a request was built from.
+    pub fn lay(&mut self, layout: magi_proto::laying::Layout) {
+        self.laid = Some(layout);
+    }
+
+    /// The layout the last request was built from.
+    #[must_use]
+    pub fn laid(&self) -> Option<&magi_proto::laying::Layout> {
+        self.laid.as_ref()
+    }
+
+    /// Say that a turn has ended.
+    pub fn rest(&mut self) {
+        self.rested = Some(std::time::Instant::now());
+    }
+
+    /// How long since a turn last ended, in whole seconds. `None` before the first.
+    #[must_use]
+    pub fn idle_for(&self) -> Option<u64> {
+        self.rested.map(|at| at.elapsed().as_secs())
     }
 
     /// A last-value view of this session's status, for an observer that must not be counted as an
@@ -72,30 +154,10 @@ impl Session {
         self.phase.subscribe()
     }
 
-    /// Take up what balthasar holds for another session, keeping everyone attached. The journal is
-    /// swapped rather than the `Session` replaced: a new broadcast channel leaves every UI quiet.
-    pub fn resume_recorded(&mut self, id: SessionId, entries: Vec<Entry>) {
-        self.journal = Journal::recorded(id, entries);
-        self.status = AgentStatus::Idle;
-        self.pending.clear();
-        let _ = self.events.send(self.snapshot(self.cursor()));
-    }
-
     /// Whether nothing is running, so something new may start.
     #[must_use]
     pub fn idle(&self) -> bool {
-        matches!(self.status, AgentStatus::Idle)
-    }
-
-    /// Keep this until the session has finished what it is doing.
-    pub fn hold(&mut self, entry: Entry) {
-        self.waiting.push(entry);
-    }
-
-    /// Take everything that was held, in the order it arrived. Emptied by the taking, so two turns
-    /// ending close together cannot both deal with the same message.
-    pub fn release(&mut self) -> Vec<Entry> {
-        std::mem::take(&mut self.waiting)
+        !self.busy() && matches!(self.status, AgentStatus::Idle)
     }
 
     /// Take what has settled since the last time, in cursor order. Cheap and synchronous: the
@@ -257,30 +319,37 @@ impl Session {
 
     /// The state a UI attaching at `from` needs before the live stream makes sense. Everything at
     /// or before `from` arrives as entries; a cold attach passes [`Cursor::ZERO`] and gets nothing.
+    /// The newest entries that fit come back: a frame past the wire's limit is refused whole, which
+    /// takes the connection and whatever the client was about to say with it.
     #[must_use]
     pub fn snapshot(&self, from: Cursor) -> HarnessEvent {
-        let kept = usize::try_from(from.0).unwrap_or(usize::MAX);
+        let kept = self
+            .entries()
+            .iter()
+            .enumerate()
+            .take_while(|(i, _)| self.cursor_at(*i).is_some_and(|c| c <= from))
+            .count();
         HarnessEvent::SessionSnapshot {
             cursor: from,
             session: self.id().clone(),
-            entries: self.entries().iter().take(kept).cloned().collect(),
+            entries: newest_within(self.entries().iter().take(kept), SNAPSHOT_BUDGET),
             status: self.status.clone(),
             model: self.model.clone(),
             choices: self.choices.clone(),
             thinking: self.thinking.clone(),
+            judging: self.judging.clone(),
         }
     }
 
     /// Everything after `from`, as the events that would have produced it, for a reattaching UI.
     #[must_use]
     pub fn replay(&self, from: Cursor) -> Vec<HarnessEvent> {
-        let skip = usize::try_from(from.0).unwrap_or(usize::MAX);
         self.entries()
             .iter()
             .enumerate()
-            .skip(skip)
+            .filter(|(i, _)| self.cursor_at(*i).is_some_and(|c| c > from))
             .flat_map(|(index, entry)| {
-                let cursor = Cursor(index as u64 + 1);
+                let cursor = self.cursor_at(index).expect("journal cursor");
                 events_for(cursor, entry)
             })
             .collect()
@@ -317,13 +386,37 @@ impl Session {
     /// # Errors
     /// When the write fails.
     pub fn amend_at(&mut self, cursor: Cursor, entry: Entry) -> Result<(), JournalError> {
-        let at = usize::try_from(cursor.0).unwrap_or(0).saturating_sub(1);
-        let previous = self.journal.entries().get(at).cloned();
+        let previous = self.amendment_target(cursor, &entry)?;
         self.journal.amend_at(cursor, entry.clone())?;
-        for event in amendment_events(cursor, previous.as_ref(), &entry) {
+        for event in amendment_events(cursor, Some(&previous), &entry) {
             let _ = self.events.send(event);
         }
         self.tally(&entry);
+        self.pending.insert(cursor.0, entry);
+        Ok(())
+    }
+
+    fn amendment_target(&self, cursor: Cursor, entry: &Entry) -> Result<Entry, JournalError> {
+        let previous = self.position(cursor).and_then(|at| self.entries().get(at));
+        let same = match (previous, entry) {
+            (Some(Entry::Assistant { id: old, .. }), Entry::Assistant { id, .. }) => old == id,
+            (Some(Entry::Tool { id: old, .. }), Entry::Tool { id, .. }) => old == id,
+            _ => false,
+        };
+        previous.filter(|_| same).cloned().ok_or_else(|| {
+            JournalError::Refused(format!("entry identity does not match cursor {}", cursor.0))
+        })
+    }
+
+    /// Update an identified streaming entry without publishing its terminal event.
+    pub fn revise_at(&mut self, cursor: Cursor, entry: Entry) -> Result<(), JournalError> {
+        let previous = self.amendment_target(cursor, &entry)?;
+        self.journal.amend_at(cursor, entry.clone())?;
+        for event in amendment_events(cursor, Some(&previous), &entry) {
+            if !matches!(event, HarnessEvent::AssistantEnded { .. }) {
+                let _ = self.events.send(event);
+            }
+        }
         self.pending.insert(cursor.0, entry);
         Ok(())
     }
@@ -361,6 +454,7 @@ impl Session {
     /// Change what the agent is doing and tell everyone. Status is not journalled: a session
     /// restored tomorrow is idle whatever it was doing when the process died.
     pub fn set_status(&mut self, status: AgentStatus) {
+        let status = self.admitted_status(status);
         self.status = status.clone();
         // The last-value view first, so a headless observer sees the change even with no UI here.
         self.phase.send_replace(status.clone());

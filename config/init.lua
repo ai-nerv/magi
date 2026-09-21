@@ -11,7 +11,30 @@
 magi.load("tools.lua")
 
 -- Which model to use, as `magi models` prints it.
-magi.model = "openrouter/deepseek/deepseek-v4-flash-0731"
+-- magi.model = "openrouter/stealth/union-alpha"
+-- magi.model = "openrouter/deepseek/deepseek-v4.1-flash"
+magi.model = {
+  -- What writes and answers. One model.
+  main = "openrouter/z-ai/glm-5.3-flash",
+
+  -- The smaller models that work on its behalf, one per kind of work. Open: a role named here is
+  -- a role this session can run, a role named nowhere does not run, and `false` turns one off.
+  --
+  --   decision  judging rather than writing: ranking `sese`'s passages, choosing between things.
+  --             A model that writes answers these by writing its way there, slowly and dearly
+  --   memory    everything balthasar asks for, unless one of the three below is named. Runs on
+  --             `main` until named here; `memory = false` keeps no notes at all
+  --   summary   the running summary of a long conversation: what the session still knows once the
+  --             turns are gone, so the one role a stronger model most plausibly pays for
+  --   notes     keeping and tidying project notes from what was said: many, and cheap is right
+  --   curate    choosing what to put in front of the model before a prompt: it waits on this
+  --   safety    judging an action no rule covers, for `magi.mode = "auto"`: see below
+  helper = {
+    decision = "decisions/typesafe/jev-1.13",
+    -- summary = "openrouter/deepseek/deepseek-v4-flash-0731",
+    -- safety  = "openrouter/deepseek/deepseek-v4-flash-0731",
+  },
+}
 
 -- Which program fills each role -- what a program is *for*, as `ROLES.md` sets it out. Named
 -- rather than assumed: magi does not know its memory is called balthasar, only that whatever
@@ -38,6 +61,15 @@ magi.model = "openrouter/deepseek/deepseek-v4-flash-0731"
 --
 -- magi.melchior  = { max_tokens = 8192 }
 -- magi.balthasar = { promote_floor = 0.6 }
+
+-- What the helper models above may spend and how long they may take. Which model runs a role is
+-- `magi.model.helper`'s, not this table's: one place names a model. The budget caps what a helper
+-- may spend on one prompt, in dollars, and `:cost` shows what they spent.
+--
+-- magi.helpers = {
+--   timeout_ms = 20000,
+--   budget     = { per_prompt = 0.05 },
+-- }
 
 -- Whether `read`, `write` and `edit` refuse paths outside the session's directory. Off: it
 -- moved work to the shell, which has no confinement at all. `bwrap` in front of the shell peer
@@ -79,6 +111,33 @@ magi.model = "openrouter/deepseek/deepseek-v4-flash-0731"
 magi.allow = {
   { verb = "run", program = "melchior" },
 }
+
+-- Who is asked about an action that nothing above allows. Shift+Tab cycles ask, edits and auto
+-- while a session runs, `:mode <name>` sets one, and the footer says which when it is not `ask`.
+--
+--   ask     you, every time. With `magi.helpers.safety` named, a second model reads the action
+--           first and its view is shown beside the question: a long command is read for you, not
+--           decided for you.
+--   edits   writes inside the session's directory go ahead; you are asked about the rest.
+--   auto    a second model decides. It is shown what you asked for and the action, and never what
+--           a tool printed, so a file the agent has just read cannot talk it round. It refuses
+--           what it is unsure of; a refusal goes back to the agent with the reason, and you are
+--           asked after three refusals in a row or twenty in all, or when it cannot be reached.
+--           Needs `magi.helpers.safety`; without one, auto asks you as `ask` does.
+--   locked  what would have been asked is refused. For a run nobody is watching.
+--
+-- Two kinds of rule hold in every mode, a second model's word included, and a chained command
+-- does not get round them (`true && sudo …` is still `sudo`):
+--
+--   magi.deny   never done, and never asked about
+--   magi.ask    always you, whatever the mode
+--
+-- The kernel jail is underneath all of this and takes no instruction from any of it. All three
+-- settings are privileged: a project's own file cannot set them.
+--
+-- magi.mode = "auto"
+-- magi.ask  = { { verb = "run", program = "git" } }
+-- magi.deny = { { verb = "run", program = "sudo" } }
 
 -- May a session start children with `spawn` without asking each time? `spawn` runs this very binary
 -- with `fork`, and granting that by hand means naming its install path -- which differs per machine

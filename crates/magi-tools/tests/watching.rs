@@ -33,9 +33,7 @@ impl Tool for Fake {
         } else {
             Output {
                 content: "ok".to_owned(),
-                is_error: false,
-                shown: None,
-                unlocks: Vec::new(),
+                ..Output::default()
             }
         }
     }

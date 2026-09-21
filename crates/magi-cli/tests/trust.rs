@@ -36,7 +36,7 @@ fn project(dir: &Path, source: &str) {
 }
 
 fn magi(dir: &Path, args: &[&str]) -> std::process::Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_magi"));
+    let mut command = Command::new(magi_testkit::live::binary(env!("CARGO_BIN_EXE_magi")));
     magi_testkit::only_its_own_store(&mut command);
     command
         .current_dir(dir.join("project"))
@@ -51,7 +51,7 @@ fn magi(dir: &Path, args: &[&str]) -> std::process::Output {
 /// `melchior models --json`, so without one the catalog is empty. In front rather than instead.
 fn with_melchior(dir: &Path, mind: &Mind, args: &[&str]) -> std::process::Output {
     let inherited = std::env::var("PATH").unwrap_or_default();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_magi"));
+    let mut command = Command::new(magi_testkit::live::binary(env!("CARGO_BIN_EXE_magi")));
     magi_testkit::only_its_own_store(&mut command);
     command
         .current_dir(dir.join("project"))

@@ -41,6 +41,7 @@ pub async fn run(
     if let Some(loaded) = &loaded {
         app.about = crate::config::agents::descriptions(loaded);
         app.mind = crate::config::mind(loaded);
+        app.tools_program = crate::config::tooling_program(loaded);
     }
     app.view_only = view_only;
     // Whether casper answers is asked once, off the UI thread: the probe starts the program.
@@ -340,6 +341,10 @@ pub async fn run(
                         // Noted before the match consumes it; the rule lives in `keys::recomputes`.
                         let accepted = !keys::recomputes(&action);
                         match action {
+                            Action::Forget(value) => {
+                                app.forget_row(&value);
+                                dirty = true;
+                            }
                             Action::Submit(text) if app.view_only => {
                                 app.refuse_view_only();
                                 app.editor.insert_str(&text);
@@ -396,17 +401,25 @@ pub async fn run(
                                     dirty = true;
                                 }
                             }
+                            Action::Tab { forward } => {
+                                floating::step(&mut app, &command_tx, forward).await;
+                                dirty = true;
+                            }
+                            Action::Attach(id) if app.pane_titled("balthasar") => {
+                                floating::weigh(&mut app, &command_tx, &id).await;
+                                dirty = true;
+                            }
                             // On the model's card, Enter takes a setting and ←/→ step it.
-                            Action::Attach(id) if app.pane_titled("model") => {
-                                if let Some(command) = app.choose_on_model(&id) {
+                            Action::Attach(id) if app.chooses() => {
+                                if let Some(command) = app.choose_on_pane(&id) {
                                     direct(&mut app, &command_tx, command).await;
                                 }
                                 dirty = true;
                             }
-                            Action::Fold { open } if app.pane_titled("model") => {
-                                if let Some(command) = app.adjust_model(open) {
-                                    direct(&mut app, &command_tx, command).await;
-                                }
+                            Action::Fold { open }
+                                if app.pane_titled("model") || app.pane_titled("permission") =>
+                            {
+                                floating::fold(&mut app, &command_tx, open).await;
                                 dirty = true;
                             }
                             // Enter on an entry in the agents view: the same as a click on it.
@@ -436,68 +449,9 @@ pub async fn run(
                                     dirty = true;
                                     continue;
                                 }
-                                let command = match app.picking.take() {
-                                    Some(crate::app::Picking::Thinking) => {
-                                        UiCommand::SetThinking { level: value }
-                                    }
-                                    // No recorded purpose, so nothing here opened it and nothing goes.
-                                    Some(crate::app::Picking::Model) => {
-                                        UiCommand::SetModel { name: value }
-                                    }
-                                    // Matched back by position: a row is labelled for a person to
-                                    // read, and none of that is the id the session needs.
-                                    Some(crate::app::Picking::Session { rows }) => {
-                                        let found = rows
-                                            .iter()
-                                            .find(|(label, _)| *label == value)
-                                            .map(|(_, id)| id.clone());
-                                        match found {
-                                            Some(id) => UiCommand::Resume { id },
-                                            None => continue,
-                                        }
-                                    }
-                                    // Matched back by label: the picker holding the positions is gone.
-                                    Some(crate::app::Picking::Asked { id, rows }) => {
-                                        let chosen = rows
-                                            .iter()
-                                            .find(|(label, _)| *label == value)
-                                            .map(|(_, choice)| choice.clone());
-                                        match chosen {
-                                            Some(choice) => UiCommand::Answered { id, choice },
-                                            // No row matches, so answering would resume a tool with
-                                            // a choice nobody made.
-                                            None => continue,
-                                        }
-                                    }
-                                    // Matched back by label, generated from these same scopes, so the
-                                    // pairing is exact; a value matching none of them is the "no" row.
-                                    Some(crate::app::Picking::Permission { id, offers }) => {
-                                        let chosen = offers
-                                            .iter()
-                                            .find(|scope| {
-                                                scope.label(&app.asking_about) == value
-                                            });
-                                        // The enforcing ledger is on the worker thread and never read
-                                        // back, so what this session holds is kept here.
-                                        if let Some(scope) = chosen
-                                            && let Some(grant) = magi_tools::permit::standing(
-                                                &app.asking_about,
-                                                scope,
-                                            )
-                                        {
-                                            app.was_granted(grant);
-                                        }
-                                        let decision = chosen.map_or(
-                                            magi_proto::permit::Decision::Deny,
-                                            |scope| magi_proto::permit::Decision::Allow {
-                                                scope: scope.clone(),
-                                                lifetime: magi_proto::permit::Lifetime::Session,
-                                            },
-                                        );
-                                        UiCommand::Permit { id, decision }
-                                    }
-                                    // Taken above: its answer is not a `UiCommand`.
-                                    Some(crate::app::Picking::Adoption { .. }) | None => continue,
+                                let Some(command) = app.chose(value) else {
+                                    dirty = true;
+                                    continue;
                                 };
                                 direct(&mut app, &command_tx, command).await;
                                 dirty = true;
@@ -573,22 +527,19 @@ pub async fn run(
                             continue;
                         }
                         let view = terminal_size().1.saturating_sub(ui::chrome_rows());
-                        match pointing::on_the_screen(
-                            &mut app,
-                            mouse,
-                            view,
-                            terminal_size().0,
-                            &mut copied,
-                        ) {
-                            pointing::Pointing::Redraw => dirty = true,
-                            pointing::Pointing::Nothing => continue,
-                            // A row in the agents view was clicked. `press_pane_row` already pointed
-                            // the app at it; this dials the socket, the way `walk` does for the keys.
-                            pointing::Pointing::Steer(seat) => {
-                                dial(&app, seat, socket, &target_tx, &command_tx, &mut held).await;
-                                dirty = true;
-                            }
+                        let pointed =
+                            pointing::on_the_screen(&mut app, mouse, view, terminal_size().0, &mut copied);
+                        if matches!(pointed, pointing::Pointing::Nothing) {
+                            continue;
                         }
+                        // A row in the agents view dials that agent, the way `walk` does for the
+                        // keys; a tab sends what its tab needs asked.
+                        if let pointing::Pointing::Steer(seat) = pointed {
+                            dial(&app, seat, socket, &target_tx, &command_tx, &mut held).await;
+                        } else if let pointing::Pointing::Ask(command) = pointed {
+                            let _ = command_tx.send(command).await;
+                        }
+                        dirty = true;
                     }
                     Event::Paste(text) => {
                         app.editor.insert_str(&text);
@@ -613,6 +564,7 @@ pub async fn run(
                 // when a turn ended would read as the UI having frozen.
                 app.advance();
                 app.poll_details();
+                app.poll_tools();
                 // Done on the frame rather than where the state changes: melchior and the socket both
                 // answer with whatever they were last told.
                 let mut ended = false;
@@ -766,28 +718,16 @@ pub(super) fn float_room() -> (u16, u16) {
     (inside.height, inside.width)
 }
 
-/// The line, if any, a watched agent's phase change is worth putting in front of a person. Only the
-/// edges that end a wait — `finished` and `blocked` — the rest is left to the panel to show quietly.
-fn signal_notice(from: &str, kind: &str, cause: Option<&str>) -> Option<String> {
-    match kind {
-        "finished" => Some(format!("`{from}` finished.")),
-        "blocked" => Some(match cause {
-            Some(why) => format!("`{from}` is blocked: {why}"),
-            None => format!("`{from}` is blocked."),
-        }),
-        _ => None,
-    }
-}
-
 /// The socket to the session, and redialling one that dropped.
 mod connecting;
 use connecting::connection_loop;
 
 /// Which agent the screen is pointed at, and what may be sent to one that is not ours.
 mod crewing;
-use crewing::{dial, direct, footer_data, ours, walk};
+use crewing::{dial, direct, footer_data, ours, signal_notice, walk};
 
 /// The pointer, and which of two readers it belongs to.
+mod floating;
 mod pointing;
 
 /// The colon commands. A closed list, in a file of its own.

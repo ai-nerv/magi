@@ -395,11 +395,22 @@ make.recipe{
       return oslo.run{ "cmp", "-s", a, b }.ok
     end
 
-    local synced, kept = 0, {}
+    -- **Whichever side was edited last wins.** The repo always winning meant an edit made to the
+    -- installed copy was overwritten by the next install, more than once. So a file that differs
+    -- and is newer where it is installed comes back here, and is named, because a file moving
+    -- into a checkout silently is how a change gets committed by accident. `rsync -a` keeps the
+    -- time, so the two agree afterwards and nothing goes back and forth.
+    local synced, kept, back = 0, {}, {}
     local function install_file(src, dir, name)
       local dst = dir .. "/" .. name
-      if a.keep and oslo.fs.stat(dst) and not same(src, dst) then
+      local differs = oslo.fs.stat(dst) and not same(src, dst)
+      if a.keep and differs then
         kept[#kept + 1] = dst
+        return
+      end
+      if differs and oslo.run{ "test", dst, "-nt", src }.ok then
+        sh.rsync("-a", dst, src)
+        back[#back + 1] = src
         return
       end
       sh.mkdir("-p", dir)
@@ -429,6 +440,9 @@ make.recipe{
     end
     print(oslo.ui.style("✓ ", { fg = "green" }) ..
           ("%d file%s -> %s"):format(synced, synced == 1 and "" or "s", dest))
+    for _, path in ipairs(back) do
+      print(dim(("   <- %s was newer where it is installed, and came back"):format(path)))
+    end
     if #kept > 0 then
       print(oslo.ui.style("!  ", { fg = "yellow" }) ..
             ("%d file%s left alone because you asked with --keep:")
@@ -463,6 +477,55 @@ make.recipe{
 make.recipe{ name = "test", desc = "the suite",
              run = function() sh.cargo("test", "--all-targets", "--release") end }
 make.alias("t", "test")
+
+make.recipe{ name = "test-resume", desc = "in-process persistence rebinding",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib")
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "resume_live")
+               sh.cargo("test", "--release", "-p", "magi-journal")
+               sh.cargo("test", "--release", "-p", "magi-lua", "engine::naming")
+               sh.cargo("test", "--release", "-p", "magi-cli", "--test", "resume_live")
+             end }
+
+make.recipe{ name = "test-lifecycle", desc = "session-wide command admission",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "session::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "lifecycle")
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "arrivals")
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "turn", "ownership::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "roundtrip")
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "worker::")
+             end }
+
+make.recipe{ name = "test-layout-display", desc = "layout display and token shares",
+             run = function() sh.cargo("test", "--release", "-p", "magi-tui", "--lib", "laid::tests::") end }
+
+make.recipe{ name = "test-note-projection", desc = "rule and observation provider channels",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "laying::tests::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "laying_live", "projection::")
+             end }
+
+make.recipe{ name = "test-helper-retries", desc = "helper attempt boundaries and truncated calls",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-host", "helping::")
+               make.run("test-turn-boundaries")
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "laying_live", "helper_retries")
+             end }
+
+make.recipe{ name = "test-turn-boundaries", desc = "host history for truncated tool calls",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "turn", "truncated")
+             end }
+
+make.recipe{ name = "test-containment", desc = "coordinator tool and surface spawn policy",
+             run = function() sh.cargo("test", "--release", "-p", "magi-tools", "-p", "magi-host") end }
+
+make.recipe{ name = "test-live-guard", desc = "the required integration prerequisite policy",
+             run = function() sh.cargo("test", "--release", "-p", "magi-testkit", "live::tests") end }
+
+make.recipe{ name = "family-path", desc = "the binary selected by the build recipe",
+             run = function() print("NERV_BINARY=" .. binary_path()) end }
 
 make.recipe{ name = "check", desc = "type-check every target",
              run = function() sh.cargo("check", "--all-targets", "--release") end }

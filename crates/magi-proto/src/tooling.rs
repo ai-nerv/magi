@@ -48,6 +48,27 @@ pub struct Ran {
     /// Deferred tools this call made available: a `tools` lookup that reached one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unlocks: Vec<String>,
+    #[serde(flatten)]
+    pub hints: Hints,
+}
+
+/// What a tool says about its own result for whoever lays out the context: the words to show when
+/// it is left out, how to get it back, and whether it must stay. Only the tool knows these.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hints {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brief: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub back: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub keep: bool,
+}
+
+impl Hints {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.brief.is_none() && self.back.is_none() && !self.keep
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -72,6 +93,19 @@ pub enum Shown {
     /// Rows the tool is asking for, and will fill itself. magi owns how much room there is, and
     /// reserves, clips, forwards input and blits back what comes out without reading it.
     Surface(Surface),
+    Wonder(Box<Wondering>),
+}
+
+/// A question a tool puts to magi rather than to the person: `wonder` names one of
+/// [`crate::wondering::Wonder`]'s verbs, and the resumption is an [`Ask`]'s with nobody to
+/// interrupt. Boxed above, being the widest thing a result carries.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Wondering {
+    pub wonder: String,
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub args: serde_json::Value,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub about: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

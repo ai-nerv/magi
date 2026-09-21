@@ -7,49 +7,17 @@ use magi_model::StopReason;
 use magi_proto::{AgentStatus, Entry, MessageId, ToolCallId};
 use magi_tools::{Ops, Registry};
 
-/// What the daemon needs to reach a model. Plain data, and sendable: the protocol it names is built
-/// on the worker's own thread, because a Lua VM is neither `Send` nor `Sync`.
-#[derive(Debug, Clone)]
-pub struct Backend {
-    pub tools: Vec<(String, String)>,
-    pub clients: Vec<(String, String)>,
-    /// Which program fills the `tools` role, and what this session tells it.
-    pub tooling: magi_tools::supplier::Tooling,
-    pub cwd: std::path::PathBuf,
-    /// Permissions a configuration granted in advance; they go into the ledger at startup.
-    pub grants: Vec<magi_proto::permit::Grant>,
-    pub environ: std::collections::BTreeMap<String, String>,
-    /// Whether the file tools refuse paths outside `cwd`. See [`magi_tools::ops::Real`].
-    pub confine: bool,
-    /// Whether a tool command runs inside a kernel jail — `magi.isolation`.
-    pub isolate: bool,
-    /// Which model to ask for, as melchior names it: `provider/model`. A name and nothing else.
-    pub model: String,
-    /// The program that owns the model, found on `PATH`. Named per backend, not compiled in.
-    pub mind: String,
-    pub wants: magi_proto::ask::Wants,
-    /// How much this model will read, as melchior's card reported it. Carried rather than looked up.
-    pub context_window: Option<u64>,
-    /// What the model is told it is. Assembled once, when the daemon starts.
-    pub system: Option<String>,
-}
+pub use crate::catalog::Backend;
 
 /// Run one turn and journal what it produced. The entry is written before the turn ends, so a UI
 /// attaching mid-turn extends a partial message and a crash leaves one rather than nothing.
 async fn one_turn(
     session: &tokio::sync::Mutex<Session>,
     backend: &Backend,
-    tools: Vec<magi_model::Tool>,
+    context: magi_model::Context,
     cancel: &crate::cancel::Cancel,
-    remembered: Option<&magi_model::Message>,
+    (scribe, prompt): (&crate::scribe::Held, &crate::laying::Prompt),
 ) -> Result<Round, crate::HostError> {
-    let mut context = crate::context::of(&*session.lock().await);
-    context.tools = tools;
-    context.system.clone_from(&backend.system);
-    if let Some(remembered) = remembered {
-        crate::injecting::put(&mut context, remembered.clone());
-    }
-
     {
         let mut held = session.lock().await;
         held.set_status(AgentStatus::Working {
@@ -57,11 +25,21 @@ async fn one_turn(
         });
     }
 
-    let id = MessageId::new(format!("a{}", session.lock().await.cursor().next().0));
     let mut turn = Turn::new();
     let mut retries_seen: Vec<(u32, u32, u64)> = Vec::new();
-
-    session.lock().await.commit(assistant(&id, &turn))?;
+    let (id, cursor) = {
+        let mut held = session.lock().await;
+        let id = MessageId::new(format!("a{}", held.cursor().next().0));
+        let cursor = held.commit(assistant(&id, &turn))?;
+        (id, cursor)
+    };
+    magi_model::noted!(
+        "ask: {} with {} messages and {} tools",
+        backend.model,
+        context.messages.len(),
+        context.tools.len()
+    );
+    let asked_at = std::time::Instant::now();
 
     // One channel for both: a delta from the second attempt arriving before the retry that
     // discarded the first would be thrown away with it.
@@ -97,14 +75,15 @@ async fn one_turn(
                         // Revised rather than amended: an amendment writes to disk and flushes.
                         Arrival::Delta(delta) => {
                             turn.apply(delta);
-                            session.lock().await.revise(assistant(&id, &turn));
+                            session.lock().await.revise_at(cursor, assistant(&id, &turn))?;
                         }
                         Arrival::Retrying { attempt, max_attempts, delay_ms } => {
                             retries_seen.push((attempt, max_attempts, delay_ms));
+                            magi_model::noted!("ask: attempt {attempt} of {max_attempts} failed; again in {delay_ms}ms");
                             // What the attempt published has to be taken back, to nothing.
                             turn = Turn::new();
                             let mut held = session.lock().await;
-                            held.revise(assistant(&id, &turn));
+                            held.revise_at(cursor, assistant(&id, &turn))?;
                             // Nothing ever set this, so an overload showed "Thinking" for a minute.
                             held.set_status(AgentStatus::Retrying {
                                 attempt,
@@ -133,7 +112,7 @@ async fn one_turn(
                 retries_seen.push((attempt, max_attempts, delay_ms));
                 turn = Turn::new();
                 let mut held = session.lock().await;
-                held.revise(assistant(&id, &turn));
+                held.revise_at(cursor, assistant(&id, &turn))?;
                 held.set_status(AgentStatus::Retrying {
                     attempt,
                     max_attempts,
@@ -142,28 +121,36 @@ async fn one_turn(
             }
         }
     }
-    session.lock().await.revise(assistant(&id, &turn));
+    session
+        .lock()
+        .await
+        .revise_at(cursor, assistant(&id, &turn))?;
 
     // Whatever arrived before the interrupt is kept: the model said it.
     if cancel.is_requested() {
+        magi_model::noted!("ask: {} interrupted", backend.model);
         turn.abort(StopReason::Aborted);
         let mut held = session.lock().await;
-        held.amend(Entry::Assistant {
-            id,
-            text: turn.text().to_owned(),
-            thinking: turn.thinking().to_owned(),
-            stop_reason: Some(StopReason::Aborted),
-            error: None,
-            signatures: magi_proto::Signatures {
-                text: None,
-                thinking: turn.signature().map(str::to_owned),
+        held.amend_at(
+            cursor,
+            Entry::Assistant {
+                id,
+                text: turn.text().to_owned(),
+                thinking: turn.thinking().to_owned(),
+                stop_reason: Some(StopReason::Aborted),
+                error: None,
+                signatures: magi_proto::Signatures {
+                    text: None,
+                    thinking: turn.signature().map(str::to_owned),
+                },
+                usage: magi_proto::Usage::default(),
             },
-            usage: magi_proto::Usage::default(),
-        })?;
+        )?;
         held.set_status(AgentStatus::Idle);
         return Ok(Round {
             turn,
             failed: None,
+            said: String::new(),
             retries: retries_seen,
         });
     }
@@ -171,28 +158,57 @@ async fn one_turn(
     if let Err(error) = outcome {
         // An error is a value, not an exception: the transcript stays well-formed.
         let refused = error.why;
+        let said = error.message.clone();
+        magi_model::noted!("ask: {} failed ({refused:?}): {said}", backend.model);
         turn.abort(StopReason::Error);
         let mut held = session.lock().await;
-        held.amend(Entry::Assistant {
-            id,
-            text: turn.text().to_owned(),
-            thinking: turn.thinking().to_owned(),
-            stop_reason: Some(StopReason::Error),
-            error: Some(error.message),
-            signatures: magi_proto::Signatures::default(),
-            usage: magi_proto::Usage::default(),
-        })?;
-        held.set_status(AgentStatus::Idle);
+        held.amend_at(
+            cursor,
+            Entry::Assistant {
+                id,
+                text: turn.text().to_owned(),
+                thinking: turn.thinking().to_owned(),
+                stop_reason: Some(StopReason::Error),
+                error: Some(error.message),
+                signatures: magi_proto::Signatures::default(),
+                usage: magi_proto::Usage::default(),
+            },
+        )?;
+        // An overflow is not the end of the turn: `run` may yet be handed a tighter layout, and
+        // `magi -p` leaves the moment a session says it is idle.
+        if refused != magi_proto::ask::Refusal::Overflow {
+            held.set_status(AgentStatus::Idle);
+        }
         return Ok(Round {
             turn,
             failed: Some(refused),
+            said,
             retries: retries_seen,
         });
     }
 
+    // Before the entry is finished, not after: `magi -p` exits the moment it is, and the report that
+    // corrects balthasar's estimate would go with it.
+    let used = turn.usage();
+    magi_model::noted!(
+        "ask: {} {} in {}ms: {} in ({} from cache), {} out, ${}.{:06}",
+        backend.model,
+        if matches!(turn.state(), magi_core::TurnState::ToolsPending) {
+            "asked for tools"
+        } else {
+            "answered"
+        },
+        asked_at.elapsed().as_millis(),
+        used.prompt_tokens(),
+        used.cache_read,
+        used.output,
+        used.cost_micros / 1_000_000,
+        used.cost_micros % 1_000_000
+    );
+    crate::laying::applied(scribe, prompt, used).await;
     let mut held = session.lock().await;
 
-    held.amend(assistant(&id, &turn))?;
+    held.amend_at(cursor, assistant(&id, &turn))?;
     // Idle only when the turn is over; a round that stopped for tools is followed by another round.
     if !matches!(turn.state(), magi_core::TurnState::ToolsPending) {
         held.set_status(AgentStatus::Idle);
@@ -200,16 +216,19 @@ async fn one_turn(
     Ok(Round {
         turn,
         failed: None,
+        said: String::new(),
         retries: retries_seen,
     })
 }
 
 /// What one round produced. The turn on its own cannot say why it stopped, and by the time a
-/// failure is an error entry the class is gone — so an overflow can be answered by compacting.
+/// failure is an error entry the class is gone — so an overflow can be answered with a tighter layout.
 struct Round {
     turn: Turn,
     /// Set when the provider refused, and the class it refused with.
     failed: Option<magi_proto::ask::Refusal>,
+    /// What the provider said when it refused, which can carry how far over the request was.
+    said: String,
     /// Every retry this round took, as `(attempt, of, delay_ms)`; the loop that owns the watchers
     /// is what reports them.
     retries: Vec<(u32, u32, u64)>,
@@ -276,6 +295,7 @@ async fn permissions(
             noted.about,
             if noted.allowed { "allowed" } else { "refused" }
         );
+        magi_model::noted!("permit: {said}");
         let mut open = scribe.lock().await;
         if let Some(scribe) = open.as_mut()
             && let Err(why) = scribe.noticed(cursor, "permission", &said).await
@@ -300,16 +320,20 @@ pub async fn run(
     // Taken once: the handle is a clone of shared state, so a mid-round stop is visible through it.
     let cancel = session.lock().await.cancel();
 
-    // Whether to compact is balthasar's answer, not a threshold here. Before the first round, not
-    // before every one: compacting between rounds summarises a conversation still in progress.
-    compact(session, backend, registry, scribe, PATIENCE).await;
-
-    // Once per prompt, and after any compaction: the recall is about what the person asked, and
-    // recalling first would spend the budget on a window that is about to change shape.
-    let (remembered, injection) = remembered(session, backend, scribe).await;
-
-    // One reactive compaction per prompt: a second overflow means the kept tail alone will not fit.
-    let mut compacted = false;
+    // What goes into each request is balthasar's to say, asked afresh every round.
+    // One budget for every helper job this prompt starts, and the session holds it for the ones after.
+    let spent = crate::helping::Spend::default();
+    session
+        .lock()
+        .await
+        .set_helpers_spent(std::sync::Arc::clone(&spent));
+    let mut prompt = crate::laying::Prompt {
+        spent,
+        ..crate::laying::Prompt::default()
+    };
+    let tools = registry.declarations();
+    // A request already laid out, because the provider refused the last one as too long.
+    let mut tighter: Option<magi_model::Context> = None;
 
     for _ in 0..MAX_ROUNDS {
         // A turn is one exchange with the model, and this is where a watcher learns of it.
@@ -318,14 +342,13 @@ pub async fn run(
         });
         let began = std::time::Instant::now();
 
-        let round = one_turn(
-            session,
-            backend,
-            registry.declarations(),
-            &cancel,
-            remembered.as_ref(),
-        )
-        .await?;
+        let mut context = match tighter.take() {
+            Some(context) => context,
+            None => crate::laying::lay(session, backend, &tools, scribe, &mut prompt).await,
+        };
+        context.tools.clone_from(&tools);
+        context.system.clone_from(&backend.system);
+        let round = one_turn(session, backend, context, &cancel, (scribe, &prompt)).await?;
 
         for (attempt, of, delay_ms) in &round.retries {
             registry.saw(&magi_tools::Event::Retried {
@@ -341,13 +364,18 @@ pub async fn run(
             ok: round.failed.is_none(),
         });
 
-        // The estimate above is rough; this is the provider's own answer. The failed round stays.
-        if round.failed == Some(magi_proto::ask::Refusal::Overflow) && !compacted {
-            compacted = true;
-            if compact(session, backend, registry, scribe, INSISTENCE).await {
+        // The estimate was balthasar's; this is the provider's own answer. The failed round stays.
+        if round.failed == Some(magi_proto::ask::Refusal::Overflow) {
+            if let Some(context) =
+                crate::laying::overflowed(session, scribe, &mut prompt, &round.said).await
+            {
+                tighter = Some(context);
                 continue;
             }
+            // Nobody had a tighter layout, so the refusal stands and the turn is over.
+            session.lock().await.set_status(AgentStatus::Idle);
         }
+        prompt.round += 1;
         let turn = round.turn;
 
         // An interrupted turn is already journalled as aborted; continuing would abort the next too.
@@ -359,7 +387,7 @@ pub async fn run(
         let poisoned = turn.poisoned_results();
         if !poisoned.is_empty() {
             let mut held = session.lock().await;
-            for (call, _) in turn_calls(&turn).into_iter().zip(poisoned) {
+            for (call, _) in turn.attempted_calls().iter().zip(poisoned) {
                 held.commit(Entry::Tool {
                     id: ToolCallId::new(call.id.clone()),
                     name: call.name.clone(),
@@ -421,6 +449,7 @@ pub async fn run(
         permissions(registry, ops, scribe, session.lock().await.cursor()).await;
 
         for ((call, prepared), at) in calls.iter().zip(prepared).zip(at) {
+            let began = std::time::Instant::now();
             // Checked per call: the entry is committed, so a stop leaves a result, not a bare call.
             let output = match prepared {
                 // A call in flight is collected even after an interrupt: the peer runs it either way.
@@ -429,12 +458,27 @@ pub async fn run(
                 }
                 _ => magi_tools::Output::error("cancelled before this tool ran"),
             };
+            magi_model::noted!(
+                "tool: {} {} {} in {}ms, {} bytes{}",
+                call.name,
+                trimmed(&call.arguments),
+                if output.is_error { "failed" } else { "ok" },
+                began.elapsed().as_millis(),
+                output.content.len(),
+                output
+                    .hints
+                    .brief
+                    .as_deref()
+                    .map(|brief| format!(", stub `{brief}`"))
+                    .unwrap_or_default()
+            );
             // The other half of the loop: what the turn did with what it was given, the only signal
             // balthasar has. After the tool, before the entry is amended, and off with no ledger.
-            if let Some(injection) = &injection {
+            if let Some(injection) = &prompt.injection {
                 acted_on(scribe, injection, call, output.is_error).await;
             }
             let mut held = session.lock().await;
+            held.hint(&call.id, output.hints);
             held.amend_at(
                 at,
                 Entry::Tool {
@@ -477,6 +521,15 @@ pub async fn run(
     Ok(())
 }
 
+/// Arguments as a log line shows them: one line, and not all of a long one.
+fn trimmed(text: &str) -> String {
+    let flat = text.replace('\n', " ");
+    match flat.char_indices().nth(100) {
+        Some((cut, _)) => format!("{}…", &flat[..cut]),
+        None => flat,
+    }
+}
+
 /// The calls a finished turn is waiting on, if any.
 fn turn_calls(turn: &Turn) -> Vec<magi_core::PendingCall> {
     match turn.step() {
@@ -485,7 +538,7 @@ fn turn_calls(turn: &Turn) -> Vec<magi_core::PendingCall> {
     }
 }
 
-/// Compaction, and what balthasar is asked and told.
+/// What balthasar is told about the memory it handed over.
 #[path = "turn/memory.rs"]
 mod memory;
-use memory::{INSISTENCE, PATIENCE, acted_on, compact, remembered};
+use memory::acted_on;

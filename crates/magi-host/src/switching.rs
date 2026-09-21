@@ -14,6 +14,10 @@ pub(super) async fn switch_model(
     scribe: &crate::scribe::Held,
     name: &str,
 ) -> Option<String> {
+    let mut boundary = worker.write().await;
+    if session.lock().await.busy() {
+        return Some("session is busy; change model after queued work finishes".into());
+    }
     let Some(backend) = catalog.backend(name) else {
         return Some(catalog.unusable(name).unwrap_or_else(|| {
             let usable = catalog.usable();
@@ -42,9 +46,10 @@ pub(super) async fn switch_model(
         Some(Arc::clone(&person.approver)),
         Arc::clone(&person.asks),
         Arc::clone(&person.holds),
+        Arc::clone(&person.knows),
         Arc::clone(scribe),
     ));
-    *worker.write().await = Some(fresh);
+    *boundary = Some(fresh);
     {
         let mut held = session.lock().await;
         held.set_model(Some(info));
@@ -87,6 +92,10 @@ pub(super) async fn switch_thinking(
     scribe: &crate::scribe::Held,
     level: &str,
 ) -> Option<String> {
+    let mut boundary = worker.write().await;
+    if session.lock().await.busy() {
+        return Some("session is busy; change thinking after queued work finishes".into());
+    }
     let Ok(parsed) = serde_json::from_value::<magi_model::ThinkingLevel>(
         serde_json::Value::String(level.to_owned()),
     ) else {
@@ -111,9 +120,10 @@ pub(super) async fn switch_thinking(
         Some(Arc::clone(&person.approver)),
         Arc::clone(&person.asks),
         Arc::clone(&person.holds),
+        Arc::clone(&person.knows),
         Arc::clone(scribe),
     ));
-    *worker.write().await = Some(fresh);
+    *boundary = Some(fresh);
     let mut held = session.lock().await;
     held.set_thinking(level.to_owned());
     held.announce_model();
@@ -131,6 +141,10 @@ pub(super) async fn switch_provider(
     scribe: &crate::scribe::Held,
     provider: Option<String>,
 ) -> Option<String> {
+    let mut boundary = worker.write().await;
+    if session.lock().await.busy() {
+        return Some("session is busy; change provider after queued work finishes".into());
+    }
     let (name, thinking) = {
         let held = session.lock().await;
         (held.model_name()?, held.thinking().to_owned())
@@ -143,9 +157,10 @@ pub(super) async fn switch_provider(
         Some(Arc::clone(&person.approver)),
         Arc::clone(&person.asks),
         Arc::clone(&person.holds),
+        Arc::clone(&person.knows),
         Arc::clone(scribe),
     ));
-    *worker.write().await = Some(fresh);
+    *boundary = Some(fresh);
     session.lock().await.set_provider(provider);
     None
 }

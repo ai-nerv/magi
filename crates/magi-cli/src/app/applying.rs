@@ -24,8 +24,12 @@ impl App {
                 model,
                 choices,
                 thinking,
+                judging,
+                session,
                 ..
             } => {
+                self.session_id = Some(session.to_string());
+                self.judging = judging;
                 let unconfigured = model.is_none();
                 self.model = model;
                 self.model_reasons = self.model.as_ref().is_some_and(|chosen| {
@@ -157,52 +161,11 @@ impl App {
             // Said in the transcript, once the conversation has started. Which model answered
             // is part of the record, and a switch that changes only two dim words in the
             // footer leaves no mark on the place a reader actually reads.
-            // The turn is blocked until this is answered, so it takes the screen: a picker
-            // opened over whatever else was there, with the narrowest answer under the cursor.
-            HarnessEvent::PermissionAsked {
-                id,
-                tool,
-                action,
-                offers,
-                ..
-            } => {
-                let choices = offers
-                    .iter()
-                    .map(|scope| magi_tui::picker::Choice {
-                        value: scope.label(&action),
-                        detail: String::new(),
-                        ready: true,
-                    })
-                    .chain(std::iter::once(magi_tui::picker::Choice {
-                        value: "no".to_owned(),
-                        detail: "refuse, and tell the model".to_owned(),
-                        ready: true,
-                    }))
-                    .collect();
-                // The call on its own rows, not in the title. A long command clipped into a
-                // heading is clipped in the middle of the very thing being decided about.
-                let about = magi_tui::wrap::hard(action.subject(), 60);
-                self.overlay = Some(
-                    magi_tui::picker::Picker::new(
-                        format!("{tool} wants to {}", action.verb()),
-                        choices,
-                        None,
-                    )
-                    .about(about)
-                    .into(),
-                );
-                self.asking_about = action;
-                self.picking = Some(Picking::Permission { id, offers });
+            // The turn is blocked until this is answered. Kept with every other question still
+            // open rather than put straight on screen: see `asks`.
+            asked @ (HarnessEvent::PermissionAsked { .. } | HarnessEvent::Asked { .. }) => {
+                self.ask_arrived(asked);
             }
-            // The general question, drawn with the same picker a permission is — see `asked`.
-            HarnessEvent::Asked {
-                id,
-                tool,
-                question,
-                options,
-                detail,
-                ..
-            } => self.asked(id, &tool, &question, options, detail),
             // Rows a tool asked for. Nothing here reads what goes in them — see `surfacing`.
             HarnessEvent::Surfaced {
                 id,
@@ -223,6 +186,19 @@ impl App {
             // holds to a child, and this one was decided on the tool thread without passing
             // through the loop that usually notices.
             HarnessEvent::Granted { grant, .. } => self.was_granted(grant),
+            // Said by the session about itself, to the person and to no model.
+            HarnessEvent::Noticed { text, .. } => self.show_notice(text),
+            HarnessEvent::ModeChanged { judging, .. } => {
+                if self.started() && self.judging.mode != judging.mode {
+                    self.show_notice(format!(
+                        "Mode is now `{}`: {}.",
+                        judging.mode.name(),
+                        crate::app::asks::said_of(judging.mode)
+                    ));
+                }
+                self.judging = judging;
+                self.refresh_views();
+            }
             HarnessEvent::ModelChanged { model, .. } => {
                 let before = self.model.as_ref().map(|m| m.name.clone());
                 let after = model.as_ref().map(|m| m.name.clone());
@@ -248,6 +224,29 @@ impl App {
                 if self.started() {
                     self.entries.push(Entry::Branch { id, keeps });
                 }
+            }
+            // How the request just sent was built, for the model's card and the `:context` view.
+            HarnessEvent::ContextLaid {
+                id,
+                budget,
+                counts,
+                why,
+                slots,
+            } => {
+                self.laid = Some(magi_tui::laid::Laid {
+                    id,
+                    budget,
+                    counts,
+                    why,
+                    slots,
+                });
+                self.refresh_views();
+            }
+            HarnessEvent::MemoryAnswered { verb, answer } => self.remembered(&verb, &answer),
+            HarnessEvent::HelperSpent { role, model, usage } => {
+                self.helped
+                    .push(magi_tui::cost::Helper { role, model, usage });
+                self.refresh_views();
             }
             HarnessEvent::Compacted {
                 id,

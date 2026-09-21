@@ -22,6 +22,45 @@ fn assistant(text: &str) -> Entry {
     }
 }
 
+#[test]
+fn targeted_updates_preserve_later_entries_and_refuse_wrong_identity() {
+    let mut s = session();
+    let cursor = s.commit(assistant("partial")).expect("valid entry");
+    let user = Entry::User {
+        id: MessageId::new("u2"),
+        text: "later".into(),
+        aside: String::new(),
+    };
+    s.commit(user.clone()).expect("valid entry");
+    s.take_pending();
+    let mut events = s.subscribe();
+    s.revise_at(cursor, assistant("partial answer"))
+        .expect("valid entry");
+    s.amend_at(cursor, assistant("finished"))
+        .expect("valid entry");
+    assert_eq!(&s.entries()[1], &user);
+    assert!(matches!(&s.entries()[0], Entry::Assistant { text, .. } if text == "finished"));
+    assert!(
+        drain(&mut events)
+            .iter()
+            .all(|event| event.cursor() == cursor)
+    );
+    s.take_pending();
+    let before = s.entries().to_vec();
+    for invalid in [Cursor(0), Cursor(2), Cursor(99)] {
+        assert!(s.revise_at(invalid, assistant("wrong")).is_err());
+        assert!(s.amend_at(invalid, assistant("wrong")).is_err());
+    }
+    let mut wrong = assistant("wrong identity");
+    if let Entry::Assistant { id, .. } = &mut wrong {
+        *id = MessageId::new("another");
+    }
+    assert!(s.amend_at(cursor, wrong).is_err());
+    assert_eq!(s.entries(), before);
+    assert!(drain(&mut events).is_empty());
+    assert!(s.take_pending().is_empty());
+}
+
 /// Everything published since the receiver was made.
 fn drain(events: &mut tokio::sync::broadcast::Receiver<HarnessEvent>) -> Vec<HarnessEvent> {
     let mut out = Vec::new();

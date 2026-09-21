@@ -48,6 +48,13 @@ pub enum UiCommand {
     SetThinking {
         level: String,
     },
+    SetMode {
+        mode: String,
+    },
+    /// How sure a second model has to be for its verdict to be acted on.
+    SetUnsure {
+        band: (f64, f64),
+    },
     /// Which provider serves the model, by routing tag; `None` lets the router choose.
     SetProvider {
         provider: Option<String>,
@@ -93,6 +100,12 @@ pub enum UiCommand {
     /// Continue a session recorded earlier, in place of this one; every attached UI follows.
     Resume {
         id: String,
+    },
+    /// Ask the memory layer about its notes; answered with [`crate::HarnessEvent::MemoryAnswered`].
+    Memory {
+        verb: String,
+        #[serde(default)]
+        arg: serde_json::Value,
     },
     Detach,
 }

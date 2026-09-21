@@ -24,10 +24,17 @@ impl Serving {
             .arg("project")
             .current_dir(dir)
             .env("XDG_RUNTIME_DIR", &runtime)
+            .env("HOME", dir.join("h"))
+            .env("XDG_CONFIG_HOME", dir.join("c"))
+            .env("XDG_DATA_HOME", dir.join("d"))
+            .env_remove("MAGI_API_SOCKET")
+            .env_remove("MAGI_MEMORY_INSTANCE")
+            .env_remove("MAGI_BALTHASAR_INSTANCE")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
+            .map_err(|why| crate::live::unavailable(&format!("balthasar could not start: {why}")))
             .ok()?;
         // Both of the role's directories: one not yet rebuilt binds only the older name.
         let sockets = ["memory", "balthasar"]

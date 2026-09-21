@@ -35,6 +35,45 @@ pub(super) fn run_command(input: &str, app: &mut App) -> Control {
             app.show_cost();
             Control::Continue
         }
+        // As the session last reported it: balthasar lays each request out, and says so.
+        ":context" => {
+            app.show_context();
+            Control::Continue
+        }
+        // balthasar's float, which the footer dot also opens: a control only the pointer can reach
+        // is one nobody finds twice.
+        ":memory" | ":balthasar" => {
+            app.show_memory(0);
+            match app.memory_opened() {
+                Some(ask) => Control::Send(ask),
+                None => Control::Continue,
+            }
+        }
+        ":crew" | ":melchior" => {
+            app.show_crew(0);
+            Control::Continue
+        }
+        ":tools" | ":casper" => {
+            app.show_tooling(0);
+            Control::Continue
+        }
+        // Opened at once and filled when the memory layer answers; the notes are the session's to ask.
+        ":notes" => {
+            app.show_notes();
+            Control::Send(UiCommand::Memory {
+                verb: "notes".to_owned(),
+                arg: serde_json::json!({}),
+            })
+        }
+        // The session's to change: the gate is there, and every screen is told.
+        ":mode" => Control::Send(UiCommand::SetMode {
+            mode: input.split_whitespace().nth(1).unwrap_or("next").to_owned(),
+        }),
+        // What it shows is the session's, and arrives with every snapshot: opened here.
+        ":permission" | ":perm" => {
+            app.show_permission();
+            Control::Continue
+        }
         ":agents" => {
             app.show_agents();
             Control::Continue
@@ -63,9 +102,23 @@ pub(super) fn run_command(input: &str, app: &mut App) -> Control {
                 Control::Continue
             }
         },
+        // Named, it asks about that one; alone, it offers the list. Nothing goes without an answer.
+        ":reset" => {
+            app.open_reset_picker(input.split_whitespace().nth(1));
+            Control::Continue
+        }
         ":permissions" => Control::Send(UiCommand::DeclareNeeds),
         ":resume" => {
             app.open_session_picker();
+            Control::Continue
+        }
+        ":archives" | ":archive" => {
+            app.open_archive_picker();
+            Control::Continue
+        }
+        _ if input.split_whitespace().next() == Some(":rename") => {
+            let name = input.trim_start()[":rename".len()..].trim();
+            app.rename_session(name);
             Control::Continue
         }
         ":rewind" => match input.split_whitespace().nth(1) {

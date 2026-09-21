@@ -41,6 +41,9 @@ pub struct Output {
     /// Deferred tools this call made available, for the registry to add to the model's list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unlocks: Vec<String>,
+    /// What the tool said about its own result for the memory layer: a stub, a way back, a keep.
+    #[serde(default, skip_serializing_if = "magi_proto::tooling::Hints::is_empty")]
+    pub hints: magi_proto::tooling::Hints,
 }
 
 impl Output {
@@ -49,9 +52,7 @@ impl Output {
     pub fn ok(content: impl Into<String>) -> Self {
         Self {
             content: content.into(),
-            is_error: false,
-            shown: None,
-            unlocks: Vec::new(),
+            ..Self::default()
         }
     }
 
@@ -61,8 +62,7 @@ impl Output {
         Self {
             content: content.into(),
             is_error: true,
-            shown: None,
-            unlocks: Vec::new(),
+            ..Self::default()
         }
     }
 }

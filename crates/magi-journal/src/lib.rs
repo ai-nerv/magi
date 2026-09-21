@@ -21,6 +21,7 @@ pub enum JournalError {
 pub struct Journal {
     session: SessionId,
     entries: Vec<Entry>,
+    cursors: Vec<Cursor>,
     next: Cursor,
 }
 
@@ -32,9 +33,40 @@ impl Journal {
         let next = Cursor(entries.len() as u64).next();
         Self {
             session,
+            cursors: (1..next.0).map(Cursor).collect(),
             entries,
             next,
         }
+    }
+
+    /// Restore entries with their original strictly increasing, nonzero cursors.
+    pub fn restore(session: SessionId, rows: Vec<(Cursor, Entry)>) -> Result<Self, JournalError> {
+        let mut previous = 0;
+        for (cursor, _) in &rows {
+            if cursor.0 <= previous || cursor.0 == u64::MAX {
+                return Err(JournalError::Refused(
+                    "invalid transcript cursor ordering".into(),
+                ));
+            }
+            previous = cursor.0;
+        }
+        let (cursors, entries) = rows.into_iter().unzip();
+        Ok(Self {
+            session,
+            cursors,
+            entries,
+            next: Cursor(previous + 1),
+        })
+    }
+
+    #[must_use]
+    pub fn cursor_at(&self, index: usize) -> Option<Cursor> {
+        self.cursors.get(index).copied()
+    }
+
+    #[must_use]
+    pub fn position(&self, cursor: Cursor) -> Option<usize> {
+        self.cursors.binary_search(&cursor).ok()
     }
 
     #[must_use]
@@ -55,20 +87,19 @@ impl Journal {
         }
     }
 
-    /// Where the entry a cursor names sits. Cursors count from one; the zero cursor names none.
-    fn at(cursor: Cursor) -> Option<usize> {
-        usize::try_from(cursor.0).ok()?.checked_sub(1)
-    }
-
     #[must_use]
     pub fn cursor(&self) -> Cursor {
         Cursor(self.next.0.saturating_sub(1))
     }
 
-    /// Append an entry and return the position it took. Cannot fail today; see [`JournalError`].
+    /// Append an entry at the next cursor, refusing an exhausted cursor range.
     pub fn append(&mut self, entry: Entry) -> Result<Cursor, JournalError> {
+        if self.next.0 == u64::MAX {
+            return Err(JournalError::Refused("transcript cursor exhausted".into()));
+        }
         let cursor = self.next;
         self.entries.push(entry);
+        self.cursors.push(cursor);
         self.next = cursor.next();
         Ok(cursor)
     }
@@ -87,7 +118,7 @@ impl Journal {
     /// which is wrong for a round of tool calls answered one at a time. A cursor naming no entry
     /// is ignored rather than refused.
     pub fn amend_at(&mut self, cursor: Cursor, entry: Entry) -> Result<(), JournalError> {
-        let Some(at) = Self::at(cursor) else {
+        let Some(at) = self.position(cursor) else {
             return Ok(());
         };
         let Some(slot) = self.entries.get_mut(at) else {

@@ -20,6 +20,40 @@ impl std::fmt::Display for Trouble {
     }
 }
 
+/// Which of a router's upstreams last answered each run of asks in this session. Asked first next
+/// time, since a prompt's cache lives with the upstream that read it; the router still falls back.
+static SERVED: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
+    std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// What to ask for: the person's own choice of upstream, else the one that answered this run last.
+fn sticky(stream: &str, wants: &Wants) -> Wants {
+    let mut wants = wants.clone();
+    if wants.provider.is_none() {
+        wants.provider = SERVED
+            .lock()
+            .ok()
+            .and_then(|served| served.get(stream).cloned());
+    }
+    wants
+}
+
+/// Forget which upstream answered a run last. Asking first for the one that has just failed asks
+/// it again on every retry, and a router told an order does not look past it for a timeout.
+fn let_go(stream: &str) {
+    if let Ok(mut served) = SERVED.lock() {
+        served.remove(stream);
+    }
+}
+
+/// A run of asks: one model with one system prompt, so a helper's short ask never moves the turn
+/// off the upstream holding its long prompt.
+fn stream_of(model: &str, context: &Context) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    context.system.hash(&mut hasher);
+    format!("{model}#{:x}", hasher.finish())
+}
+
 /// A wait melchior is taking before trying again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Retry {
@@ -85,10 +119,11 @@ pub async fn ask_through(
     mut on_delta: impl FnMut(Delta),
     mut on_retry: impl FnMut(Retry),
 ) -> Result<(), Trouble> {
+    let stream = stream_of(model, context);
     let asking = Ask {
         model: model.to_owned(),
         context: context.clone(),
-        wants: wants.clone(),
+        wants: sticky(&stream, wants),
         about: String::new(),
     };
     let body = serde_json::to_vec(&asking).map_err(|why| Trouble {
@@ -144,6 +179,7 @@ pub async fn ask_through(
         };
         match said {
             Said::Failed { message, why } => {
+                let_go(&stream);
                 ended = Some(Err(Trouble { message, why }));
             }
             Said::Stop { reason } => {
@@ -155,12 +191,21 @@ pub async fn ask_through(
                 of,
                 seconds,
                 ..
-            } => on_retry(Retry {
-                attempt,
-                max_attempts: of,
-                // Milliseconds, because that is what the status line shows.
-                delay_ms: (seconds * 1000.0) as u64,
-            }),
+            } => {
+                ended = None;
+                let_go(&stream);
+                on_retry(Retry {
+                    attempt,
+                    max_attempts: of,
+                    // Milliseconds, because that is what the status line shows.
+                    delay_ms: (seconds * 1000.0) as u64,
+                });
+            }
+            Said::Served { provider } => {
+                if let Ok(mut served) = SERVED.lock() {
+                    served.insert(stream.clone(), provider);
+                }
+            }
             other => on_delta(carried(other)),
         }
     }
@@ -187,7 +232,9 @@ fn carried(said: Said) -> Delta {
         Said::Spent { usage } => Delta::Usage(usage),
         // Unreachable by construction: the caller takes both before this is called.
         Said::Stop { reason } => Delta::Stop(reason),
-        Said::Failed { .. } | Said::Retrying { .. } => Delta::Stop(magi_model::StopReason::Error),
+        Said::Failed { .. } | Said::Retrying { .. } | Said::Served { .. } => {
+            Delta::Stop(magi_model::StopReason::Error)
+        }
     }
 }
 
@@ -197,17 +244,25 @@ fn carried(said: Said) -> Delta {
 /// # Errors
 /// Whatever [`ask`] would return, and [`Refusal::Invalid`] when the answer will not parse.
 pub async fn value(
+    program: &str,
     model: &str,
     context: &Context,
     wants: &Wants,
 ) -> Result<serde_json::Value, Trouble> {
     let mut text = String::new();
     let mut args = String::new();
-    ask(model, context, wants, |delta| match delta {
-        Delta::Text(chunk) => text.push_str(&chunk),
-        Delta::ToolCallArgs(chunk) => args.push_str(&chunk),
-        _ => {}
-    })
+    ask_through(
+        program,
+        model,
+        context,
+        wants,
+        |delta| match delta {
+            Delta::Text(chunk) => text.push_str(&chunk),
+            Delta::ToolCallArgs(chunk) => args.push_str(&chunk),
+            _ => {}
+        },
+        |_| {},
+    )
     .await?;
 
     // A call is preferred over prose: Anthropic answers a schema by calling a forced tool.
@@ -309,6 +364,48 @@ mod tests {
                 why: Refusal::Invalid
             }),
             Delta::Stop(StopReason::Error)
+        );
+    }
+
+    #[test]
+    fn an_upstream_that_failed_is_not_asked_first_again() {
+        SERVED
+            .lock()
+            .expect("lock")
+            .insert("fake/failing".into(), "Novita".into());
+        let_go("fake/failing");
+        assert_eq!(sticky("fake/failing", &Wants::default()).provider, None);
+    }
+
+    #[test]
+    fn the_upstream_that_answered_is_asked_first_unless_the_person_chose_one() {
+        SERVED
+            .lock()
+            .expect("lock")
+            .insert("fake/sticky".into(), "StreamLake".into());
+        let plain = sticky("fake/sticky", &Wants::default());
+        assert_eq!(plain.provider.as_deref(), Some("StreamLake"));
+        let chosen = Wants {
+            provider: Some("Baidu".into()),
+            ..Wants::default()
+        };
+        assert_eq!(
+            sticky("fake/sticky", &chosen).provider.as_deref(),
+            Some("Baidu")
+        );
+        assert!(sticky("fake/other", &Wants::default()).provider.is_none());
+        let turn = Context {
+            system: Some("you are the lead".into()),
+            ..Context::default()
+        };
+        let helper = Context {
+            system: Some("you keep the notes".into()),
+            ..Context::default()
+        };
+        assert_ne!(
+            stream_of("fake/one", &turn),
+            stream_of("fake/one", &helper),
+            "a helper would move the turn off its cache"
         );
     }
 

@@ -7,6 +7,26 @@ use magi_proto::permit::{Action, Decision};
 pub trait Approver: Send + Sync {
     /// Ask about `action`, and block until it is answered. A refusal is as valid an answer as a grant.
     fn ask(&self, tool: &str, action: &Action) -> Decision;
+
+    /// The same, with a second model's view shown beside the question, where it can be shown.
+    fn ask_advised(
+        &self,
+        tool: &str,
+        action: &Action,
+        _advice: Option<&magi_proto::judging::Advice>,
+    ) -> Decision {
+        self.ask(tool, action)
+    }
+
+    /// Whether a rule refuses `action` or insists on asking, which no standing grant settles.
+    fn overrides(&self, _action: &Action) -> bool {
+        false
+    }
+
+    /// Why `action` was last refused, when the reason is one a model can act on.
+    fn why(&self, _action: &Action) -> Option<String> {
+        None
+    }
 }
 
 /// An approver that says yes to everything, for tests and for `--yes`.

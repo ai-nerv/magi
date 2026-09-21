@@ -18,6 +18,7 @@ const KEYS: &str = "\
 - `ctrl+o` show tool output in full, again to fold it back
 - click a block's `▸` to open just that one — it wraps what a preview cut
 - drag to select; it is copied when you let go
+- `shift+tab` cycle who is asked about what no rule allows: ask, edits, auto
 - `ctrl+x` edit the prompt in `$EDITOR`
 - `ctrl+c` clear the prompt — `:q` to leave, `:qa` to take everything with it
 - `ctrl+a/e` line start/end — `ctrl+k/u` kill — `ctrl+y` yank

@@ -19,6 +19,8 @@
 
 pub mod ask;
 mod ids;
+pub mod judging;
+pub mod laying;
 pub mod permit;
 pub mod setup;
 pub mod surfacing;
@@ -257,6 +259,8 @@ pub enum HarnessEvent {
         choices: Vec<ModelChoice>,
         #[serde(default)]
         thinking: String,
+        #[serde(default)]
+        judging: crate::judging::Judging,
     },
     UserMessage {
         cursor: Cursor,
@@ -304,6 +308,11 @@ pub enum HarnessEvent {
         cursor: Cursor,
         status: AgentStatus,
     },
+    /// Who is asked about what no rule covers, and on what terms, as it stands now.
+    ModeChanged {
+        cursor: Cursor,
+        judging: crate::judging::Judging,
+    },
     ModelChanged {
         cursor: Cursor,
         model: Option<ModelInfo>,
@@ -317,6 +326,9 @@ pub enum HarnessEvent {
         action: crate::permit::Action,
         /// The widths this may be answered at, narrowest first.
         offers: Vec<crate::permit::Scope>,
+        /// What a second model made of it, when one is configured to say.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        advice: Option<crate::judging::Advice>,
     },
     /// A tool is asking the person something: the general form of [`Self::PermissionAsked`], with
     /// the tool's own options. The turn stops until [`UiCommand::Answered`].
@@ -382,6 +394,51 @@ pub enum HarnessEvent {
         class: ErrorClass,
         message: String,
     },
+    /// What the memory layer laid out for a request that went out, for the model card's gauge and
+    /// the `:context` view. Not part of the log.
+    ContextLaid {
+        id: String,
+        #[serde(default)]
+        budget: serde_json::Value,
+        #[serde(default)]
+        counts: Laid,
+        #[serde(default)]
+        why: String,
+        /// Every slot, in the order it was sent.
+        #[serde(default)]
+        slots: Vec<laying::LaidSlot>,
+    },
+    /// What one helper-model job cost, for the cost view. Not part of the log.
+    HelperSpent {
+        role: String,
+        model: String,
+        usage: Usage,
+    },
+    /// Something the person has to be told that is not part of the conversation and that no
+    /// model sees: the memory layer has stopped answering, so nothing said from here on is being
+    /// recorded. Said once when it happens and once when it is over, not on every turn.
+    Noticed {
+        cursor: Cursor,
+        text: String,
+    },
+    /// What the memory layer answered a [`UiCommand::Memory`] with: its notes, its change log, or
+    /// what an undo or a review did. Not part of the log.
+    MemoryAnswered {
+        verb: String,
+        answer: serde_json::Value,
+    },
+}
+
+/// How many of each kind of slot a layout held.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Laid {
+    pub items: usize,
+    pub stubs: usize,
+    pub dropped: usize,
+    pub summary: usize,
+    pub memory: usize,
+    pub pinned: usize,
+    pub notes: usize,
 }
 
 impl HarnessEvent {
@@ -406,10 +463,15 @@ impl HarnessEvent {
             | Self::Granted { cursor, .. }
             | Self::Refused { cursor, .. }
             | Self::ModelChanged { cursor, .. }
+            | Self::ModeChanged { cursor, .. }
             | Self::Branched { cursor, .. }
+            | Self::Noticed { cursor, .. }
             | Self::Error { cursor, .. } => *cursor,
             // A frame occupies no place in the log; nothing replays it.
-            Self::Drew { .. } => Cursor::ZERO,
+            Self::Drew { .. }
+            | Self::ContextLaid { .. }
+            | Self::HelperSpent { .. }
+            | Self::MemoryAnswered { .. } => Cursor::ZERO,
         }
     }
 }

@@ -90,7 +90,9 @@ component yourself is a mistake:
    back. It sees none of this conversation, so everything it needs goes in the brief.
 4. While they work, do not write their parts yourself. Say what you are waiting for and end your
    turn; you are woken as each one finishes.
-5. When they are done, integrate and verify the whole yourself: build it, run the tests, try it.
+5. When one finishes you are told it handed in a report. Read it with the `agent` tool, verb
+   `report`, who that agent; a long one comes a page at a time. Then integrate and verify the
+   whole yourself: build it, run the tests, try it.
    Send each failure to its owner with `ask`, including the exact error, or spawn a fixer with it,
    and verify again.
 6. Report what each agent did and whether the result works, from what they sent and what you
@@ -102,8 +104,11 @@ const WORKER: &str = r"# Working as a subagent
 Another agent started you with a brief, and you are one part of a larger task. Do what the brief
 asks: stay within the files it gives you, follow the contract it names, and check your own work the
 way it says. Do not edit files that belong to other agents; if the brief is wrong, or something
-outside your files blocks you, say so in your report instead. When you are done, send your report
-to the agent that started you with the `agent` tool. Start agents of your own only when your brief
+outside your files blocks you, say so in your report instead. When you are done, hand in your
+report with the `agent` tool, verb `report`: the whole of it in `message`, however long. A report
+is not a message. Never send it with `send`, and never cut it into parts: a message is capped, and
+the pieces arrive in your lead's conversation mixed up with everybody else's. Keep `send` for a
+line saying you are blocked or need something. Start agents of your own only when your brief
 is itself big and splits into independent parts; then plan first, give each its own files and a
 complete brief, and verify their work before you report.";
 
@@ -300,6 +305,11 @@ mod tests {
         let built = assemble(Some("x"), Seat::Worker, &dir, "2026-08-27").expect("a prompt");
         assert!(built.contains("# Working as a subagent"), "{built}");
         assert!(!built.contains("# Working with other agents"), "{built}");
+        // A result is handed in, not sent: a worker told to `send` its report cut it into
+        // a dozen capped messages, which arrived in its lead's conversation out of order.
+        assert!(built.contains("verb `report`"), "{built}");
+        assert!(built.contains("never cut it into parts"), "{built}");
+        assert!(!built.contains("send your report"), "{built}");
     }
 
     #[test]

@@ -227,6 +227,57 @@ pub fn mind(loaded: &Loaded) -> String {
     roles::fills(loaded, "model")
 }
 
+/// The model a conversation runs on. `magi.model` is either that name on its own, or a table
+/// naming the main model and the smaller ones that work on its behalf:
+///
+/// ```lua
+/// magi.model = "openrouter/z-ai/glm-5.3-flash"      -- the conversation, and nothing else
+/// magi.model = {
+///   main   = "openrouter/z-ai/glm-5.3-flash",       -- what writes and answers: one model
+///   helper = {
+///     decision = "decisions/typesafe/jev-1.13",     -- what judges, ranks and chooses
+///     memory   = "openrouter/google/gemini-2.5-flash",
+///   },
+/// }
+/// ```
+///
+/// The helper table is open: a role named there is a role this session can run, and nothing here
+/// has to know about it beforehand.
+#[must_use]
+pub fn main_model(loaded: &Loaded) -> Option<&str> {
+    match loaded.config.get("model") {
+        Some(serde_json::Value::String(name)) => Some(name.as_str()),
+        Some(table) => table.get("main").and_then(serde_json::Value::as_str),
+        None => None,
+    }
+}
+
+/// The model named for each kind of work done on the main model's behalf, from
+/// `magi.model.helper`. Read as a plain table so a role added later needs no change here.
+#[must_use]
+pub fn helper_models(loaded: &Loaded) -> std::collections::BTreeMap<String, String> {
+    loaded
+        .config
+        .get("model")
+        .and_then(|model| model.get("helper"))
+        .and_then(serde_json::Value::as_object)
+        .map(|table| {
+            table
+                .iter()
+                .filter_map(|(role, named)| {
+                    named.as_str().map(|name| (role.clone(), name.to_owned()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Which program offers the tools — the `tools` role, as `magi.tools` named it.
+#[must_use]
+pub fn tooling_program(loaded: &Loaded) -> String {
+    roles::fills(loaded, "tools")
+}
+
 /// Which program holds this session's history — the `memory` role, as `magi.memory` named it.
 #[must_use]
 pub fn memory(loaded: &Loaded) -> String {
@@ -248,8 +299,12 @@ pub fn catalog(loaded: &Loaded, cards: Vec<magi_proto::ask::Card>) -> magi_host:
         wants: options(loaded),
         system: system(loaded),
         grants: grants(loaded),
+        mode: settings::judging(loaded).0,
+        rules: settings::judging(loaded).1,
         environ: environ(loaded),
         chosen: None,
+        transcript: None,
+        helpers: settings::helpers(loaded),
         confine: loaded.config.boolean("confine").unwrap_or(false),
         // On by default: every session's tool commands run in the kernel jail, the network kept
         // open (it is essential) and the filesystem contained. A privileged setting, so a project
@@ -279,6 +334,33 @@ pub fn remembered() -> magi_host::remember::Chosen {
     std::env::current_dir()
         .map(|cwd| magi_host::remember::of(&cwd.display().to_string()))
         .unwrap_or_default()
+}
+
+/// Every memory this project holds, by id. Asked down the family socket, which is the same
+/// balthasar a session talks to; nothing is read off disk.
+#[must_use]
+pub fn project_memories() -> Vec<String> {
+    let Ok(mut family) = magi_ipc::family::blocking::Family::find() else {
+        return Vec::new();
+    };
+    let args = vec![
+        serde_json::Value::String(String::new()),
+        serde_json::json!({ "limit": 10_000 }),
+    ];
+    let Ok(rows) = family.call("recall", args) else {
+        return Vec::new();
+    };
+    rows.iter()
+        .flat_map(|value| match value.as_array() {
+            Some(list) => list.clone(),
+            None => vec![value.clone()],
+        })
+        .filter_map(|row| {
+            row.get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .collect()
 }
 
 /// The backend a daemon should run turns against, if one is both chosen and usable. A model that is
@@ -386,7 +468,16 @@ pub struct Trusted {
 
 /// Settings a project's own file may not assign: `confine` is the wall, `allow` is what may happen
 /// without asking, and a file that could set `trusted` could exempt itself.
-const PRIVILEGED_SETTINGS: &[&str] = &["confine", "allow", "trusted", "isolation", "may_spawn"];
+const PRIVILEGED_SETTINGS: &[&str] = &[
+    "confine",
+    "allow",
+    "trusted",
+    "isolation",
+    "may_spawn",
+    "mode",
+    "ask",
+    "deny",
+];
 
 impl Trusted {
     /// Record what has been declared so far.

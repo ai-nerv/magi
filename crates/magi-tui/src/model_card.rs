@@ -4,7 +4,7 @@
 //! off by a dashed rule. Rows for a list float that scrolls; the rows naming a choice are selectable.
 
 pub(crate) mod charts;
-mod published;
+pub(crate) mod published;
 
 use crate::footer::format_tokens;
 use charts::Item;
@@ -73,6 +73,10 @@ pub struct Card<'a> {
     /// This session's turns, oldest first.
     pub turns: &'a [Usage],
     pub details: Known<'a>,
+    /// What the last request was made of, in a line, once one has been laid out.
+    pub sent: Option<&'a str>,
+    /// How that request divided by cost, in a line.
+    pub split: Option<&'a str>,
     /// Columns the card may take.
     pub width: u16,
 }
@@ -229,29 +233,39 @@ fn settings(out: &mut Rendered, card: &Card<'_>, ink: &Ink) {
     );
 }
 
-/// How full the window is, off the last turn.
+/// How full the window is, off the last turn, and what the last request was made of.
 fn context(out: &mut Rendered, card: &Card<'_>, width: u16) {
     let used = card.turns.last().map_or(0, |turn| turn.prompt_tokens());
-    if card.context_window == 0 || used == 0 {
+    if card.context_window == 0 || (used == 0 && card.sent.is_none()) {
         return;
     }
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "a share of the window, to the percent"
-    )]
-    let share = used as f64 / card.context_window as f64;
-    let ink = match share {
-        s if s > 0.9 => crate::colour::error(),
-        s if s > 0.7 => crate::colour::warning(),
-        _ => crate::colour::success(),
-    };
     out.section("Context", "how full the window is now", width);
-    let label = format!(
-        "context {:.0}% of {}",
-        share * 100.0,
-        format_tokens(card.context_window)
-    );
-    out.chart(charts::gauge(share, &label, ink, width));
+    if used > 0 {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "a share of the window, to the percent"
+        )]
+        let share = used as f64 / card.context_window as f64;
+        let ink = match share {
+            s if s > 0.9 => crate::colour::error(),
+            s if s > 0.7 => crate::colour::warning(),
+            _ => crate::colour::success(),
+        };
+        let label = format!(
+            "context {:.0}% of {}",
+            share * 100.0,
+            format_tokens(card.context_window)
+        );
+        out.chart(charts::gauge(share, &label, ink, width));
+    }
+    if let Some(sent) = card.sent {
+        out.blank();
+        out.fact("Sent", sent, &ink());
+        if let Some(split) = card.split {
+            out.fact("Split", split, &ink());
+        }
+        out.say("  :context shows how it was laid out", ink().dim);
+    }
 }
 
 #[cfg(test)]

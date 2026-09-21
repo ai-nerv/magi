@@ -142,6 +142,29 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
     {
         transcript::hovered(under, column);
     }
+    // A tool that is waiting on the person says so on its own row, where a press answers it:
+    // without this it reads the same as one that is merely slow.
+    let waiting = app.waiting_calls();
+    if !waiting.is_empty() {
+        let mut said: Vec<&magi_proto::ToolCallId> = Vec::new();
+        for (line, owner) in laid.owners.iter().enumerate() {
+            let Some(call) = owner.as_ref().filter(|call| waiting.contains(call)) else {
+                continue;
+            };
+            // Once a block, on the first of its rows that says anything.
+            let blank = laid
+                .lines
+                .get(line)
+                .is_none_or(|row| row.spans.iter().all(|span| span.content.trim().is_empty()));
+            if blank || said.contains(&call) {
+                continue;
+            }
+            said.push(call);
+            if let Some(row) = laid.lines.get_mut(line) {
+                crate::app::marked(row);
+            }
+        }
+    }
     app.owners = laid.owners;
     app.blocks = laid.blocks;
     app.scrollback.set_lines(laid.lines);

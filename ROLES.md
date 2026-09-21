@@ -68,6 +68,16 @@ drawn wrong, and only running a program against it found out.
 
 ### Extensions
 
+The optional `run` field on an observed or amended turn identifies the scratch-memory run
+separately from the transcript key passed as the first argument. Transcripts may share a run,
+but their cursor spaces remain independent. The binding is durable and cannot be reassigned.
+Omitting `run` retains an existing binding or defaults to the transcript key. Agent identity
+remains connection-pinned; `run` never selects another agent's scratch. Implementations that
+do not support this extension may ignore the field.
+`resume` also returns the durable `run` for a transcript; a restarting coordinator retains it
+instead of rebinding the transcript to its new process's run. Without this field, the transcript
+key is the scratch run.
+
 | verb | shape | what magi loses without it |
 |---|---|---|
 | `amend` | `(session, turn) -> ok` | A turn revised after it settled keeps its first text. magi writes `observe` at a cursor that already has a row, and an implementation may treat that as an amend. |
@@ -76,7 +86,13 @@ drawn wrong, and only running a program against it found out.
 | `forget` | `(id, opts) -> ok` | The model's `forget` tool is not declared. |
 | `why` | `(id) -> { confidence, witnesses }` | The model's `why` tool is not declared. |
 | `scroll` | `(session, opts) -> { turns, next }` | The model's `history` tool is not declared, and an elided tool result cannot be read back. |
-| `plan` | `(session, window) -> { keep, mask, drop, summarise, why }` | No compaction. An over-budget context goes to the provider and is refused there. This is the most expensive extension to lack. |
+| `layout` | `(session, { round, window, reply, fixed, live, query, idle_s, helpers }) -> { id, budget, slots, jobs, fits, why }`; `rules` is verified user-instruction text. `observations`, `summary`, `memory` and legacy mixed `pinned` slots are assistant/helper context, not user instructions. | magi sends every live entry whole, every round. An over-budget context goes to the provider and is refused there. This is the most expensive extension to lack. |
+| `plan` | `(session, { window }) -> { keep, mask, drop, summarise, why }` | Asked only when `layout` is refused: what it masks goes as a stub and what it drops is left out. Without either, everything live is sent. |
+| `applied` | `(session, { id, usage }) -> ok` | The store never learns how far its estimate was from what the provider counted. |
+| `overflowed` | `(session, { id, said }) -> layout` | A request refused as too long is not retried tighter. |
+| `jobs` | `(session, {}) -> [job]` | No helper work runs between turns: no background summaries, no memory curation. |
+| `job_done` | `(session, { id, text, usage, model } \| { id, failed }) -> ok` | A job magi ran has nowhere to report back to. |
+| `notes`, `note_open`, `changes`, `undo`, `approve`, `reject` | see `PLAN-CONTEXT.md` A.5 | The memory's notes and their change log cannot be read or undone from magi. |
 | `used` | `(injection, opts) -> { action }` | The outcome loop records nothing. |
 | `outcome` | `(action, opts) -> { outcome, kind }` | The outcome loop records nothing. |
 | `model` | `(session, opts) -> { model, context }` | The store does not know which model produced a run. |

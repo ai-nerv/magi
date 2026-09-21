@@ -118,6 +118,12 @@ impl Turn {
         self.usage
     }
 
+    /// Calls as received, including incomplete calls from a failed turn.
+    #[must_use]
+    pub fn attempted_calls(&self) -> &[PendingCall] {
+        &self.calls
+    }
+
     /// Fold one provider delta into the turn.
     pub fn apply(&mut self, delta: Delta) {
         if self.state == State::Idle {

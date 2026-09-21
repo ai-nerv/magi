@@ -181,3 +181,113 @@ fn the_window_is_the_same_size_whatever_it_holds() {
         "the page, the heading, the blank under it, and two border rows"
     );
 }
+
+#[test]
+fn the_tabs_sit_in_the_heading_row_rather_than_taking_one_of_their_own() {
+    // A strip on a row of its own would cost a row of content and push the box taller than the
+    // one every other float draws.
+    let plain = Pane::new("memory", rows(4));
+    let tabbed = plain
+        .clone()
+        .tabbed(vec!["sections".into(), "utility".into()], 0);
+    let (page, width) = (10, 60);
+    assert_eq!(
+        plain.framed(width, page, 0, crate::border::Scan::Off).len(),
+        tabbed
+            .framed(width, page, 0, crate::border::Scan::Off)
+            .len(),
+    );
+    let drawn = tabbed.framed(width, page, 0, crate::border::Scan::Off);
+    assert!(drawn[1].to_string().contains("sections"), "{:?}", drawn[1]);
+    assert!(drawn[1].to_string().contains("utility"), "{:?}", drawn[1]);
+}
+
+#[test]
+fn only_the_tab_you_are_on_is_lit() {
+    let pane = Pane::new("memory", rows(2)).tabbed(vec!["a".into(), "b".into()], 1);
+    let lit: Vec<bool> = pane
+        .heading(10)
+        .iter()
+        .map(|span| span.style.add_modifier.contains(Modifier::REVERSED))
+        .collect();
+    assert_eq!(lit.iter().filter(|on| **on).count(), 1, "{lit:?}");
+}
+
+#[test]
+fn tabbing_wraps_at_both_ends_rather_than_stopping() {
+    // A strip you can walk off the end of makes the last tab harder to reach than the first.
+    let mut pane = Pane::new("memory", Vec::new()).tabbed(vec!["a".into(), "b".into()], 1);
+    assert!(pane.step_tab(true));
+    assert_eq!(pane.tab, 0, "the end did not wrap round to the start");
+    assert!(pane.step_tab(false));
+    assert_eq!(pane.tab, 1, "the start did not wrap round to the end");
+}
+
+#[test]
+fn a_float_with_one_view_does_not_take_the_key() {
+    // Tab means something else everywhere else; a float with nothing to step through should let
+    // it go on meaning that.
+    let mut plain = Pane::new("cost", rows(3));
+    assert!(!plain.step_tab(true));
+    let mut one = Pane::new("cost", rows(3)).tabbed(vec!["only".into()], 0);
+    assert!(!one.step_tab(true));
+}
+
+#[test]
+fn a_press_lands_on_the_tab_it_is_over() {
+    let pane = Pane::new("memory", Vec::new()).tabbed(
+        vec!["sections".into(), "utility".into(), "sessions".into()],
+        0,
+    );
+    let columns = pane.tab_columns();
+    assert_eq!(columns.len(), 3);
+    for (nth, at) in columns.iter().enumerate() {
+        assert_eq!(pane.tab_at(1, at.start), Some(nth), "at {at:?}");
+        assert_eq!(pane.tab_at(1, at.end - 1), Some(nth), "at {at:?}");
+    }
+    assert_eq!(pane.tab_at(4, columns[0].start), None, "not on the heading");
+}
+
+#[test]
+fn an_out_of_range_tab_lands_on_the_last_rather_than_off_the_end() {
+    let pane = Pane::new("memory", Vec::new()).tabbed(vec!["a".into(), "b".into()], 9);
+    assert_eq!(pane.tab, 1);
+}
+
+#[test]
+fn a_tinted_border_is_drawn_in_that_colour_and_an_untinted_one_is_not() {
+    // Whose float this is has to be visible without reading the heading: three siblings open the
+    // same box, and the border is the only part of it always on screen.
+    let hue = crate::footer::hue(1);
+    let plain = Pane::new("cost", rows(3));
+    let mine = Pane::new("balthasar", rows(3)).tinted(Some(hue));
+    let inks = |pane: &Pane| -> Vec<Option<ratatui::style::Color>> {
+        pane.framed(40, 8, 0, crate::border::Scan::Off)
+            .first()
+            .expect("a top edge")
+            .spans
+            .iter()
+            .map(|span| span.style.fg)
+            .collect()
+    };
+    assert!(inks(&mine).contains(&Some(hue)), "no hue");
+    assert!(
+        !inks(&plain).contains(&Some(hue)),
+        "an untinted float took a sibling's colour"
+    );
+}
+
+#[test]
+fn each_sibling_tints_its_float_differently() {
+    let ink = |nth: usize| {
+        Pane::new("x", rows(2))
+            .tinted(Some(crate::footer::hue(nth)))
+            .framed(40, 8, 0, crate::border::Scan::Off)[0]
+            .spans
+            .first()
+            .and_then(|span| span.style.fg)
+    };
+    assert_ne!(ink(0), ink(1));
+    assert_ne!(ink(1), ink(2));
+    assert_ne!(ink(0), ink(2));
+}

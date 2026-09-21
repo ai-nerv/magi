@@ -32,6 +32,8 @@ fn workspace(name: &str) -> Scratch {
     source.push_str(&format!(
         "\nmagi.model = \"{MODEL}\"\nmagi.project = \"p\"\n"
     ));
+    // These count and read what the model is asked; a note taken on it would be an ask they never wrote.
+    source.push_str("magi.helpers = { memory = false }\n");
     std::fs::write(&init, source).expect("write init");
     dir
 }
@@ -59,7 +61,7 @@ fn install_config(into: &Path) {
 /// Run the binary in `dir`, with the fake melchior in front of a real `PATH`.
 fn magi(dir: &Path, mind: &Mind, args: &[&str]) -> std::process::Output {
     let inherited = std::env::var("PATH").unwrap_or_default();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_magi"));
+    let mut command = Command::new(magi_testkit::live::binary(env!("CARGO_BIN_EXE_magi")));
     magi_testkit::only_its_own_store(&mut command);
     command
         .current_dir(dir)
@@ -136,7 +138,7 @@ fn lying_around() -> String {
 #[test]
 fn a_second_run_picks_up_the_conversation_balthasar_kept() {
     if !installed() {
-        eprintln!("skipping: no balthasar on PATH");
+        magi_testkit::live::unavailable("no balthasar on PATH");
         return;
     }
     let dir = workspace("kept");
@@ -176,12 +178,26 @@ fn a_second_run_picks_up_the_conversation_balthasar_kept() {
         "and so did the answer to it: {}",
         asks[1]
     );
+
+    // Resumed again: the second run went on in the first one's transcript, so nothing is lost.
+    let third = magi(&dir, &mind, &["--resume", "-p", "and then?"]);
+    assert!(
+        third.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&third.stderr)
+    );
+    let asks = mind.asks();
+    assert!(
+        asks[2].contains("remember gerbil") && asks[2].contains("and now?"),
+        "the second resume lost a run: {}",
+        asks[2]
+    );
 }
 
 #[test]
 fn with_balthasar_holding_it_there_is_no_journal_on_disk() {
     if !installed() {
-        eprintln!("skipping: no balthasar on PATH");
+        magi_testkit::live::unavailable("no balthasar on PATH");
         return;
     }
     // Were a journal still being written, a resume could be reading that file and balthasar doing
@@ -205,7 +221,7 @@ fn with_balthasar_holding_it_there_is_no_journal_on_disk() {
 #[test]
 fn resuming_where_nothing_was_kept_starts_a_session_rather_than_failing() {
     if !installed() {
-        eprintln!("skipping: no balthasar on PATH");
+        magi_testkit::live::unavailable("no balthasar on PATH");
         return;
     }
     // An ordinary first session, not an error. Worth pinning, because "resume found nothing" and
@@ -230,7 +246,7 @@ fn resuming_where_nothing_was_kept_starts_a_session_rather_than_failing() {
 #[test]
 fn a_finished_run_leaves_no_socket_behind() {
     if !installed() {
-        eprintln!("skipping: no balthasar on PATH");
+        magi_testkit::live::unavailable("no balthasar on PATH");
         return;
     }
     // The file as well as the process. Here rather than against a stand-in, because a stand-in binds
@@ -264,7 +280,7 @@ fn the_memory_verbs_reach_the_model_when_balthasar_is_there() {
     //
     // Asserted against what actually reached the model, because that is the only place it shows.
     if !installed() {
-        eprintln!("skipping: no balthasar on PATH");
+        magi_testkit::live::unavailable("no balthasar on PATH");
         return;
     }
     let dir = workspace("verbs");
@@ -291,4 +307,31 @@ fn the_memory_verbs_reach_the_model_when_balthasar_is_there() {
                 .join(" ")
         );
     }
+}
+
+#[test]
+fn a_named_run_that_cannot_be_read_is_an_error_not_a_fresh_start() {
+    // A resume that could not read its run back carried on as a new session, and the prompt meant
+    // for the old one was answered with no memory of it.
+    if !installed() {
+        magi_testkit::live::unavailable("no balthasar on PATH");
+        return;
+    }
+    let dir = workspace("gone");
+    let mind = Mind::answering("resume-gone", "noted");
+    let run = magi(
+        &dir,
+        &mind,
+        &["--resume-run", "no-such-run", "-p", "and now?"],
+    );
+    assert!(
+        !run.status.success(),
+        "a missing run started a fresh session"
+    );
+    let said = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        said.contains("no-such-run"),
+        "the run was not named: {said}"
+    );
+    assert!(mind.asks().is_empty(), "the model was asked anyway");
 }

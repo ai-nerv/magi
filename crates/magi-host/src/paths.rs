@@ -32,13 +32,54 @@ pub struct Summary {
     pub entries: usize,
 }
 
+/// Every session balthasar has put away, newest first. What `:archives` offers.
+#[must_use]
+pub fn archived() -> Vec<Summary> {
+    asked(vec![serde_json::json!({ "archived": true })])
+}
+
+/// Put a run out of reach: it stops being offered and nothing of it is removed. A peer may do
+/// this; what it may not do is remove it — see [`purge`].
+#[must_use]
+pub fn put_away(id: &str) -> bool {
+    let Ok(mut family) = magi_ipc::family::blocking::Family::find() else {
+        return false;
+    };
+    family
+        .call(
+            "forget",
+            vec![
+                serde_json::json!(id),
+                serde_json::json!({ "session": true }),
+            ],
+        )
+        .is_ok()
+}
+
+/// Name this run, for good: nothing renames it afterwards but a person.
+pub fn rename(id: &str, title: &str) -> Result<(), String> {
+    let mut family = magi_ipc::family::blocking::Family::find()
+        .map_err(|why| format!("balthasar is not reachable: {why}"))?;
+    family
+        .call(
+            "rename",
+            vec![serde_json::json!(id), serde_json::json!(title)],
+        )
+        .map(|_| ())
+        .map_err(|why| why.to_string())
+}
+
 /// Every session balthasar holds, newest first.
 #[must_use]
 pub fn recorded() -> Vec<Summary> {
+    asked(Vec::new())
+}
+
+fn asked(args: Vec<serde_json::Value>) -> Vec<Summary> {
     let Ok(mut family) = magi_ipc::family::blocking::Family::find() else {
         return Vec::new();
     };
-    let Ok(rows) = family.call("sessions", Vec::new()) else {
+    let Ok(rows) = family.call("sessions", args) else {
         return Vec::new();
     };
     rows.iter()
@@ -50,11 +91,40 @@ pub fn recorded() -> Vec<Summary> {
         .collect()
 }
 
-/// One of balthasar's session rows, as a picker needs it.
+/// Remove a run: its memories, what it said, and the scratch it kept.
+///
+/// Run as a command rather than asked down the socket: balthasar reserves removal for its
+/// owner's own door, so magi has to be the CLI for a moment. The error is the command's own.
+/// Remove one memory outright, by id. The same door [`purge`] uses, for the same reason.
+///
+/// # Errors
+/// What balthasar said when it would not remove it.
+pub fn purge_memory(id: &str) -> Result<(), String> {
+    ran(&["--tool", "magi", "forget", id, "--purge", "--yes"], id)
+}
+
+pub fn purge(id: &str) -> Result<(), String> {
+    ran(
+        &[
+            "--tool",
+            "magi",
+            "forget",
+            id,
+            "--session",
+            "--purge",
+            "--yes",
+        ],
+        id,
+    )
+}
+
+/// One of balthasar's session rows, as a picker needs it. A child's own transcript is `run@agent`
+/// and is never offered: a run is what is resumed, and it brings its agents back itself.
 fn summary_of(row: &serde_json::Value) -> Option<Summary> {
     let id = row
         .get("id")
-        .and_then(serde_json::Value::as_str)?
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.contains('@'))?
         .to_owned();
     let title = row
         .get("title")
@@ -75,3 +145,21 @@ fn summary_of(row: &serde_json::Value) -> Option<Summary> {
 #[cfg(test)]
 #[path = "paths/naming.rs"]
 mod naming;
+
+/// Run balthasar with `args`, and read a refusal back as one.
+fn ran(args: &[&str], id: &str) -> Result<(), String> {
+    let done = std::process::Command::new("balthasar")
+        .args(args)
+        .output()
+        .map_err(|why| format!("balthasar could not be run: {why}"))?;
+    if done.status.success() {
+        return Ok(());
+    }
+    let said = String::from_utf8_lossy(&done.stderr);
+    let said = said.trim();
+    Err(if said.is_empty() {
+        format!("balthasar refused to remove {id}")
+    } else {
+        said.to_owned()
+    })
+}

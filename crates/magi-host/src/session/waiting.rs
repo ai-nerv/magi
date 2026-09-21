@@ -3,6 +3,7 @@
 
 mod waiting_tests {
     use crate::session::Session;
+    use crate::session::admission::Request;
     use magi_model::scratch::Scratch;
     use magi_proto::{AgentStatus, Entry, SessionId};
 
@@ -25,7 +26,7 @@ mod waiting_tests {
     fn a_fresh_session_is_idle_and_holding_nothing() {
         let (mut session, _dir) = session("fresh");
         assert!(session.idle());
-        assert!(session.release().is_empty());
+        assert!(session.take_arrivals().is_empty());
     }
 
     #[test]
@@ -40,10 +41,15 @@ mod waiting_tests {
     #[test]
     fn what_was_held_comes_back_in_the_order_it_arrived() {
         let (mut session, _dir) = session("order");
+        session
+            .admit(Request::Grants(Vec::new()))
+            .expect("request admitted");
         for text in ["first", "second", "third"] {
-            session.hold(from(text));
+            session
+                .admit(Request::Opening(from(text)))
+                .expect("request admitted");
         }
-        let out = session.release();
+        let out = session.take_arrivals();
         let said: Vec<&str> = out
             .iter()
             .filter_map(|entry| match entry {
@@ -57,9 +63,17 @@ mod waiting_tests {
     #[test]
     fn releasing_empties_the_room() {
         let (mut session, _dir) = session("once");
-        session.hold(from("only once"));
-        assert_eq!(session.release().len(), 1);
-        assert!(session.release().is_empty(), "it came back a second time");
+        session
+            .admit(Request::Grants(Vec::new()))
+            .expect("request admitted");
+        session
+            .admit(Request::Opening(from("only once")))
+            .expect("request admitted");
+        assert_eq!(session.take_arrivals().len(), 1);
+        assert!(
+            session.take_arrivals().is_empty(),
+            "it came back a second time"
+        );
     }
 
     #[test]
@@ -68,7 +82,12 @@ mod waiting_tests {
         // inside an exchange, and no provider accepts that conversation.
         let (mut session, _dir) = session("unseen");
         let before = session.entries().len();
-        session.hold(from("wait for me"));
+        session
+            .admit(Request::Grants(Vec::new()))
+            .expect("request admitted");
+        session
+            .admit(Request::Opening(from("wait for me")))
+            .expect("request admitted");
         assert_eq!(session.entries().len(), before);
     }
 }

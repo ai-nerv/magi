@@ -13,7 +13,7 @@ pub(super) fn chosen(loaded: &Loaded, catalog: &magi_host::catalog::Catalog) -> 
         .as_deref()
         .and_then(usable)
         .or_else(|| remembered().model.as_deref().and_then(usable))
-        .or_else(|| loaded.config.string("model").and_then(usable))
+        .or_else(|| super::main_model(loaded).and_then(usable))
 }
 
 /// The name that was asked for, whether or not it can be used: what will actually run when something
@@ -22,7 +22,7 @@ pub(super) fn asked(loaded: &Loaded, catalog: &magi_host::catalog::Catalog) -> O
     chosen(loaded, catalog)
         .or_else(|| super::agents::own(loaded).and_then(|role| role.model))
         .or_else(|| remembered().model)
-        .or_else(|| loaded.config.string("model").map(ToOwned::to_owned))
+        .or_else(|| super::main_model(loaded).map(ToOwned::to_owned))
 }
 #[cfg(test)]
 pub(crate) mod tests {
@@ -215,5 +215,100 @@ mod entry_point {
         assert_eq!(kind("tools.lua"), Some("tools"));
         assert_eq!(kind("clients/oslo.lua"), Some("clients"));
         assert_eq!(kind("providers.lua"), None);
+    }
+}
+
+/// `magi.model` as a name on its own, and as a table.
+#[cfg(test)]
+mod shapes {
+    use super::tests::loaded;
+    use crate::config::{helper_models, main_model};
+
+    #[test]
+    fn a_plain_name_is_the_main_model_and_names_no_helper() {
+        // The older one-line form, which must go on meaning what it meant.
+        let held = loaded(r#"magi.model = "open/good""#);
+        assert_eq!(main_model(&held), Some("open/good"));
+        assert!(helper_models(&held).is_empty());
+    }
+
+    #[test]
+    fn a_table_names_the_main_model_and_a_helper_for_each_kind_of_work() {
+        let held =
+            loaded(r#"magi.model = { main = "open/good", helper = { decision = "decides/x" } }"#);
+        assert_eq!(main_model(&held), Some("open/good"));
+        assert_eq!(
+            helper_models(&held).get("decision").map(String::as_str),
+            Some("decides/x")
+        );
+    }
+
+    #[test]
+    fn a_role_nothing_here_knows_about_is_carried_through_all_the_same() {
+        // The table is open on purpose: a role added later needs no change in this file.
+        let held =
+            loaded(r#"magi.model = { main = "m", helper = { decision = "d", whatever = "w" } }"#);
+        assert_eq!(
+            helper_models(&held).get("whatever").map(String::as_str),
+            Some("w")
+        );
+    }
+
+    #[test]
+    fn a_table_with_no_main_names_no_model_rather_than_guessing_at_one() {
+        let held = loaded(r#"magi.model = { helper = { decision = "d" } }"#);
+        assert_eq!(main_model(&held), None);
+    }
+
+    #[test]
+    fn nothing_configured_names_nothing() {
+        let held = loaded("");
+        assert_eq!(main_model(&held), None);
+        assert!(helper_models(&held).is_empty());
+    }
+}
+
+/// Which model runs a role, from `magi.model.helper`.
+#[cfg(test)]
+mod helping {
+    use super::tests::loaded;
+    use crate::config::settings::helpers;
+
+    #[test]
+    fn a_role_named_there_runs_on_that_model() {
+        let held = loaded(
+            r#"magi.model = { main = "m", helper = { decision = "d/x", summary = "s/y" } }"#,
+        );
+        let roles = helpers(&held).roles;
+        assert_eq!(roles.get("decision").map(String::as_str), Some("d/x"));
+        assert_eq!(roles.get("summary").map(String::as_str), Some("s/y"));
+    }
+
+    #[test]
+    fn notes_are_kept_on_the_main_model_until_a_helper_is_named_for_them() {
+        let held = loaded(r#"magi.model = { main = "m" }"#);
+        assert_eq!(
+            helpers(&held).roles.get("memory").map(String::as_str),
+            Some(magi_host::helping::MAIN)
+        );
+    }
+
+    #[test]
+    fn a_role_set_to_false_runs_nowhere() {
+        // How notes are turned off, and it has to work in the new table as well as the old one.
+        let held = loaded(r#"magi.model = { main = "m", helper = { memory = false } }"#);
+        assert!(!helpers(&held).roles.contains_key("memory"));
+    }
+
+    #[test]
+    fn the_limits_are_still_read_from_the_older_table() {
+        // `magi.helpers` keeps the budget and the timeout; it no longer names models.
+        let held = loaded(
+            r#"magi.model = { main = "m" }
+               magi.helpers = { timeout_ms = 1234, budget = { per_prompt = 0.5 } }"#,
+        );
+        let held = helpers(&held);
+        assert_eq!(held.timeout_ms, 1234);
+        assert_eq!(held.per_prompt_micros, Some(500_000));
     }
 }

@@ -63,7 +63,9 @@ impl Recording {
             match event.clone() {
                 // A recording is a transcript, not a session: a question nobody is there to
                 // answer has no place in one.
-                HarnessEvent::PermissionAsked { .. } | HarnessEvent::Asked { .. } => {}
+                HarnessEvent::PermissionAsked { .. }
+                | HarnessEvent::Asked { .. }
+                | HarnessEvent::Noticed { .. } => {}
                 HarnessEvent::UserMessage { id, text, .. } => {
                     entries.push(Entry::User {
                         id,
@@ -121,7 +123,12 @@ impl Recording {
                 }),
                 // Not part of the transcript: a refusal is an answer to something the UI
                 // asked, and a replay is rebuilding what the session *is*.
-                HarnessEvent::Refused { .. } | HarnessEvent::ModelChanged { .. } => {}
+                HarnessEvent::Refused { .. }
+                | HarnessEvent::ModelChanged { .. }
+                | HarnessEvent::ModeChanged { .. }
+                | HarnessEvent::ContextLaid { .. }
+                | HarnessEvent::HelperSpent { .. }
+                | HarnessEvent::MemoryAnswered { .. } => {}
                 HarnessEvent::MessageArrived {
                     who,
                     kin,
@@ -240,6 +247,7 @@ impl FakeHarness {
                 model: None,
                 choices: Vec::new(),
                 thinking: String::new(),
+                judging: magi_proto::judging::Judging::default(),
             })
             .await?;
 

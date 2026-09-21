@@ -120,7 +120,10 @@ pub struct Grant {
 impl Grant {
     #[must_use]
     pub fn covers(&self, action: &Action) -> bool {
-        if self.verb != action.verb() {
+        // Leave to write somewhere is leave to read it: whoever may replace a file has nothing
+        // left to be kept from in it. Never the other way round.
+        let reads_under_write = self.verb == "write" && matches!(action, Action::Read { .. });
+        if self.verb != action.verb() && !reads_under_write {
             return false;
         }
         match &self.scope {
@@ -149,13 +152,40 @@ impl Grant {
         }
     }
 
+    /// Whether this rule is about `action`, read as a rule that refuses or insists on asking and
+    /// not as one that lets through. The difference is a chained command: leave to run `git` is
+    /// not leave to run `git status; rm -rf ~`, so a grant looks at the first word and stops at a
+    /// chain; a rule against `rm` that did the same would be walked round with `true && rm`. So a
+    /// program is looked for as any word of the whole command.
+    #[must_use]
+    pub fn names(&self, action: &Action) -> bool {
+        if self.verb != action.verb() {
+            return false;
+        }
+        match (&self.scope, action) {
+            (Scope::Anything, _) => true,
+            (Scope::Program { program }, Action::Run { command, .. }) => command
+                .split(|c: char| c.is_whitespace() || ";&|`$()<>".contains(c))
+                .map(|word| word.rsplit('/').next().unwrap_or(word))
+                .any(|word| word == program),
+            (
+                Scope::Directory { path },
+                Action::Read { path: at }
+                | Action::Write { path: at }
+                | Action::Network { host: at },
+            ) => under(at, path),
+            _ => false,
+        }
+    }
+
     /// Whether this grant is at least as wide as `other`: same verb, and a scope that contains the
     /// other's. What a parent handing a grant down asks of each one a child requested — a child may
     /// hold no more than its parent. Conservative on the scopes that carry no subject of their own
     /// (`Once`, `Exact`): a parent cannot be shown to cover them, so they are not handed down.
     #[must_use]
     pub fn allows(&self, other: &Grant) -> bool {
-        if self.verb != other.verb {
+        // As in `covers`: whoever may write somewhere may hand down leave to read it.
+        if self.verb != other.verb && !(self.verb == "write" && other.verb == "read") {
             return false;
         }
         match (&self.scope, &other.scope) {
@@ -231,6 +261,37 @@ mod handover {
     }
 
     #[test]
+    fn a_rule_against_a_program_is_not_walked_round_with_a_chain() {
+        let rule = Grant {
+            verb: "run".into(),
+            scope: Scope::Program {
+                program: "rm".into(),
+            },
+        };
+        let run = |command: &str| Action::Run {
+            command: command.into(),
+            program: command.split_whitespace().next().unwrap_or_default().into(),
+        };
+        for command in [
+            "rm -rf x",
+            "true && rm -rf x",
+            "make; /bin/rm x",
+            "echo $(rm x)",
+        ] {
+            assert!(rule.names(&run(command)), "{command}");
+            // Which is exactly what a grant must not do.
+            assert_eq!(
+                rule.covers(&run(command)),
+                command == "rm -rf x",
+                "{command}"
+            );
+        }
+        for command in ["ls", "echo warm", "firmware --update"] {
+            assert!(!rule.names(&run(command)), "{command}");
+        }
+    }
+
+    #[test]
     fn a_wider_grant_allows_a_narrower_one_of_the_same_verb() {
         assert!(dir("write", "/w").allows(&dir("write", "/w/sub")));
         assert!(anything("read").allows(&dir("read", "/anywhere")));
@@ -299,6 +360,42 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_parent_that_may_write_can_hand_down_leave_to_read() {
+        let dir = |verb: &str, path: &str| Grant {
+            verb: verb.to_owned(),
+            scope: Scope::Directory {
+                path: path.to_owned(),
+            },
+        };
+        assert!(dir("write", "/w").allows(&dir("read", "/w/src")));
+        assert!(!dir("read", "/w").allows(&dir("write", "/w/src")));
+        assert!(!dir("write", "/w").allows(&dir("read", "/elsewhere")));
+    }
+    #[test]
+    fn leave_to_write_a_directory_is_leave_to_read_it() {
+        // A child handed `write` on its project and nothing else could overwrite any file in it
+        // and read none, and being headless had nobody to ask.
+        let grant = Grant {
+            verb: "write".to_owned(),
+            scope: Scope::Directory {
+                path: "/home/x/work".to_owned(),
+            },
+        };
+        assert!(grant.covers(&read("/home/x/work/src/lib.rs")));
+        assert!(!grant.covers(&read("/home/x/elsewhere/lib.rs")));
+        assert!(!grant.covers(&run("ls")));
+        // The other way round stays shut: reading is not leave to change anything.
+        let reading = Grant {
+            verb: "read".to_owned(),
+            scope: Scope::Directory {
+                path: "/home/x/work".to_owned(),
+            },
+        };
+        assert!(!reading.covers(&Action::Write {
+            path: "/home/x/work/src/lib.rs".to_owned(),
+        }));
+    }
     #[test]
     fn a_directory_grant_covers_what_is_under_it() {
         let grant = Grant {

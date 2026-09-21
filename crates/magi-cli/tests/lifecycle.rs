@@ -105,7 +105,7 @@ fn install_config(into: &Path) {
 /// somebody else's balthasar, magi convenes none, and every test here waits out a pid file.
 fn started(dir: &Path, mind: &Mind, args: &[&str]) -> Command {
     let inherited = std::env::var("PATH").unwrap_or_default();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_magi"));
+    let mut command = Command::new(magi_testkit::live::binary(env!("CARGO_BIN_EXE_magi")));
     magi_testkit::only_its_own_store(&mut command);
     command
         .current_dir(dir)

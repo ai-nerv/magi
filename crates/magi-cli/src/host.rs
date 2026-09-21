@@ -26,7 +26,7 @@ pub type Watches = (
 /// Open this session and serve it, bound before returning so the UI's first dial cannot race it.
 pub async fn start(
     socket: &Path,
-    resume: bool,
+    resume: Option<Option<String>>,
     cwd: &Path,
     loaded: Option<&crate::config::Loaded>,
     environ: &std::collections::BTreeMap<String, String>,
@@ -67,11 +67,20 @@ pub async fn start(
     let family = dialled
         .map_err(|why| anyhow::anyhow!("{}", unreachable(&memory, "reach", &why.to_string())))?;
     let mut scribe = magi_host::scribe::Scribe::over(family, ours.clone(), &id);
-    let carried = match resume.then(|| resumable(&mut scribe)) {
-        Some(fut) => fut.await,
-        None => Vec::new(),
+    // A child records its own transcript; a run's agents share the id their memory is filed under.
+    let child = std::env::var_os("MAGI_MELCHIOR_PARENT").is_some();
+    let transcript = agent.filter(|_| child).map(|agent| format!("{id}@{agent}"));
+    let (resumed, carried) = match resume {
+        Some(run) => resumable(&mut scribe, run.as_deref()).await?,
+        None => (None, Vec::new()),
     };
-    let session = magi_host::session::Session::recorded(id, carried);
+    let id = match &resumed {
+        Some(transcript) => scribe.run_of(transcript).await?,
+        None => id,
+    };
+    // A resumed run goes on in its own transcript, so the memory layer counts what it carries.
+    let transcript = transcript.or(resumed);
+    let session = magi_host::session::Session::restored(id, carried)?;
     // Nothing outlives its process, so a stale socket here was left by a crash and is cleared.
     if let Some(parent) = socket.parent() {
         tokio::fs::create_dir_all(parent).await?;
@@ -91,6 +100,13 @@ pub async fn start(
     };
     let mut backend = crate::config::backend(&catalog);
     stamp(&mut backend, &mut catalog, environ);
+    catalog.transcript = transcript;
+    if child {
+        catalog.helpers.no_notes = true;
+        if let Some(backend) = backend.as_mut() {
+            backend.helpers.no_notes = true;
+        }
+    }
     // A last-value view of status for a headless child to report its phase without attaching.
     let phase_watch = session.phase_watch();
     let spent_watch = session.spent_watch();
@@ -347,21 +363,30 @@ fn unreachable(memory: &str, what: &str, why: &str) -> String {
     )
 }
 
-/// The newest run balthasar holds for this project, for `--resume`. Empty is a fresh session.
-async fn resumable(scribe: &mut magi_host::scribe::Scribe) -> Vec<magi_proto::Entry> {
+/// The run to continue: the one named, or the newest balthasar holds. Empty is a fresh session.
+async fn resumable(
+    scribe: &mut magi_host::scribe::Scribe,
+    wanted: Option<&str>,
+) -> Result<(Option<String>, Vec<(magi_proto::Cursor, magi_proto::Entry)>)> {
     // Both failures below used to return an empty conversation and say nothing, so `--resume`
     // against a memory layer that could not answer looked exactly like a session with nothing to
-    // resume — a fresh start, at exit 0, having quietly dropped everything.
+    // resume — a fresh start, at exit 0, having quietly dropped everything. A run named outright
+    // is not started over at all: going on without it is not what was asked.
     let rows = match scribe.sessions().await {
         Ok(rows) => rows,
         Err(why) => {
+            if let Some(wanted) = wanted {
+                anyhow::bail!(
+                    "--resume-run {wanted}: the memory layer would not list its runs: {why}"
+                );
+            }
             eprintln!(
                 "magi: --resume found nothing: the memory layer would not list its runs: {why}"
             );
-            return Vec::new();
+            return Ok((None, Vec::new()));
         }
     };
-    let newest = rows
+    let mut ids = rows
         .iter()
         .flat_map(|value| match value.as_array() {
             Some(list) => list.clone(),
@@ -371,16 +396,29 @@ async fn resumable(scribe: &mut magi_host::scribe::Scribe) -> Vec<magi_proto::En
             row.get("id")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned)
-        })
-        .next();
+        });
+    let newest = match wanted {
+        Some(wanted) => {
+            let found = ids.find(|id| id == wanted);
+            if found.is_none() {
+                anyhow::bail!("--resume-run found no run `{wanted}` in this project's memory");
+            }
+            found
+        }
+        // A child's own transcript is `run@agent`; resuming means resuming a run.
+        None => ids.find(|id| !id.contains('@')),
+    };
     match newest {
         Some(id) => match scribe.replay_of(&id).await {
-            Ok(entries) => entries,
+            Ok(entries) => Ok((Some(id), entries)),
+            Err(why) if wanted.is_some() => {
+                anyhow::bail!("--resume-run found `{id}` but could not read it back: {why}")
+            }
             Err(why) => {
                 eprintln!("magi: --resume found `{id}` but could not read it back: {why}");
-                Vec::new()
+                Ok((None, Vec::new()))
             }
         },
-        None => Vec::new(),
+        None => Ok((None, Vec::new())),
     }
 }

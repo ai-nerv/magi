@@ -27,11 +27,21 @@ pub struct Agent {
     pub spent: Vec<(String, Usage)>,
 }
 
+/// One helper job: which role it ran for, which small model ran it, and what that took.
+#[derive(Debug, Clone)]
+pub struct Helper {
+    pub role: String,
+    pub model: String,
+    pub usage: Usage,
+}
+
 /// What a cost view is drawn from.
 pub struct Report<'a> {
     pub turns: &'a [Turn],
     /// Every agent of the run, this one included; empty or alone when there are no others.
     pub agents: &'a [Agent],
+    /// The helper jobs this session ran, oldest first.
+    pub helpers: &'a [Helper],
     pub width: u16,
 }
 
@@ -66,10 +76,11 @@ pub fn view(report: &Report<'_>) -> Rendered {
     } else {
         mine
     };
-    if tokens(&whole) == 0 && whole.cost_micros == 0 {
+    let helped = sum(report.helpers.iter().map(|job| job.usage));
+    if tokens(&whole) == 0 && whole.cost_micros == 0 && tokens(&helped) == 0 {
         return out;
     }
-    let priced = whole.cost_micros > 0;
+    let priced = whole.cost_micros > 0 || helped.cost_micros > 0;
     // Each model in the order it first appears, so it keeps one colour from section to section.
     let mut models: Vec<String> = Vec::new();
     let named = report.turns.iter().map(|turn| turn.model.clone()).chain(
@@ -101,8 +112,45 @@ pub fn view(report: &Report<'_>) -> Rendered {
     per_turn(&mut out, report, &colour, width);
     over_time(&mut out, report, priced, width);
     cached(&mut out, &mine, width);
+    helping(&mut out, report, priced, width);
     recent(&mut out, report, priced, &ink, &colour, width);
     out
+}
+
+/// What the small models cost: a bar for each role and the model it ran on.
+fn helping(out: &mut Rendered, report: &Report<'_>, priced: bool, width: u16) {
+    if report.helpers.is_empty() {
+        return;
+    }
+    let total = sum(report.helpers.iter().map(|job| job.usage));
+    let jobs = report.helpers.len();
+    let note = format!(
+        "{jobs} job{} for balthasar and surfaces · {}",
+        if jobs == 1 { "" } else { "s" },
+        amount(&total, priced).1
+    );
+    out.section("Helpers", &note, width);
+    let rows = gather(
+        report
+            .helpers
+            .iter()
+            .map(|job| (format!("{} · {}", job.role, short(&job.model)), job.usage)),
+    );
+    let items: Vec<Item> = rows
+        .iter()
+        .enumerate()
+        .map(|(nth, (label, used))| {
+            let (value, said) = amount(used, priced);
+            Item {
+                label: label.clone(),
+                value,
+                said,
+                ink: hue(nth + 2),
+            }
+        })
+        .collect();
+    let top = items.iter().map(|item| item.value).fold(0.0_f64, f64::max);
+    out.chart(charts::bars(&items, top, width));
 }
 
 /// What was spent in all, large, and what it was spread over.
@@ -146,6 +194,10 @@ fn heading(
         "{models} model{}",
         if models == 1 { "" } else { "s" }
     ));
+    if !report.helpers.is_empty() {
+        let helped = sum(report.helpers.iter().map(|job| job.usage));
+        about.push(format!("helpers {}", amount(&helped, priced).1));
+    }
     out.say(about.join(" · "), ink.dim);
 }
 

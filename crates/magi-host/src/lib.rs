@@ -6,28 +6,27 @@ pub mod asking;
 pub mod broker;
 pub mod cancel;
 pub mod catalog;
-pub mod compact;
 pub mod context;
 pub mod declaring;
 pub mod driving;
+pub mod helping;
 pub mod holder;
-pub mod injecting;
+pub mod judging;
 pub mod knowing;
+pub mod laying;
 pub mod paths;
 pub mod remember;
+mod resuming;
 pub mod scribe;
 pub mod session;
-pub mod supplying;
+mod settling;
 pub mod system;
 pub mod turn;
 pub mod worker;
 
 use magi_ipc::{FrameReader, FrameWriter, IpcError, PeerCred};
 use magi_journal::JournalError;
-use magi_proto::{
-    AgentStatus, Cursor, Entry, ErrorClass, HarnessEvent, MessageId, SessionId, StopReason,
-    UiCommand,
-};
+use magi_proto::{Cursor, Entry, ErrorClass, HarnessEvent, MessageId, StopReason, UiCommand};
 
 use session::Session;
 
@@ -51,11 +50,16 @@ static DRAINING: std::sync::OnceLock<Draining> = std::sync::OnceLock::new();
 /// after the last turn and before the socket goes. A failure is logged rather than returned: the
 /// last exchange is then missing from the store, and the next run's `--resume` comes back short.
 pub async fn drain() {
-    let Some((session, scribe)) = DRAINING.get() else {
-        return;
-    };
-    if let Err(why) = crate::scribe::flush(session, &mut *scribe.lock().await).await {
-        magi_model::noted!("drain: the last turn did not reach balthasar: {why}");
+    if let Some((session, scribe)) = DRAINING.get() {
+        let helpers = session.lock().await.helpers();
+        if let Ok(paused) = helpers.pause()
+            && let Err(why) = paused.drain(std::time::Duration::from_secs(30)).await
+        {
+            magi_model::noted!("drain: {why}");
+        }
+        if let Err(why) = crate::scribe::flush(session, &mut *scribe.lock().await).await {
+            magi_model::noted!("drain: the last turn did not reach balthasar: {why}");
+        }
     }
 }
 
@@ -149,15 +153,41 @@ pub async fn serve_on(
     let told = balthasar.clone();
     let scribe = Arc::new(Mutex::new({
         let id = session.lock().await.id().clone();
-        match balthasar {
+        let found = match balthasar {
             Some(path) => magi_ipc::family::Family::dial(&path)
                 .await
                 .ok()
                 .map(|family| crate::scribe::Scribe::over(family, Some(path.clone()), &id)),
             None => crate::scribe::Scribe::find(&id).await.ok(),
-        }
+        };
+        found.map(|scribe| match &catalog.transcript {
+            Some(key) => scribe.recording_as(key.clone()),
+            None => scribe,
+        })
     }));
     let _ = DRAINING.set((Arc::clone(&session), Arc::clone(&scribe)));
+    magi_model::noted!(
+        "scribe: recording as {}",
+        catalog
+            .transcript
+            .as_deref()
+            .unwrap_or("the session itself")
+    );
+    magi_model::noted!(
+        "session: {} as agent {} serving in {}, model {}, memory {}",
+        session.lock().await.id(),
+        backend
+            .as_ref()
+            .and_then(|b| b.environ.get("MAGI_MELCHIOR_ID"))
+            .map_or("-", String::as_str),
+        catalog.cwd.display(),
+        backend.as_ref().map_or("none", |b| b.model.as_str()),
+        if scribe.lock().await.is_some() {
+            "reached"
+        } else {
+            "absent"
+        }
+    );
     // Named for the VM, so a tool can say which session it is asking about.
     magi_lua::name_session(session.lock().await.id().as_str(), told.as_deref());
 
@@ -233,12 +263,15 @@ pub async fn serve_on(
     // would be two ids counting from zero into one map. Built after the holding it draws on.
     let holding = Arc::new(crate::holder::Holding::new());
     // Questions a surface cannot answer itself go to a task of the session's own, not a connection's.
+    // The same channel a surface asks down: the second model is one more thing to ask it for.
+    let (asking, asked) = tokio::sync::mpsc::unbounded_channel();
+    let judge_asks = asking.clone();
     let knows = {
-        let (asking, asked) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(crate::knowing::serve(
             asked,
             Arc::clone(&scribe),
             Arc::clone(&session),
+            backend.clone(),
         ));
         let held = session.lock().await;
         let cwd = catalog.cwd.display().to_string();
@@ -264,20 +297,23 @@ pub async fn serve_on(
     let asker = {
         let events = session.lock().await.publisher();
         let watched = events.clone();
-        Arc::new(
-            crate::asking::Asker::new(
-                Arc::clone(&pending),
-                Box::new(move |event| {
-                    let _ = events.send(event);
-                }),
-                // Transient rather than journalled, and the UI tracks the highest cursor with a max.
-                Box::new(|| Cursor::ZERO),
-                Box::new(move || watched.receiver_count() > 0),
-            )
-            .drawn_by(Arc::clone(&holds)),
-        )
+        Arc::new(crate::asking::Asker::new(
+            Arc::clone(&pending),
+            Box::new(move |event| {
+                let _ = events.send(event);
+            }),
+            // Transient rather than journalled, and the UI tracks the highest cursor with a max.
+            Box::new(|| Cursor::ZERO),
+            Box::new(move || watched.receiver_count() > 0),
+        ))
     };
-    let person = crate::asking::Person::of(asker, holds, Arc::clone(&holding));
+    let person = crate::asking::Person::of(
+        asker,
+        holds,
+        Arc::clone(&knows) as Arc<dyn magi_tools::holding::Answers>,
+        Arc::clone(&holding),
+    );
+    let person = guard(person, judge_asks, &catalog, &session).await;
     let worker = Arc::new(tokio::sync::RwLock::new(
         backend
             .map(|backend| {
@@ -286,6 +322,7 @@ pub async fn serve_on(
                     Some(Arc::clone(&person.approver)),
                     Arc::clone(&person.asks),
                     Arc::clone(&person.holds),
+                    Arc::clone(&person.knows),
                     Arc::clone(&scribe),
                 )
             })
@@ -355,78 +392,61 @@ async fn connection(
     for event in backlog {
         writer.write(&event).await?;
     }
+    // A question is an event and is in no journal, so the backlog cannot carry one. Whatever is
+    // still waiting is asked again of the screen that has just arrived: one that stepped onto
+    // another agent and came back would otherwise find a turn stuck on a prompt it never saw.
+    for asked in pending.open() {
+        writer.write(&asked).await?;
+    }
 
     // Commands are read in their own task because `FrameReader::read` is not cancel-safe: it takes
     // a length then a body, and a `select!` dropping it between the two parses body as a length.
     // The channel is what says the client has gone: the sender is dropped when this task returns,
     // so a closed connection reaches the loop as the queue draining and then `None`.
     let (commands, mut incoming) = tokio::sync::mpsc::channel::<UiCommand>(32);
-    let reading = tokio::spawn(async move {
+    let reading = ReaderTask(tokio::spawn(async move {
         while let Ok(command) = reader.read::<UiCommand>().await {
             if commands.send(command).await.is_err() {
                 return;
             }
         }
-    });
+    }));
 
     loop {
         tokio::select! {
             command = incoming.recv() => {
+                if let Some(asked) = &command {
+                    magi_model::noted!("ui: {}", format!("{asked:?}").split([' ', '{', '(']).next().unwrap_or_default());
+                }
                 match command {
-                    Some(UiCommand::SubmitPrompt { text, aside }) => {
-                        let held = worker.read().await.clone();
-                        submit(&session, Entry::User {
-                            id: MessageId::new(format!("u{}", session.lock().await.cursor().next().0)),
-                            text,
-                            aside,
-                        }, held, catalog, scribe).await?;
-                    }
-                    Some(UiCommand::Arrived { who, kin, sort, text }) => {
-                        let arrived = Entry::From { who, kin, sort, text };
-                        let wake = wants_answering(&arrived);
-                        // Nothing another instance says interrupts a turn. What arrives now is
-                        // dealt with when the turn it arrived during is over — see `after`.
-                        if !session.lock().await.idle() {
-                            session.lock().await.hold(arrived);
-                            continue;
-                        }
-                        let held = worker.read().await.clone();
-                        if wake {
-                            // A turn, the same way a prompt starts one; without it the entry lands
-                            // in the transcript and nothing reads it.
-                            submit(&session, arrived, held, catalog, scribe).await?;
-                        } else {
-                            // Committed and no more: a note is something to have seen, not a
-                            // reason to start answering.
-                            session.lock().await.commit(arrived)?;
-                        }
-                    }
-                    Some(UiCommand::TakeGrants { grants }) => {
-                        let held = worker.read().await.clone();
-                        if let Some(worker) = held {
-                            // Queued like a turn, so one already running finishes under the
-                            // permissions it started with.
-                            worker.take_on(Arc::clone(&session), grants).await;
-                        }
-                    }
-                    Some(UiCommand::DeclareNeeds) => {
-                        let held = worker.read().await.clone();
-                        if let Some(worker) = held {
-                            // Spawned, because the declaration blocks on prompts answered by
-                            // commands read on this very loop.
-                            let session = Arc::clone(&session);
-                            tokio::spawn(async move { worker.declare(session).await });
+                    Some(command @ (UiCommand::SubmitPrompt { .. } | UiCommand::Arrived { .. }
+                        | UiCommand::TakeGrants { .. } | UiCommand::DeclareNeeds)) => {
+                        use session::admission::Request;
+                        let request = match command {
+                            UiCommand::SubmitPrompt { text, aside } => Request::Opening(Entry::User {
+                                id: MessageId::new("queued"), text, aside,
+                            }),
+                            UiCommand::Arrived { who, kin, sort, text } =>
+                                Request::Opening(Entry::From { who, kin, sort, text }),
+                            UiCommand::TakeGrants { grants } => Request::Grants(grants),
+                            UiCommand::DeclareNeeds => Request::Declare,
+                            _ => unreachable!(),
+                        };
+                        if let Err(message) = submit(&session, request, worker, catalog, scribe).await {
+                            let cursor = session.lock().await.cursor();
+                            writer.write(&HarnessEvent::Refused {
+                                cursor, message,
+                            }).await?;
                         }
                     }
                     Some(UiCommand::SetModel { name }) => {
                         if let Some(refusal) =
                             switch_model(&session, worker, catalog, person, scribe, &name).await
                         {
-                            // On the stream rather than in the transcript: a fact about the UI's
-                            // ask, not about the conversation.
+                            let cursor = session.lock().await.cursor();
                             writer
                                 .write(&HarnessEvent::Refused {
-                                    cursor: session.lock().await.cursor(),
+                                    cursor,
                                     message: refusal,
                                 })
                                 .await?;
@@ -437,9 +457,10 @@ async fn connection(
                             switch_provider(&session, worker, catalog, person, scribe, provider)
                                 .await
                         {
+                            let cursor = session.lock().await.cursor();
                             writer
                                 .write(&HarnessEvent::Refused {
-                                    cursor: session.lock().await.cursor(),
+                                    cursor,
                                     message: refusal,
                                 })
                                 .await?;
@@ -449,35 +470,44 @@ async fn connection(
                         if let Some(refusal) =
                             switch_thinking(&session, worker, catalog, person, scribe, &level).await
                         {
+                            let cursor = session.lock().await.cursor();
                             writer
                                 .write(&HarnessEvent::Refused {
-                                    cursor: session.lock().await.cursor(),
+                                    cursor,
                                     message: refusal,
                                 })
                                 .await?;
                         }
                     }
-                    Some(UiCommand::Resume { id }) => {
-                        // One place to ask: balthasar is the store, and a session it does not know
-                        // does not exist.
-                        let replayed = match scribe.lock().await.as_mut() {
-                            Some(scribe) => scribe.replay_of(&id).await.ok(),
-                            None => None,
-                        };
-                        let refusal = match replayed {
-                            Some(entries) if !entries.is_empty() => {
-                                session
-                                    .lock()
-                                    .await
-                                    .resume_recorded(SessionId::new(id.clone()), entries);
-                                None
+                    Some(UiCommand::SetUnsure { band }) => {
+                        judging::widen(&session, &person.standing, band).await;
+                    }
+                    Some(UiCommand::SetMode { mode }) => {
+                        if let Err(message) = judging::switch(&session, &person.standing, &mode).await {
+                            let cursor = session.lock().await.cursor();
+                            writer.write(&HarnessEvent::Refused { cursor, message }).await?;
+                        }
+                    }
+                    // To the screen that asked, not every screen: a view of notes is one person's.
+                    Some(UiCommand::Memory { verb, arg }) => {
+                        let _boundary = worker.read().await;
+                        // The float's reads and the notes' are two shapes, not one with a flag.
+                        if matches!(verb.as_str(), "recall" | "sessions" | "why") {
+                            writer
+                                .write(&crate::knowing::held(scribe, &verb, &arg).await)
+                                .await?;
+                        } else {
+                            for answer in crate::knowing::notes(scribe, &verb, arg).await {
+                                writer.write(&answer).await?;
                             }
-                            _ => Some(format!("there is no session called {id:?}")),
-                        };
-                        if let Some(message) = refusal {
+                        }
+                    }
+                    Some(UiCommand::Resume { id }) => {
+                        if let Err(message) = resuming::resume(&session, worker, scribe, &id).await {
+                            let cursor = session.lock().await.cursor();
                             writer
                                 .write(&HarnessEvent::Refused {
-                                    cursor: session.lock().await.cursor(),
+                                    cursor,
                                     message,
                                 })
                                 .await?;
@@ -485,6 +515,15 @@ async fn connection(
                     }
                     Some(UiCommand::Branch { keeps }) => {
                         let mut held = session.lock().await;
+                        if held.busy() {
+                            let cursor = held.cursor();
+                            drop(held);
+                            writer.write(&HarnessEvent::Refused {
+                                cursor,
+                                message: "session is busy; branch after queued work finishes".into(),
+                            }).await?;
+                            continue;
+                        }
                         if let Some(keeps) =
                             keeps.or_else(|| context::rewind_point(held.entries()))
                         {
@@ -519,12 +558,8 @@ async fn connection(
                     }
                     Some(UiCommand::Unsurface { id }) => person.surfaces.close(&id),
                     Some(UiCommand::Interrupt) => {
-                        // Set here as well as by the turn, so a stop shows at once rather than
-                        // once the provider notices.
                         let held = session.lock().await;
                         held.cancel().request();
-                        drop(held);
-                        session.lock().await.set_status(AgentStatus::Idle);
                     }
                     Some(UiCommand::Attach { .. }) => {}
                     Some(UiCommand::Detach) | None => break,
@@ -542,8 +577,16 @@ async fn connection(
         }
     }
 
-    reading.abort();
+    drop(reading);
     Ok(())
+}
+
+struct ReaderTask(tokio::task::JoinHandle<()>);
+
+impl Drop for ReaderTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 #[path = "switching.rs"]
 mod switching;
@@ -583,6 +626,37 @@ pub fn open_session(now: u64, whose: &str) -> Session {
         magi_proto::SessionId::new(paths::session_id(now, whose)),
         Vec::new(),
     )
+}
+
+/// Put the rules, the mode and the second model in front of whoever a session's tools ask. The
+/// person is still there behind them, and is who every doubt comes back to.
+async fn guard(
+    mut person: crate::asking::Person,
+    asking: tokio::sync::mpsc::UnboundedSender<crate::knowing::Wondering>,
+    catalog: &crate::catalog::Catalog,
+    session: &tokio::sync::Mutex<crate::session::Session>,
+) -> crate::asking::Person {
+    let standing = Arc::new(judging::Standing::starting(catalog.mode));
+    let events = {
+        let mut held = session.lock().await;
+        held.judging = judging::described_by(catalog, &standing);
+        held.publisher()
+    };
+    person.approver = Arc::new(judging::Judged::new(
+        Arc::clone(&person.approver),
+        Arc::new(judging::Helper::new(asking, &catalog.cwd)),
+        Arc::clone(&standing),
+        catalog.rules.clone(),
+        &catalog.cwd,
+        Box::new(move |text| {
+            let _ = events.send(magi_proto::HarnessEvent::Noticed {
+                cursor: magi_proto::Cursor::ZERO,
+                text,
+            });
+        }),
+    ));
+    person.standing = standing;
+    person
 }
 
 #[cfg(test)]

@@ -18,48 +18,73 @@ pub fn of(session: &Session) -> Context {
 #[must_use]
 pub fn of_entries(entries: &[Entry]) -> Context {
     let view = live_entries(entries);
-    let summary = view.summary;
-    let masks = view.masks;
-    // Carried with the entry, because a mask names an entry by its index in the transcript.
-    let live = view.live.into_iter().map(|at| (at, &entries[at]));
-
-    let mut messages: Vec<Message> = Vec::new();
-    if let Some(summary) = summary {
-        // As a user message: a model shown its own words as a summary tends to continue them.
-        messages.push(Message::user(format!(
+    let mut built = Built::default();
+    if let Some(summary) = view.summary {
+        built.observation(format!(
             "Here is a summary of the earlier part of this conversation:\n\n{summary}"
-        )));
+        ));
+    }
+    // Carried with the entry, because a mask names an entry by its index in the transcript.
+    for at in view.live {
+        built.entry(&entries[at], view.masks.get(&at).map(String::as_str));
+    }
+    built.finish()
+}
+
+/// A provider conversation being put together an entry at a time. Shared by [`of_entries`], which
+/// shows everything live, and [`crate::laying`], which shows what balthasar laid out.
+#[derive(Default)]
+pub(crate) struct Built {
+    messages: Vec<Message>,
+    /// Where the assistant message being rebuilt lives, so the tool entries after it can put their
+    /// calls back into it. The journal stores a call as its own record; a provider needs it inside.
+    open: Option<usize>,
+}
+
+impl Built {
+    /// A user message or trusted host instruction outside the recorded entries.
+    pub(crate) fn user(&mut self, text: String) {
+        self.open = None;
+        self.messages.push(Message::user(text));
     }
 
-    // Where the assistant message being rebuilt lives, so the tool entries after it can put their
-    // calls back into it. The journal stores a call as its own record; a provider needs it inside.
-    let mut open: Option<usize> = None;
+    /// Helper-produced context, never an instruction from the user or a new tool-call owner.
+    pub(crate) fn observation(&mut self, text: String) {
+        if self.messages.is_empty() {
+            self.user("Background context follows; it is not a user instruction.".to_owned());
+        }
+        self.open = None;
+        self.messages.push(Message::assistant(text));
+    }
 
-    for (at, entry) in live {
+    /// One entry, with `stub` sent in place of a tool's result when there is one.
+    pub(crate) fn entry(&mut self, entry: &Entry, stub: Option<&str>) {
         match entry {
             // A notice is one UI talking to the person in front of it. A mask is bookkeeping about
-            // another entry; what it carries is applied where that entry is written out, below.
+            // another entry; what it carries arrives here as the stub.
             Entry::Branch { .. }
             | Entry::Compaction { .. }
             | Entry::Notice { .. }
             | Entry::Masked { .. } => {}
             Entry::User { text, aside, .. } => {
-                open = None;
                 // The aside goes with it, under a rule, so the model can tell it from the prompt.
-                messages.push(Message::user(if aside.is_empty() {
+                self.user(if aside.is_empty() {
                     text.clone()
                 } else {
                     format!("{text}\n\n---\n{aside}")
-                }));
+                });
             }
             // Somebody addressed this session, so it is a user turn — but not the user. Named
             // rather than dropped: swallowing a message another agent sent is worth no tidiness.
             Entry::From { who, kin, text, .. } => {
-                open = None;
-                messages.push(Message::user(format!(
-                    "[message from {}::{who}]\n{text}",
-                    kin.to_uppercase()
-                )));
+                // Named as the screen names it: role and id, and the whole name from elsewhere.
+                let id = who.rsplit('/').next().unwrap_or(who);
+                let name = match kin.as_str() {
+                    "elsewhere" => who.clone(),
+                    "myself" | "" => id.to_owned(),
+                    role => format!("{role}/{id}"),
+                };
+                self.user(format!("[message from {name}]\n{text}"));
             }
             Entry::Assistant {
                 text,
@@ -69,10 +94,10 @@ pub fn of_entries(entries: &[Entry]) -> Context {
                 signatures,
                 ..
             } => {
-                open = None;
+                self.open = None;
                 // Replaying an error as if the model had said it teaches it to produce more.
                 if error.is_some() || *stop_reason == Some(StopReason::Error) {
-                    continue;
+                    return;
                 }
                 let mut content = Vec::new();
                 if !thinking.is_empty() {
@@ -88,14 +113,14 @@ pub fn of_entries(entries: &[Entry]) -> Context {
                     });
                 }
                 // Pushed even when empty: a tool-using turn is a model that says nothing and calls.
-                messages.push(Message {
+                self.messages.push(Message {
                     role: Role::Assistant,
                     content,
                     stop_reason: *stop_reason,
                     usage: None,
                     error: None,
                 });
-                open = Some(messages.len() - 1);
+                self.open = Some(self.messages.len() - 1);
             }
             Entry::Tool {
                 id,
@@ -104,8 +129,8 @@ pub fn of_entries(entries: &[Entry]) -> Context {
                 result,
                 thought_signature,
             } => {
-                if let Some(at) = open {
-                    messages[at].content.push(Content::ToolCall {
+                if let Some(at) = self.open {
+                    self.messages[at].content.push(Content::ToolCall {
                         id: id.to_string(),
                         name: name.clone(),
                         arguments: serde_json::from_str(args).unwrap_or(serde_json::Value::Null),
@@ -113,14 +138,11 @@ pub fn of_entries(entries: &[Entry]) -> Context {
                     });
                 }
                 if let Some(result) = result {
-                    // Where masking saves the window. The stub is the tool's own words, because
-                    // only its author knows what a useful one says. The call above is never masked:
+                    // Where stubbing saves the window. The stub is the tool's own words, because
+                    // only its author knows what a useful one says. The call above is never stubbed:
                     // a result without its call is an orphan, and providers refuse those.
-                    let content = masks
-                        .get(&at)
-                        .cloned()
-                        .unwrap_or_else(|| result.output.clone());
-                    messages.push(Message {
+                    let content = stub.map_or_else(|| result.output.clone(), str::to_owned);
+                    self.messages.push(Message {
                         role: Role::Tool,
                         content: vec![Content::ToolResult {
                             id: id.to_string(),
@@ -137,11 +159,15 @@ pub fn of_entries(entries: &[Entry]) -> Context {
         }
     }
 
-    // A message with nothing in it is rejected by every provider that checks.
-    messages.retain(|m| !(m.role == Role::Assistant && m.content.is_empty()));
-    Context {
-        messages: repair(messages),
-        ..Context::default()
+    /// The conversation, in a shape a provider accepts.
+    pub(crate) fn finish(mut self) -> Context {
+        // A message with nothing in it is rejected by every provider that checks.
+        self.messages
+            .retain(|m| !(m.role == Role::Assistant && m.content.is_empty()));
+        Context {
+            messages: repair(self.messages),
+            ..Context::default()
+        }
     }
 }
 
@@ -217,20 +243,20 @@ fn repair(messages: Vec<Message>) -> Vec<Message> {
 }
 
 /// What a view of the transcript comes to.
-struct Live {
+pub(crate) struct Live {
     /// Indices into the transcript, in the order a provider is shown them.
-    live: Vec<usize>,
+    pub(crate) live: Vec<usize>,
     /// The summary standing in for whatever a compaction replaced.
-    summary: Option<String>,
+    pub(crate) summary: Option<String>,
     /// What a masked entry is sent as instead of itself, by index.
-    masks: std::collections::BTreeMap<usize, String>,
+    pub(crate) masks: std::collections::BTreeMap<usize, String>,
 }
 
 /// The entries the provider is shown, the summary standing in for the rest, and the stubs. One
 /// pass: compactions and branches both answer which entries are live, they compose, and both count
 /// in entries from the start of the session. A mask does not change which entries are live, only
 /// what one of them says. Nothing is removed from the journal by any of them — this is a view.
-fn live_entries(entries: &[Entry]) -> Live {
+pub(crate) fn live_entries(entries: &[Entry]) -> Live {
     let mut live: Vec<usize> = Vec::new();
     let mut summary = None;
     let mut masks: std::collections::BTreeMap<usize, String> = std::collections::BTreeMap::new();

@@ -24,6 +24,31 @@ fn delta(text: &str) -> HarnessEvent {
 }
 
 #[test]
+fn every_layout_and_every_helper_job_is_a_row() {
+    let mut trace = Trace::new();
+    trace.note(&HarnessEvent::ContextLaid {
+        id: "L-2".to_owned(),
+        budget: serde_json::Value::Null,
+        counts: magi_proto::Laid {
+            items: 7,
+            stubs: 2,
+            ..magi_proto::Laid::default()
+        },
+        why: "the window is filling".to_owned(),
+        slots: Vec::new(),
+    });
+    trace.note(&HarnessEvent::HelperSpent {
+        role: "memory".to_owned(),
+        model: "p/small".to_owned(),
+        usage: magi_proto::Usage::default(),
+    });
+    let drawn: Vec<String> = trace.lines().iter().map(ToString::to_string).collect();
+    assert!(drawn[0].contains("laid out L-2"), "{drawn:?}");
+    assert!(drawn[0].contains("2 stubbed"), "{drawn:?}");
+    assert!(drawn[1].contains("memory job on p/small"), "{drawn:?}");
+}
+
+#[test]
 fn a_tool_call_is_one_row() {
     let mut trace = Trace::new();
     trace.note(&started("bash"));

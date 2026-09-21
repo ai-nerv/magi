@@ -3,6 +3,7 @@
 //! sandbox without touching a tool. It is also the safety boundary for Lua tools, whose reach is
 //! decided here rather than by what the VM happens to expose.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 /// Everything a tool is allowed to do to the outside world.
@@ -163,33 +164,38 @@ impl Real {
     }
 
     /// A directory to be the jail's shared `/tmp`, one per project so a project's commands and
-    /// agents see each other's temp files. Under `$XDG_RUNTIME_DIR` (per-user, `0700`) rather than a
-    /// world-writable `/tmp/<name>` a stranger could pre-make; keyed by the session's directory.
-    /// `None` when there is no runtime directory, and casper falls back to a private tmpfs.
+    /// agents see each other's temp files. In the user's cache (`0700`) rather than a
+    /// world-writable `/tmp/<name>` a stranger could pre-make, and on disk rather than under
+    /// `$XDG_RUNTIME_DIR`, which is memory a single build can fill. Keyed by the session's
+    /// directory. `None` when there is no cache to use, and casper falls back to a private tmpfs.
     fn shared_tmp(&self) -> Option<PathBuf> {
         use sha2::Digest;
-        let base = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?);
+        use std::os::unix::fs::PermissionsExt;
+        let base = scratch_base()?.join("casper").join("tmp");
         let key = format!(
             "{:x}",
             sha2::Sha256::digest(self.root.to_string_lossy().as_bytes())
         );
-        let dir = base.join("casper").join("tmp").join(&key[..16]);
+        let dir = base.join(&key[..16]);
         std::fs::create_dir_all(&dir).ok()?;
+        std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).ok()?;
         Some(dir)
     }
 
-    /// What the jail may write, from this session's grants — a write grant on a directory makes it
-    /// writable — and that it keeps the network: the jail contains the filesystem, not the network,
-    /// which is essential and stays open. Read into the tools-program profile [`Self::jail`] sends.
+    /// Writable directories and unrestricted network permission from the session ledger.
     fn jail_reach(&self) -> (Vec<PathBuf>, bool) {
         use magi_proto::permit::Scope;
         let mut write = Vec::new();
+        let mut reach = false;
         for grant in self.grants() {
             if let ("write", Scope::Directory { path }) = (grant.verb.as_str(), &grant.scope) {
                 write.push(PathBuf::from(path));
             }
+            if grant.verb == "reach" && grant.scope == Scope::Anything {
+                reach = true;
+            }
         }
-        (write, true)
+        (write, reach)
     }
 
     /// Resolve a path against the root, refusing anything that escapes it when confined. Checked
@@ -230,6 +236,20 @@ impl Real {
             other => other.clone(),
         }
     }
+}
+
+/// Where the jails' shared temp directories go: `$XDG_CACHE_HOME`, else `~/.cache`. Disk, so what
+/// a build leaves in `/tmp` costs no memory.
+fn scratch_base() -> Option<PathBuf> {
+    scratch_under(std::env::var_os("XDG_CACHE_HOME"), std::env::var_os("HOME"))
+}
+
+fn scratch_under(cache: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+    let set = |value: Option<OsString>| value.filter(|value| !value.is_empty());
+    set(cache)
+        .map(PathBuf::from)
+        .or_else(|| set(home).map(|home| PathBuf::from(home).join(".cache")))
+        .filter(|base| base.is_absolute())
 }
 
 /// Resolve `.` and `..` without touching the filesystem. `canonicalize` would be stricter but
@@ -277,7 +297,9 @@ impl Ops for Real {
         };
         // Against the resolved path, as `read`/`write` act, or a relative one never meets a grant.
         let action = &self.resolved_action(action);
-        if gate.ledger.lock().is_ok_and(|ledger| ledger.allows(action)) {
+        if !gate.approver.overrides(action)
+            && gate.ledger.lock().is_ok_and(|ledger| ledger.allows(action))
+        {
             return Ok(());
         }
         let decision = gate.approver.ask(tool, action);
@@ -291,11 +313,19 @@ impl Ops for Real {
         });
         match decision {
             magi_proto::permit::Decision::Allow { .. } => Ok(()),
-            magi_proto::permit::Decision::Deny => Err(format!(
-                "not permitted: {} {}. The person at the keyboard declined.",
-                action.verb(),
-                action.subject()
-            )),
+            magi_proto::permit::Decision::Deny => Err(match gate.approver.why(action) {
+                Some(why) => format!(
+                    "not permitted: {} {}. {why}",
+                    action.verb(),
+                    action.subject()
+                ),
+                None => format!(
+                    "not permitted: {} {}. No standing grant covers it, and asking got no leave: \
+                     either it was declined, or nobody is attached to this session to be asked.",
+                    action.verb(),
+                    action.subject()
+                ),
+            }),
         }
     }
 
@@ -342,6 +372,18 @@ mod tests {
     }
 
     #[test]
+    fn a_jails_shared_tmp_is_on_disk_in_the_users_cache() {
+        let at = |cache: &str, home: &str| {
+            let given = |value: &str| (!value.is_empty()).then(|| OsString::from(value));
+            scratch_under(given(cache), given(home))
+        };
+        assert_eq!(at("/x/cache", "/home/u"), Some(PathBuf::from("/x/cache")));
+        assert_eq!(at("", "/home/u"), Some(PathBuf::from("/home/u/.cache")));
+        assert_eq!(at("relative", ""), None);
+        assert_eq!(at("", ""), None);
+    }
+
+    #[test]
     fn isolation_off_is_no_jail_profile_at_all() {
         let (ops, _dir) = rooted("no-jail");
         assert_eq!(
@@ -349,6 +391,34 @@ mod tests {
             None,
             "a session that did not ask for a jail gets none"
         );
+    }
+
+    #[test]
+    fn an_empty_or_host_specific_grant_never_opens_all_networks() {
+        use magi_proto::permit::{Grant, Scope};
+        for grants in [
+            vec![],
+            vec![Grant {
+                verb: "reach".to_owned(),
+                scope: Scope::Directory {
+                    path: "example.test".to_owned(),
+                },
+            }],
+        ] {
+            let dir = Scratch::new("magi-ops", "network-floor");
+            let ops = Real::gated(
+                dir.to_path_buf(),
+                crate::permit::Ledger::with(grants),
+                std::sync::Arc::new(crate::approve::AllowAll),
+            )
+            .isolating(true);
+            let profile: serde_json::Value =
+                serde_json::from_str(&ops.jail().expect("profile")).expect("json");
+            assert_eq!(profile["reach"], false);
+            if let Some(tmp) = ops.shared_tmp() {
+                let _ = std::fs::remove_dir_all(tmp);
+            }
+        }
     }
 
     #[test]

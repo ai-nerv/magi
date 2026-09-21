@@ -21,11 +21,14 @@ fn backend(mind: &Mind) -> Backend {
         mind: mind.program().display().to_string(),
         wants: magi_proto::ask::Wants::default(),
         context_window: Some(200_000),
+        max_output: None,
         system: None,
         confine: false,
         isolate: false,
         grants: Vec::new(),
         environ: std::collections::BTreeMap::new(),
+        helpers: Default::default(),
+        deciders: Vec::new(),
     }
 }
 
@@ -37,12 +40,14 @@ async fn serving(name: &str, mind: &Mind) -> (Scratch, std::path::PathBuf) {
     let session = Session::recorded(SessionId::new("s"), Vec::new());
     let listener = magi_ipc::bind(&path).await.expect("bind");
     let backend = backend(mind);
+    let memory = dir.join("absent-memory.sock");
     tokio::spawn(async move {
-        let _ = magi_host::serve_catalog(
+        let _ = magi_host::serve_on(
             listener,
             session,
             Some(backend),
             magi_host::catalog::Catalog::empty(),
+            Some(memory),
         )
         .await;
     });

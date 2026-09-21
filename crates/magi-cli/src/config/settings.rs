@@ -2,6 +2,57 @@
 
 use super::Loaded;
 
+/// The rules under `key`, in the one shape `magi.allow`, `magi.ask` and `magi.deny` share: a verb
+/// and one width. A rule naming no width is no rule.
+#[must_use]
+pub fn rules(loaded: &Loaded, key: &str) -> Vec<magi_proto::permit::Grant> {
+    use magi_proto::permit::{Grant, Scope};
+    let width = |rule: &serde_json::Value| {
+        if rule.get("anything").and_then(serde_json::Value::as_bool) == Some(true) {
+            return Some(Scope::Anything);
+        }
+        let named = |field: &str| rule.get(field).and_then(|v| v.as_str()).map(str::to_owned);
+        named("program")
+            .map(|program| Scope::Program { program })
+            .or_else(|| named("directory").map(|path| Scope::Directory { path }))
+    };
+    loaded
+        .config
+        .get(key)
+        .and_then(|v| v.as_array())
+        .map(|rules| {
+            rules
+                .iter()
+                .filter_map(|rule| {
+                    Some(Grant {
+                        verb: rule.get("verb")?.as_str()?.to_owned(),
+                        scope: width(rule)?,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Who is asked about what no rule covers, and the two kinds of rule no mode overrides.
+/// ```lua
+/// magi.mode = "auto"    -- ask | edits | auto | locked
+/// ```
+#[must_use]
+pub fn judging(loaded: &Loaded) -> (magi_proto::judging::Mode, magi_host::judging::Rules) {
+    let mode = loaded
+        .config
+        .get("mode")
+        .and_then(|v| v.as_str())
+        .and_then(magi_proto::judging::Mode::named)
+        .unwrap_or_default();
+    let rules = magi_host::judging::Rules {
+        ask: rules(loaded, "ask"),
+        deny: rules(loaded, "deny"),
+    };
+    (mode, rules)
+}
+
 /// Permissions the configuration granted outright: `magi.allow` rules go into the ledger at startup
 /// rather than being prompted for. Anything not listed is asked about the first time it comes up.
 /// ```lua
@@ -14,36 +65,7 @@ use super::Loaded;
 #[must_use]
 pub fn grants(loaded: &Loaded) -> Vec<magi_proto::permit::Grant> {
     use magi_proto::permit::{Grant, Scope};
-    let mut out: Vec<Grant> = loaded
-        .config
-        .get("allow")
-        .and_then(|v| v.as_array())
-        .map(|rules| {
-            rules
-                .iter()
-                .filter_map(|rule| {
-                    let verb = rule.get("verb")?.as_str()?.to_owned();
-                    let scope = if rule.get("anything").and_then(serde_json::Value::as_bool)
-                        == Some(true)
-                    {
-                        Scope::Anything
-                    } else if let Some(program) = rule.get("program").and_then(|v| v.as_str()) {
-                        Scope::Program {
-                            program: program.to_owned(),
-                        }
-                    } else if let Some(path) = rule.get("directory").and_then(|v| v.as_str()) {
-                        Scope::Directory {
-                            path: path.to_owned(),
-                        }
-                    } else {
-                        // A rule naming no width grants nothing; a typo widened to `Anything` would.
-                        return None;
-                    };
-                    Some(Grant { verb, scope })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut out = rules(loaded, "allow");
     // `magi.may_spawn` pre-authorises starting children: `spawn` runs this very binary with `fork`,
     // gated as a `run` of its own path. Granted by the path the process runs from, so it needs no
     // machine-specific rule and survives a config reinstall — which a hand-written path does not.
@@ -124,7 +146,8 @@ pub fn options(loaded: &Loaded) -> magi_proto::ask::Wants {
     let thinking = loaded
         .config
         .string("thinking")
-        .and_then(|level| serde_json::from_value(serde_json::Value::String(level.to_owned())).ok());
+        .and_then(|level| serde_json::from_value(serde_json::Value::String(level.to_owned())).ok())
+        .or(Some(magi_model::ThinkingLevel::Off));
     magi_proto::ask::Wants {
         // Set per request, not per session: a schema belongs to one question.
         schema: None,
@@ -133,6 +156,81 @@ pub fn options(loaded: &Loaded) -> magi_proto::ask::Wants {
         // Chosen on the model's card, never in the config: providers come and go by the hour.
         provider: None,
     }
+}
+
+/// The small models that run jobs for balthasar and questions for surfaces: a model per role, and
+/// the limits they run under. A role with no model here is skipped, or run on the session's own
+/// model when the job asks for that. `memory` is on, on that model, until named or set `false`.
+/// ```lua
+/// magi.helpers = {
+///   memory = "openrouter/google/gemini-2.5-flash",
+///   timeout_ms = 20000,
+///   budget = { per_prompt = 0.05 },  -- dollars
+/// }
+/// ```
+#[must_use]
+pub fn helpers(loaded: &Loaded) -> magi_host::helping::Helpers {
+    let mut helpers = magi_host::helping::Helpers::default();
+    // Notes are kept unless a machine says otherwise, on the session's own model until one is named.
+    helpers
+        .roles
+        .insert("memory".to_owned(), magi_host::helping::MAIN.to_owned());
+    // Every role `magi.model.helper` names: the one place a helper model is named. A role set to
+    // `false` there runs nowhere, which is how notes are turned off.
+    if let Some(named) = loaded
+        .config
+        .get("model")
+        .and_then(|model| model.get("helper"))
+        .and_then(serde_json::Value::as_object)
+    {
+        for (role, value) in named {
+            match value {
+                serde_json::Value::String(model) => {
+                    helpers.roles.insert(role.clone(), model.clone());
+                }
+                serde_json::Value::Bool(false) => {
+                    helpers.roles.remove(role);
+                }
+                _ => {}
+            }
+        }
+    }
+    let Some(table) = loaded.config.get("helpers").and_then(|v| v.as_object()) else {
+        return helpers;
+    };
+    for (key, value) in table {
+        match (key.as_str(), value) {
+            ("timeout_ms", value) => helpers.timeout_ms = whole(value).unwrap_or(0),
+            ("budget", value) => {
+                let dollars = value.get("per_prompt").and_then(serde_json::Value::as_f64);
+                helpers.per_prompt_micros = dollars
+                    .filter(|usd| *usd >= 0.0)
+                    .and_then(|usd| whole(&serde_json::json!((usd * 1_000_000.0).round())));
+            }
+            (role, serde_json::Value::String(model)) => {
+                helpers.roles.insert(role.to_owned(), model.clone());
+            }
+            (role, serde_json::Value::Bool(false)) => {
+                helpers.roles.remove(role);
+            }
+            _ => {}
+        }
+    }
+    helpers
+}
+
+/// A count, whether Lua handed it over as an integer or as a float.
+fn whole(value: &serde_json::Value) -> Option<u64> {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "checked non-negative and finite; milliseconds and micro-dollars"
+    )]
+    let from_float = value
+        .as_f64()
+        .filter(|f| f.is_finite() && *f >= 0.0)
+        .map(|f| f as u64);
+    value.as_u64().or(from_float)
 }
 
 /// Everything `magi.ui` says about how the screen looks. The names come from the colour, glyph and
@@ -203,6 +301,17 @@ mod ui_tests {
             tools: Vec::new(),
             clients: Vec::new(),
         }
+    }
+
+    #[test]
+    fn notes_are_kept_on_the_sessions_model_until_told_otherwise() {
+        let memory = |source: &str| helpers(&from_lua(source)).roles.get("memory").cloned();
+        assert_eq!(memory("").as_deref(), Some(magi_host::helping::MAIN));
+        assert_eq!(
+            memory("magi.helpers = { memory = \"a/small\" }").as_deref(),
+            Some("a/small")
+        );
+        assert_eq!(memory("magi.helpers = { memory = false }"), None);
     }
 
     /// The palette a config would produce, without adopting it process-wide.

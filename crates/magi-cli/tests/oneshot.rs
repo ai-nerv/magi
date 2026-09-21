@@ -22,6 +22,10 @@ fn workspace(name: &str) -> Scratch {
     let init = dir.join("config/magi/init.lua");
     let mut source = std::fs::read_to_string(&init).expect("the installed entry point");
     source.push_str(&format!("\nmagi.model = \"{MODEL}\"\n"));
+    // These count and script what the model is asked; a note taken on it would be an ask they never wrote.
+    source.push_str("magi.helpers = { memory = false }\n");
+    // The shipped config pre-authorises spawning; what an unattended run refuses is under test here.
+    source.push_str("magi.may_spawn = false\n");
     std::fs::write(&init, source).expect("write init");
     dir
 }
@@ -42,7 +46,7 @@ fn unpinned(dir: &Path, mind: &Mind, args: &[&str]) -> std::process::Output {
 
 /// The command a run is, before it is waited on. Shared with the crash test, which needs the child.
 fn started(dir: &Path, mind: &Mind, args: &[&str]) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_magi"));
+    let mut command = Command::new(magi_testkit::live::binary(env!("CARGO_BIN_EXE_magi")));
     // The `XDG_` variables below do not settle which balthasar this reaches; `MAGI_API_SOCKET`
     // outranks them. See [`magi_testkit::only_its_own_store`].
     magi_testkit::only_its_own_store(&mut command);
@@ -124,7 +128,7 @@ fn without_a_store() -> bool {
         .status()
         .is_err();
     if missing {
-        eprintln!("skipped: balthasar is not installed, and it is the store");
+        magi_testkit::live::unavailable("balthasar is not installed, and it is the store");
     }
     missing
 }

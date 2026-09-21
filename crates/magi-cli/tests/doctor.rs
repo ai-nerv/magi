@@ -10,7 +10,7 @@ use std::process::Command;
 fn doctor(path: &std::path::Path) -> String {
     let dir = Scratch::new("magi-doctor", "run");
     let config = Scratch::new("magi-doctor", "config");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_magi"));
+    let mut command = Command::new(magi_testkit::live::binary(env!("CARGO_BIN_EXE_magi")));
     magi_testkit::only_its_own_store(&mut command);
     let out = command
         .arg("doctor")
