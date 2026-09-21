@@ -13,7 +13,7 @@ magi.load("tools.lua")
 -- Which model to use, as `magi models` prints it.
 -- magi.model = "openrouter/stealth/union-alpha"
 -- magi.model = "openrouter/deepseek/deepseek-v4.1-flash"
-magi.model = "openrouter/deepseek/deepseek-v4-flash-0731"
+magi.model = "openrouter/z-ai/glm-5.3-flash"
 
 -- Which program fills each role -- what a program is *for*, as `ROLES.md` sets it out. Named
 -- rather than assumed: magi does not know its memory is called balthasar, only that whatever

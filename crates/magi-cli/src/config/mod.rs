@@ -285,6 +285,33 @@ pub fn remembered() -> magi_host::remember::Chosen {
         .unwrap_or_default()
 }
 
+/// Every memory this project holds, by id. Asked down the family socket, which is the same
+/// balthasar a session talks to; nothing is read off disk.
+#[must_use]
+pub fn project_memories() -> Vec<String> {
+    let Ok(mut family) = magi_ipc::family::blocking::Family::find() else {
+        return Vec::new();
+    };
+    let args = vec![
+        serde_json::Value::String(String::new()),
+        serde_json::json!({ "limit": 10_000 }),
+    ];
+    let Ok(rows) = family.call("recall", args) else {
+        return Vec::new();
+    };
+    rows.iter()
+        .flat_map(|value| match value.as_array() {
+            Some(list) => list.clone(),
+            None => vec![value.clone()],
+        })
+        .filter_map(|row| {
+            row.get("id")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .collect()
+}
+
 /// The backend a daemon should run turns against, if one is both chosen and usable. A model that is
 /// configured but has no credential yields `None`, so the daemon still starts and journals a refusal.
 #[must_use]

@@ -95,6 +95,10 @@ pub fn commands() -> Vec<Candidate> {
             "balthasar: what it holds, what it is telling this model, and what it rests on",
         ),
         (":notes", "what memory has learnt, and every change to it"),
+        (
+            ":reset",
+            "clear what this directory remembers: model, memory, sessions",
+        ),
     ]
     .iter()
     .map(|(value, detail)| Candidate {

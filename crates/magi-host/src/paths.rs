@@ -95,9 +95,17 @@ fn asked(args: Vec<serde_json::Value>) -> Vec<Summary> {
 ///
 /// Run as a command rather than asked down the socket: balthasar reserves removal for its
 /// owner's own door, so magi has to be the CLI for a moment. The error is the command's own.
+/// Remove one memory outright, by id. The same door [`purge`] uses, for the same reason.
+///
+/// # Errors
+/// What balthasar said when it would not remove it.
+pub fn purge_memory(id: &str) -> Result<(), String> {
+    ran(&["--tool", "magi", "forget", id, "--purge", "--yes"], id)
+}
+
 pub fn purge(id: &str) -> Result<(), String> {
-    let ran = std::process::Command::new("balthasar")
-        .args([
+    ran(
+        &[
             "--tool",
             "magi",
             "forget",
@@ -105,19 +113,9 @@ pub fn purge(id: &str) -> Result<(), String> {
             "--session",
             "--purge",
             "--yes",
-        ])
-        .output()
-        .map_err(|why| format!("balthasar could not be run: {why}"))?;
-    if ran.status.success() {
-        return Ok(());
-    }
-    let said = String::from_utf8_lossy(&ran.stderr);
-    let said = said.trim();
-    Err(if said.is_empty() {
-        format!("balthasar refused to remove {id}")
-    } else {
-        said.to_owned()
-    })
+        ],
+        id,
+    )
 }
 
 /// One of balthasar's session rows, as a picker needs it. A child's own transcript is `run@agent`
@@ -147,3 +145,21 @@ fn summary_of(row: &serde_json::Value) -> Option<Summary> {
 #[cfg(test)]
 #[path = "paths/naming.rs"]
 mod naming;
+
+/// Run balthasar with `args`, and read a refusal back as one.
+fn ran(args: &[&str], id: &str) -> Result<(), String> {
+    let done = std::process::Command::new("balthasar")
+        .args(args)
+        .output()
+        .map_err(|why| format!("balthasar could not be run: {why}"))?;
+    if done.status.success() {
+        return Ok(());
+    }
+    let said = String::from_utf8_lossy(&done.stderr);
+    let said = said.trim();
+    Err(if said.is_empty() {
+        format!("balthasar refused to remove {id}")
+    } else {
+        said.to_owned()
+    })
+}

@@ -547,6 +547,7 @@ mod applying;
 mod asked;
 mod asks;
 mod folding;
+mod resetting;
 #[cfg(test)]
 mod retracting;
 mod sessions;

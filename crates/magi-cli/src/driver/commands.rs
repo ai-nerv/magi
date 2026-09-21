@@ -94,6 +94,11 @@ pub(super) fn run_command(input: &str, app: &mut App) -> Control {
                 Control::Continue
             }
         },
+        // Named, it asks about that one; alone, it offers the list. Nothing goes without an answer.
+        ":reset" => {
+            app.open_reset_picker(input.split_whitespace().nth(1));
+            Control::Continue
+        }
         ":permissions" => Control::Send(UiCommand::DeclareNeeds),
         ":resume" => {
             app.open_session_picker();

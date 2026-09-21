@@ -1,7 +1,7 @@
 //! The UI event loop. Three sources feed one `select!`: the socket, the terminal, and a spinner
 //! timer. State lives in [`App`], drawing lives in [`ui`], and this file owns only the wiring.
 
-use crate::app::{App, Picking};
+use crate::app::App;
 use crate::keys;
 use crate::keys::{Action, Scroll};
 use crate::terminal::Session;
@@ -448,69 +448,9 @@ pub async fn run(
                                     dirty = true;
                                     continue;
                                 }
-                                let command = match app.picking.take() {
-                                    Some(crate::app::Picking::Thinking) => {
-                                        UiCommand::SetThinking { level: value }
-                                    }
-                                    // No recorded purpose, so nothing here opened it and nothing goes.
-                                    Some(crate::app::Picking::Model) => {
-                                        UiCommand::SetModel { name: value }
-                                    }
-                                    // Matched back by position: a row is labelled for a person to
-                                    // read, and none of that is the id the session needs.
-                                    // Archived resumes the same way: away is about what is offered.
-                                    Some(Picking::Session { rows } | Picking::Archived { rows }) => {
-                                        let found = rows
-                                            .iter()
-                                            .find(|(label, _)| *label == value)
-                                            .map(|(_, id)| id.clone());
-                                        match found {
-                                            Some(id) => UiCommand::Resume { id },
-                                            None => continue,
-                                        }
-                                    }
-                                    // Matched back by label: the picker holding the positions is gone.
-                                    Some(crate::app::Picking::Asked { id, rows }) => {
-                                        let chosen = rows
-                                            .iter()
-                                            .find(|(label, _)| *label == value)
-                                            .map(|(_, choice)| choice.clone());
-                                        match chosen {
-                                            Some(choice) => UiCommand::Answered { id, choice },
-                                            // No row matches, so answering would resume a tool with
-                                            // a choice nobody made.
-                                            None => continue,
-                                        }
-                                    }
-                                    // Matched back by label, generated from these same scopes, so the
-                                    // pairing is exact; a value matching none of them is the "no" row.
-                                    Some(crate::app::Picking::Permission { id, offers }) => {
-                                        let chosen = offers
-                                            .iter()
-                                            .find(|scope| {
-                                                scope.label(&app.asking_about) == value
-                                            });
-                                        // The enforcing ledger is on the worker thread and never read
-                                        // back, so what this session holds is kept here.
-                                        if let Some(scope) = chosen
-                                            && let Some(grant) = magi_tools::permit::standing(
-                                                &app.asking_about,
-                                                scope,
-                                            )
-                                        {
-                                            app.was_granted(grant);
-                                        }
-                                        let decision = chosen.map_or(
-                                            magi_proto::permit::Decision::Deny,
-                                            |scope| magi_proto::permit::Decision::Allow {
-                                                scope: scope.clone(),
-                                                lifetime: magi_proto::permit::Lifetime::Session,
-                                            },
-                                        );
-                                        UiCommand::Permit { id, decision }
-                                    }
-                                    // Taken above: its answer is not a `UiCommand`.
-                                    Some(crate::app::Picking::Adoption { .. }) | None => continue,
+                                let Some(command) = app.chose(value) else {
+                                    dirty = true;
+                                    continue;
                                 };
                                 direct(&mut app, &command_tx, command).await;
                                 dirty = true;

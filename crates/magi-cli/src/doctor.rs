@@ -33,14 +33,28 @@ fn report() -> String {
 
     heading(&mut out, "settings");
     let environ = crate::config::environ(&loaded);
-    row(
-        &mut out,
-        "model",
-        loaded
-            .config
-            .string("model")
-            .unwrap_or("(melchior's default)"),
-    );
+    // What will actually run, not what the file asked for. A model switched in a session is
+    // remembered for that directory and outranks `magi.model`, so printing the configuration alone
+    // says a session here is one thing while it is about to be another.
+    let configured = loaded.config.string("model");
+    match crate::config::remembered().model {
+        Some(here) if Some(here.as_str()) != configured => {
+            row(&mut out, "model", &format!("{here}  (remembered here)"));
+            row(
+                &mut out,
+                "",
+                &format!(
+                    "magi.model says {} — switch the model in a session to change it back",
+                    configured.unwrap_or("nothing")
+                ),
+            );
+        }
+        _ => row(
+            &mut out,
+            "model",
+            configured.unwrap_or("(melchior's default)"),
+        ),
+    }
     row(
         &mut out,
         "confine",
