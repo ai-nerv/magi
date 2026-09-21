@@ -400,6 +400,14 @@ pub async fn run(
                                     dirty = true;
                                 }
                             }
+                            Action::Tab { forward } => {
+                                floating::step(&mut app, &command_tx, forward).await;
+                                dirty = true;
+                            }
+                            Action::Attach(id) if app.pane_titled("balthasar") => {
+                                floating::weigh(&mut app, &command_tx, &id).await;
+                                dirty = true;
+                            }
                             // On the model's card, Enter takes a setting and ←/→ step it.
                             Action::Attach(id) if app.chooses() => {
                                 if let Some(command) = app.choose_on_pane(&id) {
@@ -407,17 +415,10 @@ pub async fn run(
                                 }
                                 dirty = true;
                             }
-                            Action::Fold { open } if app.pane_titled("model") => {
-                                if let Some(command) = app.adjust_model(open) {
-                                    direct(&mut app, &command_tx, command).await;
-                                }
-                                dirty = true;
-                            }
-                            // The same on the permission card: ←/→ step whatever the cursor is on.
-                            Action::Fold { open } if app.pane_titled("permission") => {
-                                if let Some(command) = app.adjust_permission(open) {
-                                    direct(&mut app, &command_tx, command).await;
-                                }
+                            Action::Fold { open }
+                                if app.pane_titled("model") || app.pane_titled("permission") =>
+                            {
+                                floating::fold(&mut app, &command_tx, open).await;
                                 dirty = true;
                             }
                             // Enter on an entry in the agents view: the same as a click on it.
@@ -585,22 +586,19 @@ pub async fn run(
                             continue;
                         }
                         let view = terminal_size().1.saturating_sub(ui::chrome_rows());
-                        match pointing::on_the_screen(
-                            &mut app,
-                            mouse,
-                            view,
-                            terminal_size().0,
-                            &mut copied,
-                        ) {
-                            pointing::Pointing::Redraw => dirty = true,
-                            pointing::Pointing::Nothing => continue,
-                            // A row in the agents view was clicked. `press_pane_row` already pointed
-                            // the app at it; this dials the socket, the way `walk` does for the keys.
-                            pointing::Pointing::Steer(seat) => {
-                                dial(&app, seat, socket, &target_tx, &command_tx, &mut held).await;
-                                dirty = true;
-                            }
+                        let pointed =
+                            pointing::on_the_screen(&mut app, mouse, view, terminal_size().0, &mut copied);
+                        if matches!(pointed, pointing::Pointing::Nothing) {
+                            continue;
                         }
+                        // A row in the agents view dials that agent, the way `walk` does for the
+                        // keys; a tab sends what its tab needs asked.
+                        if let pointing::Pointing::Steer(seat) = pointed {
+                            dial(&app, seat, socket, &target_tx, &command_tx, &mut held).await;
+                        } else if let pointing::Pointing::Ask(command) = pointed {
+                            let _ = command_tx.send(command).await;
+                        }
+                        dirty = true;
                     }
                     Event::Paste(text) => {
                         app.editor.insert_str(&text);
@@ -787,6 +785,7 @@ mod crewing;
 use crewing::{dial, direct, footer_data, ours, signal_notice, walk};
 
 /// The pointer, and which of two readers it belongs to.
+mod floating;
 mod pointing;
 
 /// The colon commands. A closed list, in a file of its own.

@@ -90,6 +90,10 @@ pub fn commands() -> Vec<Candidate> {
             ":quitall",
             "exit, taking anything this session started — :qa for the same",
         ),
+        (
+            ":memory",
+            "balthasar: what it holds, what it is telling this model, and what it rests on",
+        ),
         (":notes", "what memory has learnt, and every change to it"),
     ]
     .iter()

@@ -133,6 +133,14 @@ pub struct App {
     /// The project's notes and their change log, as the memory layer last answered.
     pub notes: Option<serde_json::Value>,
     pub changes: Vec<serde_json::Value>,
+    /// The memory float's tabs, each as the layer last answered: what it holds, the runs it has
+    /// seen, and — for whichever memory the cursor is on — what that one has been worth.
+    pub memories: Option<Vec<serde_json::Value>>,
+    pub runs: Option<Vec<serde_json::Value>>,
+    pub utility: Option<serde_json::Value>,
+    pub why_of: Option<serde_json::Value>,
+    /// Which memory `utility` and `why_of` are about, so a stale pair is not drawn under a new one.
+    pub worth_of: Option<String>,
 }
 
 impl Default for App {
@@ -203,6 +211,11 @@ impl App {
             laid: None,
             helped: Vec::new(),
             notes: None,
+            memories: None,
+            runs: None,
+            utility: None,
+            why_of: None,
+            worth_of: None,
             changes: Vec::new(),
             pending_notice: None,
             no_model: None,

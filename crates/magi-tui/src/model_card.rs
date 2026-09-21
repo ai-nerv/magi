@@ -4,7 +4,7 @@
 //! off by a dashed rule. Rows for a list float that scrolls; the rows naming a choice are selectable.
 
 pub(crate) mod charts;
-mod published;
+pub(crate) mod published;
 
 use crate::footer::format_tokens;
 use charts::Item;

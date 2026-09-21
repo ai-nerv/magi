@@ -13,6 +13,9 @@ pub(crate) enum Pointing {
     Nothing,
     /// A row in the agents view was clicked: point the screen at that agent by dialling this seat.
     Steer(crate::app::Seat),
+    /// The press opened something that has to be filled from a sibling: send this and redraw when
+    /// the answer lands.
+    Ask(UiCommand),
 }
 
 /// Hand the pointer to a surface, if it landed on the rows one is holding. The cell is translated
@@ -125,6 +128,9 @@ pub(crate) fn on_the_screen(
                 .position(|at| at.is_some_and(|at| within(at, mouse.row, mouse.column)))
             {
                 app.press_sibling(nth);
+                if let Some(ask) = app.memory_opened() {
+                    return Pointing::Ask(ask);
+                }
                 return Pointing::Redraw;
             }
             // The model's name opens its card, the same float the name and the badge open.
@@ -150,6 +156,11 @@ pub(crate) fn on_the_screen(
             // a view closed by a key leaves its rect behind until the next frame.
             if let Some(at) = app.pane_rect.filter(|_| app.pane.is_some()) {
                 if within(at, mouse.row, mouse.column) {
+                    // A tab in the heading, before the rows: the strip sits on a row that carries
+                    // no entry, so a press there would otherwise fall through to nothing.
+                    if let Some(ask) = app.press_pane_tab(mouse.row, mouse.column) {
+                        return ask.map_or(Pointing::Redraw, Pointing::Ask);
+                    }
                     if let Some(seat) = app.press_pane_row(mouse.row, mouse.column) {
                         return Pointing::Steer(seat);
                     }

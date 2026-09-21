@@ -60,6 +60,10 @@ pub enum Action {
     },
     /// The entry under a list's cursor was taken: point the screen at that agent.
     Attach(String),
+    /// Step a float's heading strip to the next tab, or the one before.
+    Tab {
+        forward: bool,
+    },
     /// Shut the branch under a list's cursor, or open it.
     Fold {
         open: bool,
@@ -125,6 +129,10 @@ pub fn handle(
                     .chosen()
                     .map_or(Action::Ignore, |id| Action::Attach(id.to_owned()));
             }
+            // The strip first: with tabs up, tab is how you move between them, and a float without
+            // any lets the key go on meaning what it means elsewhere.
+            KeyCode::Tab if open.tabs.len() > 1 => return Action::Tab { forward: true },
+            KeyCode::BackTab if open.tabs.len() > 1 => return Action::Tab { forward: false },
             KeyCode::Left | KeyCode::Char('h') if listed => return Action::Fold { open: false },
             KeyCode::Right | KeyCode::Char('l') if listed => return Action::Fold { open: true },
             // Past the first or last entry the keys scroll instead: a list may have rows under it.

@@ -17,6 +17,7 @@ pub mod fuzzy;
 pub mod glyph;
 pub mod laid;
 pub mod markdown;
+pub mod memory;
 pub mod menu;
 pub mod metric;
 pub mod model_card;

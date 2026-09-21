@@ -377,6 +377,27 @@ impl Scribe {
         Ok(Recalled::of(&values))
     }
 
+    /// The project's memories, rather than this run's: what a person browsing the store is asking,
+    /// where [`Self::nearest`] asks what the turn should be told and scopes to the run's scratch.
+    pub async fn browsing(
+        &mut self,
+        query: &str,
+        limit: u64,
+    ) -> Result<Vec<serde_json::Value>, Fault> {
+        let args = vec![
+            serde_json::Value::String(query.to_owned()),
+            serde_json::json!({ "limit": limit }),
+        ];
+        let values = self.family.call("recall", args).await?;
+        Ok(Recalled::of(&values).memories)
+    }
+
+    /// What one memory rests on: how sure the layer is of it, and which sessions asserted it.
+    pub async fn why(&mut self, id: &str) -> Result<Vec<serde_json::Value>, Fault> {
+        let args = vec![serde_json::Value::String(id.to_owned())];
+        self.family.call("why", args).await
+    }
+
     /// Say that something was done after memories were handed over, and how it went — the only call
     /// that says what happened next, without which balthasar ranks by recency and similarity
     /// forever. Two calls, because how it went is not known when it starts.

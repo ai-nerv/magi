@@ -40,6 +40,15 @@ pub(super) fn run_command(input: &str, app: &mut App) -> Control {
             app.show_context();
             Control::Continue
         }
+        // balthasar's float, which the footer dot also opens: a control only the pointer can reach
+        // is one nobody finds twice.
+        ":memory" | ":balthasar" => {
+            app.show_memory(0);
+            match app.memory_opened() {
+                Some(ask) => Control::Send(ask),
+                None => Control::Continue,
+            }
+        }
         // Opened at once and filled when the memory layer answers; the notes are the session's to ask.
         ":notes" => {
             app.show_notes();

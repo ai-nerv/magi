@@ -276,7 +276,7 @@ fn money(dollars: f64) -> String {
 
 /// Seconds since the epoch as a calendar date, `YYYY-MM-DD`. Howard Hinnant's civil-from-days, so
 /// no clock crate is taken on for one line of a card.
-pub(super) fn date(secs: u64) -> String {
+pub(crate) fn date(secs: u64) -> String {
     let days = i64::try_from(secs / 86_400).unwrap_or(0) + 719_468;
     let era = days.div_euclid(146_097);
     let of_era = days.rem_euclid(146_097);

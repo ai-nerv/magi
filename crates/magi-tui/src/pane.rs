@@ -16,6 +16,14 @@ const HEIGHT: u16 = 70;
 /// Rows the frame draws above the content (border, heading, blank) — taken off a click's row first.
 const HEAD: u16 = 3;
 
+/// The heading's own row inside the panel, and the column the first tab starts at: the border and
+/// the space after it.
+const HEADING: u16 = 1;
+const INSET: u16 = 2;
+
+/// Between one tab and the next.
+const TAB_GAP: &str = " ";
+
 /// Left of every row in a list: a bar beside the entry the cursor is on, blank beside the rest.
 const GUTTER: &str = "┃ ";
 const NO_GUTTER: &str = "  ";
@@ -39,6 +47,10 @@ pub struct Pane {
     pub hover: Option<usize>,
     /// Bring the cursor's entry into view at the next draw, the one place the page is known.
     reveal: bool,
+    /// The tabs across the heading row, empty for a float that is one view. Tab and shift-tab move
+    /// between them; the view that owns the float rebuilds its rows for whichever is current.
+    pub tabs: Vec<String>,
+    pub tab: usize,
 }
 
 impl Pane {
@@ -54,7 +66,65 @@ impl Pane {
             picks: Vec::new(),
             hover: None,
             reveal: false,
+            tabs: Vec::new(),
+            tab: 0,
         }
+    }
+
+    /// Put `tabs` across the heading, with `at` current. An `at` past the end lands on the last.
+    #[must_use]
+    pub fn tabbed(mut self, tabs: Vec<String>, at: usize) -> Self {
+        self.tab = at.min(tabs.len().saturating_sub(1));
+        self.tabs = tabs;
+        self
+    }
+
+    /// Move to the next tab, or the one before, wrapping. False when there is nowhere to go, so a
+    /// float with one view lets the key mean whatever it meant before.
+    pub fn step_tab(&mut self, forward: bool) -> bool {
+        if self.tabs.len() < 2 {
+            return false;
+        }
+        let last = self.tabs.len() - 1;
+        self.tab = if forward {
+            if self.tab == last { 0 } else { self.tab + 1 }
+        } else if self.tab == 0 {
+            last
+        } else {
+            self.tab - 1
+        };
+        true
+    }
+
+    /// Where each tab sits along the heading row, as columns from the panel's left edge, for a
+    /// pointer that wants to press one. Parallel to `tabs`.
+    #[must_use]
+    pub fn tab_columns(&self) -> Vec<std::ops::Range<u16>> {
+        let mut at = INSET;
+        self.tabs
+            .iter()
+            .enumerate()
+            .map(|(nth, name)| {
+                if nth > 0 {
+                    at += u16::try_from(TAB_GAP.chars().count()).unwrap_or(0);
+                }
+                let width = u16::try_from(name.chars().count() + 2).unwrap_or(0);
+                let range = at..at + width;
+                at += width;
+                range
+            })
+            .collect()
+    }
+
+    /// Which tab a press `column` cells from the panel's left edge, on row `HEADING`, is on.
+    #[must_use]
+    pub fn tab_at(&self, row_in_panel: u16, column_in_panel: u16) -> Option<usize> {
+        if row_in_panel != HEADING {
+            return None;
+        }
+        self.tab_columns()
+            .into_iter()
+            .position(|at| at.contains(&column_in_panel))
     }
 
     #[must_use]
@@ -239,13 +309,36 @@ impl Pane {
         }
     }
 
-    /// The heading drawn inside the panel: what this is, and where in it you are.
+    /// The heading drawn inside the panel: the tabs where there are any, else what this is, and in
+    /// both cases where in the rows you are.
     #[must_use]
-    pub fn heading(&self, page: usize) -> String {
-        match self.more(page) {
-            Some(where_in) => format!("{}   {where_in}", self.title),
-            None => self.title.clone(),
+    pub fn heading(&self, page: usize) -> Vec<Span<'static>> {
+        let bold = Style::default()
+            .fg(crate::colour::hint())
+            .add_modifier(Modifier::BOLD);
+        let mut spans = Vec::new();
+        if self.tabs.is_empty() {
+            spans.push(Span::styled(self.title.clone(), bold));
+        } else {
+            for (nth, name) in self.tabs.iter().enumerate() {
+                if nth > 0 {
+                    spans.push(Span::raw(TAB_GAP));
+                }
+                let style = if nth == self.tab {
+                    bold.add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default().fg(crate::colour::dim())
+                };
+                spans.push(Span::styled(format!(" {name} "), style));
+            }
         }
+        if let Some(where_in) = self.more(page) {
+            spans.push(Span::styled(
+                format!("   {where_in}"),
+                Style::default().fg(crate::colour::hint()),
+            ));
+        }
+        spans
     }
 
     /// Scroll down by `rows`, stopping at the last page rather than past it.
@@ -298,13 +391,7 @@ impl Pane {
     ) -> Vec<Line<'static>> {
         // The heading and the blank under it are content rows, so the light runs past them rather
         // than round a hole in the box.
-        let heading = vec![Span::styled(
-            self.heading(page),
-            Style::default()
-                .fg(crate::colour::hint())
-                .add_modifier(Modifier::BOLD),
-        )];
-        let mut body = vec![Line::from(heading), Line::from(String::new())];
+        let mut body = vec![Line::from(self.heading(page)), Line::from(String::new())];
         body.extend(self.showing(page));
 
         // Padded out to the full page rather than shrunk to fit, so the window does not jump size.

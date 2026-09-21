@@ -311,6 +311,46 @@ pub async fn notes(
     out
 }
 
+/// What balthasar's float asks for, each verb in the shape it actually takes. Separate from
+/// [`notes`], whose verbs are all `(session, …)` and which asks for their neighbours besides.
+pub async fn held(
+    scribe: &crate::scribe::Held,
+    verb: &str,
+    arg: &serde_json::Value,
+) -> magi_proto::HarnessEvent {
+    let refusal = |message: String| magi_proto::HarnessEvent::Refused {
+        cursor: magi_proto::Cursor::ZERO,
+        message,
+    };
+    let mut open = scribe.lock().await;
+    let Some(open) = open.as_mut() else {
+        return refusal("there is no balthasar in this session".to_owned());
+    };
+    magi_model::noted!("memory: a screen asked for {verb}");
+    let asked = async {
+        match verb {
+            "sessions" => open.sessions().await,
+            "why" => open.why(arg.as_str().unwrap_or_default()).await,
+            "recall" => {
+                let limit = arg["limit"].as_u64().unwrap_or(50);
+                let query = arg["query"].as_str().unwrap_or_default();
+                open.browsing(query, limit).await
+            }
+            _ => Err(magi_ipc::family::Fault::Refused(format!(
+                "`{verb}` is not one of the memory float's questions"
+            ))),
+        }
+    };
+    match tokio::time::timeout(PATIENCE, asked).await {
+        Ok(Ok(rows)) => magi_proto::HarnessEvent::MemoryAnswered {
+            verb: verb.to_owned(),
+            answer: serde_json::Value::Array(rows),
+        },
+        Ok(Err(why)) => refusal(format!("{verb}: {why}")),
+        Err(_) => refusal(format!("{verb}: balthasar did not answer in time")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

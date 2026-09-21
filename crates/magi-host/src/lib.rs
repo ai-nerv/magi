@@ -491,8 +491,15 @@ async fn connection(
                     // To the screen that asked, not every screen: a view of notes is one person's.
                     Some(UiCommand::Memory { verb, arg }) => {
                         let _boundary = worker.read().await;
-                        for answer in crate::knowing::notes(scribe, &verb, arg).await {
-                            writer.write(&answer).await?;
+                        // The float's reads and the notes' are two shapes, not one with a flag.
+                        if matches!(verb.as_str(), "recall" | "sessions" | "why") {
+                            writer
+                                .write(&crate::knowing::held(scribe, &verb, &arg).await)
+                                .await?;
+                        } else {
+                            for answer in crate::knowing::notes(scribe, &verb, arg).await {
+                                writer.write(&answer).await?;
+                            }
                         }
                     }
                     Some(UiCommand::Resume { id }) => {
