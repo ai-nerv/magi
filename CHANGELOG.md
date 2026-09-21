@@ -1,5 +1,84 @@
 # Changelog
 
+## [0.3.0] - 2026-09-21
+
+### <!-- 0 -->⛰️  Features
+
+- One main model, a helper for each kind of work
+- The dot under the pointer wears its colour
+- Melchior and casper get their floats
+- Clear what a directory remembers
+- Balthasar's float, with tabs
+- A tool may put a question to magi
+- :rename names a session for good
+- Del twice puts a run away, :archives removes it
+- Say the model as initials and its name
+- Open the history blocks into rules
+- Open the boxes into rules
+- A role for finding contradictions
+- A card for who is asked, and on what terms
+- A permission prompt you can read at a glance
+- A schema goes as one to a model that decides
+- A verdict shape either kind of model can fill
+- The mode command and its key are listed
+- The judge's view is said plainly
+- Ask, edits, auto and locked, with a judge
+- Summary, notes and curate fall to memory
+- The client can attach from the end
+- Say when recording stops and resumes
+- A waiting tool says so on its row
+- Report by verb, named by role
+- Session lifecycle and context fixes
+- Ask the upstream that answered last
+- --resume-run continues one run by id
+- Notes run beside the turn by default
+- --logs writes the family's every step
+- Notes view, plan fallback, slot split
+- Log each layout and helper job
+- Layouts and helper jobs in trace, context
+- Balthasar lays out every request
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- A fixture the kernel called busy
+- Let a job say how much it may reason
+- Ask for the roles balthasar now asks about
+- Say which roles can actually be run
+- A tool row says what was asked for
+- Let go of an upstream that failed
+- Remember keeps facts, not rules
+- Count tokens by kind of character
+- The shared tmp is on disk, not in memory
+- A lead is told a helper is lost
+- A sender is named by role and id
+- A cut-off turn ends when the session does
+- A permission is always magi's own picker
+- Open questions survive a look elsewhere
+- The picker offers runs, not subagents
+- Leave to write is leave to read
+- A snapshot never outgrows its frame
+- A helper keeps its own upstream
+- Replay in pages; a named run is never lost
+- One budget per prompt, awaited on exit
+- A resumed run goes on in its transcript
+- --attach refuses -p rather than ignore it
+- Each session gives its siblings its own
+- A wake arrives as melchior's message
+- Ask the answer's shape in words
+- The recording scribe takes a child's key
+- Ask for no reasoning unless configured
+- A child is told by its own environment
+- Pin stated rules, drop run-bound detail
+- Helpers answer without reasoning
+- Read every job, report before exit
+- Run jobs a layout handed out
+
+### <!-- 6 -->🧪 Testing
+
+- Scripted models keep no notes
+- One run, one transcript per agent
+- Layouts against a live balthasar
+
 ## [0.2.0] - 2026-09-15
 
 ### <!-- 0 -->⛰️  Features
