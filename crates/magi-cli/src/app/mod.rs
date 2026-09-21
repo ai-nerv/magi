@@ -117,6 +117,8 @@ pub struct App {
     pub about: std::collections::BTreeMap<String, String>,
     /// Which program owns the model, asked for a model's card.
     pub mind: String,
+    /// Which program offers the tools, asked for casper's float.
+    pub tools_program: String,
     /// What the provider published about a model, by its name, once asked; and an answer on its way.
     pub details: Option<(String, Result<magi_tui::model_card::Details, String>)>,
     pub details_rx: Option<std::sync::mpsc::Receiver<crate::app::views::Answered>>,
@@ -133,6 +135,10 @@ pub struct App {
     /// The project's notes and their change log, as the memory layer last answered.
     pub notes: Option<serde_json::Value>,
     pub changes: Vec<serde_json::Value>,
+    /// What the tools program says it offers, as casper's float draws it. `None` until it has been
+    /// asked, which happens once when that float is first opened.
+    pub tools: Option<Vec<magi_tui::tooling::Tool>>,
+    pub tools_rx: Option<std::sync::mpsc::Receiver<Vec<magi_tui::tooling::Tool>>>,
     /// The memory float's tabs, each as the layer last answered: what it holds, the runs it has
     /// seen, and — for whichever memory the cursor is on — what that one has been worth.
     pub memories: Option<Vec<serde_json::Value>>,
@@ -203,6 +209,7 @@ impl App {
             folded: std::collections::BTreeSet::new(),
             about: std::collections::BTreeMap::new(),
             mind: "melchior".to_owned(),
+            tools_program: "casper".to_owned(),
             details: None,
             details_rx: None,
             attach_wanted: None,
@@ -211,6 +218,8 @@ impl App {
             laid: None,
             helped: Vec::new(),
             notes: None,
+            tools: None,
+            tools_rx: None,
             memories: None,
             runs: None,
             utility: None,
@@ -551,6 +560,7 @@ mod resetting;
 #[cfg(test)]
 mod retracting;
 mod sessions;
+mod siblings;
 pub mod surfacing;
 #[cfg(test)]
 mod tests;

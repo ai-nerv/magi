@@ -49,6 +49,14 @@ pub(super) fn run_command(input: &str, app: &mut App) -> Control {
                 None => Control::Continue,
             }
         }
+        ":crew" | ":melchior" => {
+            app.show_crew(0);
+            Control::Continue
+        }
+        ":tools" | ":casper" => {
+            app.show_tooling(0);
+            Control::Continue
+        }
         // Opened at once and filled when the memory layer answers; the notes are the session's to ask.
         ":notes" => {
             app.show_notes();

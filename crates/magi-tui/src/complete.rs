@@ -99,6 +99,14 @@ pub fn commands() -> Vec<Candidate> {
             ":reset",
             "clear what this directory remembers: model, memory, sessions",
         ),
+        (
+            ":crew",
+            "melchior: who is in this run, the models reached, what each spent",
+        ),
+        (
+            ":tools",
+            "casper: what it offers, and what this session has called",
+        ),
     ]
     .iter()
     .map(|(value, detail)| Candidate {

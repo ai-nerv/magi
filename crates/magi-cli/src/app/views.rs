@@ -2,15 +2,17 @@
 
 use super::App;
 
-/// What balthasar's float is titled; the sibling dot and every redraw agree on it through this.
-const MEMORY: &str = "balthasar";
+/// What each sibling's float is titled; the dot and every redraw agree through these.
+pub(super) const MEMORY: &str = "balthasar";
+pub(super) const CREW: &str = "melchior";
+pub(super) const TOOLING: &str = "casper";
 
 /// What melchior said about a model, by the model's name.
 pub type Answered = (String, Result<magi_tui::model_card::Details, String>);
 
 /// How wide the model card's charts may be: the float's width on this terminal, less its border,
 /// its padding and the list's gutter.
-fn card_width() -> u16 {
+pub(super) fn card_width() -> u16 {
     let (width, height) = crossterm::terminal::size().unwrap_or((80, 24));
     let float = magi_tui::pane::Pane::area(ratatui::layout::Rect::new(0, 0, width, height));
     float.width.saturating_sub(6)
@@ -322,31 +324,8 @@ impl App {
             width: card_width(),
         };
         let drawn = magi_tui::memory::view(&held, tab);
-        let was = self
-            .pane
-            .as_ref()
-            .filter(|open| open.title == MEMORY && open.tab == tab)
-            .map(|open| (open.chosen().map(ToOwned::to_owned), open.top));
-        let mut pane = magi_tui::pane::Pane::new(MEMORY, drawn.rows)
-            .selectable(drawn.picks)
-            .saying(magi_tui::memory::empty(tab, self.replied(tab)))
-            .tabbed(
-                magi_tui::memory::TABS
-                    .iter()
-                    .map(|t| (*t).to_owned())
-                    .collect(),
-                tab,
-            );
-        match was {
-            Some((on, top)) => {
-                if !on.is_some_and(|id| pane.point_at(&id)) {
-                    pane.first();
-                }
-                pane.top = top;
-            }
-            None => pane.first(),
-        }
-        self.pane = Some(pane);
+        let saying = magi_tui::memory::empty(tab, self.replied(tab));
+        self.pane = Some(self.sibling_pane(MEMORY, drawn, tab, saying, 1));
     }
 
     /// Whether the layer has answered for `tab` yet, so an empty one can say which it is.
@@ -411,12 +390,24 @@ impl App {
         if tab == open.tab {
             return Some(None);
         }
-        if open.title != MEMORY {
-            self.pane.as_mut()?.tab = tab;
-            return Some(None);
+        match open.title.as_str() {
+            CREW => {
+                self.show_crew(tab);
+                Some(None)
+            }
+            TOOLING => {
+                self.show_tooling(tab);
+                Some(None)
+            }
+            MEMORY => {
+                self.show_memory(tab);
+                Some(self.memory_ask(tab))
+            }
+            _ => {
+                self.pane.as_mut()?.tab = tab;
+                Some(None)
+            }
         }
-        self.show_memory(tab);
-        Some(self.memory_ask(tab))
     }
 
     /// Step to the tab that says what a memory has been worth, which is where Enter on one goes.
@@ -427,15 +418,20 @@ impl App {
         self.show_memory(tab);
     }
 
-    /// Step to the next tab of the memory float, or the one before, and say what to ask for it.
+    /// Step the open sibling float's strip, and say what the tab it landed on needs asked.
     pub fn step_memory(&mut self, forward: bool) -> Option<magi_proto::UiCommand> {
-        let open = self.pane.as_mut().filter(|open| open.title == MEMORY)?;
-        if !open.step_tab(forward) {
+        let open = self.pane.as_mut()?;
+        let title = open.title.clone();
+        if !matches!(title.as_str(), MEMORY | CREW | TOOLING) || !open.step_tab(forward) {
             return None;
         }
         let tab = open.tab;
-        self.show_memory(tab);
-        self.memory_ask(tab)
+        match title.as_str() {
+            CREW => self.show_crew(tab),
+            TOOLING => self.show_tooling(tab),
+            _ => self.show_memory(tab),
+        }
+        (title == MEMORY).then(|| self.memory_ask(tab)).flatten()
     }
 
     /// Open the project's notes and their change log. Drawn empty until the memory layer answers
@@ -682,10 +678,11 @@ impl App {
             self.pane = None;
             return;
         }
-        if *name == MEMORY {
-            self.show_memory(0);
-            return;
+        match *name {
+            MEMORY => self.show_memory(0),
+            CREW => self.show_crew(0),
+            TOOLING => self.show_tooling(0),
+            _ => {}
         }
-        self.pane = Some(magi_tui::pane::Pane::new(*name, Vec::new()).saying("nothing here yet"));
     }
 }

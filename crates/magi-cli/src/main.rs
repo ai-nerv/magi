@@ -19,6 +19,7 @@ mod keys;
 mod logging;
 mod melchior;
 mod models;
+mod offered;
 mod opening;
 mod paths;
 mod print;

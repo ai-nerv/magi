@@ -253,3 +253,41 @@ fn an_out_of_range_tab_lands_on_the_last_rather_than_off_the_end() {
     let pane = Pane::new("memory", Vec::new()).tabbed(vec!["a".into(), "b".into()], 9);
     assert_eq!(pane.tab, 1);
 }
+
+#[test]
+fn a_tinted_border_is_drawn_in_that_colour_and_an_untinted_one_is_not() {
+    // Whose float this is has to be visible without reading the heading: three siblings open the
+    // same box, and the border is the only part of it always on screen.
+    let hue = crate::footer::hue(1);
+    let plain = Pane::new("cost", rows(3));
+    let mine = Pane::new("balthasar", rows(3)).tinted(Some(hue));
+    let inks = |pane: &Pane| -> Vec<Option<ratatui::style::Color>> {
+        pane.framed(40, 8, 0, crate::border::Scan::Off)
+            .first()
+            .expect("a top edge")
+            .spans
+            .iter()
+            .map(|span| span.style.fg)
+            .collect()
+    };
+    assert!(inks(&mine).contains(&Some(hue)), "no hue");
+    assert!(
+        !inks(&plain).contains(&Some(hue)),
+        "an untinted float took a sibling's colour"
+    );
+}
+
+#[test]
+fn each_sibling_tints_its_float_differently() {
+    let ink = |nth: usize| {
+        Pane::new("x", rows(2))
+            .tinted(Some(crate::footer::hue(nth)))
+            .framed(40, 8, 0, crate::border::Scan::Off)[0]
+            .spans
+            .first()
+            .and_then(|span| span.style.fg)
+    };
+    assert_ne!(ink(0), ink(1));
+    assert_ne!(ink(1), ink(2));
+    assert_ne!(ink(0), ink(2));
+}

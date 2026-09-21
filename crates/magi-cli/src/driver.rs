@@ -41,6 +41,7 @@ pub async fn run(
     if let Some(loaded) = &loaded {
         app.about = crate::config::agents::descriptions(loaded);
         app.mind = crate::config::mind(loaded);
+        app.tools_program = crate::config::tooling_program(loaded);
     }
     app.view_only = view_only;
     // Whether casper answers is asked once, off the UI thread: the probe starts the program.
@@ -563,6 +564,7 @@ pub async fn run(
                 // when a turn ended would read as the UI having frozen.
                 app.advance();
                 app.poll_details();
+                app.poll_tools();
                 // Done on the frame rather than where the state changes: melchior and the socket both
                 // answer with whatever they were last told.
                 let mut ended = false;

@@ -47,6 +47,9 @@ pub struct Pane {
     pub hover: Option<usize>,
     /// Bring the cursor's entry into view at the next draw, the one place the page is known.
     reveal: bool,
+    /// Whose float this is, as a colour: the border wears it, so a sibling's view says which
+    /// sibling without a word. `None` keeps the ordinary border.
+    pub tint: Option<ratatui::style::Color>,
     /// The tabs across the heading row, empty for a float that is one view. Tab and shift-tab move
     /// between them; the view that owns the float rebuilds its rows for whichever is current.
     pub tabs: Vec<String>,
@@ -66,9 +69,17 @@ impl Pane {
             picks: Vec::new(),
             hover: None,
             reveal: false,
+            tint: None,
             tabs: Vec::new(),
             tab: 0,
         }
+    }
+
+    /// Draw the border in `tint`.
+    #[must_use]
+    pub fn tinted(mut self, tint: Option<ratatui::style::Color>) -> Self {
+        self.tint = tint;
+        self
     }
 
     /// Put `tabs` across the heading, with `at` current. An `at` past the end lands on the last.
@@ -397,12 +408,12 @@ impl Pane {
         // Padded out to the full page rather than shrunk to fit, so the window does not jump size.
         let content = page + 2;
         body.resize(content, Line::from(String::new()));
-        let (top, bottom) = crate::border::edges(width, content, tick, scan);
+        let (top, bottom) = crate::border::edges(width, content, tick, scan, self.tint);
         let mut out = Vec::with_capacity(content + 2);
         out.push(top);
         let room = usize::from(width).saturating_sub(3);
         for (row, line) in body.into_iter().enumerate() {
-            let (left, right) = crate::border::side(width, content, row, tick, scan);
+            let (left, right) = crate::border::side(width, content, row, tick, scan, self.tint);
             let fill = line.style;
             let (kept, used) = clipped(line.spans, room);
             let mut spans = vec![left, Span::raw(" ")];

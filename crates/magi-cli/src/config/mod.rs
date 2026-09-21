@@ -227,6 +227,12 @@ pub fn mind(loaded: &Loaded) -> String {
     roles::fills(loaded, "model")
 }
 
+/// Which program offers the tools — the `tools` role, as `magi.tools` named it.
+#[must_use]
+pub fn tooling_program(loaded: &Loaded) -> String {
+    roles::fills(loaded, "tools")
+}
+
 /// Which program holds this session's history — the `memory` role, as `magi.memory` named it.
 #[must_use]
 pub fn memory(loaded: &Loaded) -> String {

@@ -186,18 +186,24 @@ pub fn siblings(up: [bool; 3], open: Option<usize>, stirred: [f32; 3]) -> Vec<Sp
         if nth > 0 {
             spans.push(Span::styled(" ", dim));
         }
-        let lit = if open == Some(nth) {
-            Modifier::REVERSED
+        // Under the pointer it wears its own colour rather than an inversion: three segments a
+        // few cells apart all invert the same way, and the colour says which one this is.
+        let here = open == Some(nth);
+        let lit = Modifier::empty();
+        let dim = if here {
+            Style::default().fg(hue(nth))
         } else {
-            Modifier::empty()
+            dim
         };
-        let rest = if up[nth] {
+        let rest = if here {
+            hue(nth)
+        } else if up[nth] {
             colour::dim()
         } else {
             colour::error()
         };
         let (glyph, ink) = match stirred[nth] {
-            by if by > 0.5 => ("●", colour::blend(rest, stir_hue(nth), by)),
+            by if by > 0.5 => ("●", colour::blend(rest, hue(nth), by)),
             _ => ("✻", rest),
         };
         spans.push(Span::styled("[", dim.add_modifier(lit)));
@@ -210,8 +216,10 @@ pub fn siblings(up: [bool; 3], open: Option<usize>, stirred: [f32; 3]) -> Vec<Sp
     spans
 }
 
-/// What each sibling flashes: melchior violet, balthasar cyan, casper orange.
-fn stir_hue(nth: usize) -> ratatui::style::Color {
+/// Each sibling's own colour: melchior violet, balthasar cyan, casper orange. What it flashes
+/// when it stirs, what it wears under the pointer, and what its float's border is drawn in.
+#[must_use]
+pub fn hue(nth: usize) -> ratatui::style::Color {
     match nth {
         0 => colour::accent(),
         1 => colour::code_type(),
@@ -233,12 +241,35 @@ mod siblings_tests {
     }
 
     #[test]
-    fn a_lit_segment_is_one_background_dot_included() {
-        // The whole segment is dim reversed, the dot with it, so its ground matches the rest.
-        let lit = siblings([true; 3], Some(0), [0.0; 3]);
-        for piece in lit.iter().take(3) {
+    fn the_segment_under_the_pointer_wears_its_own_colour() {
+        // Three segments a few cells apart invert identically; the colour is what says which of
+        // them the pointer is on, and it is the same colour that sibling flashes and borders with.
+        for nth in 0..SIBLINGS.len() {
+            let lit = siblings([true; 3], Some(nth), [0.0; 3]);
+            // Three spans a segment, and a separator before all but the first.
+            let at = nth * 4;
+            for piece in lit.iter().skip(at).take(3) {
+                assert_eq!(piece.style.fg, Some(hue(nth)), "segment {nth}: {piece:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_segment_the_pointer_is_not_on_keeps_the_footer_grey() {
+        let rest = siblings([true; 3], Some(0), [0.0; 3]);
+        let other: Vec<_> = rest.iter().skip(4).take(3).collect();
+        for piece in other {
             assert_eq!(piece.style.fg, Some(colour::dim()), "{piece:?}");
-            assert!(piece.style.add_modifier.contains(Modifier::REVERSED));
+        }
+    }
+
+    #[test]
+    fn each_sibling_has_a_colour_of_its_own() {
+        let hues: Vec<_> = (0..SIBLINGS.len()).map(hue).collect();
+        for (nth, one) in hues.iter().enumerate() {
+            for (other, two) in hues.iter().enumerate() {
+                assert!(nth == other || one != two, "{nth} and {other} share a hue");
+            }
         }
     }
 
