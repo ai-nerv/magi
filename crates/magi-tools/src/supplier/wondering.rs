@@ -23,14 +23,18 @@ impl Answers for Told {
 /// A tool whose first reply is a question and whose second is a result. Every call it is handed is
 /// appended to `calls`, which is where the test reads what the resumption carried: quoting JSON
 /// back out of a shell would be testing the fixture rather than the loop.
+///
+/// The log is named absolutely. Relative, it follows whatever the process has made its working
+/// directory, which another test in the same binary is free to change under this one.
 fn fixture(dir: &std::path::Path, wonder: &serde_json::Value) -> std::path::PathBuf {
     let script = dir.join("supplier");
+    let log = dir.join("calls").display().to_string();
     let asked = serde_json::json!({ "ok": true, "result": [{ "shown": wonder }] });
     let done = serde_json::json!({ "ok": true, "result": [{ "said": "finished" }] });
     std::fs::write(
         &script,
         format!(
-            "#!/bin/sh\ncall=$(/bin/cat)\nprintf '%s\\n' \"$call\" >> calls\n\
+            "#!/bin/sh\ncall=$(/bin/cat)\nprintf '%s\\n' \"$call\" >> '{log}'\n\
              case \"$call\" in\n  *answered*) printf '%s\\n' '{done}' ;;\n  \
              *) printf '%s\\n' '{asked}' ;;\nesac\n"
         ),
@@ -49,7 +53,23 @@ fn calls(dir: &std::path::Path) -> Vec<String> {
         .collect()
 }
 
+/// Run the tool, retrying a spawn the kernel refused as busy.
+///
+/// The fixture is written and then executed. Another test's fork landing between the two inherits
+/// the still-open write descriptor, and the exec is refused `ETXTBSY` until that child execs in
+/// turn. It says nothing about the loop under test, and nothing was run when it happens.
 fn ran(dir: &std::path::Path, wonder: &serde_json::Value, knows: Arc<Told>) -> Output {
+    for _ in 0..100 {
+        let out = once(dir, wonder, Arc::clone(&knows));
+        if !out.content.contains("Text file busy") {
+            return out;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    panic!("the fixture never became executable");
+}
+
+fn once(dir: &std::path::Path, wonder: &serde_json::Value, knows: Arc<Told>) -> Output {
     let supplied = SuppliedTool {
         card: serde_json::from_value(serde_json::json!({
             "name": "probe", "description": "probe", "parameters": {}
@@ -82,7 +102,12 @@ fn a_tool_that_asks_magi_is_answered_and_run_again() {
     );
 
     let asked = knows.0.lock().expect("recording");
-    assert_eq!(asked.len(), 1, "the question never reached magi");
+    assert_eq!(
+        asked.len(),
+        1,
+        "the question never reached magi: out={out:?} calls={:?}",
+        calls(&dir)
+    );
     assert_eq!(asked[0].0, Wonder::Helper);
     assert_eq!(asked[0].1["role"], "search");
 
@@ -112,7 +137,11 @@ fn a_question_magi_does_not_know_is_refused_rather_than_guessed_at() {
         "a verb magi has no answer for was put to it anyway"
     );
     let calls = calls(&dir);
-    assert_eq!(calls.len(), 2, "the refusal did not resume the call");
+    assert_eq!(
+        calls.len(),
+        2,
+        "the refusal did not resume the call: out={out:?}"
+    );
     assert!(
         calls[1].contains("refused") && calls[1].contains("the-weather"),
         "{}",
