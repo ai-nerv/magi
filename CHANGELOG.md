@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.2] - 2026-09-23
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Refit on overflow and settle held jobs
+
 ## [0.5.1] - 2026-09-23
 
 ### <!-- 1 -->🐛 Bug Fixes

@@ -56,3 +56,17 @@ fn a_mixed_batch_is_split_rather_than_held_whole() {
     assert_eq!(named(&mine), ["notes", "summary"]);
     assert_eq!(named(&elsewhere), ["decision"]);
 }
+
+#[test]
+fn a_summary_the_turn_is_waiting_on_is_never_held_back() {
+    // Held until the turn ended, the summary it needed arrived after it: the turn was laid out at
+    // its floor, refused, and could not be made smaller by anything but what was being held.
+    for kind in ["summarise", "working"] {
+        let waited = Job {
+            kind: kind.into(),
+            ..job("summary")
+        };
+        let (mine, elsewhere) = sharing(vec![waited], &roles(&[]), "ollama/big");
+        assert_eq!((mine.len(), elsewhere.len()), (0, 1), "{kind}");
+    }
+}

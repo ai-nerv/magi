@@ -355,30 +355,63 @@ pub(crate) async fn release(
     );
 }
 
-/// `jobs` split into those that would run on `main`, the turn's own model, and the rest.
+/// Jobs balthasar queues only once a layout has decided to cut: the turn is laid out without rows
+/// until one of these answers, so holding them back holds the turn at its floor.
+const FOR_THE_TURN: &[&str] = &["summarise", "working"];
+
+/// `jobs` split into those that wait for the turn — maintenance that would run on `main`, the
+/// turn's own model — and the rest, which go now.
 #[must_use]
 pub(crate) fn sharing(jobs: Vec<Job>, helpers: &Helpers, main: &str) -> (Vec<Job>, Vec<Job>) {
-    jobs.into_iter()
-        .partition(|job| helpers.model_for(job, main).as_deref() == Some(main))
+    jobs.into_iter().partition(|job| {
+        !FOR_THE_TURN.contains(&job.kind.as_str())
+            && helpers.model_for(job, main).as_deref() == Some(main)
+    })
 }
 
-/// Between turns: hand balthasar what settled, and run the background jobs it has waiting. Spawned,
-/// so the person is never waiting on a summary somebody else asked for.
+/// Write, now and to the end, what the turn is waiting on — a summary, a working state — and say
+/// whether there was any. For a turn already at its floor, where laying out again without them
+/// would lay out the very request just refused.
+pub(crate) async fn for_the_turn(
+    session: &tokio::sync::Mutex<crate::session::Session>,
+    backend: &Backend,
+    scribe: &crate::scribe::Held,
+    spent: &Spend,
+) -> bool {
+    let (waited, events) = {
+        let mut held = session.lock().await;
+        let (waited, rest): (Vec<Job>, Vec<Job>) = held
+            .take_deferred()
+            .into_iter()
+            .partition(|job| FOR_THE_TURN.contains(&job.kind.as_str()));
+        held.defer(rest);
+        (waited, held.publisher())
+    };
+    if waited.is_empty() {
+        return false;
+    }
+    if let Err(why) = work(&waited, backend, scribe, &events, spent).await {
+        magi_model::noted!("helpers: {why}");
+    }
+    true
+}
+
+/// Between turns: hand balthasar what settled, and run the background jobs it has waiting, once the
+/// returned sender fires or is dropped. Taken on before the turn starts, so a process that leaves
+/// the moment the turn ends still waits for it; spawned, so the person never waits on a summary.
 pub async fn between(
     session: std::sync::Arc<tokio::sync::Mutex<crate::session::Session>>,
     backend: Backend,
     scribe: crate::scribe::Held,
-) {
-    let (tasks, mut jobs, events, spent) = {
-        let mut held = session.lock().await;
-        (
-            held.helpers(),
-            held.take_deferred(),
-            held.publisher(),
-            held.helpers_spent(),
-        )
-    };
+) -> tokio::sync::oneshot::Sender<()> {
+    let (over, ended) = tokio::sync::oneshot::channel::<()>();
+    let tasks = session.lock().await.helpers();
     if let Err(why) = tasks.spawn(async move {
+        let _ = ended.await;
+        let (mut jobs, events, spent) = {
+            let mut held = session.lock().await;
+            (held.take_deferred(), held.publisher(), held.helpers_spent())
+        };
         crate::scribe::flush(&session, &mut *scribe.lock().await)
             .await
             .map_err(|why| why.to_string())?;
@@ -408,6 +441,7 @@ pub async fn between(
     }) {
         magi_model::noted!("helpers: {why}");
     }
+    over
 }
 
 #[cfg(test)]

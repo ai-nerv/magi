@@ -138,16 +138,17 @@ impl Worker {
                     }
                     let outcome = match job.kind {
                         Work::Turn => {
-                            let outcome =
-                                turn::run(&job.session, &backend, &registry, &*ops, &scribe).await;
-                            job.session.lock().await.rest();
                             // What balthasar wants done between turns runs beside the next one.
-                            crate::helping::between(
+                            let over = crate::helping::between(
                                 Arc::clone(&job.session),
                                 backend.clone(),
                                 Arc::clone(&scribe),
                             )
                             .await;
+                            let outcome =
+                                turn::run(&job.session, &backend, &registry, &*ops, &scribe).await;
+                            job.session.lock().await.rest();
+                            let _ = over.send(());
                             outcome.map_err(|why| why.to_string())
                         }
                         Work::TakeOn(grants) => {
