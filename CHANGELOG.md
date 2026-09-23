@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.1] - 2026-09-23
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Hold same-model helpers until the turn ends
+
 ## [0.5.0] - 2026-09-23
 
 ### <!-- 1 -->🐛 Bug Fixes
