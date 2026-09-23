@@ -66,6 +66,7 @@ async fn one_turn(
             },
         );
         let mut streaming = std::pin::pin!(streaming);
+        let mut released = false;
         loop {
             tokio::select! {
                 biased;
@@ -74,6 +75,13 @@ async fn one_turn(
                     match arrival {
                         // Revised rather than amended: an amendment writes to disk and flushes.
                         Arrival::Delta(delta) => {
+                            // The first token says this request holds the server; helpers kept
+                            // back for it can go now without making the person wait.
+                            if !released {
+                                released = true;
+                                crate::helping::release(session, backend, scribe, &prompt.spent)
+                                    .await;
+                            }
                             turn.apply(delta);
                             session.lock().await.revise_at(cursor, assistant(&id, &turn))?;
                         }
@@ -334,7 +342,6 @@ pub async fn run(
         spent,
         ..crate::laying::Prompt::default()
     };
-    let tools = registry.declarations();
     // A request already laid out, because the provider refused the last one as too long.
     let mut tighter: Option<magi_model::Context> = None;
     let mut replans: u32 = 0;
@@ -345,6 +352,9 @@ pub async fn run(
             model: &backend.model,
         });
         let began = std::time::Instant::now();
+        // Asked every round: a `tools` lookup in the last one may have unlocked a tool this one
+        // has to be able to call.
+        let tools = registry.declarations();
 
         let mut context = match tighter.take() {
             Some(context) => context,

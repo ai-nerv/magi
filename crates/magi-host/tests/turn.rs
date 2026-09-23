@@ -20,6 +20,8 @@ use magi_testkit::mind::{failed_line, retrying_line, stop_line, text_line};
 mod ownership;
 #[path = "turn/truncated.rs"]
 mod truncated;
+#[path = "turn/unlocking.rs"]
+mod unlocking;
 
 /// A backend that asks `mind` and nothing else.
 fn backend(mind: &Mind) -> Backend {

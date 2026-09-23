@@ -435,21 +435,14 @@ pub async fn lay(
     };
 
     // A blocking job changes the answer, so it runs and the question is put once more. The rest
-    // start now, beside the turn: a rule just stated is noted before an agent this turn starts.
+    // wait for the turn's first token: on a server that answers one request at a time, a helper
+    // sent before the turn is served before it, and the person waits on a summary.
     if let Some(first) = layout.as_mut() {
         let (blocking, background): (Vec<_>, Vec<_>) = std::mem::take(&mut first.jobs)
             .into_iter()
             .partition(|j| j.blocking);
         let events = session.lock().await.publisher();
-        let helpers = session.lock().await.helpers();
-        crate::helping::alongside(
-            &helpers,
-            background,
-            backend.clone(),
-            std::sync::Arc::clone(scribe),
-            events.clone(),
-            std::sync::Arc::clone(&prompt.spent),
-        );
+        session.lock().await.defer(background);
         if !blocking.is_empty() {
             if let Err(why) =
                 crate::helping::work(&blocking, backend, scribe, &events, &prompt.spent).await

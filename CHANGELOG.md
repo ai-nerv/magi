@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0] - 2026-09-23
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Offer tools unlocked mid-prompt
+- Let the turn reach the model first
+
 ## [0.4.0] - 2026-09-23
 
 ### <!-- 0 -->⛰️  Features
