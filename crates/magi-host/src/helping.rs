@@ -329,6 +329,28 @@ pub(crate) fn alongside(
     }
 }
 
+/// Start the jobs kept back for this turn, once its own request is being answered. Whatever is
+/// still kept when the turn ends goes to [`between`] instead.
+pub(crate) async fn release(
+    session: &tokio::sync::Mutex<crate::session::Session>,
+    backend: &Backend,
+    scribe: &crate::scribe::Held,
+    spent: &Spend,
+) {
+    let (tasks, jobs, events) = {
+        let mut held = session.lock().await;
+        (held.helpers(), held.take_deferred(), held.publisher())
+    };
+    alongside(
+        &tasks,
+        jobs,
+        backend.clone(),
+        std::sync::Arc::clone(scribe),
+        events,
+        std::sync::Arc::clone(spent),
+    );
+}
+
 /// Between turns: hand balthasar what settled, and run the background jobs it has waiting. Spawned,
 /// so the person is never waiting on a summary somebody else asked for.
 pub async fn between(
