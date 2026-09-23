@@ -435,8 +435,8 @@ pub async fn lay(
     };
 
     // A blocking job changes the answer, so it runs and the question is put once more. The rest
-    // wait for the turn's first token: on a server that answers one request at a time, a helper
-    // sent before the turn is served before it, and the person waits on a summary.
+    // are kept: on a server that answers one request at a time, a helper sent while the turn is
+    // going is served before it, and the person waits on a summary. See `helping::release`.
     if let Some(first) = layout.as_mut() {
         let (blocking, background): (Vec<_>, Vec<_>) = std::mem::take(&mut first.jobs)
             .into_iter()
