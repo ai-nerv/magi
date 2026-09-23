@@ -123,6 +123,44 @@ async fn prompt(
     laid
 }
 
+/// The same, with the budget the memory layer planned against — which says how it plans.
+async fn planned(
+    session: &tokio::sync::Mutex<Session>,
+    backend: &Backend,
+    live: &Live,
+) -> (Vec<(String, magi_proto::Laid)>, serde_json::Value) {
+    let mut events = session.lock().await.subscribe();
+    let registry = magi_tools::Registry::new();
+    let ops = magi_tools::ops::Real::new(std::env::temp_dir());
+    run(session, backend, &registry, &ops, &live.scribe)
+        .await
+        .expect("the turn returns");
+    let (mut laid, mut budget) = (Vec::new(), serde_json::Value::Null);
+    while let Ok(event) = events.try_recv() {
+        if let HarnessEvent::ContextLaid {
+            id,
+            counts,
+            budget: said,
+            ..
+        } = event
+        {
+            laid.push((id, counts));
+            budget = said;
+        }
+    }
+    (laid, budget)
+}
+
+/// Whether the balthasar answering holds a request to a share of the window.
+///
+/// One from before that plans against what the window has left after the reply, which is roughly
+/// twice as much. A pair-level rule cannot be asserted against a sibling that does not hold it;
+/// the family lane builds a matching pair and is where this is guaranteed.
+fn plans_to_a_share(budget: &serde_json::Value, window: u64) -> bool {
+    let of = |name: &str| budget[name].as_u64().unwrap_or(0);
+    of("fixed") + of("room") <= window / 2
+}
+
 #[tokio::test]
 async fn every_request_is_one_balthasar_laid_out() {
     let Some(live) = live("laid").await else {
@@ -407,7 +445,12 @@ async fn an_old_result_too_big_for_the_window_goes_as_its_stub() {
     }
     let mind = Mind::answering("ll-big", "short");
 
-    let laid = prompt(&session, &backend(&mind, 40_000), &live).await;
+    // A request may hold half a window, so the room this fixture is sized for takes an 80k one.
+    let (laid, budget) = planned(&session, &backend(&mind, 80_000), &live).await;
+    if !plans_to_a_share(&budget, 80_000) {
+        magi_testkit::live::unavailable("this balthasar does not hold a request to a share");
+        return;
+    }
     let (_, counts) = laid.first().expect("a layout was reported");
     let heard = mind.heard();
     assert!(heard.contains("now summarise them"), "{heard}");

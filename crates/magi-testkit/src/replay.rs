@@ -127,6 +127,7 @@ impl Recording {
                 | HarnessEvent::ModelChanged { .. }
                 | HarnessEvent::ModeChanged { .. }
                 | HarnessEvent::ContextLaid { .. }
+                | HarnessEvent::RequestAdmitted { .. }
                 | HarnessEvent::HelperSpent { .. }
                 | HarnessEvent::MemoryAnswered { .. } => {}
                 HarnessEvent::MessageArrived {

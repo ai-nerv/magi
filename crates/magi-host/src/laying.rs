@@ -17,17 +17,9 @@ pub const PATIENCE: std::time::Duration = std::time::Duration::from_secs(2);
 /// How long a report about a request already sent may take. Instrumentation, on a short clock.
 const REPORT: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// The answer a request leaves room for when nothing configured says how long one may be.
-const REPLY: u64 = 32_000;
-
-/// What to set aside for the reply: what was asked for, else the default, and never more than the
-/// model can say. Room reserved for an answer that cannot be given is room taken from the
-/// conversation, and on a small window it was all of it.
-fn reserved(wanted: Option<u64>, cap: Option<u64>) -> u64 {
-    let asked = wanted.unwrap_or(REPLY);
-    cap.filter(|cap| *cap > 0)
-        .map_or(asked, |cap| asked.min(cap))
-}
+/// What magi can say about the sizes it reports: they come from `magi_model::estimate`, not from
+/// the provider's own count of the serialized request.
+pub const COUNTING: &str = "estimated";
 
 /// What to tell the person when the memory layer stops answering, and when it answers again.
 /// `told` is whether they already know: it is said once each way, not on every turn.
@@ -101,7 +93,10 @@ pub fn request(
     serde_json::json!({
         "round": round,
         "window": backend.context_window.unwrap_or(0),
-        "reply": reserved(backend.wants.max_tokens, backend.max_output),
+        "reply": crate::catalog::reserved(backend.wants.max_tokens, backend.max_output),
+        // How the sizes here were arrived at. magi counts by estimate; a peer that reads no
+        // capability at all is reading one that estimated.
+        "counting": COUNTING,
         "fixed": { "system": system, "tools": tooling },
         "live": live(session),
         "query": crate::context::last_asked(session).unwrap_or_default(),
@@ -187,12 +182,15 @@ pub fn extend(last: &Layout, live: &[u64]) -> Layout {
             .filter(|&&c| c > high)
             .map(|&cursor| Slot::Item { cursor }),
     );
+    // What was appended was never counted against the budget the rest was measured with, so this
+    // fits only while nothing was appended. A stale budget cannot certify new rows.
+    let grew = slots.len() > last.slots.len();
     Layout {
         id: String::new(),
         budget: last.budget.clone(),
         slots,
         jobs: Vec::new(),
-        fits: last.fits,
+        fits: last.fits && !grew,
         why: "balthasar did not answer: the last layout, and what is new since".to_owned(),
     }
 }
@@ -200,13 +198,15 @@ pub fn extend(last: &Layout, live: &[u64]) -> Layout {
 /// Everything live, as a layout: what is sent when there has never been one.
 #[must_use]
 pub fn whole(live: &[u64]) -> Layout {
+    // Nothing budgeted this and nothing counted it: with a null budget, saying it fits is a claim
+    // nobody made. The boundary counts it before it goes, and that is what decides.
     Layout {
         id: String::new(),
         budget: serde_json::Value::Null,
         slots: live.iter().map(|&cursor| Slot::Item { cursor }).collect(),
         jobs: Vec::new(),
-        fits: true,
-        why: "no layout: everything live is sent".to_owned(),
+        fits: false,
+        why: "no layout: everything live, against no budget".to_owned(),
     }
 }
 

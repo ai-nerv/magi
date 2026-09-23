@@ -167,6 +167,8 @@ async fn helper(
             .get("thinking")
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned),
+        // A tool's question is asked and answered in one call; there is no lease to fence.
+        attempt: None,
     };
     let (events, asked_for) = {
         let held = session.lock().await;

@@ -408,6 +408,23 @@ pub enum HarnessEvent {
         #[serde(default)]
         slots: Vec<laying::LaidSlot>,
     },
+    /// What the boundary counted for a request and did about it — what went, as against the
+    /// [`HarnessEvent::ContextLaid`] that was proposed. Not part of the log.
+    RequestAdmitted {
+        /// The whole window, what one request may occupy of it, and what is held back.
+        capacity: u64,
+        limit: u64,
+        reply: u64,
+        margin: u64,
+        /// The complete input: instructions, declarations and every message.
+        counted: u64,
+        /// `estimated` or `verified`.
+        counting: String,
+        /// `admitted`, `replanned`, `refused` or `blocked`, and why when it was not admitted.
+        outcome: String,
+        #[serde(default)]
+        why: String,
+    },
     /// What one helper-model job cost, for the cost view. Not part of the log.
     HelperSpent {
         role: String,
@@ -470,6 +487,7 @@ impl HarnessEvent {
             // A frame occupies no place in the log; nothing replays it.
             Self::Drew { .. }
             | Self::ContextLaid { .. }
+            | Self::RequestAdmitted { .. }
             | Self::HelperSpent { .. }
             | Self::MemoryAnswered { .. } => Cursor::ZERO,
         }

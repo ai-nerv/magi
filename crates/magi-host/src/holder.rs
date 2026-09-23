@@ -297,19 +297,21 @@ mod tests {
                 jail,
                 cwd: Some(dir.to_path_buf()),
             };
-            assert_eq!(
-                holder
-                    .hold(
-                        "probe",
-                        &surface,
-                        &serde_json::json!({
-                            "CASPER_JAIL": "", "cwd": "/", "configure": "forged", "reach": true,
-                        }),
-                        &context
-                    )
-                    .as_deref(),
-                Some("ok")
-            );
+            // Spawning a script this process has just written races every other thread's open
+            // file descriptors across the fork, and loses with ETXTBSY. Bounded, so a tenant
+            // that genuinely never answers still fails the test.
+            let forged = serde_json::json!({
+                "CASPER_JAIL": "", "cwd": "/", "configure": "forged", "reach": true,
+            });
+            let mut held = None;
+            for _ in 0..20 {
+                held = holder.hold("probe", &surface, &forged, &context);
+                if held.is_some() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            assert_eq!(held.as_deref(), Some("ok"));
             let report = std::fs::read_to_string(dir.join("report")).expect("spawn report");
             assert_eq!(
                 report,
