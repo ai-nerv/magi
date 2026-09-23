@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.0] - 2026-09-23
+
+### <!-- 0 -->⛰️  Features
+
+- Enforce the request boundary
+
 ## [0.3.0] - 2026-09-21
 
 ### <!-- 0 -->⛰️  Features
