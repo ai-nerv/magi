@@ -329,8 +329,10 @@ pub(crate) fn alongside(
     }
 }
 
-/// Start the jobs kept back for this turn, once its own request is being answered. Whatever is
-/// still kept when the turn ends goes to [`between`] instead.
+/// Start the jobs kept back for this turn that run on some other model, once its own request is
+/// being answered. The ones on the turn's own model stay kept for [`between`]: a turn is many
+/// requests, and on a server that answers one at a time a helper started between two of them holds
+/// up the second for as long as it takes.
 pub(crate) async fn release(
     session: &tokio::sync::Mutex<crate::session::Session>,
     backend: &Backend,
@@ -339,7 +341,9 @@ pub(crate) async fn release(
 ) {
     let (tasks, jobs, events) = {
         let mut held = session.lock().await;
-        (held.helpers(), held.take_deferred(), held.publisher())
+        let (mine, elsewhere) = sharing(held.take_deferred(), &backend.helpers, &backend.model);
+        held.defer(mine);
+        (held.helpers(), elsewhere, held.publisher())
     };
     alongside(
         &tasks,
@@ -349,6 +353,13 @@ pub(crate) async fn release(
         events,
         std::sync::Arc::clone(spent),
     );
+}
+
+/// `jobs` split into those that would run on `main`, the turn's own model, and the rest.
+#[must_use]
+pub(crate) fn sharing(jobs: Vec<Job>, helpers: &Helpers, main: &str) -> (Vec<Job>, Vec<Job>) {
+    jobs.into_iter()
+        .partition(|job| helpers.model_for(job, main).as_deref() == Some(main))
 }
 
 /// Between turns: hand balthasar what settled, and run the background jobs it has waiting. Spawned,
@@ -409,6 +420,9 @@ mod tests {
             ..Helpers::default()
         }
     }
+
+    #[path = "sharing.rs"]
+    mod sharing_the_turns_model;
 
     #[test]
     fn a_role_with_a_helper_runs_on_it() {
