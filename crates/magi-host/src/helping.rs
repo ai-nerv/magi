@@ -271,7 +271,8 @@ pub async fn work(
                     usage: answer.usage,
                 });
                 serde_json::json!({
-                    "id": job.id, "text": answer.text, "model": answer.model,
+                    "id": job.id, "attempt": job.attempt,
+                    "text": answer.text, "model": answer.model,
                     "usage": {
                         "input": answer.usage.input, "output": answer.usage.output,
                         "cache_read": answer.usage.cache_read,
@@ -295,7 +296,7 @@ pub async fn work(
                     job.id,
                     why.message
                 );
-                serde_json::json!({ "id": job.id, "failed": why.message,
+                serde_json::json!({ "id": job.id, "attempt": job.attempt, "failed": why.message,
                     "model": why.model, "usage": why.usage })
             }
         };

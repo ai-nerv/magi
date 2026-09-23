@@ -2,6 +2,7 @@
 //! task inside the `magi` that shows it — there is no daemon, so a session ends when its window
 //! does. `UiCommand::Attach` names one, so a registry would be a lookup, not a protocol change.
 
+pub mod admitting;
 pub mod asking;
 pub mod broker;
 pub mod cancel;
@@ -73,6 +74,11 @@ pub enum HostError {
 
     #[error(transparent)]
     Journal(#[from] JournalError),
+
+    /// A request was measured at the boundary and does not fit what the model leaves. Nothing was
+    /// sent, and nothing was cut down to make it fit: what to leave out is the memory layer's.
+    #[error("{0}")]
+    Refused(String),
 }
 
 /// Serve one session until cancelled. Every connection gets its own task; the session is shared

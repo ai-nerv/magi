@@ -433,17 +433,6 @@ async fn background_jobs_are_held_for_after_the_turn_not_run_inside_it() {
 }
 
 #[test]
-fn a_reply_is_never_reserved_beyond_what_the_model_can_say() {
-    // A 32k-window model that answers in at most 4096: reserving the 32k default left no room at
-    // all, so the conversation was dropped from the first turn.
-    assert_eq!(reserved(None, Some(4096)), 4096);
-    assert_eq!(reserved(Some(64_000), Some(4096)), 4096);
-    assert_eq!(reserved(Some(1000), Some(4096)), 1000);
-    assert_eq!(reserved(None, None), REPLY);
-    assert_eq!(reserved(None, Some(0)), REPLY);
-}
-
-#[test]
 fn losing_the_memory_layer_is_said_once_and_so_is_getting_it_back() {
     // A session that went on answering with nothing recording it told the person nothing at all:
     // the only trace was a line in a debug log. Said once, or it is said on every turn.
@@ -460,4 +449,128 @@ fn losing_the_memory_layer_is_said_once_and_so_is_getting_it_back() {
         None,
         "and a session that never lost it says nothing"
     );
+}
+
+/// What the request boundary does today, pinned so that closing it is a visible change.
+///
+/// These characterize the gaps `plans/MEMORY.md` §2.2 records: a layout can reach dispatch
+/// without ever being checked against a budget. They assert today's behaviour, not the wanted
+/// behaviour, and Phase 2 is expected to turn each of them around.
+mod boundary_today {
+    use super::*;
+
+    #[test]
+    fn the_whole_history_fallback_no_longer_declares_that_it_fits() {
+        // It used to. `whole` is what goes when there has never been a layout, and when one was
+        // refused or timed out; with a null budget, saying it fits is a claim nobody made. What
+        // decides now is the count the boundary takes of it.
+        for rows in [1_usize, 50, 5_000] {
+            let live: Vec<u64> = (0..rows as u64).collect();
+            let laid = whole(&live);
+            assert!(!laid.fits, "{rows} rows");
+            assert!(laid.budget.is_null(), "{rows} rows: {:?}", laid.budget);
+            assert_eq!(laid.slots.len(), rows, "every live row is still named");
+        }
+    }
+
+    #[test]
+    fn a_layout_that_says_it_does_not_fit_is_still_sound() {
+        // `sound` asks one question — is the prompt being answered among the rows — and a layout
+        // that already reported itself over budget answers it just as well as one that did not.
+        let live = [1_u64, 2, 3];
+        let over = Layout {
+            id: "over".to_owned(),
+            budget: serde_json::json!({ "window": 1000, "input": 4000 }),
+            slots: live.iter().map(|&cursor| Slot::Item { cursor }).collect(),
+            jobs: Vec::new(),
+            fits: false,
+            why: "does not fit".to_owned(),
+        };
+        assert!(
+            sound(&over, &live),
+            "nothing between here and dispatch reads `fits`"
+        );
+    }
+
+    #[test]
+    fn extending_a_layout_keeps_the_budget_the_old_one_was_measured_against() {
+        // New rows are appended to what was laid out before, and the budget travels with them
+        // unchanged: what it describes is no longer what is being sent.
+        let before = Layout {
+            id: "first".to_owned(),
+            budget: serde_json::json!({ "window": 1000, "input": 400 }),
+            slots: vec![Slot::Item { cursor: 1 }],
+            jobs: Vec::new(),
+            fits: true,
+            why: String::new(),
+        };
+        let after = extend(&before, &[1, 2, 3, 4]);
+        assert_eq!(after.budget, before.budget, "the old measurement is kept");
+        let named: Vec<u64> = after.slots.iter().filter_map(Slot::cursor).collect();
+        assert_eq!(named, [1, 2, 3, 4], "three rows grew to four under it");
+        assert!(
+            !after.fits,
+            "but it no longer claims to fit the budget it grew past"
+        );
+    }
+
+    #[test]
+    fn extending_a_layout_by_nothing_keeps_what_it_said() {
+        // Nothing was added, so nothing went uncounted and the old measurement still describes it.
+        let before = Layout {
+            id: "first".to_owned(),
+            budget: serde_json::json!({ "window": 1000, "input": 400 }),
+            slots: vec![Slot::Item { cursor: 1 }, Slot::Item { cursor: 2 }],
+            jobs: Vec::new(),
+            fits: true,
+            why: String::new(),
+        };
+        assert!(extend(&before, &[1, 2]).fits);
+    }
+}
+
+/// What magi tells the memory layer its sizes are worth.
+mod mem_accounting_capability_negotiation {
+    use super::*;
+
+    fn asked() -> serde_json::Value {
+        let session = recorded(&transcript());
+        request(&session, &backend(), &[], 0)
+    }
+
+    fn backend() -> crate::catalog::Backend {
+        let mut held = crate::catalog::Catalog::empty();
+        held.cards = vec![magi_proto::ask::Card {
+            id: "local/a".to_owned(),
+            provider: "local".to_owned(),
+            name: "a".to_owned(),
+            api: "openai-completions".to_owned(),
+            context_window: Some(32_000),
+            max_output: Some(4_096),
+            reasons: false,
+            ready: true,
+            needs: None,
+        }];
+        held.backend("local/a").expect("a backend")
+    }
+
+    #[test]
+    fn every_ask_says_how_its_sizes_were_counted() {
+        // Unsaid, the other side has to guess whether a ceiling over these is certified.
+        assert_eq!(asked()["counting"], COUNTING);
+    }
+
+    #[test]
+    fn magi_claims_no_more_than_an_estimate() {
+        // The sizes come from `magi_model::estimate`, not from a provider's count of what was
+        // actually serialized, and saying otherwise would license a strict ceiling over them.
+        assert_eq!(COUNTING, "estimated");
+    }
+
+    #[test]
+    fn the_window_and_the_reserve_travel_with_it() {
+        let asked = asked();
+        assert_eq!(asked["window"], 32_000);
+        assert_eq!(asked["reply"], 4_096, "capped by what the model can say");
+    }
 }

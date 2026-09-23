@@ -242,6 +242,13 @@ impl App {
                 });
                 self.refresh_views();
             }
+            // Only when a request did not simply go: a line per admitted request would say the
+            // same thing every turn, and what is worth interrupting for is a pause or a refusal.
+            HarnessEvent::RequestAdmitted { outcome, why, .. } => {
+                if outcome != "admitted" && !why.is_empty() {
+                    self.show_notice(why);
+                }
+            }
             HarnessEvent::MemoryAnswered { verb, answer } => self.remembered(&verb, &answer),
             HarnessEvent::HelperSpent { role, model, usage } => {
                 self.helped

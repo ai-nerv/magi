@@ -308,6 +308,9 @@ async fn permissions(
 /// Rounds of tool use one prompt may take: a guard against a stuck model, not a budget.
 const MAX_ROUNDS: usize = 200;
 
+/// How many times one request may be sent back to be planned smaller before it is refused.
+const REPLANS: u32 = 3;
+
 /// Run a prompt to completion: provider, tools, provider, until the turn ends. Every result is
 /// journalled as its own entry, so the transcript shows what was asked and what came back.
 pub async fn run(
@@ -334,6 +337,7 @@ pub async fn run(
     let tools = registry.declarations();
     // A request already laid out, because the provider refused the last one as too long.
     let mut tighter: Option<magi_model::Context> = None;
+    let mut replans: u32 = 0;
 
     for _ in 0..MAX_ROUNDS {
         // A turn is one exchange with the model, and this is where a watcher learns of it.
@@ -348,6 +352,62 @@ pub async fn run(
         };
         context.tools.clone_from(&tools);
         context.system.clone_from(&backend.system);
+        // The one place a request is measured as it will be sent: after the instructions and the
+        // declarations are on it, and before anything can add to it. Every path reaches here —
+        // a fresh layout, the last one grown, and the tighter one a provider's refusal asked for.
+        let admission = crate::admitting::admit(
+            &context,
+            backend.context_window,
+            crate::catalog::reserved(backend.wants.max_tokens, backend.max_output),
+        );
+        if admission.admitted() {
+            let _ = session
+                .lock()
+                .await
+                .publisher()
+                .send(crate::admitting::reported(admission, "admitted"));
+        } else {
+            magi_model::noted!(
+                "turn: this request does not fit: {admission:?} ({}, enforcing={})",
+                crate::admitting::COUNTING,
+                crate::admitting::ENFORCING
+            );
+            if crate::admitting::ENFORCING {
+                // Over the limit goes back to whoever chose the content, through the same path a
+                // provider's own refusal takes, and no more times than that path allows. Blocked
+                // is not a size at all — no layout of anything fits — so it is reported as it is.
+                let replan = matches!(admission, crate::admitting::Admission::Over { .. })
+                    && replans < REPLANS;
+                if replan {
+                    let said = crate::admitting::refusal(admission);
+                    if let Some(context) =
+                        crate::laying::overflowed(session, scribe, &mut prompt, &said).await
+                    {
+                        replans += 1;
+                        let _ = session
+                            .lock()
+                            .await
+                            .publisher()
+                            .send(crate::admitting::reported(admission, "replanned"));
+                        tighter = Some(context);
+                        continue;
+                    }
+                }
+                let outcome = if matches!(admission, crate::admitting::Admission::Blocked(_)) {
+                    "blocked"
+                } else {
+                    "refused"
+                };
+                let _ = session
+                    .lock()
+                    .await
+                    .publisher()
+                    .send(crate::admitting::reported(admission, outcome));
+                return Err(crate::HostError::Refused(crate::admitting::refusal(
+                    admission,
+                )));
+            }
+        }
         let round = one_turn(session, backend, context, &cancel, (scribe, &prompt)).await?;
 
         for (attempt, of, delay_ms) in &round.retries {

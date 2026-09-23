@@ -142,4 +142,8 @@ pub struct Job {
     /// and returns nothing at all without it.
     #[serde(default)]
     pub thinking: Option<String>,
+    /// Which hand-out this is, sent back with the answer so a superseded lease cannot settle the
+    /// job. Absent for a memory layer that does not fence its leases.
+    #[serde(default)]
+    pub attempt: Option<u64>,
 }

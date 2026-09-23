@@ -4,6 +4,18 @@
 
 use magi_proto::ask::Card;
 
+/// The answer a request leaves room for when nothing configured says how long one may be.
+pub(crate) const REPLY: u64 = 32_000;
+
+/// What to set aside for the reply: what was asked for, else the default, and never more than the
+/// model can say. Room reserved for an answer that cannot be given is room taken from the
+/// conversation, and on a small window it was all of it.
+pub(crate) fn reserved(wanted: Option<u64>, cap: Option<u64>) -> u64 {
+    let asked = wanted.unwrap_or(REPLY);
+    cap.filter(|cap| *cap > 0)
+        .map_or(asked, |cap| asked.min(cap))
+}
+
 /// What the daemon needs to reach a model. Plain data, and sendable: the protocol it names is built
 /// on the worker's own thread, because a Lua VM is neither `Send` nor `Sync`.
 #[derive(Debug, Clone)]
@@ -130,6 +142,10 @@ impl Catalog {
     #[must_use]
     pub fn backend(&self, name: &str) -> Option<Backend> {
         let card = self.find(name)?;
+        // What is reserved is what is asked for. Left unnamed, a provider generates to its own
+        // default and the room held back for the reply describes nothing.
+        let mut wants = self.wants.clone();
+        wants.max_tokens = Some(reserved(wants.max_tokens, card.max_output));
         card.ready.then(|| Backend {
             tools: self.tools.clone(),
             clients: self.clients.clone(),
@@ -138,7 +154,7 @@ impl Catalog {
             model: card.id.clone(),
             mind: self.mind.clone(),
             tooling: self.tooling.clone(),
-            wants: self.wants.clone(),
+            wants,
             context_window: card.context_window,
             max_output: card.max_output,
             system: self.system.clone(),
@@ -239,7 +255,7 @@ impl Catalog {
 mod tests {
     use super::*;
 
-    fn card(id: &str, name: &str, provider: &str, ready: bool) -> Card {
+    pub(super) fn card(id: &str, name: &str, provider: &str, ready: bool) -> Card {
         Card {
             id: id.to_owned(),
             provider: provider.to_owned(),
@@ -257,7 +273,7 @@ mod tests {
         }
     }
 
-    fn catalog() -> Catalog {
+    pub(super) fn catalog() -> Catalog {
         Catalog {
             cards: vec![
                 card("local/a", "a", "local", true),
@@ -348,6 +364,59 @@ mod tests {
         assert_eq!(
             catalog.chosen().as_deref(),
             Some("anthropic/claude-sonnet-4-5")
+        );
+    }
+}
+
+/// What a backend reserves for its reply, and what it asks the provider to generate.
+#[cfg(test)]
+mod mem_output_reserve_matches_request {
+    use super::tests::*;
+    use super::*;
+
+    #[test]
+    fn a_reply_is_never_reserved_beyond_what_the_model_can_say() {
+        // A 32k-window model that answers in at most 4096: reserving the 32k default left no room
+        // at all, so the conversation was dropped from the first turn.
+        assert_eq!(reserved(None, Some(4096)), 4096);
+        assert_eq!(reserved(Some(64_000), Some(4096)), 4096);
+        assert_eq!(reserved(Some(1000), Some(4096)), 1000);
+        assert_eq!(reserved(None, None), REPLY);
+        assert_eq!(reserved(None, Some(0)), REPLY);
+    }
+
+    #[test]
+    fn the_reserve_is_the_limit_the_request_carries() {
+        // Reserving room for an answer while naming no limit describes nothing: the provider
+        // generates to its own default and the room held back is a guess about it.
+        let backend = catalog().backend("local/a").expect("a backend");
+        let reserve = reserved(backend.wants.max_tokens, backend.max_output);
+        assert_eq!(
+            backend.wants.max_tokens,
+            Some(reserve),
+            "what is asked for is what was reserved"
+        );
+    }
+
+    #[test]
+    fn it_is_never_more_than_the_model_can_say() {
+        let backend = catalog().backend("local/a").expect("a backend");
+        assert_eq!(backend.max_output, Some(100));
+        assert_eq!(backend.wants.max_tokens, Some(100));
+    }
+
+    #[test]
+    fn a_configured_limit_is_kept_when_the_model_can_meet_it() {
+        let held = Catalog {
+            wants: magi_proto::ask::Wants {
+                max_tokens: Some(64),
+                ..magi_proto::ask::Wants::default()
+            },
+            ..catalog()
+        };
+        assert_eq!(
+            held.backend("local/a").expect("a backend").wants.max_tokens,
+            Some(64)
         );
     }
 }
