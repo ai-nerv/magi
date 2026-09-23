@@ -319,6 +319,9 @@ const MAX_ROUNDS: usize = 200;
 /// How many times one request may be sent back to be planned smaller before it is refused.
 const REPLANS: u32 = 3;
 
+/// What a turn ends with when the provider refused a request as too long and nothing in it can go.
+const NOTHING_LEFT: &str = "the provider refused this request as too long, and there is nothing left to leave out of it: the instructions, the prompt and what it is working from are all it holds. A model with a larger window, or a new session, is what would fit.";
+
 /// Run a prompt to completion: provider, tools, provider, until the turn ends. Every result is
 /// journalled as its own entry, so the transcript shows what was asked and what came back.
 pub async fn run(
@@ -391,7 +394,7 @@ pub async fn run(
                 if replan {
                     let said = crate::admitting::refusal(admission);
                     if let Some(context) =
-                        crate::laying::overflowed(session, scribe, &mut prompt, &said).await
+                        crate::laying::refit(session, scribe, &mut prompt, &said).await
                     {
                         replans += 1;
                         let _ = session
@@ -418,6 +421,8 @@ pub async fn run(
                 )));
             }
         }
+        // What went, by slot, so a tighter layout that is not tighter can be told from one that is.
+        let sent = session.lock().await.laid().map(|laid| laid.slots.clone());
         let round = one_turn(session, backend, context, &cancel, (scribe, &prompt)).await?;
 
         for (attempt, of, delay_ms) in &round.retries {
@@ -439,8 +444,26 @@ pub async fn run(
             if let Some(context) =
                 crate::laying::overflowed(session, scribe, &mut prompt, &round.said).await
             {
-                tighter = Some(context);
-                continue;
+                // The same slots are the same request, and a provider that just refused it as too
+                // long refuses it again. Nothing is left to leave out, so that is said instead.
+                let again = session.lock().await.laid().map(|laid| laid.slots.clone());
+                if again.is_none() || again != sent {
+                    tighter = Some(context);
+                    continue;
+                }
+                // At the floor, unless a summary it is waiting on has yet to be written: written
+                // now, it may take the place of rows this layout could only drop.
+                if crate::helping::for_the_turn(session, backend, scribe, &prompt.spent).await {
+                    let context =
+                        crate::laying::lay(session, backend, &tools, scribe, &mut prompt).await;
+                    let again = session.lock().await.laid().map(|laid| laid.slots.clone());
+                    if again != sent {
+                        tighter = Some(context);
+                        continue;
+                    }
+                }
+                session.lock().await.set_status(AgentStatus::Idle);
+                return Err(crate::HostError::Refused(NOTHING_LEFT.to_owned()));
             }
             // Nobody had a tighter layout, so the refusal stands and the turn is over.
             session.lock().await.set_status(AgentStatus::Idle);

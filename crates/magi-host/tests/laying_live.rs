@@ -371,12 +371,14 @@ async fn a_request_refused_as_too_long_is_laid_out_again_and_retried() {
     let Some(live) = live("over").await else {
         return;
     };
+    // Reads from a prompt already answered: word for word at first, and what a tighter layout has
+    // to leave out once the provider says the request is too long.
     let session = tokio::sync::Mutex::new(Session::recorded(live.id.clone(), Vec::new()));
-    session
-        .lock()
-        .await
-        .commit(user("u1", "what is magi"))
-        .expect("commit");
+    {
+        let mut held = session.lock().await;
+        earlier_reads(&mut held);
+        held.commit(user("u10", "what is magi")).expect("commit");
+    }
     let refused = magi_testkit::mind::failed_line(
         "prompt is too long: 250000 tokens > 200000 maximum",
         "overflow",
@@ -398,6 +400,93 @@ async fn a_request_refused_as_too_long_is_laid_out_again_and_retried() {
     assert_eq!(laid.len(), 2, "one layout, then a tighter one: {laid:?}");
     assert!(!laid[1].0.is_empty(), "balthasar answered the overflow");
     assert_ne!(laid[0].0, laid[1].0, "a new layout, not the same one");
+    let asks = mind.asks();
+    assert!(
+        asks[1].len() < asks[0].len(),
+        "and smaller than the one refused: {} then {}",
+        asks[0].len(),
+        asks[1].len()
+    );
+}
+
+#[tokio::test]
+async fn a_request_that_cannot_be_made_smaller_is_not_sent_again() {
+    // A prompt and nothing else, refused as too long: laying it out again lays out the same
+    // request, and a provider that refused it once refuses it again. It is said, not re-sent.
+    let Some(live) = live("floor").await else {
+        return;
+    };
+    let session = tokio::sync::Mutex::new(Session::recorded(live.id.clone(), Vec::new()));
+    session
+        .lock()
+        .await
+        .commit(user("u1", "what is magi"))
+        .expect("commit");
+    let refused = magi_testkit::mind::failed_line(
+        "prompt is too long: 250000 tokens > 200000 maximum",
+        "overflow",
+    );
+    let mind = Mind::turns(
+        "ll-floor",
+        &[
+            &[refused.as_str()],
+            &[
+                &magi_testkit::mind::text_line("never asked"),
+                &magi_testkit::mind::stop_line(),
+            ],
+        ],
+    );
+    let registry = magi_tools::Registry::new();
+    let ops = magi_tools::ops::Real::new(std::env::temp_dir());
+    let said = run(
+        &session,
+        &backend(&mind, 200_000),
+        &registry,
+        &ops,
+        &live.scribe,
+    )
+    .await;
+    assert_eq!(
+        mind.asked(),
+        1,
+        "the refused request was not sent a second time"
+    );
+    let why = format!("{said:?}");
+    assert!(why.contains("nothing left to leave out"), "{why}");
+}
+
+/// Four reads of seven thousand tokens each, asked for and answered in a prompt before this one.
+fn earlier_reads(held: &mut Session) {
+    let output = |n: usize| format!("RESULT{n} ").repeat(3_500);
+    held.commit(user("u0", "read the four parts"))
+        .expect("commit");
+    for n in 1..=4 {
+        let id = format!("c{n}");
+        held.commit(said(&format!("a{n}"), "", StopReason::ToolUse))
+            .expect("commit");
+        held.commit(Entry::Tool {
+            id: ToolCallId::new(&id),
+            name: "read".into(),
+            args: format!("{{\"path\":\"part{n}.txt\"}}"),
+            result: Some(ToolResult {
+                output: output(n),
+                is_error: false,
+                shown: None,
+            }),
+            thought_signature: None,
+        })
+        .expect("commit");
+        held.hint(
+            &id,
+            magi_proto::tooling::Hints {
+                brief: Some(format!("read part{n}.txt (3000 lines)")),
+                back: Some(format!("read part{n}.txt")),
+                keep: false,
+            },
+        );
+    }
+    held.commit(said("a9", "all four are read", StopReason::EndTurn))
+        .expect("commit");
 }
 
 #[tokio::test]

@@ -465,10 +465,34 @@ pub async fn overflowed(
     prompt: &mut Prompt,
     said: &str,
 ) -> Option<Context> {
-    if prompt.id.is_empty() || prompt.overflows >= OVERFLOWS {
+    if prompt.overflows >= OVERFLOWS {
         return None;
     }
     prompt.overflows += 1;
+    tighter(session, scribe, prompt, said).await
+}
+
+/// After magi's own count found a request over the limit before it was sent: a tighter layout, the
+/// same way, but not out of the allowance for a provider's refusals. The caller bounds these.
+pub async fn refit(
+    session: &tokio::sync::Mutex<Session>,
+    scribe: &crate::scribe::Held,
+    prompt: &mut Prompt,
+    said: &str,
+) -> Option<Context> {
+    tighter(session, scribe, prompt, said).await
+}
+
+/// A tighter layout from balthasar, built.
+async fn tighter(
+    session: &tokio::sync::Mutex<Session>,
+    scribe: &crate::scribe::Held,
+    prompt: &mut Prompt,
+    said: &str,
+) -> Option<Context> {
+    if prompt.id.is_empty() {
+        return None;
+    }
     let id = prompt.id.clone();
     let answered = tokio::time::timeout(PATIENCE, async {
         let mut open = scribe.lock().await;
