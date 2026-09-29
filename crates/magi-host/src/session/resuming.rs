@@ -40,6 +40,7 @@ impl Session {
 
     pub(crate) fn resume_prepared(&mut self, journal: Journal) {
         self.journal = journal;
+        self.admission.reports = Default::default();
         self.cancel = Default::default();
         self.helpers = Default::default();
         self.hints.clear();

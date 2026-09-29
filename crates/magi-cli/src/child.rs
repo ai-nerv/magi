@@ -123,17 +123,22 @@ async fn park(
     let mut working_since: Option<Instant> = None;
     // A slow beat so `working` shows a climbing timer between the rare status changes.
     let mut beat = tokio::time::interval(Duration::from_secs(2));
-    // The latest edge worth a turn, held until this session is idle and off the wake cooldown, so
-    // a burst of finishes coalesces into one turn and a mutual watch cannot spin. The turn reads
-    // the whole crew, so holding only the latest occasion loses nothing.
-    let mut pending_wake: Option<String> = None;
+    // Pending child/watched edges, coalesced into one turn while idle and off the wake cooldown.
+    let mut pending_wake = PendingWakes::default();
     let mut last_wake: Option<Instant> = None;
     // Each watched child's last phase, so a coordinator gone quiet knows whether it still waits.
     let mut children: std::collections::BTreeMap<String, String> =
         std::collections::BTreeMap::new();
     let status = phase.borrow().clone();
     let (mut phase_now, working_for) = derive(&status, &mut has_worked, &mut working_since);
-    announce(layer, phase_now, working_for, &children, &spent);
+    announce(
+        layer,
+        phase_now,
+        working_for,
+        &children,
+        &pending_wake,
+        &spent,
+    );
 
     loop {
         tokio::select! {
@@ -144,14 +149,12 @@ async fn park(
                 // A watched agent moved. A child finishing or blocking is this session's to act on;
                 // its phase is tracked either way, so this session can say what it still waits on.
                 Some(crate::melchior::Heard::Signal { from, kind, kin, cause }) => {
+                    pending_wake.observe(&kin, &kind, &from, cause.as_deref());
                     if kin == "child" {
                         children.insert(from.clone(), kind.clone());
-                        announce(layer, phase_now, working_since.map_or(0, |t| t.elapsed().as_secs()), &children, &spent);
+                        announce(layer, phase_now, working_since.map_or(0, |t| t.elapsed().as_secs()), &children, &pending_wake, &spent);
                     }
-                    if let Some(occasion) = wake_prompt(&kin, &kind, &from, cause.as_deref()) {
-                        pending_wake = Some(occasion);
-                        flush_wake(socket, phase_now, &mut pending_wake, &mut last_wake).await;
-                    }
+                    flush_wake(socket, phase_now, &mut pending_wake, &mut last_wake).await;
                 }
                 // Another instance said something: passed to the host as a screen would, once this
                 // session is idle, so `question`, `answer` and `handoff` start a turn here too.
@@ -176,14 +179,14 @@ async fn park(
                 let (next, working_for) =
                     derive(&status, &mut has_worked, &mut working_since);
                 phase_now = next;
-                announce(layer, next, working_for, &children, &spent);
+                announce(layer, next, working_for, &children, &pending_wake, &spent);
                 hand_over(socket, phase_now, &mut arrivals).await;
                 flush_wake(socket, phase_now, &mut pending_wake, &mut last_wake).await;
             }
             // Keeps the working timer moving, and catches a wake deferred by the cooldown.
             _ = beat.tick() => {
                 if let Some(since) = working_since {
-                    announce(layer, Phase::Working, since.elapsed().as_secs(), &children, &spent);
+                    announce(layer, Phase::Working, since.elapsed().as_secs(), &children, &pending_wake, &spent);
                 }
                 hand_over(socket, phase_now, &mut arrivals).await;
                 flush_wake(socket, phase_now, &mut pending_wake, &mut last_wake).await;
@@ -221,8 +224,11 @@ pub(crate) fn wake_prompt(
     };
     match kind {
         "finished" => Some(format!(
-            "{whose}, `{from}`, has finished. Read your crew and inbox with the `agent` tool — \
-             `crew` for who is still going, `inbox` for anything new they sent. If the task you were \
+            "{whose}, `{from}`, reported a finished turn. Check its CURRENT phase with `agent` \
+             verb `status`, `who: \"{from}\"`, or `crew`: it may have resumed since this signal. \
+             If it is working or waiting, keep waiting; a report alone is not completion. Read \
+             the report bodies delivered into this conversation; if one is missing, use `agent` \
+             verb `report`, who that child. Use `inbox` for other notes. If the task you were \
              given has a next step that was waiting on this, take it now. Otherwise, if everyone you \
              were waiting on is done, check the combined result yourself (build it, run its tests), \
              then write a short summary and stop; if not, keep waiting. Report \
@@ -249,16 +255,42 @@ pub(crate) fn wake_prompt(
 /// watch each other cannot spin faster than this.
 pub(crate) const WAKE_COOLDOWN: Duration = Duration::from_secs(2);
 
+/// Pending wake occasions by agent; a newer non-terminal phase removes that agent's occasion.
+#[derive(Default)]
+pub(crate) struct PendingWakes(std::collections::BTreeMap<String, String>);
+
+impl PendingWakes {
+    pub(crate) fn observe(&mut self, kin: &str, kind: &str, from: &str, cause: Option<&str>) {
+        if let Some(occasion) = wake_prompt(kin, kind, from, cause) {
+            self.0.insert(from.to_owned(), occasion);
+        } else if matches!(kin, "child" | "watched")
+            && matches!(kind, "starting" | "working" | "waiting" | "idle")
+        {
+            self.0.remove(from);
+        }
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub(crate) fn take(&mut self) -> Option<String> {
+        let occasion = self.0.pop_last().map(|(_, occasion)| occasion);
+        self.0.clear();
+        occasion
+    }
+}
+
 /// Take up the queued occasion, if there is one and it is time: only while idle (one turn at a
 /// time) and not within [`WAKE_COOLDOWN`] of the last wake. Called from every arm that could make
 /// a wake due, so a deferred one lands on the next beat rather than being lost.
 async fn flush_wake(
     socket: &Path,
     phase_now: Phase,
-    pending_wake: &mut Option<String>,
+    pending_wake: &mut PendingWakes,
     last_wake: &mut Option<Instant>,
 ) {
-    if phase_now == Phase::Working || pending_wake.is_none() {
+    if phase_now == Phase::Working || pending_wake.is_empty() {
         return;
     }
     if last_wake.is_some_and(|at| at.elapsed() < WAKE_COOLDOWN) {
@@ -353,24 +385,33 @@ fn derive(
     }
 }
 
-/// Report a phase, but a session gone quiet while children are still going reads as `waiting on`
-/// them, not `finished` — the state a coordinator sits in between delegating and gathering.
+/// Report `waiting` while children are active or a coordination wake is pending.
 fn announce(
     layer: &mut Option<crate::melchior::Melchior>,
     base: Phase,
     working_for: u64,
     children: &std::collections::BTreeMap<String, String>,
+    pending: &PendingWakes,
     spent: &watch::Receiver<Vec<(String, magi_proto::Usage)>>,
 ) {
-    let (phase, cause) = match base {
+    let (phase, cause) = announced(base, children, pending);
+    let spent = spent.borrow().clone();
+    report(layer, phase, cause.as_deref(), working_for, &spent);
+}
+
+fn announced(
+    base: Phase,
+    children: &std::collections::BTreeMap<String, String>,
+    pending: &PendingWakes,
+) -> (Phase, Option<String>) {
+    match base {
         Phase::Idle | Phase::Finished => match waiting_on(children) {
             Some(on) => (Phase::Waiting, Some(on)),
+            None if !pending.is_empty() => (Phase::Waiting, Some("coordination wake".to_owned())),
             None => (base, None),
         },
         _ => (base, None),
-    };
-    let spent = spent.borrow().clone();
-    report(layer, phase, cause.as_deref(), working_for, &spent);
+    }
 }
 
 /// How many watched children have not reached an end, as a cause line, or `None` when all are done.
@@ -480,6 +521,68 @@ fn still_running(pid: u32, since: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_deferred_finish_is_canceled_when_the_child_resumes() {
+        let mut wakes = PendingWakes::default();
+        wakes.observe("child", "finished", "psi-zeta", None);
+        assert!(!wakes.is_empty());
+        wakes.observe("child", "working", "psi-zeta", None);
+        assert!(wakes.take().is_none());
+    }
+
+    #[test]
+    fn canceling_one_child_keeps_another_childs_finish() {
+        let mut wakes = PendingWakes::default();
+        wakes.observe("child", "finished", "alpha", None);
+        wakes.observe("child", "finished", "beta", None);
+        wakes.observe("child", "waiting", "beta", None);
+        let occasion = wakes.take().expect("alpha is still finished");
+        assert!(occasion.contains("`alpha`"), "{occasion}");
+        assert!(!occasion.contains("`beta`"), "{occasion}");
+        assert!(wakes.is_empty());
+    }
+
+    #[test]
+    fn a_watched_agent_can_finish_again_after_resuming() {
+        let mut wakes = PendingWakes::default();
+        wakes.observe("watched", "blocked", "psi", Some("temporary"));
+        wakes.observe("watched", "working", "psi", None);
+        assert!(wakes.is_empty());
+        wakes.observe("watched", "finished", "psi", None);
+        wakes.observe("parent", "working", "psi", None);
+        let occasion = wakes.take().expect("a new finish still wakes");
+        assert!(occasion.contains("CURRENT phase"), "{occasion}");
+        assert!(!occasion.contains("temporary"), "{occasion}");
+    }
+
+    #[test]
+    fn a_child_going_away_after_finishing_keeps_its_queued_finish() {
+        let mut wakes = PendingWakes::default();
+        wakes.observe("child", "finished", "psi", None);
+        wakes.observe("child", "gone", "psi", None);
+        assert!(wakes.take().is_some());
+    }
+
+    #[test]
+    fn a_coordinator_is_not_finished_while_a_result_wake_is_pending() {
+        let mut wakes = PendingWakes::default();
+        wakes.observe("child", "finished", "psi", None);
+        let children = [("psi".to_owned(), "finished".to_owned())].into();
+        assert_eq!(
+            announced(Phase::Finished, &children, &wakes).0,
+            Phase::Waiting
+        );
+        assert_eq!(
+            announced(Phase::Working, &children, &wakes).0,
+            Phase::Working
+        );
+        wakes.take();
+        assert_eq!(
+            announced(Phase::Finished, &children, &wakes).0,
+            Phase::Finished
+        );
+    }
 
     #[test]
     fn a_live_process_is_read_as_running() {

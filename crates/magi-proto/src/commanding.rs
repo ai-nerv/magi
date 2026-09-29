@@ -42,6 +42,7 @@ pub enum UiCommand {
         text: String,
     },
     Interrupt,
+    RefreshModels,
     SetModel {
         name: String,
     },

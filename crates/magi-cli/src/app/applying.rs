@@ -17,6 +17,20 @@ impl App {
         self.timeline.note(&event);
         self.stir_for(&event);
         match event {
+            HarnessEvent::ModelsRefreshed { choices, warning } => {
+                self.choices = choices;
+                self.model_reasons = self.model.as_ref().is_some_and(|chosen| {
+                    self.choices
+                        .iter()
+                        .any(|c| c.name == chosen.name && c.reasoning)
+                });
+                if self.picking == Some(Picking::Model) && self.overlay.is_some() {
+                    self.open_model_picker();
+                }
+                if let Some(warning) = warning {
+                    self.show_notice(warning);
+                }
+            }
             HarnessEvent::SessionSnapshot {
                 cursor: _,
                 entries,

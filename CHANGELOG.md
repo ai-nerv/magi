@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.5.3] - 2026-09-29
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Enforce reports and refresh models
+
 ## [0.5.2] - 2026-09-23
 
 ### <!-- 1 -->🐛 Bug Fixes

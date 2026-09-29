@@ -167,7 +167,9 @@ impl Recording {
                 | HarnessEvent::Drew { .. }
                 | HarnessEvent::Unsurfaced { .. }
                 | HarnessEvent::Granted { .. } => {}
-                HarnessEvent::SessionSnapshot { .. } | HarnessEvent::Error { .. } => {}
+                HarnessEvent::SessionSnapshot { .. }
+                | HarnessEvent::ModelsRefreshed { .. }
+                | HarnessEvent::Error { .. } => {}
             }
         }
         (entries, status)

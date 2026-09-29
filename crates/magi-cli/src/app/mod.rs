@@ -465,13 +465,25 @@ impl App {
                 ready: choice.requirement.is_empty(),
             })
             .collect();
-        let current = self.model.as_ref().map(|m| m.name.clone());
-        let picker = magi_tui::picker::Picker::new("Model", choices, current.as_deref());
-        if picker.offers_nothing() {
-            self.show_notice(
-                "No providers are declared. `magi models --all` lists what magi ships.".to_owned(),
-            );
-            return;
+        let previous = (self.picking == Some(Picking::Model))
+            .then(|| self.overlay.as_ref().and_then(|overlay| overlay.list()))
+            .flatten();
+        let query = previous
+            .map(|picker| picker.query().to_owned())
+            .unwrap_or_default();
+        let current = previous
+            .and_then(|picker| picker.current().map(|choice| choice.value.clone()))
+            .or_else(|| self.model.as_ref().map(|m| m.name.clone()));
+        let mut picker = magi_tui::picker::Picker::new("Model", choices, current.as_deref());
+        for ch in query.chars() {
+            picker.push(ch);
+        }
+        if let Some(index) = picker
+            .choices
+            .iter()
+            .position(|choice| Some(choice.value.as_str()) == current.as_deref())
+        {
+            picker.selected = index;
         }
         self.overlay = Some(picker.into());
         self.picking = Some(Picking::Model);

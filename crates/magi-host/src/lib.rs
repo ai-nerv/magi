@@ -17,6 +17,7 @@ pub mod knowing;
 pub mod laying;
 pub mod paths;
 pub mod remember;
+mod reporting;
 mod resuming;
 pub mod scribe;
 pub mod session;
@@ -123,8 +124,7 @@ fn installed(clients: &mut Vec<(String, String)>, name: &str, served: String) ->
     }
 }
 
-/// The same, able to change model without restarting. The catalog is everything this session
-/// started with, held so a switch cannot silently pick up an edit made since.
+/// The same, able to switch models and refresh cards without changing session configuration.
 pub async fn serve_catalog(
     listener: UnixListener,
     session: Session,
@@ -334,7 +334,7 @@ pub async fn serve_on(
             })
             .map(Arc::new),
     ));
-    let catalog = Arc::new(catalog);
+    let catalog = Arc::new(refreshing::Models::new(catalog));
     // No idle timer. Nothing outlives its UI now, so there is nothing to sweep, and a UI whose
     // connection hiccuped would have had its own session close the socket underneath it.
     loop {
@@ -364,7 +364,7 @@ async fn connection(
     stream: UnixStream,
     session: Arc<Mutex<Session>>,
     worker: &tokio::sync::RwLock<Option<Arc<worker::Worker>>>,
-    catalog: &crate::catalog::Catalog,
+    models: &Arc<refreshing::Models>,
     pending: &crate::asking::Pending,
     person: &crate::asking::Person,
     scribe: &Arc<Mutex<Option<crate::scribe::Scribe>>>,
@@ -418,13 +418,24 @@ async fn connection(
         }
     }));
 
+    let mut refreshing = tokio::task::JoinSet::new();
     loop {
         tokio::select! {
+            _ = refreshing.join_next(), if !refreshing.is_empty() => {}
             command = incoming.recv() => {
+                let catalog = models.catalog.read().await.clone();
+                let catalog = &catalog;
                 if let Some(asked) = &command {
                     magi_model::noted!("ui: {}", format!("{asked:?}").split([' ', '{', '(']).next().unwrap_or_default());
                 }
                 match command {
+                    Some(UiCommand::RefreshModels) => {
+                        if refreshing.is_empty() {
+                            let models = Arc::clone(models);
+                            let session = Arc::clone(&session);
+                            refreshing.spawn(async move { models.refresh(&session).await });
+                        }
+                    }
                     Some(command @ (UiCommand::SubmitPrompt { .. } | UiCommand::Arrived { .. }
                         | UiCommand::TakeGrants { .. } | UiCommand::DeclareNeeds)) => {
                         use session::admission::Request;
@@ -594,6 +605,7 @@ impl Drop for ReaderTask {
         self.0.abort();
     }
 }
+mod refreshing;
 #[path = "switching.rs"]
 mod switching;
 use switching::{switch_model, switch_provider, switch_thinking};
@@ -611,7 +623,7 @@ use turning::submit;
 pub fn wants_answering(entry: &Entry) -> bool {
     matches!(entry, Entry::From { sort, .. } if matches!(
         sort.as_str(),
-        "question" | "answer" | "attention" | "trouble" | "handoff"
+        "question" | "answer" | "attention" | "trouble" | "handoff" | "report"
     ))
 }
 

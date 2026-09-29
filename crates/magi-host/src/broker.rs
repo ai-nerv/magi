@@ -308,6 +308,37 @@ pub async fn cards(program: &str) -> Vec<magi_proto::ask::Card> {
         .unwrap_or_default()
 }
 
+/// Fetch fresh model cards with a bounded child lifetime.
+pub(crate) async fn refresh_cards(
+    program: &str,
+) -> Result<(Vec<magi_proto::ask::Card>, Vec<String>), String> {
+    let mut command = tokio::process::Command::new(program);
+    command
+        .args(["models", "--json", "--refresh"])
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let out = tokio::time::timeout(std::time::Duration::from_secs(30), command.output())
+        .await
+        .map_err(|_| "Model refresh timed out; keeping the previous list.".to_owned())?
+        .map_err(|_| "Could not start the model provider; keeping the previous list.".to_owned())?;
+    if !out.status.success() {
+        return Err("Model provider failed; keeping the previous list.".into());
+    }
+    let reply: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .map_err(|_| "Invalid model listing; keeping the previous list.".to_owned())?;
+    if reply["ok"] != true || reply["refreshed"] != true {
+        return Err(
+            "Model provider did not confirm refresh; update Melchior. Keeping the previous list."
+                .into(),
+        );
+    }
+    let cards = serde_json::from_value(reply["result"].clone())
+        .map_err(|_| "Invalid model cards; keeping the previous list.".to_owned())?;
+    let failed = serde_json::from_value(reply["failed"].clone())
+        .map_err(|_| "Invalid refresh status; keeping the previous list.".to_owned())?;
+    Ok((cards, failed))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

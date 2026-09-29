@@ -187,7 +187,7 @@ main speaks for its instance, and its subagents are private, so `agent_talk` is 
 default and `instance` or `project` when you mean otherwise.
 
 A message carries a **sort**, and the sort decides what it may interrupt. `question`, `answer`,
-`attention`, `trouble` and `handoff` wake an idle session; only `attention` and `trouble` may
+`attention`, `trouble`, `handoff` and `report` wake an idle session; only `attention` and `trouble` may
 reach one mid-turn. Anything arriving during a turn waits. Consecutive arrivals are
 committed together at their queue boundary; they start one reply only when at least one
 has a waking sort. Notes alone do not start a reply.
@@ -201,6 +201,28 @@ harness spawns with what it was handed, and the session that comes up is a **chi
 the note that makes the tree readable off the directory, it is inside the walls the policy draws,
 and the session that minted its secret is the only one that can end it. melchior names; the
 harness spawns, because a layer that started harnesses would have to know what one is.
+
+`spawn` returns a child **agent id**. Check it with `agent` verb `status`, `who` set to that id,
+or read `crew`. `task` instead takes the exact `id@message-id` handle returned by `ask` in
+`about`. A tool-call refusal is not a child's failure report, and a report arriving while its
+phase is `working` does not mean it has finished. Deferred finish/blocked wakes are canceled
+if the agent resumes before delivery; a wake still asks the coordinator to check current status.
+A headless coordinator reports `waiting`, not `finished`, while a result-collection wake is queued.
+
+Every child turn hands in an end-of-turn report, including an empty answer, interruption,
+provider failure or stopped worker. The harness preserves an explicitly submitted report,
+adds final-answer and error information, and labels the outcome. This describes a turn, not
+completion of delegated children. Workers must still use `agent` verb `report` for their
+findings; they must not substitute `send`.
+
+Report notifications queue behind active work. Before the parent's next model call, the harness
+loads the stored report into the conversation and verifies its content digest. Submission
+revisions deduplicate notifications, not equal text from separate turns. Automatic loading
+carries at most 40,000 UTF-8 bytes per report; a longer report includes an explicit paged-read
+instruction. Escape cancels the current turn only: reports arriving afterward wake it again,
+and an interrupted report-handling turn is retried without another notification. Pending
+receipts last for the live session; forced process termination or unavailable coordination
+can still prevent delivery. These hooks do not reconstruct pending receipts after a restart.
 
 ## Layout
 
@@ -325,3 +347,11 @@ compiled-in defaults  →  ~/.config/magi/apis/*.lua  →  providers.lua  →  i
 A provider or a protocol declared twice replaces rather than appends, which is what makes both
 an override and a loop over a directory of machines safe to re-run. A file that exists and does
 not load is fatal: it expressed an intention that has not been carried out.
+
+## Model discovery
+
+`:model` opens the picker and refreshes provider catalogs through Melchior, bypassing its
+discovery cache. The list updates without restarting the session or changing the active model.
+Failed providers keep their previous choices with a warning; successful empty catalogs remove
+models that are no longer available. Closing the picker does not reopen it when refresh
+finishes. Magi and Melchior both need builds supporting this refresh protocol.

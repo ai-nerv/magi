@@ -372,6 +372,11 @@ fn inherited(
     named: &str,
 ) -> std::collections::BTreeMap<String, String> {
     let mut environ = loaded.map(crate::config::environ).unwrap_or_default();
+    for key in ["MAGI_MELCHIOR_PARENT", "MAGI_MELCHIOR_TOKEN"] {
+        if let Ok(value) = std::env::var(key) {
+            environ.insert(key.to_owned(), value);
+        }
+    }
     let mut parts = named.split('/');
     if let (Some(project), Some(role), Some(id)) = (parts.next(), parts.next(), parts.next()) {
         environ.insert("MAGI_MELCHIOR_PROJECT".to_owned(), project.to_owned());

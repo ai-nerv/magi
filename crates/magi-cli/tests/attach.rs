@@ -239,6 +239,7 @@ fn fold(mut entries: Vec<Entry>, events: &[HarnessEvent]) -> Vec<Entry> {
             }
             HarnessEvent::StatusChanged { .. }
             | HarnessEvent::SessionSnapshot { .. }
+            | HarnessEvent::ModelsRefreshed { .. }
             | HarnessEvent::Error { .. } => {}
         }
     }

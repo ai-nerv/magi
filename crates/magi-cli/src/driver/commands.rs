@@ -90,7 +90,10 @@ pub(super) fn run_command(input: &str, app: &mut App) -> Control {
             }),
             None => {
                 app.open_model_picker();
-                Control::Continue
+                if let Some(picker) = app.overlay.as_mut().and_then(|overlay| overlay.picker()) {
+                    picker.title = "Model — refreshing".into();
+                }
+                Control::Send(UiCommand::RefreshModels)
             }
         },
         ":think" => match input.split_whitespace().nth(1) {
@@ -146,6 +149,24 @@ mod quitting {
 
     fn ran(input: &str) -> bool {
         matches!(run_command(input, &mut App::new()), Control::Quit)
+    }
+
+    #[test]
+    fn opening_models_always_requests_refresh_even_when_empty() {
+        let mut app = App::new();
+        for _ in 0..2 {
+            assert_eq!(
+                run_command(":model", &mut app),
+                Control::Send(magi_proto::UiCommand::RefreshModels)
+            );
+            assert!(app.overlay.is_some());
+        }
+        assert_eq!(
+            run_command(":model ollama/new", &mut app),
+            Control::Send(magi_proto::UiCommand::SetModel {
+                name: "ollama/new".into()
+            })
+        );
     }
 
     #[test]

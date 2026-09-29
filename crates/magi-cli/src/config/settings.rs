@@ -431,13 +431,23 @@ mod ui_tests {
 /// ```
 #[must_use]
 pub fn environ(loaded: &Loaded) -> std::collections::BTreeMap<String, String> {
-    let Some(table) = loaded.config.get("env").and_then(|v| v.as_object()) else {
-        return std::collections::BTreeMap::new();
-    };
-    table
-        .iter()
+    let mut environ: std::collections::BTreeMap<String, String> = loaded
+        .config
+        .get("env")
+        .and_then(|v| v.as_object())
+        .into_iter()
+        .flatten()
         .filter_map(|(name, value)| Some((name.clone(), value.as_str()?.to_owned())))
-        .collect()
+        .collect();
+    let program = loaded
+        .config
+        .get("roles")
+        .and_then(|roles| roles.get("coordination"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| super::mind(loaded));
+    environ.insert("MAGI_COORD_PROGRAM".into(), program);
+    environ
 }
 
 /// The program filling the `tools` role, with what this configuration pinned and told it.
@@ -501,8 +511,21 @@ mod environ_tests {
     }
 
     #[test]
-    fn a_config_that_says_nothing_adds_nothing() {
-        assert!(from("").is_empty());
+    fn an_empty_config_still_supplies_the_coordination_program() {
+        assert_eq!(
+            from(""),
+            std::collections::BTreeMap::from([("MAGI_COORD_PROGRAM".into(), "melchior".into()),])
+        );
+    }
+
+    #[test]
+    fn the_coordination_role_can_differ_from_the_mind() {
+        let seen =
+            from(r#"magi.roles = { mind = "fake-model", coordination = "fake-coordinator" }"#);
+        assert_eq!(
+            seen.get("MAGI_COORD_PROGRAM").map(String::as_str),
+            Some("fake-coordinator")
+        );
     }
 
     #[test]
