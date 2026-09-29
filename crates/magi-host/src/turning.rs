@@ -38,6 +38,9 @@ fn error(held: &mut Session, message: String) {
 async fn opening(session: &Arc<Mutex<Session>>, mut entry: Entry) -> Result<bool, String> {
     let mut held = session.lock().await;
     let mut answer = matches!(entry, Entry::User { .. }) || wants_answering(&entry);
+    if let Some(report) = held.track_report(&entry)? {
+        answer = report;
+    }
     if let Entry::User { id, .. } = &mut entry {
         *id = MessageId::new(format!("u{}", held.cursor().next().0));
     }
@@ -48,7 +51,9 @@ async fn opening(session: &Arc<Mutex<Session>>, mut entry: Entry) -> Result<bool
     };
     held.commit(entry).map_err(|why| why.to_string())?;
     for arrived in arrivals {
-        answer |= wants_answering(&arrived);
+        answer |= held
+            .track_report(&arrived)?
+            .unwrap_or_else(|| wants_answering(&arrived));
         held.commit(arrived).map_err(|why| why.to_string())?;
     }
     Ok(answer)
@@ -80,6 +85,18 @@ async fn after(
                 Some(worker) => worker.take_on(Arc::clone(&session), grants).await,
                 None => Err(missing.clone()),
             },
+            Request::Reports if session.lock().await.pending_reports().is_empty() => Ok(()),
+            Request::Reports => {
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                let _ = session.lock().await.commit(Entry::From {
+                    who: "magi".into(), kin: "harness".into(), sort: "report_retry".into(),
+                    text: "Resume handling the pending subagent reports. The previous turn was interrupted; reports remain unacknowledged. Do not repeat completed changes or exceed the original task.".into(),
+                });
+                match &worker {
+                    Some(worker) => worker.run(Arc::clone(&session)).await,
+                    None => Err(missing.clone()),
+                }
+            }
         };
         if let Err(why) = outcome {
             error(&mut *session.lock().await, why);

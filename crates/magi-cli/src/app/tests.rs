@@ -482,6 +482,39 @@ mod picking {
     }
 
     #[test]
+    fn model_refresh_updates_open_picker_without_losing_filter_or_reopening_closed_picker() {
+        let mut app = app_with_a_reasoning_model();
+        app.open_model_picker();
+        app.overlay
+            .as_mut()
+            .and_then(Overlay::picker)
+            .expect("model picker")
+            .push('m');
+        let mut new = app.choices[0].clone();
+        new.name = "p/model-new".into();
+        app.apply(HarnessEvent::ModelsRefreshed {
+            choices: vec![new.clone()],
+            warning: None,
+        });
+        let picker = app
+            .overlay
+            .as_ref()
+            .and_then(Overlay::list)
+            .expect("refreshed picker");
+        assert_eq!(picker.query(), "m");
+        assert_eq!(picker.choices[0].value, "p/model-new");
+        assert_eq!(app.model.as_ref().expect("unchanged model").name, "p/m");
+        app.overlay = None;
+        app.picking = None;
+        app.apply(HarnessEvent::ModelsRefreshed {
+            choices: vec![new],
+            warning: Some("offline".into()),
+        });
+        assert!(app.overlay.is_none());
+        assert!(matches!(app.entries.last(), Some(Entry::Notice { text }) if text == "offline"));
+    }
+
+    #[test]
     fn a_model_that_reasons_is_offered_every_level() {
         let mut app = app_with_a_reasoning_model();
         app.open_thinking_picker();

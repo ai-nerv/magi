@@ -333,6 +333,18 @@ do -- agent
 
   So: use `ask` when you want a response, `send` only when you genuinely want no reply.
 
+  FINAL REPORTS. You MUST use `verb: "report", message: <whole report>` when done, even if there
+  are no findings, work failed, or you are blocked. Never use `send` for reports. The harness
+  loads reports into the parent's conversation and queues a response automatically. Escape
+  interrupts the current turn, not report delivery; interrupted report handling is retried.
+
+  CHECKING DELEGATED WORK. `spawn` returns an agent id, NOT a task handle. For a spawned child,
+  use `verb: "status", who: <child id>`, or `crew` for all children. Only `ask` returns a task
+  handle (`id@message-id`); poll that with `verb: "task", about: <the exact handle>`.
+  A failed status-check call is not a failure report from the child. A report or inbox message
+  may arrive before its turn ends: check its current phase, and keep waiting if it is working
+  or waiting on its own children. Do not ask it again just to check progress.
+
   BEFORE YOU START A PIECE OF WORK. Claims are how two instances avoid doing the same thing twice.
   `claims` says what everyone has taken; `claim`, with `about` naming the work, records it as
   yours, and `release` gives it back under the same name. They are advisory -- nothing stops you
@@ -364,7 +376,8 @@ do -- agent
           type = "string",
           description =
             "What is being named: the message being answered, for `reply`; the piece of work " ..
-            "being taken or let go, for `claim` and `release`.",
+            "being taken or let go, for `claim` and `release`; the exact `id@message-id` handle " ..
+            "returned by `ask`, for `task` (not the child id returned by `spawn`).",
         },
         role = {
           type = "string",

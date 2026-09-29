@@ -2,8 +2,8 @@
 
 pub(crate) mod admission;
 mod fitting;
+pub(crate) mod reporting;
 mod resuming;
-
 use fitting::{SNAPSHOT_BUDGET, newest_within};
 use magi_journal::{Journal, JournalError};
 use magi_proto::{AgentStatus, Cursor, Entry, HarnessEvent, SessionId};

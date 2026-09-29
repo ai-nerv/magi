@@ -478,6 +478,12 @@ make.recipe{ name = "test", desc = "the suite",
              run = function() sh.cargo("test", "--all-targets", "--release") end }
 make.alias("t", "test")
 
+make.recipe{ name = "test-model-refresh", desc = "live model picker and discovery refresh fixtures",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-host", "refresh")
+               sh.cargo("test", "--release", "-p", "magi-cli", "refresh")
+             end }
+
 make.recipe{ name = "test-resume", desc = "in-process persistence rebinding",
              run = function()
                sh.cargo("test", "--release", "-p", "magi-host", "--lib")
@@ -495,6 +501,22 @@ make.recipe{ name = "test-lifecycle", desc = "session-wide command admission",
                sh.cargo("test", "--release", "-p", "magi-host", "--test", "turn", "ownership::")
                sh.cargo("test", "--release", "-p", "magi-host", "--test", "roundtrip")
                sh.cargo("test", "--release", "-p", "magi-host", "--lib", "worker::")
+             end }
+
+make.recipe{ name = "test-agent-status", desc = "child wake notifications and spawn contract",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-cli", "--bin", "magi", "child::tests::")
+               sh.cargo("test", "--release", "-p", "magi-tools", "--lib", "builtin::tests::")
+             end }
+
+make.recipe{ name = "test-report-delivery", desc = "mandatory reports and interrupt-safe handling",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "reporting")
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "report_delivery")
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "system::tests::")
+               sh.cargo("test", "--release", "-p", "magi-tools", "--lib", "builtin::tests::")
+               sh.cargo("test", "--release", "-p", "magi-cli", "--bin", "magi", "environ_tests::")
+               sh.cargo("test", "--release", "-p", "magi-cli", "--bin", "magi", "inheriting::")
              end }
 
 make.recipe{ name = "test-layout-display", desc = "layout display and token shares",

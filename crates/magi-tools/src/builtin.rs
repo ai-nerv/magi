@@ -63,7 +63,10 @@ pub struct Spawn {
 /// What the model is told `spawn` does, before the configured roles are listed.
 const DESCRIPTION: &str = "Start a child agent in this project to do one part of a larger task, \
 alongside others. It sees none of your conversation, so `prompt` must be a complete brief. Returns \
-the child's id; you are woken when it finishes, and its report arrives in your inbox (`agent` tool). \
+the child's agent id, NOT an ask task handle. Check it with `agent` verb `status`, `who` set to \
+that id, or `crew`; do not pass the id to `task`. You are woken when its turn finishes, and its \
+report is delivered into your conversation automatically. The harness supplies a report even \
+for an empty answer, interruption, or failure. A report alone does not mean delegated work is done. \
 The tree has a depth and a breadth limit, and starting one past either is refused.";
 
 impl Spawn {
@@ -91,17 +94,18 @@ impl Spawn {
     }
 }
 
-/// A child's task with a closing line to report back. The coordinator's own reaction is to read
-/// its inbox when a child finishes, so the child is told to `send` its findings there. Named to the
-/// parent when its id is known, and to "the one that started you" (which `whoami` gives) otherwise.
+/// A child's task with mandatory final-report instructions.
 fn report_back(prompt: &str, parent: Option<&str>) -> String {
     let tail = match parent {
         Some(who) => format!(
-            "When you have finished, use the agent tool to send your findings to `{who}` \
-             (verb `send`) so the session that started you has your report."
+            "When you finish, you MUST hand in a report with the agent tool, verb `report`, \
+             with the whole report in `message`. The harness notifies `{who}` automatically. \
+             Report even if you found nothing, failed, or were blocked; state that explicitly. \
+             Never send the report with `send`."
         ),
-        None => "When you have finished, use the agent tool to send your findings to the session \
-                 that started you — `whoami` names it — so it has your report."
+        None => "When you finish, you MUST hand in a report with the agent tool, verb `report`, \
+                 with the whole report in `message`, even if there are no findings or work failed. \
+                 The harness notifies your parent (`whoami` names it). Never use `send` for reports."
             .to_owned(),
     };
     format!("{prompt}\n\n{tail}")
@@ -237,6 +241,18 @@ mod tests {
     }
 
     #[test]
+    fn spawn_describes_agent_status_not_task_handle_polling() {
+        let spawn = Spawn::new(std::collections::BTreeMap::new(), true, Vec::new());
+        let description = spawn.description();
+        assert!(
+            description.contains("NOT an ask task handle"),
+            "{description}"
+        );
+        assert!(description.contains("`status`"), "{description}");
+        assert!(description.contains("report alone"), "{description}");
+    }
+
+    #[test]
     fn a_child_cannot_be_started_without_a_brief() {
         // A child with no prompt comes up with nothing to do and nothing to report, so the schema
         // refuses the call before the tool runs.
@@ -320,7 +336,11 @@ mod tests {
             told.starts_with("scan the magi crate"),
             "the task is kept: {told}"
         );
-        assert!(told.contains("send"), "no reporting instruction: {told}");
+        assert!(
+            told.contains("verb `report`"),
+            "no reporting instruction: {told}"
+        );
+        assert!(told.contains("MUST"), "{told}");
         assert!(
             told.contains("`alpha-mu`"),
             "the parent is not named: {told}"

@@ -26,6 +26,7 @@ enum Work {
 
 pub struct Worker {
     jobs: mpsc::Sender<Job>,
+    reporting: Option<Backend>,
 }
 
 impl Worker {
@@ -56,6 +57,7 @@ impl Worker {
         knows: std::sync::Arc<dyn magi_tools::holding::Answers>,
         scribe: crate::scribe::Held,
     ) -> Self {
+        let reporting = backend.clone();
         let (jobs, mut queue) = mpsc::channel::<Job>(32);
         std::thread::spawn(move || {
             let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
@@ -169,12 +171,38 @@ impl Worker {
                 }
             });
         });
-        Self { jobs }
+        Self {
+            jobs,
+            reporting: Some(reporting),
+        }
     }
 
     /// Run a turn on this worker and wait for completion.
     pub async fn run(&self, session: Arc<Mutex<Session>>) -> Result<(), String> {
-        self.queue(session, Work::Turn).await
+        let Some(reporting) = &self.reporting else {
+            return self.queue(session, Work::Turn).await;
+        };
+        let start = session.lock().await.entries().len();
+        let prepared = crate::reporting::prepare(&session, reporting).await;
+        let outcome = match &prepared {
+            Ok(_) => self.queue(Arc::clone(&session), Work::Turn).await,
+            Err(why) => Err(why.clone()),
+        };
+        let reporting = crate::reporting::finish(
+            &session,
+            reporting,
+            start,
+            prepared.as_deref().unwrap_or_default(),
+            &outcome,
+        )
+        .await;
+        match (outcome, reporting) {
+            (Err(why), Err(report)) => Err(format!(
+                "{why}; final report could not be delivered: {report}"
+            )),
+            (Err(why), _) => Err(why),
+            (Ok(()), result) => result,
+        }
     }
 
     /// Ask the model what the work ahead needs, and put each answer to the person.
@@ -316,7 +344,10 @@ mod tests {
     async fn a_dropped_worker_does_not_strand_its_caller() {
         let (jobs, queue) = mpsc::channel::<Job>(1);
         drop(queue);
-        let worker = Worker { jobs };
+        let worker = Worker {
+            jobs,
+            reporting: None,
+        };
 
         let _dir = Scratch::new("magi-worker", "one");
         let session = Session::recorded(SessionId::new("s"), Vec::new());
@@ -334,7 +365,10 @@ mod tests {
     async fn a_session_is_usable_after_a_worker_refuses() {
         let (jobs, queue) = mpsc::channel::<Job>(1);
         drop(queue);
-        let worker = Worker { jobs };
+        let worker = Worker {
+            jobs,
+            reporting: None,
+        };
 
         let _dir = Scratch::new("magi-worker2", "one");
         let session = Session::recorded(SessionId::new("s"), Vec::new());

@@ -438,8 +438,13 @@ pub enum HarnessEvent {
         cursor: Cursor,
         text: String,
     },
-    /// What the memory layer answered a [`UiCommand::Memory`] with: its notes, its change log, or
-    /// what an undo or a review did. Not part of the log.
+    /// The current model choices after an explicit refresh. Not part of the log.
+    ModelsRefreshed {
+        choices: Vec<ModelChoice>,
+        #[serde(default)]
+        warning: Option<String>,
+    },
+    /// What the memory layer answered a [`UiCommand::Memory`] with. Not part of the log.
     MemoryAnswered {
         verb: String,
         answer: serde_json::Value,
@@ -489,6 +494,7 @@ impl HarnessEvent {
             | Self::ContextLaid { .. }
             | Self::RequestAdmitted { .. }
             | Self::HelperSpent { .. }
+            | Self::ModelsRefreshed { .. }
             | Self::MemoryAnswered { .. } => Cursor::ZERO,
         }
     }

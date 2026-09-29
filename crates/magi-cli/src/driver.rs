@@ -132,9 +132,8 @@ pub async fn run(
     ));
     // What melchior handed this session while the screen was somewhere else. See `crewing::ours`.
     let mut held: Vec<UiCommand> = Vec::new();
-    // The latest child/watched edge worth a turn, held until this session is idle and its own
-    // screen is up — then run as a turn so the coordinator reacts, the wake a headless `park` runs.
-    let mut pending_wake: Option<String> = None;
+    // Pending child/watched edges, held until this session is idle and on its own screen.
+    let mut pending_wake = crate::child::PendingWakes::default();
     let mut last_wake: Option<Instant> = None;
     // A lead's own prompts carry the size check, so whether to coordinate is decided at the task.
     let seat = crate::config::seat();
@@ -620,11 +619,7 @@ pub async fn run(
                             {
                                 app.show_notice(note);
                             }
-                            if let Some(occasion) =
-                                crate::child::wake_prompt(&kin, &kind, &from, cause.as_deref())
-                            {
-                                pending_wake = Some(occasion);
-                            }
+                            pending_wake.observe(&kin, &kind, &from, cause.as_deref());
                         }
                         // The asking session is blocked on the answer, not on this turn.
                         crate::melchior::Heard::Asked { id, who, why } => {
@@ -678,7 +673,7 @@ pub async fn run(
                 // and no question waiting, no faster than the cooldown — so a burst lands as one
                 // turn and never steps on the person at the keyboard.
                 let cooled = last_wake.is_none_or(|at| at.elapsed() >= crate::child::WAKE_COOLDOWN);
-                if pending_wake.is_some()
+                if !pending_wake.is_empty()
                     && app.attached.is_none()
                     && !app.is_busy()
                     && !app.questioned()

@@ -1,6 +1,5 @@
 //! Every model this session could talk to, as melchior described them, beside the parts a
-//! [`Backend`] does not vary. Held by the session rather than re-read on each switch, so `/model`
-//! picks among what this session actually started with.
+//! [`Backend`] does not vary. Model cards change on explicit refresh; session configuration stays fixed.
 
 use magi_proto::ask::Card;
 

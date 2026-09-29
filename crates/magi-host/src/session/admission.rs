@@ -7,10 +7,12 @@ pub(crate) enum Request {
     Opening(Entry),
     Declare,
     Grants(Vec<magi_proto::permit::Grant>),
+    Reports,
 }
 
 #[derive(Default)]
 pub(super) struct Admission {
+    pub(super) reports: super::reporting::Reports,
     next: u64,
     active: Option<u64>,
     waiting: VecDeque<Request>,
@@ -83,6 +85,16 @@ impl Session {
     pub(crate) fn finish(&mut self, owner: u64) -> Option<(u64, Request)> {
         if self.admission.active != Some(owner) {
             return None;
+        }
+        if self.cancel.is_requested()
+            && !self.pending_reports().is_empty()
+            && !self
+                .admission
+                .waiting
+                .iter()
+                .any(|request| matches!(request, Request::Reports))
+        {
+            self.admission.waiting.push_back(Request::Reports);
         }
         self.admission.active = None;
         match self.admission.waiting.pop_front() {
