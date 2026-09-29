@@ -547,7 +547,7 @@ dependencies = [
 
 [[package]]
 name = "magi-cli"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "anyhow",
  "base64",
@@ -572,7 +572,7 @@ dependencies = [
 
 [[package]]
 name = "magi-core"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "magi-model",
  "serde_json",
@@ -580,7 +580,7 @@ dependencies = [
 
 [[package]]
 name = "magi-host"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "magi-core",
  "magi-ipc",
@@ -599,7 +599,7 @@ dependencies = [
 
 [[package]]
 name = "magi-ipc"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "ciborium",
  "magi-model",
@@ -614,7 +614,7 @@ dependencies = [
 
 [[package]]
 name = "magi-journal"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "magi-model",
  "magi-proto",
@@ -625,7 +625,7 @@ dependencies = [
 
 [[package]]
 name = "magi-lua"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "luna",
  "magi-model",
@@ -640,7 +640,7 @@ dependencies = [
 
 [[package]]
 name = "magi-model"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "serde",
  "serde_json",
@@ -648,7 +648,7 @@ dependencies = [
 
 [[package]]
 name = "magi-proto"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "ciborium",
  "magi-model",
@@ -658,7 +658,7 @@ dependencies = [
 
 [[package]]
 name = "magi-testkit"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "magi-ipc",
  "magi-model",
@@ -669,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "magi-tools"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "magi-model",
  "magi-proto",
@@ -681,7 +681,7 @@ dependencies = [
 
 [[package]]
 name = "magi-tui"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "magi-proto",
  "ratatui",
