@@ -13,6 +13,8 @@ pub(super) struct Served {
     pub(super) scribe: crate::scribe::Held,
     /// What an `Attach` presents to control the session rather than watch it.
     pub(super) key: Arc<str>,
+    /// How long a screen has to take one event before it is let go.
+    pub(super) writing: std::time::Duration,
 }
 
 /// The key in `<socket>.key` beside the listener, minted when the binder did not write one.
@@ -33,6 +35,9 @@ pub(super) fn controller_key(listener: &UnixListener) -> Result<Arc<str>, HostEr
 
 /// How long a connection has to say who it is.
 const ATTACHING: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long an attached screen has to take one event.
+pub(super) const WRITING: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// How many connections a session serves at once.
 pub(super) const SEATS: usize = 64;
@@ -58,12 +63,13 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
         person,
         scribe,
         key: held,
+        writing,
     } = served;
     let (worker, models, pending, person, scribe) =
         (&*worker, &models, &*pending, &person, &scribe);
     let (read_half, write_half) = stream.into_split();
     let mut reader = FrameReader::new(read_half);
-    let mut writer = crate::sending::Screen(FrameWriter::new(write_half));
+    let mut writer = crate::sending::Screen::within(FrameWriter::new(write_half), writing);
 
     let first = tokio::time::timeout(ATTACHING, reader.read::<UiCommand>())
         .await
@@ -291,6 +297,9 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
     drop(reading);
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
 
 struct ReaderTask(tokio::task::JoinHandle<()>);
 

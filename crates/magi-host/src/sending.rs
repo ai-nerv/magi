@@ -44,12 +44,23 @@ pub async fn send<W: AsyncWrite + Unpin>(
         .await
 }
 
-/// One screen's half of a connection, every event to it going through [`send`].
-pub(crate) struct Screen<W>(pub(crate) FrameWriter<W>);
+/// One screen's half of a connection, every event to it going through [`send`] within a deadline.
+pub(crate) struct Screen<W> {
+    writer: FrameWriter<W>,
+    within: std::time::Duration,
+}
 
 impl<W: AsyncWrite + Unpin> Screen<W> {
+    pub(crate) fn within(writer: FrameWriter<W>, within: std::time::Duration) -> Self {
+        Self { writer, within }
+    }
+
+    /// # Errors
+    /// When the connection fails, or the screen has not taken the event within the deadline.
     pub(crate) async fn write(&mut self, event: &HarnessEvent) -> Result<(), IpcError> {
-        send(&mut self.0, event).await
+        tokio::time::timeout(self.within, send(&mut self.writer, event))
+            .await
+            .map_err(|_| IpcError::Io(std::io::ErrorKind::TimedOut.into()))?
     }
 }
 /// Cut every string in `value` longer than `keep` bytes, marking where.
@@ -105,5 +116,24 @@ mod tests {
             text.len()
         );
         assert!(matches!(second, HarnessEvent::Refused { .. }), "{second:?}");
+    }
+
+    #[tokio::test]
+    async fn a_screen_that_stops_reading_is_given_up_on_at_the_deadline() {
+        let (client, _never_read) = tokio::io::duplex(1024);
+        let within = std::time::Duration::from_millis(200);
+        let mut screen = Screen::within(FrameWriter::new(client), within);
+        let event = HarnessEvent::UserMessage {
+            cursor: Cursor(1),
+            id: MessageId::new("u1"),
+            text: "y".repeat(64 * 1024),
+        };
+        let started = std::time::Instant::now();
+        let given_up = screen.write(&event).await.expect_err("never taken");
+        assert!(
+            matches!(&given_up, IpcError::Io(why) if why.kind() == std::io::ErrorKind::TimedOut),
+            "{given_up:?}"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
     }
 }

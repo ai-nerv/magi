@@ -140,10 +140,23 @@ pub async fn serve_catalog(
 /// in the directory is a neighbour's as often as not.
 pub async fn serve_on(
     listener: UnixListener,
+    session: Session,
+    backend: Option<turn::Backend>,
+    catalog: crate::catalog::Catalog,
+    balthasar: Option<std::path::PathBuf>,
+) -> Result<(), HostError> {
+    let writing = serving::WRITING;
+    serve_writing(listener, session, backend, catalog, balthasar, writing).await
+}
+
+/// The same, letting a screen go when it has not taken an event within `writing`.
+async fn serve_writing(
+    listener: UnixListener,
     mut session: Session,
     backend: Option<turn::Backend>,
     catalog: crate::catalog::Catalog,
     balthasar: Option<std::path::PathBuf>,
+    writing: std::time::Duration,
 ) -> Result<(), HostError> {
     // Told once, here, because this is the only place that knows both.
     session.set_choices(catalog.choices());
@@ -351,6 +364,7 @@ pub async fn serve_on(
         person,
         scribe,
         key: controller_key(&listener)?,
+        writing,
     };
     // No idle timer. Nothing outlives its UI now, so there is nothing to sweep, and a UI whose
     // connection hiccuped would have had its own session close the socket underneath it.
