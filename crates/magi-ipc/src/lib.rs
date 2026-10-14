@@ -11,7 +11,7 @@ mod peer;
 mod runtime;
 mod secret;
 
-pub use binding::{clear_stale, lock_path, unbind};
+pub use binding::{clear_stale, exclusive, lock_path, unbind};
 pub use codec::{FrameReader, FrameWriter, MAX_FRAME_BYTES};
 pub use encoding::Wire;
 pub use peer::PeerCred;

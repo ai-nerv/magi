@@ -126,6 +126,14 @@ pub fn unbind(path: &Path) {
     drop(lock);
 }
 
+/// Wait for an exclusive `flock` on `file`, held until it is closed.
+///
+/// # Errors
+/// When the lock cannot be taken.
+pub fn exclusive(file: &std::fs::File) -> io::Result<()> {
+    rustix::fs::flock(file, rustix::fs::FlockOperation::LockExclusive).map_err(Into::into)
+}
+
 fn in_use(path: &Path, why: &str) -> io::Error {
     io::Error::new(
         io::ErrorKind::AddrInUse,
