@@ -62,6 +62,23 @@ fn uid() -> u32 {
     rustix::process::getuid().as_raw()
 }
 
+/// Whether an `accept` that failed is a moment rather than an ending: out of descriptors, buffers
+/// or memory, or a peer that left first. The listener keeps listening after a pause.
+#[must_use]
+pub fn transient(why: &io::Error) -> bool {
+    use rustix::io::Errno;
+    let passing = [
+        Errno::MFILE,
+        Errno::NFILE,
+        Errno::NOBUFS,
+        Errno::NOMEM,
+        Errno::CONNABORTED,
+        Errno::INTR,
+        Errno::AGAIN,
+    ];
+    why.raw_os_error()
+        .is_some_and(|code| passing.iter().any(|errno| errno.raw_os_error() == code))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,5 +112,13 @@ mod tests {
         let link = dir.join("link");
         std::os::unix::fs::symlink(&target, &link).expect("symlink");
         assert!(private_dir(&link).is_err());
+    }
+
+    #[test]
+    fn running_out_of_descriptors_is_a_moment_and_a_closed_listener_is_not() {
+        let emfile = io::Error::from_raw_os_error(rustix::io::Errno::MFILE.raw_os_error());
+        assert!(transient(&emfile));
+        let gone = io::Error::from_raw_os_error(rustix::io::Errno::BADF.raw_os_error());
+        assert!(!transient(&gone));
     }
 }

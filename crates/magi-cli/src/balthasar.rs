@@ -287,17 +287,10 @@ fn sweep_stale(dir: &Path) {
     }
 }
 
-/// Clear a socket at `path` that nothing is serving. Asked rather than merely dialled: the kernel
-/// accepts on behalf of a listener whose owner has stopped reading, so one `verbs` call settles it.
+/// Clear a socket at `path` that nothing is serving: only one whose connect is refused and whose
+/// lock nobody holds. A busy or full memory layer is another session's, alive, and stays.
 fn sweep(path: &Path) {
-    if !path.exists() {
-        return;
-    }
-    let answered = magi_ipc::family::blocking::Family::dial(path)
-        .is_ok_and(|mut open| open.call("verbs", Vec::new()).is_ok());
-    if !answered {
-        let _ = std::fs::remove_file(path);
-    }
+    let _ = magi_ipc::clear_stale(path);
 }
 
 #[cfg(test)]
@@ -314,6 +307,19 @@ mod tests {
         ALONE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// A socket file with nothing behind it. `mknod`, not a bind that is dropped: a `fork` on another
+    /// thread in between would carry the listening descriptor into a child that still accepts.
+    fn corpse(path: &std::path::Path) {
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            path,
+            rustix::fs::FileType::Socket,
+            rustix::fs::Mode::from_bits_truncate(0o600),
+            0,
+        )
+        .expect("mknod a socket");
     }
 
     /// A socket something is actually serving on: it accepts, and it answers. A bare `UnixListener`
@@ -359,9 +365,8 @@ mod tests {
         let _alone = alone();
         let dir = Scratch::new("magi-sweep-dead", "one");
         let path = dir.join("api@dead.sock");
-        {
-            let _listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
-        }
+
+        corpse(&path);
 
         sweep(&path);
         assert!(!path.exists(), "a socket nothing answers must be cleared");
@@ -371,9 +376,9 @@ mod tests {
     fn littered(name: &str) -> (Scratch, PathBuf, PathBuf) {
         let dir = Scratch::new("magi-sweep", name);
         let dead = dir.join("api@00000000000000000001-alpha.sock");
-        {
-            let _listener = std::os::unix::net::UnixListener::bind(&dead).expect("bind");
-        }
+
+        corpse(&dead);
+
         let live = dir.join("api@00000000000000000002-beta.sock");
         (dir, live, dead)
     }
@@ -529,5 +534,19 @@ mod tests {
         reading.join().expect("drained");
         let said = SAID.lock().expect("said");
         assert_eq!(said.back().map(String::as_str), Some("last-words-marker"));
+    }
+
+    #[tokio::test]
+    async fn a_memory_layer_too_busy_to_answer_keeps_its_socket() {
+        let _alone = alone();
+        // Bound and never reading: the kernel accepts for it, and nothing ever answers.
+        let dir = Scratch::new("magi-sweep-busy", "one");
+        let path = dir.join("api@busy.sock");
+        let _listening = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+        sweep(&path);
+        assert!(
+            path.exists(),
+            "another session's busy memory layer lost its socket"
+        );
     }
 }

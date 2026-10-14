@@ -118,8 +118,7 @@ pub async fn start(
 
 /// Take the socket back down: a path nothing answers would meet the next `magi` as a name taken.
 pub fn done(socket: &Path) {
-    let _ = std::fs::remove_file(socket);
-    magi_ipc::drop_key(socket);
+    magi_ipc::unbind(socket);
     // And the directory, if this was the last session: `remove_dir` refuses a non-empty one.
     if let Some(parent) = socket.parent() {
         let _ = std::fs::remove_dir(parent);
@@ -127,19 +126,15 @@ pub fn done(socket: &Path) {
 }
 
 /// Clear out sockets in `dir` that nothing is serving, at startup rather than only at exit, because
-/// what needs clearing is the sessions that never reached their exit path. Dialled, never guessed:
-/// unlinking a path because it looks stale would take a live session's socket out from under it.
+/// what needs clearing is the sessions that never reached their exit path. Only a socket whose
+/// connect is refused and whose lock nobody holds is removed: a busy session is still a session.
 fn sweep(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
-        let path = entry.path();
-        if entry.file_type().is_ok_and(|kind| kind.is_socket())
-            && std::os::unix::net::UnixStream::connect(&path).is_err()
-        {
-            let _ = std::fs::remove_file(&path);
-            magi_ipc::drop_key(&path);
+        if entry.file_type().is_ok_and(|kind| kind.is_socket()) {
+            let _ = magi_ipc::clear_stale(&entry.path());
         }
     }
 }
@@ -329,14 +324,27 @@ mod leftovers {
         drop(live);
     }
 
-    #[test]
-    fn the_last_session_out_takes_the_directory_with_it() {
+    #[tokio::test]
+    async fn the_last_session_out_takes_the_directory_with_it() {
         let dir = Scratch::new("magi-empty", "one");
         let socket = dir.join("one.host");
-        std::fs::write(&socket, b"").expect("write");
+        let listener = magi_ipc::bind(&socket).await.expect("bind");
+        drop(listener);
 
         done(&socket);
         assert!(!dir.exists(), "an empty project directory was left behind");
+    }
+
+    #[test]
+    fn a_path_this_session_never_bound_is_not_taken_down() {
+        let dir = Scratch::new("magi-notmine", "one");
+        let socket = dir.join("other.host");
+        std::fs::write(&socket, b"").expect("write");
+        done(&socket);
+        assert!(
+            socket.exists(),
+            "a path this process did not bind was removed"
+        );
     }
 
     #[test]

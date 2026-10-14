@@ -2,6 +2,7 @@
 //! `u32` byte count followed by that many bytes of `ciborium` encoding, so a peer that dies
 //! mid-frame is caught at the length. Linux only; peer identity comes from `SO_PEERCRED`.
 
+mod binding;
 pub mod blocking;
 mod codec;
 mod encoding;
@@ -10,10 +11,11 @@ mod peer;
 mod runtime;
 mod secret;
 
+pub use binding::{clear_stale, lock_path, unbind};
 pub use codec::{FrameReader, FrameWriter, MAX_FRAME_BYTES};
 pub use encoding::Wire;
 pub use peer::PeerCred;
-pub use runtime::{private_dir, runtime_base, runtime_dir, trusted_xdg};
+pub use runtime::{private_dir, runtime_base, runtime_dir, transient, trusted_xdg};
 pub use secret::{drop_key, key_path, mint_key, random_hex, read_key, same_key};
 
 use std::io;
@@ -74,17 +76,16 @@ fn digest(bytes: &[u8]) -> u64 {
     hash
 }
 
-/// Bind a listener, clearing a stale socket left by a previous run: a dead socket file makes `bind`
-/// fail with `EADDRINUSE` even though nothing is listening. A path that still answers is left alone.
-/// A fresh controller key goes beside it, in `<socket>.key`.
+/// Bind a listener under an exclusive lock on `<socket>.lock`, held until [`unbind`]. A socket
+/// already there is removed only when nothing answers it and it is this user's; anything else
+/// there is a refusal. A fresh controller key goes beside it, in `<socket>.key`.
 pub async fn bind(path: &Path) -> Result<UnixListener, IpcError> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
     }
-    if tokio::fs::metadata(path).await.is_ok() && UnixStream::connect(path).await.is_err() {
-        tokio::fs::remove_file(path).await?;
-    }
+    let lock = binding::take(path)?;
     let listener = UnixListener::bind(path)?;
+    binding::hold(path, lock)?;
     mint_key(path)?;
     Ok(listener)
 }
