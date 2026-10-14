@@ -14,6 +14,16 @@ pub use magi_proto::laying::Job;
 
 pub use crate::catalog::Spend;
 
+/// Add `cost` to what a prompt's helpers have spent, stopping at the largest value rather than
+/// wrapping round to a small one.
+fn charge(spent: &std::sync::atomic::AtomicU64, cost: u64) {
+    let _ = spent.fetch_update(
+        std::sync::atomic::Ordering::Relaxed,
+        std::sync::atomic::Ordering::Relaxed,
+        |was| Some(was.saturating_add(cost)),
+    );
+}
+
 /// How long a job may take when neither it nor the configuration says.
 const TIMEOUT_MS: u64 = 20_000;
 
@@ -261,10 +271,7 @@ pub async fn work(
                     answer.usage.prompt_tokens(),
                     answer.usage.output
                 );
-                spent.fetch_add(
-                    answer.usage.cost_micros,
-                    std::sync::atomic::Ordering::Relaxed,
-                );
+                charge(spent, answer.usage.cost_micros);
                 let _ = events.send(HarnessEvent::HelperSpent {
                     role: job.role.clone(),
                     model: answer.model.clone(),
@@ -283,7 +290,7 @@ pub async fn work(
             }
             Err(why) => {
                 if why.usage != magi_proto::Usage::default() {
-                    spent.fetch_add(why.usage.cost_micros, std::sync::atomic::Ordering::Relaxed);
+                    charge(spent, why.usage.cost_micros);
                     let _ = events.send(HarnessEvent::HelperSpent {
                         role: job.role.clone(),
                         model: why.model.clone(),

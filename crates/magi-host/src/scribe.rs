@@ -1,15 +1,23 @@
 //! Handing the transcript to balthasar, beside [`crate::session::Session`] rather than inside it:
 //! a socket round trip under the session lock would hold it across balthasar's `fsync` and freeze
-//! every UI read. What travels is `raw`, the serialised [`Record`]; the rest is a projection.
+//! every UI read. What travels is `raw`, the serialised record; the rest is a projection.
 
 use magi_ipc::family::{Family, Fault};
-use magi_journal::{JOURNAL_VERSION, Record};
 use magi_proto::{Cursor, Entry, SessionId};
 
 /// The one connection to balthasar, as the session shares it. Named here rather than beside either
 /// of its users, which would put `worker` and `turn` in a cycle.
 pub type Held = std::sync::Arc<tokio::sync::Mutex<Option<Scribe>>>;
+mod flushing;
 mod resuming;
+mod shape;
+pub use flushing::flush;
+#[cfg(test)]
+pub(crate) use flushing::said_about;
+pub(crate) use flushing::told;
+pub use shape::Recalled;
+pub(crate) use shape::{cut, tokens};
+use shape::{rebuild, rows, turn};
 
 /// The program that filled the `memory` role before it was a role, and the default when nothing
 /// names another.
@@ -45,6 +53,15 @@ const ROLE: &[&str] = &[
     "reject",
 ];
 
+/// How long after a failed dial the next is tried, at first and at most.
+const BACKOFF: (std::time::Duration, std::time::Duration) = (
+    std::time::Duration::from_secs(1),
+    std::time::Duration::from_secs(30),
+);
+
+/// The widest text a stubbed entry keeps first; each try that still does not fit keeps a quarter.
+const STUB_FIRST: usize = 1024 * 1024;
+
 /// What travels with an entry that the entry cannot say about itself: the assistant message a tool
 /// row belongs to (a group is kept, stubbed or summarised whole), and what its tool said about it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -54,11 +71,13 @@ pub struct Beside {
 }
 
 pub struct Scribe {
-    family: Family,
+    /// `None` while the memory layer is not answering; dialled again no sooner than `retry`.
+    family: Option<Family>,
     /// Where to dial to get this connection back. balthasar can restart, and it drops a caller that
     /// has been quiet — which magi is between prompts — so without this the first drop ended
-    /// recording for the session. `None` when the connection was found rather than named.
-    at: Option<std::path::PathBuf>,
+    /// recording for the session.
+    at: std::path::PathBuf,
+    retry: (std::time::Instant, std::time::Duration),
     session: String,
     /// Whose transcript this is: the session's own, or one agent's within a run it shares.
     transcript: String,
@@ -67,24 +86,31 @@ pub struct Scribe {
 }
 
 impl Scribe {
-    /// Find a running balthasar and bind to a session.
+    /// Bind to this process's own memory layer, or the one `$MAGI_API_SOCKET` names.
     pub async fn find(session: &SessionId) -> Result<Self, Fault> {
-        Ok(Self {
-            family: Family::find(None).await?,
-            at: None,
-            session: session.as_str().to_owned(),
-            transcript: session.as_str().to_owned(),
-            sent: std::collections::BTreeSet::new(),
-        })
+        let family = Family::find(None).await?;
+        let at = family.path().to_owned();
+        Ok(Self::over(family, Some(at), session))
     }
 
     /// Bind to a session over an already-open connection. `at` is where it came from, so a dropped
-    /// one can be dialled again; pass `None` only when there is no such path.
+    /// one can be dialled again; `None` takes the path the connection was made to.
     #[must_use]
     pub fn over(family: Family, at: Option<std::path::PathBuf>, session: &SessionId) -> Self {
+        let at = at.unwrap_or_else(|| family.path().to_owned());
+        let mut scribe = Self::unconnected(at, session);
+        scribe.family = Some(family);
+        scribe
+    }
+
+    /// Bind to a session whose memory layer did not answer yet; every call dials it again, backing
+    /// off, until it does.
+    #[must_use]
+    pub fn unconnected(at: std::path::PathBuf, session: &SessionId) -> Self {
         Self {
-            family,
+            family: None,
             at,
+            retry: (std::time::Instant::now(), BACKOFF.0),
             session: session.as_str().to_owned(),
             transcript: session.as_str().to_owned(),
             sent: std::collections::BTreeSet::new(),
@@ -99,13 +125,57 @@ impl Scribe {
         self
     }
 
-    /// Open the connection again, after one that was dropped.
-    async fn redial(&mut self) -> Result<(), Fault> {
-        self.family = match &self.at {
-            Some(path) => Family::dial(path).await?,
-            None => Family::find(None).await?,
-        };
-        Ok(())
+    /// The connection, dialled again when it is down and the backoff has passed.
+    async fn link(&mut self) -> Result<&mut Family, Fault> {
+        if self.family.is_none() {
+            let now = std::time::Instant::now();
+            if now < self.retry.0 {
+                return Err(Fault::Unavailable(format!(
+                    "{} is not answering; tried again in {:?}",
+                    self.at.display(),
+                    self.retry.0 - now
+                )));
+            }
+            match Family::dial(&self.at).await {
+                Ok(open) => {
+                    self.family = Some(open);
+                    self.retry.1 = BACKOFF.0;
+                }
+                Err(why) => {
+                    self.retry = (now + self.retry.1, (self.retry.1 * 2).min(BACKOFF.1));
+                    return Err(why);
+                }
+            }
+        }
+        self.family
+            .as_mut()
+            .ok_or_else(|| Fault::Unavailable("not connected".into()))
+    }
+
+    /// One call on the durable clock, dialled again and asked once more when the connection died.
+    /// A refusal is an answer and is not repeated; the second try is on the ordinary clock.
+    async fn durable(
+        &mut self,
+        verb: &str,
+        args: Vec<serde_json::Value>,
+    ) -> Result<Vec<serde_json::Value>, Fault> {
+        let first = self
+            .link()
+            .await?
+            .call_within(verb, args.clone(), magi_ipc::family::DURABLE)
+            .await;
+        match first {
+            Err(Fault::Unavailable(why)) => {
+                self.family = None;
+                self.retry.0 = std::time::Instant::now();
+                self.link()
+                    .await
+                    .map_err(|again| Fault::Unavailable(format!("{why}; and again: {again}")))?
+                    .call(verb, args)
+                    .await
+            }
+            other => other,
+        }
     }
 
     /// Record a settled entry. Durable when this returns.
@@ -124,11 +194,6 @@ impl Scribe {
         verb: &str,
         arg: serde_json::Value,
     ) -> Result<serde_json::Value, Fault> {
-        if !ROLE.contains(&verb) {
-            return Err(Fault::Refused(format!(
-                "`{verb}` is not one of the memory role's verbs; see ROLES.md"
-            )));
-        }
         Ok(self
             .ask_all(verb, arg)
             .await?
@@ -143,13 +208,9 @@ impl Scribe {
         verb: &str,
         arg: serde_json::Value,
     ) -> Result<Vec<serde_json::Value>, Fault> {
-        if !ROLE.contains(&verb) {
-            return Err(Fault::Refused(format!(
-                "`{verb}` is not one of the memory role's verbs; see ROLES.md"
-            )));
-        }
+        role_verb(verb)?;
         let args = vec![serde_json::Value::String(self.transcript.clone()), arg];
-        self.family.call(verb, args).await
+        self.link().await?.call(verb, args).await
     }
 
     /// How to lay out the next request. One that does not lay out refuses, and everything is sent.
@@ -193,11 +254,14 @@ impl Scribe {
     }
 
     /// Record something that happened that is not a transcript entry — a permission, a provider
-    /// retry, a compaction — at the cursor the turn was at, with a role of `trace`.
+    /// retry, a compaction — at the cursor the turn was at, with a role of `trace`. The memory
+    /// layer keeps a trace apart from the entry at that cursor.
     ///
     /// # Errors
     /// As any other write: a balthasar that is not there costs the trace and nothing else.
     pub async fn noticed(&mut self, cursor: Cursor, kind: &str, text: &str) -> Result<(), Fault> {
+        let mut text = text.to_owned();
+        shape::cut(&mut text, STUB_FIRST);
         let turn = serde_json::json!({
             "run": self.session,
             "cursor": cursor.0,
@@ -206,7 +270,7 @@ impl Scribe {
             "text": text,
         });
         let args = vec![serde_json::Value::String(self.transcript.clone()), turn];
-        self.family.call("observe", args).await.map(|_| ())
+        self.link().await?.call("observe", args).await.map(|_| ())
     }
 
     /// Call a verb for this session and hand back what came, undeserialised. For the rows
@@ -215,13 +279,9 @@ impl Scribe {
     /// # Errors
     /// As any other call: a balthasar that is not there costs the answer and nothing else.
     pub async fn raw(&mut self, verb: &str) -> Result<Vec<serde_json::Value>, Fault> {
-        if !ROLE.contains(&verb) {
-            return Err(Fault::Refused(format!(
-                "`{verb}` is not one of the memory role's verbs; see ROLES.md"
-            )));
-        }
+        role_verb(verb)?;
         let args = vec![serde_json::Value::String(self.transcript.clone())];
-        self.family.call(verb, args).await
+        self.link().await?.call(verb, args).await
     }
 
     /// Revise the entry already at this cursor.
@@ -255,30 +315,55 @@ impl Scribe {
         entry: &Entry,
         beside: &Beside,
     ) -> Result<(), Fault> {
-        let mut turn = turn(cursor, entry, beside)?;
-        turn["run"] = serde_json::Value::String(self.session.clone());
-        let args = vec![serde_json::Value::String(self.transcript.clone()), turn];
+        let args = self.fitted(verb, cursor, entry, beside)?;
         // On the durable clock, not a feature's: the store a session writes to is opened by this
         // very call the first time, and what is not handed over is not anywhere else either.
-        match self
-            .family
-            .call_within(verb, args.clone(), magi_ipc::family::DURABLE)
-            .await
-        {
+        match self.durable(verb, args.clone()).await {
             Ok(_) => {}
-            // Dialled again and asked once more, and only for a connection that died: a refusal is
-            // an answer. Safe to repeat, since `observe` at a cursor that has a row is an `amend`.
-            // The second attempt is on the ordinary clock: the first already gave it thirty seconds.
-            Err(Fault::Unavailable(why)) => {
-                self.redial()
-                    .await
-                    .map_err(|again| Fault::Unavailable(format!("{why}; and again: {again}")))?;
-                self.family.call(verb, args).await?;
+            // An `observe` whose reply was lost landed after all, and the entry has changed since:
+            // the row is there, so this is an `amend`.
+            Err(Fault::Refused(why)) if verb == "observe" && why.contains("already holds") => {
+                self.durable("amend", args).await?;
             }
             Err(other) => return Err(other),
         }
         self.sent.insert(cursor.0);
         Ok(())
+    }
+
+    /// The call that records `entry`, with its texts cut down until it fits in one frame.
+    fn fitted(
+        &self,
+        verb: &str,
+        cursor: Cursor,
+        entry: &Entry,
+        beside: &Beside,
+    ) -> Result<Vec<serde_json::Value>, Fault> {
+        let args = |entry: &Entry| -> Result<Vec<serde_json::Value>, Fault> {
+            let mut turn = turn(cursor, entry, beside)?;
+            turn["run"] = serde_json::Value::String(self.session.clone());
+            Ok(vec![
+                serde_json::Value::String(self.transcript.clone()),
+                turn,
+            ])
+        };
+        let whole = args(entry)?;
+        if magi_ipc::family::fits(verb, &whole) {
+            return Ok(whole);
+        }
+        let mut keep = STUB_FIRST;
+        while keep > 0 {
+            let cut = args(&shape::stubbed(entry, keep))?;
+            if magi_ipc::family::fits(verb, &cut) {
+                magi_model::noted!("scribe: entry {} recorded cut to {keep} bytes", cursor.0);
+                return Ok(cut);
+            }
+            keep /= 4;
+        }
+        Err(Fault::Failed(format!(
+            "the entry at cursor {} does not fit in one frame even cut down",
+            cursor.0
+        )))
     }
 
     /// Everything this session said, in cursor order, as it finally stood.
@@ -295,7 +380,8 @@ impl Scribe {
     /// The durable scratch run of a transcript, defaulting to its key without the extension.
     pub async fn run_of(&mut self, id: &str) -> Result<SessionId, Fault> {
         let values = match self
-            .family
+            .link()
+            .await?
             .call_within(
                 "resume",
                 vec![serde_json::Value::String(id.to_owned())],
@@ -324,7 +410,8 @@ impl Scribe {
         let mut from = 0_u64;
         loop {
             let values = self
-                .family
+                .link()
+                .await?
                 .call_within(
                     "replay",
                     vec![
@@ -360,7 +447,8 @@ impl Scribe {
     /// The runs this project has had. Durable, for the reason `replay` is.
     pub async fn sessions(&mut self) -> Result<Vec<serde_json::Value>, Fault> {
         let values = self
-            .family
+            .link()
+            .await?
             .call_within("sessions", Vec::new(), magi_ipc::family::DURABLE)
             .await?;
         Ok(values.iter().flat_map(rows).cloned().collect())
@@ -373,7 +461,7 @@ impl Scribe {
             serde_json::Value::String(query.to_owned()),
             serde_json::json!({ "limit": limit, "session": self.session }),
         ];
-        let values = self.family.call("recall", args).await?;
+        let values = self.link().await?.call("recall", args).await?;
         Ok(Recalled::of(&values))
     }
 
@@ -388,14 +476,14 @@ impl Scribe {
             serde_json::Value::String(query.to_owned()),
             serde_json::json!({ "limit": limit }),
         ];
-        let values = self.family.call("recall", args).await?;
+        let values = self.link().await?.call("recall", args).await?;
         Ok(Recalled::of(&values).memories)
     }
 
     /// What one memory rests on: how sure the layer is of it, and which sessions asserted it.
     pub async fn why(&mut self, id: &str) -> Result<Vec<serde_json::Value>, Fault> {
         let args = vec![serde_json::Value::String(id.to_owned())];
-        self.family.call("why", args).await
+        self.link().await?.call("why", args).await
     }
 
     /// Say that something was done after memories were handed over, and how it went — the only call
@@ -412,7 +500,8 @@ impl Scribe {
         worked: bool,
     ) -> Result<Option<String>, Fault> {
         let used = self
-            .family
+            .link()
+            .await?
             .call(
                 "used",
                 vec![
@@ -429,7 +518,8 @@ impl Scribe {
             return Ok(None);
         };
         let settled = self
-            .family
+            .link()
+            .await?
             .call(
                 "outcome",
                 vec![
@@ -453,7 +543,7 @@ impl Scribe {
     /// # Errors
     /// Whatever balthasar answered. An older balthasar does not know the verb, and the copy runs.
     pub async fn library(&mut self) -> Result<String, Fault> {
-        let values = self.family.call("client", Vec::new()).await?;
+        let values = self.link().await?.call("client", Vec::new()).await?;
         values
             .first()
             .and_then(serde_json::Value::as_str)
@@ -465,13 +555,8 @@ impl Scribe {
     /// not a source: magi's journal is the copy of record, and a balthasar holding fewer turns has
     /// an incomplete scrollback that `layout`, `replay` and `scroll` all answer from.
     pub async fn resumes(&mut self) -> Result<u64, Fault> {
-        let values = self
-            .family
-            .call(
-                "resume",
-                vec![serde_json::Value::String(self.transcript.clone())],
-            )
-            .await?;
+        let args = vec![serde_json::Value::String(self.transcript.clone())];
+        let values = self.link().await?.call("resume", args).await?;
         Ok(values
             .first()
             .and_then(|v| v.get("turns"))
@@ -492,7 +577,7 @@ impl Scribe {
             serde_json::Value::String(self.transcript.clone()),
             serde_json::json!({ "model": name, "context": window }),
         ];
-        self.family.call("model", args).await.map(|_| ())
+        self.link().await?.call("model", args).await.map(|_| ())
     }
 
     /// Keep something durably, and answer by the id it landed under. Separate from
@@ -503,16 +588,14 @@ impl Scribe {
     /// Whatever balthasar answered.
     pub async fn keep(&mut self, text: &str) -> Result<String, Fault> {
         // Under this session, so it is this session's to take back. A write, so durable.
+        let args = vec![
+            serde_json::Value::String(text.to_owned()),
+            serde_json::json!({ "session": self.session }),
+        ];
         let values = self
-            .family
-            .call_within(
-                "remember",
-                vec![
-                    serde_json::Value::String(text.to_owned()),
-                    serde_json::json!({ "session": self.session }),
-                ],
-                magi_ipc::family::DURABLE,
-            )
+            .link()
+            .await?
+            .call_within("remember", args, magi_ipc::family::DURABLE)
             .await?;
         values
             .first()
@@ -523,249 +606,20 @@ impl Scribe {
     }
 }
 
-/// Snapshot settled entries under the session lock, then write without holding it.
-/// Acknowledge each unchanged version only after its write succeeds.
-///
-/// # Errors
-/// Whatever balthasar answered. [`Fault::is_fatal`] says whether continuing would build on a hole.
-pub async fn flush(
-    session: &tokio::sync::Mutex<crate::session::Session>,
-    scribe: &mut Option<Scribe>,
-) -> Result<(), Fault> {
-    let Some(scribe) = scribe.as_mut() else {
+/// Refuse a verb the memory role does not name, before anything is sent.
+fn role_verb(verb: &str) -> Result<(), Fault> {
+    if ROLE.contains(&verb) {
         return Ok(());
-    };
-    let mut settled = {
-        let held = session.lock().await;
-        if !held.has_pending() {
-            return Ok(());
-        }
-        let taken = held.pending_batch();
-        let beside: Vec<Beside> = taken
-            .iter()
-            .map(|(cursor, entry)| beside(&held, *cursor, entry))
-            .collect();
-        taken
-            .into_iter()
-            .zip(beside)
-            .collect::<std::collections::VecDeque<_>>()
-    };
-    magi_model::noted!("scribe: handing {} entries to balthasar", settled.len());
-    while let Some(((cursor, entry), beside)) = settled.pop_front() {
-        // A mask is not news to the layer that ordered it: balthasar marks a turn masked as it
-        // hands the plan over, and streaming it back would file its decision as a fresh turn.
-        if matches!(entry, Entry::Masked { .. }) {
-            session.lock().await.acknowledge_pending(cursor, &entry);
-            continue;
-        }
-        scribe.settle(cursor, &entry, &beside).await?;
-        session.lock().await.acknowledge_pending(cursor, &entry);
     }
-    Ok(())
-}
-
-/// What a recall answered, and the ledger entry it belongs to. balthasar answers `recall` in two
-/// shapes — a bare list with its ledger off, `{ injection, memories }` with it on — and reading
-/// only the first is how the automatic path came to carry no injection id at all.
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct Recalled {
-    pub memories: Vec<serde_json::Value>,
-    pub injection: Option<String>,
-}
-
-impl Recalled {
-    /// Read whichever shape came back.
-    fn of(values: &[serde_json::Value]) -> Self {
-        let Some(first) = values.first() else {
-            return Self::default();
-        };
-        if let Some(id) = first.get("injection").and_then(serde_json::Value::as_str) {
-            return Self {
-                memories: first
-                    .get("memories")
-                    .map(|m| rows(m).into_iter().cloned().collect())
-                    .unwrap_or_default(),
-                injection: Some(id.to_owned()),
-            };
-        }
-        Self {
-            memories: values.iter().flat_map(rows).cloned().collect(),
-            injection: None,
-        }
-    }
+    Err(Fault::Refused(format!(
+        "`{verb}` is not one of the memory role's verbs; see ROLES.md"
+    )))
 }
 
 /// How much of a replay one reply may carry, well inside the memory layer's frame limit.
 const REPLAY_PAGE: u64 = 4 * 1024 * 1024;
 
-/// A reply value that is a list of rows, or the single row it is.
-fn rows(value: &serde_json::Value) -> Vec<&serde_json::Value> {
-    value
-        .as_array()
-        .map_or_else(|| vec![value], |a| a.iter().collect())
-}
-
-/// Rebuild one entry from the `raw` balthasar handed back, and nothing else: reconstructing from
-/// the projection would quietly lose every field the projection does not carry.
-fn rebuild(row: &serde_json::Value) -> Result<(Cursor, Entry), Fault> {
-    let raw = row
-        .get("raw")
-        .ok_or_else(|| Fault::Malformed("a replayed row has no raw".into()))?;
-
-    // Either a JSON object or the string it was serialised to; balthasar accepts both.
-    let record: Record = match raw {
-        serde_json::Value::String(text) => serde_json::from_str(text),
-        other => serde_json::from_value(other.clone()),
-    }
-    .map_err(|e| Fault::Malformed(format!("raw is not a record: {e}")))?;
-
-    match record {
-        Record::Entry { cursor, entry } => {
-            if let Some(advertised) = row.get("cursor")
-                && advertised.as_u64() != Some(cursor.0)
-            {
-                return Err(Fault::Malformed(
-                    "replay cursor differs from raw record".into(),
-                ));
-            }
-            Ok((cursor, entry))
-        }
-        Record::Meta { version, .. } => Err(Fault::Malformed(format!(
-            "a meta record replayed as an entry (version {version}, this build writes {JOURNAL_VERSION})"
-        ))),
-    }
-}
-
-/// What travels beside the entry at `cursor`. A tool row's group is the message that called it.
-fn beside(session: &crate::session::Session, cursor: Cursor, entry: &Entry) -> Beside {
-    match entry {
-        Entry::Assistant { .. } => Beside {
-            group: Some(cursor.0),
-            ..Beside::default()
-        },
-        Entry::Tool { id, .. } => {
-            let at = session.position(cursor).unwrap_or(0);
-            let before = &session.entries()[..at.min(session.entries().len())];
-            Beside {
-                group: before
-                    .iter()
-                    .rposition(|e| matches!(e, Entry::Assistant { .. }))
-                    .and_then(|i| session.cursor_at(i).map(|c| c.0)),
-                hints: session.hints(id.as_str()),
-            }
-        }
-        _ => Beside::default(),
-    }
-}
-
-/// The wire shape of one settled entry.
-fn turn(cursor: Cursor, entry: &Entry, beside: &Beside) -> Result<serde_json::Value, Fault> {
-    let record = Record::Entry {
-        cursor,
-        entry: entry.clone(),
-    };
-    let raw = serde_json::to_value(&record)
-        .map_err(|e| Fault::Malformed(format!("a record would not serialise: {e}")))?;
-
-    let mut turn = serde_json::Map::new();
-    turn.insert("cursor".into(), serde_json::Value::from(cursor.0));
-    turn.insert("role".into(), serde_json::Value::from(role(entry)));
-    turn.insert("kind".into(), serde_json::Value::from(kind(entry)));
-    turn.insert("text".into(), serde_json::Value::from(text(entry)));
-    turn.insert("tokens".into(), serde_json::Value::from(tokens(entry)));
-    if let Some(group) = beside.group {
-        turn.insert("group".into(), serde_json::Value::from(group));
-    }
-    if let Entry::Tool {
-        name, args, result, ..
-    } = entry
-    {
-        turn.insert("tool".into(), serde_json::Value::from(name.clone()));
-        // What was asked for, beside what came back: a failure means little without it, and it is
-        // what a summary carries of a call that failed.
-        let asked =
-            serde_json::from_str(args).unwrap_or_else(|_| serde_json::Value::from(args.clone()));
-        turn.insert("args".into(), asked);
-        let failed = result.as_ref().is_some_and(|r| r.is_error);
-        turn.insert("error".into(), serde_json::Value::from(failed));
-        turn.insert(
-            "keep".into(),
-            serde_json::Value::from(beside.hints.keep || failed),
-        );
-        if let Some(brief) = &beside.hints.brief {
-            turn.insert("stub".into(), serde_json::Value::from(brief.clone()));
-        }
-        if let Some(back) = &beside.hints.back {
-            turn.insert("handle".into(), serde_json::Value::from(back.clone()));
-        }
-    }
-    turn.insert("raw".into(), raw);
-    Ok(serde_json::Value::Object(turn))
-}
-
-/// What sending this entry costs: an estimate of everything the model is shown of it.
-pub(crate) fn tokens(entry: &Entry) -> u64 {
-    use magi_model::estimate::tokens as of;
-    match entry {
-        Entry::User { text, aside, .. } => of(text) + of(aside),
-        Entry::Assistant { text, thinking, .. } => of(text) + of(thinking),
-        Entry::Tool {
-            name, args, result, ..
-        } => of(name) + of(args) + result.as_ref().map_or(0, |r| of(&r.output)),
-        other => of(&text(other)),
-    }
-}
-
-fn role(entry: &Entry) -> &'static str {
-    match entry {
-        Entry::User { .. } | Entry::From { .. } => "user",
-        Entry::Assistant { .. } | Entry::Notice { .. } => "assistant",
-        Entry::Tool { .. } => "tool",
-        Entry::Branch { .. } | Entry::Compaction { .. } | Entry::Masked { .. } => "system",
-    }
-}
-
-/// Which block this is. `user`, `from` and `branch` are beyond the five `PLAN_SCROLLBACK.md` named;
-/// without them a sibling's message is quoted back as though the person had typed it.
-fn kind(entry: &Entry) -> &'static str {
-    match entry {
-        Entry::User { .. } => "user",
-        Entry::From { .. } => "from",
-        Entry::Branch { .. } => "branch",
-        Entry::Compaction { .. } => "summary",
-        // Never streamed — see `flush`. Named anyway, so the day one is, it is not filed as prose.
-        Entry::Masked { .. } => "mask",
-        Entry::Tool { result: None, .. } => "tool_call",
-        Entry::Tool { .. } => "tool_result",
-        Entry::Assistant { text, thinking, .. } if text.is_empty() && !thinking.is_empty() => {
-            "thinking"
-        }
-        Entry::Assistant { .. } | Entry::Notice { .. } => "prose",
-    }
-}
-
-/// What balthasar quotes and searches. A projection, never the record.
-fn text(entry: &Entry) -> String {
-    match entry {
-        Entry::User { text, .. }
-        | Entry::From { text, .. }
-        | Entry::Notice { text }
-        | Entry::Compaction { summary: text, .. }
-        | Entry::Masked { shown: text, .. } => text.clone(),
-        Entry::Assistant { text, thinking, .. } if text.is_empty() => thinking.clone(),
-        Entry::Assistant { text, .. } => text.clone(),
-        Entry::Tool {
-            name, args, result, ..
-        } => match result {
-            Some(done) => done.output.clone(),
-            None => format!("{name} {args}"),
-        },
-        Entry::Branch { keeps, .. } => format!("branched, keeping {keeps}"),
-    }
-}
-
 #[cfg(test)]
-#[path = "scribe/tests.rs"]
 mod tests;
 
 #[cfg(test)]

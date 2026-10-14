@@ -374,11 +374,13 @@ fn inherited(
     named: &str,
 ) -> std::collections::BTreeMap<String, String> {
     let mut environ = loaded.map(crate::config::environ).unwrap_or_default();
-    for key in ["MAGI_MELCHIOR_PARENT", "MAGI_MELCHIOR_TOKEN"] {
-        if let Ok(value) = std::env::var(key) {
-            environ.insert(key.to_owned(), value);
-        }
+    if let Ok(value) = std::env::var("MAGI_MELCHIOR_PARENT") {
+        environ.insert("MAGI_MELCHIOR_PARENT".to_owned(), value);
     }
+    // The stop secret is taken out of its file now and kept here, never handed on.
+    let _ = melchior::stop_token();
+    environ.remove(melchior::TOKEN_VAR);
+    environ.remove(melchior::TOKEN_FILE);
     let mut parts = named.split('/');
     if let (Some(project), Some(role), Some(id)) = (parts.next(), parts.next(), parts.next()) {
         environ.insert("MAGI_MELCHIOR_PROJECT".to_owned(), project.to_owned());
@@ -571,6 +573,28 @@ mod inheriting {
             !crate::balthasar::AGENT
                 .iter()
                 .any(|named| environ.contains_key(*named))
+        );
+    }
+
+    /// The stop secret never goes to anything a session starts, from whichever variable it came.
+    #[test]
+    fn the_stop_secret_is_not_handed_down() {
+        if std::env::var_os("MAGI_INHERIT_PROBE").is_some() {
+            let environ = inherited(None, "magi/main/alpha-rho");
+            assert!(!environ.contains_key(melchior::TOKEN_VAR), "{environ:?}");
+            assert!(environ.values().all(|value| value != "deadbeef"));
+            return;
+        }
+        let ran = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", "inheriting::the_stop_secret_is_not_handed_down"])
+            .env("MAGI_INHERIT_PROBE", "1")
+            .env(melchior::TOKEN_VAR, "deadbeef")
+            .output()
+            .expect("probe");
+        assert!(
+            ran.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ran.stdout)
         );
     }
 }

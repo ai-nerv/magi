@@ -337,3 +337,70 @@ async fn the_wait_is_announced_while_it_is_happening() {
     drop(held);
     drop(live);
 }
+
+/// What a turn cost, as melchior said it: its `Spent` line names the whole ask so far.
+fn spent(cost_micros: u64) -> String {
+    serde_json::json!({ "event": "spent", "usage": {
+        "input": 10, "output": 5, "cache_read": 0, "cache_write": 0, "cost_micros": cost_micros,
+    }})
+    .to_string()
+}
+
+fn cost_of(entry: &Entry) -> u64 {
+    match entry {
+        Entry::Assistant { usage, .. } => usage.cost_micros,
+        other => panic!("expected an assistant entry, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_turn_that_failed_still_counts_what_it_cost() {
+    let (session, _dir) = session("failed-cost");
+    let mind = Mind::saying(
+        "turn-failed-cost",
+        &[
+            &text_line("half"),
+            &spent(50),
+            &failed_line("rejected after the stream", "invalid"),
+        ],
+    );
+    turn(&session, &backend(&mind)).await;
+    assert_eq!(cost_of(&session.lock().await.entries()[0]), 50);
+}
+
+#[tokio::test]
+async fn an_attempt_that_was_retried_still_counts_what_it_cost() {
+    // The first: what a failed attempt cost outlives the retry. The second: melchior's later
+    // `Spent` is the whole ask's, so it replaces rather than adds.
+    for (lines, expected) in [
+        (
+            vec![
+                text_line("lost"),
+                spent(30),
+                retrying_line(1, 3, 0.0),
+                text_line("kept"),
+                stop_line(),
+            ],
+            30,
+        ),
+        (
+            vec![
+                text_line("lost"),
+                spent(30),
+                retrying_line(1, 3, 0.0),
+                spent(30),
+                text_line("kept"),
+                spent(70),
+                stop_line(),
+            ],
+            70,
+        ),
+    ] {
+        let (session, _dir) = session("retried-cost");
+        let said: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let mind = Mind::saying("turn-retried-cost", &said);
+        turn(&session, &backend(&mind)).await;
+        let held = session.lock().await;
+        assert_eq!(cost_of(&held.entries()[0]), expected, "{lines:?}");
+    }
+}

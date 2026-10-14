@@ -42,7 +42,7 @@ pub fn archived() -> Vec<Summary> {
 /// this; what it may not do is remove it — see [`purge`].
 #[must_use]
 pub fn put_away(id: &str) -> bool {
-    let Ok(mut family) = magi_ipc::family::blocking::Family::find() else {
+    let Ok(mut family) = magi_ipc::family::blocking::Family::ours() else {
         return false;
     };
     family
@@ -58,7 +58,7 @@ pub fn put_away(id: &str) -> bool {
 
 /// Name this run, for good: nothing renames it afterwards but a person.
 pub fn rename(id: &str, title: &str) -> Result<(), String> {
-    let mut family = magi_ipc::family::blocking::Family::find()
+    let mut family = magi_ipc::family::blocking::Family::ours()
         .map_err(|why| format!("balthasar is not reachable: {why}"))?;
     family
         .call(
@@ -100,22 +100,22 @@ fn asked(args: Vec<serde_json::Value>) -> Vec<Summary> {
 /// # Errors
 /// What balthasar said when it would not remove it.
 pub fn purge_memory(id: &str) -> Result<(), String> {
-    ran(&["--tool", "magi", "forget", id, "--purge", "--yes"], id)
+    ran(&forgetting(id, false), id)
 }
 
 pub fn purge(id: &str) -> Result<(), String> {
-    ran(
-        &[
-            "--tool",
-            "magi",
-            "forget",
-            id,
-            "--session",
-            "--purge",
-            "--yes",
-        ],
-        id,
-    )
+    ran(&forgetting(id, true), id)
+}
+
+/// `balthasar forget`'s argv for removing `id` outright, `id` after `--` so that one beginning
+/// with a dash is never read as a flag.
+fn forgetting(id: &str, session: bool) -> Vec<&str> {
+    let mut argv = vec!["--tool", "magi", "forget"];
+    if session {
+        argv.push("--session");
+    }
+    argv.extend(["--purge", "--yes", "--", id]);
+    argv
 }
 
 /// One of balthasar's session rows, as a picker needs it. A child's own transcript is `run@agent`
@@ -162,4 +162,17 @@ fn ran(args: &[&str], id: &str) -> Result<(), String> {
     } else {
         said.to_owned()
     })
+}
+
+#[cfg(test)]
+mod forgetting_tests {
+    #[test]
+    fn an_id_that_looks_like_a_flag_is_still_the_id() {
+        for session in [false, true] {
+            let argv = super::forgetting("--everything", session);
+            assert_eq!(argv.last(), Some(&"--everything"), "{argv:?}");
+            assert_eq!(argv[argv.len() - 2], "--", "{argv:?}");
+            assert_eq!(argv.contains(&"--session"), session);
+        }
+    }
 }

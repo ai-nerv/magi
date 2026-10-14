@@ -36,7 +36,8 @@ async fn fixture(name: &str, mind: &Mind, child: bool, broken: bool) -> Fixture 
     )
     .expect("fixture operation succeeds");
     let coord = dir.join("coord");
-    std::fs::write(&coord, "#!/bin/sh\ncase \"$*\" in\n *--who=*) cat \"$REPORT_JSON\";;\n *) cat > \"$PUBLISHED\"; echo 'Handed in';;\nesac\n").expect("fixture operation succeeds");
+    // The report arrives as `--message=<body>`; melchior reads no report off stdin.
+    std::fs::write(&coord, "#!/bin/sh\ncase \"$*\" in\n *--who=*) cat \"$REPORT_JSON\";;\n *) for a in \"$@\"; do case \"$a\" in --message=*) printf '%s' \"${a#--message=}\" > \"$PUBLISHED\";; esac; done; echo 'Handed in';;\nesac\n").expect("fixture operation succeeds");
     std::fs::set_permissions(&coord, std::fs::Permissions::from_mode(0o755))
         .expect("fixture operation succeeds");
     let mut environ = std::collections::BTreeMap::from([
@@ -115,6 +116,7 @@ async fn attach(fixture: &Fixture) -> (Reader, Writer) {
             session: None,
             from_cursor: Cursor(0),
             draws: false,
+            key: magi_ipc::read_key(&fixture.dir.join("s.sock")),
         })
         .await
         .expect("fixture operation succeeds");

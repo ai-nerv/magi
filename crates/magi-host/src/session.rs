@@ -7,6 +7,8 @@ mod resuming;
 use fitting::{SNAPSHOT_BUDGET, newest_within};
 use magi_journal::{Journal, JournalError};
 use magi_proto::{AgentStatus, Cursor, Entry, HarnessEvent, SessionId};
+#[cfg(test)]
+pub(crate) use resuming::PENDING_MOST;
 use tokio::sync::{broadcast, watch};
 
 /// Events buffered for a consumer that has fallen behind. A slow UI is dropped and reconnects with
@@ -273,13 +275,7 @@ impl Session {
         self.entries()
             .iter()
             .fold(magi_proto::Usage::default(), |total, entry| match entry {
-                Entry::Assistant { usage, .. } => magi_proto::Usage {
-                    input: total.input + usage.input,
-                    output: total.output + usage.output,
-                    cache_read: total.cache_read + usage.cache_read,
-                    cache_write: total.cache_write + usage.cache_write,
-                    cost_micros: total.cost_micros + usage.cost_micros,
-                },
+                Entry::Assistant { usage, .. } => total.plus(*usage),
                 _ => total,
             })
     }
@@ -406,6 +402,65 @@ impl Session {
         previous.filter(|_| same).cloned().ok_or_else(|| {
             JournalError::Refused(format!("entry identity does not match cursor {}", cursor.0))
         })
+    }
+
+    /// Grow the streaming message at `cursor` by what just arrived, in place: the delta is all that
+    /// is copied, published, and added to what waits to be recorded.
+    ///
+    /// # Errors
+    /// When no message `id` is at `cursor`.
+    pub fn stream_at(
+        &mut self,
+        cursor: Cursor,
+        id: &magi_proto::MessageId,
+        text: &str,
+        thinking: &str,
+    ) -> Result<(), JournalError> {
+        let grown = match self.journal.entry_mut(cursor) {
+            Some(Entry::Assistant {
+                id: held,
+                text: said,
+                thinking: thought,
+                ..
+            }) if held == id => {
+                said.push_str(text);
+                thought.push_str(thinking);
+                true
+            }
+            _ => false,
+        };
+        if !grown {
+            return Err(JournalError::Refused(format!(
+                "entry identity does not match cursor {}",
+                cursor.0
+            )));
+        }
+        match self.pending.get_mut(&cursor.0) {
+            Some(Entry::Assistant {
+                text: said,
+                thinking: thought,
+                ..
+            }) => {
+                said.push_str(text);
+                thought.push_str(thinking);
+            }
+            _ => {
+                // Handed over since it last changed; queued again as it now stands.
+                let now = self.position(cursor).and_then(|at| self.entries().get(at));
+                if let Some(now) = now.cloned() {
+                    self.pending.insert(cursor.0, now);
+                }
+            }
+        }
+        if !text.is_empty() || !thinking.is_empty() {
+            let _ = self.events.send(HarnessEvent::AssistantDelta {
+                cursor,
+                id: id.clone(),
+                text: text.to_owned(),
+                thinking: thinking.to_owned(),
+            });
+        }
+        Ok(())
     }
 
     /// Update an identified streaming entry without publishing its terminal event.
@@ -631,167 +686,7 @@ fn events_for(cursor: Cursor, entry: &Entry) -> Vec<HarnessEvent> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use magi_proto::{MessageId, StopReason};
-
-    /// A session holding nothing, which is what balthasar replays for one that has not run.
-    fn session(_name: &str) -> Session {
-        Session::recorded(SessionId::new("s1"), Vec::new())
-    }
-
-    #[test]
-    fn a_revision_never_announces_an_ending_it_has_not_written() {
-        // `revise` writes nothing, and `AssistantEnded` tells a listener the message is final —
-        // `magi -p` acts on it. Asserted here, because in one process the `amend` wins the race.
-        let mut session = session("revise-ending");
-        let mut live = session.subscribe();
-        let id = MessageId::new("a1");
-        let started = Entry::Assistant {
-            id: id.clone(),
-            text: "half".to_owned(),
-            thinking: String::new(),
-            stop_reason: None,
-            error: None,
-            signatures: magi_proto::Signatures::default(),
-            usage: magi_proto::Usage::default(),
-        };
-        session.commit(started).expect("commit");
-        let Entry::Assistant { text, .. } = session.entries()[0].clone() else {
-            panic!("an assistant entry");
-        };
-        assert_eq!(text, "half");
-        while live.try_recv().is_ok() {}
-
-        // A finished message, revised rather than amended.
-        session.revise(Entry::Assistant {
-            id,
-            text: "half an answer".to_owned(),
-            thinking: String::new(),
-            stop_reason: Some(StopReason::EndTurn),
-            error: None,
-            signatures: magi_proto::Signatures::default(),
-            usage: magi_proto::Usage::default(),
-        });
-
-        let mut sawticks = (false, false);
-        while let Ok(event) = live.try_recv() {
-            match event {
-                HarnessEvent::AssistantDelta { .. } => sawticks.0 = true,
-                HarnessEvent::AssistantEnded { .. } => sawticks.1 = true,
-                _ => {}
-            }
-        }
-        assert!(sawticks.0, "the growth is still published");
-        assert!(
-            !sawticks.1,
-            "a revision must not announce an ending: nothing has been written"
-        );
-    }
-
-    fn user(text: &str) -> Entry {
-        Entry::User {
-            id: MessageId::new(text),
-            text: text.to_owned(),
-            aside: String::new(),
-        }
-    }
-
-    #[test]
-    fn committing_publishes_to_subscribers() {
-        let mut s = session("publish");
-        let mut rx = s.subscribe();
-        s.commit(user("hi")).expect("commit");
-        let event = rx.try_recv().expect("an event");
-        assert!(matches!(event, HarnessEvent::UserMessage { .. }));
-    }
-
-    #[test]
-    fn a_cold_snapshot_carries_nothing() {
-        let mut s = session("cold");
-        s.commit(user("hi")).expect("commit");
-        match s.snapshot(Cursor::ZERO) {
-            HarnessEvent::SessionSnapshot { entries, .. } => assert!(entries.is_empty()),
-            other => panic!("expected a snapshot, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn a_resume_snapshot_carries_what_the_ui_already_saw() {
-        let mut s = session("resume");
-        s.commit(user("one")).expect("commit");
-        s.commit(user("two")).expect("commit");
-        match s.snapshot(Cursor(1)) {
-            HarnessEvent::SessionSnapshot { entries, .. } => assert_eq!(entries.len(), 1),
-            other => panic!("expected a snapshot, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn replay_covers_only_what_follows_the_cursor() {
-        let mut s = session("replay");
-        s.commit(user("one")).expect("commit");
-        s.commit(user("two")).expect("commit");
-        let events = s.replay(Cursor(1));
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].cursor(), Cursor(2));
-    }
-
-    #[test]
-    fn an_unfinished_assistant_entry_replays_without_an_end_event() {
-        let mut s = session("unfinished");
-        s.commit(Entry::Assistant {
-            id: MessageId::new("a1"),
-            text: "partial".into(),
-            thinking: String::new(),
-            stop_reason: None,
-            error: None,
-            signatures: magi_proto::Signatures::default(),
-            usage: magi_proto::Usage::default(),
-        })
-        .expect("commit");
-        let events = s.replay(Cursor::ZERO);
-        assert!(
-            !events
-                .iter()
-                .any(|e| matches!(e, HarnessEvent::AssistantEnded { .. })),
-            "a turn still in flight has not ended"
-        );
-    }
-
-    #[test]
-    fn a_finished_assistant_entry_replays_start_delta_and_end() {
-        let mut s = session("finished");
-        s.commit(Entry::Assistant {
-            id: MessageId::new("a1"),
-            text: "done".into(),
-            thinking: String::new(),
-            stop_reason: Some(StopReason::EndTurn),
-            error: None,
-            signatures: magi_proto::Signatures::default(),
-            usage: magi_proto::Usage::default(),
-        })
-        .expect("commit");
-        assert_eq!(s.replay(Cursor::ZERO).len(), 3);
-    }
-
-    #[test]
-    fn status_is_published_but_not_journalled() {
-        let mut s = session("status");
-        let mut rx = s.subscribe();
-        s.set_status(AgentStatus::Working {
-            label: "Thinking".into(),
-        });
-        assert!(matches!(
-            rx.try_recv().expect("an event"),
-            HarnessEvent::StatusChanged { .. }
-        ));
-        assert!(
-            s.entries().is_empty(),
-            "status never reaches the transcript"
-        );
-    }
-}
+mod tests;
 
 #[cfg(test)]
 mod waiting;

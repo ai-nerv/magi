@@ -1,4 +1,5 @@
 use super::*;
+use crate::scribe::said_about;
 use magi_model::{Content, Role};
 use magi_proto::{MessageId, Signatures, ToolCallId, ToolResult};
 

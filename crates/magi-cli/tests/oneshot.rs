@@ -14,6 +14,7 @@ use std::process::Command;
 /// no protocol: those are melchior's, and an opinion here would be a second catalog to keep in step.
 fn workspace(name: &str) -> Scratch {
     let dir = Scratch::new("m1", name);
+    let _ = dir.private("run");
     std::fs::create_dir_all(dir.join("run")).expect("mkdir");
     std::fs::create_dir_all(dir.join("sessions")).expect("mkdir");
     install_config(&dir.join("config/magi"));

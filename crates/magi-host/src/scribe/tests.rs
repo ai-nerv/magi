@@ -1,5 +1,8 @@
+use super::shape::{beside, kind, rebuild, turn};
 use super::*;
 use magi_proto::{MessageId, ToolCallId, ToolResult};
+
+mod recording;
 
 /// Both shapes balthasar answers `recall` in. The setting that decides is balthasar's, and both are
 /// the ordinary case on somebody's machine.

@@ -44,6 +44,7 @@ fn example(into: &Path, name: &str) -> Option<PathBuf> {
 /// A workspace whose configuration names the shim as its memory layer.
 fn workspace(name: &str) -> Scratch {
     let dir = Scratch::new("ms", name);
+    let _ = dir.private("run");
     for under in ["run", "sessions", "data", ".git"] {
         std::fs::create_dir_all(dir.join(under)).expect("mkdir");
     }

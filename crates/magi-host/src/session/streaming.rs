@@ -214,3 +214,42 @@ fn a_revised_message_is_queued_as_it_stands_not_as_it_started() {
         "the queue must hold the message as it stands"
     );
 }
+
+#[test]
+fn a_streamed_piece_grows_the_message_in_place_and_is_all_that_is_published() {
+    let mut s = session();
+    let cursor = s.commit(assistant("")).expect("commit");
+    let mut events = s.subscribe();
+    let id = MessageId::new("a1");
+    s.stream_at(cursor, &id, "Hello", "").expect("streamed");
+    s.stream_at(cursor, &id, " there", "hm").expect("streamed");
+
+    assert!(
+        matches!(&s.entries()[0], Entry::Assistant { text, thinking, .. }
+        if text == "Hello there" && thinking == "hm")
+    );
+    let pieces: Vec<(String, String)> = drain(&mut events)
+        .into_iter()
+        .filter_map(|event| match event {
+            HarnessEvent::AssistantDelta { text, thinking, .. } => Some((text, thinking)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        pieces,
+        vec![
+            ("Hello".into(), String::new()),
+            (" there".into(), "hm".into())
+        ]
+    );
+    assert_eq!(s.take_pending(), vec![(cursor, s.entries()[0].clone())]);
+
+    // Handed over in between: queued again whole, as it now stands.
+    s.stream_at(cursor, &id, "!", "").expect("streamed");
+    assert!(
+        matches!(&s.take_pending()[..], [(_, Entry::Assistant { text, .. })]
+        if text == "Hello there!")
+    );
+    let other = MessageId::new("someone-else");
+    assert!(s.stream_at(cursor, &other, "x", "").is_err());
+}

@@ -68,6 +68,7 @@ async fn ask(socket: &Path, prompt: String, aside: String) -> Result<()> {
             from_cursor: FROM_END,
             // No terminal here, so no rows are reserved for a surface nothing could draw.
             draws: false,
+            key: magi_ipc::read_key(socket),
         })
         .await?;
     if !matches!(
@@ -348,6 +349,7 @@ async fn tell(socket: &Path, command: UiCommand) {
         session: None,
         from_cursor: FROM_END,
         draws: false,
+        key: magi_ipc::read_key(socket),
     };
     if writer.write(&attach).await.is_err() {
         return;

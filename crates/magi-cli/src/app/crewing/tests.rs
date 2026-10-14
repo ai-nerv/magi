@@ -186,6 +186,7 @@ fn only_this_screens_geometry_is_kept_from_somebody_else() {
             session: None,
             from_cursor: Cursor::ZERO,
             draws: false,
+            key: None,
         },
         UiCommand::Detach,
     ];

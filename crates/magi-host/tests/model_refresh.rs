@@ -20,6 +20,7 @@ async fn attach(
             session: None,
             from_cursor: Cursor::ZERO,
             draws: false,
+            key: magi_ipc::read_key(path),
         })
         .await
         .expect("refresh fixture");

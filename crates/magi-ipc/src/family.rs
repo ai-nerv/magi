@@ -8,8 +8,70 @@ use std::path::{Path, PathBuf};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
-/// The largest reply this client will read.
+/// The family's one frame cap, on a call this client writes and on a reply it reads.
 pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+
+/// One call as it goes on the wire: four bytes of length, then the body.
+#[derive(serde::Serialize)]
+struct Call<'a> {
+    call: &'a str,
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    args: &'a [serde_json::Value],
+}
+
+/// A call framed for sending, or refused here when its body is past [`MAX_FRAME_BYTES`].
+fn frame(wire: crate::Wire, verb: &str, args: &[serde_json::Value]) -> Result<Vec<u8>, Fault> {
+    let body = wire
+        .write(&Call { call: verb, args })
+        .map_err(|why| Fault::Malformed(format!("encoding {verb}: {why}")))?;
+    let len = u32::try_from(body.len())
+        .ok()
+        .filter(|len| *len as usize <= MAX_FRAME_BYTES)
+        .ok_or_else(|| too_large(verb, body.len()))?;
+    let mut framed = Vec::with_capacity(4 + body.len());
+    framed.extend_from_slice(&len.to_be_bytes());
+    framed.extend_from_slice(&body);
+    Ok(framed)
+}
+
+/// Whether a call of `verb` with `args` fits in one frame, measured in JSON, the larger encoding.
+#[must_use]
+pub fn fits(verb: &str, args: &[serde_json::Value]) -> bool {
+    crate::Wire::Json
+        .write(&Call { call: verb, args })
+        .is_ok_and(|body| body.len() <= MAX_FRAME_BYTES)
+}
+
+/// The refusal for a call that would not fit in one frame. Nothing was sent.
+fn too_large(verb: &str, len: usize) -> Fault {
+    Fault::Failed(format!(
+        "{verb} is {len} bytes, past the family's {MAX_FRAME_BYTES} byte frame cap; it was not sent"
+    ))
+}
+
+/// Close what another user is serving: a socket path is a name, and the kernel says who holds it.
+fn served_by_us(stream: &impl std::os::fd::AsFd, path: &Path) -> Result<(), Fault> {
+    let peer = rustix::net::sockopt::get_socket_peercred(stream)
+        .map_err(|e| Fault::Unavailable(format!("{}: {e}", path.display())))?;
+    let ours = rustix::process::getuid();
+    if peer.uid != ours {
+        return Err(Fault::Unavailable(format!(
+            "{} is served by uid {}, not this user",
+            path.display(),
+            peer.uid.as_raw()
+        )));
+    }
+    Ok(())
+}
+
+/// Connect, and keep the stream only when this user is the one serving it.
+async fn connected(path: &Path) -> Result<UnixStream, Fault> {
+    let stream = UnixStream::connect(path)
+        .await
+        .map_err(|e| Fault::Unavailable(format!("{}: {e}", path.display())))?;
+    served_by_us(&stream, path)?;
+    Ok(stream)
+}
 
 /// Where a call ended up.
 #[derive(Debug, thiserror::Error)]
@@ -55,9 +117,7 @@ impl Family {
     /// Connect to a socket by path.
     pub async fn dial(path: impl AsRef<Path>) -> Result<Self, Fault> {
         let path = path.as_ref().to_path_buf();
-        let stream = UnixStream::connect(&path)
-            .await
-            .map_err(|e| Fault::Unavailable(format!("{}: {e}", path.display())))?;
+        let stream = connected(&path).await?;
         Ok(Self {
             stream,
             scratch: Vec::new(),
@@ -71,18 +131,20 @@ impl Family {
     /// still owed. The only way back into step: a reply cannot be skipped without reading it, and
     /// reading it means waiting for a call this side has already given up on.
     async fn reopen(&mut self) -> Result<(), Fault> {
-        self.stream = UnixStream::connect(&self.path)
-            .await
-            .map_err(|e| Fault::Unavailable(format!("{}: {e}", self.path.display())))?;
+        self.stream = connected(&self.path).await?;
         self.adrift = false;
         Ok(())
     }
 
-    /// Connect to whichever socket [`candidates`] offers first, newest wins. Each is tried in turn:
-    /// a socket file left by a killed frontend looks like a live one until something connects to it.
+    /// Connect to the newest socket in `dir` that takes the connection. With no directory, only
+    /// this process's own memory layer or the one `$MAGI_API_SOCKET` names: never a neighbour's.
     pub async fn find(dir: Option<&Path>) -> Result<Self, Fault> {
         let mut last = None;
-        for path in candidates(dir) {
+        let paths = match dir {
+            Some(_) => candidates(dir),
+            None => named().into_iter().collect(),
+        };
+        for path in paths {
             match Self::dial(&path).await {
                 Ok(open) => return Ok(open),
                 Err(e) => last = Some(e),
@@ -121,19 +183,7 @@ impl Family {
         args: Vec<serde_json::Value>,
         patience: std::time::Duration,
     ) -> Result<Vec<serde_json::Value>, Fault> {
-        let mut body = serde_json::Map::new();
-        body.insert("call".into(), serde_json::Value::String(verb.to_owned()));
-        if !args.is_empty() {
-            body.insert("args".into(), serde_json::Value::Array(args));
-        }
-        let body = self
-            .wire
-            .write(&serde_json::Value::Object(body))
-            .map_err(|why| Fault::Malformed(format!("encoding {verb}: {why}")))?;
-
-        let mut frame = Vec::with_capacity(4 + body.len());
-        frame.extend_from_slice(&(body.len() as u32).to_be_bytes());
-        frame.extend_from_slice(&body);
+        let frame = frame(self.wire, verb, &args)?;
         // Whatever the abandoned call still owes arrives on this stream and nowhere else, so the
         // stream goes rather than the answer being skipped.
         if self.adrift {
@@ -142,9 +192,9 @@ impl Family {
         // Set before the write, not after: a `call` dropped where it stands — a caller's own
         // timeout around this one — leaves a request on the wire either way.
         self.adrift = true;
-        self.stream
-            .write_all(&frame)
+        tokio::time::timeout(patience, self.stream.write_all(&frame))
             .await
+            .map_err(|_| Fault::Unavailable(format!("sending {verb}: not taken in {patience:?}")))?
             .map_err(|e| Fault::Unavailable(format!("sending {verb}: {e}")))?;
 
         // A socket that accepts the connection and then never replies is the ordinary shape of a
@@ -337,8 +387,9 @@ fn unwrap(reply: &serde_json::Value, verb: &str) -> Result<Vec<serde_json::Value
     Ok(values.iter().take(n).cloned().collect())
 }
 
+pub mod blocking;
 mod looking;
-pub use looking::{candidates, legacy_socket_dir, socket_dir, socket_dirs, sockets_in};
+pub use looking::{candidates, legacy_socket_dir, named, own, socket_dir, socket_dirs, sockets_in};
 
 #[cfg(test)]
 mod tests {
@@ -496,6 +547,42 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn a_peer_that_never_reads_costs_a_call_and_not_the_session() {
+        let dir = magi_model::scratch::Scratch::new("magi-family-unread", "one");
+        let path = dir.join("api@unread.sock");
+        let listener = tokio::net::UnixListener::bind(&path).expect("bind");
+        let mut open = Family::dial(&path).await.expect("dial");
+        let (_held, _) = listener.accept().await.expect("accept");
+
+        let big = json!("x".repeat(MAX_FRAME_BYTES / 2));
+        let started = std::time::Instant::now();
+        let sent = open
+            .call_within("observe", vec![big], std::time::Duration::from_millis(300))
+            .await;
+        assert!(matches!(sent, Err(Fault::Unavailable(_))), "{sent:?}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_call_past_the_cap_is_refused_and_one_inside_it_is_framed() {
+        let huge = vec![json!("x".repeat(MAX_FRAME_BYTES))];
+        let refused = frame(crate::Wire::Json, "observe", &huge).expect_err("refused");
+        assert!(matches!(refused, Fault::Failed(_)), "{refused:?}");
+        assert!(refused.to_string().contains("frame cap"), "{refused}");
+
+        let framed = frame(crate::Wire::Json, "verbs", &[]).expect("framed");
+        assert_eq!(
+            &framed[4..],
+            br#"{"call":"verbs"}"#,
+            "no args, no args field"
+        );
+        assert_eq!(
+            u32::from_be_bytes([framed[0], framed[1], framed[2], framed[3]]),
+            16
+        );
+    }
+
     /// A caller that gives up on a call leaves its answer in the stream. Read as the next call's,
     /// every answer after it belongs to the call before — a write is told it landed by somebody
     /// else's reply, and the transcript goes missing without anything failing.
@@ -552,90 +639,5 @@ mod tests {
                 let _ = stream.write_all(&framed);
             }
         })
-    }
-}
-
-/// The same protocol, without a runtime, for the synchronous paths such as the session picker.
-pub mod blocking {
-    use super::{Fault, candidates, unwrap};
-    use std::io::{Read, Write};
-    use std::os::unix::net::UnixStream;
-    use std::path::Path;
-    use std::time::Duration;
-
-    /// How long a picker will wait before drawing without balthasar.
-    const PATIENCE: Duration = Duration::from_millis(2000);
-
-    /// One held connection.
-    pub struct Family {
-        stream: UnixStream,
-    }
-
-    impl Family {
-        /// Connect to a socket by path.
-        pub fn dial(path: impl AsRef<Path>) -> Result<Self, Fault> {
-            let path = path.as_ref();
-            let stream = UnixStream::connect(path)
-                .map_err(|e| Fault::Unavailable(format!("{}: {e}", path.display())))?;
-            let _ = stream.set_read_timeout(Some(PATIENCE));
-            let _ = stream.set_write_timeout(Some(PATIENCE));
-            Ok(Self { stream })
-        }
-
-        /// Connect to whichever socket answers first, newest tried first. Answers, not accepts: the
-        /// kernel accepts on behalf of a listener whose owner has stopped reading, so each candidate
-        /// is proved with one `verbs` call before the rest are given up on.
-        pub fn find() -> Result<Self, Fault> {
-            let mut last = None;
-            for path in candidates(None) {
-                match Self::dial(&path) {
-                    Ok(mut open) => match open.call("verbs", Vec::new()) {
-                        Ok(_) => return Ok(open),
-                        Err(e) => last = Some(e),
-                    },
-                    Err(e) => last = Some(e),
-                }
-            }
-            Err(last.unwrap_or_else(|| Fault::Unavailable("no socket to try".into())))
-        }
-
-        /// Send one call and wait for its answer.
-        pub fn call(
-            &mut self,
-            verb: &str,
-            args: Vec<serde_json::Value>,
-        ) -> Result<Vec<serde_json::Value>, Fault> {
-            let mut body = serde_json::Map::new();
-            body.insert("call".into(), serde_json::Value::String(verb.to_owned()));
-            if !args.is_empty() {
-                body.insert("args".into(), serde_json::Value::Array(args));
-            }
-            let body = serde_json::Value::Object(body).to_string();
-
-            let mut frame = Vec::with_capacity(4 + body.len());
-            frame.extend_from_slice(&(body.len() as u32).to_be_bytes());
-            frame.extend_from_slice(body.as_bytes());
-            self.stream
-                .write_all(&frame)
-                .map_err(|e| Fault::Unavailable(format!("sending {verb}: {e}")))?;
-
-            let mut head = [0_u8; 4];
-            self.stream
-                .read_exact(&mut head)
-                .map_err(|e| Fault::Unavailable(format!("awaiting {verb}: {e}")))?;
-            let len = u32::from_be_bytes(head) as usize;
-            if len > super::MAX_FRAME_BYTES {
-                return Err(Fault::Malformed(format!("{len} byte reply to {verb}")));
-            }
-            let mut rest = vec![0_u8; len];
-            self.stream
-                .read_exact(&mut rest)
-                .map_err(|e| Fault::Unavailable(format!("reading {verb}: {e}")))?;
-
-            // In whichever encoding came back, as in the asynchronous half above.
-            let reply: serde_json::Value =
-                crate::Wire::read(&rest).map_err(|e| Fault::Malformed(format!("{verb}: {e}")))?;
-            unwrap(&reply, verb)
-        }
     }
 }

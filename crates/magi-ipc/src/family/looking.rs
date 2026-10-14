@@ -31,8 +31,8 @@ pub fn socket_dirs() -> [PathBuf; 2] {
 /// One socket directory, with `$MAGI_MEMORY_INSTANCE` — or the name it used to have — selecting
 /// one when several are running.
 fn named_dir(name: &str) -> PathBuf {
-    let base = match std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
-        Some(runtime) => PathBuf::from(runtime).join(name),
+    let base = match crate::trusted_xdg() {
+        Some(runtime) => runtime.join(name),
         None => std::env::temp_dir().join(format!("{name}-{}", rustix::process::getuid().as_raw())),
     };
     match instance() {
@@ -48,13 +48,33 @@ fn instance() -> Option<String> {
         .find_map(|named| std::env::var(named).ok().filter(|v| !v.is_empty()))
 }
 
+/// The memory layer this process convened, once it has said so.
+static OWN: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Say which socket is this process's own memory layer. The first one said stands.
+pub fn own(path: &Path) {
+    let _ = OWN.set(path.to_path_buf());
+}
+
+/// `$MAGI_API_SOCKET` when it is set, else this process's own memory layer, else nothing.
+#[must_use]
+pub fn named() -> Option<PathBuf> {
+    std::env::var_os("MAGI_API_SOCKET")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| OWN.get().cloned())
+}
+
 /// Every socket worth trying, newest first. `$MAGI_API_SOCKET` alone when it is set: a program
-/// balthasar started inherits it and means *that* session. With no directory named, both of the
-/// role's are searched and merged by age, so one bound only under the old name is still found.
+/// balthasar started inherits it and means *that* session. With no directory named, this process's
+/// own alone when it has one; otherwise both of the role's are searched and merged by age.
 #[must_use]
 pub fn candidates(dir: Option<&Path>) -> Vec<PathBuf> {
     if let Some(named) = std::env::var_os("MAGI_API_SOCKET").filter(|v| !v.is_empty()) {
         return vec![PathBuf::from(named)];
+    }
+    if let (None, Some(own)) = (dir, OWN.get()) {
+        return vec![own.clone()];
     }
     match dir {
         Some(dir) => listing(dir),

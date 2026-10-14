@@ -38,6 +38,41 @@ struct Ours {
 /// and the loop below stops the moment the child exits.
 const PATIENCE: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// The last lines the balthasar this process started wrote to its stderr, kept as they arrive so
+/// the pipe never fills.
+static SAID: Mutex<std::collections::VecDeque<String>> =
+    Mutex::new(std::collections::VecDeque::new());
+
+/// The thread reading that stderr.
+static DRAINING: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+
+/// How many of its lines are kept, and how long one may be.
+const KEPT: (usize, u64) = (16, 64 * 1024);
+
+/// Read `pipe` to its end on a thread of its own, logging each line and keeping the last few.
+fn drain(pipe: impl std::io::Read + Send + 'static) -> std::thread::JoinHandle<()> {
+    use std::io::{BufRead, Read};
+    std::thread::spawn(move || {
+        let mut pipe = std::io::BufReader::new(pipe);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            match pipe.by_ref().take(KEPT.1).read_until(b'\n', &mut line) {
+                Ok(0) | Err(_) => return,
+                Ok(_) => {}
+            }
+            let text = String::from_utf8_lossy(&line).trim_end().to_owned();
+            magi_model::noted!("memory: {text}");
+            if let Ok(mut said) = SAID.lock() {
+                said.push_back(text);
+                while said.len() > KEPT.0 {
+                    said.pop_front();
+                }
+            }
+        }
+    })
+}
+
 /// What came of trying to convene this session's store.
 #[derive(Debug)]
 pub enum Started {
@@ -96,7 +131,12 @@ pub async fn start(program: &str, instance: &str, project: &Path, agent: Option<
         .stderr(Stdio::piped())
         .spawn();
     let child = match child {
-        Ok(child) => child,
+        Ok(mut child) => {
+            if let (Some(pipe), Ok(mut reading)) = (child.stderr.take(), DRAINING.lock()) {
+                *reading = Some(drain(pipe));
+            }
+            child
+        }
         Err(why) => {
             return Started::Refused(format!("`{program} serve` could not be started: {why}"));
         }
@@ -182,20 +222,23 @@ fn exited() -> Option<std::process::ExitStatus> {
 /// What a balthasar that would not start said on its way out: the last line only, read after the
 /// child has exited, so the pipe is closed and this cannot block.
 fn last_words() -> String {
-    use std::io::Read;
-    let mut said = String::new();
-    if let Ok(mut held) = STARTED.lock()
-        && let Some(ours) = held.as_mut()
-        && let Some(pipe) = ours.child.stderr.as_mut()
-    {
-        let _ = pipe.read_to_string(&mut said);
+    // The child has exited, so its stderr ends shortly; the reader is given a moment to get there.
+    let reading = DRAINING.lock().ok().and_then(|mut held| held.take());
+    if let Some(reading) = reading {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        while !reading.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
-    said.lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
+    SAID.lock()
+        .ok()
+        .and_then(|said| {
+            said.iter()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .map(|line| line.trim().to_owned())
+        })
         .unwrap_or_default()
-        .trim()
-        .to_owned()
 }
 
 /// End the balthasar this process started and clear its path, reaping before the unlink: after
@@ -230,9 +273,11 @@ pub fn alive() -> bool {
 fn ended(Ours { mut child, sockets }: Ours) {
     let _ = child.kill();
     let _ = child.wait();
-    // Every name it may have answered under; absent when it never got as far as binding.
+    // Every name it may have answered under, and the lock it held each by; absent when it never
+    // got as far as binding. Reaped first, so nothing holds them now.
     for socket in &sockets {
         let _ = std::fs::remove_file(socket);
+        let _ = std::fs::remove_file(magi_ipc::lock_path(socket));
     }
 }
 
@@ -244,17 +289,10 @@ fn sweep_stale(dir: &Path) {
     }
 }
 
-/// Clear a socket at `path` that nothing is serving. Asked rather than merely dialled: the kernel
-/// accepts on behalf of a listener whose owner has stopped reading, so one `verbs` call settles it.
+/// Clear a socket at `path` that nothing is serving: only one whose connect is refused and whose
+/// lock nobody holds. A busy or full memory layer is another session's, alive, and stays.
 fn sweep(path: &Path) {
-    if !path.exists() {
-        return;
-    }
-    let answered = magi_ipc::family::blocking::Family::dial(path)
-        .is_ok_and(|mut open| open.call("verbs", Vec::new()).is_ok());
-    if !answered {
-        let _ = std::fs::remove_file(path);
-    }
+    let _ = magi_ipc::clear_stale(path);
 }
 
 #[cfg(test)]
@@ -271,6 +309,19 @@ mod tests {
         ALONE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// A socket file with nothing behind it. `mknod`, not a bind that is dropped: a `fork` on another
+    /// thread in between would carry the listening descriptor into a child that still accepts.
+    fn corpse(path: &std::path::Path) {
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            path,
+            rustix::fs::FileType::Socket,
+            rustix::fs::Mode::from_bits_truncate(0o600),
+            0,
+        )
+        .expect("mknod a socket");
     }
 
     /// A socket something is actually serving on: it accepts, and it answers. A bare `UnixListener`
@@ -316,9 +367,8 @@ mod tests {
         let _alone = alone();
         let dir = Scratch::new("magi-sweep-dead", "one");
         let path = dir.join("api@dead.sock");
-        {
-            let _listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
-        }
+
+        corpse(&path);
 
         sweep(&path);
         assert!(!path.exists(), "a socket nothing answers must be cleared");
@@ -328,9 +378,9 @@ mod tests {
     fn littered(name: &str) -> (Scratch, PathBuf, PathBuf) {
         let dir = Scratch::new("magi-sweep", name);
         let dead = dir.join("api@00000000000000000001-alpha.sock");
-        {
-            let _listener = std::os::unix::net::UnixListener::bind(&dead).expect("bind");
-        }
+
+        corpse(&dead);
+
         let live = dir.join("api@00000000000000000002-beta.sock");
         (dir, live, dead)
     }
@@ -376,6 +426,7 @@ mod tests {
         let older = dir.join("api@00000000000000000003-gamma-old.sock");
         let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
         let elder = std::os::unix::net::UnixListener::bind(&older).expect("bind");
+        std::fs::write(magi_ipc::lock_path(&socket), b"").expect("a lock it held");
         // A stand-in for balthasar: running and holding the socket open, so this is a kill.
         let child = Command::new("sleep")
             .arg("30")
@@ -395,6 +446,10 @@ mod tests {
         assert!(
             !older.exists(),
             "the name it also answered under outlived the session"
+        );
+        assert!(
+            !magi_ipc::lock_path(&socket).exists(),
+            "the lock it held outlived the session"
         );
         assert!(
             !Path::new(&format!("/proc/{id}")).exists(),
@@ -460,6 +515,45 @@ mod tests {
                 ),
             "an explicit socket means somebody else's balthasar — not ours to start, and not a \
              refusal either"
+        );
+    }
+
+    #[test]
+    fn a_memory_layer_that_says_a_great_deal_is_never_left_blocked_on_its_stderr() {
+        let _alone = alone();
+        let mut child = Command::new("sh")
+            .args([
+                "-c",
+                "head -c 300000 /dev/zero | tr '\\0' 'x' >&2; echo >&2; echo 'last-words-marker' >&2",
+            ])
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("a talkative child");
+        let reading = drain(child.stderr.take().expect("piped"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while child.try_wait().expect("wait").is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the child blocked on a full pipe"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        reading.join().expect("drained");
+        let said = SAID.lock().expect("said");
+        assert_eq!(said.back().map(String::as_str), Some("last-words-marker"));
+    }
+
+    #[tokio::test]
+    async fn a_memory_layer_too_busy_to_answer_keeps_its_socket() {
+        let _alone = alone();
+        // Bound and never reading: the kernel accepts for it, and nothing ever answers.
+        let dir = Scratch::new("magi-sweep-busy", "one");
+        let path = dir.join("api@busy.sock");
+        let _listening = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+        sweep(&path);
+        assert!(
+            path.exists(),
+            "another session's busy memory layer lost its socket"
         );
     }
 }

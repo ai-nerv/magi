@@ -12,6 +12,7 @@ use std::process::Command;
 /// A machine config and a project directory, kept apart.
 fn workspace(name: &str) -> Scratch {
     let dir = Scratch::new("magi-trust", name);
+    let _ = dir.private("run");
     install_config(&dir.join("config/magi"));
     std::fs::create_dir_all(dir.join("config/magi/tools")).expect("mkdir");
     std::fs::create_dir_all(dir.join("project")).expect("mkdir");

@@ -30,15 +30,41 @@ pub fn note(args: std::fmt::Arguments<'_>) {
 /// and `unsafe` is denied.
 pub fn note_to(path: &std::path::Path, args: std::fmt::Arguments<'_>) {
     use std::io::Write;
-    let line = stamped(&args.to_string(), std::time::SystemTime::now());
+    use std::os::unix::fs::OpenOptionsExt;
+    let line = stamped(&redacted(&args.to_string()), std::time::SystemTime::now());
     if let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
+        .mode(0o600)
         .open(path)
     {
         // One write per line, so lines from several programs appending to one file do not interleave.
         let _ = file.write_all(format!("{line}\n").as_bytes());
     }
+}
+
+/// The shortest run that is taken for a secret: a key or a token is a long word of letters and
+/// digits, and nothing a log line needs to say is.
+const SECRET: usize = 32;
+
+/// `said`, with every word that looks like a secret replaced.
+fn redacted(said: &str) -> String {
+    let wordy = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+    let mut out = String::with_capacity(said.len());
+    let mut rest = said;
+    while let Some(start) = rest.find(wordy) {
+        out.push_str(&rest[..start]);
+        let word = &rest[start..];
+        let end = word.find(|c: char| !wordy(c)).unwrap_or(word.len());
+        let (word, after) = word.split_at(end);
+        let secret = word.len() >= SECRET
+            && word.chars().any(|c| c.is_ascii_digit())
+            && word.chars().any(|c| c.is_ascii_alphabetic());
+        out.push_str(if secret { "[redacted]" } else { word });
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 /// One line as it lands: when, who, and what, kept to one line whatever it said.
@@ -93,7 +119,7 @@ macro_rules! noted {
 
 #[cfg(test)]
 mod tests {
-    use super::{FAMILY, VARIABLE, note_to, timestamp};
+    use super::{FAMILY, VARIABLE, note_to, redacted, timestamp};
     use crate::scratch::Scratch;
 
     #[test]
@@ -138,5 +164,27 @@ mod tests {
         let at = Scratch::file("magi-noted", "quiet", "log.txt");
         noted!("nobody asked");
         assert!(!at.exists(), "{}", at.display());
+    }
+
+    #[test]
+    fn a_log_is_its_owners_alone_and_carries_no_secret() {
+        use std::os::unix::fs::MetadataExt;
+        let at = Scratch::file("magi-noted", "private", "log.txt");
+        let token = "0f".repeat(32);
+        note_to(&at, format_args!("fork: minted {{\"token\":\"{token}\"}}"));
+        let held = std::fs::read_to_string(&at).expect("the log");
+        assert!(!held.contains(&token), "{held}");
+        assert!(held.contains("[redacted]"), "{held}");
+        assert_eq!(std::fs::metadata(&at).expect("stat").mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn what_a_log_line_needs_to_say_survives_redaction() {
+        let said = "session 00000000001789123456-beef00042 bound api@x.sock in 12ms";
+        assert_eq!(redacted(said), said);
+        assert_eq!(
+            redacted("key sk-ant-0123456789abcdefghijklmnopqrstuv end"),
+            "key [redacted] end"
+        );
     }
 }

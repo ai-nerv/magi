@@ -138,35 +138,42 @@ impl Worker {
                         });
                         announced = Some(id);
                     }
-                    let outcome = match job.kind {
-                        Work::Turn => {
-                            // What balthasar wants done between turns runs beside the next one.
-                            let over = crate::helping::between(
-                                Arc::clone(&job.session),
-                                backend.clone(),
-                                Arc::clone(&scribe),
-                            )
-                            .await;
-                            let outcome =
-                                turn::run(&job.session, &backend, &registry, &*ops, &scribe).await;
-                            job.session.lock().await.rest();
-                            let _ = over.send(());
-                            outcome.map_err(|why| why.to_string())
-                        }
-                        Work::TakeOn(grants) => {
-                            ops.take_on(grants);
-                            Ok(())
-                        }
-                        Work::Declare => {
-                            let cancel = job.session.lock().await.cancel();
-                            tokio::select! {
-                                biased;
-                                () = cancel.requested() => {},
-                                () = declare(&job.session, &backend, &*ops) => {},
+                    let outcome = crate::catching::caught(async {
+                        match job.kind {
+                            Work::Turn => {
+                                // What balthasar wants done between turns runs beside the next one.
+                                let over = crate::helping::between(
+                                    Arc::clone(&job.session),
+                                    backend.clone(),
+                                    Arc::clone(&scribe),
+                                )
+                                .await;
+                                let outcome =
+                                    turn::run(&job.session, &backend, &registry, &*ops, &scribe)
+                                        .await;
+                                job.session.lock().await.rest();
+                                let _ = over.send(());
+                                outcome.map_err(|why| why.to_string())
                             }
-                            Ok(())
+                            Work::TakeOn(grants) => {
+                                ops.take_on(handed(&*ops, &grants));
+                                Ok(())
+                            }
+                            Work::Declare => {
+                                let cancel = job.session.lock().await.cancel();
+                                tokio::select! {
+                                    biased;
+                                    () = cancel.requested() => {},
+                                    () = declare(&job.session, &backend, &*ops) => {},
+                                }
+                                Ok(())
+                            }
                         }
-                    };
+                    })
+                    .await
+                    .unwrap_or_else(|why| {
+                        Err(format!("this turn stopped on an internal error: {why}"))
+                    });
                     let _ = job.done.send(outcome);
                 }
             });
@@ -333,6 +340,14 @@ async fn declare(session: &Arc<Mutex<Session>>, backend: &Backend, ops: &dyn mag
     }
 }
 
+/// What a handover from an adopting session may add: only what this session already holds.
+fn handed(
+    ops: &dyn magi_tools::Ops,
+    offered: &[magi_proto::permit::Grant],
+) -> Vec<magi_proto::permit::Grant> {
+    magi_proto::permit::narrow(&ops.held(), offered)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,5 +403,31 @@ mod tests {
             })
             .expect("commit");
         assert_eq!(session.lock().await.entries().len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod handing {
+    use magi_proto::permit::{Grant, Scope};
+
+    fn program(name: &str) -> Grant {
+        Grant {
+            verb: "run".into(),
+            scope: Scope::Program {
+                program: name.into(),
+            },
+        }
+    }
+
+    #[test]
+    fn a_handover_never_adds_what_the_session_did_not_hold() {
+        let dir = magi_model::scratch::Scratch::new("magi-handover", "one");
+        let ops = magi_tools::ops::Real::gated(
+            dir.to_path_buf(),
+            magi_tools::permit::Ledger::with(vec![program("git")]),
+            std::sync::Arc::new(magi_tools::approve::DenyAll),
+        );
+        let offered = [program("git"), program("rm")];
+        assert_eq!(super::handed(&ops, &offered), vec![program("git")]);
     }
 }

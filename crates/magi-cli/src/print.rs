@@ -88,6 +88,7 @@ pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
             from_cursor: FROM_END,
             // No terminal and nobody watching, so no rows are reserved for a surface.
             draws: false,
+            key: magi_ipc::read_key(socket),
         })
         .await?;
     if !matches!(
