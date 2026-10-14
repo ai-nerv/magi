@@ -132,7 +132,7 @@ for verb in $listed; do
   case "$verb" in
     # Verbs whose whole job is to hold a stream or take over the terminal cannot be probed by
     # running them; they are covered by the tests in their own repository.
-    serve|surface|ask|run|fork) continue ;;
+    serve|surface|ask|run|fork|mcp) continue ;;
   esac
   out=$("$prog" "$verb" 2>&1 </dev/null || true)
   case "$out" in
@@ -170,7 +170,7 @@ esac
 refused_flag=""
 for verb in $listed; do
   case "$verb" in
-    serve|surface|ask|run|fork) continue ;;
+    serve|surface|ask|run|fork|mcp) continue ;;
   esac
   for how in --json --cbor; do
     said=$("$prog" "$verb" "$how" 2>&1 </dev/null || true)
