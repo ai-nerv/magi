@@ -282,6 +282,7 @@ fn serving(
         .arg(project)
         .arg("--ui")
         .arg(ui)
+        .env(magi_host::driving::GIVEN, magi_host::driving::given_dir())
         .envs(talk.map(|talk| (TALK.to_owned(), talk.to_owned())));
     if let Some(name) = role.name {
         serving.arg("--role").arg(name);
@@ -326,6 +327,7 @@ impl Melchior {
             let _ = child.kill();
             return None;
         };
+        magi_host::coordinated_at(std::path::Path::new(&at));
 
         let told = child.stdin.take();
         Some((

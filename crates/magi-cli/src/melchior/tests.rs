@@ -473,3 +473,14 @@ fn the_secret_goes_to_serve_in_the_shape_its_pipe_reads() {
         serde_json::json!({ "event": "token", "token": "cafe" })
     );
 }
+
+#[test]
+fn serve_reads_this_sessions_settings_and_no_other_sessions() {
+    let screen = a_screen("magi");
+    let spawn = serving("melchior", "magi", None, &screen, Role::default());
+    let given = spawn
+        .get_envs()
+        .find(|(name, _)| *name == magi_host::driving::GIVEN)
+        .and_then(|(_, value)| value.map(std::path::PathBuf::from));
+    assert_eq!(given, Some(magi_host::driving::given_dir()));
+}

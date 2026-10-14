@@ -171,6 +171,7 @@ async fn asking(
     // JSON rather than CBOR, though melchior reads both: what crosses here is read constantly.
     let mut child = tokio::process::Command::new(program)
         .arg("ask")
+        .env(crate::driving::GIVEN, crate::driving::given_dir())
         .arg("--json")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -339,7 +340,10 @@ pub async fn value(
 /// melchior is not installed or would not answer, which is not an error.
 pub async fn cards(program: &str) -> Vec<magi_proto::ask::Card> {
     let mut asking = tokio::process::Command::new(program);
-    asking.arg("models").arg("--json");
+    asking
+        .arg("models")
+        .arg("--json")
+        .env(crate::driving::GIVEN, crate::driving::given_dir());
     let out = match crate::driving::ran(asking, None, crate::driving::ASKED).await {
         Ok(out) => out,
         Err(why) => {
@@ -376,6 +380,7 @@ pub(crate) async fn refresh_cards(
     let mut command = tokio::process::Command::new(program);
     command
         .args(["models", "--json", "--refresh"])
+        .env(crate::driving::GIVEN, crate::driving::given_dir())
         .stderr(std::process::Stdio::null())
         .kill_on_drop(true);
     let out = tokio::time::timeout(std::time::Duration::from_secs(30), command.output())

@@ -4,16 +4,11 @@ use magi_model::StopReason;
 use magi_proto::Entry;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
-use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
 const AUTO_BYTES: usize = 40_000;
 
-async fn tool(
-    backend: &Backend,
-    arguments: &[String],
-    input: Option<&str>,
-) -> Result<String, String> {
+async fn tool(backend: &Backend, arguments: &[String]) -> Result<String, String> {
     let program = backend
         .environ
         .get("MAGI_COORD_PROGRAM")
@@ -25,23 +20,10 @@ async fn tool(
         .envs(&backend.environ)
         .current_dir(&backend.cwd)
         .kill_on_drop(true)
-        .stdin(if input.is_some() {
-            std::process::Stdio::piped()
-        } else {
-            std::process::Stdio::null()
-        })
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let transfer = async {
-        let mut child = command.spawn()?;
-        if let Some(body) = input {
-            let mut stdin = child.stdin.take().expect("piped report input");
-            stdin.write_all(body.as_bytes()).await?;
-            stdin.shutdown().await?;
-        }
-        child.wait_with_output().await
-    };
-    let output = tokio::time::timeout(std::time::Duration::from_secs(10), transfer)
+    let output = tokio::time::timeout(std::time::Duration::from_secs(10), command.output())
         .await
         .map_err(|_| "report coordination timed out".to_owned())?
         .map_err(|why| format!("report coordination could not run: {why}"))?;
@@ -65,7 +47,6 @@ async fn read(backend: &Backend, who: &str) -> Result<serde_json::Value, String>
             format!("--who={who}"),
             "--about=json".into(),
         ],
-        None,
     )
     .await?;
     serde_json::from_str(&body).map_err(|why| format!("report metadata could not be read: {why}"))
@@ -242,10 +223,49 @@ pub(crate) async fn finish(
     let body = format!(
         "Outcome: {status}\nScope: this turn; delegated children may still be working.\nHarness-generated end-of-turn report.{error}{tools}\n\n{findings}"
     );
+    hand_in(backend, body).await
+}
+
+/// Where this session's melchior answers, once it has said.
+static COORDINATOR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Say where this session's melchior answers.
+pub(crate) fn coordinated_at(socket: &std::path::Path) {
+    let _ = COORDINATOR.set(socket.to_path_buf());
+}
+
+/// The longest report handed in on argv: one argument may not pass 128 KiB.
+const ARGV_MOST: usize = 120 * 1024;
+
+/// Hand in a report as `--message`, or over this session's own socket when it is too long for an
+/// argument. With no socket to use, the end of a long one is cut and said to be.
+async fn hand_in(backend: &Backend, mut body: String) -> Result<(), String> {
+    let coordinated = !backend.environ.contains_key("MAGI_COORD_PROGRAM");
+    if body.len() > ARGV_MOST
+        && coordinated
+        && let Some(socket) = COORDINATOR.get()
+    {
+        let mut family = magi_ipc::family::Family::dial(socket)
+            .await
+            .map_err(|why| format!("report coordination could not reach melchior: {why}"))?;
+        let asked = serde_json::json!({ "verb": "report", "message": body });
+        return family
+            .call_within("tool", vec![asked], std::time::Duration::from_secs(10))
+            .await
+            .map(|_| ())
+            .map_err(|why| format!("report coordination failed: {why}"));
+    }
+    if body.len() > ARGV_MOST {
+        let mut end = ARGV_MOST - 128;
+        while !body.is_char_boundary(end) {
+            end -= 1;
+        }
+        body.truncate(end);
+        body.push_str("\n[The report was cut here: too long to hand in on a command line.]");
+    }
     tool(
         backend,
-        &["--verb=report".into(), "--about=-".into()],
-        Some(&body),
+        &["--verb=report".into(), format!("--message={body}")],
     )
     .await?;
     Ok(())
@@ -275,5 +295,48 @@ mod tests {
             Vec::new(),
         )));
         assert_eq!(finish(&session, &backend, 9, &[], &Ok(())).await, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn a_report_too_long_for_argv_is_still_handed_in_as_an_argument() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = magi_model::scratch::Scratch::new("magi-handin", "long");
+        let coord = dir.join("coord");
+        let published = dir.join("published");
+        std::fs::write(
+            &coord,
+            format!(
+                "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in --message=*) printf '%s' \"${{a#--message=}}\" > {};; esac; done\n",
+                published.display()
+            ),
+        )
+        .expect("write");
+        std::fs::set_permissions(&coord, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        while let Err(why) = std::process::Command::new(&coord).status() {
+            assert_eq!(why.raw_os_error(), Some(26), "{why}");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let mut catalog = crate::catalog::Catalog::empty();
+        catalog.cards = vec![magi_proto::ask::Card {
+            id: "fake/m".into(),
+            provider: "fake".into(),
+            name: "m".into(),
+            api: "openai-completions".into(),
+            context_window: Some(1000),
+            max_output: Some(100),
+            reasons: false,
+            ready: true,
+            needs: None,
+        }];
+        let mut backend = catalog.backend("fake/m").expect("a backend");
+        backend
+            .environ
+            .insert("MAGI_COORD_PROGRAM".into(), coord.display().to_string());
+        hand_in(&backend, "é".repeat(200 * 1024))
+            .await
+            .expect("handed in");
+        let said = std::fs::read_to_string(&published).expect("published");
+        assert!(said.len() <= ARGV_MOST, "{}", said.len());
+        assert!(said.ends_with("too long to hand in on a command line.]"));
     }
 }
