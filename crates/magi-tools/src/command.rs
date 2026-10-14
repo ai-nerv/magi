@@ -296,7 +296,7 @@ fn drain<R: Read + Send + 'static>(mut pipe: R) -> std::thread::JoinHandle<Strin
         while buffer.len() < MAX_READ {
             match pipe.read(&mut chunk) {
                 Ok(0) | Err(_) => break,
-                Ok(read) => buffer.extend_from_slice(&chunk[..read]),
+                Ok(read) => buffer.extend_from_slice(chunk.get(..read).unwrap_or(&chunk)),
             }
         }
         buffer.truncate(MAX_READ);

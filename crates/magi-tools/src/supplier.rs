@@ -145,7 +145,7 @@ fn rows(body: &[u8]) -> Result<Vec<serde_json::Value>, String> {
         Some(Some(n)) if usize::try_from(n).is_ok_and(|n| n == result.len()) => Ok(result.clone()),
         Some(_) => Err(format!(
             "said it answered {} rows and sent {}",
-            reply["n"],
+            reply.get("n").unwrap_or(&serde_json::Value::Null),
             result.len()
         )),
     }

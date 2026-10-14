@@ -212,8 +212,8 @@ pub(super) fn write_frame(to: &mut UnixStream, body: &[u8]) -> Result<(), Failed
     frame.extend_from_slice(body);
     let _ = to.set_write_timeout(Some(MID_FRAME));
     let mut written = 0;
-    while written < frame.len() {
-        match to.write(&frame[written..]) {
+    while let Some(rest) = frame.get(written..).filter(|rest| !rest.is_empty()) {
+        match to.write(rest) {
             Ok(0) => break,
             Ok(n) => written += n,
             Err(why) if why.kind() == std::io::ErrorKind::Interrupted => {}
@@ -237,8 +237,8 @@ pub(super) fn read_frame(from: &mut UnixStream, cancel: &dyn Cancel) -> Result<V
     let mut begun: Option<Instant> = None;
     let mut have = 0;
     let mut fill = |into: &mut [u8], have: &mut usize, begun: &mut Option<Instant>| {
-        while *have < into.len() {
-            match from.read(&mut into[*have..]) {
+        while let Some(rest) = into.get_mut(*have..).filter(|rest| !rest.is_empty()) {
+            match from.read(rest) {
                 Ok(0) => return Err("the socket closed mid-reply".to_owned()),
                 Ok(n) => {
                     *have += n;
