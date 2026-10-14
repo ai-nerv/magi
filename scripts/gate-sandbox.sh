@@ -200,6 +200,10 @@ for vm in '^pub fn apply[(]' '^pub fn apply_project[(]'; do
     echo "gate-sandbox: a VM's setmetatable no longer refuses __gc" >&2
     fail=1
   }
+  body "$SANDBOX" "$vm" | grep -q 'hide_userdata_metatables(ctx)' || {
+    echo "gate-sandbox: a VM's getmetatable hands out the metatable errors share" >&2
+    fail=1
+  }
 done
 if code "$ENGINE" | grep -q 'run_finalizers('; then
   echo "gate-sandbox: $ENGINE runs finalizers, which no budget meters" >&2

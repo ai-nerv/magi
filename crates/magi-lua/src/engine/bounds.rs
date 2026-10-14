@@ -129,12 +129,18 @@ fn no_route_past_the_guard_enrols_an_object_for_a_finalizer() {
                setmetatable({ string.rep('y', 1024) }, late)\n\
                late.__gc = gc.__gc\n\
              end\n\
-             magi.took = took",
+             local _, raised = pcall(string.rep)\n\
+             local shared = getmetatable(raised)\n\
+             if type(shared) == 'table' then shared.__gc = gc.__gc end\n\
+             for i = 1, 20000 do pcall(string.rep, string.rep('z', 256) .. i, {}) end\n\
+             magi.took, magi.raised, magi.shared = took, type(raised), type(shared)",
             "enrol.lua",
         )
         .expect("runs");
     engine.harvest();
     assert_eq!(engine.config().number("took"), Some(0.0));
+    assert_eq!(engine.config().string("raised"), Some("userdata"));
+    assert_eq!(engine.config().string("shared"), Some("nil"));
     engine.lua.gc_collect();
     engine.lua.gc_collect();
     let after = engine.lua.total_memory();

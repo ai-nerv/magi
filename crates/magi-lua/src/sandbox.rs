@@ -76,7 +76,27 @@ pub fn apply_project(lua: &mut Lua) {
             }
         }
         guard(ctx, "setmetatable", finalized);
+        hide_userdata_metatables(ctx);
     });
+}
+
+/// `getmetatable`, answering `nil` for a userdata: luna attaches one shared metatable to every
+/// error it raises as a userdata, and `__gc` set on it would enrol each later error.
+fn hide_userdata_metatables(ctx: Context<'_>) {
+    let Value::Function(original) = ctx.get_global_value("getmetatable") else {
+        return;
+    };
+    let hidden = Callback::from_fn_with(&ctx, original, |original, ctx, _exec, mut stack| {
+        if matches!(stack.get(0), Value::UserData(_)) {
+            stack.replace(ctx, Value::Nil);
+            return Ok(CallbackReturn::Return);
+        }
+        Ok(CallbackReturn::Call {
+            function: *original,
+            then: None,
+        })
+    });
+    ctx.set_global("getmetatable", hidden);
 }
 
 /// A check on a call's first two arguments, naming why it refuses them.
@@ -142,6 +162,7 @@ pub fn apply(lua: &mut Lua) {
             );
         }
         guard(ctx, "setmetatable", finalized);
+        hide_userdata_metatables(ctx);
         guard(ctx, "load", binary);
     });
 }
@@ -267,6 +288,10 @@ mod tests {
         assert_eq!(probe(kept), "7");
         assert_eq!(project_probe(kept), "7");
         assert_eq!(probe("debug"), "nil");
+        let shared = "type(getmetatable(select(2, pcall(string.rep))))";
+        assert_eq!(probe(shared), "nil");
+        assert_eq!(project_probe(shared), "nil");
+        assert_eq!(project_probe("type(getmetatable(''))"), "table");
     }
 
     #[test]
