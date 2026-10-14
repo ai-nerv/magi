@@ -14,6 +14,7 @@ const PATIENCE: Duration = Duration::from_millis(2000);
 pub struct Family {
     stream: Option<UnixStream>,
     path: PathBuf,
+    key: Option<super::keys::Key>,
 }
 
 /// Open a stream with both deadlines set, served by this user or not at all.
@@ -27,12 +28,13 @@ fn opened(path: &Path) -> Result<UnixStream, Fault> {
 }
 
 impl Family {
-    /// Connect to a socket by path.
+    /// Connect to a socket by path. Every call carries the key held for it, if one is.
     pub fn dial(path: impl AsRef<Path>) -> Result<Self, Fault> {
         let path = path.as_ref();
         Ok(Self {
             stream: Some(opened(path)?),
             path: path.to_path_buf(),
+            key: super::keys::held_for(path),
         })
     }
 
@@ -62,13 +64,30 @@ impl Family {
     }
 
     /// Send one call and wait for its answer. A call over the frame cap is refused here and
-    /// never sent.
+    /// never sent; one refused for its key is made once more with a newly published key.
     pub fn call(
         &mut self,
         verb: &str,
         args: Vec<serde_json::Value>,
     ) -> Result<Vec<serde_json::Value>, Fault> {
-        let frame = frame(crate::Wire::Json, verb, &args)?;
+        let reply = self.once(verb, &args);
+        if matches!(&reply, Err(Fault::Refused(why)) if why == super::keys::REFUSED)
+            && let Some(fresh) = super::keys::published(&self.path)
+            && self.key.as_ref().map(super::keys::Key::as_str) != Some(fresh.as_str())
+        {
+            self.key = Some(fresh);
+            return self.once(verb, &args);
+        }
+        reply
+    }
+
+    /// One call and its reply, the connection kept only when the reply came back whole.
+    fn once(
+        &mut self,
+        verb: &str,
+        args: &[serde_json::Value],
+    ) -> Result<Vec<serde_json::Value>, Fault> {
+        let frame = frame(crate::Wire::Json, verb, args, self.key.as_ref())?;
         let mut stream = match self.stream.take() {
             Some(stream) => stream,
             None => opened(&self.path)?,

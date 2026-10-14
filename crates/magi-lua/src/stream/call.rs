@@ -22,13 +22,21 @@ pub(super) fn patience<'gc>(ctx: Context<'gc>, opts: Value<'gc>, fallback: Durat
     }
 }
 
-/// `request` as one framed JSON call, or why it was not sent.
-pub(super) fn framed<'gc>(ctx: Context<'gc>, request: Value<'gc>) -> Result<Vec<u8>, String> {
+/// `request` as one framed JSON call, sealed with the key held for `keyed` when there is one, or
+/// why it was not sent.
+pub(super) fn framed<'gc>(
+    ctx: Context<'gc>,
+    request: Value<'gc>,
+    keyed: Option<&std::path::Path>,
+) -> Result<Vec<u8>, String> {
     if !matches!(request, Value::Table(_)) {
         return Err("call needs a request table".to_owned());
     }
-    let json = crate::convert::json_from_lua(ctx, request, 0)
+    let mut json = crate::convert::json_from_lua(ctx, request, 0)
         .ok_or_else(|| "this request cannot be written as JSON; it was not sent".to_owned())?;
+    if let Some(socket) = keyed {
+        magi_tools::family::seal(socket, &mut json);
+    }
     let body = serde_json::to_vec(&json).map_err(|why| format!("{why}; it was not sent"))?;
     frame(&body)
 }

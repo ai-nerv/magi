@@ -17,12 +17,25 @@ struct Call<'a> {
     call: &'a str,
     #[serde(skip_serializing_if = "<[_]>::is_empty")]
     args: &'a [serde_json::Value],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    key: Option<&'a str>,
 }
 
-/// A call framed for sending, or refused here when its body is past [`MAX_FRAME_BYTES`].
-fn frame(wire: crate::Wire, verb: &str, args: &[serde_json::Value]) -> Result<Vec<u8>, Fault> {
+/// A call framed for sending, with the key held for its socket when there is one, or refused here
+/// when its body is past [`MAX_FRAME_BYTES`].
+fn frame(
+    wire: crate::Wire,
+    verb: &str,
+    args: &[serde_json::Value],
+    key: Option<&keys::Key>,
+) -> Result<Vec<u8>, Fault> {
+    let key = key.map(keys::Key::as_str);
     let body = wire
-        .write(&Call { call: verb, args })
+        .write(&Call {
+            call: verb,
+            args,
+            key,
+        })
         .map_err(|why| Fault::Malformed(format!("encoding {verb}: {why}")))?;
     let len = u32::try_from(body.len())
         .ok()
@@ -34,11 +47,17 @@ fn frame(wire: crate::Wire, verb: &str, args: &[serde_json::Value]) -> Result<Ve
     Ok(framed)
 }
 
-/// Whether a call of `verb` with `args` fits in one frame, measured in JSON, the larger encoding.
+/// Whether a call of `verb` with `args` fits in one frame with a key beside it, measured in JSON,
+/// the larger encoding.
 #[must_use]
 pub fn fits(verb: &str, args: &[serde_json::Value]) -> bool {
+    const ROOM_FOR_A_KEY: &str = "0000000000000000000000000000000000000000000000000000000000000000";
     crate::Wire::Json
-        .write(&Call { call: verb, args })
+        .write(&Call {
+            call: verb,
+            args,
+            key: Some(ROOM_FOR_A_KEY),
+        })
         .is_ok_and(|body| body.len() <= MAX_FRAME_BYTES)
 }
 
@@ -108,10 +127,12 @@ pub struct Family {
     /// Which encoding calls go out in; replies are read in whichever came back. JSON by default.
     wire: crate::Wire,
     path: PathBuf,
+    /// What every call carries, when this process holds a key for the socket.
+    key: Option<keys::Key>,
 }
 
 impl Family {
-    /// Connect to a socket by path.
+    /// Connect to a socket by path. Every call carries the key held for it, if one is.
     pub async fn dial(path: impl AsRef<Path>) -> Result<Self, Fault> {
         let path = path.as_ref().to_path_buf();
         let stream = connected(&path).await?;
@@ -119,6 +140,7 @@ impl Family {
             stream: Some(stream),
             scratch: Vec::new(),
             wire: crate::Wire::default(),
+            key: keys::held_for(&path),
             path,
         })
     }
@@ -164,13 +186,34 @@ impl Family {
 
     /// The same, waiting `patience` rather than the clock a feature keeps. For the calls whose
     /// failure costs the conversation rather than a feature — see [`DURABLE`].
+    ///
+    /// A call refused for its key is made once more with the key the memory layer now publishes
+    /// beside its socket, when that is a different one: the layer was started again by another.
     pub async fn call_within(
         &mut self,
         verb: &str,
         args: Vec<serde_json::Value>,
         patience: std::time::Duration,
     ) -> Result<Vec<serde_json::Value>, Fault> {
-        let frame = frame(self.wire, verb, &args)?;
+        let reply = self.once(verb, &args, patience).await;
+        if matches!(&reply, Err(Fault::Refused(why)) if why == keys::REFUSED)
+            && let Some(fresh) = keys::published(&self.path)
+            && self.key.as_ref().map(keys::Key::as_str) != Some(fresh.as_str())
+        {
+            self.key = Some(fresh);
+            return self.once(verb, &args, patience).await;
+        }
+        reply
+    }
+
+    /// One call and its reply, the connection kept only when the reply came back whole.
+    async fn once(
+        &mut self,
+        verb: &str,
+        args: &[serde_json::Value],
+        patience: std::time::Duration,
+    ) -> Result<Vec<serde_json::Value>, Fault> {
+        let frame = frame(self.wire, verb, args, self.key.as_ref())?;
         let mut stream = match self.stream.take() {
             Some(stream) => stream,
             None => connected(&self.path).await?,
@@ -381,7 +424,9 @@ fn unwrap(reply: &serde_json::Value, verb: &str) -> Result<Vec<serde_json::Value
 }
 
 pub mod blocking;
+mod keys;
 mod looking;
+pub use keys::{hold_key, holds_key, seal, sealed};
 pub use looking::{candidates, legacy_socket_dir, named, own, socket_dir, socket_dirs, sockets_in};
 
 #[cfg(test)]
@@ -561,11 +606,11 @@ mod tests {
     #[test]
     fn a_call_past_the_cap_is_refused_and_one_inside_it_is_framed() {
         let huge = vec![json!("x".repeat(MAX_FRAME_BYTES))];
-        let refused = frame(crate::Wire::Json, "observe", &huge).expect_err("refused");
+        let refused = frame(crate::Wire::Json, "observe", &huge, None).expect_err("refused");
         assert!(matches!(refused, Fault::Failed(_)), "{refused:?}");
         assert!(refused.to_string().contains("frame cap"), "{refused}");
 
-        let framed = frame(crate::Wire::Json, "verbs", &[]).expect("framed");
+        let framed = frame(crate::Wire::Json, "verbs", &[], None).expect("framed");
         assert_eq!(
             &framed[4..],
             br#"{"call":"verbs"}"#,
@@ -575,6 +620,116 @@ mod tests {
             u32::from_be_bytes([framed[0], framed[1], framed[2], framed[3]]),
             16
         );
+    }
+
+    /// What a peer was sent, one call per connection, answered with its verb.
+    fn recording(path: &Path, calls: usize) -> std::thread::JoinHandle<Vec<serde_json::Value>> {
+        use std::io::{Read, Write};
+
+        let listener = std::os::unix::net::UnixListener::bind(path).expect("bind");
+        std::thread::spawn(move || {
+            let mut heard = Vec::new();
+            for _ in 0..calls {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
+                let mut head = [0_u8; 4];
+                stream.read_exact(&mut head).expect("head");
+                let mut body = vec![0_u8; u32::from_be_bytes(head) as usize];
+                stream.read_exact(&mut body).expect("body");
+                let call: serde_json::Value = serde_json::from_slice(&body).expect("json");
+                let reply = json!({ "ok": true, "n": 1, "result": [call["call"].clone()] });
+                let reply = reply.to_string();
+                let mut framed = (reply.len() as u32).to_be_bytes().to_vec();
+                framed.extend_from_slice(reply.as_bytes());
+                stream.write_all(&framed).expect("reply");
+                heard.push(call);
+            }
+            heard
+        })
+    }
+
+    #[tokio::test]
+    async fn every_call_to_a_socket_with_a_held_key_carries_it_and_no_other_does() {
+        let dir = magi_model::scratch::Scratch::new("magi-family-keyed", "one");
+        let (ours, theirs) = (dir.join("api@ours.sock"), dir.join("api@theirs.sock"));
+        let key = crate::random_hex(32).expect("random");
+        hold_key(&ours, &key);
+        let (heard_ours, heard_theirs) = (recording(&ours, 1), recording(&theirs, 1));
+
+        Family::dial(&ours)
+            .await
+            .expect("dial")
+            .call("verbs", Vec::new())
+            .await
+            .expect("verbs");
+        blocking::Family::dial(&theirs)
+            .expect("dial")
+            .call("verbs", Vec::new())
+            .expect("verbs");
+
+        let ours = heard_ours.join().expect("ours");
+        assert_eq!(ours[0]["key"], json!(key));
+        let theirs = heard_theirs.join().expect("theirs");
+        assert!(theirs[0].get("key").is_none(), "{}", theirs[0]);
+    }
+
+    /// A memory layer started again by another: it answers a write only with `key`, and refuses
+    /// any other the way balthasar does. Hands back the key each call carried.
+    fn restarted(path: &Path, key: &str) -> std::thread::JoinHandle<Vec<serde_json::Value>> {
+        use std::io::{Read, Write};
+
+        let listener = std::os::unix::net::UnixListener::bind(path).expect("bind");
+        let key = key.to_owned();
+        std::thread::spawn(move || {
+            let mut carried = Vec::new();
+            let Ok((mut stream, _)) = listener.accept() else {
+                return carried;
+            };
+            for _ in 0..2 {
+                let mut head = [0_u8; 4];
+                if stream.read_exact(&mut head).is_err() {
+                    break;
+                }
+                let mut body = vec![0_u8; u32::from_be_bytes(head) as usize];
+                stream.read_exact(&mut body).expect("body");
+                let call: serde_json::Value = serde_json::from_slice(&body).expect("json");
+                carried.push(call["key"].clone());
+                let reply = if call["key"] == json!(key) {
+                    json!({ "ok": true, "n": 1, "result": [call["call"].clone()] })
+                } else {
+                    json!({ "ok": false, "fault": "refused", "error": keys::REFUSED })
+                };
+                let reply = reply.to_string();
+                let mut framed = (reply.len() as u32).to_be_bytes().to_vec();
+                framed.extend_from_slice(reply.as_bytes());
+                stream.write_all(&framed).expect("reply");
+            }
+            carried
+        })
+    }
+
+    #[tokio::test]
+    async fn a_write_refused_for_its_key_is_made_again_with_the_key_now_published() {
+        use std::io::Write;
+        let dir = magi_model::scratch::Scratch::new("magi-family-rekeyed", "one");
+        let socket = dir.join("api@again.sock");
+        let (old, new) = (
+            crate::random_hex(32).expect("random"),
+            crate::random_hex(32).expect("random"),
+        );
+        hold_key(&socket, &old);
+        crate::private_file(&crate::key_path(&socket))
+            .expect("create")
+            .write_all(new.as_bytes())
+            .expect("write");
+        let served = restarted(&socket, &new);
+
+        let mut open = Family::dial(&socket).await.expect("dial");
+        let answered = open.call("observe", Vec::new()).await.expect("observe");
+        assert_eq!(answered, vec![json!("observe")]);
+        drop(open);
+        assert_eq!(served.join().expect("served"), vec![json!(old), json!(new)]);
     }
 
     /// A caller that gives up on a call leaves its answer in the stream. Read as the next call's,

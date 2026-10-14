@@ -76,7 +76,9 @@ pub fn table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
             Ok(socket) => {
                 let _ = socket.set_read_timeout(Some(timeout));
                 let _ = socket.set_write_timeout(Some(timeout));
-                let handle = handle_table(ctx, Rc::new(RefCell::new(Some(socket))), timeout);
+                let keyed = magi_tools::family::holds_key(&path).then_some(path);
+                let socket = Rc::new(RefCell::new(Some(socket)));
+                let handle = handle_table(ctx, socket, timeout, keyed);
                 stack.replace(ctx, handle);
             }
             Err(e) => {
@@ -90,15 +92,22 @@ pub fn table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
 }
 
 /// One connection's methods. `timeout` is what `send` and `recv` wait, and what `call` waits when
-/// it is given no deadline.
-fn handle_table<'gc>(ctx: Context<'gc>, socket: Handle, timeout: Duration) -> Table<'gc> {
+/// it is given no deadline. `keyed` names the socket when this process holds its key: a whole call
+/// sent on it goes out with the key added, which the script never sees.
+fn handle_table<'gc>(
+    ctx: Context<'gc>,
+    socket: Handle,
+    timeout: Duration,
+    keyed: Option<std::path::PathBuf>,
+) -> Table<'gc> {
     let handle = Table::new(&ctx);
 
     let held = Rc::clone(&socket);
+    let sealing = keyed.clone();
     let call = Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
         let (_self, request, opts): (Value, Value, Value) = stack.consume(ctx)?;
         let deadline = std::time::Instant::now() + call::patience(ctx, opts, timeout);
-        let frame = match call::framed(ctx, request) {
+        let frame = match call::framed(ctx, request, sealing.as_deref()) {
             Ok(frame) => frame,
             Err(why) => {
                 let why = luna::String::from_slice(&ctx, why.as_bytes());
@@ -142,8 +151,11 @@ fn handle_table<'gc>(ctx: Context<'gc>, socket: Handle, timeout: Duration) -> Ta
             stack.replace(ctx, (Value::Nil, "the connection is closed"));
             return Ok(CallbackReturn::Return);
         };
+        let sealed = keyed
+            .as_deref()
+            .and_then(|at| magi_tools::family::sealed(at, bytes.as_bytes()));
         match socket
-            .write_all(bytes.as_bytes())
+            .write_all(sealed.as_deref().unwrap_or(bytes.as_bytes()))
             .and_then(|()| socket.flush())
         {
             Ok(()) => stack.replace(ctx, true),
