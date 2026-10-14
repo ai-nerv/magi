@@ -97,7 +97,7 @@ fn moving(column: usize, across: u16, tick: usize) -> Style {
 /// drawn and counted: the caller sizes the box before it knows how much room a menu has.
 #[must_use]
 pub fn text_rows(editor: &Editor, rows: u16, width: u16, badge: &str) -> usize {
-    if editor.lines().len() == 1 && editor.lines()[0].is_empty() {
+    if matches!(editor.lines(), [only] if only.is_empty()) {
         return 1;
     }
     // Folded rows, not logical lines: a three-line prompt sized from logical lines gets one row.
@@ -141,7 +141,7 @@ pub fn render(
     let text_style = Style::default().fg(colour::text());
     // What is left for text once the sides, the padding and the badge's strip are taken out.
     let room = crate::fold::text_room(width, badge);
-    let blank = editor.lines().len() == 1 && editor.lines()[0].is_empty();
+    let blank = matches!(editor.lines(), [only] if only.is_empty());
 
     // Folded first, then scrolled over the folded rows: scrolling logical lines and drawing folded
     // ones disagree about how far down the cursor is.
@@ -377,7 +377,7 @@ fn with_cursor(text: &str, col: usize, style: Style, mode: crate::vim::Mode) -> 
     let col = col.min(chars.len());
     let inverted = style.add_modifier(Modifier::REVERSED);
 
-    let before: String = chars[..col].iter().collect();
+    let before: String = chars.iter().take(col).collect();
     let mut spans = Vec::with_capacity(3);
     if !before.is_empty() {
         spans.push(Span::styled(before, style));
@@ -386,7 +386,7 @@ fn with_cursor(text: &str, col: usize, style: Style, mode: crate::vim::Mode) -> 
     match chars.get(col) {
         Some(&c) => {
             spans.push(Span::styled(c.to_string(), inverted));
-            let after: String = chars[col + 1..].iter().collect();
+            let after: String = chars.iter().skip(col + 1).collect();
             if !after.is_empty() {
                 spans.push(Span::styled(after, style));
             }

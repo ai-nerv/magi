@@ -13,9 +13,11 @@
 set -eu
 
 prog=${1:-}
-[ -n "$prog" ] || { echo "usage: gate-family.sh <program>" >&2; exit 2; }
+[ -n "$prog" ] || { echo "usage: gate-family.sh <program> [serve arguments…]" >&2; exit 2; }
 command -v "$prog" >/dev/null 2>&1 || [ -x "$prog" ] || {
   echo "gate-family: no such program: $prog" >&2; exit 2; }
+# What follows the program is how it serves a socket, for the live probe at the end.
+shift
 
 # Whether the coordinated half applies is **read off what the program advertises**, not passed in.
 # A flag would be a second place the contract lives, and the one a caller can get wrong; asking
@@ -130,7 +132,7 @@ for verb in $listed; do
   case "$verb" in
     # Verbs whose whole job is to hold a stream or take over the terminal cannot be probed by
     # running them; they are covered by the tests in their own repository.
-    serve|surface|ask|run|fork) continue ;;
+    serve|surface|ask|run|fork|mcp) continue ;;
   esac
   out=$("$prog" "$verb" 2>&1 </dev/null || true)
   case "$out" in
@@ -168,7 +170,7 @@ esac
 refused_flag=""
 for verb in $listed; do
   case "$verb" in
-    serve|surface|ask|run|fork) continue ;;
+    serve|surface|ask|run|fork|mcp) continue ;;
   esac
   for how in --json --cbor; do
     said=$("$prog" "$verb" "$how" 2>&1 </dev/null || true)
@@ -207,6 +209,101 @@ if printf '%s' "$verbs" | grep -q '"door":"tool"'; then
   fi
 else
   say "a tool door it can open" "no tool verbs, so no tool door to account for"
+fi
+
+# ---- a live socket answers a bad frame with a refusal ---------------------------------------
+# Run when the caller says how the program serves: `gate-family.sh <program> serve …`. It is
+# started alone, with a clean environment and a runtime directory of its own, which `{run}` in an
+# argument names; `$GATE_SERVE_STDIN` is the first line it reads, for a serve handed a key before
+# it binds. The first socket that appears there is sent the wire corpus's cap+1 header and
+# zero-length frame, and a call from a newer family. Each must come back as a refusal frame, not
+# as a closed connection, and the newer family's refusal must name it.
+corpus="$(cd "$(dirname "$0")/.." && pwd)/tests/wire-corpus/server"
+
+# The bytes in file `$1`, sent to socket `$2` and half-closed; what came back, on stdout.
+ask() {
+  if command -v socat >/dev/null 2>&1; then
+    socat -t 5 - "UNIX-CONNECT:$2" <"$1" 2>/dev/null || true
+  else
+    nc -U -N -w 5 "$2" <"$1" 2>/dev/null || true
+  fi
+}
+
+# One frame holding `$1`, written to file `$2`.
+frame() {
+  n=$(printf '%s' "$1" | wc -c)
+  printf "$(printf '\\%03o\\%03o\\%03o\\%03o' $((n >> 24 & 255)) $((n >> 16 & 255)) \
+    $((n >> 8 & 255)) $((n & 255)))" >"$2"
+  printf '%s' "$1" >>"$2"
+}
+
+live() {
+  if ! command -v socat >/dev/null 2>&1 && ! nc -h 2>&1 | grep -q -- '-U'; then
+    bad "a live socket" "nothing here speaks to a unix socket: install socat or OpenBSD nc"
+    return
+  fi
+  if [ ! -f "$corpus/oversize.header" ] || [ ! -f "$corpus/zero-length.frame" ]; then
+    bad "a live socket" "no wire corpus at $corpus"
+    return
+  fi
+  probe=$(mktemp -d)
+  mkdir -m 700 "$probe/run" "$probe/home"
+  mkfifo "$probe/in"
+  for arg in "$@"; do
+    shift
+    case "$arg" in "{run}"*) arg="$probe/run${arg#"{run}"}" ;; esac
+    set -- "$@" "$arg"
+  done
+  env -i PATH="$PATH" HOME="$probe/home" TMPDIR="$probe" XDG_RUNTIME_DIR="$probe/run" \
+    XDG_CONFIG_HOME="$probe/home/config" XDG_DATA_HOME="$probe/home/data" \
+    XDG_CACHE_HOME="$probe/home/cache" XDG_STATE_HOME="$probe/home/state" \
+    "$prog" "$@" <"$probe/in" >"$probe/out" 2>&1 &
+  served=$!
+  exec 3>"$probe/in"
+  [ -z "${GATE_SERVE_STDIN:-}" ] || printf '%s\n' "$GATE_SERVE_STDIN" >&3
+
+  sock=""
+  tries=0
+  while [ -z "$sock" ] && [ "$tries" -lt 50 ] && kill -0 "$served" 2>/dev/null; do
+    sleep 0.2 2>/dev/null || sleep 1
+    sock=$(find "$probe/run" -type s 2>/dev/null | head -n 1)
+    tries=$((tries + 1))
+  done
+
+  if [ -z "$sock" ]; then
+    bad "a live socket" "\`$name $*\` bound nothing to probe: $(head -c 300 "$probe/out")"
+  else
+    frame '{"call":"verbs","family":999}' "$probe/newer.frame"
+    for sent in "cap+1:$corpus/oversize.header" "zero length:$corpus/zero-length.frame" \
+                "a newer family:$probe/newer.frame"; do
+      label=${sent%%:*}
+      back=$(ask "${sent#*:}" "$sock" | tail -c +5)
+      if [ -z "$back" ]; then
+        bad "live: $label" "the connection closed with no reply"
+      elif ! printf '%s' "$back" | grep -q '"ok":false'; then
+        bad "live: $label" "answered, but not with a refusal: $(printf '%s' "$back" | head -c 120)"
+      elif [ "$label" = "a newer family" ] && ! printf '%s' "$back" | grep -q 'family 999'; then
+        bad "live: $label" "refused, but without naming the family"
+      else
+        say "live: $label" "answered with a refusal frame"
+      fi
+    done
+  fi
+
+  exec 3>&-
+  kill -TERM "$served" 2>/dev/null || true
+  wait "$served" 2>/dev/null || true
+  rm -rf "$probe"
+}
+
+if [ "$#" -gt 0 ]; then
+  live "$@"
+elif printf '%s' "$verbs" | grep -q '"door":"socket"'; then
+  say "a live socket" "not probed: no serve command named"
+else
+  # A program with no socket verbs serves no family socket. magi's one socket is its host socket,
+  # its own CBOR protocol for a front end (FAMILY.md), so a family frame is not its to refuse.
+  say "a live socket" "skipped: $name serves no family socket, only its own front-end protocol"
 fi
 
 echo

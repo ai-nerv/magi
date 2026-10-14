@@ -210,7 +210,7 @@ impl Pane {
             Some(nth) if forward => (nth + 1).min(starts.len() - 1),
             Some(nth) => nth.saturating_sub(1),
         };
-        self.hover = Some(starts[next]);
+        self.hover = starts.get(next).copied().or(self.hover);
         self.reveal = true;
         was != self.hover
     }
@@ -231,27 +231,30 @@ impl Pane {
         self.picks
             .iter()
             .enumerate()
-            .filter(|(at, pick)| pick.is_some() && (*at == 0 || self.picks[at - 1] != **pick))
+            .filter(|(at, pick)| {
+                pick.is_some() && at.checked_sub(1).and_then(|up| self.picks.get(up)) != Some(*pick)
+            })
             .map(|(at, _)| at)
             .collect()
     }
 
     /// The rows of the entry the cursor is on; empty when it is on none.
     fn lit_rows(&self) -> std::ops::Range<usize> {
-        let Some(at) = self
-            .hover
-            .filter(|at| self.picks.get(*at).is_some_and(Option::is_some))
-        else {
+        let Some((at, pick)) = self.hover.and_then(|at| {
+            self.picks
+                .get(at)
+                .filter(|pick| pick.is_some())
+                .map(|pick| (at, pick))
+        }) else {
             return 0..0;
         };
-        let pick = &self.picks[at];
         let from = (0..at)
             .rev()
-            .take_while(|row| self.picks[*row] == *pick)
+            .take_while(|row| self.picks.get(*row) == Some(pick))
             .last()
             .unwrap_or(at);
         let to = (at..self.picks.len())
-            .take_while(|row| self.picks[*row] == *pick)
+            .take_while(|row| self.picks.get(*row) == Some(pick))
             .count();
         from..at + to
     }

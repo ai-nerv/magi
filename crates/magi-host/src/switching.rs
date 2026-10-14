@@ -193,7 +193,7 @@ pub fn no_model(catalog: &crate::catalog::Catalog) -> String {
         };
         said.push_str(&format!(
             " Ready now: {}{tail}. Type `/model` to switch, or set `magi.model` in your config.",
-            ready[..shown].join(", ")
+            ready.get(..shown).unwrap_or(&ready).join(", ")
         ));
     }
     said

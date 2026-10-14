@@ -429,7 +429,7 @@ fn recent(
     );
     out.say(head.trim_end(), ink.label);
     let skip = report.turns.len().saturating_sub(RECENT);
-    for turn in &report.turns[skip..] {
+    for turn in report.turns.iter().skip(skip) {
         let model: String = short(&turn.model).chars().take(19).collect();
         let mut spans = vec![
             Span::styled(format!("{:<6}", turn.at), ink.dim),

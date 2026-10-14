@@ -27,12 +27,17 @@ pub fn table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
 
     let encode = Callback::from_fn(&ctx, |ctx, _exec, mut stack| {
         let value: Value = stack.consume(ctx)?;
-        match json_from_lua(ctx, value, 0).and_then(|v| serde_json::to_string(&v).ok()) {
-            Some(text) => {
+        let encoded = json_from_lua(ctx, value)
+            .and_then(|v| serde_json::to_string(&v).map_err(|why| why.to_string()));
+        match encoded {
+            Ok(text) => {
                 let text = luna::String::from_slice(&ctx, text.as_bytes());
                 stack.replace(ctx, text);
             }
-            None => stack.replace(ctx, Value::Nil),
+            Err(why) => {
+                let why = luna::String::from_slice(&ctx, why.as_bytes());
+                stack.replace(ctx, (Value::Nil, why));
+            }
         }
         Ok(CallbackReturn::Return)
     });

@@ -19,6 +19,26 @@ fn missing(program: &str) -> bool {
     true
 }
 
+/// This process's given directory, held by one test at a time and taken down when it is done.
+struct Given {
+    _held: tokio::sync::MutexGuard<'static, ()>,
+}
+
+impl Given {
+    async fn hold() -> Self {
+        static HELD: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        Self {
+            _held: HELD.lock().await,
+        }
+    }
+}
+
+impl Drop for Given {
+    fn drop(&mut self) {
+        driving::forget_given();
+    }
+}
+
 fn absent(program: &str) -> bool {
     std::process::Command::new(program)
         .arg("verbs")
@@ -54,6 +74,7 @@ async fn every_sibling_declares_what_it_takes_in_a_shape_magi_can_read() {
 #[tokio::test]
 async fn a_setting_nobody_declared_comes_back_refused_by_name() {
     // A sibling that ignored what it did not recognise would make a misspelling look applied.
+    let _given = Given::hold().await;
     for program in ["casper", "melchior", "balthasar"] {
         if absent(program) {
             continue;
@@ -72,6 +93,7 @@ async fn a_setting_nobody_declared_comes_back_refused_by_name() {
 async fn a_table_setting_survives_the_round_trip() {
     // casper is the sibling whose settings are tables: ask what it takes, write the Lua, hand it
     // over, and read back that it was set rather than refused.
+    let _given = Given::hold().await;
     if absent("casper") {
         return;
     }
@@ -128,6 +150,7 @@ async fn what_a_coordinator_says_reaches_a_sibling_it_spawns_per_call() {
 #[tokio::test]
 async fn a_setting_a_sibling_would_refuse_is_named_before_it_is_relied_on() {
     // What `configure` is still for on a spawn-per-call program: a dry run naming what it refuses.
+    let _given = Given::hold().await;
     if absent("casper") {
         return;
     }

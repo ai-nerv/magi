@@ -23,7 +23,9 @@ pub fn text_room(width: u16, badge: &str) -> usize {
 /// as the first of [`crate::glyph::type_stages`], passes through the rest and lands as what was
 /// typed. Off unless `magi.ui.type_reveal_ms` says otherwise, and the same width throughout.
 pub(crate) fn resolving(editor: &Editor, row: usize) -> String {
-    let text = &editor.lines()[row];
+    let Some(text) = editor.lines().get(row) else {
+        return String::new();
+    };
     let over = crate::metric::type_reveal_ms();
     let stages: Vec<char> = crate::glyph::type_stages().chars().collect();
     if over == 0 || stages.is_empty() {

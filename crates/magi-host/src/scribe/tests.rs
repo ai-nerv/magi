@@ -1,5 +1,8 @@
+use super::shape::{beside, kind, rebuild, turn};
 use super::*;
 use magi_proto::{MessageId, ToolCallId, ToolResult};
+
+mod recording;
 
 /// Both shapes balthasar answers `recall` in. The setting that decides is balthasar's, and both are
 /// the ordinary case on somebody's machine.
@@ -124,6 +127,40 @@ fn a_row_whose_raw_is_a_string_rebuilds_the_same_as_one_that_is_an_object() {
 fn a_row_with_no_raw_is_malformed_rather_than_an_empty_entry() {
     let row = serde_json::json!({ "cursor": 1, "text": "hi", "kind": "user" });
     assert!(matches!(rebuild(&row), Err(Fault::Malformed(_))));
+}
+
+#[test]
+fn a_row_cut_short_rebuilds_as_its_text_and_says_so() {
+    let row = |role: &str, kind: &str| {
+        serde_json::json!({
+            "cursor": 4, "role": role, "kind": kind, "text": "the start of it",
+            "tool": "read", "truncated": true,
+        })
+    };
+    let (cursor, user) = rebuild(&row("user", "user")).expect("a user row");
+    assert_eq!(cursor, Cursor(4));
+    let Entry::User { text, .. } = user else {
+        panic!("{user:?}")
+    };
+    assert_eq!(text, format!("the start of it{}", super::shape::CUT_SHORT));
+
+    let (_, said) = rebuild(&row("assistant", "prose")).expect("an assistant row");
+    assert!(
+        matches!(&said, Entry::Assistant { text, signatures, .. }
+            if text.starts_with("the start of it") && signatures.is_empty()),
+        "{said:?}"
+    );
+
+    let (_, tool) = rebuild(&row("tool", "tool_result")).expect("a tool row");
+    let Entry::Tool { name, result, .. } = tool else {
+        panic!("{tool:?}")
+    };
+    assert_eq!(name, "read");
+    let output = result.expect("its result").output;
+    assert!(output.ends_with(super::shape::CUT_SHORT), "{output}");
+
+    let (_, other) = rebuild(&row("system", "summary")).expect("any other row");
+    assert!(matches!(other, Entry::Notice { .. }), "{other:?}");
 }
 
 #[test]

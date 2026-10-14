@@ -49,6 +49,7 @@ pub(super) async fn connection_loop(
                 session: None,
                 from_cursor,
                 draws,
+                key: magi_ipc::read_key(&socket),
             })
             .await
             .is_err()

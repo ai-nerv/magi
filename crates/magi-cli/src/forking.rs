@@ -4,8 +4,8 @@
 //! the child inherits arrives in one `environment` block melchior wrote, with two exceptions:
 //!
 //! - `BALTHASAR_AGENT` is set here, to the child's own id, in the child's own spawn environment.
-//!   balthasar reads the agent out of the connecting peer's `/proc/<pid>/environ` — the block the
-//!   kernel wrote at `exec` — and a child that inherited its parent's would share its `memory.db`.
+//!   The child's `balthasar serve` is started with it and records for that agent, and a child that
+//!   inherited its parent's would share its `memory.db`.
 //! - `MAGI_API_SOCKET` is removed rather than passed on. Set, [`crate::balthasar::start`] answers
 //!   `Started::Theirs` and convenes none, so the child would record into a store that dies with the
 //!   parent — and a session that cannot record does not start.
@@ -15,6 +15,7 @@
 //! process, which prints an id and exits a moment later. See [`crate::child`].
 
 use anyhow::{Context, Result, bail};
+use std::os::unix::fs::OpenOptionsExt;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -27,11 +28,13 @@ pub const SESSION_PID: &str = "MAGI_SESSION_PID";
 /// person who typed `magi fork` is the only party left who could be told about.
 const WATCH: Duration = Duration::from_millis(750);
 
-/// What `melchior fork` prints: a name, a secret, and the environment to start a child with. Three
-/// fields out of the several it says; the rest appear inside `environment` as well.
+/// What `melchior fork` prints: a name, the child's stop secret, and the environment to start it
+/// with. The secret is never put in that environment, whichever field it arrives in.
 #[derive(Debug, serde::Deserialize)]
 struct Minted {
     id: String,
+    #[serde(default)]
+    token: Option<String>,
     environment: std::collections::BTreeMap<String, String>,
 }
 
@@ -43,15 +46,35 @@ pub fn fork(
     prompt: Option<&str>,
 ) -> Result<()> {
     let parent = session_pid()?;
+    if !has_leave(parent) {
+        bail!("this session was started without leave to start children of its own");
+    }
     let loaded = crate::config::load().ok();
     let program = loaded.as_ref().map_or_else(
         || magi_host::broker::MELCHIOR.to_owned(),
         crate::config::mind,
     );
-    let minted = mint(&program, role, role_description)?;
+    let mut minted = mint(&program, role, role_description)?;
+    let secret = minted
+        .token
+        .take()
+        .or_else(|| minted.environment.remove(crate::melchior::TOKEN_VAR));
+    minted.environment.remove(crate::melchior::TOKEN_VAR);
+    let handed = secret
+        .as_deref()
+        .map(crate::melchior::hand_token)
+        .transpose()
+        .context("the child's stop secret could not be put where only it can read it")?;
     let harness = std::env::current_exe()
         .context("magi could not find its own binary, so it has nothing to start a child with")?;
-    start(&harness, &minted, parent, prompt)?;
+    let logs = magi_ipc::private_dir(&magi_ipc::runtime_dir("magi")?.join("children"))?;
+    let started = start(&harness, &minted, parent, prompt, handed.as_deref(), &logs);
+    if started.is_err()
+        && let Some(path) = &handed
+    {
+        let _ = std::fs::remove_file(path);
+    }
+    started?;
     println!("{}", minted.id);
     Ok(())
 }
@@ -74,6 +97,19 @@ fn session_pid_from(said: Option<&str>) -> Result<u32> {
                  started — where ${SESSION_PID} says so."
             )
         })
+}
+
+/// Whether the session `pid` was started with leave to start children: `MAGI_NO_SPAWN` absent from
+/// the environment the kernel recorded when it was started. Read there rather than from this
+/// process, whose own `MAGI_NO_SPAWN` is what `spawn` hands a child that may not delegate. A
+/// session whose environment cannot be read has no leave.
+fn has_leave(pid: u32) -> bool {
+    let wanted = format!("{}=", magi_tools::builtin::NO_SPAWN);
+    std::fs::read(format!("/proc/{pid}/environ")).is_ok_and(|environ| {
+        !environ
+            .split(|byte| *byte == 0)
+            .any(|entry| entry.starts_with(wanted.as_bytes()))
+    })
 }
 
 /// Ask this session's melchior to name a child and mint its secret over argv. `melchior fork` calls
@@ -110,6 +146,7 @@ fn spawning(
     minted: &Minted,
     parent: u32,
     prompt: Option<&str>,
+    token: Option<&std::path::Path>,
 ) -> Command {
     let mut starting = Command::new(harness);
     // Both, though `--tied` implies the first: argv is what a person reads off `/proc`, and "no
@@ -118,32 +155,49 @@ fn spawning(
         .arg("--headless")
         .arg("--tied")
         .arg(parent.to_string());
+    // After `--`, so a prompt that begins with a dash is a prompt and not a flag.
     if let Some(prompt) = prompt {
-        starting.arg(prompt);
+        starting.arg("--").arg(prompt);
     }
     starting.envs(&minted.environment);
     for named in crate::balthasar::AGENT {
         starting.env(named, &minted.id);
     }
+    if let Some(token) = token {
+        starting.env(crate::melchior::TOKEN_FILE, token);
+    }
     starting
+        .env_remove(crate::melchior::TOKEN_VAR)
         .env_remove("MAGI_API_SOCKET")
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
+        .stdout(Stdio::null());
     starting
 }
 
-/// Spawn the child, and give up on it if it dies while we are still watching. stdout and stderr go
-/// nowhere: `magi fork` is usually run through a tool whose output is a pipe somebody reads to the
-/// end: a child holding it open is a tool call that never returns. stderr is piped for [`WATCH`]
-/// only. `harness` comes from the caller so a test can point it at a program that does not start.
+/// Spawn the child, and give up on it if it dies while we are still watching. stdout goes nowhere:
+/// `magi fork` is usually run through a tool whose output is a pipe somebody reads to the end, and
+/// a child holding it open is a tool call that never returns. stderr goes to `<logs>/<id>.log`,
+/// which outlives this process, so the child can always write it. `harness` comes from the caller
+/// so a test can point it at a program that does not start.
 fn start(
     harness: &std::path::Path,
     minted: &Minted,
     parent: u32,
     prompt: Option<&str>,
+    token: Option<&std::path::Path>,
+    logs: &std::path::Path,
 ) -> Result<()> {
-    let mut child = spawning(harness, minted, parent, prompt)
+    let log = logs.join(format!("{}.log", minted.id));
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .open(&log)
+        .with_context(|| format!("the child's log {} could not be opened", log.display()))?;
+    let mut child = spawning(harness, minted, parent, prompt, token)
+        .stderr(written)
         .spawn()
         .context("the child session could not be started")?;
     let deadline = Instant::now() + WATCH;
@@ -151,7 +205,7 @@ fn start(
         if let Some(status) = child.try_wait().unwrap_or(None) {
             bail!(
                 "the child session exited ({status}) before it was up: {}",
-                last_words(&mut child)
+                last_words(&log)
             );
         }
         std::thread::sleep(Duration::from_millis(25));
@@ -159,14 +213,9 @@ fn start(
     Ok(())
 }
 
-/// What a child that would not start said on its way out: the last line only, read after it has
-/// exited so the pipe is closed and this cannot block.
-fn last_words(child: &mut std::process::Child) -> String {
-    use std::io::Read;
-    let mut said = String::new();
-    if let Some(pipe) = child.stderr.as_mut() {
-        let _ = pipe.read_to_string(&mut said);
-    }
+/// What a child that would not start said on its way out: the last line of its log.
+fn last_words(log: &std::path::Path) -> String {
+    let said = std::fs::read_to_string(log).unwrap_or_default();
     said.lines()
         .rev()
         .find(|line| !line.trim().is_empty())
@@ -198,7 +247,7 @@ mod tests {
     /// Everything the spawn would set, read back off the very `Command` [`start`] would run, so a
     /// copy written out here cannot go on passing after somebody changes the spawn.
     fn spawn_environment(minted: &Minted) -> std::collections::BTreeMap<String, Option<String>> {
-        spawning(std::path::Path::new("magi"), minted, 4242, None)
+        spawning(std::path::Path::new("magi"), minted, 4242, None, None)
             .get_envs()
             .map(|(name, value)| {
                 (
@@ -249,12 +298,9 @@ mod tests {
             Some("alpha-rho")
         );
         assert_eq!(
-            environ
-                .get("MAGI_MELCHIOR_TOKEN")
-                .and_then(Clone::clone)
-                .as_deref(),
-            Some("deadbeef"),
-            "without the token nothing could ever stop it"
+            environ.get(crate::melchior::TOKEN_VAR),
+            Some(&None),
+            "the stop secret travels in a file, never in the environment"
         );
     }
 
@@ -314,7 +360,7 @@ mod tests {
             &dir,
             "echo 'magi could not convene balthasar' >&2\nexit 3\n",
         );
-        let why = start(&script, &minted(), std::process::id(), None)
+        let why = start(&script, &minted(), std::process::id(), None, None, &dir)
             .expect_err("a child that exited must not be announced")
             .to_string();
         assert!(why.contains("could not convene balthasar"), "{why}");
@@ -338,6 +384,8 @@ mod tests {
             &minted(),
             std::process::id(),
             Some("get on with it"),
+            None,
+            &dir,
         )
         .expect("a child that stays up is started");
 
@@ -369,14 +417,165 @@ mod tests {
             &dir,
             &format!("printf '%s\\n' \"$@\" > {}\nsleep 2\n", seen.display()),
         );
-        start(&script, &minted(), 4242, Some("read the diff"))
+        start(&script, &minted(), 4242, Some("read the diff"), None, &dir)
             .expect("a child that stays up is started");
 
         let said = std::fs::read_to_string(&seen).expect("the child wrote its arguments");
         assert_eq!(
             said.lines().collect::<Vec<_>>(),
-            ["--headless", "--tied", "4242", "read the diff"]
+            ["--headless", "--tied", "4242", "--", "read the diff"]
         );
+    }
+
+    #[test]
+    fn a_child_is_told_where_its_secret_waits_and_not_the_secret() {
+        let handed = std::path::Path::new("/run/user/1000/magi/tokens/0123456789abcdef.token");
+        let environ: std::collections::BTreeMap<_, _> = spawning(
+            std::path::Path::new("magi"),
+            &minted(),
+            4242,
+            None,
+            Some(handed),
+        )
+        .get_envs()
+        .map(|(name, value)| (name.to_owned(), value.map(ToOwned::to_owned)))
+        .collect();
+        assert_eq!(
+            environ.get(std::ffi::OsStr::new(crate::melchior::TOKEN_FILE)),
+            Some(&Some(handed.as_os_str().to_owned()))
+        );
+        assert!(
+            environ.values().flatten().all(|value| value != "deadbeef"),
+            "the secret itself is in the environment"
+        );
+    }
+
+    #[test]
+    fn a_prompt_that_looks_like_a_flag_is_still_a_prompt() {
+        use clap::Parser;
+        let argv: Vec<String> = spawning(
+            std::path::Path::new("magi"),
+            &minted(),
+            4242,
+            Some("-p rm everything"),
+            None,
+        )
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+        let parsed = crate::Cli::try_parse_from(std::iter::once("magi".to_owned()).chain(argv))
+            .expect("parses");
+        assert!(!parsed.print, "the prompt became a flag");
+        assert_eq!(parsed.prompt.as_deref(), Some("-p rm everything"));
+    }
+
+    /// A process standing in for a session, started with or without leave to spawn.
+    fn a_session(leave: bool) -> std::process::Child {
+        let mut session = Command::new("sleep");
+        session.arg("30");
+        if leave {
+            session.env_remove(magi_tools::builtin::NO_SPAWN);
+        } else {
+            session.env(magi_tools::builtin::NO_SPAWN, "1");
+        }
+        let session = session.spawn().expect("a stand-in session");
+        // Until the exec has put the stand-in's own environment in place.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while std::fs::read(format!("/proc/{}/environ", session.id())).is_ok_and(|e| e.is_empty())
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        session
+    }
+
+    #[test]
+    fn a_session_without_leave_to_spawn_forks_nothing() {
+        // Probed in a child process, so the variables are set in its environment and not this one's.
+        if let Ok(expected) = std::env::var("MAGI_FORK_PROBE") {
+            let why = fork(None, None, None)
+                .expect_err("nothing to mint with")
+                .to_string();
+            assert_eq!(
+                why.contains("without leave"),
+                expected == "refused",
+                "{why}"
+            );
+            return;
+        }
+        let dir = magi_model::scratch::Scratch::new("magi-fork", "leave");
+        let probe = |session: &std::process::Child, own: bool, expected: &str| {
+            let mut ran = Command::new(std::env::current_exe().expect("test binary"));
+            ran.args([
+                "--exact",
+                "forking::tests::a_session_without_leave_to_spawn_forks_nothing",
+            ])
+            .env("MAGI_FORK_PROBE", expected)
+            .env(SESSION_PID, session.id().to_string())
+            .env("PATH", &*dir)
+            .env("XDG_CONFIG_HOME", &*dir)
+            .env_remove(magi_tools::builtin::NO_SPAWN);
+            if own {
+                ran.env(magi_tools::builtin::NO_SPAWN, "1");
+            }
+            let ran = ran.output().expect("probe");
+            assert!(
+                ran.status.success(),
+                "{}",
+                String::from_utf8_lossy(&ran.stdout)
+            );
+        };
+        let (mut with, mut without) = (a_session(true), a_session(false));
+        assert!(has_leave(with.id()) && !has_leave(without.id()));
+        probe(&without, false, "refused");
+        // What `spawn` hands a child that may not delegate does not stop the fork carrying it.
+        probe(&with, true, "allowed");
+        for session in [&mut with, &mut without] {
+            let _ = session.kill();
+            let _ = session.wait();
+        }
+    }
+
+    #[test]
+    fn a_child_writing_stderr_after_fork_exits_neither_dies_nor_blocks() {
+        // The fork runs in a probe process, which exits once the child is started.
+        if let Ok(dir) = std::env::var("MAGI_FORK_STDERR_PROBE") {
+            let dir = std::path::Path::new(&dir);
+            start(&dir.join("magi"), &minted(), 4242, None, None, dir).expect("started");
+            return;
+        }
+        let dir = magi_model::scratch::Scratch::new("magi-forking", "late");
+        let done = dir.join("done");
+        a_harness(
+            &dir,
+            &format!(
+                "set -e\nsleep 2\nhead -c 262144 /dev/zero | tr '\\0' x >&2\necho kept > {}\n",
+                done.display()
+            ),
+        );
+        let probe = Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "forking::tests::a_child_writing_stderr_after_fork_exits_neither_dies_nor_blocks",
+            ])
+            .env("MAGI_FORK_STDERR_PROBE", &*dir)
+            .output()
+            .expect("probe");
+        assert!(
+            probe.status.success(),
+            "{}",
+            String::from_utf8_lossy(&probe.stdout)
+        );
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !done.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "the child died or blocked writing its stderr"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let logged = std::fs::metadata(dir.join("iota-mu.log")).expect("the log");
+        assert!(logged.len() >= 262_144, "{} bytes logged", logged.len());
     }
 
     /// A runnable stand-in for the magi a fork would start, written into `dir`. A script, not

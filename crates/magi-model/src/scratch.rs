@@ -20,12 +20,16 @@ pub struct Scratch {
 impl Scratch {
     /// A fresh directory, named after `prefix` and `name`. Panics if it cannot be created.
     #[must_use]
+    #[allow(clippy::expect_used)]
     pub fn new(prefix: &str, name: &str) -> Self {
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!("{prefix}-{}-{n}-{name}", std::process::id()));
         // A pid is reused eventually, and a run that was killed leaves its directory behind.
         let _ = std::fs::remove_dir_all(&path);
-        std::fs::create_dir_all(&path).expect("a scratch directory");
+        // Private, so a runtime directory made in here is one this family will use.
+        std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
+            .create(&path)
+            .expect("a scratch directory");
         Self {
             path,
             settles: false,
@@ -90,6 +94,25 @@ impl std::ops::Deref for ScratchFile {
 impl AsRef<Path> for ScratchFile {
     fn as_ref(&self) -> &Path {
         &self.path
+    }
+}
+
+impl Scratch {
+    /// A directory in here only this user may enter, as a runtime directory must be. Panics if it
+    /// cannot be made.
+    #[must_use]
+    #[allow(clippy::expect_used)]
+    pub fn private(&self, name: &str) -> PathBuf {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let path = self.path.join(name);
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&path)
+            .expect("a private directory");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
+            .expect("a private directory");
+        path
     }
 }
 

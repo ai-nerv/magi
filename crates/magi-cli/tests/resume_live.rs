@@ -2,6 +2,8 @@
 //! journal at all, so the transcript comes back over a socket. It cannot be faked — the claim is
 //! that a separate program still has the conversation after the process that had it is gone.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_model::scratch::Scratch;
 
 use magi_testkit::Mind;
@@ -23,6 +25,7 @@ fn installed() -> bool {
 /// directory beneath it. Short names, because a unix socket path may not exceed `SUN_LEN`.
 fn workspace(name: &str) -> Scratch {
     let dir = Scratch::new("mr", name);
+    let _ = dir.private("run");
     for under in ["run", "sessions", "data", ".git"] {
         std::fs::create_dir_all(dir.join(under)).expect("mkdir");
     }

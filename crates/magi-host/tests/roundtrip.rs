@@ -3,6 +3,8 @@
 //! M1's claim is that `magi host` can stand in for the replay host without the UI changing.
 //! These drive the same protocol the UI drives, so the claim is tested rather than asserted.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_model::scratch::Scratch;
 
 use magi_host::{open_session, serve};
@@ -34,6 +36,10 @@ struct Client {
 
 impl Client {
     async fn attach(socket: &Path, from: Cursor) -> (Self, Vec<Entry>) {
+        Self::attach_as(socket, from, magi_ipc::read_key(socket)).await
+    }
+
+    async fn attach_as(socket: &Path, from: Cursor, key: Option<String>) -> (Self, Vec<Entry>) {
         let stream = magi_ipc::connect(socket).await.expect("connect");
         let (read_half, write_half) = stream.into_split();
         let mut client = Self {
@@ -46,6 +52,7 @@ impl Client {
                 session: None,
                 from_cursor: from,
                 draws: false,
+                key,
             })
             .await
             .expect("attach");
@@ -71,6 +78,7 @@ impl Client {
                 session: None,
                 from_cursor: Cursor::ZERO,
                 draws: false,
+                key: magi_ipc::read_key(socket),
             })
             .await
             .expect("attach");
@@ -668,4 +676,98 @@ async fn a_prompt_written_by_a_client_that_hangs_up_is_still_run() {
             other => panic!("round {round}: expected a user entry, got {other:?}"),
         }
     }
+}
+
+/// Without the key in `<socket>.key` a connection watches: whatever it asks for is refused, and
+/// the session does not move.
+#[tokio::test]
+async fn a_connection_without_the_key_watches_and_changes_nothing() {
+    let (_dir, socket) = start("watcher").await;
+    for key in [None, Some("0".repeat(64))] {
+        let (mut watcher, _) = Client::attach_as(&socket, Cursor::ZERO, key).await;
+        for command in [
+            UiCommand::SubmitPrompt {
+                text: "do it".into(),
+                aside: String::new(),
+            },
+            UiCommand::SetMode {
+                mode: "auto".into(),
+            },
+            UiCommand::TakeGrants { grants: Vec::new() },
+            UiCommand::Interrupt,
+        ] {
+            let verb = command.verb();
+            watcher.writer.write(&command).await.expect("sent");
+            match watcher.next().await {
+                HarnessEvent::Refused { message, .. } => {
+                    assert!(message.contains("controller key"), "{verb}: {message}");
+                }
+                other => panic!("{verb} was not refused: {other:?}"),
+            }
+        }
+    }
+    let (_controller, entries) = Client::attach(&socket, Cursor(u64::MAX)).await;
+    assert!(
+        entries.is_empty(),
+        "a watcher's prompt reached the transcript"
+    );
+}
+
+/// A session at its limit of connections says so to the next one rather than dropping it.
+#[tokio::test]
+async fn a_session_with_every_seat_taken_says_it_is_busy() {
+    let (_dir, socket) = start("busy").await;
+    let mut held = Vec::new();
+    for _ in 0..64 {
+        held.push(magi_ipc::connect(&socket).await.expect("connect"));
+    }
+    let stream = magi_ipc::connect(&socket).await.expect("connect");
+    let (read_half, _write_half) = stream.into_split();
+    let said = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        FrameReader::new(read_half).read::<HarnessEvent>(),
+    )
+    .await
+    .expect("answered, not left hanging")
+    .expect("an event");
+    assert!(
+        matches!(&said, HarnessEvent::Refused { message, .. } if message.starts_with("busy")),
+        "{said:?}"
+    );
+}
+
+/// A screen too slow to keep up is handed the session whole, not left showing a cut message.
+#[tokio::test]
+async fn a_screen_that_falls_behind_is_handed_the_whole_session_again() {
+    let (_dir, socket) = start("lagged").await;
+    let (mut slow, _) = Client::attach(&socket, Cursor::ZERO).await;
+    let (fast, _) = Client::attach(&socket, Cursor::ZERO).await;
+    let Client {
+        mut reader,
+        mut writer,
+    } = fast;
+    let draining =
+        tokio::spawn(async move { while reader.read::<HarnessEvent>().await.is_ok() {} });
+    for n in 0..600 {
+        let text = format!("{n} {}", "x".repeat(4 * 1024));
+        let prompt = UiCommand::SubmitPrompt {
+            text,
+            aside: String::new(),
+        };
+        writer.write(&prompt).await.expect("submit");
+    }
+    let mut resynced = false;
+    for _ in 0..4096 {
+        let next = tokio::time::timeout(std::time::Duration::from_secs(2), slow.reader.read());
+        match next.await {
+            Ok(Ok(HarnessEvent::SessionSnapshot { .. })) => {
+                resynced = true;
+                break;
+            }
+            Ok(Ok(_)) => {}
+            _ => break,
+        }
+    }
+    assert!(resynced, "the screen that fell behind was never resynced");
+    draining.abort();
 }

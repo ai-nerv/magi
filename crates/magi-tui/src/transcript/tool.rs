@@ -100,7 +100,7 @@ pub(super) fn block(
             Some(lines) => {
                 // casper's painting as it stands: code in its roles, and each row of an edit on
                 // the ground of what happened to it.
-                for spans in &lines[..shown] {
+                for spans in lines.iter().take(shown) {
                     let on = crate::painted::row(spans, style);
                     let line = crate::painted::line(spans, on);
                     rows.extend(wrapped(line, on, detail, width, body, lead));

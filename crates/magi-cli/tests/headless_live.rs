@@ -3,6 +3,8 @@
 //! silently. melchior's own screen note is read here, where the other live tests refuse to, because a
 //! screen has no verb to ask; the note is then dialled rather than merely stat'ed.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_ipc::{FrameReader, FrameWriter};
 use magi_model::scratch::Scratch;
 use magi_proto::{Cursor, HarnessEvent, UiCommand};
@@ -56,6 +58,7 @@ fn workspace(name: &str) -> Option<Scratch> {
         return None;
     }
     let dir = Scratch::new("mh", name).settling();
+    let _ = dir.private("r");
     for under in ["p", "r", "c", "d"] {
         std::fs::create_dir_all(dir.join(under)).expect("mkdir");
     }
@@ -218,6 +221,7 @@ async fn attaches_to(screen: &Path) {
             session: None,
             from_cursor: Cursor(0),
             draws: true,
+            key: magi_ipc::read_key(screen),
         })
         .await
         .expect("attach");

@@ -73,3 +73,17 @@ fn a_vm_learns_which_session_it_is_once_somebody_says() {
         )
         .expect("stale socket cleared");
 }
+
+#[test]
+fn a_vm_built_after_the_coordinator_is_named_knows_where_it_listens() {
+    // The agent tool's library door dials this, never whichever melchior socket is newest.
+    let at = std::path::Path::new("/run/user/1000/melchior/p/alpha.sock");
+    super::name_coordinator(at);
+    let mut engine = super::Engine::new();
+    engine.harvest();
+    assert_eq!(
+        engine.config().string("melchior_at"),
+        super::coordinator_at(),
+        "the VM is told what the process was told"
+    );
+}

@@ -42,8 +42,8 @@ const DESCRIBED: usize = 280;
 /// there. Inherited, and only ever added going down the tree, so `delegate` narrows like a grant.
 pub const NO_SPAWN: &str = "MAGI_NO_SPAWN";
 
-/// The grants of the session that started a child, as JSON: the child may do what its parent may,
-/// no wider. Read once, when the child starts.
+/// The grants of the session that started a child, as JSON. The child intersects them with its own
+/// configuration's, so it may do no more than its parent. Read once, when the child starts.
 pub const GRANTS: &str = "MAGI_GRANTS";
 
 /// Start a child agent of this session. The one builtin that reaches the harness: it runs the very
@@ -91,6 +91,32 @@ impl Spawn {
             kinds,
             described,
         }
+    }
+}
+
+impl Spawn {
+    /// The `magi fork` argv for one child: its role, what the role is for, and after `--` the
+    /// brief, so a brief that begins with a dash is never read as a flag.
+    fn argv(&self, role: Option<&str>, kind: Option<&Kind>, prompt: Option<&str>) -> Vec<String> {
+        let mut argv = vec!["fork".to_owned()];
+        if let Some(role) = role {
+            argv.push(format!("--role={role}"));
+        }
+        // Filed by melchior with the child's name. Free text, so it is kept out of what the grant
+        // sees, as the prompt is.
+        if let Some(kind) = kind.filter(|kind| !kind.description.is_empty()) {
+            let about: String = kind.description.chars().take(DESCRIBED).collect();
+            argv.push(format!("--role-description={about}"));
+        }
+        // A task carries a closing line telling the child to report back to this session.
+        if let Some(prompt) = prompt {
+            argv.push("--".to_owned());
+            argv.push(report_back(
+                prompt,
+                self.environ.get("MAGI_MELCHIOR_ID").map(String::as_str),
+            ));
+        }
+        argv
     }
 }
 
@@ -162,28 +188,14 @@ impl Tool for Spawn {
         // A child started with `delegate: false`, or in a role that may not, may not spawn in turn.
         let delegate = arguments["delegate"].as_bool().unwrap_or(true)
             && kind.is_none_or(|kind| kind.delegate);
-        let mut shown = vec!["fork".to_owned()];
-        if let Some(role) = role {
-            shown.push(format!("--role={role}"));
-        }
         // What the `run` grant sees: binary and role, not the free-text `prompt` — whose `(` would
         // trip the chain guard and defeat a standing grant, and which is the child's task anyway.
-        let asked = format!("{} {}", exe.display(), shown.join(" "));
-        // Filed by melchior with the child's name. Free text, so like the prompt it is kept out of
-        // what the grant sees.
-        if let Some(kind) = kind.filter(|kind| !kind.description.is_empty()) {
-            let about: String = kind.description.chars().take(DESCRIBED).collect();
-            shown.push(format!("--role-description={about}"));
-        }
-        // A coordinator wakes when a child finishes and reads its inbox; a child that never sends
-        // leaves it empty. So a task carries a closing line telling the child to report back to the
-        // session that started it — this one, named by its own melchior id.
-        if let Some(prompt) = prompt {
-            shown.push(report_back(
-                prompt,
-                self.environ.get("MAGI_MELCHIOR_ID").map(String::as_str),
-            ));
-        }
+        let asked = format!(
+            "{} {}",
+            exe.display(),
+            self.argv(role, None, None).join(" ")
+        );
+        let shown = self.argv(role, kind, prompt);
         if let Err(why) = ops.allow(
             "spawn",
             &magi_proto::permit::Action::Run {
@@ -387,5 +399,18 @@ mod tests {
         );
         let bare = Spawn::new(std::collections::BTreeMap::new(), true, Vec::new());
         assert!(!bare.description().contains("Roles"), "no roles, no list");
+    }
+
+    #[test]
+    fn a_brief_that_begins_with_a_dash_is_still_the_brief() {
+        let spawn = Spawn::new(std::collections::BTreeMap::new(), true, Vec::new());
+        let argv = spawn.argv(Some("tests"), None, Some("--yes do it"));
+        let ended = argv
+            .iter()
+            .position(|arg| arg == "--")
+            .expect("options end");
+        assert_eq!(argv.len(), ended + 2, "the brief alone follows: {argv:?}");
+        assert!(argv[ended + 1].starts_with("--yes do it"), "{argv:?}");
+        assert!(argv[..ended].iter().all(|arg| !arg.contains("do it")));
     }
 }

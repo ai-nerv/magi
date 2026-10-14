@@ -5,20 +5,23 @@
 --   for _, s in ipairs(agent.sessions()) do print(s.id, s.cwd, s.status) end
 --
 -- Three ways to get `src`, and a sandboxed host can only use the first two: the `client` verb on
--- an already-open connection, a sibling's own client (the framing and reply shape are shared), or
+-- an already-open connection, a sibling's own client (the reply shape is shared), or
 -- `io.popen("magi lua-api"):read("a")` where the host permits `io`.
 --
 -- Plain Lua on purpose. It runs unchanged in magi's own VM, in hexe's, in oslo's, in PUC Lua and in whatever
--- the next sibling embeds, so it is *copied* between tools rather than ported — and a fix to the
--- framing reaches every one of them. It is a sibling of oslo's `client.lua` and deliberately the
--- same shape; read that one and this one holds no surprises.
+-- the next sibling embeds, so it is *copied* between tools rather than ported. It is a sibling of
+-- oslo's `client.lua` and deliberately the same shape; read that one and this one holds no
+-- surprises.
 --
--- The only thing it cannot do itself is open a socket. That arrives as the chunk's argument:
+-- It opens no socket and frames nothing itself. Both arrive as the chunk's argument:
 --
 --   load(src)(transport)     transport.connect(path, timeout_ms) -> handle
---                            handle:send(bytes) / handle:recv(n) / handle:close()
+--                            handle:call(request, { deadline_ms = N }) -> reply | nil, why
+--                            handle:close()
 --
--- Inside magi that is `magi.stream`, and it is found automatically when nothing is passed.
+-- `call` writes one frame, holding the 16 MiB cap before a byte is sent, and reads one reply by
+-- the deadline, holding the cap before its body is read. Inside magi that is `magi.stream`, and it
+-- is found automatically when nothing is passed.
 --
 -- **The surface is small on purpose.** It is not a mirror of the local API; it is the handful of
 -- things another program has a real reason to ask a mux, and every one answers a question the
@@ -42,6 +45,31 @@ local M = { _NAME = "magi", _VERSION = 1 }
 -- only its own name would send discovery down the `io.popen` path on exactly the hosts that refuse
 -- it -- which reads as "nothing is running".
 local HOSTS = { "magi", "hexe", "oslo" }
+
+-- The newest reply shape this client reads.
+local FAMILY = 1
+
+--- This user's uid, as the host says it: `host.uid`, a number or a function answering one. Never
+--- `$UID`, which a shell does not export and anything can set.
+local function host_uid()
+  for _, name in ipairs(HOSTS) do
+    local h = _G[name]
+    local uid = type(h) == "table" and h.uid or nil
+    if type(uid) == "function" then uid = uid() end
+    if type(uid) == "number" then return uid end
+  end
+  return nil
+end
+
+--- Why a decoded reply cannot be read here: one written in a newer `family` than this client.
+local function newer(reply)
+  if type(reply) ~= "table" then return "the reply is not the family's shape" end
+  local family = reply.family
+  if family ~= nil and (type(family) ~= "number" or family > FAMILY) then
+    return "the reply is in family " .. tostring(family) .. ", newer than this client reads"
+  end
+  return nil
+end
 
 -- ---------------------------------------------------------------- JSON, in Lua
 
@@ -205,41 +233,6 @@ local function decode(s)
   return value()
 end
 
--- ---------------------------------------------------------------- the frame
-
--- Four bytes of big-endian length, then the body. Written by hand rather than with `string.pack`,
--- which Lua 5.1 and LuaJIT do not have and one of the siblings might be.
-local function frame(body)
-  local n = #body
-  return string.char(
-    math.floor(n / 16777216) % 256,
-    math.floor(n / 65536) % 256,
-    math.floor(n / 256) % 256,
-    n % 256
-  ) .. body
-end
-
-local function be32(s)
-  return s:byte(1) * 16777216 + s:byte(2) * 65536 + s:byte(3) * 256 + s:byte(4)
-end
-
---- Read exactly `n` bytes, however many reads that takes.
----
---- **A stream delivers what it likes.** One `recv` answering fewer bytes than asked for is
---- ordinary, not an error, and a client that treated it as the whole message would desynchronise
---- on the first reply large enough to be split.
-local function exactly(handle, n)
-  local parts, have = {}, 0
-  while have < n do
-    local chunk, why = handle:recv(n - have)
-    if not chunk then return nil, why end
-    if #chunk == 0 then return nil, "the session closed the connection" end
-    parts[#parts + 1] = chunk
-    have = have + #chunk
-  end
-  return table.concat(parts)
-end
-
 -- ---------------------------------------------------------------- the session
 
 local Session = {}
@@ -257,17 +250,16 @@ function Session:call(name, ...)
 
   local handle, why = transport.connect(self.path, self.timeout_ms)
   if not handle then return nil, why end
+  if type(handle.call) ~= "function" then
+    handle:close()
+    return nil, "this transport lends no handle:call, and this client frames nothing itself"
+  end
 
-  local sent, gone = handle:send(frame(encode(body)))
-  if not sent then handle:close(); return nil, gone end
-
-  local head, cut = exactly(handle, 4)
-  if not head then handle:close(); return nil, cut end
-  local reply_body, trimmed = exactly(handle, be32(head))
+  local reply, failed = handle:call(body, { deadline_ms = self.timeout_ms })
   handle:close()
-  if not reply_body then return nil, trimmed end
-
-  local reply = decode(reply_body)
+  if not reply then return nil, failed end
+  local unread = newer(reply)
+  if unread then return nil, unread end
   if not reply.ok then return nil, reply.error or "the session refused the call" end
   -- `result` is a list of return values and `n` says how many, so one Lua call
   -- answers with what the remote one did. The same shape oslo's server uses:
@@ -289,11 +281,12 @@ end
 -- the asker cannot answer for itself: which sessions exist and where they are rooted, what each is
 -- doing right now, what it has said. A shell scraping `ps` is guessing; this is not.
 --
--- **Read-only, deliberately.** There is no `prompt`, `submit` or `run` here. A coding agent
--- executes shell commands and edits files on the model's say-so, so a socket verb that hands it a
--- prompt is remote code execution wearing a friendlier name — and the fact that a person would
--- have typed the same thing does not make it the same thing when a peer types it. Anything that
--- causes work stays behind the local API, where the person who owns the session is the one asking.
+-- **This library only asks.** There is no `prompt`, `submit` or `run` here. A coding agent
+-- executes shell commands and edits files on the model's say-so, so a verb that hands it a prompt
+-- is remote code execution wearing a friendlier name. magi's own session socket does take a
+-- prompt, a permission answer and a mode change, in its own protocol and only from a screen that
+-- presents the key magi writes beside it in `<socket>.key`, readable by this user alone; a
+-- connection without that key watches and changes nothing.
 --
 -- `verbs` ships from the first version. One sibling having it and another not is how a family
 -- stops being one, and it cannot be retrofitted quietly.
@@ -380,9 +373,15 @@ local function socket_dir()
     end
   end
   local runtime = os.getenv("XDG_RUNTIME_DIR")
-  local base = (runtime and runtime ~= "")
-    and (runtime .. "/magi")
-    or ("/tmp/magi-" .. (os.getenv("UID") or "0"))
+  local base
+  if runtime and runtime ~= "" then
+    base = runtime .. "/magi"
+  else
+    -- Without a uid the host vouches for there is no directory to name, and no guess is made.
+    local uid = host_uid()
+    if not uid then return nil end
+    base = "/tmp/magi-" .. uid
+  end
   local instance = os.getenv("HEXE_INSTANCE")
   return (instance and instance ~= "") and (base .. "/" .. instance) or base
 end
@@ -409,6 +408,7 @@ local function find(where)
   if not named and env and env ~= "" then return { { path = env } } end
 
   local dir = socket_dir()
+  if not dir then return {} end
   if not named then return list_candidates(dir) end
 
   local direct = dir .. "/api@" .. named .. ".sock"
@@ -527,17 +527,31 @@ end
 local function tool_dir(tool)
   local runtime = os.getenv("XDG_RUNTIME_DIR")
   if runtime and runtime ~= "" then return runtime .. "/" .. tool end
-  return "/tmp/" .. tool .. "-" .. (os.getenv("UID") or "0")
+  local uid = host_uid()
+  return uid and ("/tmp/" .. tool .. "-" .. uid) or nil
+end
+
+--- Whether `stat` describes a file this user owns that nobody else may change: owned by `uid`,
+--- and neither group- nor other-writable. Arithmetic rather than `&`, which Lua 5.1 lacks.
+local function trusted(stat, uid)
+  if type(stat) ~= "table" or type(stat.mode) ~= "number" or stat.uid ~= uid then return false end
+  local group_writes = math.floor(stat.mode / 16) % 2 == 1
+  local other_writes = math.floor(stat.mode / 2) % 2 == 1
+  return not group_writes and not other_writes
 end
 
 local function descriptor(tool)
   if type(tool) ~= "string" or tool == "" or tool:find("[^%w._-]") then return nil end
-  local host, path = nil, tool_dir(tool) .. "/" .. tool .. ".tool"
+  local dir, uid = tool_dir(tool), host_uid()
+  if not dir or not uid then return nil end
+  local host, path = nil, dir .. "/" .. tool .. ".tool"
   for _, name in ipairs(HOSTS) do
     local h = _G[name]
     if h and h.fs and h.fs.ls then host = h; break end
   end
-  if not host or not host.fs.read then return nil end
+  -- What it says is executed, so who could have written it is checked before it is read.
+  if not host or not host.fs.read or not host.fs.stat then return nil end
+  if not trusted(host.fs.stat(path), uid) then return nil end
   local body = host.fs.read(path)
   if not body then return nil end
   local ok, d = pcall(decode, body)
@@ -597,6 +611,8 @@ function M.fetch(where, verb, ...)
   local decoded, why = pcall(decode, r.stdout or "")
   if not decoded then return nil, "'" .. tool .. "' did not answer in the family's shape: " .. tostring(why) end
   local reply = why
+  local unread = newer(reply)
+  if unread then return nil, "'" .. tool .. "': " .. unread end
   if not reply.ok then return nil, reply.error or "the tool refused the call" end
   return table.unpack(reply.result or {}, 1, reply.n or #(reply.result or {}))
 end

@@ -22,10 +22,10 @@ jobs:
           - os: ubuntu-24.04-arm
             artifact: "magi-linux-arm64"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # The flake's toolchain, as in tests.yml: a release built with a different compiler from
       # the one the gates ran under is not the thing that was tested.
-      - uses: DeterminateSystems/nix-installer-action@main
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
 
       # `--bin`, not `--example main`. This built an example no repository has ever defined,
       # then packaged `target/release/examples/main`, so all sixteen matrix legs failed and no
@@ -42,6 +42,6 @@ jobs:
       - name: Package
         run: tar -czf "${{ matrix.artifact }}.tar.gz" -C target/release "magi"
       - name: Upload artifact
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: ${{ matrix.artifact }}.tar.gz

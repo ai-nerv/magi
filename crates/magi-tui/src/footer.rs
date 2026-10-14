@@ -66,7 +66,7 @@ pub fn fit_path(path: &str, width: usize) -> String {
     // Whole components while any fit, so the result is still a path and not a cut word.
     let parts: Vec<&str> = path.split('/').filter(|p| !p.is_empty()).collect();
     for skip in 1..parts.len() {
-        let tail = format!("…/{}", parts[skip..].join("/"));
+        let tail = format!("…/{}", parts.get(skip..).unwrap_or_default().join("/"));
         if tail.chars().count() <= width {
             return tail;
         }
@@ -182,7 +182,8 @@ pub const SIBLING_STEP: u16 = 8;
 pub fn siblings(up: [bool; 3], open: Option<usize>, stirred: [f32; 3]) -> Vec<Span<'static>> {
     let dim = Style::default().fg(colour::dim());
     let mut spans = Vec::new();
-    for (nth, (short, _)) in SIBLINGS.iter().enumerate() {
+    let states = up.into_iter().zip(stirred);
+    for (nth, ((short, _), (up, by))) in SIBLINGS.iter().zip(states).enumerate() {
         if nth > 0 {
             spans.push(Span::styled(" ", dim));
         }
@@ -201,12 +202,12 @@ pub fn siblings(up: [bool; 3], open: Option<usize>, stirred: [f32; 3]) -> Vec<Sp
         };
         let rest = if here {
             hue(nth)
-        } else if up[nth] {
+        } else if up {
             colour::dim()
         } else {
             colour::error()
         };
-        let (glyph, ink) = match stirred[nth] {
+        let (glyph, ink) = match by {
             by if by > 0.5 => ("●", colour::blend(rest, hue(nth), by)),
             _ => ("✻", rest),
         };

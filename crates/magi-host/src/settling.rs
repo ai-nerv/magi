@@ -16,9 +16,20 @@ struct State {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct Tasks(Arc<Mutex<State>>);
+pub(crate) struct Tasks(Arc<Mutex<State>>, Option<tokio::runtime::Handle>);
 
 impl Tasks {
+    /// Tasks that run on `runtime`, whichever runtime spawns them: the session's own, not the
+    /// worker's, which blocks for the length of a tool call and goes when the model changes.
+    pub(crate) fn on(runtime: tokio::runtime::Handle) -> Self {
+        Self(Arc::default(), Some(runtime))
+    }
+
+    /// An empty set of tasks on the same runtime as these.
+    pub(crate) fn fresh(&self) -> Self {
+        Self(Arc::default(), self.1.clone())
+    }
+
     pub(crate) fn spawn(
         &self,
         future: impl Future<Output = Result<(), String>> + Send + 'static,
@@ -47,7 +58,10 @@ impl Tasks {
             }
         });
         state.failure = failure;
-        state.tasks.push(tokio::spawn(future));
+        state.tasks.push(match &self.1 {
+            Some(runtime) => runtime.spawn(future),
+            None => tokio::spawn(future),
+        });
         Ok(())
     }
 
@@ -91,10 +105,12 @@ impl Paused {
                 task: Some(task),
                 owner: self.tasks.clone(),
             };
-            let outcome =
-                tokio::time::timeout_at(deadline, borrowed.task.as_mut().expect("borrowed helper"))
-                    .await
-                    .map_err(|_| "old session helpers have not settled; retry resume later")?;
+            let Some(running) = borrowed.task.as_mut() else {
+                continue;
+            };
+            let outcome = tokio::time::timeout_at(deadline, running)
+                .await
+                .map_err(|_| "old session helpers have not settled; retry resume later")?;
             borrowed.task.take();
             outcome.map_err(|why| format!("old session helper stopped: {why}"))??;
         }
@@ -256,5 +272,34 @@ mod tests {
             .drain(std::time::Duration::from_secs(1))
             .await
             .expect("remaining helper");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_helper_runs_while_the_thread_that_started_it_is_blocked() {
+        let tasks = Tasks::on(tokio::runtime::Handle::current());
+        let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen = Arc::clone(&ran);
+        let worker = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("a worker runtime");
+            runtime.block_on(async move {
+                tasks
+                    .spawn(async move {
+                        seen.store(true, std::sync::atomic::Ordering::SeqCst);
+                        Ok(())
+                    })
+                    .expect("accepted");
+                // A tool call: the worker's runtime polls nothing for its length.
+                std::thread::sleep(std::time::Duration::from_millis(800));
+            });
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        assert!(
+            ran.load(std::sync::atomic::Ordering::SeqCst),
+            "the helper waited for the worker's tool call"
+        );
+        worker.join().expect("worker");
     }
 }

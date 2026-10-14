@@ -3,6 +3,8 @@
 //! whole contribution is asking the kernel at spawn to do it instead. What is testable here is that
 //! magi asks, and that a sibling honouring the asking is gone afterwards.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_model::scratch::Scratch;
 
 use magi_testkit::Mind;
@@ -18,6 +20,7 @@ const WITHIN: Duration = Duration::from_secs(10);
 /// out its own patience and carries on without memory.
 fn workspace(name: &str, tie: Tie) -> Scratch {
     let dir = Scratch::new("ml", name);
+    let _ = dir.private("run");
     for under in ["run", "sessions", "bin"] {
         std::fs::create_dir_all(dir.join(under)).expect("mkdir");
     }

@@ -188,6 +188,68 @@ fn refused_three_times_running_the_person_is_asked_and_their_yes_takes_auto_up_a
 }
 
 #[test]
+fn a_file_the_next_session_runs_is_never_an_edit_auto_approves() {
+    let dir = magi_model::scratch::Scratch::new("magi-judge", "held");
+    let root = dir.join("p");
+    std::fs::create_dir_all(root.join(".git/hooks")).expect("mkdir");
+    std::os::unix::fs::symlink(root.join(".git/hooks"), root.join("h")).expect("symlink");
+    std::os::unix::fs::symlink("/etc", root.join("x")).expect("symlink");
+    std::os::unix::fs::symlink(".git/hooks/post-merge", root.join("d")).expect("symlink");
+    for mode in [Mode::Edits, Mode::Auto] {
+        let person = Person::who(false);
+        let gate = Judged::new(
+            Arc::clone(&person) as Arc<dyn Approver>,
+            Arc::new(Says(Some(false))),
+            Arc::new(Standing::starting(mode)),
+            Rules::default(),
+            &root,
+            Box::new(|_| {}),
+        );
+        let at = |rest: &str| write(&root.join(rest).display().to_string());
+        assert!(allowed(&gate.ask("write", &at("src/a.rs"))), "{mode:?}");
+        for held in [
+            ".magi.lua",
+            ".balthasar.lua",
+            ".git/config",
+            ".git/hooks/pre-commit",
+            "h/post-checkout",
+            "x/hosts",
+            "d",
+            "sub/.magi.lua",
+        ] {
+            assert!(!allowed(&gate.ask("write", &at(held))), "{mode:?} {held}");
+        }
+    }
+}
+
+#[test]
+fn a_command_a_deny_rule_cannot_read_for_certain_is_the_persons() {
+    let rules = Rules {
+        deny: vec![rule("run", "rm")],
+        ask: Vec::new(),
+    };
+    let person = Person::who(true);
+    let gate = gate(Mode::Auto, Some(true), &person, rules);
+    assert!(
+        !allowed(&gate.ask("shell", &run("sh -c 'rm -rf ~'"))),
+        "named through sh -c"
+    );
+    assert!(
+        !allowed(&gate.ask("shell", &run("\\rm -rf ~"))),
+        "named through a backslash"
+    );
+    assert_eq!(person.times(), 0, "refused outright, nobody asked");
+    assert!(gate.overrides(&run("\"$X\" -rf ~")));
+    assert!(allowed(&gate.ask("shell", &run("$(printf r)m -rf ~"))));
+    assert_eq!(
+        person.times(),
+        1,
+        "unsure goes to the person, not the second model"
+    );
+    assert!(!gate.overrides(&run("cargo test")));
+}
+
+#[test]
 fn edits_lets_a_write_into_the_project_through_and_nothing_else() {
     let person = Person::who(false);
     let gate = gate(Mode::Edits, None, &person, Rules::default());

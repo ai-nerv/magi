@@ -26,7 +26,7 @@ that talk over sockets and pipes:
 
 | | |
 |---|---|
-| **magi** | this one: the harness — UI, host, providers, tools |
+| **magi** | this one: the harness — UI, host and turns; models come through melchior, tools from casper |
 | **melchior** | the agent layer — sessions talking to sessions, adoption, permissions |
 | **balthasar** | the memory layer — what was said, distilled and recalled |
 | **casper** | the tools, and the screen they draw on |
@@ -130,9 +130,11 @@ five wires had grown five ways to say the same thing.
 |---|---|---|
 | **argv** | a question with an answer and nothing to hold open | one JSON object on stdout |
 | **pipe** | a parent and the child it started | newline-delimited JSON, both directions |
-| **socket** | anything may knock | four bytes of big-endian length, then JSON |
+| **socket** | a sibling of this user's, checked by `SO_PEERCRED` | four bytes of big-endian length, then at most 16 MiB of JSON or CBOR |
 
-JSON is on all three. It is the *encoding*, not a transport.
+JSON is on all three; a socket body may also be CBOR, the same shape as bytes. magi's own session
+socket is the exception: its own CBOR protocol for a screen, where a connection that does not
+present the key in `<socket>.key` watches and changes nothing.
 
 A **call** is answered; an **event** is not:
 
@@ -157,7 +159,8 @@ stops being answered.
 
 ### Concurrent clients
 
-All attached clients share one session queue. Prompts, incoming messages, permission
+All attached clients share one session queue; only a client that attached with the key in
+`<socket>.key` may add to it, and one without it watches. Prompts, incoming messages, permission
 declarations and inherited grants are admitted in order. Prompts received during a turn
 wait for its completion and persistence attempt; they do not interrupt it. Consecutive
 incoming-agent messages at a boundary are read together. Up to 256 requests may wait;
@@ -229,9 +232,8 @@ can still prevent delivery. These hooks do not reconstruct pending receipts afte
 | Crate | Role |
 |---|---|
 | `magi-proto` | the wire contract: events, commands, envelope. No I/O |
-| `magi-ipc` | Unix socket transport, length-prefixed CBOR, `SO_PEERCRED` identity |
+| `magi-ipc` | Unix socket transport: magi's own CBOR frames, the family client, the runtime-directory rule, `SO_PEERCRED` |
 | `magi-model` | the provider-neutral message model |
-| `magi-provider` | the HTTP side: streaming, SSE, retries, what each error means |
 | `magi-core` | the turn loop, as an explicit state machine |
 | `magi-tools` | what a tool is, and how one is dispatched to the tools program |
 | `magi-lua` | the Lua VM, and the config API it offers `init.lua` |
@@ -301,8 +303,9 @@ arrives, and the reason the limit has to be a script rather than an intention.
 
 ## Releases
 
-`make dist` builds against `x86_64-unknown-linux-musl`, which produces a genuine `static-pie`
-binary — no interpreter, no `NEEDED` entries, nothing to install alongside it:
+`make build` builds against `x86_64-unknown-linux-musl` where the toolchain has that target,
+which produces a genuine `static-pie` binary — no interpreter, no `NEEDED` entries, nothing to
+install alongside it:
 
 ```
 magi 0.1.0   2.15 MB
@@ -315,12 +318,28 @@ The linkage line is read out of the ELF, not inferred from the flags: a glibc "s
 still carries an INTERP and dies on a machine whose loader disagrees, and `ldd` reports it as
 statically linked anyway.
 
-The release profile is pinned rather than left to defaults — `lto = "thin"`,
-`codegen-units = 16` — because a build that silently switches to fat LTO and one codegen unit
-turns a ten-second link into minutes.
+The release profile is pinned rather than left to defaults — fat LTO and one codegen unit, for
+size — and `make debug` is the build to iterate with.
 
 Tagging a release builds the same binary on the runner, for `amd64` and `arm64`, and attaches
 it. The toolchain is the flake's, so a release is built with the compiler the gates ran under.
+
+## Nix
+
+Each release tag publishes a static build for x86_64 and aarch64 Linux to the `ai-nerv` cache,
+with `config/` under `share/magi/`.
+
+```sh
+cachix use ai-nerv
+nix run github:ai-nerv/magi -- verbs
+nix build github:ai-nerv/magi
+```
+
+The flake names the cache itself, so `--accept-flake-config` does the same as `cachix use`. In
+another flake, take `inputs.magi.packages.${system}.default`, and configure the cache on the
+consuming machine: an input's `nixConfig` is not inherited.
+
+Here, `make nix-build` builds it into `result/`, and `make nix-check` checks the flake.
 
 ## Configuration
 

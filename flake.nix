@@ -1,5 +1,12 @@
 {
-  description = "magi Rust development shell";
+  description = "magi, and its Rust development shell";
+
+  nixConfig = {
+    extra-substituters = [ "https://ai-nerv.cachix.org" ];
+    extra-trusted-public-keys = [
+      "ai-nerv.cachix.org-1:1Wycl/383z79Nvh7ELU2jlycVzOqJyy1PGajS9caDBY="
+    ];
+  };
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs?rev=4c1018dae018162ec878d42fec712642d214fdfa";
@@ -15,7 +22,121 @@
 
   outputs =
     { nixpkgs, flake-utils, nixgl, rust-overlay, ... }:
-    flake-utils.lib.eachDefaultSystem (
+    let
+      manifest = builtins.fromTOML (builtins.readFile ./Cargo.toml);
+
+      # The static (musl) binary, as `make build` makes it, with the shipped configuration beside it.
+      packaged = flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (
+        system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          lib = pkgs.lib;
+          magi = pkgs.pkgsStatic.rustPlatform.buildRustPackage {
+            pname = "magi";
+            inherit (manifest.workspace.package) version;
+            src = lib.fileset.toSource {
+              root = ./.;
+              fileset = lib.fileset.unions [
+                ./Cargo.toml
+                ./Cargo.lock
+                ./crates
+                ./config
+              ];
+            };
+
+            cargoLock = {
+              lockFile = ./Cargo.lock;
+              outputHashes = {
+                "luna-0.5.0" = "sha256-YJsEKm7UykhqNQjhLPBgpmCHQZQhDLFVAENSD43SyAw=";
+              };
+            };
+            cargoBuildFlags = [
+              "--bin"
+              "magi"
+            ];
+            stripAllList = [ "bin" ];
+
+            doCheck = false;
+            postInstall = ''
+              mkdir -p "$out/share/magi"
+              cp -r config "$out/share/magi/"
+            '';
+
+            doInstallCheck = true;
+            nativeInstallCheckInputs = [ pkgs.binutils ];
+            installCheckPhase = ''
+              runHook preInstallCheck
+
+              binary="$out/bin/magi"
+              home="$TMPDIR/home"
+              mkdir -p "$home/run" "$home/config"
+              chmod 700 "$home/run"
+              isolated() {
+                env -i PATH="$PATH" HOME="$home" \
+                  XDG_CONFIG_HOME="$home/config" XDG_DATA_HOME="$home/data" \
+                  XDG_CACHE_HOME="$home/cache" XDG_STATE_HOME="$home/state" \
+                  XDG_RUNTIME_DIR="$home/run" "$@"
+              }
+              (cd "$home" && isolated "$binary" verbs --json) > "$TMPDIR/verbs.json"
+              grep -q '^{"ok":true,"family":1,' "$TMPDIR/verbs.json"
+              grep -q '"verb":"verbs"' "$TMPDIR/verbs.json"
+              (cd "$home" && isolated "$binary" client) > "$TMPDIR/client.lua"
+              grep -q "magi's client library" "$TMPDIR/client.lua"
+
+              ln -s "$out/share/magi/config" "$home/config/magi"
+              (cd "$home" && isolated "$binary" doctor) > "$TMPDIR/doctor.txt"
+              grep -q 'agent *config' "$TMPDIR/doctor.txt"
+              grep -q 'spawn *builtin' "$TMPDIR/doctor.txt"
+              test -s "$out/share/magi/config/init.lua"
+              test -s "$out/share/magi/config/tools.lua"
+              test "$(ls "$out/bin")" = magi
+
+              if readelf -l "$binary" | grep -q 'program interpreter'; then
+                echo "error: $binary requests a dynamic loader" >&2
+                exit 1
+              fi
+              if readelf -d "$binary" 2>/dev/null | grep -q NEEDED; then
+                echo "error: $binary has dynamic dependencies" >&2
+                exit 1
+              fi
+
+              runHook postInstallCheck
+            '';
+
+            meta = {
+              description = "A coding agent for Linux";
+              homepage = "https://github.com/ai-nerv/magi";
+              license = lib.licenses.mit;
+              mainProgram = "magi";
+              platforms = [
+                "x86_64-linux"
+                "aarch64-linux"
+              ];
+            };
+          };
+          app = {
+            type = "app";
+            program = "${magi}/bin/magi";
+            meta.description = "Run magi";
+          };
+        in
+        {
+          packages = {
+            default = magi;
+            inherit magi;
+          };
+          apps = {
+            default = app;
+            magi = app;
+          };
+          checks = {
+            inherit magi;
+          };
+        }
+      );
+    in
+    nixpkgs.lib.recursiveUpdate packaged
+    (flake-utils.lib.eachDefaultSystem (
       system:
       let
         overlays = [
@@ -94,6 +215,9 @@
             # failure rather than a line somebody eventually notices. See the note in
             # `Cargo.toml` for why this and not `unused_crate_dependencies`.
             pkgs.cargo-machete
+            # The dependency policy in `deny.toml`, and the advisory database against the lockfile.
+            pkgs.cargo-deny
+            pkgs.cargo-audit
             pkgs.clang
             pkgs.mold
             pkgs.pkg-config
@@ -133,5 +257,5 @@
           WGPU_DEBUG = "0";
         };
       }
-    );
+    ));
 }

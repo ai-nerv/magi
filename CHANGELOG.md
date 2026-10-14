@@ -1,5 +1,157 @@
 # Changelog
 
+## [0.6.0] - 2026-10-14
+
+### <!-- 0 -->⛰️  Features
+
+- Key each session's balthasar serve
+- Handle:call frames family calls
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Sweep given dirs of dead sessions
+- Send print and warn to the log
+- Bound Lua-to-JSON by nodes, bytes, cycles
+- Hide the metatable errors share
+- Refuse precompiled chunks everywhere
+- Hold every VM under a memory ceiling
+- Refuse __gc metatables and drop debug
+- Hold a sealed frame's length to the cap
+- Read a published key, retry once
+- End an unrecorded turn on an error
+- Find a sibling by the runtime rule
+- Bind only in a private directory
+- Spill per project and hand it to the jail
+- Let a screen go when it stops reading
+- A command value is never an option
+- Open beneath the root with openat2
+- A reply that breaks closes the connection
+- Read leave to spawn off the session
+- Replay a row cut to fit a frame
+- Leave no lock file beside a live socket
+- Hand reports in by message; given to all
+- Take a killed balthasar's lock files too
+- Count what a failed or retried try cost
+- Sums saturate rather than wrap
+- Private log files, no arguments or secrets
+- Write chosen.json whole, under a lock
+- Private runtime dirs, safe XDG only
+- A deadline on every sibling a session asks
+- Read a tenant on a clock and reap it
+- Keep serving through accept errors and lag
+- Unlink a socket only when it is stale
+- Drain balthasar's stderr as it comes
+- A panic or a bad report ends one turn
+- End options before a brief or an id
+- Hand the stop secret over in a file
+- A session's controller holds its key
+- Never wedge, lose or overflow a record
+- Cap, deadline and uid check on family calls
+- Dial the session's own melchior socket
+- Saturate usage sums
+- Stop a command tool on cancel
+- Cap frames, check family and descriptors
+- Intersect a child's handed-down grants
+- Pass the session's NERV_GIVEN
+- Write atomically, privately, escaped
+- Private editor scratch and spill files
+- Restore the terminal on a panic
+- Show control characters, survive tiny frames
+- Resolve the tools program once
+- Judge argv by program, strip capability
+- Gate and write on real paths, no links
+- Ask by tool name, and web by host
+- Read programs and hosts strictly
+- Mask a tool's brief and way back
+- Run each call once, keyed, cancellable
+- Keep the network open, guard home writes
+- Run a project file as budgeted data
+- Never auto-approve run-later files
+
+### <!-- 2 -->🚜 Refactor
+
+- No panics in menus and the prompt
+- No panics in the beacon and charts
+- No panics in text and table drawing
+- No panics on input in the transcript
+- No panics on input in the editor
+- No panics on input
+- No panics on input
+- Mark the helpers that may panic
+- No panics on input
+- Sum usage with Usage::plus
+- One runtime rule, peer check, secret file
+- One record of where melchior listens
+
+### <!-- 3 -->📚 Documentation
+
+- Name the walker's bounds without links
+- Name the new sandbox refusals
+- The memory key and socket families
+- Balthasar's agent is its spawn env's
+- One contract in all four
+- Releases and the ai-nerv Nix cache
+- Say what the sockets and grants now do
+- No link to a private item
+- Name hexe and oslo sockets
+- Frames, sockets, deadlines, callers
+
+### <!-- 4 -->⚡ Performance
+
+- Insert a paste in one splice
+- Grow a message in place per delta
+
+### <!-- 5 -->🎨 Styling
+
+- Comments describe the block
+- One if for the jail's shared tmp
+- Keep comments within the budget
+- Say what, not why
+
+### <!-- 6 -->🧪 Testing
+
+- Leave no given dir behind
+- Wait out ETXTBSY on the key fake
+- One gate-family in all four
+- Hold both VMs to an allowlist
+- A one-slice chunk meets the ceiling
+- A keyed write through handle:call
+- A stand-in serve leaves no sleep
+- Skip the live probe with its reason
+- Wire gate checks the cap and dir rule
+- A 9 and a 15 MiB observe end to end
+- Wait for a stand-in to finish its exec
+- Late stderr neither kills nor blocks
+- Let integration tests expect and index
+- Wait out ETXTBSY in the refresh fixture
+- Run the corpus on the door and magi.lua
+- Fork and stop from inside a session
+- Wait out a busy tenant script
+- Skip stop against an older melchior
+- A trace never replaces its entry
+- Wait out ETXTBSY before running a stand-in
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Develop into harden-w4
+- Develop into harden-w3
+- Pin actions by commit
+- Publish tagged builds to ai-nerv
+- Harden core
+
+### Build
+
+- Enable flakes for the dev shell
+- Cargo deny and audit in verify and CI
+- Read the version from Cargo.toml
+- Nix-build, nix-check, download check
+- A static package with its config
+- Hold the expect and indexing denials
+- Deny expect and indexing outside tests
+- Check arithmetic overflow
+- Quote shell words, audit offline
+- Unwind on panic
+
 ## [0.5.5] - 2026-09-29
 
 ## [0.5.4] - 2026-09-29

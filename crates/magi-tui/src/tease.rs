@@ -294,7 +294,9 @@ fn pick<'a>(lines: &'a [String], not: &str, seen: &VecDeque<String>) -> &'a str 
             .map_or(0, |since| since.as_millis() % 1_000_000),
     )
     .unwrap_or(0);
-    close[turn % close.len()]
+    close
+        .get(turn.checked_rem(close.len()).unwrap_or(0))
+        .map_or("", |line| line.as_str())
 }
 
 /// How many words two lines share at the start and the end — what a middle edit is measured in.
@@ -379,7 +381,10 @@ pub fn perform(from: &str, to: &str, caret: usize) -> VecDeque<Act> {
     });
     // A cut runs to the start of the next word, taking the space after it, so the replacement owes
     // that space back or `build` becoming `scan` leaves `scansomething`.
-    let mut replacement = ours[write.clone()].join(" ");
+    let mut replacement = ours
+        .get(write.clone())
+        .map(|written| written.join(" "))
+        .unwrap_or_default();
     if !write.is_empty() && cut.end < theirs.len() {
         replacement.push(' ');
     }
@@ -418,10 +423,12 @@ fn span_of(line: &str, words: Range<usize>) -> Range<usize> {
 fn walk(stops: &[usize], from: usize, to: usize) -> Vec<usize> {
     let at = stops.iter().position(|stop| *stop >= from).unwrap_or(0);
     let want = stops.iter().position(|stop| *stop >= to).unwrap_or(0);
+    let last = stops.len().saturating_sub(1);
+    let between = |from: usize, to: usize| stops.get(from..=to).unwrap_or_default().to_vec();
     if at <= want {
-        stops[at.min(stops.len())..=want.min(stops.len() - 1)].to_vec()
+        between(at.min(stops.len()), want.min(last))
     } else {
-        let mut back: Vec<usize> = stops[want..=at.min(stops.len() - 1)].to_vec();
+        let mut back = between(want, at.min(last));
         back.reverse();
         back
     }

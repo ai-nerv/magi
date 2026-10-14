@@ -8,7 +8,7 @@ version.workspace = true
 [dependencies]
 magi-proto.workspace = true
 ciborium.workspace = true
-rustix.workspace = true
+rustix = { workspace = true, features = ["net"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

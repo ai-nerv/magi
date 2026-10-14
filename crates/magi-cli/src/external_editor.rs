@@ -18,9 +18,9 @@ pub fn edit_with(editor: &str, text: &str) -> Result<Option<String>> {
         return Ok(None);
     };
 
-    let path = scratch_path();
+    let path = scratch_path()?;
     let mut file =
-        std::fs::File::create(&path).with_context(|| format!("creating {}", path.display()))?;
+        magi_ipc::private_file(&path).with_context(|| format!("creating {}", path.display()))?;
     file.write_all(text.as_bytes())?;
     file.flush()?;
     drop(file);
@@ -56,12 +56,13 @@ pub fn editor_command() -> Option<String> {
         .find(|value| !value.trim().is_empty())
 }
 
-/// A scratch path unique to this call. The counter matters: keying only on the process id makes
-/// two concurrent edits share a file, and the second one silently wins.
-fn scratch_path() -> PathBuf {
+/// A scratch path unique to this call, inside magi's own private run-time directory. The counter
+/// matters: keying only on the process id makes two concurrent edits share a file.
+fn scratch_path() -> Result<PathBuf> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("{}-{n}-{SUFFIX}", std::process::id()))
+    let dir = magi_ipc::runtime_dir("magi")?;
+    Ok(dir.join(format!("{}-{n}-{SUFFIX}", std::process::id())))
 }
 
 #[cfg(test)]
@@ -107,8 +108,38 @@ mod tests {
             .expect("the editor was handed a path")
             .expect("entry")
             .file_name();
-        let used = std::env::temp_dir().join(copied);
+        let used = magi_ipc::runtime_base("magi").join(copied);
         assert!(!used.exists(), "{}", used.display());
+    }
+
+    #[test]
+    fn the_scratch_file_is_private_in_a_private_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = Scratch::new("magi-editor", "private");
+        let said = dir.join("said");
+        let editor = dir.join("editor");
+        std::fs::write(
+            &editor,
+            format!(
+                "#!/bin/sh\n[ \"$1\" = --probe ] && exit 0\n\
+                 stat -c '%a' \"$1\" \"$(dirname \"$1\")\" > '{}'\n",
+                said.display()
+            ),
+        )
+        .expect("write");
+        std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        // `ETXTBSY` while a fork on another thread still holds the descriptor it was written by.
+        while let Err(why) = Command::new(&editor).arg("--probe").status() {
+            assert_eq!(
+                why.raw_os_error(),
+                Some(26),
+                "the editor will not run: {why}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        edit_with(&editor.display().to_string(), "secret").expect("edit runs");
+        let modes = std::fs::read_to_string(&said).expect("the editor ran");
+        assert_eq!(modes.split_whitespace().collect::<Vec<_>>(), ["600", "700"]);
     }
 
     #[test]

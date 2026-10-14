@@ -41,11 +41,8 @@ pub const SIBLINGS: &[Sibling] = &[
 /// should not have to answer, and magi knows which session it means anyway.
 #[must_use]
 pub fn socket_of(name: &str) -> Option<std::path::PathBuf> {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
     let mut found: Vec<(std::time::SystemTime, std::path::PathBuf)> =
-        std::fs::read_dir(runtime.join(name))
+        std::fs::read_dir(magi_tools::family::runtime_base(name))
             .ok()?
             .flatten()
             .filter(|e| {
@@ -176,7 +173,7 @@ mod tests {
         use std::io::{Read, Write};
         use std::os::unix::net::UnixListener;
 
-        let dir = magi_model::scratch::Scratch::new("magi-stream", "one");
+        let dir = magi_tools::family::FamilyScratch::new("one").expect("a family scratch");
         let path = dir.join("s.sock");
         let listener = UnixListener::bind(&path).expect("bind");
         let server = std::thread::spawn(move || {

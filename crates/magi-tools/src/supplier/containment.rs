@@ -1,6 +1,7 @@
 use super::*;
 use crate::holding::{Context, Holds};
 use std::os::unix::fs::PermissionsExt;
+use std::sync::Mutex;
 
 #[derive(Default)]
 struct Recorded(Mutex<Vec<Context>>);

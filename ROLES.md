@@ -46,8 +46,8 @@ send next.
 
 | verb | shape | what magi does with it |
 |---|---|---|
-| `observe` | `(session, turn) -> ok` | Streams every turn as it settles. Without this nothing is recorded and the session has no history at all. |
-| `replay` | `(session) -> [turn]` | Everything a run said, in order. This is what `--resume` reads back. |
+| `observe` | `(session, turn) -> ok` | Streams every turn as it settles. Without this nothing is recorded and the session has no history at all. Insert-only: the same turn again at its cursor is a retry and answers ok; a different one is refused (`cursor N already holds a different turn`), and `amend` is how a turn changes. A missing or non-whole cursor is refused. A turn not made durable is `fault: "failed"`. A row with `role: "trace"` is kept beside the turns, never at one's place; `replay` does not return it, `scroll` carries it under `traces`. |
+| `replay` | `(session, {from, bytes, raw}) -> [turn]` | Everything a run said, in order. This is what `--resume` reads back, a page at a time with `{from, bytes}`. A row too large for a frame comes back `truncated: true` with `raw_bytes`, the length of the raw record it left out, and the next page starts after it; `{from: cursor, raw: offset, bytes}` reads that record back a piece at a time, each piece carrying `offset` and, until the last, `next`. |
 | `sessions` | `-> [session]` | The runs this project has had. `--resume` with no id asks this **first**, to find which run was newest, and only then replays it. |
 
 Plus the family floor from `FAMILY.md` — `verbs` and `client` — which every program owes whatever
@@ -71,8 +71,8 @@ drawn wrong, and only running a program against it found out.
 The optional `run` field on an observed or amended turn identifies the scratch-memory run
 separately from the transcript key passed as the first argument. Transcripts may share a run,
 but their cursor spaces remain independent. The binding is durable and cannot be reassigned.
-Omitting `run` retains an existing binding or defaults to the transcript key. Agent identity
-remains connection-pinned; `run` never selects another agent's scratch. Implementations that
+Omitting `run` retains an existing binding or defaults to the transcript key. The agent is the
+one `serve` was started for; `run` never selects another agent's scratch. Implementations that
 do not support this extension may ignore the field.
 `resume` also returns the durable `run` for a transcript; a restarting coordinator retains it
 instead of rebinding the transcript to its new process's run. Without this field, the transcript
@@ -80,17 +80,17 @@ key is the scratch run.
 
 | verb | shape | what magi loses without it |
 |---|---|---|
-| `amend` | `(session, turn) -> ok` | A turn revised after it settled keeps its first text. magi writes `observe` at a cursor that already has a row, and an implementation may treat that as an amend. |
+| `amend` | `(session, turn) -> ok` | A turn revised after it settled keeps its first text. The one verb that changes a turn; the revision it replaces is kept. |
 | `recall` | `(query, opts) -> [memory]` | The model's `recall` tool is not declared. |
 | `remember` | `(text, opts) -> landing` | The model's `remember` tool is not declared. |
 | `forget` | `(id, opts) -> ok` | The model's `forget` tool is not declared. |
 | `why` | `(id) -> { confidence, witnesses }` | The model's `why` tool is not declared. |
 | `scroll` | `(session, opts) -> { turns, next }` | The model's `history` tool is not declared, and an elided tool result cannot be read back. |
-| `layout` | `(session, { round, window, reply, fixed, live, query, idle_s, helpers }) -> { id, budget, slots, jobs, fits, why }`; `rules` is verified user-instruction text. `observations`, `summary`, `memory` and legacy mixed `pinned` slots are assistant/helper context, not user instructions. | magi sends every live entry whole, every round. An over-budget context goes to the provider and is refused there. This is the most expensive extension to lack. |
+| `layout` | `(session, { round, window, reply, fixed, live, query, idle_s, helpers }) -> { id, budget, slots, jobs, fits, why }`; `rules` contains verified user directives, `observations` contains lower-trust metadata. Both consume the `pinned` quota. `summary`, `memory` and legacy mixed `pinned` text are assistant or helper context, not verified authority. | magi sends every live entry whole, every round. An over-budget context goes to the provider and is refused there. This is the most expensive extension to lack. |
 | `plan` | `(session, { window }) -> { keep, mask, drop, summarise, why }` | Asked only when `layout` is refused: what it masks goes as a stub and what it drops is left out. Without either, everything live is sent. |
 | `applied` | `(session, { id, usage }) -> ok` | The store never learns how far its estimate was from what the provider counted. |
 | `overflowed` | `(session, { id, said }) -> layout` | A request refused as too long is not retried tighter. |
-| `jobs` | `(session, {}) -> [job]` | No helper work runs between turns: no background summaries, no memory curation. |
+| `jobs` | `(session, {helpers?, retry_extraction?}) -> [job]`; `{inspect=true}` instead returns one extraction/job status object without issuing work. | No helper work runs between turns: no background summaries, no memory curation. |
 | `job_done` | `(session, { id, text, usage, model } \| { id, failed }) -> ok` | A job magi ran has nowhere to report back to. |
 | `notes`, `note_open`, `changes`, `undo`, `approve`, `reject` | see `PLAN-CONTEXT.md` A.5 | The memory's notes and their change log cannot be read or undone from magi. |
 | `used` | `(injection, opts) -> { action }` | The outcome loop records nothing. |
@@ -101,6 +101,19 @@ key is the scratch run.
 **The four model-facing verbs — `recall`, `remember`, `forget`, `why` — are declared
 independently.** magi declares a tool for each verb the role answers and omits the rest, so a
 memory layer that can search but not explain gets three tools and no `why`.
+
+**A memory layer's socket takes writes from the session that started it.** magi starts one
+`serve` per session and writes a key on its standard input: one line of 64 lowercase hex
+characters, read before anything is bound; a malformed line refuses the start. A `serve` handed no
+line (its input ends, or is a terminal) mints its own key and writes it beside its socket as
+`<socket>.key`, created 0600 and new in its 0700 runtime directory and removed when it exits; one
+handed a key writes no file. A call that writes or issues work carries the key as `"key"`; without
+it, or with another, it is refused (`fault: "refused"`, `a call to serve needs the key it was
+started with`) and the connection stays open. A call that only reads needs no key. A magi that did
+not start the `serve` it talks to reads `<socket>.key` with the owner and mode check it applies to
+its host's controller key, and reads it again once when a write is refused for the key. The agent
+a call is recorded for is the one `serve` was started for, `MAGI_MEMORY_AGENT` in its own
+environment; what a caller's environment names is attribution only.
 
 ---
 
@@ -126,10 +139,12 @@ Plus the family floor.
 
 **A tools program may keep a socket, but the trust is never the caller's.** casper binds one with
 `serve` and answers `tools` and `run` on it, kept open across a session so a call need not spawn a
-process each time. What makes that safe is that the jail is set on `serve`'s spawn — in the
-program's environment, by the coordinator — never by the call: a socket peer runs inside the same
-walls a spawned call would, and a peer of another user is turned away. See `FAMILY.md`'s Doors
-table. The command line stays the spawn-per-call door and is always available.
+process each time. The jail is set on `serve`'s spawn — in the program's environment, by the
+coordinator — never by the call, so a socket peer runs inside the same walls a spawned call would.
+A call is answered only when it carries the key the coordinator wrote on `serve`'s standard input,
+and a peer of another user is turned away. With the jail off, `run` runs commands as the person on
+either door: the socket is then a remote shell exactly as far as the person's own shell is. See
+`FAMILY.md`'s Doors table. The command line stays the spawn-per-call door and is always available.
 
 **Its settings arrive in `MAGI_TOOLS_CONFIGURE`**, as a JSON object, on every spawn — `tools` and
 `run` alike, since there is no process alive between calls to send them to once. magi reads them

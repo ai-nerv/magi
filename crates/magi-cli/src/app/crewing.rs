@@ -117,7 +117,7 @@ impl App {
         } else {
             (now + round - 1) % round
         };
-        let target = next.checked_sub(1).map(|at| crew[at].clone());
+        let target = next.checked_sub(1).and_then(|at| crew.get(at).cloned());
         let seat = match target.as_ref().and_then(|them| them.ui.clone()) {
             Some(at) => Seat::Peer(at),
             // Only reachable for the own seat: `movable` is what put the rest in the ring.

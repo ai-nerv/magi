@@ -28,10 +28,15 @@ const SHORTEST: usize = 12;
 /// Replace any credential this process is holding with a marker naming it.
 #[must_use]
 pub fn apply(content: String) -> String {
+    masked(content, &secrets())
+}
+
+/// Replace each of `secrets` in `content` with a marker naming it.
+fn masked(content: String, secrets: &[(String, String)]) -> String {
     let mut out = content;
-    for (name, value) in secrets() {
-        if out.contains(&value) {
-            out = out.replace(&value, &marker(&name));
+    for (name, value) in secrets {
+        if out.contains(value.as_str()) {
+            out = out.replace(value.as_str(), &marker(name));
         }
     }
     out
@@ -60,6 +65,22 @@ pub fn painted(shown: Option<Shown>) -> Option<Shown> {
         })
         .collect();
     Some(Shown::Painted { lines })
+}
+
+/// What a tool said about its own result, masked as its text is: the brief and the way back reach
+/// the memory layer and its logs.
+#[must_use]
+pub fn hints(hints: magi_proto::tooling::Hints) -> magi_proto::tooling::Hints {
+    hints_with(hints, &secrets())
+}
+
+fn hints_with(
+    mut hints: magi_proto::tooling::Hints,
+    secrets: &[(String, String)],
+) -> magi_proto::tooling::Hints {
+    hints.brief = hints.brief.map(|brief| masked(brief, secrets));
+    hints.back = hints.back.map(|back| masked(back, secrets));
+    hints
 }
 
 /// This process's secret-looking variables, longest value first: one value can contain another, and
@@ -112,6 +133,26 @@ mod tests {
             lines: vec![vec![Span::new(Role::Keyword, "fn")]],
         });
         assert_eq!(painted(shown.clone()), shown);
+    }
+
+    #[test]
+    fn a_hint_holding_a_credential_is_masked_like_the_text() {
+        let secrets = vec![(
+            "OPENAI_API_KEY".to_owned(),
+            "sk-abcdefghijklmnop".to_owned(),
+        )];
+        let hints = magi_proto::tooling::Hints {
+            brief: Some("printenv said sk-abcdefghijklmnop".to_owned()),
+            back: Some("echo sk-abcdefghijklmnop".to_owned()),
+            keep: true,
+        };
+        let masked = super::hints_with(hints, &secrets);
+        for said in [masked.brief.as_deref(), masked.back.as_deref()] {
+            let said = said.expect("kept");
+            assert!(!said.contains("sk-abcdefghijklmnop"), "{said}");
+            assert!(said.contains(&marker("OPENAI_API_KEY")), "{said}");
+        }
+        assert!(masked.keep);
     }
 
     #[test]

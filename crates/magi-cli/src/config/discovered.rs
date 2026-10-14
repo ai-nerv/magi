@@ -145,6 +145,34 @@ mod tests {
     }
 
     #[test]
+    fn a_precompiled_plugin_is_skipped_and_the_rest_still_run() {
+        let mut engine = Engine::new();
+        engine
+            .run(
+                "magi.chunk = string.dump(load('magi.ran = true'))",
+                "dump.lua",
+            )
+            .expect("dumps");
+        engine.harvest();
+        let chunk = engine.config().string("chunk").expect("a chunk").to_owned();
+        let dir = Scratch::new("magi-disc", "bytecode");
+        std::fs::create_dir_all(dir.join("plugin")).expect("mkdir");
+        std::fs::write(dir.join("plugin/a-dumped.lua"), chunk).expect("write");
+        std::fs::write(dir.join("plugin/b-plain.lua"), "magi.plain = 1\n").expect("write");
+
+        let mut engine = Engine::new();
+        let roots = Roots {
+            config: Some(dir.to_path_buf()),
+            site: None,
+            project: None,
+        };
+        run(&mut engine, &roots, &mut |_| Ok(())).expect("discovery");
+        engine.harvest();
+        assert_eq!(engine.config().boolean("ran"), None);
+        assert_eq!(engine.config().number("plain"), Some(1.0));
+    }
+
+    #[test]
     fn a_discovered_file_cannot_spawn_a_process() {
         // The sandbox is applied in `Engine::new`, so it is a property of the VM, not of the loader.
         let mut engine = Engine::new();

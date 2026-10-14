@@ -1,0 +1,296 @@
+//! Recording against a memory layer that misbehaves: a lost reply, a refusal, an entry too large
+//! for one frame, and one that is not there at all.
+
+use super::super::*;
+use magi_ipc::family::{MAX_FRAME_BYTES, Reply};
+use magi_model::scratch::Scratch;
+use magi_proto::MessageId;
+use serde_json::{Value, json};
+use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+/// What the fake does with one call: answer it, or hang up without a word.
+enum Says {
+    Answer(Reply),
+    HangUp,
+}
+
+/// A memory layer that hands each call, with the number of the connection it came on, to `says`.
+struct Fake {
+    dir: Scratch,
+    /// Each call, with the connection it came on and the length its frame declared.
+    calls: Arc<Mutex<Vec<(usize, usize, Value)>>>,
+}
+
+impl Fake {
+    fn start(name: &str, says: impl Fn(usize, &Value) -> Says + Send + Sync + 'static) -> Self {
+        let dir = Scratch::new("magi-scribe-fake", name);
+        let listener = tokio::net::UnixListener::bind(dir.join("m.sock")).expect("bind");
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::clone(&calls);
+        tokio::spawn(async move {
+            let mut nth = 0;
+            while let Ok((mut stream, _)) = listener.accept().await {
+                while let Ok(length) = stream.read_u32().await {
+                    let mut body = vec![0; length as usize];
+                    if stream.read_exact(&mut body).await.is_err() {
+                        break;
+                    }
+                    let call: Value = magi_ipc::Wire::read(&body).expect("a family call");
+                    let length = length as usize;
+                    seen.lock()
+                        .expect("calls")
+                        .push((nth, length, call.clone()));
+                    let Says::Answer(reply) = says(nth, &call) else {
+                        break;
+                    };
+                    let bytes = reply.encode(magi_ipc::Wire::Json);
+                    let _ = stream.write_u32(bytes.len() as u32).await;
+                    let _ = stream.write_all(&bytes).await;
+                }
+                nth += 1;
+            }
+        });
+        Self { dir, calls }
+    }
+
+    fn path(&self) -> std::path::PathBuf {
+        self.dir.join("m.sock")
+    }
+
+    async fn scribe(&self) -> Scribe {
+        let family = Family::dial(self.path()).await.expect("dial");
+        Scribe::over(family, Some(self.path()), &SessionId::new("s"))
+    }
+
+    /// Each call's verb and cursor, in the order they arrived.
+    fn heard(&self) -> Vec<(String, u64)> {
+        self.calls
+            .lock()
+            .expect("calls")
+            .iter()
+            .map(|(_, _, call)| {
+                let verb = call["call"].as_str().unwrap_or_default().to_owned();
+                (verb, call["args"][1]["cursor"].as_u64().unwrap_or(0))
+            })
+            .collect()
+    }
+
+    /// Each call's connection and frame length, in the order they arrived.
+    fn framed(&self) -> Vec<(usize, usize)> {
+        let calls = self.calls.lock().expect("calls");
+        calls
+            .iter()
+            .map(|(nth, length, _)| (*nth, *length))
+            .collect()
+    }
+}
+
+fn said(text: &str) -> Entry {
+    Entry::User {
+        id: MessageId::new("u"),
+        text: text.into(),
+        aside: String::new(),
+    }
+}
+
+#[tokio::test]
+async fn an_observe_whose_reply_was_lost_is_sent_again_and_then_amended() {
+    // The first connection takes the observe and hangs up before answering; the store has it.
+    let fake = Fake::start("lost", |nth, _| match nth {
+        0 => Says::HangUp,
+        _ => Says::Answer(Reply::done()),
+    });
+    let mut scribe = fake.scribe().await;
+    scribe
+        .settle(Cursor(1), &said("one"), &Beside::default())
+        .await
+        .expect("the retry lands");
+    scribe
+        .settle(Cursor(1), &said("one, revised"), &Beside::default())
+        .await
+        .expect("the revision lands");
+    assert_eq!(
+        fake.heard(),
+        vec![
+            ("observe".into(), 1),
+            ("observe".into(), 1),
+            ("amend".into(), 1)
+        ],
+        "a cursor once acknowledged is amended, never observed again"
+    );
+}
+
+#[tokio::test]
+async fn a_cursor_the_store_already_holds_is_amended_rather_than_lost() {
+    let fake = Fake::start("holds", |_, call| match call["call"].as_str() {
+        Some("observe") => Says::Answer(Reply::refused("cursor 4 already holds a different turn")),
+        _ => Says::Answer(Reply::done()),
+    });
+    let mut scribe = fake.scribe().await;
+    scribe
+        .settle(Cursor(4), &said("changed since"), &Beside::default())
+        .await
+        .expect("amended");
+    assert_eq!(
+        fake.heard(),
+        vec![("observe".into(), 4), ("amend".into(), 4)]
+    );
+}
+
+#[tokio::test]
+async fn one_entry_refused_does_not_hold_back_the_ones_after_it() {
+    let fake = Fake::start("refused", |_, call| {
+        match call["args"][1]["cursor"].as_u64() {
+            Some(2) => Says::Answer(Reply::refused("not this one")),
+            _ => Says::Answer(Reply::done()),
+        }
+    });
+    let session = tokio::sync::Mutex::new(crate::session::Session::recorded(
+        SessionId::new("s"),
+        Vec::new(),
+    ));
+    for text in ["one", "two", "three"] {
+        session.lock().await.commit(said(text)).expect("commit");
+    }
+    let mut scribe = Some(fake.scribe().await);
+    let flushed = flush(&session, &mut scribe).await;
+    assert!(matches!(flushed, Err(Fault::Refused(_))), "{flushed:?}");
+    assert_eq!(
+        fake.heard(),
+        vec![
+            ("observe".into(), 1),
+            ("observe".into(), 2),
+            ("observe".into(), 3)
+        ]
+    );
+    assert!(
+        !session.lock().await.has_pending(),
+        "the queue is not wedged"
+    );
+}
+
+#[test]
+fn an_entry_past_the_frame_cap_is_recorded_cut_down_and_still_replays() {
+    let scribe = Scribe::unconnected("/nonexistent/m.sock".into(), &SessionId::new("s"));
+    let huge = said(&"é".repeat(MAX_FRAME_BYTES / 2 + 1));
+    let args = scribe
+        .fitted("observe", Cursor(1), &huge, &Beside::default())
+        .expect("fitted");
+    assert!(magi_ipc::family::fits("observe", &args), "it fits now");
+
+    let (cursor, back) = shape::rebuild(&args[1]).expect("the raw still rebuilds");
+    assert_eq!(cursor, Cursor(1));
+    let Entry::User { text, .. } = back else {
+        panic!("a user entry");
+    };
+    assert!(text.len() < MAX_FRAME_BYTES / 4, "{}", text.len());
+    assert!(text.contains("bytes cut here"), "the cut is marked");
+}
+
+#[tokio::test]
+async fn a_9_and_a_15_mib_entry_keep_the_connection_and_what_follows() {
+    let fake = Fake::start("huge", |_, _| Says::Answer(Reply::done()));
+    let family = Family::dial(fake.path()).await.expect("dial");
+    let nowhere = fake.dir.join("nowhere.sock");
+    let mut scribe = Scribe::over(family, Some(nowhere), &SessionId::new("s"));
+    for (cursor, size) in [(1, 8), (2, 9 << 20), (3, 15 << 20), (4, 8)] {
+        scribe
+            .observe(
+                Cursor(cursor),
+                &said(&"é".repeat(size / 2)),
+                &Beside::default(),
+            )
+            .await
+            .expect("observed on the one connection");
+    }
+    let observed: Vec<u64> = fake.heard().into_iter().map(|(_, at)| at).collect();
+    assert_eq!(observed, [1, 2, 3, 4]);
+    for (nth, length) in fake.framed() {
+        assert_eq!(nth, 0, "the connection was dialled again");
+        assert!(length <= MAX_FRAME_BYTES, "a {length} byte frame was sent");
+    }
+}
+
+#[tokio::test]
+async fn a_memory_layer_that_is_not_there_yet_is_dialled_again_after_a_pause() {
+    let dir = Scratch::new("magi-scribe-late", "one");
+    let mut scribe = Scribe::unconnected(dir.join("m.sock"), &SessionId::new("s"));
+    assert!(scribe.resumes().await.is_err(), "nothing is there");
+    assert!(
+        scribe.retry.0 > std::time::Instant::now(),
+        "and it backs off"
+    );
+
+    let late = Fake::start("late", |_, _| {
+        Says::Answer(Reply::of(json!({ "turns": 3 })))
+    });
+    let mut scribe = Scribe::unconnected(late.path(), &SessionId::new("s"));
+    scribe.retry.0 = std::time::Instant::now() + std::time::Duration::from_millis(300);
+    let waiting = scribe
+        .resumes()
+        .await
+        .expect_err("within the pause nothing is dialled");
+    assert!(waiting.to_string().contains("tried again"), "{waiting}");
+    assert!(late.heard().is_empty());
+
+    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+    assert_eq!(scribe.resumes().await.expect("answered"), 3);
+}
+
+#[test]
+fn a_queue_nothing_is_taking_stays_bounded_and_says_what_went() {
+    let mut session = crate::session::Session::recorded(SessionId::new("s"), Vec::new());
+    let most = crate::session::PENDING_MOST;
+    for n in 0..most + 5 {
+        session.commit(said(&n.to_string())).expect("commit");
+    }
+    let told = session.bound_pending().expect("something went");
+    assert!(told.contains("5 of the oldest"), "{told}");
+    assert!(told.contains("cursors 1 to 5"), "{told}");
+    assert_eq!(session.pending_batch().len(), most);
+    assert!(
+        session.bound_pending().is_none(),
+        "said once, when it happens"
+    );
+}
+
+#[tokio::test]
+async fn a_row_cut_to_fit_a_frame_still_replays_with_the_rows_around_it() {
+    let row = |cursor: u64, text: &str| {
+        super::super::shape::turn(Cursor(cursor), &said(text), &Beside::default()).expect("a row")
+    };
+    let cut = json!({
+        "cursor": 2, "role": "user", "kind": "user", "text": "the start of a huge paste",
+        "truncated": true,
+    });
+    let (first, second) = (row(1, "before"), row(3, "after"));
+    let fake = Fake::start("cut", move |_, call| {
+        let page = match call["args"][1]["from"].as_u64() {
+            Some(0) => vec![first.clone(), cut.clone()],
+            Some(3) => vec![second.clone()],
+            _ => Vec::new(),
+        };
+        Says::Answer(Reply::rows(page))
+    });
+    let mut scribe = fake.scribe().await;
+    let replayed = scribe.replay_of("s").await.expect("the run replays");
+    let texts: Vec<String> = replayed
+        .iter()
+        .map(|(cursor, entry)| match entry {
+            Entry::User { text, .. } => format!("{}:{text}", cursor.0),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        texts,
+        vec![
+            "1:before".to_owned(),
+            format!(
+                "2:the start of a huge paste{}",
+                super::super::shape::CUT_SHORT
+            ),
+            "3:after".to_owned(),
+        ]
+    );
+}

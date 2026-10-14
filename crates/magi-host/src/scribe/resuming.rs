@@ -4,11 +4,11 @@ use magi_journal::Journal;
 
 impl Scribe {
     pub(crate) fn socket(&self) -> &std::path::Path {
-        self.family.path()
+        &self.at
     }
 
     pub(crate) async fn prepare_resume(&self, id: &str) -> Result<(Self, Journal), Fault> {
-        let path = self.family.path().to_owned();
+        let path = self.at.clone();
         let family = Family::dial(&path).await?;
         let mut next = Self::over(family, Some(path), &magi_proto::SessionId::new(id));
         let owner = next.run_of(id).await?;

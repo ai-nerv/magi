@@ -1,6 +1,8 @@
 //! Laying a request out, against a balthasar of each test's own: magi asks, sends what it is told,
 //! and says so. Skipped when balthasar is not installed, or is one from before layouts.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_host::scribe::Scribe;
 use magi_host::session::Session;
 use magi_host::turn::{Backend, run};

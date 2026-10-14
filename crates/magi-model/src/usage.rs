@@ -19,7 +19,9 @@ pub struct Usage {
 impl Usage {
     #[must_use]
     pub const fn prompt_tokens(self) -> u64 {
-        self.input + self.cache_read + self.cache_write
+        self.input
+            .saturating_add(self.cache_read)
+            .saturating_add(self.cache_write)
     }
 
     /// What fraction of the prompt came from cache, or `None` when nothing was sent.
@@ -29,12 +31,21 @@ impl Usage {
         (prompt > 0).then(|| self.cache_read as f64 / prompt as f64 * 100.0)
     }
 
+    /// Add `other` in, each count stopping at its largest value rather than wrapping: a bogus
+    /// figure from a provider must not turn a large total into a small one.
     pub const fn add(&mut self, other: Self) {
-        self.input += other.input;
-        self.output += other.output;
-        self.cache_read += other.cache_read;
-        self.cache_write += other.cache_write;
-        self.cost_micros += other.cost_micros;
+        self.input = self.input.saturating_add(other.input);
+        self.output = self.output.saturating_add(other.output);
+        self.cache_read = self.cache_read.saturating_add(other.cache_read);
+        self.cache_write = self.cache_write.saturating_add(other.cache_write);
+        self.cost_micros = self.cost_micros.saturating_add(other.cost_micros);
+    }
+
+    /// `self` with `other` added — see [`Usage::add`].
+    #[must_use]
+    pub const fn plus(mut self, other: Self) -> Self {
+        self.add(other);
+        self
     }
 
     #[must_use]
@@ -127,5 +138,23 @@ mod tests {
             "{}",
             usage.price(cost)
         );
+    }
+
+    #[test]
+    fn a_total_stops_at_its_largest_value_rather_than_wrapping() {
+        let mut total = Usage {
+            cost_micros: u64::MAX - 1,
+            input: u64::MAX,
+            ..Usage::default()
+        };
+        total.add(Usage {
+            cost_micros: 5,
+            input: 1,
+            cache_read: u64::MAX,
+            ..Usage::default()
+        });
+        assert_eq!(total.cost_micros, u64::MAX);
+        assert_eq!(total.input, u64::MAX);
+        assert_eq!(total.prompt_tokens(), u64::MAX);
     }
 }

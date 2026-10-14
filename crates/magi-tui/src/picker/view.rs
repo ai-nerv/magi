@@ -14,7 +14,8 @@ pub fn render(picker: &Picker, width: u16) -> Vec<Line<'static>> {
             width,
         )];
     }
-    let value_width = picker.choices[window.clone()]
+    let shown = picker.choices.get(window.clone()).unwrap_or_default();
+    let value_width = shown
         .iter()
         .map(|c| c.value.chars().count())
         .max()
@@ -55,24 +56,19 @@ pub fn render(picker: &Picker, width: u16) -> Vec<Line<'static>> {
         spans.extend(row.spans);
         ratatui::text::Line::from(spans)
     }));
-    out.extend(
-        picker.choices[window.clone()]
-            .iter()
-            .enumerate()
-            .map(|(offset, choice)| {
-                crate::menu::row(
-                    &crate::menu::Row {
-                        value: &choice.value,
-                        detail: &choice.detail,
-                        selected: window.start + offset == picker.selected,
-                        ready: choice.ready,
-                        value_width,
-                    },
-                    picker.query(),
-                    width,
-                )
-            }),
-    );
+    out.extend(shown.iter().enumerate().map(|(offset, choice)| {
+        crate::menu::row(
+            &crate::menu::Row {
+                value: &choice.value,
+                detail: &choice.detail,
+                selected: window.start + offset == picker.selected,
+                ready: choice.ready,
+                value_width,
+            },
+            picker.query(),
+            width,
+        )
+    }));
     // The question last, under the row it is about, so the row stays under your eye while you
     // decide and the list does not move.
     if let Some(asking) = picker.asking() {

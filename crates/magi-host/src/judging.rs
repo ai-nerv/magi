@@ -161,11 +161,21 @@ impl Judged {
         Decision::Deny
     }
 
-    /// A write this session's own directory takes, and not into the repository's own records:
-    /// what `edits` exists to stop asking about.
+    /// A write this session's own directory takes, and not into the repository's records or a
+    /// file the next session runs: what `edits` exists to stop asking about. Judged on the path
+    /// as written and as it resolves on disk.
     fn an_edit_here(&self, action: &Action) -> bool {
-        matches!(action, Action::Write { path }
-            if magi_proto::permit::under(path, &self.root) && !path.contains("/.git/"))
+        use magi_tools::ops::{real_path, runs_later};
+        let Action::Write { path } = action else {
+            return false;
+        };
+        let written = std::path::Path::new(path);
+        let real = real_path(written);
+        let root = real_path(std::path::Path::new(&self.root));
+        written.is_absolute()
+            && real.starts_with(&root)
+            && !runs_later(written)
+            && !runs_later(&real)
     }
 
     /// The second model's word on it, acted on. Asked of the person when there is none, and when
@@ -245,7 +255,7 @@ impl magi_tools::approve::Approver for Judged {
                 ),
             );
         }
-        if self.rules.ask.iter().any(|rule| rule.names(action)) {
+        if self.rules.ask.iter().any(|rule| rule.names(action)) || self.unsure(action) {
             let advice = self.judge.judge(tool, action);
             return self.person.ask_advised(tool, action, advice.as_ref());
         }
@@ -277,6 +287,24 @@ impl magi_tools::approve::Approver for Judged {
             .iter()
             .chain(&self.rules.ask)
             .any(|rule| rule.names(action))
+            || self.unsure(action)
+    }
+}
+
+impl Judged {
+    /// Whether `action` is a command whose programs cannot be read for certain while a rule
+    /// names a program: whether that rule applies is then the person's to say.
+    fn unsure(&self, action: &Action) -> bool {
+        let Action::Run { command, .. } = action else {
+            return false;
+        };
+        magi_proto::permit::ambiguous(command)
+            && self
+                .rules
+                .deny
+                .iter()
+                .chain(&self.rules.ask)
+                .any(|rule| rule.verb == "run" && matches!(rule.scope, Scope::Program { .. }))
     }
 }
 
@@ -327,7 +355,7 @@ impl Judge for Helper {
             })
             .ok()?;
         match answer.recv_timeout(PATIENCE).ok()? {
-            magi_proto::wondering::Answered::Told { said } => read(said["text"].as_str()?),
+            magi_proto::wondering::Answered::Told { said } => read(said.get("text")?.as_str()?),
             magi_proto::wondering::Answered::Refused { .. } => None,
         }
     }
@@ -397,7 +425,9 @@ fn read(text: &str) -> Option<Advice> {
     let said: serde_json::Value = serde_json::from_str(text.get(from..=to)?).ok()?;
     let mut advice: Advice = serde_json::from_value(said.clone()).ok()?;
     // A model that decides says how sure it was, beside the answer it gave.
-    advice.sure = said["_decided"]["safe"]["p"].as_f64();
+    advice.sure = said
+        .pointer("/_decided/safe/p")
+        .and_then(serde_json::Value::as_f64);
     Some(advice)
 }
 

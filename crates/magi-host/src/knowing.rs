@@ -221,7 +221,7 @@ fn said_by_the_person(entries: &[magi_proto::Entry]) -> String {
         })
         .collect();
     let mut out = String::from("What the person has said, oldest first:\n");
-    for text in &said[said.len().saturating_sub(KEPT)..] {
+    for text in said.iter().skip(said.len().saturating_sub(KEPT)) {
         out.push_str(&format!("- {text}\n"));
     }
     out

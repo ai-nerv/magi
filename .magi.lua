@@ -1,1 +1,2 @@
-magi.theme = "dark"
+-- This checkout's own settings. A project file may set only `magi.model`, `magi.thinking` and
+-- `magi.ui`; anything else is refused by name and the session does not start.

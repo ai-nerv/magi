@@ -171,12 +171,13 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
     // Each edge with something past it takes a row for its rule, so both sit against the text.
     let above = app.scrollback.hidden_above() > 0;
     let live_area = Rect {
-        y: live_area.y + u16::from(above),
+        y: live_area.y.saturating_add(u16::from(above)),
         height: live_area
             .height
             .saturating_sub(u16::from(above) + more_rows),
         ..live_area
-    };
+    }
+    .intersection(area);
     let view = app.scrollback.view(live_area.height).to_vec();
     // Bottom-aligned: a transcript grows towards the prompt.
     let used = u16::try_from(view.len()).unwrap_or(live_area.height);
@@ -184,28 +185,31 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
         y: live_area.y + live_area.height.saturating_sub(used),
         height: used.min(live_area.height),
         ..live_area
-    };
+    }
+    .intersection(area);
     // The rows the transcript landed on, which is what a click is measured against.
     app.live_rows = anchored.y..anchored.y + anchored.height;
     frame.render_widget(Paragraph::new(view), anchored);
-    if above {
+    if above && live_area.y > area.y {
         frame.render_widget(
             Paragraph::new(status::more(area.width)),
             Rect {
                 y: live_area.y - 1,
                 height: 1,
                 ..live_area
-            },
+            }
+            .intersection(area),
         );
     }
     if scrolled {
         frame.render_widget(
             Paragraph::new(status::more(area.width)),
             Rect {
-                y: live_area.y + live_area.height,
+                y: live_area.y.saturating_add(live_area.height),
                 height: 1,
                 ..live_area
-            },
+            }
+            .intersection(area),
         );
     }
 
@@ -341,7 +345,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
                 y: top,
                 height: rows,
                 ..prompt_area
-            },
+            }
+            .intersection(area),
             progress,
         );
     }
@@ -351,6 +356,8 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
     if let Some(selection) = app.selection {
         magi_tui::select::over(frame.buffer_mut(), selection);
     }
+    // Whatever drew it, a cell that would instruct the terminal is shown instead.
+    magi_tui::clean::scrub(frame.buffer_mut());
 
     // A tenant that asked for the cursor gets it: while a surface has the keyboard, a caret parked
     // in the prompt points an IME and a screen reader at a box nothing is going into.
@@ -698,3 +705,6 @@ mod where_the_rows_landed {
         assert!(at.y < rect.y, "the caret went into the tenant's rows");
     }
 }
+
+#[cfg(test)]
+mod hostile_and_tiny;

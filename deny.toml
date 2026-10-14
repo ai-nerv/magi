@@ -1,0 +1,41 @@
+# The dependency policy `cargo deny check` holds the lockfile to, in `make verify` and in CI.
+
+[graph]
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "x86_64-unknown-linux-musl",
+  "aarch64-unknown-linux-gnu",
+  "aarch64-unknown-linux-musl",
+]
+all-features = true
+
+[advisories]
+yanked = "deny"
+unmaintained = "all"
+unsound = "all"
+ignore = [
+  { id = "RUSTSEC-2026-0002", reason = "lru 0.12 via ratatui 0.29's layout cache, which never takes IterMut; the fix is lru 0.18, only under ratatui 0.30" },
+  { id = "RUSTSEC-2026-0253", reason = "lru 0.12 via ratatui 0.29, whose cache holds plain Rects that cannot panic on drop; the fix is lru 0.18, only under ratatui 0.30" },
+  { id = "RUSTSEC-2024-0436", reason = "paste is unmaintained with no fix; a build-time macro of ratatui 0.29, gone under ratatui 0.30" },
+  { id = "RUSTSEC-2025-0141", reason = "bincode 1 is unmaintained with no fix; syntect decodes only the syntax set built into the binary with it" },
+]
+
+[licenses]
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Unicode-3.0",
+  "Zlib",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = ["https://github.com/onix-os/luna"]

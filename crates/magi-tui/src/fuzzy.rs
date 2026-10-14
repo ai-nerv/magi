@@ -42,18 +42,17 @@ fn score_exact(query: &str, text: &str) -> Option<Match> {
     let mut consecutive = 0_i32;
 
     for (i, &c) in text_chars.iter().enumerate() {
-        if query_index >= query_chars.len() {
+        let Some(&wanted) = query_chars.get(query_index) else {
             break;
-        }
-        if c != query_chars[query_index] {
+        };
+        if c != wanted {
             continue;
         }
 
-        let at_boundary = i == 0
-            || matches!(
-                text_chars[i - 1],
-                ' ' | '\t' | '\n' | '-' | '_' | '.' | '/' | ':'
-            );
+        let at_boundary = i
+            .checked_sub(1)
+            .and_then(|before| text_chars.get(before))
+            .is_none_or(|before| matches!(before, ' ' | '\t' | '\n' | '-' | '_' | '.' | '/' | ':'));
 
         if last_match == Some(i.wrapping_sub(1)) && i > 0 {
             consecutive += 1;

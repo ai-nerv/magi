@@ -10,6 +10,9 @@ pub(crate) enum Request {
     Reports,
 }
 
+/// The largest message a session takes: a quarter of a frame, so its record still fits in one.
+pub(crate) const ENTRY_MOST: usize = 4 * 1024 * 1024;
+
 #[derive(Default)]
 pub(super) struct Admission {
     pub(super) reports: super::reporting::Reports,
@@ -57,6 +60,15 @@ impl Session {
     }
 
     pub(crate) fn admit(&mut self, request: Request) -> Result<Option<(u64, Request)>, String> {
+        if let Request::Opening(entry) = &request
+            && super::resuming::weight(entry) > ENTRY_MOST
+        {
+            return Err(format!(
+                "this message is {} bytes and a message may be at most {ENTRY_MOST}; it was not \
+                 accepted",
+                super::resuming::weight(entry)
+            ));
+        }
         if self.busy() {
             if self.admission.waiting.len() >= 256 {
                 return Err("session queue is full; this request was not accepted".into());
@@ -67,6 +79,7 @@ impl Session {
         Ok(Some(self.reserve(request)))
     }
 
+    #[allow(clippy::expect_used)]
     fn reserve(&mut self, request: Request) -> (u64, Request) {
         self.admission.next = self
             .admission
@@ -177,6 +190,17 @@ mod tests {
         assert_eq!(text, "third");
         assert!(session.finish(third).is_none());
         assert!(session.idle());
+    }
+
+    #[test]
+    fn a_message_too_large_to_record_is_refused_at_the_door() {
+        let mut session = Session::recorded(SessionId::new("large"), Vec::new());
+        let refused = session
+            .admit(prompt(&"x".repeat(ENTRY_MOST + 1)))
+            .expect_err("refused");
+        assert!(refused.contains("at most"), "{refused}");
+        assert!(!session.busy(), "nothing was reserved for it");
+        assert!(session.admit(prompt(&"x".repeat(ENTRY_MOST))).is_ok());
     }
 
     #[test]

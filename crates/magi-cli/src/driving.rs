@@ -111,7 +111,13 @@ mod tests {
 
     #[tokio::test]
     async fn an_absent_sibling_is_passed_over_rather_than_fatal() {
-        settle(&loaded(r#"magi.thinking = "off""#)).await;
+        settle(&loaded(
+            r#"magi.thinking = "off"
+            magi.melchior = "magi-no-such-melchior"
+            magi.memory = "magi-no-such-memory"
+            magi.tools = "magi-no-such-tools""#,
+        ))
+        .await;
     }
 }
 

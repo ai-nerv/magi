@@ -1,5 +1,7 @@
 //! The completion popup, on screen.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_tui::complete::{self, Kind};
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;

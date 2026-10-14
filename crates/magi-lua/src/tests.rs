@@ -226,3 +226,70 @@ fn a_project_config_is_applied_after_a_machine_one() {
     let paths = crate::search_paths();
     assert!(paths.last().expect("a path").ends_with(".magi.lua"));
 }
+
+#[test]
+fn a_dial_to_the_session_bus_is_refused() {
+    // A listener of this uid, outside every family directory, and the bus where the runtime
+    // directory has one: both answer as a refusal rather than a connection.
+    let dir = magi_model::scratch::Scratch::new("magi-dial", "bus");
+    let bus = dir.join("bus");
+    let _listening = std::os::unix::net::UnixListener::bind(&bus).expect("bind");
+    let mut tried = vec![bus.display().to_string()];
+    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
+        tried.push(
+            std::path::Path::new(&runtime)
+                .join("bus")
+                .display()
+                .to_string(),
+        );
+    }
+    for path in tried {
+        let config = run(&format!(
+            r#"local h, why = magi.stream.connect({path:?}, 200)
+               magi.answer = tostring(h) .. "|" .. tostring(why)"#
+        ));
+        let said = config.string("answer").expect("an answer");
+        assert!(
+            said.starts_with("nil|") && said.contains("family"),
+            "{path}: {said}"
+        );
+    }
+}
+
+/// A peer that takes one framed call and hands back the body it was sent.
+fn hearing(path: &std::path::Path) -> std::thread::JoinHandle<serde_json::Value> {
+    use std::io::Read;
+    let listener = std::os::unix::net::UnixListener::bind(path).expect("bind");
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut head = [0_u8; 4];
+        stream.read_exact(&mut head).expect("head");
+        let mut body = vec![0_u8; u32::from_be_bytes(head) as usize];
+        stream.read_exact(&mut body).expect("body");
+        serde_json::from_slice(&body).expect("a call")
+    })
+}
+
+#[test]
+fn a_call_sent_to_the_memory_layer_this_process_started_carries_its_key_unseen() {
+    let dir = magi_tools::family::FamilyScratch::new("keyed").expect("a dialable directory");
+    let (ours, other) = (dir.join("api@ours.sock"), dir.join("api@other.sock"));
+    let key = "ab".repeat(32);
+    magi_tools::family::hold_key(&ours, &key);
+    let (heard_ours, heard_other) = (hearing(&ours), hearing(&other));
+    for path in [&ours, &other] {
+        let config = run(&format!(
+            r#"local h = assert(magi.stream.connect({path:?}, 2000))
+               local body = '{{"call":"verbs"}}'
+               magi.answer = tostring(h:send(string.char(0, 0, 0, #body) .. body))
+               h:close()"#,
+            path = path.display().to_string()
+        ));
+        assert_eq!(config.string("answer"), Some("true"));
+    }
+    let ours = heard_ours.join().expect("ours");
+    assert_eq!(ours["call"], "verbs");
+    assert_eq!(ours["key"], key.as_str(), "{ours}");
+    let other = heard_other.join().expect("other");
+    assert!(other.get("key").is_none(), "{other}");
+}

@@ -66,8 +66,8 @@ pub fn render(rows: &[String], width: u16) -> Vec<Line<'static>> {
 
     let mut widths = vec![0usize; columns];
     for row in &parsed {
-        for (i, cell) in row.iter().enumerate() {
-            widths[i] = widths[i].max(cell.chars().count());
+        for (widest, cell) in widths.iter_mut().zip(row) {
+            *widest = (*widest).max(cell.chars().count());
         }
     }
     fit(&mut widths, usize::from(width));
@@ -104,15 +104,13 @@ fn fit(widths: &mut [usize], width: usize) {
     let mut total: usize = widths.iter().sum::<usize>() + chrome;
     while total > width {
         let Some(widest) = widths
-            .iter()
-            .enumerate()
-            .filter(|(_, w)| **w > usize::from(crate::metric::min_column()))
-            .max_by_key(|(_, w)| **w)
-            .map(|(i, _)| i)
+            .iter_mut()
+            .filter(|w| **w > usize::from(crate::metric::min_column()))
+            .max_by_key(|w| **w)
         else {
             break;
         };
-        widths[widest] -= 1;
+        *widest -= 1;
         total -= 1;
     }
 }

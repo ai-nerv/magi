@@ -12,6 +12,9 @@ pub enum UiCommand {
         /// Whether this client can draw rows a tool asks for; `magi -p` cannot.
         #[serde(default)]
         draws: bool,
+        /// The key in `<socket>.key`. Without it the connection watches and may change nothing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
     },
     /// How big the screen is, and what its keyboard can say. Sent at attach and on resize.
     Sized {
@@ -109,4 +112,72 @@ pub enum UiCommand {
         arg: serde_json::Value,
     },
     Detach,
+}
+
+impl UiCommand {
+    /// The command's wire name, for a log line that must carry nothing a command holds.
+    #[must_use]
+    pub const fn verb(&self) -> &'static str {
+        match self {
+            Self::Attach { .. } => "attach",
+            Self::Sized { .. } => "sized",
+            Self::FloatSized { .. } => "float_sized",
+            Self::SubmitPrompt { .. } => "submit_prompt",
+            Self::Arrived { .. } => "arrived",
+            Self::Interrupt => "interrupt",
+            Self::RefreshModels => "refresh_models",
+            Self::SetModel { .. } => "set_model",
+            Self::SetThinking { .. } => "set_thinking",
+            Self::SetMode { .. } => "set_mode",
+            Self::SetUnsure { .. } => "set_unsure",
+            Self::SetProvider { .. } => "set_provider",
+            Self::Permit { .. } => "permit",
+            Self::Answered { .. } => "answered",
+            Self::Keyed { .. } => "keyed",
+            Self::Moused { .. } => "moused",
+            Self::Unsurface { .. } => "unsurface",
+            Self::DeclareNeeds => "declare_needs",
+            Self::TakeGrants { .. } => "take_grants",
+            Self::Branch { .. } => "branch",
+            Self::Resume { .. } => "resume",
+            Self::Memory { .. } => "memory",
+            Self::Detach => "detach",
+        }
+    }
+
+    /// Whether a connection that only watches may send this.
+    #[must_use]
+    pub const fn watches(&self) -> bool {
+        matches!(self, Self::Attach { .. } | Self::Detach)
+    }
+}
+
+#[cfg(test)]
+mod verbs {
+    use super::*;
+
+    #[test]
+    fn a_verb_is_the_tag_the_command_travels_under() {
+        for command in [
+            UiCommand::Interrupt,
+            UiCommand::DeclareNeeds,
+            UiCommand::SetMode { mode: "x".into() },
+            UiCommand::TakeGrants { grants: Vec::new() },
+        ] {
+            let wire = serde_json::to_value(&command).expect("encode");
+            assert_eq!(wire["command"], command.verb(), "{command:?}");
+        }
+    }
+
+    #[test]
+    fn a_watcher_may_attach_and_leave_and_nothing_else() {
+        assert!(UiCommand::Detach.watches());
+        assert!(!UiCommand::Interrupt.watches());
+        assert!(
+            !UiCommand::SetMode {
+                mode: "auto".into()
+            }
+            .watches()
+        );
+    }
 }

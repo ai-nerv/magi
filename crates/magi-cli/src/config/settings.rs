@@ -79,21 +79,37 @@ pub fn grants(loaded: &Loaded) -> Vec<magi_proto::permit::Grant> {
             },
         });
     }
-    // A spawned child may do what the session that started it may: those grants arrive in the
-    // environment `spawn` set, on top of this configuration's own.
-    for grant in inherited(std::env::var(magi_tools::builtin::GRANTS).ok().as_deref()) {
+    // A forked child may do no more than the session that started it: what `spawn` handed down
+    // narrows this configuration's own grants, and never adds to them.
+    let child = std::env::var_os(PARENT).is_some();
+    handed(
+        out,
+        std::env::var(magi_tools::builtin::GRANTS).ok().as_deref(),
+        child,
+    )
+}
+
+/// What a session may do, given its configuration's grants and what a parent handed down: the
+/// configuration alone for a session nobody started, and the two intersected for a child. What
+/// does not parse narrows to nothing rather than failing: the child still starts, and is refused
+/// what it cannot ask about.
+fn handed(
+    configured: Vec<magi_proto::permit::Grant>,
+    said: Option<&str>,
+    child: bool,
+) -> Vec<magi_proto::permit::Grant> {
+    use magi_proto::permit::narrow;
+    let Some(said) = said.filter(|_| child) else {
+        return configured;
+    };
+    let parent: Vec<magi_proto::permit::Grant> = serde_json::from_str(said).unwrap_or_default();
+    let mut out = narrow(&configured, &parent);
+    for grant in narrow(&parent, &configured) {
         if !out.contains(&grant) {
             out.push(grant);
         }
     }
     out
-}
-
-/// The grants a parent handed down. What does not parse is nothing rather than a failure: a child
-/// with no grants still starts, and is refused what it cannot ask about.
-fn inherited(said: Option<&str>) -> Vec<magi_proto::permit::Grant> {
-    said.and_then(|said| serde_json::from_str(said).ok())
-        .unwrap_or_default()
 }
 
 /// What the model is told it is, for this session: assembled where the configuration and the
@@ -355,19 +371,40 @@ mod ui_tests {
     }
 
     #[test]
-    fn a_child_takes_on_the_grants_its_parent_handed_down() {
+    fn what_a_parent_hands_down_narrows_a_child_and_never_widens_it() {
         use magi_proto::permit::{Grant, Scope};
-        let parent = vec![Grant {
-            verb: "read".to_owned(),
+        let dir = |verb: &str, path: &str| Grant {
+            verb: verb.to_owned(),
             scope: Scope::Directory {
-                path: "/home/x/work".to_owned(),
+                path: path.to_owned(),
             },
-        }];
+        };
+        let anything = |verb: &str| Grant {
+            verb: verb.to_owned(),
+            scope: Scope::Anything,
+        };
+        let configured = vec![dir("write", "/home/x/work"), dir("read", "/etc")];
+        let parent = vec![dir("write", "/home/x/work/sub"), anything("run")];
         let said = serde_json::to_string(&parent).expect("grants serialise");
-        assert_eq!(inherited(Some(&said)), parent);
-        // Nothing handed down, or nothing readable, is no grants rather than a failure.
-        assert!(inherited(None).is_empty());
-        assert!(inherited(Some("not json")).is_empty());
+
+        let child = handed(configured.clone(), Some(&said), true);
+        assert_eq!(
+            child,
+            vec![dir("write", "/home/x/work/sub")],
+            "the meet of the two"
+        );
+        assert!(
+            !child.contains(&anything("run")),
+            "a parent cannot add what config lacks"
+        );
+
+        assert_eq!(
+            handed(configured.clone(), Some(&said), false),
+            configured,
+            "a session nobody started takes no grants from its environment"
+        );
+        assert_eq!(handed(configured.clone(), None, true), configured);
+        assert!(handed(configured, Some("not json"), true).is_empty());
     }
 
     #[test]
@@ -468,7 +505,7 @@ pub fn tooling(loaded: &Loaded) -> magi_tools::supplier::Tooling {
     magi_tools::supplier::Tooling {
         pin: pinned(loaded, &program),
         configure: configured(loaded, &program),
-        program,
+        program: magi_tools::supplier::located(&program),
         kinds: super::agents::kinds(loaded),
     }
 }

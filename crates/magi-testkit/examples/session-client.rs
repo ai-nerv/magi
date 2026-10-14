@@ -37,6 +37,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 0
             }),
             draws: false,
+            key: magi_ipc::read_key(std::path::Path::new(socket)),
         })
         .await?;
     if let Some(text) = flags.get("prompt") {

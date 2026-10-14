@@ -1,5 +1,7 @@
 //! Refresh and model selection through the running session protocol.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_ipc::{FrameReader, FrameWriter};
 use magi_model::scratch::Scratch;
 use magi_proto::{Cursor, HarnessEvent, UiCommand};
@@ -20,6 +22,7 @@ async fn attach(
             session: None,
             from_cursor: Cursor::ZERO,
             draws: false,
+            key: magi_ipc::read_key(path),
         })
         .await
         .expect("refresh fixture");

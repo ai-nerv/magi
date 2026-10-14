@@ -11,6 +11,54 @@ pub const TALK: &str = "MAGI_MELCHIOR_TALK";
 /// The id of the root that started the whole tree: inherited unchanged, absent for a root itself.
 pub const SESSION: &str = "MAGI_MELCHIOR_SESSION";
 
+/// Where `magi fork` left a child's stop secret: a path, which is not itself a secret.
+pub const TOKEN_FILE: &str = "MAGI_MELCHIOR_TOKEN_FILE";
+
+/// Where the stop secret used to travel. Never passed on.
+pub const TOKEN_VAR: &str = "MAGI_MELCHIOR_TOKEN";
+
+/// This session's stop secret, once read.
+static TOKEN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+
+/// This session's stop secret, read once from the file `magi fork` left it in, which goes with
+/// the reading. Only a file in this user's own token directory is read or removed.
+pub fn stop_token() -> Option<&'static str> {
+    TOKEN
+        .get_or_init(|| {
+            let path = std::path::PathBuf::from(std::env::var_os(TOKEN_FILE)?);
+            let tokens = magi_ipc::runtime_dir("magi").ok()?.join("tokens");
+            taken(&path, &tokens)
+        })
+        .as_deref()
+}
+
+/// The secret in `path`, when it is a token file of this user's in `tokens`; removed either way.
+fn taken(path: &std::path::Path, tokens: &std::path::Path) -> Option<String> {
+    let named = path.extension().is_some_and(|ext| ext == "token");
+    if !named || path.parent() != Some(tokens) {
+        return None;
+    }
+    let token = magi_ipc::read_private(path, 256);
+    let _ = std::fs::remove_file(path);
+    token.filter(|token| !token.is_empty() && token.bytes().all(|b| b.is_ascii_alphanumeric()))
+}
+
+/// Leave `token` for a child in a new file only this user can read, and say where it is.
+///
+/// # Errors
+/// When there is no private runtime directory to put it in, or the file cannot be written.
+pub fn hand_token(token: &str) -> std::io::Result<std::path::PathBuf> {
+    let dir = magi_ipc::private_dir(&magi_ipc::runtime_dir("magi")?.join("tokens"))?;
+    let path = dir.join(format!("{}.token", magi_ipc::random_hex(8)?));
+    magi_ipc::private_file(&path)?.write_all(token.as_bytes())?;
+    Ok(path)
+}
+
+/// The first line `melchior serve` reads, carrying the secret a `stop` of this session must show.
+fn token_line(token: &str) -> String {
+    serde_json::json!({ "event": "token", "token": token }).to_string()
+}
+
 /// Which run this session belongs to, by the same rule melchior applies to itself.
 #[must_use]
 pub fn run_of(named: &str) -> Option<String> {
@@ -211,6 +259,7 @@ fn serving(
         .arg(project)
         .arg("--ui")
         .arg(ui)
+        .env(magi_host::driving::GIVEN, magi_host::driving::given_dir())
         .envs(talk.map(|talk| (TALK.to_owned(), talk.to_owned())));
     if let Some(name) = role.name {
         serving.arg("--role").arg(name);
@@ -239,6 +288,9 @@ impl Melchior {
             .stderr(Stdio::inherit())
             .spawn()
             .ok()?;
+        if let (Some(token), Some(told)) = (stop_token(), child.stdin.as_mut()) {
+            let _ = writeln!(told, "{}", token_line(token)).and_then(|()| told.flush());
+        }
 
         let stdout = child.stdout.take()?;
         let mut reading = BufReader::new(stdout);
@@ -252,7 +304,6 @@ impl Melchior {
             let _ = child.kill();
             return None;
         };
-
         let told = child.stdin.take();
         Some((
             Self {

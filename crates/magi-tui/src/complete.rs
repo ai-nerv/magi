@@ -193,8 +193,12 @@ pub fn resolve_with(
 #[must_use]
 pub fn render(completion: &Completion, width: u16) -> Vec<Line<'static>> {
     let window = window(completion);
+    let shown = completion
+        .candidates
+        .get(window.clone())
+        .unwrap_or_default();
     // Details line up in a column: a ragged left edge reads as noise rather than as choices.
-    let value_width = completion.candidates[window.clone()]
+    let value_width = shown
         .iter()
         .map(|c| c.value.chars().count())
         .max()
@@ -202,7 +206,7 @@ pub fn render(completion: &Completion, width: u16) -> Vec<Line<'static>> {
     // So the part of each candidate already typed can be told apart from the part it adds.
     let typed = completion.typed.clone();
 
-    completion.candidates[window.clone()]
+    shown
         .iter()
         .enumerate()
         .map(|(offset, candidate)| {

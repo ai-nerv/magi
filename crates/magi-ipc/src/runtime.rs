@@ -1,0 +1,252 @@
+//! Where a program's sockets, notes and secrets live: `$XDG_RUNTIME_DIR` when it is safe to use,
+//! else `<tmp>/<program>-<uid>`, and every directory made there private to this user.
+
+use std::io;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+use std::path::{Path, PathBuf};
+
+/// This program's runtime directory, created when it is missing and refused when it is not this
+/// user's alone.
+///
+/// # Errors
+/// When the directory cannot be made, or is not a private directory of this user.
+pub fn runtime_dir(program: &str) -> io::Result<PathBuf> {
+    private_dir(&runtime_base(program))
+}
+
+/// The same path, without creating or checking it: for naming a socket a client will dial.
+#[must_use]
+pub fn runtime_base(program: &str) -> PathBuf {
+    match trusted_xdg() {
+        Some(runtime) => runtime.join(program),
+        None => std::env::temp_dir().join(format!("{program}-{}", uid())),
+    }
+}
+
+/// `$XDG_RUNTIME_DIR`, when it is set, absolute, a directory, this user's and nobody else's.
+#[must_use]
+pub fn trusted_xdg() -> Option<PathBuf> {
+    trusted(std::env::var_os("XDG_RUNTIME_DIR"))
+}
+
+/// The same decision, from what the environment said. Empty is unset; a link to a directory that
+/// passes is followed, as every sibling's check does.
+#[must_use]
+pub fn trusted(said: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    let runtime = PathBuf::from(said.filter(|v| !v.is_empty())?);
+    let held = std::fs::metadata(&runtime).ok()?;
+    (runtime.is_absolute() && private(&held)).then_some(runtime)
+}
+
+/// Make `path` a directory only this user may enter, or prove it already is one.
+///
+/// # Errors
+/// When it cannot be made, or what is there is a link, another user's, or open to others.
+pub fn private_dir(path: &Path) -> io::Result<PathBuf> {
+    match std::fs::DirBuilder::new().mode(0o700).create(path) {
+        Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(e),
+        _ => {}
+    }
+    let held = std::fs::symlink_metadata(path)?;
+    if !private(&held) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "{} is not a directory private to this user: refused",
+                path.display()
+            ),
+        ));
+    }
+    Ok(path.to_path_buf())
+}
+
+/// Make `path` and whatever is missing above it, each new one `0700`, then prove `path` itself is a
+/// directory private to this user — see [`private_dir`].
+///
+/// # Errors
+/// As [`private_dir`].
+pub fn private_dirs(path: &Path) -> io::Result<PathBuf> {
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)?;
+    private_dir(path)
+}
+
+/// Create `path` new, mode 0600, never through a link.
+///
+/// # Errors
+/// When it exists already or cannot be made.
+pub fn private_file(path: &Path) -> io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .open(path)
+}
+
+/// A real directory, owned by this uid, with no group or other permissions.
+fn private(held: &std::fs::Metadata) -> bool {
+    held.file_type().is_dir() && held.uid() == uid() && held.mode() & 0o077 == 0
+}
+
+/// This process's uid.
+#[must_use]
+pub fn uid() -> u32 {
+    rustix::process::getuid().as_raw()
+}
+
+/// Whether an `accept` that failed is a moment rather than an ending: out of descriptors, buffers
+/// or memory, or a peer that left first. The listener keeps listening after a pause.
+#[must_use]
+pub fn transient(why: &io::Error) -> bool {
+    use rustix::io::Errno;
+    let passing = [
+        Errno::MFILE,
+        Errno::NFILE,
+        Errno::NOBUFS,
+        Errno::NOMEM,
+        Errno::CONNABORTED,
+        Errno::INTR,
+        Errno::AGAIN,
+    ];
+    why.raw_os_error()
+        .is_some_and(|code| passing.iter().any(|errno| errno.raw_os_error() == code))
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn a_directory_made_here_is_private_and_one_open_to_others_is_refused() {
+        let dir = magi_model::scratch::Scratch::new("magi-runtime", "private");
+        let made = private_dir(&dir.join("mine")).expect("made");
+        let mode = std::fs::metadata(&made).expect("stat").mode();
+        assert_eq!(mode & 0o777, 0o700, "{mode:o}");
+        assert!(
+            private_dir(&made).is_ok(),
+            "an existing private one is fine"
+        );
+
+        let open = dir.join("open");
+        std::fs::create_dir(&open).expect("mkdir");
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let refused = private_dir(&open).expect_err("refused");
+        assert!(
+            refused.to_string().contains("open"),
+            "names the path: {refused}"
+        );
+    }
+
+    #[test]
+    fn a_runtime_directory_is_trusted_only_when_it_is_this_users_alone() {
+        let dir = magi_model::scratch::Scratch::new("magi-runtime", "trusted");
+        let said = |path: &Path| Some(path.as_os_str().to_owned());
+        std::fs::set_permissions(&*dir, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        assert_eq!(trusted(said(&dir)), None, "group-readable");
+        std::fs::set_permissions(&*dir, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        assert_eq!(trusted(said(&dir)), Some(dir.to_path_buf()));
+        assert_eq!(trusted(Some("".into())), None, "empty is unset");
+        assert_eq!(trusted(Some("run".into())), None, "relative");
+        assert_eq!(trusted(None), None);
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&*dir, &link).expect("symlink");
+        assert_eq!(trusted(said(&link)), Some(link), "followed, as siblings do");
+    }
+
+    #[test]
+    fn a_private_file_is_new_closed_and_never_opened_twice() {
+        let dir = magi_model::scratch::Scratch::new("magi-runtime", "file");
+        let file = dir.join("f");
+        drop(private_file(&file).expect("new"));
+        let mode = std::fs::metadata(&file).expect("there").mode();
+        assert_eq!(mode & 0o777, 0o600, "{mode:o}");
+        assert!(private_file(&file).is_err(), "never opened twice");
+        std::os::unix::fs::symlink(&file, dir.join("link")).expect("symlink");
+        assert!(
+            private_file(&dir.join("link")).is_err(),
+            "never through a link"
+        );
+    }
+
+    #[test]
+    fn a_link_where_a_directory_belongs_is_refused() {
+        let dir = magi_model::scratch::Scratch::new("magi-runtime", "link");
+        let target = private_dir(&dir.join("real")).expect("made");
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+        assert!(private_dir(&link).is_err());
+    }
+
+    #[test]
+    fn running_out_of_descriptors_is_a_moment_and_a_closed_listener_is_not() {
+        let emfile = io::Error::from_raw_os_error(rustix::io::Errno::MFILE.raw_os_error());
+        assert!(transient(&emfile));
+        let gone = io::Error::from_raw_os_error(rustix::io::Errno::BADF.raw_os_error());
+        assert!(!transient(&gone));
+    }
+
+    /// Run this test binary's `probe` test with `env`, so a variable is set in a child and not here.
+    fn probed(probe: &str, env: &[(&str, &std::ffi::OsStr)]) -> bool {
+        let mut child = std::process::Command::new(std::env::current_exe().expect("test binary"));
+        child
+            .args(["--exact", probe])
+            .env("MAGI_RUNTIME_PROBE", "1");
+        for (name, value) in env {
+            child.env(name, value);
+        }
+        child.status().expect("probe").success()
+    }
+
+    #[test]
+    fn an_empty_or_unsafe_runtime_directory_is_not_used() {
+        if std::env::var_os("MAGI_RUNTIME_PROBE").is_some() {
+            let base = runtime_base("magi");
+            assert_eq!(base, std::env::temp_dir().join(format!("magi-{}", uid())));
+            return;
+        }
+        let probe = "runtime::tests::an_empty_or_unsafe_runtime_directory_is_not_used";
+        let dir = magi_model::scratch::Scratch::new("magi-runtime", "xdg");
+        let open = dir.join("open");
+        std::fs::create_dir(&open).expect("mkdir");
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let empty = std::ffi::OsStr::new("");
+        assert!(
+            probed(probe, &[("XDG_RUNTIME_DIR", empty)]),
+            "empty is unset"
+        );
+        assert!(
+            probed(probe, &[("XDG_RUNTIME_DIR", open.as_os_str())]),
+            "open to others"
+        );
+        assert!(
+            probed(
+                probe,
+                &[("XDG_RUNTIME_DIR", std::ffi::OsStr::new("relative/run"))]
+            ),
+            "not absolute"
+        );
+    }
+
+    #[test]
+    fn a_fallback_directory_open_to_others_is_refused() {
+        if std::env::var_os("MAGI_RUNTIME_PROBE").is_some() {
+            let refused = runtime_dir("magi").expect_err("refused");
+            assert!(refused.to_string().contains("magi-"), "{refused}");
+            return;
+        }
+        let dir = magi_model::scratch::Scratch::new("magi-runtime", "fallback");
+        let planted = dir.join(format!("magi-{}", uid()));
+        std::fs::create_dir(&planted).expect("mkdir");
+        std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o777)).expect("chmod");
+        let probe = "runtime::tests::a_fallback_directory_open_to_others_is_refused";
+        let empty = std::ffi::OsStr::new("");
+        assert!(probed(
+            probe,
+            &[("XDG_RUNTIME_DIR", empty), ("TMPDIR", dir.as_os_str())]
+        ));
+    }
+}

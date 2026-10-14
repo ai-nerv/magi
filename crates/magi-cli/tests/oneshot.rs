@@ -3,6 +3,8 @@
 //! is the store and there is no journal — so a checkout without it skips them, see
 //! [`without_a_store`]. `PATH` goes on the child, the only place magi looks for a sibling.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_model::scratch::Scratch;
 
 use magi_testkit::Mind;
@@ -14,6 +16,7 @@ use std::process::Command;
 /// no protocol: those are melchior's, and an opinion here would be a second catalog to keep in step.
 fn workspace(name: &str) -> Scratch {
     let dir = Scratch::new("m1", name);
+    let _ = dir.private("run");
     std::fs::create_dir_all(dir.join("run")).expect("mkdir");
     std::fs::create_dir_all(dir.join("sessions")).expect("mkdir");
     install_config(&dir.join("config/magi"));

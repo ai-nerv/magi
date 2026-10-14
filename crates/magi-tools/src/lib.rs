@@ -8,6 +8,7 @@ pub mod builtin;
 pub mod cancel;
 pub mod command;
 pub mod environ;
+pub mod family;
 pub mod holding;
 pub mod masking;
 pub mod ops;

@@ -1,14 +1,8 @@
-//! A tool that is an ordinary program.
-//!
-//! The third transport, and the one that makes the rule operable: the core ships `read`, `write`,
-//! `edit` and the shell peer, and **everything else is declared in Lua config**. Until this, a
-//! config could not declare a tool that runs a program. A Lua tool cannot spawn — the sandbox
-//! removes `os.execute` so that spawning cannot happen outside the [`Ops`] seam — and the process
-//! transport wants a peer speaking magi's framed protocol, so `command = "rg"` was a broken pipe
-//! rather than a search.
-//!
-//! So `grep` was a shell string the model composed, which costs a round trip whenever the quoting
-//! is wrong and returns however much the tree happens to hold.
+//! A tool that is an ordinary program: the `command` transport, declared in Lua config. magi
+//! ships no machine tools of its own (those are the `tools` role's, see [`crate::supplier`]); this
+//! is how a configuration reaches a sibling's command line, such as `agent` reaching `melchior
+//! tool`. A Lua tool cannot spawn: the sandbox removes `os.execute`, so a program runs only here,
+//! behind the [`Ops`] seam and its permission check.
 //!
 //! **There is no shell here.** The program is executed directly with an argument vector built from
 //! the call. A value containing `;` or `$(…)` is one argument, verbatim, and that is what makes
@@ -17,6 +11,7 @@
 use crate::{Cancel, Ops, Output, Sending, Tool};
 use std::collections::BTreeMap;
 use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::time::{Duration, Instant};
 
 /// Bytes read from a child before it is cut off.
@@ -91,10 +86,14 @@ impl CommandTool {
         out
     }
 
-    /// What a person is asked before this runs.
+    /// What a person is asked before this runs: the program and each argument, quoted as a shell
+    /// would read them back.
     fn action(&self, rendered: &[String]) -> magi_proto::permit::Action {
-        let mut shown = vec![self.program.clone()];
-        shown.extend(rendered.iter().cloned());
+        use magi_proto::permit::quoted;
+        let shown: Vec<String> = std::iter::once(&self.program)
+            .chain(rendered)
+            .map(|argument| quoted(argument))
+            .collect();
         magi_proto::permit::Action::Run {
             command: shown.join(" "),
             program: self.program.clone(),
@@ -139,14 +138,24 @@ impl Tool for CommandTool {
         self.parameters.clone()
     }
 
-    fn run(&self, arguments: &serde_json::Value, ops: &dyn Ops, _cancel: &dyn Cancel) -> Output {
-        let rendered = render(&self.args, arguments);
+    fn run(&self, arguments: &serde_json::Value, ops: &dyn Ops, cancel: &dyn Cancel) -> Output {
+        let rendered = match render(&self.args, arguments) {
+            Ok(rendered) => rendered,
+            Err(why) => return Output::error(format!("{}: {why}", self.name)),
+        };
         // Asked before anything is started. A tool that runs and then asks has already done the
         // thing the question was about.
         if let Err(why) = ops.allow(&self.name, &self.action(&rendered)) {
             return Output::error(why);
         }
-        match spawn(&self.program, &rendered, &self.env, ops, self.timeout) {
+        match spawn(
+            &self.program,
+            &rendered,
+            &self.env,
+            ops,
+            self.timeout,
+            cancel,
+        ) {
             Ok(finished) => finished.into_output(&self.program),
             Err(why) => Output::error(why),
         }
@@ -203,15 +212,23 @@ fn spawn(
     env: &BTreeMap<String, String>,
     ops: &dyn Ops,
     timeout: Duration,
+    cancel: &dyn Cancel,
 ) -> Result<Finished, String> {
     let mut command = std::process::Command::new(program);
     command
         .args(args)
+        .process_group(0)
         .current_dir(ops.cwd())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    crate::environ::apply(&mut command, env);
+    crate::environ::without_capability(&mut command);
+    let kept: BTreeMap<String, String> = env
+        .iter()
+        .filter(|(name, _)| !crate::environ::carries_capability(name))
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
+    crate::environ::apply(&mut command, &kept);
 
     let mut child = command
         .spawn()
@@ -227,25 +244,45 @@ fn spawn(
         match child.try_wait() {
             Ok(Some(status)) => break status.code(),
             Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!(
+                let ended = if cancel.is_cancelled() {
+                    Some(format!("{program} was cancelled"))
+                } else if Instant::now() >= deadline {
+                    Some(format!(
                         "{program} was still running after {}s",
                         timeout.as_secs()
-                    ));
+                    ))
+                } else {
+                    None
+                };
+                if let Some(why) = ended {
+                    stop_group(&mut child);
+                    let _ = child.wait();
+                    return Err(why);
                 }
                 std::thread::sleep(POLL);
             }
             Err(why) => return Err(format!("{program} could not be waited for: {why}")),
         }
     };
+    // Whatever it left running in its group would hold the pipes the drains are reading.
+    stop_group(&mut child);
 
     Ok(Finished {
         out: out.map(collect).unwrap_or_default(),
         err: err.map(collect).unwrap_or_default(),
         code,
     })
+}
+
+/// Kill the child's process group, and the child.
+fn stop_group(child: &mut std::process::Child) {
+    if let Some(group) = i32::try_from(child.id())
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+    {
+        let _ = rustix::process::kill_process_group(group, rustix::process::Signal::Kill);
+    }
+    let _ = child.kill();
 }
 
 /// Read a pipe to its end on a thread of its own, up to [`MAX_READ`].
@@ -256,7 +293,7 @@ fn drain<R: Read + Send + 'static>(mut pipe: R) -> std::thread::JoinHandle<Strin
         while buffer.len() < MAX_READ {
             match pipe.read(&mut chunk) {
                 Ok(0) | Err(_) => break,
-                Ok(read) => buffer.extend_from_slice(&chunk[..read]),
+                Ok(read) => buffer.extend_from_slice(chunk.get(..read).unwrap_or(&chunk)),
             }
         }
         buffer.truncate(MAX_READ);
@@ -283,29 +320,52 @@ fn collect(handle: std::thread::JoinHandle<String>) -> String {
 ///   element, so a list of paths is a list of paths.
 /// - Values are never interpreted. This is an argument vector, not a command line: nothing here
 ///   splits on whitespace, expands a glob, or reads a `;`.
-#[must_use]
-pub fn render(templates: &[String], arguments: &serde_json::Value) -> Vec<String> {
+/// - A value is never read as an option. An argument that begins with a value is refused when
+///   that value begins with `-`, unless a literal `--` earlier in the templates ended the options.
+///
+/// # Errors
+/// When a value would begin an argument with `-` before any `--`.
+pub fn render(templates: &[String], arguments: &serde_json::Value) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
+    let mut ended = false;
     for template in templates {
         if let Some(name) = whole_placeholder(template) {
-            match arguments.get(name) {
-                None | Some(serde_json::Value::Null) => {}
-                Some(serde_json::Value::Array(items)) => {
-                    out.extend(items.iter().map(scalar));
-                }
-                Some(value) => out.push(scalar(value)),
+            let values = match arguments.get(name) {
+                None | Some(serde_json::Value::Null) => continue,
+                Some(serde_json::Value::Array(items)) => items.iter().map(scalar).collect(),
+                Some(value) => vec![scalar(value)],
+            };
+            for value in values {
+                out.push(operand(name, value, ended)?);
             }
             continue;
         }
-        if embedded(template)
-            .iter()
-            .any(|name| !given(arguments, name))
-        {
+        let named = embedded(template);
+        if named.iter().any(|name| !given(arguments, name)) {
             continue;
         }
-        out.push(substitute(template, arguments));
+        let rendered = substitute(template, arguments);
+        match named.first() {
+            Some(name) if template.starts_with('{') => {
+                out.push(operand(name, rendered, ended)?);
+            }
+            _ => out.push(rendered),
+        }
+        ended |= template == "--";
     }
-    out
+    Ok(out)
+}
+
+/// `value`, refused when it would be read as an option: it begins with `-` and nothing has ended
+/// the options.
+fn operand(name: &str, value: String, ended: bool) -> Result<String, String> {
+    if ended || !value.starts_with('-') {
+        return Ok(value);
+    }
+    Err(format!(
+        "the value of `{name}` begins with `-`, and with no `--` before it in this tool's \
+         arguments the program would read it as an option: {value:?}"
+    ))
 }
 
 /// Whether the call actually carries a value for `name`.
@@ -374,8 +434,44 @@ mod render_tests {
     use serde_json::json;
 
     fn rendered(templates: &[&str], arguments: &serde_json::Value) -> Vec<String> {
+        attempted(templates, arguments).expect("rendered")
+    }
+
+    fn attempted(templates: &[&str], arguments: &serde_json::Value) -> Result<Vec<String>, String> {
         let templates: Vec<String> = templates.iter().map(|t| (*t).to_owned()).collect();
         render(&templates, arguments)
+    }
+
+    #[test]
+    fn a_value_that_would_be_read_as_an_option_is_refused() {
+        for (templates, arguments) in [
+            (vec!["{pattern}"], json!({ "pattern": "--pre=sh" })),
+            (vec!["-n", "{paths}"], json!({ "paths": ["a.rs", "-rf"] })),
+            (vec!["{name}.txt"], json!({ "name": "-x" })),
+            (vec!["{count}"], json!({ "count": -1 })),
+        ] {
+            let why = attempted(&templates, &arguments).expect_err("refused");
+            assert!(why.contains("begins with `-`"), "{templates:?}: {why}");
+        }
+    }
+
+    #[test]
+    fn after_a_double_dash_a_value_is_a_value_whatever_it_begins_with() {
+        assert_eq!(
+            rendered(
+                &["-n", "--", "{pattern}"],
+                &json!({ "pattern": "--pre=sh" })
+            ),
+            ["-n", "--", "--pre=sh"]
+        );
+    }
+
+    #[test]
+    fn a_value_inside_a_flag_is_that_flags_value() {
+        assert_eq!(
+            rendered(&["--max-count={limit}"], &json!({ "limit": -1 })),
+            ["--max-count=-1"]
+        );
     }
 
     #[test]
@@ -524,6 +620,26 @@ mod running_tests {
     }
 
     #[test]
+    fn a_value_that_looks_like_a_flag_never_reaches_the_program_as_one() {
+        let dir = Scratch::new("magi-dashed", "one");
+        let marker = dir.join("ran");
+        let tool = CommandTool::new(
+            "touching",
+            "",
+            json!({ "type": "object", "properties": { "text": { "type": "string" } } }),
+            "touch",
+            vec!["{text}".to_owned(), marker.display().to_string()],
+        );
+        let out = tool.run(
+            &json!({ "text": "--no-create" }),
+            &Real::new(dir.to_path_buf()),
+            &Uncancelled,
+        );
+        assert!(out.is_error && out.content.contains("`text`"), "{out:?}");
+        assert!(!marker.exists(), "the program ran");
+    }
+
+    #[test]
     fn a_refused_call_never_runs_the_program() {
         let dir = Scratch::new("magi-refused", "one");
         let marker = dir.join("ran");
@@ -540,6 +656,57 @@ mod running_tests {
             !marker.exists(),
             "the gate refused and the program ran anyway"
         );
+    }
+
+    #[test]
+    fn an_argument_vector_is_judged_by_its_program() {
+        // A grant on `echo` covers it whatever the arguments hold: they are data, not a line.
+        let grant = magi_proto::permit::Grant {
+            verb: "run".to_owned(),
+            scope: magi_proto::permit::Scope::Program {
+                program: "echo".to_owned(),
+            },
+        };
+        let ops = Real::gated(
+            std::env::temp_dir(),
+            crate::permit::Ledger::with(vec![grant]),
+            std::sync::Arc::new(crate::approve::DenyAll),
+        );
+        let out =
+            echo(vec!["{text}"]).run(&json!({ "text": "a; rm -rf ~\nb" }), &ops, &Uncancelled);
+        assert!(!out.is_error, "{out:?}");
+        assert_eq!(out.content, "a; rm -rf ~\nb\n");
+    }
+
+    #[test]
+    fn what_carries_capability_never_reaches_the_program() {
+        let env = BTreeMap::from(
+            [
+                ("MAGI_GRANTS", "[]"),
+                ("CASPER_JAIL", "{}"),
+                ("MAGI_HOST_SOCKET", "/x"),
+                ("BALTHASAR_DEBUG_LOG", "/tmp/log"),
+                ("MAGI_MELCHIOR_ID", "alpha-rho"),
+                ("MAGI_MELCHIOR_PROJECT", "magi"),
+            ]
+            .map(|(k, v)| (k.to_owned(), v.to_owned())),
+        );
+        let tool =
+            CommandTool::new("env", "", json!({ "type": "object" }), "env", vec![]).with_env(env);
+        let out = tool.run(&json!({}), &Real::new(std::env::temp_dir()), &Uncancelled);
+        for gone in [
+            "MAGI_GRANTS=",
+            "CASPER_JAIL=",
+            "MAGI_HOST_SOCKET=",
+            "BALTHASAR_DEBUG_LOG=",
+        ] {
+            assert!(!out.content.contains(gone), "{gone} reached it");
+        }
+        assert!(
+            out.content.contains("MAGI_MELCHIOR_ID=alpha-rho"),
+            "attribution is kept"
+        );
+        assert!(out.content.contains("MAGI_MELCHIOR_PROJECT=magi"));
     }
 
     #[test]
@@ -569,6 +736,28 @@ mod running_tests {
             "{}",
             out.content
         );
+    }
+
+    #[test]
+    fn a_cancel_stops_the_program_and_what_it_started() {
+        struct After(Instant);
+        impl Cancel for After {
+            fn is_cancelled(&self) -> bool {
+                Instant::now() >= self.0
+            }
+        }
+        let tool = CommandTool::new(
+            "waiting",
+            "",
+            json!({ "type": "object" }),
+            "sh",
+            vec!["-c".to_owned(), "sleep 1000 & sleep 1000".to_owned()],
+        );
+        let started = Instant::now();
+        let cancel = After(Instant::now() + Duration::from_millis(200));
+        let out = tool.run(&json!({}), &Real::new(std::env::temp_dir()), &cancel);
+        assert!(out.is_error && out.content.contains("cancelled"), "{out:?}");
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]

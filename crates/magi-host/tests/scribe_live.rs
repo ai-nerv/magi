@@ -4,6 +4,8 @@
 //! an `Entry` handed to balthasar comes back the same `Entry`, including the fields no projection
 //! carries. Never against the balthasar of whoever runs the suite, whose store these would fill.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_model::scratch::Scratch;
 
 use magi_host::scribe::Scribe;
@@ -280,6 +282,55 @@ async fn agents_of_one_run_do_not_overwrite_each_others_transcript() {
     );
 }
 
+/// A 9 MiB and a 15 MiB entry, between two small ones, on one connection that is never dialled
+/// again: the scribe's way back points nowhere, so a connection balthasar closed would show.
+#[tokio::test]
+async fn a_9_and_a_15_mib_observe_keep_the_connection_and_what_follows() {
+    let Some((_, held)) = scribe("huge").await else {
+        return;
+    };
+    let family = Family::dial(held.0.socket()).await.expect("dial");
+    let id = SessionId::new(format!("magi-scribe-{}-huge", std::process::id()));
+    let mut scribe = Scribe::over(family, Some(held.1.join("nowhere.sock")), &id);
+    let entry = |text: String| Entry::User {
+        id: MessageId::new("u"),
+        text,
+        aside: String::new(),
+    };
+    for (cursor, size) in [(1, 0), (2, 9 << 20), (3, 15 << 20), (4, 0)] {
+        let text = format!("{cursor}:{}", "x".repeat(size));
+        scribe
+            .observe(Cursor(cursor), &entry(text), &Default::default())
+            .await
+            .expect("observed on the one connection");
+    }
+    let back = scribe
+        .replay()
+        .await
+        .expect("replayed on the same connection");
+    let texts: Vec<&str> = back
+        .iter()
+        .map(|(_, entry)| match entry {
+            Entry::User { text, .. } => text.as_str(),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        texts.len(),
+        4,
+        "{:?}",
+        back.iter().map(|(c, _)| c).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        (texts[0], texts[3]),
+        ("1:", "4:"),
+        "the small ones are whole"
+    );
+    for (at, cut) in [(1, "2:"), (2, "3:")] {
+        assert!(texts[at].starts_with(cut) && texts[at].contains("bytes cut here"));
+    }
+}
+
 #[tokio::test]
 async fn a_run_past_one_frame_comes_back_whole() {
     // 12 MB of turns: one reply with all of it was past the memory layer's frame limit, and the
@@ -304,5 +355,60 @@ async fn a_run_past_one_frame_comes_back_whole() {
         cursors,
         (1..=12).collect::<Vec<_>>(),
         "not all of it came back"
+    );
+}
+
+/// Whether the balthasar behind `socket` keeps a cursor's row once written: one that predates it
+/// overwrites a turn with whatever is observed at its cursor, traces included.
+async fn insert_only(socket: &std::path::Path, name: &str) -> bool {
+    let mut family = Family::dial(socket).await.expect("dial");
+    let session = format!("magi-probe-{}-{name}", std::process::id());
+    let turn = |text: &str| {
+        serde_json::json!({
+            "run": session, "cursor": 1, "role": "user", "kind": "user", "text": text,
+        })
+    };
+    let args = |text: &str| vec![serde_json::json!(session), turn(text)];
+    family
+        .call("observe", args("first"))
+        .await
+        .expect("observe");
+    match family.call("observe", args("second")).await {
+        Err(magi_ipc::family::Fault::Refused(why)) => why.contains("already holds"),
+        _ => false,
+    }
+}
+
+/// A permission trace lands at the cursor of the tool call it was about. Kept apart from the entry
+/// there, so the entry still replays with its raw and the session can still be resumed.
+#[tokio::test]
+async fn a_trace_at_an_entrys_cursor_leaves_the_entry_and_its_raw() {
+    let Some((mut scribe, held)) = scribe("trace").await else {
+        return;
+    };
+    if !insert_only(held.0.socket(), "trace").await {
+        magi_testkit::live::unavailable("balthasar predates traces kept apart from turns");
+        return;
+    }
+    let call = Entry::Tool {
+        id: ToolCallId::new("t1"),
+        name: "shell".into(),
+        args: "{\"command\":\"ls\"}".into(),
+        result: None,
+        thought_signature: Some("opaque".into()),
+    };
+    scribe
+        .observe(Cursor(1), &call, &Default::default())
+        .await
+        .expect("observe");
+    scribe
+        .noticed(Cursor(1), "permission", "allowed: shell ls")
+        .await
+        .expect("trace");
+    let back = scribe.replay().await.expect("the entry still replays");
+    assert_eq!(
+        back,
+        vec![(Cursor(1), call)],
+        "the trace replaced the entry"
     );
 }

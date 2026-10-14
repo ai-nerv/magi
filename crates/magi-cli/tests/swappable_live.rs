@@ -5,6 +5,8 @@
 //! `magi.tools` at them and run real sessions. Nothing here is faked — separate programs, written
 //! against the document rather than against magi, hold the conversation and run the calls.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_model::scratch::Scratch;
 use magi_testkit::Mind;
 use magi_testkit::mind::MODEL;
@@ -44,6 +46,7 @@ fn example(into: &Path, name: &str) -> Option<PathBuf> {
 /// A workspace whose configuration names the shim as its memory layer.
 fn workspace(name: &str) -> Scratch {
     let dir = Scratch::new("ms", name);
+    let _ = dir.private("run");
     for under in ["run", "sessions", "data", ".git"] {
         std::fs::create_dir_all(dir.join(under)).expect("mkdir");
     }

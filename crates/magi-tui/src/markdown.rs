@@ -246,15 +246,14 @@ fn inline(text: &str, base: Style) -> Vec<Span<'static>> {
     let mut buf = String::new();
     let mut i = 0;
 
-    while i < chars.len() {
-        let c = chars[i];
+    while let Some(&c) = chars.get(i) {
         // Looked up rather than tried and rolled back: a delimiter with no partner is ordinary
         // text, and deciding that after the fact means putting back everything consumed while
         // finding out — which is where the text before it went missing.
         let closes = |from: usize, delim: char, run: usize| -> Option<usize> {
             let mut j = from;
             while j + run <= chars.len() {
-                if chars[j] == delim && (run == 1 || chars.get(j + 1) == Some(&delim)) {
+                if chars.get(j) == Some(&delim) && (run == 1 || chars.get(j + 1) == Some(&delim)) {
                     // `_` is a word character as far as a name is concerned, so a closer that
                     // runs straight into one is not closing anything.
                     let inside_word =
@@ -270,9 +269,10 @@ fn inline(text: &str, base: Style) -> Vec<Span<'static>> {
 
         match c {
             '`' => {
-                if let Some(end) = chars[i + 1..].iter().position(|&n| n == '`') {
+                let after = chars.get(i + 1..).unwrap_or_default();
+                if let Some(end) = after.iter().position(|&n| n == '`') {
                     flush(&mut buf, &mut spans, base);
-                    let code: String = chars[i + 1..i + 1 + end].iter().collect();
+                    let code = span(&chars, i + 1, i + 1 + end);
                     spans.push(Span::styled(code, Style::default().fg(colour::md_code())));
                     i += end + 2;
                     continue;
@@ -283,7 +283,7 @@ fn inline(text: &str, base: Style) -> Vec<Span<'static>> {
             '*' if chars.get(i + 1) == Some(&'*') => {
                 if let Some(end) = closes(i + 2, '*', 2) {
                     flush(&mut buf, &mut spans, base);
-                    let bold: String = chars[i + 2..end].iter().collect();
+                    let bold = span(&chars, i + 2, end);
                     spans.push(Span::styled(bold, base.add_modifier(Modifier::BOLD)));
                     i = end + 2;
                     continue;
@@ -296,14 +296,18 @@ fn inline(text: &str, base: Style) -> Vec<Span<'static>> {
             // has just been told to set, so eating half of it is worse than rendering no
             // emphasis at all. CommonMark draws the same line for the same reason: `*` marks
             // emphasis mid-word, `_` does not.
-            '_' if i > 0 && chars[i - 1].is_alphanumeric() => {
+            '_' if i
+                .checked_sub(1)
+                .and_then(|before| chars.get(before))
+                .is_some_and(|n| n.is_alphanumeric()) =>
+            {
                 buf.push(c);
                 i += 1;
             }
             '*' | '_' => {
                 if let Some(end) = closes(i + 1, c, 1) {
                     flush(&mut buf, &mut spans, base);
-                    let italic: String = chars[i + 1..end].iter().collect();
+                    let italic = span(&chars, i + 1, end);
                     spans.push(Span::styled(italic, base.add_modifier(Modifier::ITALIC)));
                     i = end + 1;
                     continue;
@@ -320,6 +324,14 @@ fn inline(text: &str, base: Style) -> Vec<Span<'static>> {
 
     flush(&mut buf, &mut spans, base);
     spans
+}
+
+/// The characters from `from` to `to`, as text; nothing where that is not a span of `chars`.
+fn span(chars: &[char], from: usize, to: usize) -> String {
+    chars
+        .get(from..to)
+        .map(|run| run.iter().collect())
+        .unwrap_or_default()
 }
 
 fn flush(buf: &mut String, spans: &mut Vec<Span<'static>>, style: Style) {

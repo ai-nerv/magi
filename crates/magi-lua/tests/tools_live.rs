@@ -2,6 +2,8 @@
 //!
 //! Each memory connection uses a disposable server owned by this test.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_lua::Engine;
 use magi_tools::Registry;
 use std::cell::RefCell;
@@ -208,7 +210,7 @@ fn agent_argv(call: serde_json::Value) -> Vec<String> {
         .iter()
         .map(|a| a.as_str().unwrap_or_default().to_owned())
         .collect();
-    magi_tools::command::render(&args, &call)
+    magi_tools::command::render(&args, &call).expect("rendered")
 }
 
 #[test]

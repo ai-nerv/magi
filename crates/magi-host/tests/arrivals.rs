@@ -2,6 +2,8 @@
 //! rule is invisible when it is wrong: an arrival is committed either way, so a session that should
 //! have answered and did not looks exactly like one with nothing to say.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_model::scratch::Scratch;
 
 use magi_host::session::Session;
@@ -57,6 +59,18 @@ async fn serving(name: &str, mind: &Mind) -> (Scratch, std::path::PathBuf) {
 /// Attach, hand over one arrival, and report every event that follows within `patience`. "No turn
 /// ran" has to mean nothing was spawned, not that no event arrived before a timeout.
 async fn arrival_of(sort: &str, name: &str) -> (Vec<HarnessEvent>, bool) {
+    arrival_until(sort, name, |event| {
+        matches!(event, HarnessEvent::AssistantEnded { .. })
+    })
+    .await
+}
+
+/// The same, reading until `done` says an event is the last one wanted.
+async fn arrival_until(
+    sort: &str,
+    name: &str,
+    done: impl Fn(&HarnessEvent) -> bool,
+) -> (Vec<HarnessEvent>, bool) {
     let mind = Mind::answering(&format!("arr-{name}"), "thanks");
     let (_dir, path) = serving(name, &mind).await;
     let stream = magi_ipc::connect(&path).await.expect("connect");
@@ -68,6 +82,7 @@ async fn arrival_of(sort: &str, name: &str) -> (Vec<HarnessEvent>, bool) {
             session: None,
             from_cursor: Cursor(0),
             draws: false,
+            key: magi_ipc::read_key(&path),
         })
         .await
         .expect("attach");
@@ -89,9 +104,9 @@ async fn arrival_of(sort: &str, name: &str) -> (Vec<HarnessEvent>, bool) {
     let deadline = tokio::time::Instant::now() + patience;
     while let Ok(Ok(event)) = tokio::time::timeout_at(deadline, reader.read::<HarnessEvent>()).await
     {
-        let done = matches!(event, HarnessEvent::AssistantEnded { .. });
+        let last = done(&event);
         seen.push(event);
-        if done {
+        if last {
             break;
         }
     }
@@ -132,6 +147,27 @@ async fn work_handed_over_wakes_whoever_it_was_handed_to() {
     // Otherwise the work stops with both sides believing the other has it.
     let (seen, asked) = arrival_of("handoff", "handoff").await;
     assert!(started_a_turn(&seen) && asked, "{seen:?}");
+}
+
+#[tokio::test]
+async fn an_answer_the_memory_layer_did_not_take_ends_saying_so() {
+    // The memory layer these sessions name is never there.
+    let unrecorded = |event: &HarnessEvent| {
+        matches!(event, HarnessEvent::AssistantEnded { error: Some(why), .. }
+            if why.contains("not recorded"))
+    };
+    let (seen, asked) = arrival_until("question", "unrecorded", unrecorded).await;
+    assert!(asked, "the question was never put to the model: {seen:?}");
+    assert!(
+        seen.iter().any(unrecorded),
+        "a turn nothing recorded ended as if it had been: {seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .any(|event| matches!(event, HarnessEvent::Noticed { text, .. }
+            if text.contains("not being recorded"))),
+        "nobody was told recording stopped: {seen:?}"
+    );
 }
 
 #[tokio::test]

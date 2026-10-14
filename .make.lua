@@ -16,14 +16,11 @@
 
 local make = oslo.make
 
--- Name and version live in PROJECT, one per line, so every tool reads them from one place.
+-- Version from the workspace package table of Cargo.toml, the file a release bumps.
 local function project()
-  local found = {}
-  for line in (oslo.fs.read("PROJECT") or ""):gmatch("[^\n]+") do
-    local value = line:match("^%s*([^#%[%s]%S*)%s*$")
-    if value then found[#found + 1] = value end
-  end
-  return found[1] or "magi", found[2] or "0.1.0"
+  local manifest = oslo.fs.read("Cargo.toml") or ""
+  local package = manifest:match("%[workspace%.package%](.-)\n%[") or ""
+  return "magi", package:match('\nversion%s*=%s*"([^"]+)"') or "0.0.0"
 end
 
 local NAME, VERSION = project()
@@ -101,8 +98,13 @@ end
 make.recipe{ name = "version", desc = "what this checkout calls itself",
              run = function() print(("%s v%s"):format(NAME, VERSION)) end }
 
+-- One word for `sh -c`, single-quoted, so a path or a parameter is never read as shell.
+local function shq(word)
+  return "'" .. tostring(word):gsub("'", "'\\''") .. "'"
+end
+
 local function need(tool, why)
-  assert(oslo.run{ "sh", "-c", "command -v " .. tool, capture = true }.ok, why)
+  assert(oslo.run{ "sh", "-c", "command -v " .. shq(tool), capture = true }.ok, why)
 end
 
 
@@ -167,7 +169,7 @@ local function has_musl_std()
   if not dir.ok then return false end
   local path = (dir.out or ""):match("^%s*(.-)%s*$")
   if path == "" then return false end
-  return oslo.run{ "sh", "-c", ("ls %q/libcore-*.rlib >/dev/null 2>&1"):format(path) }.ok
+  return oslo.run{ "sh", "-c", shq(path) .. "/libcore-*.rlib >/dev/null 2>&1" }.ok
 end
 
 -- Where `build` leaves its artifact. Every recipe that needs a binary asks for this one, so
@@ -198,7 +200,7 @@ local function warn_if_install_is_behind()
     print(dim("   nothing is installed yet — run `make install`"))
     return
   end
-  local newer = oslo.run{ "sh", "-c", ("test %q -nt %q"):format(binary_path(), installed) }
+  local newer = oslo.run{ "test", binary_path(), "-nt", installed }
   if newer.ok then
     print(oslo.ui.style("!  ", { fg = "yellow" }) ..
           ("%s is older than what you have built — run `make install`"):format(installed))
@@ -269,8 +271,8 @@ make.recipe{
       trap 'kill $host 2>/dev/null || true; rm -f "$socket"' EXIT INT TERM
       until [ -S "$socket" ]; do sleep 0.05; done
       %s --socket "$socket"
-    ]]):format(demo_socket(), binary_path(), a.recording or RECORDING,
-               a.pace or "40", binary_path())
+    ]]):format(shq(demo_socket()), shq(binary_path()), shq(a.recording or RECORDING),
+               shq(a.pace or "40"), shq(binary_path()))
     assert(oslo.run{ "sh", "-c", script }.ok, "the UI exited with an error")
   end,
 }
@@ -290,8 +292,8 @@ make.recipe{
   },
   run = function(a)
     build_binary(false)
-    local prompt = a.prompt and (" " .. string.format("%q", a.prompt)) or ""
-    sh.sh("-c", ("%s%s"):format(binary_path(), prompt))
+    local prompt = a.prompt and (" " .. shq(a.prompt)) or ""
+    sh.sh("-c", shq(binary_path()) .. prompt)
   end,
 }
 
@@ -303,7 +305,7 @@ make.recipe{
   },
   run = function(a)
     build_binary(false)
-    sh.sh("-c", ("%s --socket %s"):format(binary_path(), a.socket or demo_socket()))
+    sh.sh("-c", ("%s --socket %s"):format(shq(binary_path()), shq(a.socket or demo_socket())))
   end,
 }
 
@@ -319,7 +321,7 @@ make.recipe{
     local socket = a.socket or demo_socket()
     oslo.run{ "rm", "-f", socket }
     sh.sh("-c", ("%s --socket %s fake-host --replay %s"):format(
-      binary_path(), socket, a.recording or RECORDING))
+      shq(binary_path()), shq(socket), shq(a.recording or RECORDING)))
   end,
 }
 
@@ -463,7 +465,8 @@ make.recipe{
       local home = dest:gsub("/" .. NAME .. "$", "")
       local absolute = binary:sub(1, 1) == "/" and binary or (root .. "/" .. binary)
       local checked = oslo.run{ "sh", "-c",
-        ("cd %q && XDG_CONFIG_HOME=%q %q models --all >/dev/null"):format(dest, home, absolute) }
+        ("cd %s && XDG_CONFIG_HOME=%s %s models --all >/dev/null")
+          :format(shq(dest), shq(home), shq(absolute)) }
       assert(checked.ok, "the installed configuration does not load")
       print(dim("   it loads"))
     end
@@ -548,6 +551,26 @@ make.recipe{ name = "test-live-guard", desc = "the required integration prerequi
 
 make.recipe{ name = "family-path", desc = "the binary selected by the build recipe",
              run = function() print("NERV_BINARY=" .. binary_path()) end }
+
+make.recipe{ name = "nix-build", desc = "the static Nix package, into result/bin/" .. BIN,
+             run = function() sh.nix("build", "--accept-flake-config", ".#" .. BIN, "-L") end }
+
+make.recipe{ name = "nix-check", desc = "the flake's outputs and the package's install checks",
+             run = function() sh.nix("flake", "check", "--accept-flake-config", "-L") end }
+
+-- Substituted only: no local or remote builder may build it, so a cache miss fails here.
+make.recipe{
+  name = "nix-download-check",
+  desc = "fetch the package from the cache, building nothing, and run it",
+  run = function()
+    sh.nix("build", "--accept-flake-config", "--no-update-lock-file",
+           "--max-jobs", "0", "--builders", "", ".#" .. BIN)
+    local ran = oslo.run{ "result/bin/" .. BIN, "verbs", "--json", capture = true }
+    assert(ran.ok and (ran.out or ""):find('"ok":true', 1, true),
+           "result/bin/" .. BIN .. " verbs --json did not answer ok")
+    print(("%s answers verbs from the cache"):format(BIN))
+  end,
+}
 
 make.recipe{ name = "check", desc = "type-check every target",
              run = function() sh.cargo("check", "--all-targets", "--release") end }
@@ -649,15 +672,39 @@ make.recipe{
       print(said)
       error("cargo machete failed")
     end
-    local shelled = oslo.run{ "nix", "develop", "--command", "cargo", "machete" }
+    local shelled = oslo.run{ "nix", "--extra-experimental-features", "nix-command flakes",
+                              "develop", "--command", "cargo", "machete" }
     assert(shelled.ok, "cargo machete failed")
   end,
 }
 
+-- The advisory database and the dependency policy: this machine's tool where it has one, else the
+-- dev shell's, which carries both. `verify` names them, so neither is skipped for want of a tool.
+local function cargo_tool(tool, args, failed)
+  return function()
+    local argv = { "cargo", tool }
+    for _, arg in ipairs(args) do argv[#argv + 1] = arg end
+    if not oslo.run{ "cargo", tool, "--version", capture = true }.ok then
+      for _, word in ipairs{ "--command", "develop", "nix-command flakes",
+                             "--extra-experimental-features", "nix" } do
+        table.insert(argv, 1, word)
+      end
+    end
+    assert(oslo.run(argv).ok, failed)
+  end
+end
+
+make.recipe{ name = "audit", desc = "known advisories against the lockfile, offline",
+             run = cargo_tool("audit", { "--no-fetch" }, "cargo audit failed") }
+
+make.recipe{ name = "deny", desc = "the dependency policy in deny.toml",
+             run = cargo_tool("deny", { "check" }, "cargo deny failed") }
+
 make.recipe{
   name = "verify",
   desc = "the whole local gate",
-  deps = { "fmt-check", "check", "test", "clippy", "gates", "gate-hermetic", "gate-family", "machete", "rustdoc" },
+  deps = { "fmt-check", "check", "test", "clippy", "gates", "gate-hermetic", "gate-family",
+           "machete", "rustdoc", "audit", "deny" },
 }
 make.alias("v", "verify")
 

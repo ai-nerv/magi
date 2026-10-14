@@ -102,19 +102,20 @@ pub fn load() -> Result<Loaded, LuaError> {
     // The line between the machine's own configuration and a file that arrived with a checkout,
     // unless `magi.trusted` names the directory: the decision lives in the config only the user edits.
     engine.harvest();
-    let machine = trusts_here(&engine.config()).then(|| Trusted::snapshot(&mut engine));
+    let vouched = vouched_for(&engine.config(), &cwd);
 
     // Then the project, last, so a repository can choose among what the machine offers.
-    for path in magi_lua::search_paths() {
-        if path.exists() && path.file_name().is_some_and(|n| n == ".magi.lua") {
-            engine.run_file(&path)?;
+    let local = cwd.join(".magi.lua");
+    if std::fs::symlink_metadata(&local).is_ok() {
+        if vouched {
+            engine.run_file(&local)?;
             // A vouched directory's file is as good as the machine's own, so its tools have to
             // reach the daemon and not just this VM.
-            if machine.is_none()
-                && let Ok(source) = std::fs::read_to_string(&path)
-            {
-                layer(&mut tools, path.display().to_string(), source);
+            if let Ok(source) = std::fs::read_to_string(&local) {
+                layer(&mut tools, local.display().to_string(), source);
             }
+        } else {
+            project::apply(&mut engine, &local)?;
         }
     }
     engine.harvest();
@@ -123,21 +124,16 @@ pub fn load() -> Result<Loaded, LuaError> {
     for said in &engine.config().unkept {
         eprintln!("magi: {said}");
     }
-
-    if let Some(machine) = &machine {
-        // A changed privileged setting is fatal: a project file has already changed how the rest of
-        // the session is governed, and the value it wanted is the value the config now holds.
-        if let Some(message) = machine.altered(&mut engine) {
-            return Err(LuaError::Runtime {
-                file: ".magi.lua".to_owned(),
-                message,
-            });
-        }
-        for refused in machine.refusals(&mut engine) {
-            eprintln!("magi: {refused}");
-        }
-    }
     collect(engine.config(), tools, clients)
+}
+
+/// The configuration for a session: `None` when nothing is installed, else what [`load`] says.
+pub fn for_session() -> Result<Option<Loaded>, LuaError> {
+    let installed = config_dir().is_some_and(|dir| dir.join("init.lua").exists());
+    if !installed {
+        return Ok(None);
+    }
+    load().map(Some)
 }
 
 /// Acknowledge every installed package, so it may run. Nothing installed is not an error.
@@ -180,29 +176,25 @@ pub fn acknowledge(how: crate::verbs::As) {
         Err(why) => refuse(&why.to_string()),
     }
 }
-/// Whether the working directory is one the machine's config vouched for. Inverted on purpose:
-/// `Some(Trusted)` means a boundary is enforced. Ancestors count, so a worktree root covers what is under it.
-fn trusts_here(config: &Config) -> bool {
-    let Ok(cwd) = std::env::current_dir() else {
-        return true;
-    };
-    let listed = config
+/// Whether `cwd` is under a directory the person's own `magi.trusted` names.
+fn vouched_for(config: &Config, cwd: &std::path::Path) -> bool {
+    let listed: Vec<String> = config
         .get("trusted")
         .and_then(|v| v.as_array())
         .map(|paths| {
             paths
                 .iter()
-                .filter_map(|p| p.as_str())
-                .any(|p| cwd.starts_with(p))
+                .filter_map(|p| p.as_str().map(str::to_owned))
+                .collect()
         })
-        .unwrap_or(false);
-    !listed
+        .unwrap_or_default();
+    magi_lua::plugins::vouched_for(&listed, cwd)
 }
 
 /// Replace a compiled-in file with the installed one of the same name, or add it.
 fn layer(files: &mut Vec<(String, String)>, name: String, source: String) {
-    match files.iter().position(|(n, _)| *n == name) {
-        Some(at) => files[at] = (name, source),
+    match files.iter_mut().find(|(n, _)| *n == name) {
+        Some(held) => *held = (name, source),
         None => files.push((name, source)),
     }
 }
@@ -320,6 +312,7 @@ pub mod agents;
 pub(crate) mod chosen;
 mod discovered;
 mod lent;
+pub mod project;
 pub mod roles;
 use chosen::asked;
 mod settings;
@@ -453,94 +446,6 @@ pub fn config_dir() -> Option<std::path::PathBuf> {
         .map(|base| base.join("magi"))
 }
 
-/// What the machine's own configuration had declared, before any project file ran. A `.magi.lua`
-/// arrives with a checkout, and cloning a repository must not be enough to add a tool. A project
-/// file can still *choose* with `magi.model`, which carries no authority.
-pub struct Trusted {
-    tools: BTreeSet<String>,
-    /// What [`PRIVILEGED_SETTINGS`] were before a project file ran.
-    settings: Vec<Option<serde_json::Value>>,
-    /// Which program filled each role before a project file ran. Held apart from the settings
-    /// because what is privileged is the *name*: `magi.melchior = { … }` is a settings table a
-    /// project may write, and `magi.melchior = "./x"` is a program it may not.
-    roles: Vec<(String, String)>,
-}
-
-/// Settings a project's own file may not assign: `confine` is the wall, `allow` is what may happen
-/// without asking, and a file that could set `trusted` could exempt itself.
-const PRIVILEGED_SETTINGS: &[&str] = &[
-    "confine",
-    "allow",
-    "trusted",
-    "isolation",
-    "may_spawn",
-    "mode",
-    "ask",
-    "deny",
-];
-
-impl Trusted {
-    /// Record what has been declared so far.
-    fn snapshot(engine: &mut Engine) -> Self {
-        Self {
-            tools: engine.tools().into_iter().map(|(name, _)| name).collect(),
-            settings: Self::privileged(engine),
-            roles: roles::said(engine),
-        }
-    }
-
-    /// The privileged settings as they stand, in `PRIVILEGED_SETTINGS` order.
-    fn privileged(engine: &mut Engine) -> Vec<Option<serde_json::Value>> {
-        let config = engine.config();
-        PRIVILEGED_SETTINGS
-            .iter()
-            .map(|name| config.get(name).cloned())
-            .collect()
-    }
-
-    /// Why the session may not start, if a project file changed something privileged. Compared by
-    /// value, so a project file that reads `magi.confine` and assigns it back has changed nothing.
-    fn altered(&self, engine: &mut Engine) -> Option<String> {
-        let now = Self::privileged(engine);
-        if let Some((_, name)) = PRIVILEGED_SETTINGS
-            .iter()
-            .enumerate()
-            .find(|(index, _)| now.get(*index) != self.settings.get(*index))
-        {
-            return Some(format!(
-                "a project file set `magi.{name}`, which decides what this session may do \
-                 without asking; only your own configuration can set it"
-            ));
-        }
-        // A role's program is spawned on every turn with the session's authority, so naming one is
-        // more than declaring a tool — which a project file is already refused.
-        let now = roles::said(engine);
-        let (role, program) = now.iter().find(|held| !self.roles.contains(held))?;
-        let setting = roles::of(role).map_or(role.as_str(), |known| known.named[0]);
-        Some(format!(
-            "a project file named `{program}` to fill the {role} role with `magi.{setting}`; \
-             that program would run with this session's authority, so only your own \
-             configuration can name it"
-        ))
-    }
-
-    /// One message per declaration a project file made that will not be honoured, rather than a silent drop.
-    fn refusals(&self, engine: &mut Engine) -> Vec<String> {
-        // melchior owns the model; a project file naming a provider is told so by `Config::unkept`.
-        let mut out = Vec::new();
-        for (name, _) in engine.tools() {
-            if !self.tools.contains(&name) {
-                out.push(format!(
-                    "the tool {name:?} was declared by a project file and will not be offered; \
-                     a tool can name a command to run, so only your own configuration can add \
-                     one"
-                ));
-            }
-        }
-        out
-    }
-}
-
 /// The source behind one `magi.load` path, read from the config directory. A path that is not there
 /// is skipped rather than fatal.
 fn source_of(path: &str) -> Option<String> {
@@ -620,8 +525,36 @@ mod pinning_tests {
         // The same rule, for the configuration everybody already has: `magi.casper` is the tools
         // program's table because casper is the tools program, not because it is spelled casper.
         let tooling = tooling(&from(r#"magi.casper = { off = true }"#));
-        assert_eq!(tooling.program, "casper");
+        assert_eq!(
+            std::path::Path::new(&tooling.program).file_name(),
+            Some(std::ffi::OsStr::new("casper")),
+            "found once, by its own name"
+        );
         assert_eq!(tooling.configure, r#"{"off":true}"#);
+    }
+
+    #[test]
+    fn the_tools_program_is_resolved_once_to_an_executable_absolute_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = magi_model::scratch::Scratch::new("magi-locate", "bin");
+        let plain = dir.join("plain");
+        std::fs::write(&plain, "#!/bin/sh\n").expect("write");
+        assert_eq!(
+            magi_tools::supplier::located(&plain.display().to_string()),
+            plain.display().to_string(),
+            "not executable, so not resolved"
+        );
+        std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let found = magi_tools::supplier::located(&plain.display().to_string());
+        assert!(std::path::Path::new(&found).is_absolute());
+        assert_eq!(
+            std::path::Path::new(&found),
+            plain.canonicalize().expect("real")
+        );
+        assert_eq!(
+            magi_tools::supplier::located("magi-no-such-tool"),
+            "magi-no-such-tool"
+        );
     }
 }
 

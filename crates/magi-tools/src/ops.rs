@@ -21,7 +21,7 @@ pub trait Ops: Send + Sync {
         } else {
             self.cwd().join(path)
         };
-        normalise(&joined)
+        real_path(&joined)
     }
 
     /// Read a file.
@@ -182,20 +182,25 @@ impl Real {
         Some(dir)
     }
 
-    /// Writable directories and unrestricted network permission from the session ledger.
+    /// What the jail may write, from this session's write grants, and that it keeps the network:
+    /// the jail contains the filesystem, and the network stays open.
     fn jail_reach(&self) -> (Vec<PathBuf>, bool) {
         use magi_proto::permit::Scope;
+        let home = std::env::var_os("HOME")
+            .filter(|home| !home.is_empty())
+            .map(PathBuf::from);
         let mut write = Vec::new();
-        let mut reach = false;
         for grant in self.grants() {
             if let ("write", Scope::Directory { path }) = (grant.verb.as_str(), &grant.scope) {
-                write.push(PathBuf::from(path));
-            }
-            if grant.verb == "reach" && grant.scope == Scope::Anything {
-                reach = true;
+                let dir = PathBuf::from(path);
+                if handed_to_jail(&dir, home.as_deref()) {
+                    write.push(dir);
+                } else {
+                    magi_model::noted!("jail: write on {} is not handed over", dir.display());
+                }
             }
         }
-        (write, reach)
+        (write, true)
     }
 
     /// Resolve a path against the root, refusing anything that escapes it when confined. Checked
@@ -207,18 +212,53 @@ impl Real {
         } else {
             self.root.join(path)
         };
-        let normalised = normalise(&joined);
+        let real = real_path(&joined);
         if !self.confined {
-            return Ok(normalised);
+            return Ok(real);
         }
-        let root = normalise(&self.root);
-        if !normalised.starts_with(&root) {
+        let root = real_path(&self.root);
+        if !real.starts_with(&root) {
             return Err(format!(
                 "{} is outside this session's directory, and `magi.confine` is on",
                 path.display()
             ));
         }
-        Ok(normalised)
+        Ok(real)
+    }
+
+    /// Open `real`, the path [`Self::resolve`] answered for `asked`: beneath the root when confined,
+    /// through no link otherwise, and never through its leaf.
+    fn open(
+        &self,
+        asked: &Path,
+        real: &Path,
+        flags: rustix::fs::OFlags,
+        mode: u32,
+    ) -> Result<std::fs::File, String> {
+        let flags = flags | rustix::fs::OFlags::NOFOLLOW;
+        let mode = rustix::fs::Mode::from_raw_mode(mode);
+        let opened = if self.confined {
+            let root = real_path(&self.root);
+            let inside = real.strip_prefix(&root).unwrap_or(real);
+            let inside = if inside.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                inside
+            };
+            opening::beneath(&root, inside, flags, mode)
+        } else {
+            opening::unlinked(real, flags, mode)
+        };
+        opened.map_err(|why| {
+            if opening::escaped(&why) {
+                format!(
+                    "{} resolves outside this session's directory, and `magi.confine` is on",
+                    asked.display()
+                )
+            } else {
+                format!("{}: {why}", real.display())
+            }
+        })
     }
 
     /// The same action with any `Read`/`Write` path resolved against the root, so the gate sees
@@ -252,6 +292,91 @@ fn scratch_under(cache: Option<OsString>, home: Option<OsString>) -> Option<Path
         .filter(|base| base.is_absolute())
 }
 
+/// Credentials and the family's own configuration, under `$HOME`. The jail is never handed write
+/// on one of these, on anything inside one, or on any directory above one.
+const PROTECTED: &[&str] = &[
+    ".config/magi",
+    ".config/casper",
+    ".config/melchior",
+    ".config/balthasar",
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".azure",
+    ".kube",
+    ".docker",
+    ".config/gcloud",
+    ".netrc",
+    ".git-credentials",
+    ".npmrc",
+    ".pypirc",
+    ".cargo/credentials",
+    ".cargo/credentials.toml",
+    ".password-store",
+    ".local/share/keyrings",
+];
+
+/// Whether a write grant on `dir` may be handed to the jail: not `$HOME`, and not a directory
+/// above, at or inside a `PROTECTED` one.
+#[must_use]
+pub fn handed_to_jail(dir: &Path, home: Option<&Path>) -> bool {
+    let dir = real_path(dir);
+    let Some(home) = home.map(real_path) else {
+        return dir.parent().is_some();
+    };
+    !PROTECTED.iter().any(|held| {
+        let held = home.join(held);
+        held.starts_with(&dir) || dir.starts_with(&held)
+    })
+}
+
+/// Where `path` lands on disk: its longest existing prefix resolved through every symlink, and
+/// the rest appended. An absolute path in, an absolute path out.
+#[must_use]
+pub fn real_path(path: &Path) -> PathBuf {
+    real_within(path, 40)
+}
+
+/// [`real_path`], following at most `hops` links that point at nothing yet.
+fn real_within(path: &Path, hops: u32) -> PathBuf {
+    let lexical = normalise(path);
+    let mut existing = lexical.as_path();
+    let mut rest = Vec::new();
+    let joined = |at: PathBuf, rest: &[std::ffi::OsString]| {
+        rest.iter().rev().fold(at, |at, part| at.join(part))
+    };
+    loop {
+        if let Ok(real) = existing.canonicalize() {
+            return joined(real, &rest);
+        }
+        // A link to something not there yet: a write through it creates what it names.
+        if hops > 0
+            && let Ok(target) = std::fs::read_link(existing)
+        {
+            let from = existing.parent().unwrap_or_else(|| Path::new("/"));
+            return real_within(&joined(from.join(target), &rest), hops - 1);
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_owned());
+                existing = parent;
+            }
+            _ => return lexical,
+        }
+    }
+}
+
+/// Whether a write to `path` changes something the next session, or the repository, runs:
+/// a project's own configuration, or anything under `.git`.
+#[must_use]
+pub fn runs_later(path: &Path) -> bool {
+    const RUN_ON_START: &[&str] = &[".magi.lua", ".balthasar.lua"];
+    path.components().any(|part| part.as_os_str() == ".git")
+        || path
+            .file_name()
+            .is_some_and(|name| RUN_ON_START.iter().any(|held| name == *held))
+}
+
 /// Resolve `.` and `..` without touching the filesystem. `canonicalize` would be stricter but
 /// requires the path to exist, and a write to a new file has to be checked before it does.
 fn normalise(path: &Path) -> PathBuf {
@@ -273,17 +398,39 @@ impl Ops for Real {
         self.root.clone()
     }
 
-    fn read(&self, path: &Path) -> Result<String, String> {
-        let path = self.resolve(path)?;
-        std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))
+    fn read(&self, asked: &Path) -> Result<String, String> {
+        use std::io::Read;
+        let path = self.resolve(asked)?;
+        let mut text = String::new();
+        self.open(asked, &path, rustix::fs::OFlags::RDONLY, 0)?
+            .read_to_string(&mut text)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(text)
     }
 
     fn write(&self, path: &Path, contents: &str) -> Result<(), String> {
-        let path = self.resolve(path)?;
+        use std::io::Write;
+        let written = if path.is_absolute() {
+            path.to_owned()
+        } else {
+            self.root.join(path)
+        };
+        if std::fs::symlink_metadata(normalise(&written)).is_ok_and(|meta| meta.is_symlink()) {
+            return Err(format!(
+                "{} is a symbolic link; write to what it points at instead",
+                path.display()
+            ));
+        }
+        let asked = path;
+        let path = self.resolve(asked)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
-        std::fs::write(&path, contents).map_err(|e| format!("{}: {e}", path.display()))
+        use rustix::fs::OFlags;
+        let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::TRUNC;
+        self.open(asked, &path, flags, 0o666)?
+            .write_all(contents.as_bytes())
+            .map_err(|e| format!("{}: {e}", path.display()))
     }
 
     /// Consult the ledger, and ask if it has nothing to say. The answer is recorded before it is
@@ -334,16 +481,19 @@ impl Ops for Real {
     }
 
     /// The jail profile from the grants this session holds. `None` when isolation is off; otherwise
-    /// the write directories, network toggle, and a `/tmp` shared across this project's commands,
-    /// conservative on an empty ledger, not open.
+    /// the write directories, this project's spill directory, the network toggle, and a `/tmp`
+    /// shared across this project's commands, conservative on an empty ledger, not open.
     fn jail(&self) -> Option<String> {
         if !self.isolate {
             return None;
         }
-        let (write, reach) = self.jail_reach();
+        let (mut write, reach) = self.jail_reach();
+        write.extend(crate::bound::spill_dir(&self.root));
         let mut profile = serde_json::json!({ "write": write, "reach": reach });
-        if let Some(tmp) = self.shared_tmp() {
-            profile["tmp"] = serde_json::json!(tmp);
+        if let Some(tmp) = self.shared_tmp()
+            && let Some(fields) = profile.as_object_mut()
+        {
+            fields.insert("tmp".to_owned(), serde_json::json!(tmp));
         }
         serde_json::to_string(&profile).ok()
     }
@@ -394,7 +544,33 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_or_host_specific_grant_never_opens_all_networks() {
+    fn a_write_grant_over_home_or_a_credential_is_not_handed_to_the_jail() {
+        let home = Scratch::new("magi-ops", "home");
+        std::fs::create_dir_all(home.join("work")).expect("mkdir");
+        std::os::unix::fs::symlink(home.join(".ssh"), home.join("keys")).expect("symlink");
+        let kept = |dir: &str| handed_to_jail(&home.join(dir), Some(&home));
+        assert!(kept("work"));
+        assert!(kept("work/build"));
+        for refused in [
+            "",
+            ".config",
+            ".config/magi",
+            ".config/magi/plugin",
+            ".ssh",
+            ".local/share",
+            "keys",
+        ] {
+            assert!(!kept(refused), "{refused:?} was handed over");
+        }
+        assert!(!handed_to_jail(Path::new("/"), Some(&home)));
+        assert!(
+            !handed_to_jail(Path::new("/"), None),
+            "the root, with no home"
+        );
+    }
+
+    #[test]
+    fn the_network_stays_open_whatever_the_grants_say() {
         use magi_proto::permit::{Grant, Scope};
         for grants in [
             vec![],
@@ -414,10 +590,27 @@ mod tests {
             .isolating(true);
             let profile: serde_json::Value =
                 serde_json::from_str(&ops.jail().expect("profile")).expect("json");
-            assert_eq!(profile["reach"], false);
+            assert_eq!(profile["reach"], true);
             if let Some(tmp) = ops.shared_tmp() {
                 let _ = std::fs::remove_dir_all(tmp);
             }
+        }
+    }
+
+    #[test]
+    fn the_jail_is_handed_this_projects_spill_directory_and_nothing_above_it() {
+        let (ops, dir) = rooted("spills");
+        let ops = ops.isolating(true);
+        let profile: serde_json::Value =
+            serde_json::from_str(&ops.jail().expect("a profile")).expect("json");
+        let spills = crate::bound::spill_dir(&dir).expect("made");
+        let write = profile["write"].as_array().expect("a write list");
+        assert!(write.contains(&serde_json::json!(spills)), "{profile}");
+        let above = serde_json::json!(spills.parent().expect("the user's"));
+        assert!(!write.contains(&above), "{profile}");
+        let _ = std::fs::remove_dir(&spills);
+        if let Some(tmp) = ops.shared_tmp() {
+            let _ = std::fs::remove_dir_all(tmp);
         }
     }
 
@@ -462,6 +655,32 @@ mod tests {
     fn walled(name: &str) -> (Real, Scratch) {
         let dir = Scratch::new("magi-wall", name);
         (Real::confined(dir.to_path_buf()), dir)
+    }
+
+    #[test]
+    fn a_symlink_is_seen_through_before_gating_and_never_written_through() {
+        let (ops, dir) = rooted("links");
+        std::fs::create_dir_all(dir.join(".git/hooks")).expect("mkdir");
+        std::os::unix::fs::symlink(dir.join(".git/hooks"), dir.join("h")).expect("symlink");
+        std::os::unix::fs::symlink(dir.join(".git/config"), dir.join("c")).expect("symlink");
+        let real = |path: &str| ops.resolved(Path::new(path));
+        assert_eq!(real("h/post-checkout"), real(".git/hooks/post-checkout"));
+        assert_eq!(real("c"), real(".git/config"), "a link to nothing yet");
+
+        let refused = ops.write(Path::new("c"), "[core]").expect_err("refused");
+        assert!(refused.contains("symbolic link"), "{refused}");
+        assert!(
+            !dir.join(".git/config").exists(),
+            "the write went through the link"
+        );
+
+        let walled = Real::confined(dir.join("inner"));
+        std::fs::create_dir_all(dir.join("inner")).expect("mkdir");
+        std::os::unix::fs::symlink("/etc", dir.join("inner/x")).expect("symlink");
+        assert!(
+            walled.read(Path::new("x/hostname")).is_err(),
+            "out through a link"
+        );
     }
 
     #[test]
@@ -568,3 +787,6 @@ mod reach_tests {
 #[path = "ops/gating.rs"]
 #[cfg(test)]
 mod gating;
+
+#[path = "ops/opening.rs"]
+mod opening;

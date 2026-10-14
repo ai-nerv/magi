@@ -79,6 +79,12 @@ impl Journal {
         &self.entries
     }
 
+    /// The entry at `cursor`, to change in place.
+    pub fn entry_mut(&mut self, cursor: Cursor) -> Option<&mut Entry> {
+        let at = self.position(cursor)?;
+        self.entries.get_mut(at)
+    }
+
     /// Replace the last entry, for a message that is still arriving. Unlike [`Journal::amend`]
     /// this is not streamed onward to the store, which would resend the message once per token.
     pub fn revise(&mut self, entry: Entry) {

@@ -4,6 +4,8 @@
 //! another process. These drive the reduction the driver performs, against the transport the
 //! driver uses, so the resume path is exercised end to end rather than asserted about.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_ipc::{FrameReader, FrameWriter};
 use magi_model::scratch::{Scratch, ScratchFile};
 use magi_proto::{Cursor, Entry, HarnessEvent, UiCommand};
@@ -51,6 +53,7 @@ async fn attach(path: &Path, from: Cursor, take: usize) -> (Vec<Entry>, Vec<Harn
             session: None,
             from_cursor: from,
             draws: false,
+            key: magi_ipc::read_key(path),
         })
         .await
         .expect("attach");

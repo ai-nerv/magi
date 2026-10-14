@@ -73,6 +73,7 @@ impl Mind {
     }
 
     /// Allow the numbered controlled request to finish.
+    #[allow(clippy::expect_used)]
     pub fn release(&self, nth: usize) {
         std::fs::write(self.dir.join(format!("release.{nth}")), b"").expect("release request");
     }
@@ -232,6 +233,7 @@ fn surface() -> String {
     )
 }
 
+#[allow(clippy::expect_used)]
 fn written(name: &str, body: &str) -> Mind {
     let dir = std::env::temp_dir().join(format!("magi-mind-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);

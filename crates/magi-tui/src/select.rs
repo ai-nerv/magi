@@ -85,9 +85,14 @@ pub fn over(buffer: &mut Buffer, selection: Selection) {
 /// Trailing blanks go, because a block's background runs to the edge of the screen.
 #[must_use]
 pub fn text(buffer: &Buffer, selection: Selection, area: Rect) -> String {
+    let area = area.intersection(buffer.area);
     let ((top, _), (bottom, _)) = selection.ordered();
     let mut out = String::new();
-    for y in top.max(area.top())..=bottom.min(area.bottom().saturating_sub(1)) {
+    if area.is_empty() {
+        return out;
+    }
+    let last = bottom.min(area.bottom().saturating_sub(1));
+    for y in top.max(area.top())..=last {
         let mut line = String::new();
         for x in area.left()..area.right() {
             if selection.covers(y, x) {
@@ -95,7 +100,7 @@ pub fn text(buffer: &Buffer, selection: Selection, area: Rect) -> String {
             }
         }
         out.push_str(line.trim_end());
-        if y < bottom {
+        if y < last {
             out.push('\n');
         }
     }
@@ -247,6 +252,17 @@ mod tests {
         let mut sel = Selection::begin(0, 0);
         sel.drag_to(1, 10);
         assert_eq!(text(&buffer, sel, buffer.area), "text\nmore");
+    }
+
+    #[test]
+    fn a_selection_read_after_the_screen_shrank_reads_what_is_left() {
+        // The area a selection was made over can outlive a resize.
+        let buffer = drawn(&["hello"]);
+        let mut sel = Selection::begin(0, 0);
+        sel.drag_to(4, 30);
+        let stale = Rect::new(0, 0, 40, 10);
+        assert_eq!(text(&buffer, sel, stale), "hello");
+        assert_eq!(text(&buffer, sel, Rect::new(0, 0, 0, 0)), "");
     }
 
     #[test]

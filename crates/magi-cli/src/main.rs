@@ -167,7 +167,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
     // Only a session has a prologue, so an argument error arrives without a layer being started.
-    let opening = (cli.command.is_none() && !(cli.print && cli.prompt.is_none())).then(|| {
+    let opening = match (cli.command.is_none() && !(cli.print && cli.prompt.is_none())).then(|| {
         opening::Opening::begin(
             cli.socket.clone(),
             melchior::Role {
@@ -175,7 +175,14 @@ fn main() -> Result<()> {
                 description: cli.role_description.as_deref(),
             },
         )
-    });
+    }) {
+        Some(Err(why)) => {
+            eprintln!("magi: {why}");
+            std::process::exit(1);
+        }
+        Some(Ok(opening)) => Some(opening),
+        None => None,
+    };
     // `fork` is not a session: a prologue here would name a second one and throw it away.
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -252,7 +259,9 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
             let Some(prompt) = cli.prompt else {
                 anyhow::bail!("`-p` needs a prompt: magi -p \"…\"");
             };
-            let opening = opening.expect("a session's prologue runs before the runtime");
+            let Some(opening) = opening else {
+                anyhow::bail!("a session's prologue did not run before the runtime");
+            };
             let loaded = opening.loaded;
             // Held for the run, so its socket is up while the turn is.
             let _layer = opening.started;
@@ -287,12 +296,7 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
             balthasar::stop();
             host::done(&socket);
             let outcome = outcome?;
-            if !outcome.text.is_empty() {
-                println!("{}", outcome.text);
-            }
-            if let Some(error) = &outcome.error {
-                eprintln!("magi: {error}");
-            }
+            print::report(&outcome);
             if outcome.failed() {
                 std::process::exit(1);
             }
@@ -300,7 +304,9 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
         }
         None => {
             // The configuration, the layer and this session's name, settled before the runtime.
-            let opening = opening.expect("a session's prologue runs before the runtime");
+            let Some(opening) = opening else {
+                anyhow::bail!("a session's prologue did not run before the runtime");
+            };
             let loaded = opening.loaded;
             let project = opening.project;
             let started = opening.started;
@@ -372,11 +378,13 @@ fn inherited(
     named: &str,
 ) -> std::collections::BTreeMap<String, String> {
     let mut environ = loaded.map(crate::config::environ).unwrap_or_default();
-    for key in ["MAGI_MELCHIOR_PARENT", "MAGI_MELCHIOR_TOKEN"] {
-        if let Ok(value) = std::env::var(key) {
-            environ.insert(key.to_owned(), value);
-        }
+    if let Ok(value) = std::env::var("MAGI_MELCHIOR_PARENT") {
+        environ.insert("MAGI_MELCHIOR_PARENT".to_owned(), value);
     }
+    // The stop secret is taken out of its file now and kept here, never handed on.
+    let _ = melchior::stop_token();
+    environ.remove(melchior::TOKEN_VAR);
+    environ.remove(melchior::TOKEN_FILE);
     let mut parts = named.split('/');
     if let (Some(project), Some(role), Some(id)) = (parts.next(), parts.next(), parts.next()) {
         environ.insert("MAGI_MELCHIOR_PROJECT".to_owned(), project.to_owned());
@@ -569,6 +577,28 @@ mod inheriting {
             !crate::balthasar::AGENT
                 .iter()
                 .any(|named| environ.contains_key(*named))
+        );
+    }
+
+    /// The stop secret never goes to anything a session starts, from whichever variable it came.
+    #[test]
+    fn the_stop_secret_is_not_handed_down() {
+        if std::env::var_os("MAGI_INHERIT_PROBE").is_some() {
+            let environ = inherited(None, "magi/main/alpha-rho");
+            assert!(!environ.contains_key(melchior::TOKEN_VAR), "{environ:?}");
+            assert!(environ.values().all(|value| value != "deadbeef"));
+            return;
+        }
+        let ran = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", "inheriting::the_stop_secret_is_not_handed_down"])
+            .env("MAGI_INHERIT_PROBE", "1")
+            .env(melchior::TOKEN_VAR, "deadbeef")
+            .output()
+            .expect("probe");
+        assert!(
+            ran.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ran.stdout)
         );
     }
 }

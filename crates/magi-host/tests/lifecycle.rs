@@ -1,7 +1,9 @@
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_host::{catalog::Catalog, session::Session, turn::Backend};
 use magi_ipc::{FrameReader, FrameWriter};
 use magi_model::scratch::Scratch;
-use magi_proto::{Cursor, Entry, HarnessEvent, SessionId, UiCommand};
+use magi_proto::{Cursor, Entry, HarnessEvent, MessageId, SessionId, UiCommand};
 use magi_testkit::Mind;
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
@@ -17,6 +19,7 @@ async fn attach(path: &std::path::Path, cursor: Cursor) -> (Reader, Writer) {
             session: None,
             from_cursor: cursor,
             draws: false,
+            key: magi_ipc::read_key(path),
         })
         .await
         .expect("attach");
@@ -107,13 +110,38 @@ async fn barrier(reader: &mut Reader, writer: &mut Writer) {
     until(reader, |e| matches!(e, HarnessEvent::Refused { .. })).await;
 }
 
-async fn prefix(reader: &mut Reader, nth: usize) {
+/// Wait for the answer that streams `part-<nth>`, and name it.
+async fn prefix(reader: &mut Reader, nth: usize) -> MessageId {
     let wanted = format!("part-{nth}");
-    until(
+    match until(
         reader,
         |e| matches!(e, HarnessEvent::AssistantDelta { text, .. } if text == &wanted),
     )
+    .await
+    {
+        HarnessEvent::AssistantDelta { id, .. } => id,
+        _ => unreachable!(),
+    }
+}
+
+/// Wait for the answer named `id` to end.
+async fn ended(reader: &mut Reader, id: &MessageId) {
+    until(
+        reader,
+        |e| matches!(e, HarnessEvent::AssistantEnded { id: done, .. } if done == id),
+    )
     .await;
+}
+
+/// The transcript without the error each answer ends on while the memory layer is not there.
+fn kept(entries: Vec<Entry>) -> Vec<Entry> {
+    entries
+        .into_iter()
+        .filter(|entry| {
+            !matches!(entry, Entry::Assistant { error: Some(why), .. }
+                if why.contains("not recorded"))
+        })
+        .collect()
 }
 
 async fn snapshot(path: &std::path::Path) -> Vec<Entry> {
@@ -123,7 +151,7 @@ async fn snapshot(path: &std::path::Path) -> Vec<Entry> {
     })
     .await
     {
-        HarnessEvent::SessionSnapshot { entries, .. } => entries,
+        HarnessEvent::SessionSnapshot { entries, .. } => kept(entries),
         _ => unreachable!(),
     }
 }
@@ -181,6 +209,7 @@ async fn two_clients_keep_each_prompt_and_answer_in_order() {
         unreachable!()
     };
     assert!(!mind.overlapped(), "provider requests overlapped");
+    let entries = kept(entries);
     let bodies: Vec<_> = entries
         .iter()
         .filter_map(|e| match e {
@@ -276,13 +305,9 @@ async fn busy_reconfiguration_is_refused_and_disconnect_keeps_accepted_work() {
     drop(writer);
     let (mut reader, _writer) = attach(&path, Cursor(0)).await;
     mind.release(0);
-    prefix(&mut reader, 1).await;
+    let answer = prefix(&mut reader, 1).await;
     mind.release(1);
-    until(
-        &mut reader,
-        |e| matches!(e, HarnessEvent::AssistantEnded { id, .. } if id.as_str() == "a4"),
-    )
-    .await;
+    ended(&mut reader, &answer).await;
     let entries = snapshot(&path).await;
     assert_eq!(entries.len(), 4);
     assert!(matches!(&entries[2], Entry::User { text, .. } if text == "survives disconnect"));
@@ -342,14 +367,10 @@ async fn arrivals_and_declarations_share_the_prompt_boundary() {
     barrier(&mut reader, &mut writer).await;
     assert_eq!(mind.asked(), 1);
     mind.release(0);
-    prefix(&mut reader, 1).await;
+    let answer = prefix(&mut reader, 1).await;
     mind.release(1);
     let (mut observing, mut control) = attach(&path, Cursor(0)).await;
-    until(
-        &mut observing,
-        |e| matches!(e, HarnessEvent::AssistantEnded { id, .. } if id.as_str() == "a5"),
-    )
-    .await;
+    ended(&mut observing, &answer).await;
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
         while mind.asked() < 3 {
             tokio::task::yield_now().await;
@@ -361,13 +382,9 @@ async fn arrivals_and_declarations_share_the_prompt_boundary() {
         .write(&UiCommand::Interrupt)
         .await
         .expect("command sent");
-    prefix(&mut reader, 3).await;
+    let answer = prefix(&mut reader, 3).await;
     mind.release(3);
-    until(
-        &mut reader,
-        |e| matches!(e, HarnessEvent::AssistantEnded { id, .. } if id.as_str() == "a7"),
-    )
-    .await;
+    ended(&mut reader, &answer).await;
     let entries = snapshot(&path).await;
     assert_eq!(entries.len(), 7);
     assert!(matches!(&entries[2], Entry::From { text, .. } if text == "note first"));

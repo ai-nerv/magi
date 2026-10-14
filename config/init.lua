@@ -84,6 +84,11 @@ magi.model = {
 --   directory = "/path"    that path and everything under it
 --   program = "git"        any command whose first word is this
 --
+-- A program grant is wider than its name. `git` runs hooks, `git -c core.fsmonitor=…` runs any
+-- command, and `make`, `cargo` and `npm` run whatever the repository's Makefile, build script or
+-- package scripts say: a grant on one of them is a grant on nearly anything in that checkout. A
+-- command that starts by setting a variable (`PATH=… git`) or chains another is never covered.
+--
 -- magi.allow = {
 --   { verb = "read",  directory = "/home/you/work" },
 --   { verb = "run",   program = "git" },
@@ -180,8 +185,8 @@ you found none.]],
 --
 -- magi.env = { PAGER = "cat", RUST_LOG = "warn" }
 
--- Directories whose `.magi.lua` is as trusted as this file. A project file may otherwise set
--- settings but not declare a provider, a tool or a peer.
+-- Directories whose `.magi.lua` is as trusted as this file. A project file may otherwise set only
+-- `magi.model`, `magi.thinking` and `magi.ui`, and anything else it says stops the session.
 --
 -- magi.trusted = { "/home/you/work" }
 

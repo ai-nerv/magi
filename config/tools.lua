@@ -13,9 +13,8 @@
 -- Each reaches its sibling through **either door**, chosen by `magi.memory.door` / `magi.agent.door`:
 --   library -- the sibling's own client library in this VM, over its socket (`sibling` below).
 --   command -- the sibling's command line, one exec per call (the `command` transport).
--- Both are wired for both tools. The defaults differ only because one door costs something on each:
--- `agent` defaults to `command`, because melchior takes who is calling from the kernel and a root
--- session's own process cannot present that over the socket (a child can); `memory` defaults to
+-- Both are wired for both tools. `agent` defaults to `command`: `melchior tool` runs as this
+-- session's own child, which melchior's kernel check reads as the session. `memory` defaults to
 -- `library`, because balthasar's library carries the injection/outcome loop the command line drops.
 
 -- Load a sibling's client library and run it against the socket primitive -- the library door.
@@ -125,10 +124,11 @@ do -- the memory role
 
   if DOOR == "command" then
     -- The core verbs through balthasar's command line, one exec per call. `{arg}` is filled from
-    -- the call, its own token dropped when absent. `history` and the injection/outcome loop below
-    -- are the library door's, and are not offered here.
+    -- the call, its own token dropped when absent, and after `--` so it is never read as an option.
+    -- `history` and the injection/outcome loop below are the library door's, and are not offered
+    -- here.
     for name, shape in pairs(MEMORY) do
-      local argv = { name }
+      local argv = { name, "--" }
       for _, key in ipairs(shape.args) do
         argv[#argv + 1] = "{" .. key .. "}"
       end
@@ -398,19 +398,25 @@ do -- agent
     }
 
     if DOOR == "library" then
-      -- The client library, over the socket melchior's `serve` bound, calling the `tool` verb --
-      -- `nil` is this session's own melchior. A refusal comes back as `nil, why`, handled here.
+      -- The client library, over the socket this session's own melchior said it bound
+      -- (`magi.melchior_at`), calling the `tool` verb. A refusal comes back as `nil, why`.
       spec.transport = { kind = "lua" }
       spec.run = function(args)
         args = args or {}
         if not args.verb or args.verb == "" then
           return { content = 'agent needs a `verb`; `verb: "help"` lists them', is_error = true }
         end
+        if not magi.melchior_at then
+          return {
+            content = "this session does not know where its melchior listens; the command door reaches it",
+            is_error = true,
+          }
+        end
         local map = { verb = args.verb }
         for _, key in ipairs({ "who", "message", "about", "role", "sort" }) do
           if args[key] ~= nil and args[key] ~= "" then map[key] = args[key] end
         end
-        local said, why = mel.fetch(nil, "tool", map)
+        local said, why = mel.fetch({ path = magi.melchior_at }, "tool", map)
         if not said then return { content = tostring(why), is_error = true } end
         return { content = said }
       end

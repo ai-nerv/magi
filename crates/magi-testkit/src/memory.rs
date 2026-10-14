@@ -14,9 +14,21 @@ impl Serving {
     ///
     /// # Panics
     /// When it started and never answered, which is a failure and not a skip.
+    #[allow(clippy::expect_used)]
     pub async fn start(dir: &Path, instance: &str) -> Option<Self> {
         let runtime = dir.join("r");
-        let child = std::process::Command::new("balthasar")
+        // Private, or the family does not take it for a runtime directory and falls back.
+        std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
+            .create(&runtime)
+            .expect("a private runtime directory");
+        // Both of the role's directories: one not yet rebuilt binds only the older name.
+        let sockets = ["memory", "balthasar"]
+            .map(|role| runtime.join(role).join(format!("api@{instance}.sock")));
+        let key = magi_ipc::random_hex(32).expect("a key");
+        for socket in &sockets {
+            magi_ipc::family::hold_key(socket, &key);
+        }
+        let mut child = std::process::Command::new("balthasar")
             .arg("serve")
             .arg("--instance")
             .arg(instance)
@@ -30,15 +42,15 @@ impl Serving {
             .env_remove("MAGI_API_SOCKET")
             .env_remove("MAGI_MEMORY_INSTANCE")
             .env_remove("MAGI_BALTHASAR_INSTANCE")
-            .stdin(std::process::Stdio::null())
+            .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
             .map_err(|why| crate::live::unavailable(&format!("balthasar could not start: {why}")))
             .ok()?;
-        // Both of the role's directories: one not yet rebuilt binds only the older name.
-        let sockets = ["memory", "balthasar"]
-            .map(|role| runtime.join(role).join(format!("api@{instance}.sock")));
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = std::io::Write::write_all(&mut stdin, format!("{key}\n").as_bytes());
+        }
         let mut serving = Self {
             child,
             socket: sockets[0].clone(),

@@ -29,14 +29,15 @@ impl App {
         let agents: Vec<magi_tui::crew::Agent<'_>> = self
             .reachable
             .iter()
-            .enumerate()
-            .map(|(nth, them)| magi_tui::crew::Agent {
-                name: &names[nth],
+            .zip(&names)
+            .zip(&spent)
+            .map(|((them, name), spent)| magi_tui::crew::Agent {
+                name,
                 role: named_role(&them.role),
                 here: Some(them.id.as_str()) == mine,
                 phase: them.phase.as_deref().unwrap_or("idle"),
                 claim: them.claim.as_deref(),
-                spent: &spent[nth],
+                spent,
             })
             .collect();
         let drawn = magi_tui::crew::view(

@@ -18,10 +18,11 @@ const MAX_BYTES: usize = 50_000;
 /// middle dropped: a file read wants its head, and a build that failed wants its tail.
 const HEAD_SHARE: usize = 2;
 
-/// Cap `content`, spilling the whole of it to a file when it does not fit. Returns the text the
-/// model should see, with the spill path named in it.
+/// Cap `content`, spilling the whole of it to a file in the spill directory of the session rooted
+/// at `root` when it does not fit. Returns the text the model should see, with the spill path
+/// named in it.
 #[must_use]
-pub fn apply(tool: &str, content: String) -> String {
+pub fn apply(tool: &str, content: String, root: &std::path::Path) -> String {
     let lines: Vec<&str> = content.lines().collect();
     if lines.len() <= MAX_LINES && content.len() <= MAX_BYTES {
         return content;
@@ -36,7 +37,7 @@ pub fn apply(tool: &str, content: String) -> String {
     let tail = take(&lines, tail_lines, tail_bytes, End::Tail);
     let dropped = lines.len().saturating_sub(head.len() + tail.len());
 
-    let spilled = spill(tool, &content);
+    let spilled = spill(tool, &content, root);
     let note = match &spilled {
         Some(path) => format!(
             "… {dropped} of {} lines cut from the middle. The whole of it is at {}",
@@ -118,15 +119,29 @@ fn piece<'a>(line: &'a str, most: usize, end: &End) -> &'a str {
 /// because nothing else knows the files exist.
 const SPILL_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Write the full output beside the others, and answer where it went. Outside the session directory
-/// on purpose, so `read` cannot open it — `Ops` refuses paths outside the session root — and the
-/// note names the path only. Best effort: a result that could not be spilled is still capped.
-fn spill(tool: &str, content: &str) -> Option<PathBuf> {
-    // Per user. The temporary directory is shared: a fixed name there belongs to whoever created it
-    // first, and every later user either fails to write or writes into a directory somebody owns.
+/// Where the session rooted at `root` spills: `<tmp>/magi-output-<uid>/<project>`, each made `0700`
+/// and checked as this user's alone, one per project.
+#[must_use]
+pub fn spill_dir(root: &std::path::Path) -> Option<PathBuf> {
+    use sha2::Digest;
     let uid = rustix::process::getuid().as_raw();
-    let dir = std::env::temp_dir().join(format!("magi-output-{uid}"));
-    std::fs::create_dir_all(&dir).ok()?;
+    let digest = sha2::Sha256::digest(root.to_string_lossy().as_bytes());
+    let key: String = digest
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    crate::family::private_dir(&std::env::temp_dir().join(format!("magi-output-{uid}")))
+        .and_then(|base| crate::family::private_dir(&base.join(key)))
+        .map_err(|why| magi_model::noted!("spill: {why}"))
+        .ok()
+}
+
+/// Write the full output beside the others, and answer where it went: this project's spill
+/// directory, which a jailed tool can read. Best effort: a result that could not be spilled is
+/// still capped.
+fn spill(tool: &str, content: &str, root: &std::path::Path) -> Option<PathBuf> {
+    let dir = spill_dir(root)?;
     expire(&dir);
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -136,7 +151,7 @@ fn spill(tool: &str, content: &str) -> Option<PathBuf> {
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
         .collect();
     let path = dir.join(format!("{safe}-{stamp}.txt"));
-    let mut file = std::fs::File::create(&path).ok()?;
+    let mut file = crate::family::private_file(&path).ok()?;
     file.write_all(content.as_bytes()).ok()?;
     Some(path)
 }
@@ -164,6 +179,27 @@ fn expire(dir: &std::path::Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The session these tests spill for. Only its name is used.
+    const ROOT: &str = "/magi-bound-tests";
+
+    fn apply(tool: &str, content: String) -> String {
+        super::apply(tool, content, std::path::Path::new(ROOT))
+    }
+
+    #[test]
+    fn each_project_spills_into_a_private_directory_of_its_own() {
+        use std::os::unix::fs::PermissionsExt;
+        let ours = spill_dir(std::path::Path::new(ROOT)).expect("ours");
+        let theirs = spill_dir(std::path::Path::new("/magi-bound-tests-other")).expect("theirs");
+        assert_ne!(ours, theirs);
+        assert_eq!(ours.parent(), theirs.parent());
+        for dir in [&ours, &theirs] {
+            let mode = std::fs::metadata(dir).expect("made").permissions().mode();
+            assert_eq!(mode & 0o777, 0o700, "{}", dir.display());
+        }
+        let _ = std::fs::remove_dir(theirs);
+    }
 
     #[test]
     fn one_line_too_long_to_keep_still_shows_both_of_its_ends() {
@@ -230,6 +266,22 @@ mod tests {
             .expect("a note");
         assert!(note.contains("of 10000 lines"), "{note}");
         assert!(note.contains("/magi-output-"), "it names the spill: {note}");
+    }
+
+    #[test]
+    fn a_spill_is_private_to_this_user() {
+        use std::os::unix::fs::PermissionsExt;
+        let out = apply("bash", lines_of(10_000));
+        let path = std::path::PathBuf::from(spilled_path(&out).expect("a path"));
+        let mode = |at: &std::path::Path| {
+            std::fs::metadata(at).expect("there").permissions().mode() & 0o777
+        };
+        assert_eq!(mode(&path), 0o600);
+        let dir = path.parent().expect("a directory");
+        assert_eq!(Some(dir), spill_dir(std::path::Path::new(ROOT)).as_deref());
+        assert_eq!(mode(dir), 0o700);
+        assert_eq!(mode(dir.parent().expect("the user's")), 0o700);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

@@ -3,6 +3,8 @@
 //! feature's call may give up. Against a peer that answers after the ordinary clock has run out
 //! and well inside the durable one.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_host::scribe::Scribe;
 use magi_ipc::family::{Family, Fault};
 use magi_model::scratch::Scratch;

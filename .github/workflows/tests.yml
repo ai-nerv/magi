@@ -17,7 +17,7 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # The toolchain comes from `flake.nix`, which already pins it and says why: *"a newer rustc
       # brings newer clippy lints, and `make verify` denies warnings. Raise it deliberately, not
@@ -28,10 +28,10 @@ jobs:
       #
       # Using the flake makes the two the same toolchain by construction rather than by two
       # version strings that happen to agree.
-      - uses: DeterminateSystems/nix-installer-action@main
-      - uses: DeterminateSystems/magic-nix-cache-action@main
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      - uses: DeterminateSystems/magic-nix-cache-action@84c0677f58dcedf3b91f8223ce36a9ea5b3c84b7 # v15
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/.cargo/registry
@@ -50,6 +50,13 @@ jobs:
           # A dependency nothing uses is a lie about the graph, and the graph is what the
           # modularity claim rests on. See the note in `Cargo.toml`.
           nix develop --command cargo machete
+
+      # The dependency policy in `deny.toml` and the advisory database, both against the lockfile
+      # and both from the dev shell, with the advisories fetched fresh for this run.
+      - name: Supply chain
+        run: |
+          nix develop --command cargo deny check
+          nix develop --command cargo audit
 
       # The architectural gates, which until now ran only on whoever remembered. `README.md` says
       # they are not advisory and `PLAN.md` says they go into CI at the first commit; both were

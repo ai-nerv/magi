@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_host::{catalog::Catalog, scribe::Scribe, session::Session, turn::Backend};
 use magi_ipc::{FrameReader, FrameWriter, family::Family};
 use magi_model::scratch::Scratch;
@@ -67,6 +69,7 @@ async fn attach(
             session: None,
             from_cursor: Cursor(0),
             draws: false,
+            key: magi_ipc::read_key(path),
         })
         .await
         .expect("attach");

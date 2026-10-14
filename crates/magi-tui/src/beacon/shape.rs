@@ -76,7 +76,8 @@ impl Trace {
         let signal = signal(mood);
         while self.owed >= 1.0 {
             self.owed -= 1.0;
-            self.written.push(signal[self.at % signal.len()]);
+            let next = self.at.checked_rem(signal.len()).unwrap_or(0);
+            self.written.extend(signal.get(next).copied());
             self.at += 1;
         }
         // Held to twice the width rather than exactly it, so the trim is occasional.
@@ -96,7 +97,12 @@ impl Trace {
                 return LINE;
             }
             // Counted back from the newest sample, so the right-hand edge is always what just arrived.
-            self.written[self.written.len() - (columns - x)]
+            self.written
+                .len()
+                .checked_sub(columns - x)
+                .and_then(|back| self.written.get(back))
+                .copied()
+                .unwrap_or(LINE)
         };
         for (x, column) in dots.iter_mut().enumerate() {
             let here = at(x);
@@ -106,7 +112,9 @@ impl Trace {
             let before = if x == 0 { here } else { at(x - 1) };
             let joined = if before == GAP { here } else { before };
             for height in here.min(joined)..=here.max(joined) {
-                column[ROWS - 1 - usize::from(height).min(ROWS - 1)] = true;
+                if let Some(dot) = column.get_mut(ROWS - 1 - usize::from(height).min(ROWS - 1)) {
+                    *dot = true;
+                }
             }
         }
         dots

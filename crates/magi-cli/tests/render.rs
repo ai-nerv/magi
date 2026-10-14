@@ -4,6 +4,8 @@
 //! emulator; `TestBackend` is the same idea. These assert on what a user sees, not on what a
 //! function returned.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_proto::{
     AgentStatus, Cursor, Entry, HarnessEvent, MessageId, StopReason, ToolCallId, ToolResult,
 };

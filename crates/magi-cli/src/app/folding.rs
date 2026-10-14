@@ -369,23 +369,20 @@ fn said_by(
     }
     // The block's own inset comes off every row at once, so what was indented *within* the block
     // still is. Taking the whitespace off each row separately would flatten a code fence.
+    // Counted in characters: an inset of wide or multibyte blanks is not as many bytes as columns.
     let inset = rows
         .iter()
         .filter(|row| !row.trim().is_empty())
-        .map(|row| row.len() - row.trim_start().len())
+        .map(|row| row.chars().take_while(|c| c.is_whitespace()).count())
         .min()
         .unwrap_or(0);
     while rows.last().is_some_and(|row| row.trim().is_empty()) {
         rows.pop();
     }
-    let mut out: Vec<&str> = Vec::new();
-    for row in &rows {
-        out.push(if row.len() >= inset {
-            &row[inset..]
-        } else {
-            ""
-        });
-    }
+    let mut out: Vec<String> = rows
+        .iter()
+        .map(|row| row.chars().skip(inset).collect())
+        .collect();
     while out.first().is_some_and(|row| row.trim().is_empty()) {
         out.remove(0);
     }
@@ -457,6 +454,19 @@ mod copying {
         let copied = app.copy_at(row, column, 60).expect("the chip was there");
         assert!(copied.contains("    let x = 1;"), "{copied:?}");
         assert!(copied.starts_with("Try this:"), "{copied:?}");
+    }
+
+    #[test]
+    fn a_row_indented_with_multibyte_blanks_is_copied_without_panicking() {
+        // An ideographic space is three bytes and one character, a no-break space two: an inset
+        // counted in bytes cut the second row in the middle of a character.
+        let mut scrollback = magi_tui::scrollback::Scrollback::new();
+        scrollback.set_lines(vec![
+            ratatui::text::Line::from("  \u{3000}全角の字下げ"),
+            ratatui::text::Line::from("  \u{a0}\u{a0}nbsp"),
+        ]);
+        let copied = super::said_by(&scrollback, &[Some(0), Some(0)], 0);
+        assert_eq!(copied, "全角の字下げ\n\u{a0}nbsp");
     }
 
     #[test]
