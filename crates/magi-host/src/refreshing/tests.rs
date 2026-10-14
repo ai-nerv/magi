@@ -2,28 +2,31 @@ use super::*;
 use magi_model::scratch::Scratch;
 use magi_proto::{Cursor, HarnessEvent, ModelInfo, ask::Card};
 use serde_json::json;
-use std::os::unix::fs::PermissionsExt;
 
 fn card(name: &str) -> Card {
     serde_json::from_value(json!({"id":format!("ollama/{name}"),"provider":"ollama",
-        "name":name,"api":"openai-completions","ready":true,"reasons":false,
-        "context_window":32000,"max_output":8000}))
+        "name":name,"api":"openai-completions","ready":true,"reasons":false,"vision":true,
+        "context_window":32000,"max_output":8000,"pricing":{"input":"0.3","output":"1.2"},"popularity_rank":7}))
     .expect("refresh fixture")
 }
 
 fn fixture() -> (Scratch, Models) {
     let dir = Scratch::new("magi", "refresh");
     let program = dir.join("mind");
-    std::fs::write(
-        &program,
-        format!(
+    let saved = std::process::Command::new("/bin/sh")
+        .args([
+            "-c",
+            "umask 077; printf '%s' \"$2\" > \"$1\" && chmod 700 \"$1\"",
+            "refresh-fixture",
+        ])
+        .arg(&program)
+        .arg(format!(
             "#!/bin/sh\n[ \"$*\" = \"models --json --refresh\" ] || exit 1\nexec /bin/cat '{}'\n",
             dir.join("reply").display()
-        ),
-    )
-    .expect("refresh fixture");
-    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700))
+        ))
+        .status()
         .expect("refresh fixture");
+    assert!(saved.success(), "refresh fixture writer failed");
     while let Err(why) = std::process::Command::new(&program).status() {
         assert_eq!(why.raw_os_error(), Some(26), "{why}");
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -55,8 +58,16 @@ async fn refresh_updates_selection_and_snapshot_without_switching_active_model()
         else {
             panic!("refresh event")
         };
-        assert!(warning.is_none());
+        assert!(warning.is_none(), "{warning:?}");
         assert_eq!(choices.len(), cards.len());
+        if let Some(choice) = choices.first() {
+            assert!(choice.vision);
+            assert_eq!(
+                choice.pricing.as_ref().expect("prices").input.as_deref(),
+                Some("0.3")
+            );
+            assert_eq!(choice.popularity_rank, Some(7));
+        }
         assert_eq!(
             models.catalog.read().await.backend("ollama/new").is_some(),
             !cards.is_empty()

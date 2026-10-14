@@ -16,10 +16,21 @@
 use magi_model::{Context, StopReason, ThinkingLevel, Usage};
 use serde::{Deserialize, Serialize};
 
+/// Published USD per million tokens, with absent rates left unknown.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pricing {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+}
+
 /// One model, as melchior describes it. `api` is the interface it is spoken to over, which is
 /// what keeps the rest of this neutral: magi never learns what an Anthropic request looks like.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Card {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub vision: bool,
     /// How an [`Ask`] names it: `provider/model`.
     pub id: String,
     pub provider: String,
@@ -31,6 +42,13 @@ pub struct Card {
     pub context_window: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<Pricing>,
+    /// Position in OpenRouter's weekly popularity-sorted model catalog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub popularity_rank: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<magi_model::Capabilities>,
     #[serde(default)]
     pub reasons: bool,
     #[serde(default)]
@@ -273,6 +291,10 @@ mod tests {
             api: "openai".into(),
             context_window: Some(200_000),
             max_output: None,
+            pricing: None,
+            popularity_rank: None,
+            capabilities: None,
+            vision: false,
             reasons: true,
             ready: false,
             needs: Some("OPENROUTER_API_KEY".into()),
@@ -289,6 +311,21 @@ mod tests {
 mod cbor_tests {
     use super::tests::an_ask;
     use super::*;
+
+    #[test]
+    fn model_metadata_survives_json_and_cbor_with_old_cards_still_readable() {
+        let value = serde_json::json!({"id":"openrouter/vendor/model","provider":"openrouter","name":"model",
+            "api":"openai-completions","pricing":{"input":"0","output":"0.3"},"popularity_rank":7,
+            "capabilities":{"input":["text","image"],"output":["text"],"thinking":["low","high"]}});
+        let card: Card = serde_json::from_value(value).expect("card");
+        assert_eq!(through_cbor(&card), card);
+        let text = serde_json::to_string(&card).expect("JSON");
+        assert_eq!(serde_json::from_str::<Card>(&text).expect("JSON"), card);
+        let old: Card = serde_json::from_value(serde_json::json!({"id":"local/model","provider":"local","name":"model","api":"openai-completions"})).expect("old card");
+        assert!(old.pricing.is_none());
+        assert!(old.popularity_rank.is_none());
+        assert!(old.capabilities.is_none());
+    }
 
     fn through_cbor<T>(value: &T) -> T
     where

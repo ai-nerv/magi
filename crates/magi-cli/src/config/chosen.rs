@@ -54,12 +54,16 @@ pub(crate) mod tests {
     /// Two cards: one that can be used and one whose key is not set.
     pub(super) fn catalog() -> magi_host::catalog::Catalog {
         let card = |id: &str, ready: bool| Card {
+            vision: false,
             id: id.to_owned(),
             provider: id.split('/').next().unwrap_or_default().to_owned(),
             name: id.split_once('/').map_or(id, |(_, rest)| rest).to_owned(),
             api: "openai-completions".to_owned(),
             context_window: Some(1000),
             max_output: None,
+            pricing: None,
+            popularity_rank: None,
+            capabilities: None,
             reasons: false,
             ready,
             needs: (!ready).then(|| "MAGI_TEST_NOT_SET".to_owned()),

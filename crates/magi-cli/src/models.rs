@@ -5,6 +5,11 @@
 
 use magi_proto::ask::Card;
 
+mod metadata;
+pub(crate) use metadata::capabilities;
+pub(crate) use metadata::details;
+pub(crate) use metadata::{COLUMNS, table_cells};
+
 /// Print the catalog.
 ///
 /// Models that are not ready are listed too, with the variable that would enable them: somebody
@@ -98,17 +103,20 @@ fn print_card(card: &Card, default: Option<&str>) {
     } else {
         " "
     };
-    let window = card
-        .context_window
-        .map(|n| format!("{}k", n / 1000))
-        .unwrap_or_default();
+    let metadata = details(
+        card.context_window.unwrap_or(0),
+        card.pricing.as_ref(),
+        card.popularity_rank,
+        "",
+    );
     let note = match (&card.needs, card.ready) {
         (_, true) => String::new(),
         (Some(variable), _) => format!("  needs {variable}"),
         (None, _) => "  not reachable".to_owned(),
     };
-    let reasons = if card.reasons { " reasons" } else { "" };
-    println!("{marker} {:<48} {window:>7}{reasons}{note}", card.id);
+    let capabilities =
+        capabilities(card.capabilities.as_ref(), card.vision, card.reasons).replace('\n', " · ");
+    println!("{marker} {:<48} {metadata} · {capabilities}{note}", card.id);
 }
 
 /// Every card `program` offers, or nothing when it will not answer.
@@ -154,12 +162,16 @@ mod tests {
 
     fn card(ready: bool) -> Card {
         Card {
+            vision: false,
             id: "p/m".into(),
             provider: "p".into(),
             name: "m".into(),
             api: "openai-completions".into(),
             context_window: Some(128_000),
             max_output: None,
+            pricing: None,
+            popularity_rank: None,
+            capabilities: None,
             reasons: false,
             ready,
             needs: if ready { None } else { Some("P_KEY".into()) },
