@@ -211,6 +211,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_socket_is_never_bound_where_others_may_enter() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = magi_model::scratch::Scratch::new("magi-binding", "open");
+        let open = dir.join("open");
+        std::fs::create_dir(&open).expect("mkdir");
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let refused = crate::bind(&open.join("s.sock"))
+            .await
+            .expect_err("refused");
+        assert!(refused.to_string().contains("private"), "{refused}");
+        assert!(!open.join("s.sock").exists());
+        let made = dir.join("made/deeper");
+        let _bound = crate::bind(&made.join("s.sock"))
+            .await
+            .expect("made private");
+        let mode = std::fs::metadata(&made)
+            .expect("there")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700);
+        unbind(&made.join("s.sock"));
+    }
+
+    #[tokio::test]
     async fn giving_back_a_path_somebody_rebound_leaves_theirs() {
         let dir = magi_model::scratch::Scratch::new("magi-binding", "rebound");
         let path = dir.join("s.sock");

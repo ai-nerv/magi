@@ -73,13 +73,13 @@ fn digest(bytes: &[u8]) -> u64 {
     hash
 }
 
-/// Bind a listener under an exclusive lock on `<socket>.lock`, held until [`unbind`]. A socket
-/// already there is removed only when nothing answers it and it is this user's; anything else
-/// there is a refusal. A fresh controller key goes beside it, in `<socket>.key`.
+/// Bind a listener under an exclusive lock on `<socket>.lock`, held until [`unbind`], in a directory
+/// private to this user. A socket already there is removed only when nothing answers it and it is
+/// this user's; anything else there is a refusal. A fresh controller key goes beside it, in
+/// `<socket>.key`.
 pub async fn bind(path: &Path) -> Result<UnixListener, IpcError> {
     if let Some(parent) = path.parent() {
-        std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
-            .create(parent)?;
+        private_dirs(parent)?;
     }
     let lock = binding::take(path)?;
     let listener = UnixListener::bind(path)?;
