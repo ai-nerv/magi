@@ -60,9 +60,12 @@ pub const CONFIG_BUDGET: i64 = 200_000_000;
 /// Fuel one tool call or watcher may spend; a client decoding a large reply in Lua costs more.
 pub const CALL_BUDGET: i64 = 2_000_000_000;
 
+/// The most memory a config VM may hold between slices, in bytes.
+pub const MEMORY: usize = 512 << 20;
+
 /// Fuel and memory a project's own file may spend. It assigns settings and nothing more.
 pub const PROJECT_BUDGET: i64 = 5_000_000;
-const PROJECT_MEMORY: usize = 64 * 1024 * 1024;
+pub const PROJECT_MEMORY: usize = 16 << 20;
 
 /// Fuel handed to one `Executor::step`, between which the budget is checked.
 const SLICE: i32 = 8192;
@@ -157,6 +160,7 @@ impl Engine {
             installed: std::collections::HashSet::new(),
             budget: CONFIG_BUDGET,
         };
+        engine.lua.set_memory_limit(Some(MEMORY));
         engine.install();
         // After install, so a removal cannot be undone by something the installer adds.
         crate::sandbox::apply(&mut engine.lua);
@@ -230,28 +234,22 @@ impl Engine {
                 .lua
                 .enter(|ctx| ctx.fetch(&executor).step(ctx, &mut fuel))
                 .map_err(|e| failed(e.to_string()))?;
+            if let Some(ceiling) = self.over_memory() {
+                self.lua.enter(|ctx| ctx.fetch(&executor).stop(&ctx));
+                return Err(failed(format!(
+                    "held more than its {} MiB of memory and was stopped",
+                    ceiling >> 20
+                )));
+            }
             if finished {
                 break;
             }
             left -= i64::from(SLICE) - i64::from(fuel.remaining());
             let waiting = self.lua.enter(|ctx| ctx.fetch(&executor).is_waiting());
-            let over = self
-                .lua
-                .memory_limit()
-                .is_some_and(|limit| self.lua.total_memory() > limit);
-            if over {
-                self.lua.gc_collect();
-            }
-            let over = self
-                .lua
-                .memory_limit()
-                .is_some_and(|limit| self.lua.total_memory() > limit);
-            if waiting || over || left <= 0 {
+            if waiting || left <= 0 {
                 self.lua.enter(|ctx| ctx.fetch(&executor).stop(&ctx));
                 return Err(failed(if waiting {
                     "waited on something this VM cannot drive".to_owned()
-                } else if over {
-                    "used more memory than it may and was stopped".to_owned()
                 } else {
                     format!("ran past its budget of {budget} instructions and was stopped")
                 }));
@@ -260,6 +258,17 @@ impl Engine {
         self.lua
             .try_enter(|ctx| ctx.fetch(&executor).take_result::<()>(ctx)?)
             .map_err(|e| failed(e.to_string()))
+    }
+
+    /// The ceiling, when the VM still holds more than it after two full collections.
+    fn over_memory(&mut self) -> Option<usize> {
+        let ceiling = self.lua.memory_limit()?;
+        if self.lua.total_memory() <= ceiling {
+            return None;
+        }
+        self.lua.gc_collect();
+        self.lua.gc_collect();
+        (self.lua.total_memory() > ceiling).then_some(ceiling)
     }
 
     /// Install the `magi` global and its registrars. Settings are plain fields, read back after
@@ -629,8 +638,9 @@ impl Engine {
                __magi_tool_result = answer\n\
              end"
         );
-        let ran = self.run_within(&source, "tool.lua", CALL_BUDGET);
-        ran.ok()?;
+        if let Err(why) = self.run_within(&source, name, CALL_BUDGET) {
+            return Some(serde_json::json!({ "content": why.to_string(), "is_error": true }));
+        }
 
         let mut out = None;
         self.lua.enter(|ctx| {

@@ -98,6 +98,40 @@ fn a_call_one_byte_over_the_cap_is_refused_before_a_byte_is_sent() {
 }
 
 #[test]
+fn a_frame_of_transcript_entries_each_way_fits_the_vm() {
+    let entry = serde_json::json!({
+        "cursor": 1, "role": "assistant", "text": "word ".repeat(40), "at": "2026-10-14T00:00:00.000Z",
+    });
+    let room = CAP - 4096;
+    let count = room / (serde_json::to_vec(&entry).expect("encode").len() + 1);
+    let reply = serde_json::json!({ "ok": true, "family": 1, "result": vec![entry; count] });
+    let reply = serde_json::to_vec(&reply).expect("encode");
+    let (answer, asked) = called(
+        "dense",
+        move |mut stream| {
+            let body = call_on(&mut stream);
+            let head = u32::try_from(reply.len()).expect("fits");
+            stream.write_all(&head.to_be_bytes()).expect("head");
+            stream.write_all(&reply).expect("body");
+            body.len()
+        },
+        &format!(
+            "local entries, at = {{}}, 0\n\
+             while at < {room} do\n\
+               entries[#entries + 1] = {{ cursor = #entries + 1, role = 'assistant',\n\
+                 text = string.rep('word ', 40) .. #entries, at = '2026-10-14T00:00:00.000Z' }}\n\
+               at = at + 290\n\
+             end\n\
+             local request = {{ call = 'remember', args = {{ 'session', {{ entries = entries }} }} }}\n\
+             local r, why = h:call(request, {{ deadline_ms = 20000 }})\n\
+             magi.answer = tostring(r and #r.result) .. '|' .. tostring(why)"
+        ),
+    );
+    assert_eq!(answer, format!("{count}|nil"));
+    assert!(asked > CAP - (CAP >> 3), "the call carried {asked} bytes");
+}
+
+#[test]
 fn a_short_read_takes_the_connection_with_it() {
     let (answer, ()) = called(
         "short",

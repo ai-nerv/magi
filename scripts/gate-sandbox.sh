@@ -141,6 +141,14 @@ body "$ENGINE" 'fn run_within[(]' | grep -q 'left <= 0' || {
   echo "gate-sandbox: nothing stops a chunk that has spent its budget" >&2
   fail=1
 }
+body "$ENGINE" 'pub fn new[(][)] -> Self' | grep -q 'set_memory_limit(Some(MEMORY))' || {
+  echo "gate-sandbox: the config VM is built with no memory ceiling" >&2
+  fail=1
+}
+body "$ENGINE" 'fn run_within[(]' | grep -q 'self.over_memory()' || {
+  echo "gate-sandbox: nothing stops a chunk that holds more than its ceiling" >&2
+  fail=1
+}
 
 # ---- a VM dials the family and nothing else ----------------------------------------------------
 # By the family's own directory names, never by the runtime directory alone.
