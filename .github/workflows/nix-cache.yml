@@ -1,0 +1,98 @@
+name: nix-cache
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nix-cache
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'ai-nerv/magi' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            system: x86_64-linux
+          - runner: ubuntu-24.04-arm
+            system: aarch64-linux
+    steps:
+      - name: Check publishing credentials
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: |
+          if [ -z "$CACHIX_AUTH_TOKEN" ]; then
+            echo "::error::Add an ai-nerv cache write token as the CACHIX_AUTH_TOKEN Actions secret."
+            exit 1
+          fi
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@b85815f71a6de0ddee80b8a80a98d43f4bcc66c7
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866
+        with:
+          name: ai-nerv
+          skipPush: true
+      - name: Build the package and run its install checks
+        run: |
+          nix build --accept-flake-config --no-update-lock-file --print-build-logs \
+            --no-link --print-out-paths .#magi > "$RUNNER_TEMP/magi-store-paths"
+      - name: Publish the runtime closure
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+        run: cachix push ai-nerv < "$RUNNER_TEMP/magi-store-paths"
+      - name: Pin the release package
+        env:
+          CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          SYSTEM: ${{ matrix.system }}
+        run: |
+          path=$(cat "$RUNNER_TEMP/magi-store-paths")
+          cachix pin ai-nerv "magi-$SYSTEM" "$path" --keep-revisions 5
+
+  verify-download:
+    needs: publish
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+          - runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@b85815f71a6de0ddee80b8a80a98d43f4bcc66c7
+      - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866
+        with:
+          name: ai-nerv
+          skipPush: true
+      - name: Download the package without local or remote builders
+        run: |
+          nix build --accept-flake-config --no-update-lock-file \
+            --max-jobs 0 --builders '' .#magi
+          home="$RUNNER_TEMP/home"
+          mkdir -p "$home/run" "$home/config"
+          chmod 700 "$home/run"
+          isolated() {
+            env -i PATH="$PATH" HOME="$home" XDG_CONFIG_HOME="$home/config" \
+              XDG_DATA_HOME="$home/data" XDG_CACHE_HOME="$home/cache" \
+              XDG_STATE_HOME="$home/state" XDG_RUNTIME_DIR="$home/run" "$@"
+          }
+          isolated result/bin/magi verbs --json > "$RUNNER_TEMP/verbs.json"
+          grep -q '^{"ok":true,' "$RUNNER_TEMP/verbs.json"
+          isolated result/bin/magi client > "$RUNNER_TEMP/client.lua"
+          grep -q "magi's client library" "$RUNNER_TEMP/client.lua"
+          ln -s "$(readlink -f result)/share/magi/config" "$home/config/magi"
+          isolated result/bin/magi doctor > "$RUNNER_TEMP/doctor.txt"
+          grep -q 'agent *config' "$RUNNER_TEMP/doctor.txt"
+          grep -q 'spawn *builtin' "$RUNNER_TEMP/doctor.txt"
