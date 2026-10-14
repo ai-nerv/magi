@@ -182,20 +182,25 @@ impl Real {
         Some(dir)
     }
 
-    /// Writable directories and unrestricted network permission from the session ledger.
+    /// What the jail may write, from this session's write grants, and that it keeps the network:
+    /// the jail contains the filesystem, and the network stays open.
     fn jail_reach(&self) -> (Vec<PathBuf>, bool) {
         use magi_proto::permit::Scope;
+        let home = std::env::var_os("HOME")
+            .filter(|home| !home.is_empty())
+            .map(PathBuf::from);
         let mut write = Vec::new();
-        let mut reach = false;
         for grant in self.grants() {
             if let ("write", Scope::Directory { path }) = (grant.verb.as_str(), &grant.scope) {
-                write.push(PathBuf::from(path));
-            }
-            if grant.verb == "reach" && grant.scope == Scope::Anything {
-                reach = true;
+                let dir = PathBuf::from(path);
+                if handed_to_jail(&dir, home.as_deref()) {
+                    write.push(dir);
+                } else {
+                    magi_model::noted!("jail: write on {} is not handed over", dir.display());
+                }
             }
         }
-        (write, reach)
+        (write, true)
     }
 
     /// Resolve a path against the root, refusing anything that escapes it when confined. Checked
@@ -252,16 +257,69 @@ fn scratch_under(cache: Option<OsString>, home: Option<OsString>) -> Option<Path
         .filter(|base| base.is_absolute())
 }
 
+/// Credentials and the family's own configuration, under `$HOME`. The jail is never handed write
+/// on one of these, on anything inside one, or on any directory above one.
+const PROTECTED: &[&str] = &[
+    ".config/magi",
+    ".config/casper",
+    ".config/melchior",
+    ".config/balthasar",
+    ".ssh",
+    ".gnupg",
+    ".aws",
+    ".azure",
+    ".kube",
+    ".docker",
+    ".config/gcloud",
+    ".netrc",
+    ".git-credentials",
+    ".npmrc",
+    ".pypirc",
+    ".cargo/credentials",
+    ".cargo/credentials.toml",
+    ".password-store",
+    ".local/share/keyrings",
+];
+
+/// Whether a write grant on `dir` may be handed to the jail: not `$HOME`, and not a directory
+/// above, at or inside a [`PROTECTED`] one.
+#[must_use]
+pub fn handed_to_jail(dir: &Path, home: Option<&Path>) -> bool {
+    let dir = real_path(dir);
+    let Some(home) = home.map(real_path) else {
+        return dir.parent().is_some();
+    };
+    !PROTECTED.iter().any(|held| {
+        let held = home.join(held);
+        held.starts_with(&dir) || dir.starts_with(&held)
+    })
+}
+
 /// Where `path` lands on disk: its longest existing prefix resolved through every symlink, and
 /// the rest appended. An absolute path in, an absolute path out.
 #[must_use]
 pub fn real_path(path: &Path) -> PathBuf {
+    real_within(path, 40)
+}
+
+/// [`real_path`], following at most `hops` links that point at nothing yet.
+fn real_within(path: &Path, hops: u32) -> PathBuf {
     let lexical = normalise(path);
     let mut existing = lexical.as_path();
     let mut rest = Vec::new();
+    let joined = |at: PathBuf, rest: &[std::ffi::OsString]| {
+        rest.iter().rev().fold(at, |at, part| at.join(part))
+    };
     loop {
         if let Ok(real) = existing.canonicalize() {
-            return rest.iter().rev().fold(real, |at, part| at.join(part));
+            return joined(real, &rest);
+        }
+        // A link to something not there yet: a write through it creates what it names.
+        if hops > 0
+            && let Ok(target) = std::fs::read_link(existing)
+        {
+            let from = existing.parent().unwrap_or_else(|| Path::new("/"));
+            return real_within(&joined(from.join(target), &rest), hops - 1);
         }
         match (existing.parent(), existing.file_name()) {
             (Some(parent), Some(name)) => {
@@ -426,7 +484,33 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_or_host_specific_grant_never_opens_all_networks() {
+    fn a_write_grant_over_home_or_a_credential_is_not_handed_to_the_jail() {
+        let home = Scratch::new("magi-ops", "home");
+        std::fs::create_dir_all(home.join("work")).expect("mkdir");
+        std::os::unix::fs::symlink(home.join(".ssh"), home.join("keys")).expect("symlink");
+        let kept = |dir: &str| handed_to_jail(&home.join(dir), Some(&home));
+        assert!(kept("work"));
+        assert!(kept("work/build"));
+        for refused in [
+            "",
+            ".config",
+            ".config/magi",
+            ".config/magi/plugin",
+            ".ssh",
+            ".local/share",
+            "keys",
+        ] {
+            assert!(!kept(refused), "{refused:?} was handed over");
+        }
+        assert!(!handed_to_jail(Path::new("/"), Some(&home)));
+        assert!(
+            !handed_to_jail(Path::new("/"), None),
+            "the root, with no home"
+        );
+    }
+
+    #[test]
+    fn the_network_stays_open_whatever_the_grants_say() {
         use magi_proto::permit::{Grant, Scope};
         for grants in [
             vec![],
@@ -446,7 +530,7 @@ mod tests {
             .isolating(true);
             let profile: serde_json::Value =
                 serde_json::from_str(&ops.jail().expect("profile")).expect("json");
-            assert_eq!(profile["reach"], false);
+            assert_eq!(profile["reach"], true);
             if let Some(tmp) = ops.shared_tmp() {
                 let _ = std::fs::remove_dir_all(tmp);
             }

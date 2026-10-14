@@ -194,6 +194,7 @@ fn a_file_the_next_session_runs_is_never_an_edit_auto_approves() {
     std::fs::create_dir_all(root.join(".git/hooks")).expect("mkdir");
     std::os::unix::fs::symlink(root.join(".git/hooks"), root.join("h")).expect("symlink");
     std::os::unix::fs::symlink("/etc", root.join("x")).expect("symlink");
+    std::os::unix::fs::symlink(".git/hooks/post-merge", root.join("d")).expect("symlink");
     for mode in [Mode::Edits, Mode::Auto] {
         let person = Person::who(false);
         let gate = Judged::new(
@@ -213,6 +214,7 @@ fn a_file_the_next_session_runs_is_never_an_edit_auto_approves() {
             ".git/hooks/pre-commit",
             "h/post-checkout",
             "x/hosts",
+            "d",
             "sub/.magi.lua",
         ] {
             assert!(!allowed(&gate.ask("write", &at(held))), "{mode:?} {held}");
