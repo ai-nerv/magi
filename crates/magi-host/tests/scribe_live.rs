@@ -282,6 +282,55 @@ async fn agents_of_one_run_do_not_overwrite_each_others_transcript() {
     );
 }
 
+/// A 9 MiB and a 15 MiB entry, between two small ones, on one connection that is never dialled
+/// again: the scribe's way back points nowhere, so a connection balthasar closed would show.
+#[tokio::test]
+async fn a_9_and_a_15_mib_observe_keep_the_connection_and_what_follows() {
+    let Some((_, held)) = scribe("huge").await else {
+        return;
+    };
+    let family = Family::dial(held.0.socket()).await.expect("dial");
+    let id = SessionId::new(format!("magi-scribe-{}-huge", std::process::id()));
+    let mut scribe = Scribe::over(family, Some(held.1.join("nowhere.sock")), &id);
+    let entry = |text: String| Entry::User {
+        id: MessageId::new("u"),
+        text,
+        aside: String::new(),
+    };
+    for (cursor, size) in [(1, 0), (2, 9 << 20), (3, 15 << 20), (4, 0)] {
+        let text = format!("{cursor}:{}", "x".repeat(size));
+        scribe
+            .observe(Cursor(cursor), &entry(text), &Default::default())
+            .await
+            .expect("observed on the one connection");
+    }
+    let back = scribe
+        .replay()
+        .await
+        .expect("replayed on the same connection");
+    let texts: Vec<&str> = back
+        .iter()
+        .map(|(_, entry)| match entry {
+            Entry::User { text, .. } => text.as_str(),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        texts.len(),
+        4,
+        "{:?}",
+        back.iter().map(|(c, _)| c).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        (texts[0], texts[3]),
+        ("1:", "4:"),
+        "the small ones are whole"
+    );
+    for (at, cut) in [(1, "2:"), (2, "3:")] {
+        assert!(texts[at].starts_with(cut) && texts[at].contains("bytes cut here"));
+    }
+}
+
 #[tokio::test]
 async fn a_run_past_one_frame_comes_back_whole() {
     // 12 MB of turns: one reply with all of it was past the memory layer's frame limit, and the

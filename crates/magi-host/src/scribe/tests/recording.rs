@@ -18,7 +18,8 @@ enum Says {
 /// A memory layer that hands each call, with the number of the connection it came on, to `says`.
 struct Fake {
     dir: Scratch,
-    calls: Arc<Mutex<Vec<Value>>>,
+    /// Each call, with the connection it came on and the length its frame declared.
+    calls: Arc<Mutex<Vec<(usize, usize, Value)>>>,
 }
 
 impl Fake {
@@ -36,7 +37,10 @@ impl Fake {
                         break;
                     }
                     let call: Value = magi_ipc::Wire::read(&body).expect("a family call");
-                    seen.lock().expect("calls").push(call.clone());
+                    let length = length as usize;
+                    seen.lock()
+                        .expect("calls")
+                        .push((nth, length, call.clone()));
                     let Says::Answer(reply) = says(nth, &call) else {
                         break;
                     };
@@ -65,10 +69,19 @@ impl Fake {
             .lock()
             .expect("calls")
             .iter()
-            .map(|call| {
+            .map(|(_, _, call)| {
                 let verb = call["call"].as_str().unwrap_or_default().to_owned();
                 (verb, call["args"][1]["cursor"].as_u64().unwrap_or(0))
             })
+            .collect()
+    }
+
+    /// Each call's connection and frame length, in the order they arrived.
+    fn framed(&self) -> Vec<(usize, usize)> {
+        let calls = self.calls.lock().expect("calls");
+        calls
+            .iter()
+            .map(|(nth, length, _)| (*nth, *length))
             .collect()
     }
 }
@@ -173,6 +186,30 @@ fn an_entry_past_the_frame_cap_is_recorded_cut_down_and_still_replays() {
     };
     assert!(text.len() < MAX_FRAME_BYTES / 4, "{}", text.len());
     assert!(text.contains("bytes cut here"), "the cut is marked");
+}
+
+#[tokio::test]
+async fn a_9_and_a_15_mib_entry_keep_the_connection_and_what_follows() {
+    let fake = Fake::start("huge", |_, _| Says::Answer(Reply::done()));
+    let family = Family::dial(fake.path()).await.expect("dial");
+    let nowhere = fake.dir.join("nowhere.sock");
+    let mut scribe = Scribe::over(family, Some(nowhere), &SessionId::new("s"));
+    for (cursor, size) in [(1, 8), (2, 9 << 20), (3, 15 << 20), (4, 8)] {
+        scribe
+            .observe(
+                Cursor(cursor),
+                &said(&"é".repeat(size / 2)),
+                &Beside::default(),
+            )
+            .await
+            .expect("observed on the one connection");
+    }
+    let observed: Vec<u64> = fake.heard().into_iter().map(|(_, at)| at).collect();
+    assert_eq!(observed, [1, 2, 3, 4]);
+    for (nth, length) in fake.framed() {
+        assert_eq!(nth, 0, "the connection was dialled again");
+        assert!(length <= MAX_FRAME_BYTES, "a {length} byte frame was sent");
+    }
 }
 
 #[tokio::test]
