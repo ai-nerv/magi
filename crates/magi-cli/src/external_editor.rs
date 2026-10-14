@@ -19,8 +19,8 @@ pub fn edit_with(editor: &str, text: &str) -> Result<Option<String>> {
     };
 
     let path = scratch_path()?;
-    let mut file = magi_tools::family::private_file(&path)
-        .with_context(|| format!("creating {}", path.display()))?;
+    let mut file =
+        magi_ipc::private_file(&path).with_context(|| format!("creating {}", path.display()))?;
     file.write_all(text.as_bytes())?;
     file.flush()?;
     drop(file);
@@ -61,7 +61,7 @@ pub fn editor_command() -> Option<String> {
 fn scratch_path() -> Result<PathBuf> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let n = NEXT.fetch_add(1, Ordering::Relaxed);
-    let dir = magi_tools::family::private_dir(&magi_tools::family::own_dir("magi"))?;
+    let dir = magi_ipc::runtime_dir("magi")?;
     Ok(dir.join(format!("{}-{n}-{SUFFIX}", std::process::id())))
 }
 
@@ -108,7 +108,7 @@ mod tests {
             .expect("the editor was handed a path")
             .expect("entry")
             .file_name();
-        let used = magi_tools::family::own_dir("magi").join(copied);
+        let used = magi_ipc::runtime_base("magi").join(copied);
         assert!(!used.exists(), "{}", used.display());
     }
 

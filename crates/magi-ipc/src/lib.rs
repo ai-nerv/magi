@@ -14,9 +14,12 @@ mod secret;
 pub use binding::{clear_stale, exclusive, lock_path, unbind};
 pub use codec::{FrameReader, FrameWriter, MAX_FRAME_BYTES};
 pub use encoding::Wire;
-pub use peer::PeerCred;
-pub use runtime::{private_dir, private_dirs, runtime_base, runtime_dir, transient, trusted_xdg};
-pub use secret::{drop_key, key_path, mint_key, random_hex, read_key, same_key};
+pub use peer::{PeerCred, peer_is_us, peer_uid};
+pub use runtime::{
+    private_dir, private_dirs, private_file, runtime_base, runtime_dir, transient, trusted,
+    trusted_xdg, uid,
+};
+pub use secret::{drop_key, key_path, mint_key, random_hex, read_key, read_private, same_key};
 
 use std::io;
 use std::path::{Path, PathBuf};

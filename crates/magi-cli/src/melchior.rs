@@ -34,29 +34,13 @@ pub fn stop_token() -> Option<&'static str> {
 
 /// The secret in `path`, when it is a token file of this user's in `tokens`; removed either way.
 fn taken(path: &std::path::Path, tokens: &std::path::Path) -> Option<String> {
-    use std::io::Read;
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     let named = path.extension().is_some_and(|ext| ext == "token");
     if !named || path.parent() != Some(tokens) {
         return None;
     }
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-        .open(path)
-        .ok();
+    let token = magi_ipc::read_private(path, 256);
     let _ = std::fs::remove_file(path);
-    let file = file?;
-    let held = file.metadata().ok()?;
-    let ours = rustix::process::getuid().as_raw();
-    if !held.is_file() || held.uid() != ours || held.mode() & 0o077 != 0 {
-        return None;
-    }
-    let mut token = String::new();
-    file.take(256).read_to_string(&mut token).ok()?;
-    let token = token.trim();
-    (!token.is_empty() && token.bytes().all(|b| b.is_ascii_alphanumeric()))
-        .then(|| token.to_owned())
+    token.filter(|token| !token.is_empty() && token.bytes().all(|b| b.is_ascii_alphanumeric()))
 }
 
 /// Leave `token` for a child in a new file only this user can read, and say where it is.
@@ -64,16 +48,9 @@ fn taken(path: &std::path::Path, tokens: &std::path::Path) -> Option<String> {
 /// # Errors
 /// When there is no private runtime directory to put it in, or the file cannot be written.
 pub fn hand_token(token: &str) -> std::io::Result<std::path::PathBuf> {
-    use std::os::unix::fs::OpenOptionsExt;
     let dir = magi_ipc::private_dir(&magi_ipc::runtime_dir("magi")?.join("tokens"))?;
     let path = dir.join(format!("{}.token", magi_ipc::random_hex(8)?));
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-        .open(&path)?;
-    file.write_all(token.as_bytes())?;
+    magi_ipc::private_file(&path)?.write_all(token.as_bytes())?;
     Ok(path)
 }
 

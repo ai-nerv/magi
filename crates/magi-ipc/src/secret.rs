@@ -34,34 +34,33 @@ pub fn mint_key(socket: &Path) -> io::Result<String> {
         Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
         _ => {}
     }
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-        .open(&path)?;
-    file.write_all(key.as_bytes())?;
+    crate::private_file(&path)?.write_all(key.as_bytes())?;
     Ok(key)
 }
 
-/// The key for `socket`, when this user's file holds one: a regular file, not a link, owned by
-/// this uid and readable by nobody else.
+/// The key for `socket`, when this user's file holds one — see [`read_private`].
 #[must_use]
 pub fn read_key(socket: &Path) -> Option<String> {
+    let key = read_private(&key_path(socket), 128)?;
+    (key.len() == 64 && key.bytes().all(|b| b.is_ascii_hexdigit())).then_some(key)
+}
+
+/// At most `most` bytes of `path`, trimmed, when it is a regular file and not a link, owned by
+/// this uid and readable by nobody else.
+#[must_use]
+pub fn read_private(path: &Path, most: u64) -> Option<String> {
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-        .open(key_path(socket))
+        .open(path)
         .ok()?;
     let held = file.metadata().ok()?;
-    let ours = rustix::process::getuid().as_raw();
-    if !held.is_file() || held.uid() != ours || held.mode() & 0o077 != 0 {
+    if !held.is_file() || held.uid() != crate::uid() || held.mode() & 0o077 != 0 {
         return None;
     }
-    let mut key = String::new();
-    file.take(128).read_to_string(&mut key).ok()?;
-    let key = key.trim();
-    (key.len() == 64 && key.bytes().all(|b| b.is_ascii_hexdigit())).then(|| key.to_owned())
+    let mut said = String::new();
+    file.take(most).read_to_string(&mut said).ok()?;
+    Some(said.trim().to_owned())
 }
 
 /// Remove the key for `socket`.

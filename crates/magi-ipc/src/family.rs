@@ -9,7 +9,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
 /// The family's one frame cap, on a call this client writes and on a reply it reads.
-pub const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_FRAME_BYTES: usize = crate::MAX_FRAME_BYTES;
 
 /// One call as it goes on the wire: four bytes of length, then the body.
 #[derive(serde::Serialize)]
@@ -51,14 +51,12 @@ fn too_large(verb: &str, len: usize) -> Fault {
 
 /// Close what another user is serving: a socket path is a name, and the kernel says who holds it.
 fn served_by_us(stream: &impl std::os::fd::AsFd, path: &Path) -> Result<(), Fault> {
-    let peer = rustix::net::sockopt::get_socket_peercred(stream)
+    let peer = crate::peer_uid(stream)
         .map_err(|e| Fault::Unavailable(format!("{}: {e}", path.display())))?;
-    let ours = rustix::process::getuid();
-    if peer.uid != ours {
+    if peer != crate::uid() {
         return Err(Fault::Unavailable(format!(
-            "{} is served by uid {}, not this user",
-            path.display(),
-            peer.uid.as_raw()
+            "{} is served by uid {peer}, not this user",
+            path.display()
         )));
     }
     Ok(())

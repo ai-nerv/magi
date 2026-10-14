@@ -26,7 +26,7 @@ fn source(relative: &str) -> String {
 /// A socket path this VM is allowed to dial: `magi.stream` refuses anything outside the family's
 /// own directories, and it stays short enough for `SUN_LEN`.
 fn socket_path(tag: &str) -> (magi_tools::family::FamilyScratch, std::path::PathBuf) {
-    let dir = magi_tools::family::FamilyScratch::new(tag);
+    let dir = magi_tools::family::FamilyScratch::new(tag).expect("a family scratch");
     let path = dir.join("s.sock");
     (dir, path)
 }

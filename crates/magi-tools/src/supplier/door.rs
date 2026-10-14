@@ -64,7 +64,7 @@ pub(super) fn serving(
     program: &str,
     context: &crate::holding::Context,
 ) -> Option<(PathBuf, String)> {
-    let dir = crate::family::runtime_dir()?.join("casper");
+    let dir = magi_ipc::runtime_base("casper");
     let wanted =
         serde_json::to_string(&(program, &context.configure, &context.jail, &context.cwd)).ok()?;
     let gone = {
@@ -83,7 +83,7 @@ pub(super) fn serving(
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
-    let key = secret()?;
+    let key = magi_ipc::random_hex(32).ok()?;
     let mut command = std::process::Command::new(program);
     command
         .arg("serve")
@@ -129,15 +129,6 @@ fn announced(child: &mut Child) -> bool {
         let _ = std::io::copy(&mut reader, &mut std::io::sink());
     });
     heard.recv_timeout(ANNOUNCE).unwrap_or(false)
-}
-
-/// 32 random bytes as 64 lowercase hex characters.
-fn secret() -> Option<String> {
-    let mut bytes = [0_u8; 32];
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut random| random.read_exact(&mut bytes))
-        .ok()?;
-    Some(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 /// Spawn on one long-lived thread, the one a daemon's parent-death signal is then tied to.
@@ -303,7 +294,7 @@ mod tests {
         PathBuf,
         std::sync::mpsc::Receiver<Vec<u8>>,
     ) {
-        let dir = crate::family::FamilyScratch::new("door");
+        let dir = crate::family::FamilyScratch::new("door").expect("a family scratch");
         let path = dir.join("s.sock");
         let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
         let (seen, calls) = std::sync::mpsc::channel();
@@ -335,7 +326,7 @@ mod tests {
         let ran = serde_json::json!({ "said": "done", "failed": false });
         let reply = serde_json::json!({ "ok": true, "family": 1, "n": 1, "result": [ran] });
         let (_dir, path, calls) = serve(framed(reply.to_string().as_bytes()));
-        let key = secret().expect("random");
+        let key = magi_ipc::random_hex(32).expect("random");
         assert_eq!(key.len(), 64);
         assert!(
             key.chars()
@@ -364,7 +355,7 @@ mod tests {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null());
         let mut child = spawn_kept(command).expect("spawned");
-        let key = secret().expect("random");
+        let key = magi_ipc::random_hex(32).expect("random");
         assert!(handed_key(&mut child, &key));
         assert!(announced(&mut child));
         let _ = child.kill();
@@ -413,7 +404,7 @@ mod tests {
 
     #[test]
     fn nothing_listening_is_unsent_and_may_be_spawned_instead() {
-        let dir = crate::family::FamilyScratch::new("door-none");
+        let dir = crate::family::FamilyScratch::new("door-none").expect("a family scratch");
         match over_socket(&dir.join("absent.sock"), "k", &call(), &Uncancelled) {
             Err(Failed::Unsent(_)) => {}
             other => panic!("{other:?}"),

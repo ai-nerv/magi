@@ -26,8 +26,15 @@ pub fn runtime_base(program: &str) -> PathBuf {
 /// `$XDG_RUNTIME_DIR`, when it is set, absolute, a directory, this user's and nobody else's.
 #[must_use]
 pub fn trusted_xdg() -> Option<PathBuf> {
-    let runtime = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty())?);
-    let held = std::fs::symlink_metadata(&runtime).ok()?;
+    trusted(std::env::var_os("XDG_RUNTIME_DIR"))
+}
+
+/// The same decision, from what the environment said. Empty is unset; a link to a directory that
+/// passes is followed, as every sibling's check does.
+#[must_use]
+pub fn trusted(said: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    let runtime = PathBuf::from(said.filter(|v| !v.is_empty())?);
+    let held = std::fs::metadata(&runtime).ok()?;
     (runtime.is_absolute() && private(&held)).then_some(runtime)
 }
 
@@ -66,12 +73,28 @@ pub fn private_dirs(path: &Path) -> io::Result<PathBuf> {
     private_dir(path)
 }
 
+/// Create `path` new, mode 0600, never through a link.
+///
+/// # Errors
+/// When it exists already or cannot be made.
+pub fn private_file(path: &Path) -> io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .open(path)
+}
+
 /// A real directory, owned by this uid, with no group or other permissions.
 fn private(held: &std::fs::Metadata) -> bool {
     held.file_type().is_dir() && held.uid() == uid() && held.mode() & 0o077 == 0
 }
 
-fn uid() -> u32 {
+/// This process's uid.
+#[must_use]
+pub fn uid() -> u32 {
     rustix::process::getuid().as_raw()
 }
 
@@ -115,6 +138,37 @@ mod tests {
         assert!(
             refused.to_string().contains("open"),
             "names the path: {refused}"
+        );
+    }
+
+    #[test]
+    fn a_runtime_directory_is_trusted_only_when_it_is_this_users_alone() {
+        let dir = magi_model::scratch::Scratch::new("magi-runtime", "trusted");
+        let said = |path: &Path| Some(path.as_os_str().to_owned());
+        std::fs::set_permissions(&*dir, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        assert_eq!(trusted(said(&dir)), None, "group-readable");
+        std::fs::set_permissions(&*dir, std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        assert_eq!(trusted(said(&dir)), Some(dir.to_path_buf()));
+        assert_eq!(trusted(Some("".into())), None, "empty is unset");
+        assert_eq!(trusted(Some("run".into())), None, "relative");
+        assert_eq!(trusted(None), None);
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&*dir, &link).expect("symlink");
+        assert_eq!(trusted(said(&link)), Some(link), "followed, as siblings do");
+    }
+
+    #[test]
+    fn a_private_file_is_new_closed_and_never_opened_twice() {
+        let dir = magi_model::scratch::Scratch::new("magi-runtime", "file");
+        let file = dir.join("f");
+        drop(private_file(&file).expect("new"));
+        let mode = std::fs::metadata(&file).expect("there").mode();
+        assert_eq!(mode & 0o777, 0o600, "{mode:o}");
+        assert!(private_file(&file).is_err(), "never opened twice");
+        std::os::unix::fs::symlink(&file, dir.join("link")).expect("symlink");
+        assert!(
+            private_file(&dir.join("link")).is_err(),
+            "never through a link"
         );
     }
 

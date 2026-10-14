@@ -74,7 +74,7 @@ fn remember_in(path: &Path, prompt: &str) -> std::io::Result<()> {
 
     let fresh = parent.join(format!(".history-{}", std::process::id()));
     let _ = std::fs::remove_file(&fresh);
-    let mut file = magi_tools::family::private_file(&fresh)?;
+    let mut file = magi_ipc::private_file(&fresh)?;
     let written = file
         .write_all(text.as_bytes())
         .and_then(|()| file.sync_all())

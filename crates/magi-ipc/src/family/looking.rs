@@ -31,10 +31,7 @@ pub fn socket_dirs() -> [PathBuf; 2] {
 /// One socket directory, with `$MAGI_MEMORY_INSTANCE` — or the name it used to have — selecting
 /// one when several are running.
 fn named_dir(name: &str) -> PathBuf {
-    let base = match crate::trusted_xdg() {
-        Some(runtime) => runtime.join(name),
-        None => std::env::temp_dir().join(format!("{name}-{}", rustix::process::getuid().as_raw())),
-    };
+    let base = crate::runtime_base(name);
     match instance() {
         Some(instance) => base.join(instance),
         None => base,
