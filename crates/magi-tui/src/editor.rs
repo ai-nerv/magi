@@ -108,7 +108,7 @@ impl Editor {
 
     pub fn insert(&mut self, c: char) {
         let byte = self.byte_offset();
-        self.lines[self.row].insert(byte, c);
+        self.line_mut().insert(byte, c);
         self.col += 1;
         self.history_pos = None;
         self.note(c);
@@ -152,7 +152,7 @@ impl Editor {
 
     pub fn newline(&mut self) {
         let byte = self.byte_offset();
-        let tail = self.lines[self.row].split_off(byte);
+        let tail = self.line_mut().split_off(byte);
         self.lines.insert(self.row + 1, tail);
         self.row += 1;
         self.col = 0;
@@ -164,12 +164,12 @@ impl Editor {
         if self.col > 0 {
             self.col -= 1;
             let byte = self.byte_offset();
-            self.lines[self.row].remove(byte);
+            self.line_mut().remove(byte);
         } else if self.row > 0 {
             let current = self.lines.remove(self.row);
             self.row -= 1;
-            self.col = self.lines[self.row].chars().count();
-            self.lines[self.row].push_str(&current);
+            self.col = self.width();
+            self.line_mut().push_str(&current);
         }
         self.history_pos = None;
     }
@@ -179,12 +179,12 @@ impl Editor {
             self.col -= 1;
         } else if self.row > 0 {
             self.row -= 1;
-            self.col = self.lines[self.row].chars().count();
+            self.col = self.width();
         }
     }
 
     pub fn right(&mut self) {
-        if self.col < self.lines[self.row].chars().count() {
+        if self.col < self.width() {
             self.col += 1;
         } else if self.row + 1 < self.lines.len() {
             self.row += 1;
@@ -200,49 +200,50 @@ impl Editor {
     pub fn up(&mut self) {
         if self.row > 0 {
             self.row -= 1;
-            self.col = self.col.min(self.lines[self.row].chars().count());
+            self.col = self.col.min(self.width());
         }
     }
 
     pub fn down(&mut self) {
         if self.row + 1 < self.lines.len() {
             self.row += 1;
-            self.col = self.col.min(self.lines[self.row].chars().count());
+            self.col = self.col.min(self.width());
         }
     }
 
     /// Move to the first character on the line that is not a space.
     pub fn first_word(&mut self) {
-        self.col = self.lines[self.row]
+        self.col = self
+            .line()
             .chars()
             .position(|c| !c.is_whitespace())
             .unwrap_or(0);
     }
 
     pub fn last_line(&mut self) {
-        self.row = self.lines.len() - 1;
-        self.col = self.col.min(self.lines[self.row].chars().count());
+        self.row = self.lines.len().saturating_sub(1);
+        self.col = self.col.min(self.width());
     }
 
     pub fn first_line(&mut self) {
         self.row = 0;
-        self.col = self.col.min(self.lines[self.row].chars().count());
+        self.col = self.col.min(self.width());
     }
 
     /// Delete the character under the cursor. Nothing at the end of a line: `x` does not join.
     pub fn delete_char(&mut self) {
         let byte = self.byte_offset();
-        if byte < self.lines[self.row].len() {
-            self.lines[self.row].remove(byte);
+        if byte < self.line().len() {
+            self.line_mut().remove(byte);
         }
         // Off the end after deleting the last character, which is where `x` leaves you.
-        self.col = self.col.min(self.lines[self.row].chars().count());
+        self.col = self.col.min(self.width());
     }
 
     /// Delete the whole line, into the kill ring. The last line is emptied rather than removed:
-    /// a buffer with no lines has no cursor position, and every method here indexes `lines[row]`.
+    /// a buffer with no lines has no cursor position.
     pub fn delete_line(&mut self) {
-        self.kill_ring = std::mem::take(&mut self.lines[self.row]);
+        self.kill_ring = std::mem::take(self.line_mut());
         self.kill_lines = true;
         if self.lines.len() > 1 {
             self.lines.remove(self.row);
@@ -270,14 +271,14 @@ impl Editor {
     /// Pull the cursor back off the end of the line. Normal mode sits *on* a character, so the
     /// column one past the end is not a place it can rest.
     pub fn settle(&mut self) {
-        let last = self.lines[self.row].chars().count();
+        let last = self.width();
         self.col = self.col.min(last.saturating_sub(1));
     }
 
     /// Put the cursor somewhere, clamped to what is actually there.
     pub fn goto(&mut self, row: usize, col: usize) {
-        self.row = row.min(self.lines.len() - 1);
-        self.col = col.min(self.lines[self.row].chars().count());
+        self.row = row.min(self.lines.len().saturating_sub(1));
+        self.col = col.min(self.width());
     }
 
     /// Keep the buffer as it stands, to go back to. Called by whatever is about to change it, so
@@ -310,19 +311,20 @@ impl Editor {
     pub fn between(&self, from: (usize, usize), to: (usize, usize)) -> String {
         let (start, end) = if from <= to { (from, to) } else { (to, from) };
         if start.0 == end.0 {
-            return self.lines[start.0]
+            return self
+                .row_text(start.0)
                 .chars()
                 .skip(start.1)
                 .take(end.1 - start.1)
                 .collect();
         }
-        let mut out: String = self.lines[start.0].chars().skip(start.1).collect();
+        let mut out: String = self.row_text(start.0).chars().skip(start.1).collect();
         for row in start.0 + 1..end.0 {
             out.push('\n');
-            out.push_str(&self.lines[row]);
+            out.push_str(self.row_text(row));
         }
         out.push('\n');
-        out.extend(self.lines[end.0].chars().take(end.1));
+        out.extend(self.row_text(end.0).chars().take(end.1));
         out
     }
 
@@ -330,8 +332,8 @@ impl Editor {
         let (start, end) = if from <= to { (from, to) } else { (to, from) };
         self.kill_ring = self.between(start, end);
         self.kill_lines = false;
-        let head: String = self.lines[start.0].chars().take(start.1).collect();
-        let tail: String = self.lines[end.0].chars().skip(end.1).collect();
+        let head: String = self.row_text(start.0).chars().take(start.1).collect();
+        let tail: String = self.row_text(end.0).chars().skip(end.1).collect();
         self.lines.splice(start.0..=end.0, [head + &tail]);
         self.row = start.0;
         self.col = start.1;
@@ -346,7 +348,12 @@ impl Editor {
     /// Copy whole lines into the kill ring, so a later paste opens a line for them.
     pub fn copy_lines(&mut self, from: usize, to: usize) {
         let (start, end) = (from.min(to), from.max(to));
-        self.kill_ring = self.lines[start..=end.min(self.lines.len() - 1)].join("\n");
+        let last = self.lines.len().saturating_sub(1);
+        self.kill_ring = self
+            .lines
+            .get(start..=end.min(last))
+            .map(|lines| lines.join("\n"))
+            .unwrap_or_default();
         self.kill_lines = true;
     }
 
@@ -361,8 +368,8 @@ impl Editor {
             self.row = at;
             self.col = 0;
         } else {
-            if after && !self.lines[self.row].is_empty() {
-                self.col = (self.col + 1).min(self.lines[self.row].chars().count());
+            if after && !self.line().is_empty() {
+                self.col = (self.col + 1).min(self.width());
             }
             self.insert_str(&text);
         }
@@ -372,34 +379,34 @@ impl Editor {
 
     /// Move to the last character of the word the cursor is in, or of the next one.
     pub fn word_end(&mut self) {
-        let chars: Vec<char> = self.lines[self.row].chars().collect();
+        let chars: Vec<char> = self.line().chars().collect();
         if self.col + 1 >= chars.len() {
             return;
         }
         self.col += 1;
-        while self.col < chars.len() && chars[self.col].is_whitespace() {
+        while chars.get(self.col).is_some_and(|c| c.is_whitespace()) {
             self.col += 1;
         }
-        while self.col + 1 < chars.len() && !chars[self.col + 1].is_whitespace() {
+        while chars.get(self.col + 1).is_some_and(|c| !c.is_whitespace()) {
             self.col += 1;
         }
     }
 
     pub fn replace_char(&mut self, c: char) {
         let byte = self.byte_offset();
-        if byte < self.lines[self.row].len() {
-            let mut rest = self.lines[self.row].split_off(byte);
+        if byte < self.line().len() {
+            let line = self.line_mut();
+            let rest = line.split_off(byte);
             let mut chars = rest.chars();
             chars.next();
-            rest = chars.as_str().to_owned();
-            self.lines[self.row].push(c);
-            self.lines[self.row].push_str(&rest);
+            line.push(c);
+            line.push_str(chars.as_str());
         }
         self.history_pos = None;
     }
 
     pub fn flip_case(&mut self) {
-        let Some(c) = self.lines[self.row].chars().nth(self.col) else {
+        let Some(c) = self.line().chars().nth(self.col) else {
             return;
         };
         let swapped = if c.is_uppercase() {
@@ -418,23 +425,24 @@ impl Editor {
         }
         let next = self.lines.remove(self.row + 1);
         let joined = next.trim_start();
-        self.col = self.lines[self.row].chars().count();
-        if !self.lines[self.row].is_empty() && !joined.is_empty() {
-            self.lines[self.row].push(' ');
+        self.col = self.width();
+        let line = self.line_mut();
+        if !line.is_empty() && !joined.is_empty() {
+            line.push(' ');
         }
-        self.lines[self.row].push_str(joined);
+        line.push_str(joined);
         self.history_pos = None;
     }
 
     /// Move to the next occurrence of `c` on this line, or to just before it, answering whether
     /// it found one — so `df,` on a line with no comma leaves the line alone.
     pub fn find_char(&mut self, c: char, before: bool) -> bool {
-        let chars: Vec<char> = self.lines[self.row].chars().collect();
-        let found = chars
-            .iter()
+        let found = self
+            .line()
+            .chars()
             .enumerate()
             .skip(self.col + 1)
-            .find(|(_, at)| **at == c)
+            .find(|(_, at)| *at == c)
             .map(|(index, _)| index);
         let Some(index) = found else {
             return false;
@@ -449,13 +457,13 @@ impl Editor {
 
     /// The same, backwards.
     pub fn find_char_back(&mut self, c: char, after: bool) -> bool {
-        let chars: Vec<char> = self.lines[self.row].chars().collect();
-        let found = chars
-            .iter()
+        let found = self
+            .line()
+            .chars()
             .enumerate()
             .take(self.col)
-            .rev()
-            .find(|(_, at)| **at == c)
+            .filter(|(_, at)| *at == c)
+            .last()
             .map(|(index, _)| index);
         let Some(index) = found else {
             return false;
@@ -465,38 +473,41 @@ impl Editor {
     }
 
     pub fn end(&mut self) {
-        self.col = self.lines[self.row].chars().count();
+        self.col = self.width();
     }
 
     pub fn word_left(&mut self) {
-        let chars: Vec<char> = self.lines[self.row].chars().collect();
-        while self.col > 0 && chars[self.col - 1].is_whitespace() {
+        let chars: Vec<char> = self.line().chars().collect();
+        let before = |col: usize| col.checked_sub(1).and_then(|at| chars.get(at)).copied();
+        while before(self.col).is_some_and(char::is_whitespace) {
             self.col -= 1;
         }
-        while self.col > 0 && !chars[self.col - 1].is_whitespace() {
+        while before(self.col).is_some_and(|c| !c.is_whitespace()) {
             self.col -= 1;
         }
     }
 
     pub fn word_right(&mut self) {
-        let chars: Vec<char> = self.lines[self.row].chars().collect();
-        while self.col < chars.len() && !chars[self.col].is_whitespace() {
+        let chars: Vec<char> = self.line().chars().collect();
+        while chars.get(self.col).is_some_and(|c| !c.is_whitespace()) {
             self.col += 1;
         }
-        while self.col < chars.len() && chars[self.col].is_whitespace() {
+        while chars.get(self.col).is_some_and(|c| c.is_whitespace()) {
             self.col += 1;
         }
     }
 
     pub fn kill_to_end(&mut self) {
         let byte = self.byte_offset();
-        self.kill_ring = self.lines[self.row].split_off(byte);
+        self.kill_ring = self.line_mut().split_off(byte);
     }
 
     pub fn kill_to_start(&mut self) {
         let byte = self.byte_offset();
-        let tail = self.lines[self.row].split_off(byte);
-        self.kill_ring = std::mem::replace(&mut self.lines[self.row], tail);
+        let line = self.line_mut();
+        let tail = line.split_off(byte);
+        let head = std::mem::replace(line, tail);
+        self.kill_ring = head;
         self.col = 0;
     }
 
@@ -531,10 +542,13 @@ impl Editor {
     }
 
     fn load_history(&mut self, index: usize) {
-        self.lines = self.history[index].split('\n').map(str::to_owned).collect();
+        let Some(entry) = self.history.get(index) else {
+            return;
+        };
+        self.lines = entry.split('\n').map(str::to_owned).collect();
         self.history_pos = Some(index);
-        self.row = self.lines.len() - 1;
-        self.col = self.lines[self.row].chars().count();
+        self.row = self.lines.len().saturating_sub(1);
+        self.col = self.width();
     }
 
     /// Replace the characters from `start` to the cursor with `text`, which is the token a
@@ -543,7 +557,7 @@ impl Editor {
         let start = start.min(self.col);
         let from = self.byte_at(start);
         let to = self.byte_offset();
-        self.lines[self.row].replace_range(from..to, text);
+        self.line_mut().replace_range(from..to, text);
         self.col = start + text.chars().count();
         self.history_pos = None;
     }
@@ -555,25 +569,48 @@ impl Editor {
             self.lines.push(String::new());
         }
         self.row = self.lines.len() - 1;
-        self.col = self.lines[self.row].chars().count();
+        self.col = self.width();
         self.history_pos = None;
+    }
+
+    /// Line `row`, or nothing where there is no such line.
+    fn row_text(&self, row: usize) -> &str {
+        self.lines.get(row).map_or("", String::as_str)
+    }
+
+    /// The cursor's line.
+    fn line(&self) -> &str {
+        self.row_text(self.row)
+    }
+
+    /// How many characters the cursor's line holds.
+    fn width(&self) -> usize {
+        self.line().chars().count()
+    }
+
+    /// The cursor's line, to change. An empty buffer gains one first, and the row is held to the
+    /// lines there are.
+    #[allow(clippy::indexing_slicing)]
+    fn line_mut(&mut self) -> &mut String {
+        if self.lines.is_empty() {
+            self.lines.push(String::new());
+        }
+        self.row = self.row.min(self.lines.len() - 1);
+        &mut self.lines[self.row]
     }
 
     /// Byte offset of character index `index` within the cursor's line.
     fn byte_at(&self, index: usize) -> usize {
-        self.lines[self.row]
-            .char_indices()
+        let line = self.line();
+        line.char_indices()
             .nth(index)
-            .map_or(self.lines[self.row].len(), |(i, _)| i)
+            .map_or(line.len(), |(i, _)| i)
     }
 
     /// Byte offset of the cursor within its line. `col` counts characters so motion is uniform
     /// across scripts, and indexing a `String` needs bytes.
     fn byte_offset(&self) -> usize {
-        self.lines[self.row]
-            .char_indices()
-            .nth(self.col)
-            .map_or(self.lines[self.row].len(), |(i, _)| i)
+        self.byte_at(self.col)
     }
 }
 
