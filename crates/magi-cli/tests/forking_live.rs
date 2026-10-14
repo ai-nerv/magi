@@ -209,6 +209,21 @@ fn fork(dir: &Path, parent: &Session, role: &str, prompt: &str) -> String {
     id
 }
 
+/// Whether this melchior still mints a child's stop secret into the child's environment: one from
+/// before it took the secret on `serve`'s stdin cannot be told it by a magi that hands it over in a
+/// file, and refuses the parent's `stop`.
+fn mints_into_environment(dir: &Path, parent: &Session) -> bool {
+    let mut command = Command::new("melchior");
+    command
+        .current_dir(dir.join("p"))
+        .env("XDG_RUNTIME_DIR", dir.join("r"))
+        .args(["fork", "--role", "probe"]);
+    as_session(&mut command, parent.id(), "main", parent.process.id());
+    let done = command.output().expect("melchior runs");
+    serde_json::from_slice::<serde_json::Value>(&done.stdout)
+        .is_ok_and(|minted| minted["environment"].get("MAGI_MELCHIOR_TOKEN").is_some())
+}
+
 /// Whether melchior can see `them` from `me` at all. `list` rather than `crew`: `crew` is scoped to
 /// the run, so waiting on it would report every kinship failure as an empty timeout.
 fn listening(dir: &Path, me: &str, them: &str) -> bool {
@@ -323,6 +338,10 @@ fn a_forked_child_files_its_scratch_beside_its_parents_and_not_in_it() {
     // The transcript reaches balthasar when a session lets go of it, so both are ended and waited
     // for. The child is stopped; the parent is signalled, the only thing that reaches a headless one.
     let (ok, said) = asked(&dir, parent.id(), "stop", Some(&child));
+    if !ok && mints_into_environment(&dir, &parent) {
+        magi_testkit::live::unavailable("melchior predates the stop secret on serve's stdin");
+        return;
+    }
     assert!(ok, "the parent could not stop its own child: {said}");
     until("the child to finish", || !running(theirs));
     parent.end();
@@ -374,6 +393,10 @@ fn a_child_is_stopped_by_the_session_that_started_it_and_by_nobody_else() {
     );
 
     let (ok, said) = asked(&dir, parent.id(), "stop", Some(&child));
+    if !ok && mints_into_environment(&dir, &parent) {
+        magi_testkit::live::unavailable("melchior predates the stop secret on serve's stdin");
+        return;
+    }
     assert!(ok, "the session that started it could not end it: {said}");
     until("the child to go", || !listening(&dir, parent.id(), &child));
 }
