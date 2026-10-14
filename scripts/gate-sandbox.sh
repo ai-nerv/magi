@@ -220,6 +220,16 @@ body "$SANDBOX" '^pub fn apply[(]' | grep -q 'guard(ctx, "load", binary)' || {
   fail=1
 }
 
+# ---- a value leaves the VM as JSON within bounds -------------------------------------------------
+CONVERT="$ROOT/magi-lua/src/convert.rs"
+for wanted in 'self.open.insert(table)' 'self.nodes > NODES' 'self.bytes > BYTES' \
+              'self.open.len() >= DEEPEST'; do
+  shipped "$CONVERT" | grep -qF "$wanted" || {
+    echo "gate-sandbox: converting a Lua value to JSON no longer checks $wanted" >&2
+    fail=1
+  }
+done
+
 # ---- fetched code still has to be let in --------------------------------------------------------
 # The other half of the boundary. A file under `site/pack/` arrived from somewhere else and can
 # change between one run and the next, so it runs once somebody has said it may.

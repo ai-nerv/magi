@@ -32,8 +32,8 @@ pub(super) fn framed<'gc>(
     if !matches!(request, Value::Table(_)) {
         return Err("call needs a request table".to_owned());
     }
-    let mut json = crate::convert::json_from_lua(ctx, request, 0)
-        .ok_or_else(|| "this request cannot be written as JSON; it was not sent".to_owned())?;
+    let mut json = crate::convert::json_from_lua(ctx, request)
+        .map_err(|why| format!("this request cannot be written as JSON: {why}; it was not sent"))?;
     if let Some(socket) = keyed {
         magi_tools::family::seal(socket, &mut json);
     }

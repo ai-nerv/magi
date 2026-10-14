@@ -417,14 +417,14 @@ impl Engine {
                 let name = String::from_utf8_lossy(name.as_bytes()).into_owned();
                 // A registrar is a function and cannot be described; skipping it is what makes
                 // "every other field is a setting" work without a list to keep in step.
-                if let Some(json) = json_from_lua(ctx, value, 0) {
-                    held.settings.insert(name, json);
-                } else if !self.installed.contains(&name) {
-                    // Everything else that will not convert is a table nested past the bound. The
-                    // bound stays — it is what stops a cycle becoming a stack overflow.
-                    held.unkept.push(format!(
-                        "magi.{name} was not kept: it nests deeper than magi will describe"
-                    ));
+                match json_from_lua(ctx, value) {
+                    Ok(json) => {
+                        held.settings.insert(name, json);
+                    }
+                    Err(why) if !self.installed.contains(&name) => {
+                        held.unkept.push(format!("magi.{name} was not kept: {why}"));
+                    }
+                    Err(_) => {}
                 }
             }
         });
@@ -541,7 +541,7 @@ impl Engine {
                     other => other.display().to_string(),
                 };
                 if !installed.contains(&name) {
-                    out.push((name, json_from_lua(ctx, value, 0)));
+                    out.push((name, json_from_lua(ctx, value).ok()));
                 }
             }
         });
@@ -587,7 +587,7 @@ impl Engine {
                 let Value::String(name) = key else { continue };
                 // The `run` function cannot be described, so what comes back is the declaration
                 // without it; the function stays in the VM.
-                if let Some(json) = crate::convert::declaration_from_lua(ctx, value, 0) {
+                if let Ok(Some(json)) = crate::convert::declaration_from_lua(ctx, value) {
                     out.push((String::from_utf8_lossy(name.as_bytes()).into_owned(), json));
                 }
             }
@@ -648,11 +648,17 @@ impl Engine {
             return Some(serde_json::json!({ "content": why.to_string(), "is_error": true }));
         }
 
-        let mut out = None;
+        let mut out = Ok(serde_json::Value::Null);
         self.lua.enter(|ctx| {
-            out = crate::convert::json_from_lua(ctx, ctx.get_global_value("__magi_tool_result"), 0);
+            out = json_from_lua(ctx, ctx.get_global_value("__magi_tool_result"));
         });
-        out.filter(|value| !value.is_null())
+        match out {
+            Ok(value) => Some(value).filter(|value| !value.is_null()),
+            Err(why) => Some(serde_json::json!({
+                "content": format!("the tool's answer cannot be described: {why}"),
+                "is_error": true,
+            })),
+        }
     }
 }
 
