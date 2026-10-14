@@ -97,7 +97,8 @@ pub fn seal(socket: &Path, call: &mut serde_json::Value) {
 pub fn sealed(socket: &Path, frame: &[u8]) -> Option<Vec<u8>> {
     let key = held_for(socket)?;
     let (head, body) = frame.split_first_chunk::<4>()?;
-    if body.is_empty() || u32::from_be_bytes(*head) as usize != body.len() {
+    let declared = u32::from_be_bytes(*head) as usize;
+    if body.is_empty() || declared > super::MAX_FRAME_BYTES || declared != body.len() {
         return None;
     }
     let wire = crate::Wire::of(body);
