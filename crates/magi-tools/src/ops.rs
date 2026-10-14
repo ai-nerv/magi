@@ -252,6 +252,38 @@ fn scratch_under(cache: Option<OsString>, home: Option<OsString>) -> Option<Path
         .filter(|base| base.is_absolute())
 }
 
+/// Where `path` lands on disk: its longest existing prefix resolved through every symlink, and
+/// the rest appended. An absolute path in, an absolute path out.
+#[must_use]
+pub fn real_path(path: &Path) -> PathBuf {
+    let lexical = normalise(path);
+    let mut existing = lexical.as_path();
+    let mut rest = Vec::new();
+    loop {
+        if let Ok(real) = existing.canonicalize() {
+            return rest.iter().rev().fold(real, |at, part| at.join(part));
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_owned());
+                existing = parent;
+            }
+            _ => return lexical,
+        }
+    }
+}
+
+/// Whether a write to `path` changes something the next session, or the repository, runs:
+/// a project's own configuration, or anything under `.git`.
+#[must_use]
+pub fn runs_later(path: &Path) -> bool {
+    const RUN_ON_START: &[&str] = &[".magi.lua", ".balthasar.lua"];
+    path.components().any(|part| part.as_os_str() == ".git")
+        || path
+            .file_name()
+            .is_some_and(|name| RUN_ON_START.iter().any(|held| name == *held))
+}
+
 /// Resolve `.` and `..` without touching the filesystem. `canonicalize` would be stricter but
 /// requires the path to exist, and a write to a new file has to be checked before it does.
 fn normalise(path: &Path) -> PathBuf {

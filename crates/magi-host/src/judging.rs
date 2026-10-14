@@ -161,11 +161,21 @@ impl Judged {
         Decision::Deny
     }
 
-    /// A write this session's own directory takes, and not into the repository's own records:
-    /// what `edits` exists to stop asking about.
+    /// A write this session's own directory takes, and not into the repository's records or a
+    /// file the next session runs: what `edits` exists to stop asking about. Judged on the path
+    /// as written and as it resolves on disk, so a symlink cannot carry a write out.
     fn an_edit_here(&self, action: &Action) -> bool {
-        matches!(action, Action::Write { path }
-            if magi_proto::permit::under(path, &self.root) && !path.contains("/.git/"))
+        use magi_tools::ops::{real_path, runs_later};
+        let Action::Write { path } = action else {
+            return false;
+        };
+        let written = std::path::Path::new(path);
+        let real = real_path(written);
+        let root = real_path(std::path::Path::new(&self.root));
+        written.is_absolute()
+            && real.starts_with(&root)
+            && !runs_later(written)
+            && !runs_later(&real)
     }
 
     /// The second model's word on it, acted on. Asked of the person when there is none, and when
