@@ -43,6 +43,32 @@ local M = { _NAME = "magi", _VERSION = 1 }
 -- it -- which reads as "nothing is running".
 local HOSTS = { "magi", "hexe", "oslo" }
 
+-- The most bytes one frame carries, either way, and the newest reply shape this client reads.
+local CAP = 16777216
+local FAMILY = 1
+
+--- This user's uid, as the host says it: `host.uid`, a number or a function answering one. Never
+--- `$UID`, which a shell does not export and anything can set.
+local function host_uid()
+  for _, name in ipairs(HOSTS) do
+    local h = _G[name]
+    local uid = type(h) == "table" and h.uid or nil
+    if type(uid) == "function" then uid = uid() end
+    if type(uid) == "number" then return uid end
+  end
+  return nil
+end
+
+--- Why a decoded reply cannot be read here: one written in a newer `family` than this client.
+local function newer(reply)
+  if type(reply) ~= "table" then return "the reply is not the family's shape" end
+  local family = reply.family
+  if family ~= nil and (type(family) ~= "number" or family > FAMILY) then
+    return "the reply is in family " .. tostring(family) .. ", newer than this client reads"
+  end
+  return nil
+end
+
 -- ---------------------------------------------------------------- JSON, in Lua
 
 -- Carried rather than required. The library runs inside somebody else's VM, so it cannot reach
@@ -255,19 +281,31 @@ function Session:call(name, ...)
   local body = { call = name }
   if #args > 0 then body.args = args end
 
+  local payload = encode(body)
+  if #payload > CAP then return nil, "the call is larger than the " .. CAP .. " bytes a frame carries" end
+
   local handle, why = transport.connect(self.path, self.timeout_ms)
   if not handle then return nil, why end
 
-  local sent, gone = handle:send(frame(encode(body)))
+  local sent, gone = handle:send(frame(payload))
   if not sent then handle:close(); return nil, gone end
 
   local head, cut = exactly(handle, 4)
   if not head then handle:close(); return nil, cut end
-  local reply_body, trimmed = exactly(handle, be32(head))
+  -- Checked before a byte of the body is asked for: a declared length is a claim, not a promise.
+  local want = be32(head)
+  if want == 0 or want > CAP then
+    handle:close()
+    return nil, "the reply declared " .. want .. " bytes; a frame carries 1 to " .. CAP
+  end
+  local reply_body, trimmed = exactly(handle, want)
   handle:close()
   if not reply_body then return nil, trimmed end
 
-  local reply = decode(reply_body)
+  local decoded, reply = pcall(decode, reply_body)
+  if not decoded then return nil, reply end
+  local unread = newer(reply)
+  if unread then return nil, unread end
   if not reply.ok then return nil, reply.error or "the session refused the call" end
   -- `result` is a list of return values and `n` says how many, so one Lua call
   -- answers with what the remote one did. The same shape oslo's server uses:
@@ -380,9 +418,15 @@ local function socket_dir()
     end
   end
   local runtime = os.getenv("XDG_RUNTIME_DIR")
-  local base = (runtime and runtime ~= "")
-    and (runtime .. "/magi")
-    or ("/tmp/magi-" .. (os.getenv("UID") or "0"))
+  local base
+  if runtime and runtime ~= "" then
+    base = runtime .. "/magi"
+  else
+    -- Without a uid the host vouches for there is no directory to name, and no guess is made.
+    local uid = host_uid()
+    if not uid then return nil end
+    base = "/tmp/magi-" .. uid
+  end
   local instance = os.getenv("HEXE_INSTANCE")
   return (instance and instance ~= "") and (base .. "/" .. instance) or base
 end
@@ -409,6 +453,7 @@ local function find(where)
   if not named and env and env ~= "" then return { { path = env } } end
 
   local dir = socket_dir()
+  if not dir then return {} end
   if not named then return list_candidates(dir) end
 
   local direct = dir .. "/api@" .. named .. ".sock"
@@ -527,17 +572,31 @@ end
 local function tool_dir(tool)
   local runtime = os.getenv("XDG_RUNTIME_DIR")
   if runtime and runtime ~= "" then return runtime .. "/" .. tool end
-  return "/tmp/" .. tool .. "-" .. (os.getenv("UID") or "0")
+  local uid = host_uid()
+  return uid and ("/tmp/" .. tool .. "-" .. uid) or nil
+end
+
+--- Whether `stat` describes a file this user owns that nobody else may change: owned by `uid`,
+--- and neither group- nor other-writable. Arithmetic rather than `&`, which Lua 5.1 lacks.
+local function trusted(stat, uid)
+  if type(stat) ~= "table" or type(stat.mode) ~= "number" or stat.uid ~= uid then return false end
+  local group_writes = math.floor(stat.mode / 16) % 2 == 1
+  local other_writes = math.floor(stat.mode / 2) % 2 == 1
+  return not group_writes and not other_writes
 end
 
 local function descriptor(tool)
   if type(tool) ~= "string" or tool == "" or tool:find("[^%w._-]") then return nil end
-  local host, path = nil, tool_dir(tool) .. "/" .. tool .. ".tool"
+  local dir, uid = tool_dir(tool), host_uid()
+  if not dir or not uid then return nil end
+  local host, path = nil, dir .. "/" .. tool .. ".tool"
   for _, name in ipairs(HOSTS) do
     local h = _G[name]
     if h and h.fs and h.fs.ls then host = h; break end
   end
-  if not host or not host.fs.read then return nil end
+  -- What it says is executed, so who could have written it is checked before it is read.
+  if not host or not host.fs.read or not host.fs.stat then return nil end
+  if not trusted(host.fs.stat(path), uid) then return nil end
   local body = host.fs.read(path)
   if not body then return nil end
   local ok, d = pcall(decode, body)
@@ -597,6 +656,8 @@ function M.fetch(where, verb, ...)
   local decoded, why = pcall(decode, r.stdout or "")
   if not decoded then return nil, "'" .. tool .. "' did not answer in the family's shape: " .. tostring(why) end
   local reply = why
+  local unread = newer(reply)
+  if unread then return nil, "'" .. tool .. "': " .. unread end
   if not reply.ok then return nil, reply.error or "the tool refused the call" end
   return table.unpack(reply.result or {}, 1, reply.n or #(reply.result or {}))
 end

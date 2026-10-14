@@ -102,6 +102,88 @@ mod tests {
         );
     }
 
+    /// A transport whose connection hands back `replies`, one `recv` at a time, and counts them.
+    const SCRIPTED: &str = r#"
+        local replies, recvs = __replies, 0
+        __transport = { connect = function() return {
+          send = function(_, bytes) return true end,
+          recv = function(_, n) recvs = recvs + 1; __recvs = recvs; return table.remove(replies, 1) or "" end,
+          close = function() end,
+        } end }
+    "#;
+
+    fn framed(body: &str) -> String {
+        let n = body.len();
+        let header: String = [n >> 24, n >> 16, n >> 8, n]
+            .iter()
+            .map(|b| format!("\\{}", b & 0xff))
+            .collect();
+        format!("\"{header}\", {body:?}")
+    }
+
+    #[test]
+    fn a_declared_length_past_the_cap_is_refused_before_the_body_is_read() {
+        let answer = probe(&format!(
+            r#"(function()
+                __replies = {{ "\255\255\255\255" }}
+                {SCRIPTED}
+                local s = assert(chunk(__transport).connect({{ path = "/x" }}))
+                local v, why = s:call("verbs")
+                return tostring(v) .. "|" .. tostring(why) .. "|" .. tostring(__recvs)
+            end)()"#
+        ));
+        assert!(answer.starts_with("nil|the reply declared"), "{answer}");
+        assert!(answer.ends_with("|1"), "the body was asked for: {answer}");
+    }
+
+    #[test]
+    fn a_reply_in_a_newer_family_is_refused_by_name() {
+        let answer = probe(&format!(
+            r#"(function()
+                __replies = {{ {} }}
+                {SCRIPTED}
+                local s = assert(chunk(__transport).connect({{ path = "/x" }}))
+                local v, why = s:call("verbs")
+                return tostring(v) .. "|" .. tostring(why)
+            end)()"#,
+            framed(r#"{"ok":true,"family":2,"n":1,"result":[1]}"#)
+        ));
+        assert!(
+            answer.starts_with("nil|") && answer.contains("family 2"),
+            "{answer}"
+        );
+    }
+
+    #[test]
+    fn a_descriptor_somebody_else_could_write_is_never_executed() {
+        // The host says who this user is and what the file is; `$UID` is never asked.
+        let run = |mode: u32, uid: &str| {
+            probe(&format!(
+                r#"(function()
+                    magi.fs = nil
+                    local ran = "nothing"
+                    oslo = {{ uid = {uid}, run = function(cmd) ran = cmd
+                        return {{ ok = true, stdout = '{{"ok":true,"n":1,"result":["x"]}}' }} end,
+                      fs = {{ ls = function() return {{}} end,
+                              read = function() return '{{"exec":"/opt/x/tool"}}' end,
+                              stat = function() return {{ uid = 1000, mode = {mode} }} end }} }}
+                    chunk(nil).fetch({{ tool = "x" }}, "verbs")
+                    oslo = nil
+                    return ran
+                end)()"#
+            ))
+        };
+        assert_ne!(
+            run(0o644, "1000"),
+            "nothing",
+            "its own, unwritable by others, runs"
+        );
+        assert_eq!(run(0o664, "1000"), "nothing", "group-writable");
+        assert_eq!(run(0o646, "1000"), "nothing", "other-writable");
+        assert_eq!(run(0o644, "1001"), "nothing", "somebody else's");
+        assert_eq!(run(0o644, "nil"), "nothing", "no uid from the host");
+    }
+
     #[test]
     fn the_reply_shape_is_a_list_of_return_values() {
         // A client that unpacks reads a bare-value server as having returned nothing at all.
