@@ -565,10 +565,22 @@ mod tests {
         let pid = dir.join("pid");
         std::fs::write(
             &script,
-            format!("#!/bin/sh\necho $$ > {}\nexec sleep 600\n", pid.display()),
+            format!(
+                "#!/bin/sh\n[ \"$1\" = --probe ] && exit 0\necho $$ > {}\nexec sleep 600\n",
+                pid.display()
+            ),
         )
         .expect("write");
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        // `ETXTBSY` while a `fork` on another thread still holds the file just written.
+        while let Err(why) = std::process::Command::new(&script).arg("--probe").status() {
+            assert_eq!(
+                why.raw_os_error(),
+                Some(26),
+                "the tenant will not run: {why}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
         let held = Arc::new(Holding::new());
         std::mem::forget(Drawing::attach(&held, true));
         held.sized(Some(10), 120, false);
