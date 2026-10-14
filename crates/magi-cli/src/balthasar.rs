@@ -104,33 +104,16 @@ pub async fn start(program: &str, instance: &str, project: &Path, agent: Option<
         sweep_stale(dir);
     }
 
-    let mut spawning = Command::new(program);
-    // In the child's initial environment, which is the only place balthasar can read it from.
-    if let Some(agent) = agent {
-        for named in AGENT {
-            spawning.env(named, agent);
-        }
+    // Its key, held for every call to its sockets.
+    let key = match magi_ipc::random_hex(32) {
+        Ok(key) => key,
+        Err(why) => return Started::Refused(format!("no key for `{program} serve`: {why}")),
+    };
+    for socket in &sockets {
+        magi_ipc::family::hold_key(socket, &key);
     }
-    // What this session told it at `configure`, and nothing another session said.
-    spawning.env(magi_host::driving::GIVEN, magi_host::driving::given_dir());
-    let child = spawning
-        .arg("serve")
-        .arg("--instance")
-        .arg(instance)
-        .arg("--scope")
-        .arg("project")
-        // The kernel's copy of "it dies with its magi". This process names itself: an orphan has
-        // already been reparented by the time it could look.
-        .arg("--tied")
-        .arg(std::process::id().to_string())
-        .current_dir(project)
-        // Piped rather than silenced: it must not reach the terminal the UI shares, but a balthasar
-        // that refuses to start needs its last words, which are all a person has to go on.
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn();
-    let child = match child {
+
+    let child = match spawned(program, instance, project, agent, &key) {
         Ok(mut child) => {
             if let (Some(pipe), Ok(mut reading)) = (child.stderr.take(), DRAINING.lock()) {
                 *reading = Some(drain(pipe));
@@ -183,6 +166,47 @@ pub async fn start(program: &str, instance: &str, project: &Path, agent: Option<
         "{program} did not bind {} within {PATIENCE:?}",
         named(&sockets)
     ))
+}
+
+/// `program serve` for `instance`, tied to this process, with `key` written on its standard input
+/// and nowhere else.
+fn spawned(
+    program: &str,
+    instance: &str,
+    project: &Path,
+    agent: Option<&str>,
+    key: &str,
+) -> std::io::Result<Child> {
+    let mut spawning = Command::new(program);
+    // In the child's initial environment, which is the only place balthasar can read it from.
+    if let Some(agent) = agent {
+        for named in AGENT {
+            spawning.env(named, agent);
+        }
+    }
+    // What this session told it at `configure`, and nothing another session said.
+    spawning.env(magi_host::driving::GIVEN, magi_host::driving::given_dir());
+    let mut child = spawning
+        .arg("serve")
+        .arg("--instance")
+        .arg(instance)
+        .arg("--scope")
+        .arg("project")
+        // The kernel's copy of "it dies with its magi". This process names itself: an orphan has
+        // already been reparented by the time it could look.
+        .arg("--tied")
+        .arg(std::process::id().to_string())
+        .current_dir(project)
+        // Piped rather than silenced: it must not reach the terminal the UI shares, but a balthasar
+        // that refuses to start needs its last words, which are all a person has to go on.
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = std::io::Write::write_all(&mut stdin, format!("{key}\n").as_bytes());
+    }
+    Ok(child)
 }
 
 /// The paths waited on, for a refusal that has to say what was looked for.
@@ -487,6 +511,43 @@ mod tests {
     async fn a_directory_that_is_not_there_is_not_an_error() {
         // The first run on a machine: nothing to sweep is ordinary, not a failure.
         sweep_stale(Path::new("/nonexistent/magi-sweep-nothing-here"));
+    }
+
+    #[test]
+    fn the_key_reaches_serve_on_its_standard_input_and_nowhere_else() {
+        use std::os::unix::fs::PermissionsExt;
+        let _alone = alone();
+        let dir = Scratch::new("magi-keyed", "serve");
+        let program = dir.join("memory-fake");
+        let at = dir.display();
+        std::fs::write(
+            &program,
+            format!(
+                "#!/bin/sh\nhead -n 1 > '{at}/stdin'\nenv > '{at}/env'\necho \"$@\" > '{at}/argv'\n"
+            ),
+        )
+        .expect("write");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let key = magi_ipc::random_hex(32).expect("random");
+
+        let mut child = spawned(
+            &program.display().to_string(),
+            "keyed",
+            &dir,
+            Some("alpha-rho"),
+            &key,
+        )
+        .expect("spawned");
+        assert!(child.wait().expect("reaped").success());
+
+        let told = std::fs::read_to_string(dir.join("stdin")).expect("what it read");
+        assert_eq!(told, format!("{key}\n"), "one line, the key");
+        for elsewhere in ["env", "argv"] {
+            let said = std::fs::read_to_string(dir.join(elsewhere)).expect(elsewhere);
+            assert!(!said.contains(&key), "the key is in its {elsewhere}");
+        }
+        let env = std::fs::read_to_string(dir.join("env")).expect("env");
+        assert!(env.contains("MAGI_MEMORY_AGENT=alpha-rho"), "{env}");
     }
 
     #[test]

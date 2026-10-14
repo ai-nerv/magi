@@ -134,3 +134,62 @@ async fn the_same_question_gets_the_same_answer_in_either_encoding() {
     assert_eq!(in_json, in_cbor, "one shape, two encodings");
     assert!(!in_json.is_empty(), "and it said something: {in_json:?}");
 }
+
+/// One call by hand from another connection of this user's, carrying `key` or none.
+fn by_hand(socket: &std::path::Path, call: &serde_json::Value) -> serde_json::Value {
+    use std::io::{Read, Write};
+    let mut stream = std::os::unix::net::UnixStream::connect(socket).expect("connect");
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .expect("a deadline");
+    let body = serde_json::to_vec(call).expect("encode");
+    let mut framed = (body.len() as u32).to_be_bytes().to_vec();
+    framed.extend_from_slice(&body);
+    stream.write_all(&framed).expect("write");
+    let mut head = [0_u8; 4];
+    stream.read_exact(&mut head).expect("a reply, not a close");
+    let mut reply = vec![0_u8; u32::from_be_bytes(head) as usize];
+    stream.read_exact(&mut reply).expect("reply");
+    serde_json::from_slice(&reply).expect("decode")
+}
+
+#[tokio::test]
+async fn a_second_peer_without_the_key_cannot_observe_into_the_session() {
+    let Some((mut family, held)) = dial("peer").await else {
+        return;
+    };
+    let session = format!("magi-peer-{}", std::process::id());
+    let turn = |cursor: u64, text: &str| serde_json::json!({ "cursor": cursor, "role": "user", "kind": "prose", "text": text, "raw": {} });
+    family
+        .call("observe", vec![serde_json::json!(session), turn(1, "ours")])
+        .await
+        .expect("the session's own call, which carries the key");
+
+    let wrong = "0".repeat(64);
+    let mut refused = 0;
+    for key in [None, Some(wrong.as_str())] {
+        let mut call = serde_json::json!({
+            "call": "observe", "args": [session, turn(2, "planted")],
+        });
+        if let Some(key) = key {
+            call["key"] = serde_json::json!(key);
+        }
+        let told = by_hand(held.0.socket(), &call);
+        if told["ok"] == true {
+            eprintln!("skipping: this balthasar predates the session key");
+            return;
+        }
+        assert!(
+            told["error"].as_str().unwrap_or_default().contains("key"),
+            "{key:?}: {told}"
+        );
+        refused += 1;
+    }
+    assert_eq!(refused, 2);
+
+    let back = family
+        .call("replay", vec![serde_json::json!(session)])
+        .await
+        .expect("replay");
+    assert_eq!(back.len(), 1, "only what the session said: {back:?}");
+}

@@ -73,7 +73,8 @@ pub fn table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
             Ok(socket) => {
                 let _ = socket.set_read_timeout(Some(timeout));
                 let _ = socket.set_write_timeout(Some(timeout));
-                let handle = handle_table(ctx, Rc::new(RefCell::new(Some(socket))));
+                let keyed = magi_tools::family::holds_key(&path).then_some(path);
+                let handle = handle_table(ctx, Rc::new(RefCell::new(Some(socket))), keyed);
                 stack.replace(ctx, handle);
             }
             Err(e) => {
@@ -86,7 +87,13 @@ pub fn table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
     stream
 }
 
-fn handle_table<'gc>(ctx: Context<'gc>, socket: Handle) -> Table<'gc> {
+/// One connection's methods. `keyed` names the socket when this process holds its key: a whole
+/// call sent on it goes out with the key added, which the script never sees.
+fn handle_table<'gc>(
+    ctx: Context<'gc>,
+    socket: Handle,
+    keyed: Option<std::path::PathBuf>,
+) -> Table<'gc> {
     let handle = Table::new(&ctx);
 
     let held = Rc::clone(&socket);
@@ -102,8 +109,11 @@ fn handle_table<'gc>(ctx: Context<'gc>, socket: Handle) -> Table<'gc> {
             stack.replace(ctx, (Value::Nil, "the connection is closed"));
             return Ok(CallbackReturn::Return);
         };
+        let sealed = keyed
+            .as_deref()
+            .and_then(|at| magi_tools::family::sealed(at, bytes.as_bytes()));
         match socket
-            .write_all(bytes.as_bytes())
+            .write_all(sealed.as_deref().unwrap_or(bytes.as_bytes()))
             .and_then(|()| socket.flush())
         {
             Ok(()) => stack.replace(ctx, true),
