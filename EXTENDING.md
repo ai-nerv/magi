@@ -79,6 +79,16 @@ What you use instead:
 keeps `magi.fs.write`/`magi.fs.ls` only so a config can find a sibling's socket and record a small
 file; `magi.fs.write` goes through the permission gate and answers `nil, why` rather than raising.
 
+magi refuses a few more things, as casper, melchior and balthasar do. `debug` is gone, because it
+reaches past every other refusal. A precompiled chunk is refused, as a file or as a string handed
+to `load`: only source is loaded. `setmetatable` refuses a metatable carrying `__gc`, and
+`getmetatable` answers `nil` for a userdata, because no finalizer ever runs. A chunk is stopped
+once the VM holds more than 512 MiB, the way it is stopped once it runs too long. A value handed
+back as JSON may not contain itself, nest more than 32 tables deep or grow past a size limit, and
+each of those is an error that says which. `print` and `warn` write to magi's log
+(`MAGI_DEBUG_LOG`, or `NERV_LOG` under `magi --logs`), never to the screen the session is drawn
+on.
+
 A file that raises costs itself and nothing else. Your package failing is reported on stderr and
 skipped; the program's own configuration failing is fatal, because a config that will not parse
 has not expressed an intention.
@@ -194,9 +204,9 @@ neighbouring program's file harmless.
 
 A `.magi.lua` or `.balthasar.lua` arrives with a checkout, and cloning a repository must not be a
 way to run code. Those files run in a VM of their own with no socket, no filesystem, no
-environment and no `load`, under an instruction budget, and may *choose* among what your own
-configuration offers. In magi that is `magi.model` (but not the `safety` helper), `magi.thinking`
-and `magi.ui`. Any other setting, a tool, a watcher or a `magi.load` is refused by name, and the
+environment and no `load`, under an instruction budget and a memory ceiling (16 MiB in magi),
+and may *choose* among what your own configuration offers. In magi that is `magi.model` (but not
+the `safety` helper), `magi.thinking` and `magi.ui`. Any other setting, a tool, a watcher or a `magi.load` is refused by name, and the
 session does not start.
 
 `magi.trusted = { "/home/you/work" }` in your own configuration lifts that for directories you
