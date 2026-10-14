@@ -5,20 +5,23 @@
 --   for _, s in ipairs(agent.sessions()) do print(s.id, s.cwd, s.status) end
 --
 -- Three ways to get `src`, and a sandboxed host can only use the first two: the `client` verb on
--- an already-open connection, a sibling's own client (the framing and reply shape are shared), or
+-- an already-open connection, a sibling's own client (the reply shape is shared), or
 -- `io.popen("magi lua-api"):read("a")` where the host permits `io`.
 --
 -- Plain Lua on purpose. It runs unchanged in magi's own VM, in hexe's, in oslo's, in PUC Lua and in whatever
--- the next sibling embeds, so it is *copied* between tools rather than ported — and a fix to the
--- framing reaches every one of them. It is a sibling of oslo's `client.lua` and deliberately the
--- same shape; read that one and this one holds no surprises.
+-- the next sibling embeds, so it is *copied* between tools rather than ported. It is a sibling of
+-- oslo's `client.lua` and deliberately the same shape; read that one and this one holds no
+-- surprises.
 --
--- The only thing it cannot do itself is open a socket. That arrives as the chunk's argument:
+-- It opens no socket and frames nothing itself. Both arrive as the chunk's argument:
 --
 --   load(src)(transport)     transport.connect(path, timeout_ms) -> handle
---                            handle:send(bytes) / handle:recv(n) / handle:close()
+--                            handle:call(request, { deadline_ms = N }) -> reply | nil, why
+--                            handle:close()
 --
--- Inside magi that is `magi.stream`, and it is found automatically when nothing is passed.
+-- `call` writes one frame, holding the 16 MiB cap before a byte is sent, and reads one reply by
+-- the deadline, holding the cap before its body is read. Inside magi that is `magi.stream`, and it
+-- is found automatically when nothing is passed.
 --
 -- **The surface is small on purpose.** It is not a mirror of the local API; it is the handful of
 -- things another program has a real reason to ask a mux, and every one answers a question the
@@ -43,8 +46,7 @@ local M = { _NAME = "magi", _VERSION = 1 }
 -- it -- which reads as "nothing is running".
 local HOSTS = { "magi", "hexe", "oslo" }
 
--- The most bytes one frame carries, either way, and the newest reply shape this client reads.
-local CAP = 16777216
+-- The newest reply shape this client reads.
 local FAMILY = 1
 
 --- This user's uid, as the host says it: `host.uid`, a number or a function answering one. Never
@@ -231,41 +233,6 @@ local function decode(s)
   return value()
 end
 
--- ---------------------------------------------------------------- the frame
-
--- Four bytes of big-endian length, then the body. Written by hand rather than with `string.pack`,
--- which Lua 5.1 and LuaJIT do not have and one of the siblings might be.
-local function frame(body)
-  local n = #body
-  return string.char(
-    math.floor(n / 16777216) % 256,
-    math.floor(n / 65536) % 256,
-    math.floor(n / 256) % 256,
-    n % 256
-  ) .. body
-end
-
-local function be32(s)
-  return s:byte(1) * 16777216 + s:byte(2) * 65536 + s:byte(3) * 256 + s:byte(4)
-end
-
---- Read exactly `n` bytes, however many reads that takes.
----
---- **A stream delivers what it likes.** One `recv` answering fewer bytes than asked for is
---- ordinary, not an error, and a client that treated it as the whole message would desynchronise
---- on the first reply large enough to be split.
-local function exactly(handle, n)
-  local parts, have = {}, 0
-  while have < n do
-    local chunk, why = handle:recv(n - have)
-    if not chunk then return nil, why end
-    if #chunk == 0 then return nil, "the session closed the connection" end
-    parts[#parts + 1] = chunk
-    have = have + #chunk
-  end
-  return table.concat(parts)
-end
-
 -- ---------------------------------------------------------------- the session
 
 local Session = {}
@@ -281,29 +248,16 @@ function Session:call(name, ...)
   local body = { call = name }
   if #args > 0 then body.args = args end
 
-  local payload = encode(body)
-  if #payload > CAP then return nil, "the call is larger than the " .. CAP .. " bytes a frame carries" end
-
   local handle, why = transport.connect(self.path, self.timeout_ms)
   if not handle then return nil, why end
-
-  local sent, gone = handle:send(frame(payload))
-  if not sent then handle:close(); return nil, gone end
-
-  local head, cut = exactly(handle, 4)
-  if not head then handle:close(); return nil, cut end
-  -- The declared length is checked against the cap before the body is read.
-  local want = be32(head)
-  if want == 0 or want > CAP then
+  if type(handle.call) ~= "function" then
     handle:close()
-    return nil, "the reply declared " .. want .. " bytes; a frame carries 1 to " .. CAP
+    return nil, "this transport lends no handle:call, and this client frames nothing itself"
   end
-  local reply_body, trimmed = exactly(handle, want)
-  handle:close()
-  if not reply_body then return nil, trimmed end
 
-  local decoded, reply = pcall(decode, reply_body)
-  if not decoded then return nil, reply end
+  local reply, failed = handle:call(body, { deadline_ms = self.timeout_ms })
+  handle:close()
+  if not reply then return nil, failed end
   local unread = newer(reply)
   if unread then return nil, unread end
   if not reply.ok then return nil, reply.error or "the session refused the call" end

@@ -1,12 +1,15 @@
 //! The socket primitive the client libraries need.
 //!
-//! The client carries framing and encoding in plain Lua but cannot open a socket, so the host
-//! lends it one as a native rather than a VM feature.
+//! A client cannot open a socket, so the host lends it one as a native rather than a VM feature,
+//! and frames a family call on it in Rust.
 //!
 //! ```lua
 //! local h = magi.stream.connect(path, timeout_ms)
+//! local reply, why = h:call({ call = "verbs" }, { deadline_ms = 2000 })
 //! h:send(bytes)   h:recv(n)   h:close()
 //! ```
+
+mod call;
 
 use luna::{Callback, CallbackReturn, Context, Table, Value};
 use std::cell::RefCell;
@@ -73,7 +76,7 @@ pub fn table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
             Ok(socket) => {
                 let _ = socket.set_read_timeout(Some(timeout));
                 let _ = socket.set_write_timeout(Some(timeout));
-                let handle = handle_table(ctx, Rc::new(RefCell::new(Some(socket))));
+                let handle = handle_table(ctx, Rc::new(RefCell::new(Some(socket))), timeout);
                 stack.replace(ctx, handle);
             }
             Err(e) => {
@@ -86,8 +89,45 @@ pub fn table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
     stream
 }
 
-fn handle_table<'gc>(ctx: Context<'gc>, socket: Handle) -> Table<'gc> {
+/// One connection's methods. `timeout` is what `send` and `recv` wait, and what `call` waits when
+/// it is given no deadline.
+fn handle_table<'gc>(ctx: Context<'gc>, socket: Handle, timeout: Duration) -> Table<'gc> {
     let handle = Table::new(&ctx);
+
+    let held = Rc::clone(&socket);
+    let call = Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
+        let (_self, request, opts): (Value, Value, Value) = stack.consume(ctx)?;
+        let deadline = std::time::Instant::now() + call::patience(ctx, opts, timeout);
+        let frame = match call::framed(ctx, request) {
+            Ok(frame) => frame,
+            Err(why) => {
+                let why = luna::String::from_slice(&ctx, why.as_bytes());
+                stack.replace(ctx, (Value::Nil, why));
+                return Ok(CallbackReturn::Return);
+            }
+        };
+        let mut slot = held.borrow_mut();
+        let Some(socket) = slot.as_mut() else {
+            stack.replace(ctx, (Value::Nil, "the connection is closed"));
+            return Ok(CallbackReturn::Return);
+        };
+        let answered = call::exchange(socket, &frame, deadline);
+        let restored = socket
+            .set_read_timeout(Some(timeout))
+            .and_then(|()| socket.set_write_timeout(Some(timeout)))
+            .map_err(|why| why.to_string());
+        // A call that did not come back whole leaves the stream out of step, so it goes with it.
+        match answered.and_then(|reply| restored.map(|()| reply)) {
+            Ok(reply) => stack.replace(ctx, crate::convert::lua_from_json(ctx, &reply)),
+            Err(why) => {
+                slot.take();
+                let why = luna::String::from_slice(&ctx, why.as_bytes());
+                stack.replace(ctx, (Value::Nil, why));
+            }
+        }
+        Ok(CallbackReturn::Return)
+    });
+    handle.set(ctx, "call", call).ok();
 
     let held = Rc::clone(&socket);
     let send = Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {

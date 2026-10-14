@@ -1,11 +1,12 @@
 //! The client library other programs load to talk to a running magi.
 //!
-//! Copied from the family rather than written, so a fix to the framing, the reply shape or the
-//! discovery order reaches every sibling. Opening a socket arrives as the chunk's argument:
+//! Copied from the family rather than written, so a fix to the reply shape or the discovery order
+//! reaches every sibling. Opening a socket and framing a call arrive as the chunk's argument:
 //!
 //! ```lua
 //! load(src)(transport)   -- transport.connect(path, timeout_ms) -> handle
-//!                        -- handle:send(bytes) / handle:recv(n) / handle:close()
+//!                        -- handle:call(request, { deadline_ms = N }) -> reply | nil, why
+//!                        -- handle:close()
 //! ```
 
 /// The client library, as a program would receive it from `magi lua-api`.
@@ -95,58 +96,65 @@ mod tests {
     }
 
     #[test]
-    fn the_frame_is_the_familys_four_byte_big_endian_length() {
-        assert!(
-            CLIENT.contains("16777216"),
-            "the shared framing must not drift"
-        );
+    fn the_client_frames_nothing_by_hand() {
+        assert!(CLIENT.contains("handle:call(body, { deadline_ms = self.timeout_ms })"));
+        for framing in [":recv(", ":send(", "be32", "16777216"] {
+            assert!(!CLIENT.contains(framing), "{framing:?} is framing by hand");
+        }
     }
 
-    /// A transport whose connection hands back `replies`, one `recv` at a time, and counts them.
+    /// A transport whose connection answers each `call` with the next of `__replies`, and keeps
+    /// what it was asked.
     const SCRIPTED: &str = r#"
-        local replies, recvs = __replies, 0
         __transport = { connect = function() return {
-          send = function(_, bytes) return true end,
-          recv = function(_, n) recvs = recvs + 1; __recvs = recvs; return table.remove(replies, 1) or "" end,
+          call = function(_, request, opts)
+            __asked, __deadline = request, opts.deadline_ms
+            return table.remove(__replies, 1)
+          end,
           close = function() end,
         } end }
     "#;
 
-    fn framed(body: &str) -> String {
-        let n = body.len();
-        let header: String = [n >> 24, n >> 16, n >> 8, n]
-            .iter()
-            .map(|b| format!("\\{}", b & 0xff))
-            .collect();
-        format!("\"{header}\", {body:?}")
+    #[test]
+    fn a_call_is_one_request_table_on_the_sessions_deadline() {
+        let answer = probe(&format!(
+            r#"(function()
+                __replies = {{ {{ ok = true, n = 2, result = {{ "a", "b" }} }} }}
+                {SCRIPTED}
+                local s = assert(chunk(__transport).connect({{ path = "/x", timeout_ms = 900 }}))
+                local first, second = s:call("session", "main")
+                return first .. second .. "|" .. __asked.call .. "|" .. __asked.args[1] .. "|" .. __deadline
+            end)()"#
+        ));
+        assert_eq!(answer, "ab|session|main|900");
     }
 
     #[test]
-    fn a_declared_length_past_the_cap_is_refused_before_the_body_is_read() {
-        let answer = probe(&format!(
+    fn a_transport_that_lends_no_call_is_refused_by_name() {
+        let answer = probe(
             r#"(function()
-                __replies = {{ "\255\255\255\255" }}
-                {SCRIPTED}
-                local s = assert(chunk(__transport).connect({{ path = "/x" }}))
+                local bare = { connect = function() return { close = function() end } end }
+                local s = assert(chunk(bare).connect({ path = "/x" }))
                 local v, why = s:call("verbs")
-                return tostring(v) .. "|" .. tostring(why) .. "|" .. tostring(__recvs)
-            end)()"#
-        ));
-        assert!(answer.starts_with("nil|the reply declared"), "{answer}");
-        assert!(answer.ends_with("|1"), "the body was asked for: {answer}");
+                return tostring(v) .. "|" .. tostring(why)
+            end)()"#,
+        );
+        assert!(
+            answer.starts_with("nil|") && answer.contains("handle:call"),
+            "{answer}"
+        );
     }
 
     #[test]
     fn a_reply_in_a_newer_family_is_refused_by_name() {
         let answer = probe(&format!(
             r#"(function()
-                __replies = {{ {} }}
+                __replies = {{ {{ ok = true, family = 2, n = 1, result = {{ 1 }} }} }}
                 {SCRIPTED}
                 local s = assert(chunk(__transport).connect({{ path = "/x" }}))
                 local v, why = s:call("verbs")
                 return tostring(v) .. "|" .. tostring(why)
-            end)()"#,
-            framed(r#"{"ok":true,"family":2,"n":1,"result":[1]}"#)
+            end)()"#
         ));
         assert!(
             answer.starts_with("nil|") && answer.contains("family 2"),
