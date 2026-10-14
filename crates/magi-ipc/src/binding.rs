@@ -70,16 +70,20 @@ fn ours(path: &Path) -> bool {
 /// # Errors
 /// When the lock file cannot be opened.
 pub fn clear_stale(path: &Path) -> io::Result<bool> {
+    // A lock file made only to ask is not left beside a socket that turns out to be alive.
+    let made = std::fs::symlink_metadata(lock_path(path)).is_err();
     let Some(_lock) = locked(path)? else {
         return Ok(false);
     };
-    if !(ours(path) && refused(path)) {
-        return Ok(false);
+    let stale = ours(path) && refused(path);
+    if stale {
+        std::fs::remove_file(path)?;
+        crate::secret::drop_key(path);
     }
-    std::fs::remove_file(path)?;
-    crate::secret::drop_key(path);
-    let _ = std::fs::remove_file(lock_path(path));
-    Ok(true)
+    if stale || made {
+        let _ = std::fs::remove_file(lock_path(path));
+    }
+    Ok(stale)
 }
 
 /// Take `path` for a listener this process is about to bind: its lock, held until [`unbind`], and
@@ -163,6 +167,10 @@ mod tests {
             "a file that is no socket went"
         );
         assert!(live.exists() && plain.exists());
+        assert!(
+            !lock_path(&live).exists() && !lock_path(&plain).exists(),
+            "a lock file made to ask was left beside what it asked about"
+        );
     }
 
     #[test]
