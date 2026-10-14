@@ -3,6 +3,8 @@
 //! and the client must take it as `cases.json` says. The library dials per call, so every call
 //! closes its connection whatever came back.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_lua::Engine;
 use magi_lua::client::CLIENT;
 use std::io::{Read, Write};

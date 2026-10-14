@@ -2,6 +2,8 @@
 //! journal at all, so the transcript comes back over a socket. It cannot be faked — the claim is
 //! that a separate program still has the conversation after the process that had it is gone.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_model::scratch::Scratch;
 
 use magi_testkit::Mind;

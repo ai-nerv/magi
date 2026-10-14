@@ -1,6 +1,8 @@
 //! The family client against a balthasar of each test's own, skipped when balthasar is not
 //! installed. Never the one whoever runs the suite has running: `observe` below writes into it.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_ipc::family::{Family, Fault};
 use magi_model::scratch::Scratch;
 use magi_testkit::memory::Serving;

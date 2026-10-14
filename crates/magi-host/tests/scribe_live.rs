@@ -4,6 +4,8 @@
 //! an `Entry` handed to balthasar comes back the same `Entry`, including the fields no projection
 //! carries. Never against the balthasar of whoever runs the suite, whose store these would fill.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_model::scratch::Scratch;
 
 use magi_host::scribe::Scribe;

@@ -2,6 +2,8 @@
 //! must not be enough to add a tool — which names a command — or a provider, which names a URL the
 //! whole conversation is sent to. Run through the binary, because the boundary is two files on disk.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_model::scratch::Scratch;
 
 use magi_testkit::Mind;

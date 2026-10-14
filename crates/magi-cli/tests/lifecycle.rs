@@ -3,6 +3,8 @@
 //! whole contribution is asking the kernel at spawn to do it instead. What is testable here is that
 //! magi asks, and that a sibling honouring the asking is gone afterwards.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_model::scratch::Scratch;
 
 use magi_testkit::Mind;

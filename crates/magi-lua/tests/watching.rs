@@ -5,6 +5,8 @@
 //! anybody writes will live — and the seam between them is a JSON value and a string, neither of
 //! which the compiler checks.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_lua::Engine;
 use magi_tools::{Registry, Watch};
 use std::cell::RefCell;

@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_host::{catalog::Catalog, session::Session, turn::Backend};
 use magi_ipc::{FrameReader, FrameWriter};
 use magi_model::scratch::Scratch;

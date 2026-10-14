@@ -2,6 +2,8 @@
 //! rule is invisible when it is wrong: an arrival is committed either way, so a session that should
 //! have answered and did not looks exactly like one with nothing to say.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_model::scratch::Scratch;
 
 use magi_host::session::Session;

@@ -3,6 +3,8 @@
 //! is the store and there is no journal — so a checkout without it skips them, see
 //! [`without_a_store`]. `PATH` goes on the child, the only place magi looks for a sibling.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_model::scratch::Scratch;
 
 use magi_testkit::Mind;

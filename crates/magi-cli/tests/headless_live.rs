@@ -3,6 +3,8 @@
 //! silently. melchior's own screen note is read here, where the other live tests refuse to, because a
 //! screen has no verb to ask; the note is then dialled rather than merely stat'ed.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_ipc::{FrameReader, FrameWriter};
 use magi_model::scratch::Scratch;
 use magi_proto::{Cursor, HarnessEvent, UiCommand};

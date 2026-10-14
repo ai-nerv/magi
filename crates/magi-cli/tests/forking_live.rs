@@ -8,6 +8,8 @@
 //! and `list` are asked instead, and a stop goes through a session's own `agent` tool. The store
 //! is magi's own.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_ipc::{FrameReader, FrameWriter};
 use magi_model::scratch::Scratch;
 use magi_proto::{Cursor, Entry, HarnessEvent, ToolResult, UiCommand};

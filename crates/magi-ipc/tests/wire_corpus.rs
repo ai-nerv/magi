@@ -1,6 +1,8 @@
 //! The family's wire corpus, against both family clients in this crate: each client case is what a
 //! fake server answers a call with, and the client must take it as `cases.json` says.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_ipc::family::{Fault, blocking};
 use magi_model::scratch::Scratch;
 use std::io::{Read, Write};

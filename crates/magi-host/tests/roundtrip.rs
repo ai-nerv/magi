@@ -3,6 +3,8 @@
 //! M1's claim is that `magi host` can stand in for the replay host without the UI changing.
 //! These drive the same protocol the UI drives, so the claim is tested rather than asserted.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_model::scratch::Scratch;
 
 use magi_host::{open_session, serve};

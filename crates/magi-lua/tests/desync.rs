@@ -4,6 +4,8 @@
 //! magi's client dials per call and is in step by construction; this measures that rather than
 //! reading it off the source, and fails if the client is ever changed to hold its handle.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_lua::Engine;
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};

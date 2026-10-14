@@ -2,6 +2,8 @@
 //!
 //! Each memory connection uses a disposable server owned by this test.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_lua::Engine;
 use magi_tools::Registry;
 use std::cell::RefCell;

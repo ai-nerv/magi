@@ -1,6 +1,8 @@
 //! `magi doctor`, against the real binary. It answers without starting a session, says where each
 //! tool came from, and reports a missing sibling as missing rather than omitting it.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_model::scratch::Scratch;
 
 use std::process::Command;

@@ -8,6 +8,8 @@
 //! both, and they have their own tests over there. What is left is the half magi still decides:
 //! what it does with an answer, a refusal, an overflow and an interrupt.
 
+#![allow(clippy::expect_used, clippy::indexing_slicing)]
+
 use magi_model::scratch::Scratch;
 
 use magi_host::session::Session;
