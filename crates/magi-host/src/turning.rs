@@ -101,12 +101,8 @@ async fn after(
         if let Err(why) = outcome {
             error(&mut *session.lock().await, why);
         }
-        if let Err(why) = crate::scribe::flush(&session, &mut *scribe.lock().await).await {
-            error(
-                &mut *session.lock().await,
-                format!("this turn was not recorded: {why}"),
-            );
-        }
+        let flushed = crate::scribe::flush(&session, &mut *scribe.lock().await).await;
+        crate::scribe::told(&mut *session.lock().await, &flushed);
         let Some(next) = session.lock().await.finish(owner) else {
             return;
         };

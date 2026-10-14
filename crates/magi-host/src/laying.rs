@@ -21,26 +21,6 @@ const REPORT: std::time::Duration = std::time::Duration::from_millis(500);
 /// the provider's own count of the serialized request.
 pub const COUNTING: &str = "estimated";
 
-/// What to tell the person when the memory layer stops answering, and when it answers again.
-/// `told` is whether they already know: it is said once each way, not on every turn.
-fn said_about(told: &mut bool, handed_over: bool) -> Option<&'static str> {
-    match (handed_over, *told) {
-        (false, false) => {
-            *told = true;
-            Some(
-                "The memory layer has stopped answering, so this conversation is not being \
-                 recorded. It carries on, and what is said is kept here and handed over if the \
-                 memory layer comes back; if this session ends first, it is lost.",
-            )
-        }
-        (true, true) => {
-            *told = false;
-            Some("The memory layer is answering again, and the conversation is recorded again.")
-        }
-        _ => None,
-    }
-}
-
 /// How many tighter layouts one prompt may ask for after the provider refused one as too long.
 pub const OVERFLOWS: u8 = 3;
 
@@ -412,15 +392,7 @@ pub async fn lay(
     if let Err(why) = &handed {
         magi_model::noted!("layout: the transcript could not be handed over: {why}");
     }
-    {
-        let mut held = session.lock().await;
-        if let Some(text) = said_about(&mut held.unrecorded, handed.is_ok()) {
-            let _ = held.publisher().send(HarnessEvent::Noticed {
-                cursor: magi_proto::Cursor::ZERO,
-                text: text.to_owned(),
-            });
-        }
-    }
+    crate::scribe::told(&mut *session.lock().await, &handed);
     let asked = request(&*session.lock().await, backend, tools, prompt.round);
     magi_model::noted!(
         "layout: asking for round {} of {} live entries in a {} window",

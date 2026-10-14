@@ -20,6 +20,7 @@ pub mod remember;
 mod reporting;
 mod resuming;
 pub mod scribe;
+mod sending;
 pub mod session;
 mod settling;
 pub mod system;
@@ -154,17 +155,23 @@ pub async fn serve_on(
     // backend has no worker. Behind a lock because `/model` replaces it — the worker owns a VM
     // built for one protocol. Shared with every connection, so any attached UI can answer.
     let pending = Arc::new(crate::asking::Pending::new());
-    // Dialled once, and `None` when balthasar is not running, which is the ordinary case. Kept
-    // before the block below takes it: the VM is told where to reach this session's balthasar.
+    // `None` only when no memory layer was named at all. One that was named and does not answer
+    // yet is dialled again, backing off, by every call that needs it.
     let told = balthasar.clone();
+    if let Some(path) = &balthasar {
+        magi_ipc::family::own(path);
+    }
     let scribe = Arc::new(Mutex::new({
         let id = session.lock().await.id().clone();
-        let found = match balthasar {
-            Some(path) => magi_ipc::family::Family::dial(&path)
-                .await
-                .ok()
-                .map(|family| crate::scribe::Scribe::over(family, Some(path.clone()), &id)),
-            None => crate::scribe::Scribe::find(&id).await.ok(),
+        let found = match balthasar.or_else(magi_ipc::family::named) {
+            Some(path) => Some(match magi_ipc::family::Family::dial(&path).await {
+                Ok(family) => crate::scribe::Scribe::over(family, Some(path), &id),
+                Err(why) => {
+                    magi_model::noted!("scribe: {why}; dialling again as it is needed");
+                    crate::scribe::Scribe::unconnected(path, &id)
+                }
+            }),
+            None => None,
         };
         found.map(|scribe| match &catalog.transcript {
             Some(key) => scribe.recording_as(key.clone()),
@@ -371,7 +378,7 @@ async fn connection(
 ) -> Result<(), HostError> {
     let (read_half, write_half) = stream.into_split();
     let mut reader = FrameReader::new(read_half);
-    let mut writer = FrameWriter::new(write_half);
+    let mut writer = crate::sending::Screen(FrameWriter::new(write_half));
 
     let (from, draws) = match reader.read::<UiCommand>().await? {
         UiCommand::Attach {

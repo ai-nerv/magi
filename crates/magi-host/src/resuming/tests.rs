@@ -170,7 +170,9 @@ async fn an_optional_model_extension_is_not_required_for_resume() {
 async fn pending_storage_failure_leaves_a_selected_and_every_unsent_row_pending() {
     let peer = Peer::new("write-failure", |request| {
         std::future::ready(if request["call"] == "observe" {
-            Reply::refused("synthetic write failure")
+            let mut failed = Reply::refused("synthetic write failure");
+            failed.fault = Some(magi_ipc::family::Faulted::Failed);
+            failed
         } else {
             candidate(&request)
         })
