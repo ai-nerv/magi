@@ -47,6 +47,21 @@ fn a_chunk_over_the_ceiling_is_stopped_and_the_vm_recovers() {
 }
 
 #[test]
+fn a_chunk_that_finishes_inside_one_slice_is_held_to_the_ceiling_all_the_same() {
+    let mut project = Engine::project(&serde_json::Map::new());
+    let why = project
+        .run("magi.big = string.rep('x', 32 << 20)", ".magi.lua")
+        .expect_err("held");
+    assert!(why.to_string().contains("16 MiB of memory"), "{why}");
+    let mut engine = Engine::new();
+    engine.lua.set_memory_limit(Some(8 << 20));
+    let why = engine
+        .run("magi.big = string.rep('x', 16 << 20)", "big.lua")
+        .expect_err("held");
+    assert!(why.to_string().contains("8 MiB of memory"), "{why}");
+}
+
+#[test]
 fn garbage_is_collected_before_the_ceiling_is_judged() {
     let mut engine = Engine::new();
     engine.lua.set_memory_limit(Some(8 << 20));
