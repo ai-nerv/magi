@@ -223,7 +223,8 @@ reported as failing; it never stalls the program that ran it.
 **A socket a VM may dial is one of the family's, by name.** A program's Lua stream reaches the
 sockets of these four programs in their runtime directories and nothing else — not "anything under
 the runtime directory", which is also where the session bus, the agents and the user's systemd
-listen.
+listen. The one addition is casper's: it lends clients for hexe and oslo, so its VM also reaches
+`hexe` and `onix` by the same rule.
 
 **A file that raises costs itself and nothing else.** Somebody else's package failing is reported
 and skipped; a program's own configuration failing is fatal, because a config that will not parse
