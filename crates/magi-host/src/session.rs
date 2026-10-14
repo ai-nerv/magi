@@ -275,13 +275,7 @@ impl Session {
         self.entries()
             .iter()
             .fold(magi_proto::Usage::default(), |total, entry| match entry {
-                Entry::Assistant { usage, .. } => magi_proto::Usage {
-                    input: total.input + usage.input,
-                    output: total.output + usage.output,
-                    cache_read: total.cache_read + usage.cache_read,
-                    cache_write: total.cache_write + usage.cache_write,
-                    cost_micros: total.cost_micros + usage.cost_micros,
-                },
+                Entry::Assistant { usage, .. } => total.plus(*usage),
                 _ => total,
             })
     }
