@@ -121,6 +121,21 @@ impl Holding {
         }
     }
 
+    /// Forget every one: the person interrupted, and a surface is part of the turn they stopped.
+    pub fn close_all(&self) {
+        if let Ok(mut typing) = self.typing.lock() {
+            typing.clear();
+        }
+    }
+
+    /// Whether the surface `id` is still open.
+    #[must_use]
+    pub fn is_open(&self, id: &ToolCallId) -> bool {
+        self.typing
+            .lock()
+            .is_ok_and(|typing| typing.contains_key(id))
+    }
+
     /// Whether anybody attached can draw rows a tool asks for.
     #[must_use]
     pub fn on_a_screen(&self) -> bool {

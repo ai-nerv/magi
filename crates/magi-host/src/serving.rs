@@ -263,6 +263,7 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
                     Some(UiCommand::Interrupt) => {
                         let held = session.lock().await;
                         held.cancel().request();
+                        person.surfaces.close_all();
                     }
                     Some(UiCommand::Attach { .. }) => {}
                     Some(UiCommand::Detach) | None => break,

@@ -19,6 +19,7 @@ const IDLE: Duration = Duration::from_millis(250);
 
 /// Which surfaces are open, and what reaches them.
 mod holding;
+mod tenant;
 pub use holding::{Drawing, Holding, Nudge};
 
 /// Gives a tool rows by publishing, and drives its tenant over a spawn.
@@ -127,15 +128,21 @@ impl Holder {
     /// Exchange frames with the tenant until it is done.
     fn pump(
         &self,
-        mut child: std::process::Child,
+        child: std::process::Child,
         id: &ToolCallId,
         surface: &Surface,
         granted: u16,
         args: &serde_json::Value,
         nudges: &std::sync::mpsc::Receiver<Nudge>,
     ) -> Option<String> {
-        let mut writing = child.stdin.take()?;
-        let mut reading = std::io::BufReader::new(child.stdout.take()?);
+        let mut tenant = tenant::Tenant(child);
+        let mut writing = tenant.0.stdin.take()?;
+        let open = || self.held.is_open(id);
+        let mut reading = tenant::Fed {
+            lines: tenant::listen(tenant.0.stdout.take()?),
+            pending: std::io::Cursor::new(Vec::new()),
+            open: &open,
+        };
 
         // The height is granted, the width is reported: magi decides how many rows a tool gets,
         // and the width is whatever the window happens to be, measured by the client.
@@ -145,10 +152,7 @@ impl Holder {
             holds: self.held.reports_holds(),
             args: args.clone(),
         };
-        if send(&mut writing, &opened).is_none() {
-            let _ = child.kill();
-            return None;
-        }
+        send(&mut writing, &opened)?;
 
         // The first frame is drawn before anything is pressed, so the rows fill as they appear.
         let mut answered = self.take(id, &mut reading, &mut writing);
@@ -199,11 +203,10 @@ impl Holder {
             answered = self.take(id, &mut reading, &mut writing);
         }
 
-        // Told rather than killed, then killed, so a tenant that ignores it does not outlive its rows.
+        // Told rather than killed, then killed and reaped as `tenant` goes, so a tenant that ignores
+        // it does not outlive its rows.
         let _ = send(&mut writing, &ToSurface::Close);
         drop(writing);
-        let _ = child.kill();
-        let _ = child.wait();
         answered
     }
 
@@ -551,5 +554,58 @@ mod tests {
             seen.lock().expect("held").first(),
             Some(HarnessEvent::Drew { .. })
         ));
+    }
+
+    #[test]
+    fn a_tenant_that_never_answers_is_let_go_when_its_surface_closes_and_reaped() {
+        use magi_tools::holding::Holds;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = magi_model::scratch::Scratch::new("magi-holder", "silent");
+        let script = dir.join("tenant");
+        let pid = dir.join("pid");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\necho $$ > {}\nexec sleep 600\n", pid.display()),
+        )
+        .expect("write");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let held = Arc::new(Holding::new());
+        std::mem::forget(Drawing::attach(&held, true));
+        held.sized(Some(10), 120, false);
+        let holder = Holder::new(
+            Arc::clone(&held),
+            Box::new(|_| {}),
+            Box::new(|| true),
+            &script.display().to_string(),
+        );
+        let closing = Arc::clone(&held);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            closing.close_all();
+        });
+        let started = std::time::Instant::now();
+        let surface = Surface {
+            rows: 4,
+            about: "quiet".to_owned(),
+            tick: None,
+            place: magi_proto::tooling::Place::Prompt,
+            tenant: None,
+        };
+        let answered = holder.hold(
+            "quiet",
+            &surface,
+            &serde_json::Value::Null,
+            &magi_tools::holding::Context::default(),
+        );
+        assert_eq!(answered, None);
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "it waited on the tenant"
+        );
+        let tenant = std::fs::read_to_string(&pid).expect("the tenant ran");
+        assert!(
+            !std::path::Path::new(&format!("/proc/{}", tenant.trim())).exists(),
+            "the tenant outlived its surface"
+        );
     }
 }
