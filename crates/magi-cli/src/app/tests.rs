@@ -331,6 +331,19 @@ mod usage_tests {
     }
 
     #[test]
+    fn a_bogus_figure_saturates_the_total_rather_than_wrapping() {
+        let mut app = App::new();
+        for (n, cost) in [(1, spent(u64::MAX, 0)), (2, spent(1, 0))] {
+            app.apply(HarnessEvent::AssistantStarted {
+                cursor: Cursor(n),
+                id: MessageId::new(format!("a{n}")),
+            });
+            app.apply(ended(&format!("a{n}"), n, cost));
+        }
+        assert_eq!(app.usage().input, u64::MAX);
+    }
+
+    #[test]
     fn a_turn_that_reported_nothing_does_not_reset_the_gauge() {
         // A refusal costs nothing and is journalled with a zero. Reading it as "the window is
         // empty now" would make the gauge flicker to zero on every error.
