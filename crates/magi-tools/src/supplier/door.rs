@@ -360,7 +360,7 @@ mod tests {
         command
             .arg("-c")
             .arg(format!(
-                "read key; printf %s \"$key\" > '{}'; echo '{{\"event\":\"listening\"}}'; sleep 5",
+                "read key; printf %s \"$key\" > '{}'; echo '{{\"event\":\"listening\"}}'; exec sleep 5",
                 heard.display()
             ))
             .stdin(std::process::Stdio::piped())
