@@ -282,7 +282,7 @@ const PROTECTED: &[&str] = &[
 ];
 
 /// Whether a write grant on `dir` may be handed to the jail: not `$HOME`, and not a directory
-/// above, at or inside a [`PROTECTED`] one.
+/// above, at or inside a `PROTECTED` one.
 #[must_use]
 pub fn handed_to_jail(dir: &Path, home: Option<&Path>) -> bool {
     let dir = real_path(dir);
