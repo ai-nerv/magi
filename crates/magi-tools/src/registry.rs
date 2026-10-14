@@ -190,7 +190,7 @@ impl Registry {
                     // What the person is shown, masked the same way: the painting is the file.
                     shown: crate::masking::painted(output.shown),
                     unlocks: Vec::new(),
-                    hints: output.hints,
+                    hints: crate::masking::hints(output.hints),
                 }
             }
             None => {
@@ -288,7 +288,7 @@ impl Registry {
             is_error: output.is_error,
             shown: crate::masking::painted(output.shown),
             unlocks: Vec::new(),
-            hints: output.hints,
+            hints: crate::masking::hints(output.hints),
         }
     }
 }
