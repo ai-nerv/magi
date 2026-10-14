@@ -294,12 +294,7 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
             balthasar::stop();
             host::done(&socket);
             let outcome = outcome?;
-            if !outcome.text.is_empty() {
-                println!("{}", outcome.text);
-            }
-            if let Some(error) = &outcome.error {
-                eprintln!("magi: {error}");
-            }
+            print::report(&outcome);
             if outcome.failed() {
                 std::process::exit(1);
             }

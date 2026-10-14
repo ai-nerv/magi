@@ -27,6 +27,52 @@ impl Outcome {
     }
 }
 
+/// One line beside the answer, on stderr, shown rather than obeyed by the terminal.
+fn say(line: &str) {
+    eprintln!("{}", magi_tui::clean::visible(line));
+}
+
+/// What a finished run prints: the answer on stdout and any error on stderr, each shown rather
+/// than obeyed by the terminal.
+pub fn report(outcome: &Outcome) {
+    let _ = written(outcome, &mut std::io::stdout(), &mut std::io::stderr());
+}
+
+fn written(
+    outcome: &Outcome,
+    out: &mut impl std::io::Write,
+    err: &mut impl std::io::Write,
+) -> std::io::Result<()> {
+    if !outcome.text.is_empty() {
+        writeln!(out, "{}", magi_tui::clean::visible(&outcome.text))?;
+    }
+    if let Some(error) = &outcome.error {
+        writeln!(err, "magi: {}", magi_tui::clean::visible(error))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod reporting {
+    #[test]
+    fn an_answer_holding_escapes_is_printed_shown_not_obeyed() {
+        let outcome = super::Outcome {
+            text: "done \x1b]52;c;ZXZpbA==\x07\x1b[2J\n\tnext".to_owned(),
+            stop_reason: None,
+            error: Some("failed \u{9b}2J".to_owned()),
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        super::written(&outcome, &mut out, &mut err).expect("written");
+        let (out, err) = (String::from_utf8_lossy(&out), String::from_utf8_lossy(&err));
+        assert!(!out.contains('\x1b') && !out.contains('\x07'), "{out:?}");
+        assert!(
+            out.contains("\u{241b}]52;") && out.contains("\n\tnext"),
+            "{out:?}"
+        );
+        assert!(!err.contains('\u{9b}'), "{err:?}");
+    }
+}
+
 /// Submit one prompt and collect the answer.
 pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
     let stream = magi_ipc::connect(socket).await?;
@@ -96,21 +142,21 @@ pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
                     _ => break,
                 }
             }
-            HarnessEvent::ToolCallStarted { name, .. } => eprintln!("· {name}"),
+            HarnessEvent::ToolCallStarted { name, .. } => say(&format!("· {name}")),
             // About the session and not from the model, so beside the answer rather than in it.
-            HarnessEvent::Noticed { text, .. } => eprintln!("· {text}"),
+            HarnessEvent::Noticed { text, .. } => say(&format!("· {text}")),
             // Nobody is at the keyboard, and the daemon waits for an answer, so a `-p` run that
             // ignored this would hang. Denied rather than allowed: `magi.allow` is how a person
             // says in advance what an unattended run may do, and anything else is refused here.
             HarnessEvent::PermissionAsked {
                 id, tool, action, ..
             } => {
-                eprintln!(
+                say(&format!(
                     "· {tool} was not permitted to {} {} -- nothing is attached to ask, and \
                      `magi.allow` does not cover it",
                     action.verb(),
                     action.subject()
-                );
+                ));
                 writer
                     .write(&UiCommand::Permit {
                         id,
@@ -130,14 +176,16 @@ pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
             } => {
                 let Some(last) = options.last() else {
                     // A question with no answers cannot be answered; the tool gives up on its own.
-                    eprintln!("· {tool} asked \"{question}\" and offered nothing to answer with");
+                    say(&format!(
+                        "· {tool} asked \"{question}\" and offered nothing to answer with"
+                    ));
                     continue;
                 };
-                eprintln!(
+                say(&format!(
                     "· {tool} asked \"{question}\" -- nothing is attached to answer, so `{}` \
                      was taken",
                     last.label
-                );
+                ));
                 writer
                     .write(&UiCommand::Answered {
                         id,

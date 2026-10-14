@@ -5,6 +5,7 @@
 pub mod agents;
 pub mod beacon;
 pub mod border;
+pub mod clean;
 pub mod colour;
 pub mod complete;
 pub mod corner;
