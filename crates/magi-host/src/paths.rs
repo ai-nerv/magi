@@ -42,7 +42,7 @@ pub fn archived() -> Vec<Summary> {
 /// this; what it may not do is remove it — see [`purge`].
 #[must_use]
 pub fn put_away(id: &str) -> bool {
-    let Ok(mut family) = magi_ipc::family::blocking::Family::find() else {
+    let Ok(mut family) = magi_ipc::family::blocking::Family::ours() else {
         return false;
     };
     family
@@ -58,7 +58,7 @@ pub fn put_away(id: &str) -> bool {
 
 /// Name this run, for good: nothing renames it afterwards but a person.
 pub fn rename(id: &str, title: &str) -> Result<(), String> {
-    let mut family = magi_ipc::family::blocking::Family::find()
+    let mut family = magi_ipc::family::blocking::Family::ours()
         .map_err(|why| format!("balthasar is not reachable: {why}"))?;
     family
         .call(

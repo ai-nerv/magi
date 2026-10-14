@@ -84,7 +84,15 @@ pub async fn bind(path: &Path) -> Result<UnixListener, IpcError> {
 
 /// Connect to a listening daemon.
 pub async fn connect(path: &Path) -> Result<UnixStream, IpcError> {
-    Ok(UnixStream::connect(path).await?)
+    let stream = UnixStream::connect(path).await?;
+    // A session is this user's; a socket another uid answers on is not one, whatever its name.
+    if !PeerCred::of(&stream)?.is_same_user() {
+        return Err(IpcError::Io(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("{} is served by another user", path.display()),
+        )));
+    }
+    Ok(stream)
 }
 
 #[cfg(test)]
