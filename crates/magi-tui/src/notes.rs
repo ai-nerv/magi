@@ -84,9 +84,9 @@ pub fn view(
     for change in changes {
         let id = field(change, "id");
         let state = field(change, "state");
-        let what = [&change["after"]["title"], &change["before"]["title"]]
+        let what = ["after", "before"]
             .into_iter()
-            .find_map(serde_json::Value::as_str)
+            .find_map(|side| change.get(side)?.get("title")?.as_str())
             .unwrap_or_else(|| field(change, "note"));
         let line = Line::from(vec![
             Span::styled(format!("{state:<9}"), ink.label),

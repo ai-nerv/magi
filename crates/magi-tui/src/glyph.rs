@@ -101,10 +101,9 @@ pub fn glyphs() -> &'static Glyphs {
 #[must_use]
 pub fn spinner(tick: usize) -> &'static str {
     let frames = &glyphs().spinner;
-    if frames.is_empty() {
-        return "";
-    }
-    &frames[tick % frames.len()]
+    frames
+        .get(tick.checked_rem(frames.len()).unwrap_or(0))
+        .map_or("", String::as_str)
 }
 
 #[must_use]

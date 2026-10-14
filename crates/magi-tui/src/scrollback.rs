@@ -88,7 +88,7 @@ impl Scrollback {
             self.offset = self.offset.min(max);
         }
         let end = (self.offset + height).min(self.lines.len());
-        &self.lines[self.offset..end]
+        self.lines.get(self.offset..end).unwrap_or_default()
     }
 
     /// Scroll towards the start of the transcript.
