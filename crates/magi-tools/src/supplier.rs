@@ -327,7 +327,15 @@ impl Tool for SuppliedTool {
         };
         // magi decides, the program describes: the card says which verb this tool acts under and
         // the ledger answers, so a tool moved out of magi's config cannot leave the gate behind it.
-        if let Some(action) = wants(&self.card, arguments)
+        let action = wants(&self.card, arguments);
+        if matches!(&action, Some(magi_proto::permit::Action::Network { host }) if host.is_empty())
+        {
+            return Output::error(format!(
+                "{} names no host to reach, so nobody can be asked about it",
+                self.card.name
+            ));
+        }
+        if let Some(action) = action
             && let Err(why) = ops.allow(&self.card.name, &action)
         {
             return Output::error(why);
@@ -546,7 +554,6 @@ fn finished(ran: Ran) -> Output {
 fn wants(card: &Card, arguments: &serde_json::Value) -> Option<magi_proto::permit::Action> {
     use magi_proto::permit::Action;
     let needs = card.needs.as_deref()?;
-    // The argument a person would judge it by; a tool with no path is asked about by name.
     let text = |key: &str| {
         arguments
             .get(key)
@@ -554,18 +561,22 @@ fn wants(card: &Card, arguments: &serde_json::Value) -> Option<magi_proto::permi
             .unwrap_or("")
             .to_owned()
     };
-    let path = || {
-        let path = text("path");
-        if path.is_empty() {
-            card.name.clone()
-        } else {
-            path
-        }
+    // A tool with no local path, or one whose path is an MCP server's, is asked about by its own
+    // name and never resolved under the session's directory.
+    let by_name = || Action::Run {
+        command: card.name.clone(),
+        program: card.name.clone(),
     };
+    let path = text("path");
+    let local = !path.is_empty() && !card.name.starts_with("mcp__");
     Some(match needs {
-        "read" => Action::Read { path: path() },
-        "write" => Action::Write { path: path() },
-        "reach" => Action::Network { host: text("host") },
+        "read" if local => Action::Read { path },
+        "write" if local => Action::Write { path },
+        "read" | "write" => by_name(),
+        "reach" => Action::Network {
+            host: host_of(&text("host"), &text("url")),
+        },
+        _ if card.name.starts_with("mcp__") => by_name(),
         _ => {
             let command = {
                 let command = text("command");
@@ -587,6 +598,25 @@ fn wants(card: &Card, arguments: &serde_json::Value) -> Option<magi_proto::permi
             Action::Run { command, program }
         }
     })
+}
+
+/// The host a `reach` call names: `host` when it says one, else the host part of `url`, lowercased
+/// and without credentials or port. Empty when neither names one.
+fn host_of(host: &str, url: &str) -> String {
+    if !host.trim().is_empty() {
+        return host.trim().to_lowercase();
+    }
+    let rest = url
+        .trim()
+        .split_once("://")
+        .map_or(url.trim(), |(_, rest)| rest);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let authority = authority.rsplit_once('@').map_or(authority, |(_, at)| at);
+    let name = match authority.strip_prefix('[') {
+        Some(bracketed) => bracketed.split(']').next().unwrap_or(""),
+        None => authority.split(':').next().unwrap_or(""),
+    };
+    name.to_lowercase()
 }
 
 /// The command's program name, for the permission subject, stepping over any leading `VAR=value`.
@@ -672,13 +702,82 @@ mod gating {
 
     #[test]
     fn a_tool_with_nothing_to_name_is_asked_about_by_its_own_name() {
-        // Better than an empty prompt: "bash wants to run" with a blank where the command goes.
-        let bare = wants(&card(Some("read")), &serde_json::json!({}));
+        // Never as a path: `<cwd>/bash` would be an edit inside the project to `edits` mode.
+        for needs in ["read", "write"] {
+            let bare = wants(&card(Some(needs)), &serde_json::json!({}));
+            assert_eq!(
+                bare,
+                Some(Action::Run {
+                    command: "bash".to_owned(),
+                    program: "bash".to_owned(),
+                }),
+                "{needs}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_mcp_tool_is_asked_about_by_name_whatever_its_path_says() {
+        let mut card = card(Some("write"));
+        card.name = "mcp__github__create_file".to_owned();
+        let asked = wants(&card, &serde_json::json!({ "path": "README.md" }));
         assert_eq!(
-            bare,
-            Some(Action::Read {
-                path: "bash".to_owned()
+            asked,
+            Some(Action::Run {
+                command: "mcp__github__create_file".to_owned(),
+                program: "mcp__github__create_file".to_owned(),
             })
+        );
+    }
+
+    #[test]
+    fn a_reach_that_names_no_host_is_refused_before_anything_runs() {
+        let tool = SuppliedTool {
+            card: card(Some("reach")),
+            program: "magi-no-such-casper-anywhere".to_owned(),
+            asks: Arc::new(crate::question::Unanswered),
+            holds: Arc::new(crate::holding::Screenless),
+            knows: Arc::new(crate::holding::Incurious),
+            configured: String::new(),
+        };
+        let out = tool.run(
+            &serde_json::json!({ "url": "" }),
+            &crate::ops::Real::gated(
+                std::env::temp_dir(),
+                crate::permit::Ledger::new(),
+                Arc::new(crate::approve::AllowAll),
+            ),
+            &Uncancelled,
+        );
+        assert!(
+            out.is_error && out.content.contains("names no host"),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn web_is_asked_about_by_the_host_its_url_names() {
+        let reach = |args: serde_json::Value| wants(&card(Some("reach")), &args);
+        for (url, host) in [
+            ("https://Example.COM/a?b", "example.com"),
+            ("http://user:pw@host.test:8080/x", "host.test"),
+            ("https://[::1]:443/", "::1"),
+            ("example.org/path", "example.org"),
+        ] {
+            assert_eq!(
+                reach(serde_json::json!({ "url": url })),
+                Some(Action::Network {
+                    host: host.to_owned()
+                }),
+                "{url}"
+            );
+        }
+        assert_eq!(
+            reach(serde_json::json!({})),
+            Some(Action::Network {
+                host: String::new()
+            }),
+            "named nowhere, and refused before anybody is asked"
         );
     }
 }
