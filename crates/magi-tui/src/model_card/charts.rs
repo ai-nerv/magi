@@ -22,6 +22,11 @@ const ACROSS: [&str; 8] = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"];
 /// The cell a column tops out in, by the eighths of it that are filled.
 const UP: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
 
+/// The [`ACROSS`] cell for `part` eighths, empty past seven.
+fn eighth(part: usize) -> &'static str {
+    ACROSS.get(part).copied().unwrap_or_default()
+}
+
 /// `ink` at `t` of its strength: dark where a bar starts, bright where it ends.
 fn fade(ink: Color, t: f32) -> Color {
     crate::colour::blend(crate::colour::blend(ink, Color::Rgb(0, 0, 0), 0.55), ink, t)
@@ -104,7 +109,7 @@ pub(crate) fn bars(items: &[Item], max: f64, width: u16) -> Vec<Line<'static>> {
                 spans.push(Span::styled("█", Style::default().fg(ink)));
             }
             if part > 0 {
-                spans.push(Span::styled(ACROSS[part], Style::default().fg(item.ink)));
+                spans.push(Span::styled(eighth(part), Style::default().fg(item.ink)));
             }
             spans.push(Span::styled("·".repeat(room.saturating_sub(used)), track));
             spans.push(Span::styled(
@@ -126,7 +131,9 @@ pub(crate) fn columns(items: &[Item], width: u16, height: u16) -> Vec<Line<'stat
         .map_or_else(String::new, |item| item.said.clone());
     let gutter = peak.chars().count().max(1);
     let fit = (usize::from(width).saturating_sub(gutter + 2) / 3).max(1);
-    let shown = &items[items.len().saturating_sub(fit)..];
+    let shown = items
+        .get(items.len().saturating_sub(fit)..)
+        .unwrap_or_default();
     let height = usize::from(height).max(2);
     let axis = Style::default().fg(crate::colour::border());
     let scale = Style::default().fg(crate::colour::dim());
@@ -140,7 +147,7 @@ pub(crate) fn columns(items: &[Item], width: u16, height: u16) -> Vec<Line<'stat
         ];
         for item in shown {
             let filled = cells(item.value / top.max(f64::EPSILON), height * 8);
-            let here = UP[filled.saturating_sub(floor).min(8)];
+            let here = UP.get(filled.saturating_sub(floor)).copied().unwrap_or("█");
             let ink = fade(item.ink, portion(height - row, height));
             spans.push(Span::styled(
                 format!(" {here}{here}"),
@@ -185,7 +192,7 @@ pub(crate) fn gauge(ratio: f64, label: &str, ink: Color, width: u16) -> Vec<Line
         spans.push(Span::styled("█", Style::default().fg(lit)));
     }
     if part > 0 {
-        spans.push(Span::styled(ACROSS[part], Style::default().fg(ink)));
+        spans.push(Span::styled(eighth(part), Style::default().fg(ink)));
     }
     spans.push(Span::styled(
         "─".repeat(room.saturating_sub(full + usize::from(part > 0))),
@@ -255,7 +262,9 @@ fn resampled(points: &[(f64, f64)], samples: usize) -> Vec<(f64, f64)> {
                 .position(|point| point.0 >= x)
                 .unwrap_or(points.len() - 1)
                 .max(1);
-            let (a, b) = (points[after - 1], points[after]);
+            let Some(&[a, b]) = points.get(after - 1..=after) else {
+                return (x, last.1);
+            };
             let t = if (b.0 - a.0).abs() < f64::EPSILON {
                 0.0
             } else {

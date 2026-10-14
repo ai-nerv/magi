@@ -69,13 +69,13 @@ fn cell_of(dots: &Dots, cell: usize) -> char {
     // order of the bits: dots 7 and 8 took the two high bits above the original six.
     const LEFT: [u8; ROWS] = [0, 1, 2, 6];
     const RIGHT: [u8; ROWS] = [3, 4, 5, 7];
+    let column = |n: usize| dots.get(n).copied().unwrap_or([false; ROWS]);
     let mut bits = 0u8;
-    for row in 0..ROWS {
-        if dots[cell * 2][row] {
-            bits |= 1 << LEFT[row];
-        }
-        if dots[cell * 2 + 1][row] {
-            bits |= 1 << RIGHT[row];
+    for (side, order) in [(column(cell * 2), LEFT), (column(cell * 2 + 1), RIGHT)] {
+        for (on, bit) in side.into_iter().zip(order) {
+            if on {
+                bits |= 1 << bit;
+            }
         }
     }
     char::from_u32(0x2800 + u32::from(bits)).unwrap_or('⠀')
