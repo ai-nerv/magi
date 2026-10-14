@@ -219,11 +219,10 @@ pub fn highlight(line: &str, base: Style) -> Vec<Span<'static>> {
     let mut out = Vec::new();
     let mut state = State::new();
     let mut at = 0;
-    while at < chars.len() {
+    while let Some(&c) = chars.get(at) {
         let from = at;
-        let c = chars[at];
         let ink = if c.is_whitespace() {
-            while at < chars.len() && chars[at].is_whitespace() {
+            while chars.get(at).is_some_and(|c| c.is_whitespace()) {
                 at += 1;
             }
             colour::code_argument()
@@ -246,31 +245,37 @@ pub fn highlight(line: &str, base: Style) -> Vec<Span<'static>> {
             }
         } else if OPERATORS.contains(c) {
             at = operator(&chars, at);
-            state.after(&chars[from..at].iter().collect::<String>());
+            state.after(&text(&chars, from, at));
             colour::code_operator()
         } else {
             at = word_end(&chars, at);
-            state.word(&chars[from..at].iter().collect::<String>(), base, &mut out);
+            state.word(&text(&chars, from, at), base, &mut out);
             continue;
         };
-        out.push(Span::styled(
-            chars[from..at].iter().collect::<String>(),
-            base.fg(ink),
-        ));
+        out.push(Span::styled(text(&chars, from, at), base.fg(ink)));
     }
     out
 }
 
+/// The characters from `from` to `to`, as text; nothing where that is not a span of `chars`.
+fn text(chars: &[char], from: usize, to: usize) -> String {
+    chars
+        .get(from..to)
+        .map(|span| span.iter().collect())
+        .unwrap_or_default()
+}
+
 /// Past a quoted string starting at `at`; a double-quoted one skips what a backslash escapes.
 fn quoted(chars: &[char], at: usize) -> usize {
-    let quote = chars[at];
+    let Some(&quote) = chars.get(at) else {
+        return at;
+    };
     let mut end = at + 1;
-    while end < chars.len() && chars[end] != quote {
-        end += if quote == '"' && chars[end] == '\\' {
-            2
-        } else {
-            1
-        };
+    while let Some(&c) = chars.get(end) {
+        if c == quote {
+            break;
+        }
+        end += if quote == '"' && c == '\\' { 2 } else { 1 };
     }
     (end + 1).min(chars.len())
 }
@@ -282,14 +287,17 @@ fn variable(chars: &[char], at: usize) -> (usize, bool) {
     match chars.get(end) {
         Some('(') => return (end + 1, true),
         Some('{') => {
-            while end < chars.len() && chars[end] != '}' {
+            while chars.get(end).is_some_and(|c| *c != '}') {
                 end += 1;
             }
             end += 1;
         }
         Some(c) if "?@#*!$-".contains(*c) || c.is_ascii_digit() => end += 1,
         _ => {
-            while end < chars.len() && (chars[end].is_alphanumeric() || chars[end] == '_') {
+            while chars
+                .get(end)
+                .is_some_and(|c| c.is_alphanumeric() || *c == '_')
+            {
                 end += 1;
             }
         }
@@ -300,13 +308,13 @@ fn variable(chars: &[char], at: usize) -> (usize, bool) {
 /// Past an operator at `at`: a bracket or backtick alone, or a run like `&&`, `2>&1`'s `>&`, `<<-`.
 fn operator(chars: &[char], at: usize) -> usize {
     let mut end = at + 1;
-    if matches!(chars[at], '(' | ')' | '`') {
+    if matches!(chars.get(at), Some('(' | ')' | '`')) {
         return end;
     }
-    while end < chars.len() && "|&;<>".contains(chars[end]) {
+    while chars.get(end).is_some_and(|c| "|&;<>".contains(*c)) {
         end += 1;
     }
-    if chars[at..end] == ['<', '<'] && chars.get(end) == Some(&'-') {
+    if chars.get(at..end) == Some(&['<', '<'][..]) && chars.get(end) == Some(&'-') {
         end += 1;
     }
     end
@@ -315,8 +323,11 @@ fn operator(chars: &[char], at: usize) -> usize {
 /// Past a word at `at`, keeping what a backslash escapes inside it.
 fn word_end(chars: &[char], at: usize) -> usize {
     let mut end = at;
-    while end < chars.len() && !chars[end].is_whitespace() && !STOPS.contains(chars[end]) {
-        end += if chars[end] == '\\' { 2 } else { 1 };
+    while let Some(&c) = chars.get(end) {
+        if c.is_whitespace() || STOPS.contains(c) {
+            break;
+        }
+        end += if c == '\\' { 2 } else { 1 };
     }
     end.min(chars.len())
 }
