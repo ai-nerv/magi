@@ -138,35 +138,42 @@ impl Worker {
                         });
                         announced = Some(id);
                     }
-                    let outcome = match job.kind {
-                        Work::Turn => {
-                            // What balthasar wants done between turns runs beside the next one.
-                            let over = crate::helping::between(
-                                Arc::clone(&job.session),
-                                backend.clone(),
-                                Arc::clone(&scribe),
-                            )
-                            .await;
-                            let outcome =
-                                turn::run(&job.session, &backend, &registry, &*ops, &scribe).await;
-                            job.session.lock().await.rest();
-                            let _ = over.send(());
-                            outcome.map_err(|why| why.to_string())
-                        }
-                        Work::TakeOn(grants) => {
-                            ops.take_on(handed(&*ops, &grants));
-                            Ok(())
-                        }
-                        Work::Declare => {
-                            let cancel = job.session.lock().await.cancel();
-                            tokio::select! {
-                                biased;
-                                () = cancel.requested() => {},
-                                () = declare(&job.session, &backend, &*ops) => {},
+                    let outcome = crate::catching::caught(async {
+                        match job.kind {
+                            Work::Turn => {
+                                // What balthasar wants done between turns runs beside the next one.
+                                let over = crate::helping::between(
+                                    Arc::clone(&job.session),
+                                    backend.clone(),
+                                    Arc::clone(&scribe),
+                                )
+                                .await;
+                                let outcome =
+                                    turn::run(&job.session, &backend, &registry, &*ops, &scribe)
+                                        .await;
+                                job.session.lock().await.rest();
+                                let _ = over.send(());
+                                outcome.map_err(|why| why.to_string())
                             }
-                            Ok(())
+                            Work::TakeOn(grants) => {
+                                ops.take_on(handed(&*ops, &grants));
+                                Ok(())
+                            }
+                            Work::Declare => {
+                                let cancel = job.session.lock().await.cancel();
+                                tokio::select! {
+                                    biased;
+                                    () = cancel.requested() => {},
+                                    () = declare(&job.session, &backend, &*ops) => {},
+                                }
+                                Ok(())
+                            }
                         }
-                    };
+                    })
+                    .await
+                    .unwrap_or_else(|why| {
+                        Err(format!("this turn stopped on an internal error: {why}"))
+                    });
                     let _ = job.done.send(outcome);
                 }
             });

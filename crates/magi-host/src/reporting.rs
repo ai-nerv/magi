@@ -141,7 +141,7 @@ pub(crate) async fn finish(
     let (interrupted, completed, explicit, answer, recorded_error, tool_errors) = {
         let mut held = session.lock().await;
         let interrupted = held.cancel().is_requested();
-        let entries = &held.entries()[start..];
+        let entries = held.entries().get(start..).unwrap_or_default();
         let tool_errors: Vec<String> = entries
             .iter()
             .filter_map(|entry| match entry {
@@ -249,4 +249,31 @@ pub(crate) async fn finish(
     )
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_start_past_the_transcript_reads_as_nothing_rather_than_a_panic() {
+        let mut catalog = crate::catalog::Catalog::empty();
+        catalog.cards = vec![magi_proto::ask::Card {
+            id: "fake/m".into(),
+            provider: "fake".into(),
+            name: "m".into(),
+            api: "openai-completions".into(),
+            context_window: Some(1000),
+            max_output: Some(100),
+            reasons: false,
+            ready: true,
+            needs: None,
+        }];
+        let backend = catalog.backend("fake/m").expect("a backend");
+        let session = Arc::new(Mutex::new(Session::recorded(
+            magi_proto::SessionId::new("s"),
+            Vec::new(),
+        )));
+        assert_eq!(finish(&session, &backend, 9, &[], &Ok(())).await, Ok(()));
+    }
 }

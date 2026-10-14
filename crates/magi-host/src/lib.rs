@@ -7,6 +7,7 @@ pub mod asking;
 pub mod broker;
 pub mod cancel;
 pub mod catalog;
+mod catching;
 pub mod context;
 pub mod declaring;
 pub mod driving;
