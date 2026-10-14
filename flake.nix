@@ -215,6 +215,9 @@
             # failure rather than a line somebody eventually notices. See the note in
             # `Cargo.toml` for why this and not `unused_crate_dependencies`.
             pkgs.cargo-machete
+            # The dependency policy in `deny.toml`, and the advisory database against the lockfile.
+            pkgs.cargo-deny
+            pkgs.cargo-audit
             pkgs.clang
             pkgs.mold
             pkgs.pkg-config
