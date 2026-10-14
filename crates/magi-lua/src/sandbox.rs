@@ -21,6 +21,10 @@ const REMOVED: &[(&str, &str)] = &[
 /// Globals removed whole. `debug` reaches other frames and sets metatables past `setmetatable`.
 const REMOVED_TABLES: &[&str] = &["io", "package", "dofile", "loadfile", "require", "debug"];
 
+/// Globals replaced rather than removed: luna's `print` writes to stdout and its `warn` to stderr,
+/// which the TUI owns. Both go to magi's log instead, and nowhere when none was asked for.
+const QUIETENED: &[&str] = &["print", "warn"];
+
 /// What a metatable carrying `__gc` is told.
 const FINALIZED: &str = "setmetatable: a metatable with __gc is refused; no finalizer runs here";
 
@@ -164,7 +168,30 @@ pub fn apply(lua: &mut Lua) {
         guard(ctx, "setmetatable", finalized);
         hide_userdata_metatables(ctx);
         guard(ctx, "load", binary);
+        for name in QUIETENED {
+            ctx.set_global(name, quiet(ctx, name));
+        }
     });
+}
+
+/// A `print` or `warn` that writes one line to magi's log, `MAGI_DEBUG_LOG` or `NERV_LOG`.
+fn quiet<'gc>(ctx: Context<'gc>, named: &'static str) -> Callback<'gc> {
+    Callback::from_fn(&ctx, move |_ctx, _exec, mut stack| {
+        if magi_model::noted::enabled() {
+            let said: Vec<String> = (0..stack.len()).map(|at| text(&stack.get(at))).collect();
+            magi_model::noted::note(format_args!("lua {named}: {}", said.join("\t")));
+        }
+        stack.clear();
+        Ok(CallbackReturn::Return)
+    })
+}
+
+/// One value as text, without `__tostring`, which would re-enter the VM from a diagnostic.
+fn text(value: &Value<'_>) -> String {
+    match value {
+        Value::String(said) => said.display_lossy().to_string(),
+        other => other.display().to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -292,6 +319,42 @@ mod tests {
         assert_eq!(probe(shared), "nil");
         assert_eq!(project_probe(shared), "nil");
         assert_eq!(project_probe("type(getmetatable(''))"), "table");
+    }
+
+    #[test]
+    fn print_and_warn_go_to_the_log_and_never_to_the_terminal() {
+        if std::env::var_os("MAGI_PRINT_PROBE").is_some() {
+            Engine::new()
+                .run(
+                    "print('printed', 1, nil, true) warn('warned ', 'twice')",
+                    "plugin/noisy.lua",
+                )
+                .expect("runs");
+            return;
+        }
+        let dir = magi_model::scratch::Scratch::new("magi-print", "log");
+        let log = dir.join("debug.log");
+        let probe = "sandbox::tests::print_and_warn_go_to_the_log_and_never_to_the_terminal";
+        let ran = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args(["--exact", probe, "--nocapture"])
+            .env("MAGI_PRINT_PROBE", "1")
+            .env("MAGI_DEBUG_LOG", &log)
+            .env_remove(magi_model::noted::FAMILY)
+            .output()
+            .expect("the probe");
+        assert!(ran.status.success(), "{ran:?}");
+        let terminal = [ran.stdout, ran.stderr].concat();
+        let terminal = String::from_utf8_lossy(&terminal);
+        assert!(
+            !terminal.contains("printed") && !terminal.contains("warned"),
+            "{terminal}"
+        );
+        let logged = std::fs::read_to_string(&log).expect("the log");
+        assert!(
+            logged.contains("lua print: printed\t1\tnil\ttrue"),
+            "{logged}"
+        );
+        assert!(logged.contains("lua warn: warned \ttwice"), "{logged}");
     }
 
     #[test]

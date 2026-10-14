@@ -220,6 +220,18 @@ body "$SANDBOX" '^pub fn apply[(]' | grep -q 'guard(ctx, "load", binary)' || {
   fail=1
 }
 
+# ---- and writes nothing to the terminal the TUI owns ---------------------------------------------
+body "$SANDBOX" '^pub fn apply[(]' | grep -q 'quiet(ctx, name)' || {
+  echo "gate-sandbox: print and warn write to the terminal again" >&2
+  fail=1
+}
+for said in print warn; do
+  decl "$SANDBOX" '^const QUIETENED' | grep -q "\"$said\"" || {
+    echo "gate-sandbox: \`$said\` no longer goes to magi's log" >&2
+    fail=1
+  }
+done
+
 # ---- a value leaves the VM as JSON within bounds -------------------------------------------------
 CONVERT="$ROOT/magi-lua/src/convert.rs"
 for wanted in 'self.open.insert(table)' 'self.nodes > NODES' 'self.bytes > BYTES' \
