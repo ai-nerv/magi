@@ -206,6 +206,16 @@ if code "$ENGINE" | grep -q 'run_finalizers('; then
   fail=1
 fi
 
+# ---- bytecode never enters ---------------------------------------------------------------------
+body "$ENGINE" 'fn run_within[(]' | grep -q 'sandbox::precompiled(' || {
+  echo "gate-sandbox: a chunk is no longer checked for bytecode before it is loaded" >&2
+  fail=1
+}
+body "$SANDBOX" '^pub fn apply[(]' | grep -q 'guard(ctx, "load", binary)' || {
+  echo "gate-sandbox: \`load\` no longer refuses bytecode" >&2
+  fail=1
+}
+
 # ---- fetched code still has to be let in --------------------------------------------------------
 # The other half of the boundary. A file under `site/pack/` arrived from somewhere else and can
 # change between one run and the next, so it runs once somebody has said it may.

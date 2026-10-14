@@ -24,6 +24,16 @@ const REMOVED_TABLES: &[&str] = &["io", "package", "dofile", "loadfile", "requir
 /// What a metatable carrying `__gc` is told.
 const FINALIZED: &str = "setmetatable: a metatable with __gc is refused; no finalizer runs here";
 
+/// What a precompiled chunk is told, wherever it is handed in.
+pub const PRECOMPILED: &str = "a precompiled chunk is refused; only Lua source is loaded";
+
+/// Whether `source` is a precompiled chunk: every binary signature, PUC-Rio's and luna's, opens
+/// with ESC.
+#[must_use]
+pub fn precompiled(source: &[u8]) -> bool {
+    source.first() == Some(&0x1b)
+}
+
 /// Globals a project's file must not have, beyond what [`luna::Lua::core`] never loads: `load`
 /// compiles code, `collectgarbage` steers the collector, `warn` and `print` write to the terminal,
 /// and the rest read files, spawn, read the environment or reach inside other frames.
@@ -89,6 +99,11 @@ fn guard(ctx: Context<'_>, name: &'static str, refuses: Refusal) {
     ctx.set_global(name, guarded);
 }
 
+/// `load` handed a precompiled chunk, whatever mode it names.
+fn binary<'gc>(_ctx: Context<'gc>, chunk: Value<'gc>, _: Value<'gc>) -> Option<&'static str> {
+    matches!(chunk, Value::String(chunk) if precompiled(chunk.as_bytes())).then_some(PRECOMPILED)
+}
+
 /// A metatable carrying `__gc`, which would enrol its object for a finalizer.
 fn finalized<'gc>(ctx: Context<'gc>, _: Value<'gc>, metatable: Value<'gc>) -> Option<&'static str> {
     matches!(metatable, Value::Table(metatable) if !metatable.get_value(ctx, MetaMethod::Gc).is_nil())
@@ -127,6 +142,7 @@ pub fn apply(lua: &mut Lua) {
             );
         }
         guard(ctx, "setmetatable", finalized);
+        guard(ctx, "load", binary);
     });
 }
 
@@ -251,6 +267,17 @@ mod tests {
         assert_eq!(probe(kept), "7");
         assert_eq!(project_probe(kept), "7");
         assert_eq!(probe("debug"), "nil");
+    }
+
+    #[test]
+    fn load_refuses_a_precompiled_chunk_whatever_mode_it_names() {
+        for chunk in ["string.dump(load('return 1'))", "'\\27Lua\\84\\0'"] {
+            for mode in ["nil", "'b'", "'bt'", "'t'"] {
+                let said = probe(&format!("select(2, pcall(load, {chunk}, 'chunk', {mode}))"));
+                assert!(said.contains("precompiled"), "{chunk} as {mode}: {said}");
+            }
+        }
+        assert_eq!(probe("load('return 41 + 1')()"), "42");
     }
 
     #[test]

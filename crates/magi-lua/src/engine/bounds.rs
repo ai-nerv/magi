@@ -143,3 +143,39 @@ fn no_route_past_the_guard_enrols_an_object_for_a_finalizer() {
         "{before} bytes before, {after} after"
     );
 }
+
+/// A real luna chunk that sets `magi.dumped`, as text.
+fn dumped(engine: &mut Engine) -> String {
+    let bytes = engine.lua.enter(|ctx| {
+        let closure =
+            luna::Closure::load(ctx, Some("dumped"), b"magi.dumped = true").expect("compiles");
+        luna::dump::dump(&closure.prototype(), true)
+    });
+    String::from_utf8(bytes).expect("this chunk dumps as UTF-8")
+}
+
+#[test]
+fn a_precompiled_chunk_is_refused_by_either_vm_and_from_a_file() {
+    let mut engine = Engine::new();
+    let luna = dumped(&mut engine);
+    let puc = "\u{1b}LuaT\0\u{19}\u{93}\r\n\u{1a}\n";
+    let dir = magi_model::scratch::Scratch::new("magi-bytecode", "file");
+    let file = dir.join("init.lua");
+    std::fs::write(&file, &luna).expect("write");
+    let mut project = Engine::project(&serde_json::Map::new());
+    for (said, named) in [
+        (engine.run(&luna, "plugin/dumped.lua"), "plugin/dumped.lua"),
+        (engine.run(puc, "plugin/puc.lua"), "plugin/puc.lua"),
+        (engine.run_file(&file), "init.lua"),
+        (project.run(&luna, ".magi.lua"), ".magi.lua"),
+    ] {
+        let said = said.expect_err("bytecode ran").to_string();
+        assert!(
+            said.contains(named) && said.contains("precompiled"),
+            "{said}"
+        );
+    }
+    engine.harvest();
+    assert_eq!(engine.config().boolean("dumped"), None);
+    assert!(project.assigned().iter().all(|(name, _)| name != "dumped"));
+}

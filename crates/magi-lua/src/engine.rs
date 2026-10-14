@@ -212,6 +212,12 @@ impl Engine {
     /// Run one chunk on at most `budget` fuel. A chunk that spends it, or outgrows the memory
     /// limit, is stopped and reported as failing.
     fn run_within(&mut self, source: &str, chunk: &str, budget: i64) -> Result<(), LuaError> {
+        if crate::sandbox::precompiled(source.as_bytes()) {
+            return Err(LuaError::Syntax {
+                file: chunk.to_owned(),
+                message: crate::sandbox::PRECOMPILED.to_owned(),
+            });
+        }
         let executor = self
             .lua
             .try_enter(|ctx| {

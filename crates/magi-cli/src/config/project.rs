@@ -230,6 +230,21 @@ mod tests {
     }
 
     #[test]
+    fn a_precompiled_project_file_is_refused() {
+        let mut engine = Engine::new();
+        engine
+            .run(
+                "magi.chunk = string.dump(load(\"magi.model = 'x'\"))",
+                "dump.lua",
+            )
+            .expect("dumps");
+        engine.harvest();
+        let chunk = engine.config().string("chunk").expect("a chunk").to_owned();
+        let why = over("", &chunk).expect_err("bytecode ran");
+        assert!(why.contains("precompiled"), "{why}");
+    }
+
+    #[test]
     fn a_looping_project_file_is_stopped() {
         let why = over("", "while true do end").expect_err("stopped");
         assert!(why.contains("budget"), "{why}");
