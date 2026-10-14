@@ -136,6 +136,7 @@ Plus the family floor.
 |---|---|
 | `surface` | No tool of this program's can hold rows on the screen; the drawing tools are not declared. |
 | `acknowledge` | Installed packages cannot be cleared for running, so a fetched package's declarations never run. |
+| `image` | A prompt's `@file` image attachments are refused; a prompt without one is sent as before. |
 
 **A tools program may keep a socket, but the trust is never the caller's.** casper binds one with
 `serve` and answers `tools` and `run` on it, kept open across a session so a call need not spawn a

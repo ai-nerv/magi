@@ -28,7 +28,7 @@ case "$role" in
     extra="amend recall remember forget why scroll plan layout applied overflowed jobs job_done notes note_open changes undo approve reject used outcome model resume" ;;
   tools)
     core="tools run"
-    extra="surface acknowledge" ;;
+    extra="surface acknowledge image" ;;
   model)
     core="models ask"
     extra="" ;;
