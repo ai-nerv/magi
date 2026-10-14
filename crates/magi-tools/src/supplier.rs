@@ -17,6 +17,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+mod mcp;
+
 #[cfg(test)]
 mod containment;
 mod door;
@@ -88,8 +90,18 @@ pub fn cards_from(program: &str) -> Vec<Card> {
 /// call, so the configuration goes on every spawn. Empty means "whatever it is by default".
 #[must_use]
 pub fn cards_configured(program: &str, configured: &str) -> Vec<Card> {
+    cards_environment(program, configured, &std::collections::BTreeMap::new())
+}
+
+/// The same, with this session's environment overlay on the spawn.
+fn cards_environment(
+    program: &str,
+    configured: &str,
+    environ: &std::collections::BTreeMap<String, String>,
+) -> Vec<Card> {
     let mut command = std::process::Command::new(program);
     command
+        .envs(environ)
         .arg("tools")
         .env(CONFIGURE, configured)
         .env(CONFIGURE_WAS, configured);
@@ -181,16 +193,37 @@ pub fn run_jailed(
     cancel: &dyn Cancel,
 ) -> Result<Ran, String> {
     let context = crate::holding::Context {
+        environ: Default::default(),
         configure: configured.to_owned(),
         jail: jail.map(str::to_owned),
         cwd: (!call.cwd.is_empty()).then(|| PathBuf::from(&call.cwd)),
     };
-    // The library door when asked for. Only a call that never left falls back to a spawn.
-    if library_door()
-        && let Some((path, key)) = door::serving(program, &context)
+    run_context(program, call, &context, cancel)
+}
+
+/// Run a supplied tool with its session environment and containment settings.
+///
+/// # Errors
+/// As [`run_jailed`].
+pub fn run_context(
+    program: &str,
+    call: &Call,
+    context: &crate::holding::Context,
+    cancel: &dyn Cancel,
+) -> Result<Ran, String> {
+    let remote = call.tool.starts_with("mcp_");
+    // The library door when asked for, and for MCP unless told otherwise. Only a call that never
+    // left falls back to a spawn.
+    if mcp::uses_library(remote, std::env::var(DOOR).ok().as_deref())
+        && let Some((path, key)) = door::serving(program, context)
     {
         match door::over_socket(&path, &key, call, cancel) {
             Ok(ran) => return Ok(ran),
+            Err(door::Failed::Sent(why)) if remote => {
+                return Err(format!(
+                    "MCP response lost: {why}; the remote operation may have taken effect; not retried"
+                ));
+            }
             Err(door::Failed::Sent(why)) => return Err(format!("{program}: {why}")),
             Err(door::Failed::Unsent(why)) => {
                 magi_model::noted!("tools: {program} socket call fell back to a spawn: {why}");
@@ -212,13 +245,10 @@ pub fn run_jailed(
     serde_json::from_value(first).map_err(|why| format!("{program}: {why}"))
 }
 
-/// Whether this session was told to reach the tools program on its socket.
-fn library_door() -> bool {
-    std::env::var(DOOR).is_ok_and(|value| value.trim() == "library")
-}
-
 /// One tool the role's program supplied, as magi's registry sees it.
 pub struct SuppliedTool {
+    /// This session's environment overlay, carried on every spawn.
+    environ: std::collections::BTreeMap<String, String>,
     card: Card,
     program: String,
     asks: Arc<dyn Asks>,
@@ -240,29 +270,20 @@ impl SuppliedTool {
         asks: Arc<dyn Asks>,
         holds: Arc<dyn crate::holding::Holds>,
         knows: Arc<dyn crate::holding::Answers>,
+        environ: &std::collections::BTreeMap<String, String>,
     ) -> Vec<Self> {
+        let program = match verified(tooling) {
+            Ok(program) => program,
+            Err(why) => {
+                eprintln!("magi: {why}. No tools were taken from it");
+                return Vec::new();
+            }
+        };
         let tooling = &Tooling {
-            program: located(&tooling.program),
+            program,
             ..tooling.clone()
         };
-        let program = tooling.program.as_str();
-        if let Some(pinned) = &tooling.pin {
-            match fingerprint(program) {
-                Some(actual) if &actual == pinned => {}
-                Some(actual) => {
-                    eprintln!(
-                        "magi: {program} is not the program this configuration pinned: it is \
-                         {actual} and the pin says {pinned}. No tools were taken from it"
-                    );
-                    return Vec::new();
-                }
-                None => {
-                    eprintln!("magi: {program} is pinned to {pinned} and cannot be read to check");
-                    return Vec::new();
-                }
-            }
-        }
-        Self::all(tooling, asks, holds, knows)
+        Self::all(tooling, asks, holds, knows, environ)
     }
 
     /// Every tool the role's program offers, ready to register. `asks` is how a question reaches
@@ -273,16 +294,20 @@ impl SuppliedTool {
         asks: Arc<dyn Asks>,
         holds: Arc<dyn crate::holding::Holds>,
         knows: Arc<dyn crate::holding::Answers>,
+        environ: &std::collections::BTreeMap<String, String>,
     ) -> Vec<Self> {
-        cards_configured(&tooling.program, &tooling.configure)
+        let cards = cards_environment(&tooling.program, &tooling.configure, environ);
+        let configured = mcp::with_catalog(&tooling.configure, &cards);
+        cards
             .into_iter()
             .map(|card| Self {
+                environ: environ.clone(),
                 card,
                 program: tooling.program.clone(),
                 asks: Arc::clone(&asks),
                 holds: Arc::clone(&holds),
                 knows: Arc::clone(&knows),
-                configured: tooling.configure.clone(),
+                configured: configured.clone(),
             })
             .collect()
     }
@@ -346,6 +371,7 @@ impl Tool for SuppliedTool {
         }
         let jail = ops.jail();
         let context = crate::holding::Context {
+            environ: self.environ.clone(),
             configure: self.configured.clone(),
             jail: jail.clone(),
             cwd: Some(PathBuf::from(&call.cwd)),
@@ -354,13 +380,7 @@ impl Tool for SuppliedTool {
         // hold the turn open forever. Wider than the two a person is ever asked, because a question
         // put to magi costs patience rather than attention: a search scores a batch at a time.
         for _ in 0..8 {
-            let ran = match run_jailed(
-                &self.program,
-                &call,
-                &self.configured,
-                jail.as_deref(),
-                cancel,
-            ) {
+            let ran = match run_context(&self.program, &call, &context, cancel) {
                 // A refusal is still something the model reads, and it can try another way round.
                 Err(why) => return Output::error(why),
                 Ok(ran) => ran,
@@ -446,6 +466,7 @@ mod tests {
             Arc::clone(&asks),
             Arc::clone(&holds),
             Arc::clone(&knows),
+            &Default::default(),
         );
         assert!(wrong.is_empty(), "a substituted casper supplied tools");
 
@@ -459,6 +480,7 @@ mod tests {
                 asks,
                 holds,
                 knows,
+                &Default::default(),
             );
             assert_eq!(
                 right.len(),
@@ -467,6 +489,7 @@ mod tests {
                     Arc::new(crate::question::Unanswered),
                     Arc::new(crate::holding::Screenless),
                     Arc::new(crate::holding::Incurious),
+                    &Default::default(),
                 )
                 .len(),
                 "pinning the right program changed what it offers"
@@ -475,6 +498,41 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_program_is_verified_against_its_pin_at_the_one_path_it_resolves_to() {
+        use sha2::Digest;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = magi_model::scratch::Scratch::new("magi-verified", "pin");
+        let program = dir.join("tools");
+        std::fs::write(&program, "#!/bin/sh\n").expect("write");
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("mode");
+        let linked = dir.join("linked");
+        std::os::unix::fs::symlink(&program, &linked).expect("link");
+        let real = program.canonicalize().expect("real").display().to_string();
+        let pin = format!(
+            "{:x}",
+            sha2::Sha256::digest(std::fs::read(&program).expect("bytes"))
+        );
+        let named = |pin: Option<String>| Tooling {
+            program: linked.display().to_string(),
+            pin,
+            ..Tooling::default()
+        };
+        assert_eq!(verified(&named(None)), Ok(real.clone()));
+        assert_eq!(verified(&named(Some(pin))), Ok(real));
+        let why = verified(&named(Some("0".repeat(64)))).expect_err("another program");
+        assert!(
+            why.contains("not the program this configuration pinned"),
+            "{why}"
+        );
+        let gone = Tooling {
+            program: dir.join("absent").display().to_string(),
+            pin: Some("0".repeat(64)),
+            ..Tooling::default()
+        };
+        assert!(verified(&gone).is_err(), "nothing there to check");
+    }
 
     #[test]
     fn a_casper_that_is_not_there_offers_nothing_rather_than_failing() {
@@ -544,6 +602,7 @@ mod tests {
 /// tool that reported a problem is still a result, so a failure carries its view too.
 fn finished(ran: Ran) -> Output {
     Output {
+        images: ran.images,
         content: ran.said,
         is_error: ran.failed,
         shown: ran.shown,
@@ -558,6 +617,9 @@ fn finished(ran: Ran) -> Output {
 fn wants(card: &Card, arguments: &serde_json::Value) -> Option<magi_proto::permit::Action> {
     use magi_proto::permit::Action;
     let needs = card.needs.as_deref()?;
+    if let Some(action) = mcp::permission(card) {
+        return Some(action);
+    }
     let text = |key: &str| {
         arguments
             .get(key)
@@ -665,6 +727,28 @@ fn resolve(command: &str) -> Option<std::path::PathBuf> {
 #[must_use]
 pub fn located(program: &str) -> String {
     resolve(program).map_or_else(|| program.to_owned(), |path| path.display().to_string())
+}
+
+/// The tools program as one absolute path, when it is the program the configuration pinned: what
+/// is run for the session's tools and for anything else it asks of that program.
+///
+/// # Errors
+/// When a pin was set and the program does not hash to it, or cannot be read to check.
+pub fn verified(tooling: &Tooling) -> Result<String, String> {
+    let program = located(&tooling.program);
+    let Some(pinned) = &tooling.pin else {
+        return Ok(program);
+    };
+    match fingerprint(&program) {
+        Some(actual) if &actual == pinned => Ok(program),
+        Some(actual) => Err(format!(
+            "{program} is not the program this configuration pinned: it is {actual} and the pin \
+             says {pinned}"
+        )),
+        None => Err(format!(
+            "{program} is pinned to {pinned} and cannot be read to check"
+        )),
+    }
 }
 
 #[cfg(test)]

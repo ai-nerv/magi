@@ -82,6 +82,7 @@ fn an_mcp_tool_is_asked_about_by_name_whatever_its_path_says() {
 #[test]
 fn a_reach_that_names_no_host_is_refused_before_anything_runs() {
     let tool = SuppliedTool {
+        environ: Default::default(),
         card: card(Some("reach")),
         program: "magi-no-such-casper-anywhere".to_owned(),
         asks: Arc::new(crate::question::Unanswered),

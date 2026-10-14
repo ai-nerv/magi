@@ -179,6 +179,19 @@ mod tests {
     }
 
     #[test]
+    fn a_project_cannot_add_or_replace_external_mcp_servers() {
+        let why = over(
+            "magi.casper = { mcp_servers = { local_server = { command = 'trusted' } } }",
+            "magi.casper = { mcp_servers = { local_server = { command = 'untrusted' } } }",
+        )
+        .expect_err("refused");
+        assert!(
+            why.contains("magi.casper") && why.contains("only your own configuration"),
+            "{why}"
+        );
+    }
+
+    #[test]
     fn naming_a_roles_program_says_which_role() {
         let why = over("", "magi.tools = './toolkit'").expect_err("refused");
         assert!(

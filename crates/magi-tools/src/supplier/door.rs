@@ -58,6 +58,43 @@ fn daemons() -> &'static Mutex<HashMap<String, Daemon>> {
 /// Socket names are never reused within a process.
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
+/// The daemon a `context` is served by: one per program, settings, jail, cwd and environment,
+/// hashed so no environment value is held in the key.
+fn wanted(program: &str, context: &crate::holding::Context) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let said = serde_json::to_vec(&(
+        program,
+        &context.configure,
+        &context.jail,
+        &context.cwd,
+        &context.environ,
+    ))
+    .ok()?;
+    Some(format!("{:x}", Sha256::digest(said)))
+}
+
+/// Put a daemon already running at `path` in front of `context`, as if it had been started here.
+#[cfg(test)]
+pub(super) fn adopt(
+    program: &str,
+    context: &crate::holding::Context,
+    path: PathBuf,
+    child: Child,
+) -> Option<String> {
+    let key = magi_ipc::random_hex(32).ok()?;
+    let daemon = Daemon {
+        path,
+        key: key.clone(),
+        child,
+    };
+    let superseded = daemons()
+        .lock()
+        .ok()?
+        .insert(wanted(program, context)?, daemon);
+    drop(superseded);
+    Some(key)
+}
+
 /// The socket and key of a running `program serve` for `context`, started the first time and
 /// reused after. A daemon that has exited, or that a newer one replaced, is killed and reaped.
 pub(super) fn serving(
@@ -65,8 +102,7 @@ pub(super) fn serving(
     context: &crate::holding::Context,
 ) -> Option<(PathBuf, String)> {
     let dir = magi_ipc::runtime_base("casper");
-    let wanted =
-        serde_json::to_string(&(program, &context.configure, &context.jail, &context.cwd)).ok()?;
+    let wanted = wanted(program, context)?;
     let gone = {
         let mut running = daemons().lock().ok()?;
         if let Some(daemon) = running.get_mut(&wanted)
