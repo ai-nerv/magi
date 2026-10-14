@@ -452,10 +452,10 @@ impl Ops for Real {
         }
         let (write, reach) = self.jail_reach();
         let mut profile = serde_json::json!({ "write": write, "reach": reach });
-        if let Some(tmp) = self.shared_tmp() {
-            if let Some(fields) = profile.as_object_mut() {
-                fields.insert("tmp".to_owned(), serde_json::json!(tmp));
-            }
+        if let Some(tmp) = self.shared_tmp()
+            && let Some(fields) = profile.as_object_mut()
+        {
+            fields.insert("tmp".to_owned(), serde_json::json!(tmp));
         }
         serde_json::to_string(&profile).ok()
     }
