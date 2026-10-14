@@ -154,3 +154,104 @@ fn a_reply_that_does_not_come_by_the_deadline_takes_the_connection_with_it() {
     assert!(answer.starts_with("nil|awaiting the reply"), "{answer}");
     assert!(started.elapsed() < Duration::from_secs(4));
 }
+
+/// balthasar's own client library, from a balthasar checkout beside this one, when it frames
+/// through `handle:call`.
+fn balthasar_library() -> Option<String> {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .map(|at| at.join("balthasar/crates/balthasar-lua/lua/balthasar.lua"))
+        .find_map(|path| std::fs::read_to_string(path).ok())
+        .filter(|library| library.contains("handle:call("))
+}
+
+/// A memory layer on `path` that answers `verbs` to anybody and `remember` only with `key`, on
+/// one connection, until it closes. Answers each call's verb and the key it carried.
+fn keyed_serve(
+    path: &std::path::Path,
+    key: String,
+) -> std::thread::JoinHandle<Vec<(String, Option<String>)>> {
+    let listener = UnixListener::bind(path).expect("bind");
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut heard = Vec::new();
+        let mut head = [0_u8; 4];
+        while stream.read_exact(&mut head).is_ok() {
+            let mut body = vec![0_u8; u32::from_be_bytes(head) as usize];
+            stream.read_exact(&mut body).expect("a body");
+            let call: serde_json::Value = serde_json::from_slice(&body).expect("json");
+            let verb = call["call"].as_str().unwrap_or_default().to_owned();
+            let carried = call["key"].as_str().map(str::to_owned);
+            let reply = match verb.as_str() {
+                "remember" if carried.as_deref() != Some(key.as_str()) => serde_json::json!({
+                    "ok": false, "family": 1, "fault": "refused",
+                    "error": "a call to serve needs the key it was started with",
+                }),
+                "remember" => serde_json::json!({
+                    "ok": true, "family": 1, "n": 1, "result": [{ "landing": "scratch", "id": "m1" }],
+                }),
+                _ => {
+                    serde_json::json!({ "ok": true, "family": 1, "n": 1, "result": [{ "verb": "remember" }] })
+                }
+            };
+            let reply = serde_json::to_vec(&reply).expect("encode");
+            stream
+                .write_all(&(reply.len() as u32).to_be_bytes())
+                .expect("head");
+            stream.write_all(&reply).expect("body");
+            heard.push((verb, carried));
+        }
+        heard
+    })
+}
+
+/// What balthasar's library made of a `remember` on `path`, as `id|why`.
+fn remembered_through(library: &str, path: &std::path::Path) -> String {
+    let script = format!(
+        "local lib = assert(load({library:?}, 'balthasar.lua'))(magi.stream)\n\
+         local mem = assert(lib.connect({{ path = {:?}, timeout_ms = 2000 }}))\n\
+         local kept, why = mem.remember('the build is make')\n\
+         mem:close()\n\
+         magi.answer = tostring(kept and kept.id) .. '|' .. tostring(why)",
+        path.to_string_lossy()
+    );
+    let mut engine = crate::Engine::new();
+    engine
+        .run(&script, "remember.lua")
+        .expect("the script runs");
+    engine.harvest();
+    let config = engine.config();
+    config.string("answer").expect("an answer").to_owned()
+}
+
+#[test]
+fn balthasars_library_writes_to_a_keyed_serve_through_call_and_never_holds_the_key() {
+    let Some(library) = balthasar_library() else {
+        magi_testkit::live::unavailable("no balthasar checkout whose library frames through call");
+        return;
+    };
+    let dir = magi_tools::family::FamilyScratch::new("keyed-call").expect("a family scratch");
+    let key = "cd".repeat(32);
+    let (keyed, bare) = (dir.join("api@keyed.sock"), dir.join("api@bare.sock"));
+    magi_tools::family::hold_key(&keyed, &key);
+
+    let serving = keyed_serve(&keyed, key.clone());
+    assert_eq!(remembered_through(&library, &keyed), "m1|nil");
+    let heard = serving.join().expect("the keyed serve");
+    assert!(
+        heard.contains(&("remember".to_owned(), Some(key.clone()))),
+        "{heard:?}"
+    );
+
+    let serving = keyed_serve(&bare, key);
+    let refused = remembered_through(&library, &bare);
+    assert!(
+        refused.starts_with("nil|a call to serve needs the key"),
+        "{refused}"
+    );
+    let heard = serving.join().expect("the bare serve");
+    assert!(
+        heard.iter().all(|(_, carried)| carried.is_none()),
+        "{heard:?}"
+    );
+}
