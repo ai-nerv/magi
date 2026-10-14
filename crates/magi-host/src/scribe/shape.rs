@@ -44,8 +44,12 @@ pub(super) fn rows(value: &serde_json::Value) -> Vec<&serde_json::Value> {
 }
 
 /// Rebuild one entry from the `raw` balthasar handed back, and nothing else: reconstructing from
-/// the projection would quietly lose every field the projection does not carry.
+/// the projection would quietly lose every field the projection does not carry. A row marked
+/// `truncated` has no `raw` and is rebuilt by [`cut_short`] instead.
 pub(super) fn rebuild(row: &serde_json::Value) -> Result<(Cursor, Entry), Fault> {
+    if row.get("truncated").and_then(serde_json::Value::as_bool) == Some(true) {
+        return cut_short(row);
+    }
     let raw = row
         .get("raw")
         .ok_or_else(|| Fault::Malformed("a replayed row has no raw".into()))?;
@@ -72,6 +76,54 @@ pub(super) fn rebuild(row: &serde_json::Value) -> Result<(Cursor, Entry), Fault>
             "a meta record replayed as an entry (version {version}, this build writes {JOURNAL_VERSION})"
         ))),
     }
+}
+
+/// The marker left on an entry rebuilt from a row the memory layer cut to fit one frame.
+pub(crate) const CUT_SHORT: &str =
+    "\n[cut short: too large for one frame, so only this much of it was kept]";
+
+/// An entry from a row cut to fit one frame: no record, its text shortened. What remains is kept as
+/// what was said by whoever said it, marked with [`CUT_SHORT`]; a kind with no text of its own to
+/// carry it becomes a notice.
+fn cut_short(row: &serde_json::Value) -> Result<(Cursor, Entry), Fault> {
+    use magi_proto::{MessageId, ToolCallId, ToolResult};
+    let field = |name: &str| row.get(name).and_then(serde_json::Value::as_str);
+    let cursor = row
+        .get("cursor")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| Fault::Malformed("a cut-short row has no cursor".into()))?;
+    let text = format!("{}{CUT_SHORT}", field("text").unwrap_or_default());
+    let id = format!("cut-{cursor}");
+    let entry = match (field("role").unwrap_or_default(), field("kind")) {
+        ("user", _) => Entry::User {
+            id: MessageId::new(id),
+            text,
+            aside: String::new(),
+        },
+        ("assistant", Some("prose" | "thinking")) => Entry::Assistant {
+            id: MessageId::new(id),
+            text,
+            thinking: String::new(),
+            stop_reason: Some(magi_model::StopReason::EndTurn),
+            error: None,
+            signatures: magi_proto::Signatures::default(),
+            usage: magi_proto::Usage::default(),
+        },
+        ("tool", kind) => Entry::Tool {
+            id: ToolCallId::new(id),
+            name: field("tool").unwrap_or("unknown").to_owned(),
+            args: serde_json::json!({ "not_recorded": CUT_SHORT.trim() }).to_string(),
+            result: (kind != Some("tool_call")).then(|| ToolResult {
+                output: text,
+                is_error: row.get("error").and_then(serde_json::Value::as_bool) == Some(true)
+                    || row.get("ok").and_then(serde_json::Value::as_bool) == Some(false),
+                shown: None,
+            }),
+            thought_signature: None,
+        },
+        _ => Entry::Notice { text },
+    };
+    Ok((Cursor(cursor), entry))
 }
 
 /// What travels beside the entry at `cursor`. A tool row's group is the message that called it.

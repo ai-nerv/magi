@@ -130,6 +130,40 @@ fn a_row_with_no_raw_is_malformed_rather_than_an_empty_entry() {
 }
 
 #[test]
+fn a_row_cut_short_rebuilds_as_its_text_and_says_so() {
+    let row = |role: &str, kind: &str| {
+        serde_json::json!({
+            "cursor": 4, "role": role, "kind": kind, "text": "the start of it",
+            "tool": "read", "truncated": true,
+        })
+    };
+    let (cursor, user) = rebuild(&row("user", "user")).expect("a user row");
+    assert_eq!(cursor, Cursor(4));
+    let Entry::User { text, .. } = user else {
+        panic!("{user:?}")
+    };
+    assert_eq!(text, format!("the start of it{}", super::shape::CUT_SHORT));
+
+    let (_, said) = rebuild(&row("assistant", "prose")).expect("an assistant row");
+    assert!(
+        matches!(&said, Entry::Assistant { text, signatures, .. }
+            if text.starts_with("the start of it") && signatures.is_empty()),
+        "{said:?}"
+    );
+
+    let (_, tool) = rebuild(&row("tool", "tool_result")).expect("a tool row");
+    let Entry::Tool { name, result, .. } = tool else {
+        panic!("{tool:?}")
+    };
+    assert_eq!(name, "read");
+    let output = result.expect("its result").output;
+    assert!(output.ends_with(super::shape::CUT_SHORT), "{output}");
+
+    let (_, other) = rebuild(&row("system", "summary")).expect("any other row");
+    assert!(matches!(other, Entry::Notice { .. }), "{other:?}");
+}
+
+#[test]
 fn the_projection_never_stands_in_for_the_record() {
     // A signature is in `raw` and nowhere else; rebuilding from `text` would be a 400.
     let entry = Entry::Tool {

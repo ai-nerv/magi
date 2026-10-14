@@ -217,3 +217,43 @@ fn a_queue_nothing_is_taking_stays_bounded_and_says_what_went() {
         "said once, when it happens"
     );
 }
+
+#[tokio::test]
+async fn a_row_cut_to_fit_a_frame_still_replays_with_the_rows_around_it() {
+    let row = |cursor: u64, text: &str| {
+        super::super::shape::turn(Cursor(cursor), &said(text), &Beside::default()).expect("a row")
+    };
+    let cut = json!({
+        "cursor": 2, "role": "user", "kind": "user", "text": "the start of a huge paste",
+        "truncated": true,
+    });
+    let (first, second) = (row(1, "before"), row(3, "after"));
+    let fake = Fake::start("cut", move |_, call| {
+        let page = match call["args"][1]["from"].as_u64() {
+            Some(0) => vec![first.clone(), cut.clone()],
+            Some(3) => vec![second.clone()],
+            _ => Vec::new(),
+        };
+        Says::Answer(Reply::rows(page))
+    });
+    let mut scribe = fake.scribe().await;
+    let replayed = scribe.replay_of("s").await.expect("the run replays");
+    let texts: Vec<String> = replayed
+        .iter()
+        .map(|(cursor, entry)| match entry {
+            Entry::User { text, .. } => format!("{}:{text}", cursor.0),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        texts,
+        vec![
+            "1:before".to_owned(),
+            format!(
+                "2:the start of a huge paste{}",
+                super::super::shape::CUT_SHORT
+            ),
+            "3:after".to_owned(),
+        ]
+    );
+}
