@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.1] - 2026-10-14
+
+### <!-- 3 -->📚 Documentation
+
+- The model role's spend cap
+
 ## [0.6.0] - 2026-10-14
 
 ### <!-- 0 -->⛰️  Features
