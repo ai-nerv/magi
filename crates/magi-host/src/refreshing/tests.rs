@@ -24,6 +24,10 @@ fn fixture() -> (Scratch, Models) {
     .expect("refresh fixture");
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700))
         .expect("refresh fixture");
+    while let Err(why) = std::process::Command::new(&program).status() {
+        assert_eq!(why.raw_os_error(), Some(26), "{why}");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     let mut catalog = crate::catalog::Catalog::empty();
     catalog.mind = program.to_string_lossy().into_owned();
     catalog.cards = vec![card("old")];
