@@ -170,7 +170,10 @@ impl Tool for Spawn {
         })
     }
 
-    fn run(&self, arguments: &Value, ops: &dyn Ops, _cancel: &dyn Cancel) -> Output {
+    fn run(&self, arguments: &Value, ops: &dyn Ops, cancel: &dyn Cancel) -> Output {
+        if cancel.is_cancelled() {
+            return Output::error("cancelled before this child was started");
+        }
         // A session started without leave to spawn may not, however it was granted `run`.
         if !self.may_spawn {
             return Output::error(
@@ -205,27 +208,50 @@ impl Tool for Spawn {
         ) {
             return Output::error(why);
         }
-        let mut command = std::process::Command::new(&exe);
-        command.args(&shown).envs(&self.environ);
-        // The child inherits what this session may do: nobody is attached to a headless child to
-        // ask, so without this it is refused what its parent would be allowed.
+        let mut command = self.starting(&exe, &shown, ops, delegate);
+        command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        match crate::command::capture(
+            &mut command,
+            "magi fork",
+            std::time::Duration::from_secs(30),
+            cancel,
+        ) {
+            Ok(out) if out.code == Some(0) => Output {
+                content: out.out.trim().to_owned(),
+                ..Output::default()
+            },
+            Ok(out) => Output::error(format!(
+                "the child could not be started: {}",
+                out.err.trim()
+            )),
+            Err(why) => Output::error(format!("magi fork could not be run: {why}")),
+        }
+    }
+}
+
+impl Spawn {
+    fn starting(
+        &self,
+        exe: &std::path::Path,
+        shown: &[String],
+        ops: &dyn Ops,
+        delegate: bool,
+    ) -> std::process::Command {
+        let mut command = std::process::Command::new(exe);
+        command.args(shown).envs(&self.environ);
+        if let Some(socket) = self.environ.get("MAGI_HOST_SOCKET") {
+            command.env("MAGI_PARENT_HOST_SOCKET", socket);
+        }
         if let Ok(held) = serde_json::to_string(&ops.held()) {
             command.env(GRANTS, held);
         }
         if !delegate {
             command.env(NO_SPAWN, "1");
         }
-        match command.output() {
-            Ok(out) if out.status.success() => Output {
-                content: String::from_utf8_lossy(&out.stdout).trim().to_owned(),
-                ..Output::default()
-            },
-            Ok(out) => Output::error(format!(
-                "the child could not be started: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            )),
-            Err(why) => Output::error(format!("magi fork could not be run: {why}")),
-        }
+        command
     }
 }
 
@@ -233,6 +259,46 @@ impl Tool for Spawn {
 mod tests {
     use super::*;
     use magi_model::scratch::Scratch;
+
+    #[test]
+    fn a_child_inherits_grants_and_routes_questions_to_its_immediate_parent() {
+        let dir = scratch("inherit-parent");
+        let grants = vec![magi_proto::permit::Grant {
+            verb: "read".into(),
+            scope: magi_proto::permit::Scope::Directory {
+                path: dir.display().to_string(),
+            },
+        }];
+        let ops = crate::ops::Real::gated(
+            dir.to_path_buf(),
+            crate::permit::Ledger::with(grants.clone()),
+            std::sync::Arc::new(crate::approve::DenyAll),
+        );
+        let spawn = Spawn::new(
+            std::collections::BTreeMap::from([
+                ("MAGI_HOST_SOCKET".into(), "/parent.host".into()),
+                ("MAGI_PARENT_HOST_SOCKET".into(), "/grandparent.host".into()),
+            ]),
+            true,
+            Vec::new(),
+        );
+        let command = spawn.starting(std::path::Path::new("magi"), &["fork".into()], &ops, false);
+        let env: std::collections::BTreeMap<_, _> = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.expect("value").to_string_lossy().into_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(env["MAGI_PARENT_HOST_SOCKET"], "/parent.host");
+        assert_eq!(
+            serde_json::from_str::<Vec<magi_proto::permit::Grant>>(&env[GRANTS]).expect("grants"),
+            grants
+        );
+        assert_eq!(env[NO_SPAWN], "1");
+    }
 
     fn scratch(name: &str) -> Scratch {
         Scratch::new("magi-spawn", name)

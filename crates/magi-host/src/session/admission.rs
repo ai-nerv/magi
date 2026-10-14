@@ -18,6 +18,7 @@ pub(super) struct Admission {
     pub(super) reports: super::reporting::Reports,
     next: u64,
     active: Option<u64>,
+    retrying_reports: bool,
     waiting: VecDeque<Request>,
     changing: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
@@ -69,6 +70,9 @@ impl Session {
                 super::resuming::weight(entry)
             ));
         }
+        if let Request::Opening(Entry::User { images, .. }) = &request {
+            magi_model::validate_images(images)?;
+        }
         if self.busy() {
             if self.admission.waiting.len() >= 256 {
                 return Err("session queue is full; this request was not accepted".into());
@@ -81,6 +85,7 @@ impl Session {
 
     #[allow(clippy::expect_used)]
     fn reserve(&mut self, request: Request) -> (u64, Request) {
+        self.admission.retrying_reports = matches!(request, Request::Reports);
         self.admission.next = self
             .admission
             .next
@@ -100,6 +105,7 @@ impl Session {
             return None;
         }
         if self.cancel.is_requested()
+            && !self.admission.retrying_reports
             && !self.pending_reports().is_empty()
             && !self
                 .admission
@@ -140,6 +146,7 @@ mod tests {
 
     fn prompt(text: &str) -> Request {
         Request::Opening(Entry::User {
+            images: Vec::new(),
             id: MessageId::new("queued"),
             text: text.into(),
             aside: String::new(),
