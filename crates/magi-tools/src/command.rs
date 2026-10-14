@@ -1,14 +1,8 @@
-//! A tool that is an ordinary program.
-//!
-//! The third transport, and the one that makes the rule operable: the core ships `read`, `write`,
-//! `edit` and the shell peer, and **everything else is declared in Lua config**. Until this, a
-//! config could not declare a tool that runs a program. A Lua tool cannot spawn — the sandbox
-//! removes `os.execute` so that spawning cannot happen outside the [`Ops`] seam — and the process
-//! transport wants a peer speaking magi's framed protocol, so `command = "rg"` was a broken pipe
-//! rather than a search.
-//!
-//! So `grep` was a shell string the model composed, which costs a round trip whenever the quoting
-//! is wrong and returns however much the tree happens to hold.
+//! A tool that is an ordinary program: the `command` transport, declared in Lua config. magi
+//! ships no machine tools of its own (those are the `tools` role's, see [`crate::supplier`]); this
+//! is how a configuration reaches a sibling's command line, such as `agent` reaching `melchior
+//! tool`. A Lua tool cannot spawn: the sandbox removes `os.execute`, so a program runs only here,
+//! behind the [`Ops`] seam and its permission check.
 //!
 //! **There is no shell here.** The program is executed directly with an argument vector built from
 //! the call. A value containing `;` or `$(…)` is one argument, verbatim, and that is what makes

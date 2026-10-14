@@ -4,7 +4,7 @@ use crate::IpcError;
 use tokio::net::UnixStream;
 
 /// Who is on the other end of a connection, as the kernel reports it. `SO_PEERCRED` cannot be
-/// forged by the peer, so the daemon needs no handshake token.
+/// forged by the peer: it says which user is calling, not what that caller may change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PeerCred {
     pub pid: Option<i32>,

@@ -26,7 +26,7 @@ that talk over sockets and pipes:
 
 | | |
 |---|---|
-| **magi** | this one: the harness — UI, host, providers, tools |
+| **magi** | this one: the harness — UI, host and turns; models come through melchior, tools from casper |
 | **melchior** | the agent layer — sessions talking to sessions, adoption, permissions |
 | **balthasar** | the memory layer — what was said, distilled and recalled |
 | **casper** | the tools, and the screen they draw on |
@@ -130,9 +130,11 @@ five wires had grown five ways to say the same thing.
 |---|---|---|
 | **argv** | a question with an answer and nothing to hold open | one JSON object on stdout |
 | **pipe** | a parent and the child it started | newline-delimited JSON, both directions |
-| **socket** | anything may knock | four bytes of big-endian length, then JSON |
+| **socket** | a sibling of this user's, checked by `SO_PEERCRED` | four bytes of big-endian length, then at most 16 MiB of JSON or CBOR |
 
-JSON is on all three. It is the *encoding*, not a transport.
+JSON is on all three; a socket body may also be CBOR, the same shape as bytes. magi's own session
+socket is the exception: its own CBOR protocol for a screen, where a connection that does not
+present the key in `<socket>.key` watches and changes nothing.
 
 A **call** is answered; an **event** is not:
 
@@ -157,7 +159,8 @@ stops being answered.
 
 ### Concurrent clients
 
-All attached clients share one session queue. Prompts, incoming messages, permission
+All attached clients share one session queue; only a client that attached with the key in
+`<socket>.key` may add to it, and one without it watches. Prompts, incoming messages, permission
 declarations and inherited grants are admitted in order. Prompts received during a turn
 wait for its completion and persistence attempt; they do not interrupt it. Consecutive
 incoming-agent messages at a boundary are read together. Up to 256 requests may wait;
@@ -229,9 +232,8 @@ can still prevent delivery. These hooks do not reconstruct pending receipts afte
 | Crate | Role |
 |---|---|
 | `magi-proto` | the wire contract: events, commands, envelope. No I/O |
-| `magi-ipc` | Unix socket transport, length-prefixed CBOR, `SO_PEERCRED` identity |
+| `magi-ipc` | Unix socket transport: magi's own CBOR frames, the family client, the runtime-directory rule, `SO_PEERCRED` |
 | `magi-model` | the provider-neutral message model |
-| `magi-provider` | the HTTP side: streaming, SSE, retries, what each error means |
 | `magi-core` | the turn loop, as an explicit state machine |
 | `magi-tools` | what a tool is, and how one is dispatched to the tools program |
 | `magi-lua` | the Lua VM, and the config API it offers `init.lua` |

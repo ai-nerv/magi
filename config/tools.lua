@@ -13,9 +13,8 @@
 -- Each reaches its sibling through **either door**, chosen by `magi.memory.door` / `magi.agent.door`:
 --   library -- the sibling's own client library in this VM, over its socket (`sibling` below).
 --   command -- the sibling's command line, one exec per call (the `command` transport).
--- Both are wired for both tools. The defaults differ only because one door costs something on each:
--- `agent` defaults to `command`, because melchior takes who is calling from the kernel and a root
--- session's own process cannot present that over the socket (a child can); `memory` defaults to
+-- Both are wired for both tools. `agent` defaults to `command`: `melchior tool` runs as this
+-- session's own child, which melchior's kernel check reads as the session. `memory` defaults to
 -- `library`, because balthasar's library carries the injection/outcome loop the command line drops.
 
 -- Load a sibling's client library and run it against the socket primitive -- the library door.

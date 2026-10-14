@@ -42,8 +42,8 @@ const DESCRIBED: usize = 280;
 /// there. Inherited, and only ever added going down the tree, so `delegate` narrows like a grant.
 pub const NO_SPAWN: &str = "MAGI_NO_SPAWN";
 
-/// The grants of the session that started a child, as JSON: the child may do what its parent may,
-/// no wider. Read once, when the child starts.
+/// The grants of the session that started a child, as JSON. The child intersects them with its own
+/// configuration's, so it may do no more than its parent. Read once, when the child starts.
 pub const GRANTS: &str = "MAGI_GRANTS";
 
 /// Start a child agent of this session. The one builtin that reaches the harness: it runs the very

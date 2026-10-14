@@ -2,8 +2,8 @@
 //!
 //! neovim's model, unchanged: a runtimepath of roots, `plugin/` run at startup, `after/` last.
 //! `init.lua` and `magi.load` are unchanged, and what is discovered runs after what was named. A
-//! discovered file runs in the same sandboxed VM as a named one, so dropping a file in a directory
-//! extends magi and cannot spawn a process.
+//! discovered file runs in the same sandboxed VM as a named one: it cannot spawn a process, and a
+//! tool it declares runs only through the declared transport, asked about like any other.
 
 use std::path::{Path, PathBuf};
 

@@ -327,11 +327,12 @@ end
 -- the asker cannot answer for itself: which sessions exist and where they are rooted, what each is
 -- doing right now, what it has said. A shell scraping `ps` is guessing; this is not.
 --
--- **Read-only, deliberately.** There is no `prompt`, `submit` or `run` here. A coding agent
--- executes shell commands and edits files on the model's say-so, so a socket verb that hands it a
--- prompt is remote code execution wearing a friendlier name — and the fact that a person would
--- have typed the same thing does not make it the same thing when a peer types it. Anything that
--- causes work stays behind the local API, where the person who owns the session is the one asking.
+-- **This library only asks.** There is no `prompt`, `submit` or `run` here. A coding agent
+-- executes shell commands and edits files on the model's say-so, so a verb that hands it a prompt
+-- is remote code execution wearing a friendlier name. magi's own session socket does take a
+-- prompt, a permission answer and a mode change, in its own protocol and only from a screen that
+-- presents the key magi writes beside it in `<socket>.key`, readable by this user alone; a
+-- connection without that key watches and changes nothing.
 --
 -- `verbs` ships from the first version. One sibling having it and another not is how a family
 -- stops being one, and it cannot be retrofitted quietly.
