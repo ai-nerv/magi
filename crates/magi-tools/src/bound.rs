@@ -120,7 +120,7 @@ fn piece<'a>(line: &'a str, most: usize, end: &End) -> &'a str {
 const SPILL_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Where the session rooted at `root` spills: `<tmp>/magi-output-<uid>/<project>`, each made `0700`
-/// and checked as this user's alone. One per project, because the jail is handed it.
+/// and checked as this user's alone, one per project.
 #[must_use]
 pub fn spill_dir(root: &std::path::Path) -> Option<PathBuf> {
     use sha2::Digest;

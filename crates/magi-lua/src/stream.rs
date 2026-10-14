@@ -116,7 +116,7 @@ fn handle_table<'gc>(ctx: Context<'gc>, socket: Handle, timeout: Duration) -> Ta
             .set_read_timeout(Some(timeout))
             .and_then(|()| socket.set_write_timeout(Some(timeout)))
             .map_err(|why| why.to_string());
-        // A call that did not come back whole leaves the stream out of step, so it goes with it.
+        // A call that did not come back whole closes the handle.
         match answered.and_then(|reply| restored.map(|()| reply)) {
             Ok(reply) => stack.replace(ctx, crate::convert::lua_from_json(ctx, &reply)),
             Err(why) => {
