@@ -30,10 +30,7 @@ impl PeerCred {
     }
 }
 
-/// The uid of whoever holds the far end of a connected Unix socket, as the kernel says.
-///
-/// # Errors
-/// When the socket has no peer credentials to read.
+/// The uid of whoever holds the far end of a connected Unix socket, or why it cannot be read.
 pub fn peer_uid(socket: &impl std::os::fd::AsFd) -> std::io::Result<u32> {
     Ok(rustix::net::sockopt::get_socket_peercred(socket)?
         .uid

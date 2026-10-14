@@ -28,8 +28,7 @@ pub fn socket_dirs() -> [PathBuf; 2] {
     [socket_dir(), legacy_socket_dir()]
 }
 
-/// One socket directory, with `$MAGI_MEMORY_INSTANCE` — or the name it used to have — selecting
-/// one when several are running.
+/// One socket directory, with `$MAGI_MEMORY_INSTANCE` (or its old name) selecting one of several.
 fn named_dir(name: &str) -> PathBuf {
     let base = crate::runtime_base(name);
     match instance() {
