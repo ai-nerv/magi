@@ -7,11 +7,13 @@ mod codec;
 mod encoding;
 pub mod family;
 mod peer;
+mod runtime;
 mod secret;
 
 pub use codec::{FrameReader, FrameWriter, MAX_FRAME_BYTES};
 pub use encoding::Wire;
 pub use peer::PeerCred;
+pub use runtime::{private_dir, runtime_base, runtime_dir, trusted_xdg};
 pub use secret::{drop_key, key_path, mint_key, random_hex, read_key, same_key};
 
 use std::io;

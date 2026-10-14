@@ -15,6 +15,7 @@
 //! process, which prints an id and exits a moment later. See [`crate::child`].
 
 use anyhow::{Context, Result, bail};
+use std::os::unix::fs::OpenOptionsExt;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -27,11 +28,13 @@ pub const SESSION_PID: &str = "MAGI_SESSION_PID";
 /// person who typed `magi fork` is the only party left who could be told about.
 const WATCH: Duration = Duration::from_millis(750);
 
-/// What `melchior fork` prints: a name, a secret, and the environment to start a child with. Three
-/// fields out of the several it says; the rest appear inside `environment` as well.
+/// What `melchior fork` prints: a name, the child's stop secret, and the environment to start it
+/// with. The secret is never put in that environment, whichever field it arrives in.
 #[derive(Debug, serde::Deserialize)]
 struct Minted {
     id: String,
+    #[serde(default)]
+    token: Option<String>,
     environment: std::collections::BTreeMap<String, String>,
 }
 
@@ -42,16 +45,36 @@ pub fn fork(
     role_description: Option<&str>,
     prompt: Option<&str>,
 ) -> Result<()> {
+    if std::env::var_os(magi_tools::builtin::NO_SPAWN).is_some() {
+        bail!("this session was started without leave to start children of its own");
+    }
     let parent = session_pid()?;
     let loaded = crate::config::load().ok();
     let program = loaded.as_ref().map_or_else(
         || magi_host::broker::MELCHIOR.to_owned(),
         crate::config::mind,
     );
-    let minted = mint(&program, role, role_description)?;
+    let mut minted = mint(&program, role, role_description)?;
+    let secret = minted
+        .token
+        .take()
+        .or_else(|| minted.environment.remove(crate::melchior::TOKEN_VAR));
+    minted.environment.remove(crate::melchior::TOKEN_VAR);
+    let handed = secret
+        .as_deref()
+        .map(crate::melchior::hand_token)
+        .transpose()
+        .context("the child's stop secret could not be put where only it can read it")?;
     let harness = std::env::current_exe()
         .context("magi could not find its own binary, so it has nothing to start a child with")?;
-    start(&harness, &minted, parent, prompt)?;
+    let logs = magi_ipc::private_dir(&magi_ipc::runtime_dir("magi")?.join("children"))?;
+    let started = start(&harness, &minted, parent, prompt, handed.as_deref(), &logs);
+    if started.is_err()
+        && let Some(path) = &handed
+    {
+        let _ = std::fs::remove_file(path);
+    }
+    started?;
     println!("{}", minted.id);
     Ok(())
 }
@@ -110,6 +133,7 @@ fn spawning(
     minted: &Minted,
     parent: u32,
     prompt: Option<&str>,
+    token: Option<&std::path::Path>,
 ) -> Command {
     let mut starting = Command::new(harness);
     // Both, though `--tied` implies the first: argv is what a person reads off `/proc`, and "no
@@ -118,32 +142,49 @@ fn spawning(
         .arg("--headless")
         .arg("--tied")
         .arg(parent.to_string());
+    // After `--`, so a prompt that begins with a dash is a prompt and not a flag.
     if let Some(prompt) = prompt {
-        starting.arg(prompt);
+        starting.arg("--").arg(prompt);
     }
     starting.envs(&minted.environment);
     for named in crate::balthasar::AGENT {
         starting.env(named, &minted.id);
     }
+    if let Some(token) = token {
+        starting.env(crate::melchior::TOKEN_FILE, token);
+    }
     starting
+        .env_remove(crate::melchior::TOKEN_VAR)
         .env_remove("MAGI_API_SOCKET")
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
+        .stdout(Stdio::null());
     starting
 }
 
-/// Spawn the child, and give up on it if it dies while we are still watching. stdout and stderr go
-/// nowhere: `magi fork` is usually run through a tool whose output is a pipe somebody reads to the
-/// end: a child holding it open is a tool call that never returns. stderr is piped for [`WATCH`]
-/// only. `harness` comes from the caller so a test can point it at a program that does not start.
+/// Spawn the child, and give up on it if it dies while we are still watching. stdout goes nowhere:
+/// `magi fork` is usually run through a tool whose output is a pipe somebody reads to the end, and
+/// a child holding it open is a tool call that never returns. stderr goes to `<logs>/<id>.log`,
+/// which outlives this process, so the child can always write it. `harness` comes from the caller
+/// so a test can point it at a program that does not start.
 fn start(
     harness: &std::path::Path,
     minted: &Minted,
     parent: u32,
     prompt: Option<&str>,
+    token: Option<&std::path::Path>,
+    logs: &std::path::Path,
 ) -> Result<()> {
-    let mut child = spawning(harness, minted, parent, prompt)
+    let log = logs.join(format!("{}.log", minted.id));
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .open(&log)
+        .with_context(|| format!("the child's log {} could not be opened", log.display()))?;
+    let mut child = spawning(harness, minted, parent, prompt, token)
+        .stderr(written)
         .spawn()
         .context("the child session could not be started")?;
     let deadline = Instant::now() + WATCH;
@@ -151,7 +192,7 @@ fn start(
         if let Some(status) = child.try_wait().unwrap_or(None) {
             bail!(
                 "the child session exited ({status}) before it was up: {}",
-                last_words(&mut child)
+                last_words(&log)
             );
         }
         std::thread::sleep(Duration::from_millis(25));
@@ -159,14 +200,9 @@ fn start(
     Ok(())
 }
 
-/// What a child that would not start said on its way out: the last line only, read after it has
-/// exited so the pipe is closed and this cannot block.
-fn last_words(child: &mut std::process::Child) -> String {
-    use std::io::Read;
-    let mut said = String::new();
-    if let Some(pipe) = child.stderr.as_mut() {
-        let _ = pipe.read_to_string(&mut said);
-    }
+/// What a child that would not start said on its way out: the last line of its log.
+fn last_words(log: &std::path::Path) -> String {
+    let said = std::fs::read_to_string(log).unwrap_or_default();
     said.lines()
         .rev()
         .find(|line| !line.trim().is_empty())
@@ -198,7 +234,7 @@ mod tests {
     /// Everything the spawn would set, read back off the very `Command` [`start`] would run, so a
     /// copy written out here cannot go on passing after somebody changes the spawn.
     fn spawn_environment(minted: &Minted) -> std::collections::BTreeMap<String, Option<String>> {
-        spawning(std::path::Path::new("magi"), minted, 4242, None)
+        spawning(std::path::Path::new("magi"), minted, 4242, None, None)
             .get_envs()
             .map(|(name, value)| {
                 (
@@ -249,12 +285,9 @@ mod tests {
             Some("alpha-rho")
         );
         assert_eq!(
-            environ
-                .get("MAGI_MELCHIOR_TOKEN")
-                .and_then(Clone::clone)
-                .as_deref(),
-            Some("deadbeef"),
-            "without the token nothing could ever stop it"
+            environ.get(crate::melchior::TOKEN_VAR),
+            Some(&None),
+            "the stop secret travels in a file, never in the environment"
         );
     }
 
@@ -314,7 +347,7 @@ mod tests {
             &dir,
             "echo 'magi could not convene balthasar' >&2\nexit 3\n",
         );
-        let why = start(&script, &minted(), std::process::id(), None)
+        let why = start(&script, &minted(), std::process::id(), None, None, &dir)
             .expect_err("a child that exited must not be announced")
             .to_string();
         assert!(why.contains("could not convene balthasar"), "{why}");
@@ -338,6 +371,8 @@ mod tests {
             &minted(),
             std::process::id(),
             Some("get on with it"),
+            None,
+            &dir,
         )
         .expect("a child that stays up is started");
 
@@ -369,16 +404,82 @@ mod tests {
             &dir,
             &format!("printf '%s\\n' \"$@\" > {}\nsleep 2\n", seen.display()),
         );
-        start(&script, &minted(), 4242, Some("read the diff"))
+        start(&script, &minted(), 4242, Some("read the diff"), None, &dir)
             .expect("a child that stays up is started");
 
         let said = std::fs::read_to_string(&seen).expect("the child wrote its arguments");
         assert_eq!(
             said.lines().collect::<Vec<_>>(),
-            ["--headless", "--tied", "4242", "read the diff"]
+            ["--headless", "--tied", "4242", "--", "read the diff"]
         );
     }
 
+    #[test]
+    fn a_child_is_told_where_its_secret_waits_and_not_the_secret() {
+        let handed = std::path::Path::new("/run/user/1000/magi/tokens/0123456789abcdef.token");
+        let environ: std::collections::BTreeMap<_, _> = spawning(
+            std::path::Path::new("magi"),
+            &minted(),
+            4242,
+            None,
+            Some(handed),
+        )
+        .get_envs()
+        .map(|(name, value)| (name.to_owned(), value.map(ToOwned::to_owned)))
+        .collect();
+        assert_eq!(
+            environ.get(std::ffi::OsStr::new(crate::melchior::TOKEN_FILE)),
+            Some(&Some(handed.as_os_str().to_owned()))
+        );
+        assert!(
+            environ.values().flatten().all(|value| value != "deadbeef"),
+            "the secret itself is in the environment"
+        );
+    }
+
+    #[test]
+    fn a_prompt_that_looks_like_a_flag_is_still_a_prompt() {
+        use clap::Parser;
+        let argv: Vec<String> = spawning(
+            std::path::Path::new("magi"),
+            &minted(),
+            4242,
+            Some("-p rm everything"),
+            None,
+        )
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+        let parsed = crate::Cli::try_parse_from(std::iter::once("magi".to_owned()).chain(argv))
+            .expect("parses");
+        assert!(!parsed.print, "the prompt became a flag");
+        assert_eq!(parsed.prompt.as_deref(), Some("-p rm everything"));
+    }
+
+    #[test]
+    fn a_session_without_leave_to_spawn_forks_nothing() {
+        // Probed in a child process, so the variable is set in its environment and not this one's.
+        if std::env::var_os("MAGI_FORK_PROBE").is_some() {
+            let why = fork(None, None, None).expect_err("refused").to_string();
+            assert!(why.contains("without leave"), "{why}");
+            return;
+        }
+        let ran = Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "forking::tests::a_session_without_leave_to_spawn_forks_nothing",
+            ])
+            .env("MAGI_FORK_PROBE", "1")
+            .env(magi_tools::builtin::NO_SPAWN, "1")
+            .env(SESSION_PID, "1")
+            .output()
+            .expect("probe");
+        assert!(
+            ran.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ran.stdout)
+        );
+    }
     /// A runnable stand-in for the magi a fork would start, written into `dir`. A script, not
     /// a mock, because what is under test is the argv and the environment block the kernel writes.
     fn a_harness(dir: &std::path::Path, body: &str) -> std::path::PathBuf {

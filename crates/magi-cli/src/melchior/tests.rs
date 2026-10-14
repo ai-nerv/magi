@@ -428,3 +428,48 @@ fn what_the_session_is_doing_keeps_reaching_the_layer() {
         "the layer answered with the state at startup: {said}"
     );
 }
+
+#[test]
+fn the_stop_secret_is_handed_over_in_a_file_read_once_and_gone() {
+    let dir = magi_model::scratch::Scratch::new("magi-token", "once");
+    let tokens = magi_ipc::private_dir(&dir.join("tokens")).expect("tokens");
+    let path = tokens.join("0123456789abcdef.token");
+    std::fs::write(&path, "deadbeef").expect("write");
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600))
+        .expect("chmod");
+    assert_eq!(taken(&path, &tokens).as_deref(), Some("deadbeef"));
+    assert!(!path.exists(), "the file outlived the reading");
+    assert_eq!(taken(&path, &tokens), None, "read once");
+}
+
+#[test]
+fn a_token_file_anywhere_else_is_neither_read_nor_removed() {
+    let dir = magi_model::scratch::Scratch::new("magi-token", "elsewhere");
+    let tokens = magi_ipc::private_dir(&dir.join("tokens")).expect("tokens");
+    let precious = dir.join("precious.token");
+    std::fs::write(&precious, "deadbeef").expect("write");
+    assert_eq!(taken(&precious, &tokens), None);
+    assert!(
+        precious.exists(),
+        "a file outside the token directory was removed"
+    );
+    let open = tokens.join("open.token");
+    std::fs::write(&open, "deadbeef").expect("write");
+    std::fs::set_permissions(&open, std::os::unix::fs::PermissionsExt::from_mode(0o644))
+        .expect("chmod");
+    assert_eq!(
+        taken(&open, &tokens),
+        None,
+        "a secret others could read is no secret"
+    );
+}
+
+#[test]
+fn the_secret_goes_to_serve_in_the_shape_its_pipe_reads() {
+    // melchior's `Told` is tagged by `event`, as every other line on the pipe is.
+    let line: serde_json::Value = serde_json::from_str(&token_line("cafe")).expect("json");
+    assert_eq!(
+        line,
+        serde_json::json!({ "event": "token", "token": "cafe" })
+    );
+}
