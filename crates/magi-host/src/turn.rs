@@ -3,7 +3,7 @@
 
 use crate::session::Session;
 use magi_core::{Step, Turn};
-use magi_model::StopReason;
+use magi_model::{Delta, StopReason};
 use magi_proto::{AgentStatus, Entry, MessageId, ToolCallId};
 use magi_tools::{Ops, Registry};
 
@@ -82,8 +82,16 @@ async fn one_turn(
                                 crate::helping::release(session, backend, scribe, &prompt.spent)
                                     .await;
                             }
+                            // Only what grew is handed on; the rest settles when the stream ends.
+                            let (text, thinking) = match &delta {
+                                Delta::Text(text) => (text.clone(), String::new()),
+                                Delta::Thinking(thought) => (String::new(), thought.clone()),
+                                _ => (String::new(), String::new()),
+                            };
                             turn.apply(delta);
-                            session.lock().await.revise_at(cursor, assistant(&id, &turn))?;
+                            if !text.is_empty() || !thinking.is_empty() {
+                                session.lock().await.stream_at(cursor, &id, &text, &thinking)?;
+                            }
                         }
                         Arrival::Retrying { attempt, max_attempts, delay_ms } => {
                             retries_seen.push((attempt, max_attempts, delay_ms));

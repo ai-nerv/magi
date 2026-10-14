@@ -410,6 +410,65 @@ impl Session {
         })
     }
 
+    /// Grow the streaming message at `cursor` by what just arrived, in place: the delta is all that
+    /// is copied, published, and added to what waits to be recorded.
+    ///
+    /// # Errors
+    /// When no message `id` is at `cursor`.
+    pub fn stream_at(
+        &mut self,
+        cursor: Cursor,
+        id: &magi_proto::MessageId,
+        text: &str,
+        thinking: &str,
+    ) -> Result<(), JournalError> {
+        let grown = match self.journal.entry_mut(cursor) {
+            Some(Entry::Assistant {
+                id: held,
+                text: said,
+                thinking: thought,
+                ..
+            }) if held == id => {
+                said.push_str(text);
+                thought.push_str(thinking);
+                true
+            }
+            _ => false,
+        };
+        if !grown {
+            return Err(JournalError::Refused(format!(
+                "entry identity does not match cursor {}",
+                cursor.0
+            )));
+        }
+        match self.pending.get_mut(&cursor.0) {
+            Some(Entry::Assistant {
+                text: said,
+                thinking: thought,
+                ..
+            }) => {
+                said.push_str(text);
+                thought.push_str(thinking);
+            }
+            _ => {
+                // Handed over since it last changed; queued again as it now stands.
+                let now = self.position(cursor).and_then(|at| self.entries().get(at));
+                if let Some(now) = now.cloned() {
+                    self.pending.insert(cursor.0, now);
+                }
+            }
+        }
+        if !text.is_empty() || !thinking.is_empty() {
+            let _ = self.events.send(HarnessEvent::AssistantDelta {
+                cursor,
+                id: id.clone(),
+                text: text.to_owned(),
+                thinking: thinking.to_owned(),
+            });
+        }
+        Ok(())
+    }
+
     /// Update an identified streaming entry without publishing its terminal event.
     pub fn revise_at(&mut self, cursor: Cursor, entry: Entry) -> Result<(), JournalError> {
         let previous = self.amendment_target(cursor, &entry)?;
