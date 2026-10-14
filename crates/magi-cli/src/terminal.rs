@@ -34,7 +34,9 @@ impl Session {
                  that has one. To watch a session without a terminal, read the journal."
             );
         }
+        guard_panics();
         enable_raw_mode()?;
+        HELD.store(true, std::sync::atomic::Ordering::SeqCst);
         let mut out = io::stdout();
         execute!(out, crossterm::event::EnableBracketedPaste)?;
         execute!(out, EnterAlternateScreen)?;
@@ -92,13 +94,50 @@ impl Drop for Session {
         if self.enhanced {
             let _ = execute!(out, PopKeyboardEnhancementFlags);
         }
-        let _ = write!(out, "{MOUSE_OFF}");
-        let _ = execute!(out, crossterm::cursor::SetCursorStyle::DefaultUserShape);
-        let _ = execute!(out, LeaveAlternateScreen);
-        let _ = execute!(out, crossterm::event::DisableBracketedPaste);
-        let _ = disable_raw_mode();
+        restore();
         let _ = self.terminal.show_cursor();
     }
+}
+
+/// Whether a [`Session`] holds the terminal, so that restoring it happens once.
+static HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Every keyboard flag still pushed, the mouse, the cursor, the screen and bracketed paste, as a
+/// shell expects them back.
+fn given_back(out: &mut impl Write) -> io::Result<()> {
+    write!(out, "\x1b[<99u{MOUSE_OFF}")?;
+    queue!(
+        out,
+        crossterm::cursor::SetCursorStyle::DefaultUserShape,
+        crossterm::cursor::Show,
+        LeaveAlternateScreen,
+        crossterm::event::DisableBracketedPaste
+    )?;
+    out.flush()
+}
+
+/// Give the terminal back and leave raw mode, once, whichever of a drop or a panic gets there.
+fn restore() {
+    if HELD.swap(false, std::sync::atomic::Ordering::SeqCst) {
+        let _ = given_back(&mut io::stdout());
+        let _ = disable_raw_mode();
+    }
+}
+
+/// Restore the terminal before a panic's message is printed, when that panic ends the process:
+/// always under `panic = "abort"`, and from the main thread otherwise, since a task's panic is
+/// caught and the screen is still in use.
+fn guard_panics() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if cfg!(panic = "abort") || std::thread::current().name() == Some("main") {
+                restore();
+            }
+            previous(info);
+        }));
+    });
 }
 
 /// The cursor shape for a mode: an underline rather than a bar, which wants a column between cells.
@@ -128,4 +167,30 @@ pub fn hold_keys(want: bool) {
         let _ = execute!(out, PopKeyboardEnhancementFlags);
     }
     let _ = out.flush();
+}
+
+#[cfg(test)]
+mod restoring {
+    #[test]
+    fn what_is_given_back_undoes_every_mode_a_session_set() {
+        let mut out = Vec::new();
+        super::given_back(&mut out).expect("written");
+        let said = String::from_utf8_lossy(&out);
+        for undone in [
+            "\x1b[<99u",
+            "\x1b[?1003l",
+            "\x1b[?1006l",
+            "\x1b[?1049l",
+            "\x1b[?2004l",
+        ] {
+            assert!(said.contains(undone), "{undone:?} missing from {said:?}");
+        }
+    }
+
+    #[test]
+    fn restoring_twice_is_restoring_once() {
+        super::HELD.store(false, std::sync::atomic::Ordering::SeqCst);
+        super::restore();
+        assert!(!super::HELD.load(std::sync::atomic::Ordering::SeqCst));
+    }
 }
