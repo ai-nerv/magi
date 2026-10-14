@@ -51,6 +51,7 @@ fn attaching_somewhere_else_forgets_where_the_last_one_had_got_to() {
 fn a_swap_takes_the_whole_screen_with_it() {
     let mut app = app_with(vec![peer("beta-nu", "reviewer")]);
     app.apply(HarnessEvent::UserMessage {
+        images: Vec::new(),
         cursor: Cursor(1),
         id: MessageId::new("u1"),
         text: "mine".into(),
@@ -175,6 +176,7 @@ fn a_peer_is_named_by_its_role_and_id() {
 fn only_this_screens_geometry_is_kept_from_somebody_else() {
     let driving = [
         UiCommand::SubmitPrompt {
+            images: Vec::new(),
             text: "hello".into(),
             aside: String::new(),
         },
@@ -204,12 +206,18 @@ fn only_this_screens_geometry_is_kept_from_somebody_else() {
 #[test]
 fn a_view_only_screen_changes_nothing() {
     assert!(changes(&UiCommand::SubmitPrompt {
+        images: Vec::new(),
         text: "x".into(),
         aside: String::new(),
     }));
     assert!(changes(&UiCommand::Interrupt));
     assert!(changes(&UiCommand::Branch { keeps: Some(0) }));
     assert!(!changes(&UiCommand::Detach));
+    assert!(!changes(&UiCommand::Inspect));
+    assert!(!changes(&UiCommand::AttachLatest {
+        draws: false,
+        key: None
+    }));
     assert!(!changes(&UiCommand::Sized {
         rows: None,
         cols: 80,

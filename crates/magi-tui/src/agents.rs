@@ -1,5 +1,5 @@
 //! The run as a tree: every agent under this session's root, drawn with git-log rails, for the
-//! agents panel. Three rows per agent — who it is, what it is doing, what it is for — and children
+//! agents panel. Identity, activity and host details, with children
 //! under the one that started them. Every row of an entry selects it; attaching goes to that agent.
 
 use ratatui::style::{Modifier, Style};
@@ -27,6 +27,7 @@ pub struct Agent {
     pub claim: Option<String>,
     /// What its role is for, when the configuration says.
     pub about: Option<String>,
+    pub details: Option<magi_proto::monitoring::AgentDetails>,
 }
 
 /// The panel's rows and, parallel to them, the agent each row selects. A header and the blank under
@@ -40,6 +41,11 @@ pub struct Rendered {
 /// `folded` is left out, and the folded agent says how many.
 #[must_use]
 pub fn view(agents: &[Agent], folded: &BTreeSet<String>) -> Rendered {
+    view_with_width(agents, folded, u16::MAX)
+}
+
+#[must_use]
+pub fn view_with_width(agents: &[Agent], folded: &BTreeSet<String>, width: u16) -> Rendered {
     let mut out = Rendered {
         rows: Vec::new(),
         picks: Vec::new(),
@@ -56,7 +62,7 @@ pub fn view(agents: &[Agent], folded: &BTreeSet<String>) -> Rendered {
     out.picks.push(None);
     out.picks.push(None);
     for placed in tiered(agents, folded) {
-        for line in entry(&placed) {
+        for line in entry(&placed, width) {
             out.rows.push(line);
             out.picks.push(Some(placed.agent.id.clone()));
         }
@@ -73,8 +79,7 @@ fn counted(n: usize) -> String {
     }
 }
 
-/// Where one agent lands in the tree: the rail beside its name, the rail beside the two rows under
-/// the name, and how many agents below it are folded away.
+/// An agent's head and continuation rails, and the number of folded descendants.
 struct Placed<'a> {
     agent: &'a Agent,
     head: String,
@@ -82,18 +87,24 @@ struct Placed<'a> {
     hidden: usize,
 }
 
-/// One agent's three rows: a phase glyph and `role/id` with its tags, then what it is doing, then
-/// what it is for — the role's description, or who started it.
-fn entry(placed: &Placed<'_>) -> [Line<'static>; 3] {
+/// An agent's identity, activity, role description and host details.
+fn entry(placed: &Placed<'_>, width: u16) -> Vec<Line<'static>> {
     use magi_proto::Phase;
     let agent = placed.agent;
     let dim = Style::default().add_modifier(Modifier::DIM);
     let bold = Style::default().add_modifier(Modifier::BOLD);
     let rail = |text: &str| Span::styled(text.to_owned(), dim);
 
-    // A glyph per phase, lit only while working: the tree should read at a glance, with the one
-    // agent doing something now the one that stands out.
-    let (dot, lit) = match agent.phase {
+    let phase = if agent
+        .details
+        .as_ref()
+        .is_some_and(|details| details.approvals + details.questions > 0)
+    {
+        Phase::Waiting
+    } else {
+        agent.phase
+    };
+    let (dot, lit) = match phase {
         Phase::Working => ("◗ ", bold),
         Phase::Blocked => ("✗ ", bold),
         Phase::Finished => ("✓ ", dim),
@@ -127,14 +138,43 @@ fn entry(placed: &Placed<'_>) -> [Line<'static>; 3] {
         .clone()
         .or_else(|| agent.parent.as_ref().map(|up| format!("started by {up}")))
         .unwrap_or_else(|| "the root of this run".to_owned());
-    [
+    let mut rows = vec![
         Line::from(name),
         Line::from(vec![rail(&placed.body), Span::styled(doing(agent), dim)]),
         Line::from(vec![
             rail(&placed.body),
             Span::styled(about, dim.add_modifier(Modifier::ITALIC)),
         ]),
-    ]
+    ];
+    rows.extend(
+        details::lines(agent)
+            .into_iter()
+            .map(|said| Line::from(vec![rail(&placed.body), Span::raw(said)])),
+    );
+    let inset = crate::wrap::columns(&placed.body).max(crate::wrap::columns(&placed.head));
+    let room = width
+        .saturating_sub(u16::try_from(inset).unwrap_or(u16::MAX))
+        .max(1);
+    rows.into_iter()
+        .flat_map(|mut line| {
+            let prefix = line.spans.remove(0);
+            crate::wrap::line(line, room)
+                .into_iter()
+                .enumerate()
+                .map(|(index, mut row)| {
+                    row.spans.insert(
+                        0,
+                        if index == 0 {
+                            prefix.clone()
+                        } else {
+                            rail(&placed.body)
+                        },
+                    );
+                    row
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// The phase in words, with the timer on `working` and the cause on `waiting`/`blocked`, so a
@@ -150,6 +190,25 @@ fn doing(agent: &Agent) -> String {
         Phase::Gone => "gone",
         Phase::Idle => "idle",
     });
+    if let Some(details) = &agent.details {
+        if details.approvals > 0 {
+            said = format!("waiting for approval ({})", details.approvals);
+        } else if details.questions > 0 {
+            said = format!("waiting for input ({})", details.questions);
+        } else {
+            match &details.status {
+                magi_proto::AgentStatus::Working { label } => said = format!("working: {label}"),
+                magi_proto::AgentStatus::Retrying {
+                    attempt,
+                    max_attempts,
+                    delay_ms,
+                } => {
+                    said = format!("retrying {attempt}/{max_attempts} in {delay_ms}ms");
+                }
+                magi_proto::AgentStatus::Idle => {}
+            }
+        }
+    }
     if agent.phase == Phase::Working && agent.working_for > 0 {
         said.push_str(&format!(" {}", elapsed(agent.working_for)));
     }
@@ -166,6 +225,8 @@ fn doing(agent: &Agent) -> String {
     }
     said
 }
+
+mod details;
 
 /// A working-for span: `m:ss` once past a minute, else `Ns`.
 fn elapsed(secs: u64) -> String {

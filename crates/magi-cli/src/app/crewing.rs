@@ -170,7 +170,14 @@ pub fn for_screen(command: &UiCommand) -> bool {
 /// and this terminal's own geometry. What a `--view-only` screen holds back.
 #[must_use]
 pub fn changes(command: &UiCommand) -> bool {
-    !for_screen(command) && !matches!(command, UiCommand::Attach { .. } | UiCommand::Detach)
+    !for_screen(command)
+        && !matches!(
+            command,
+            UiCommand::Attach { .. }
+                | UiCommand::AttachLatest { .. }
+                | UiCommand::Detach
+                | UiCommand::Inspect
+        )
 }
 
 #[cfg(test)]

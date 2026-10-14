@@ -406,11 +406,75 @@ mod continues_past_the_edge {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
+    #[test]
+    fn agent_tail_is_visible_on_first_frame_and_manual_scroll_is_preserved() {
+        for (width, height) in [(80, 24), (160, 28)] {
+            let mut app = App::new();
+            app.attach_to(Some(crate::melchior::Peer {
+                id: "child".into(),
+                ..Default::default()
+            }));
+            let entries = (0..100)
+                .map(|index| magi_proto::Entry::User {
+                    images: Vec::new(),
+                    id: MessageId::new(format!("u{index}")),
+                    text: format!("history-marker-{index}"),
+                    aside: String::new(),
+                })
+                .collect();
+            app.apply(HarnessEvent::SessionSnapshot {
+                cursor: Cursor(100),
+                session: magi_proto::SessionId::new("child"),
+                entries,
+                status: magi_proto::AgentStatus::Idle,
+                model: None,
+                choices: Vec::new(),
+                thinking: "off".into(),
+                judging: Default::default(),
+            });
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
+            let footer = magi_tui::footer::FooterData::default();
+            terminal
+                .draw(|frame| {
+                    draw(frame, &mut app, &footer);
+                })
+                .expect("first frame");
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(
+                text.contains("history-marker-99"),
+                "tail missing on first {width}x{height} frame"
+            );
+            assert!(!text.contains("history-marker-0"));
+            app.scrollback.scroll_up(20);
+            let top = app.scrollback.hidden_above();
+            app.apply(HarnessEvent::UserMessage {
+                cursor: Cursor(101),
+                id: MessageId::new("new"),
+                images: Vec::new(),
+                text: "new-output-marker".into(),
+            });
+            terminal
+                .draw(|frame| {
+                    draw(frame, &mut app, &footer);
+                })
+                .expect("scrolled frame");
+            assert_eq!(app.scrollback.hidden_above(), top);
+            assert!(!app.scrollback.is_following());
+        }
+    }
+
     /// A 60x16 screen holding a conversation `turns` long, scrolled up by `lines`.
     fn drawn(turns: usize, lines: usize) -> Vec<String> {
         let mut app = App::new();
         for n in 0..turns {
             app.apply(HarnessEvent::UserMessage {
+                images: Vec::new(),
                 cursor: Cursor(n as u64 + 1),
                 id: MessageId::new(format!("u{n}")),
                 text: format!("question number {n}"),

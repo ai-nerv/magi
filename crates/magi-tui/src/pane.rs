@@ -57,6 +57,13 @@ pub struct Pane {
 }
 
 impl Pane {
+    pub fn keep_scroll(&mut self, previous: &Self) {
+        if self.chosen() == previous.chosen() {
+            self.top = previous.top;
+            self.reveal = previous.reveal;
+        }
+    }
+
     /// A float titled `title`, holding `rows`.
     #[must_use]
     pub fn new(title: impl Into<String>, rows: Vec<Line<'static>>) -> Self {
