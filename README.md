@@ -303,8 +303,9 @@ arrives, and the reason the limit has to be a script rather than an intention.
 
 ## Releases
 
-`make dist` builds against `x86_64-unknown-linux-musl`, which produces a genuine `static-pie`
-binary — no interpreter, no `NEEDED` entries, nothing to install alongside it:
+`make build` builds against `x86_64-unknown-linux-musl` where the toolchain has that target,
+which produces a genuine `static-pie` binary — no interpreter, no `NEEDED` entries, nothing to
+install alongside it:
 
 ```
 magi 0.1.0   2.15 MB
@@ -317,12 +318,28 @@ The linkage line is read out of the ELF, not inferred from the flags: a glibc "s
 still carries an INTERP and dies on a machine whose loader disagrees, and `ldd` reports it as
 statically linked anyway.
 
-The release profile is pinned rather than left to defaults — `lto = "thin"`,
-`codegen-units = 16` — because a build that silently switches to fat LTO and one codegen unit
-turns a ten-second link into minutes.
+The release profile is pinned rather than left to defaults — fat LTO and one codegen unit, for
+size — and `make debug` is the build to iterate with.
 
 Tagging a release builds the same binary on the runner, for `amd64` and `arm64`, and attaches
 it. The toolchain is the flake's, so a release is built with the compiler the gates ran under.
+
+## Nix
+
+Each release tag publishes a static build for x86_64 and aarch64 Linux to the `ai-nerv` cache,
+with `config/` under `share/magi/`.
+
+```sh
+cachix use ai-nerv
+nix run github:ai-nerv/magi -- verbs
+nix build github:ai-nerv/magi
+```
+
+The flake names the cache itself, so `--accept-flake-config` does the same as `cachix use`. In
+another flake, take `inputs.magi.packages.${system}.default`, and configure the cache on the
+consuming machine: an input's `nixConfig` is not inherited.
+
+Here, `make nix-build` builds it into `result/`, and `make nix-check` checks the flake.
 
 ## Configuration
 
