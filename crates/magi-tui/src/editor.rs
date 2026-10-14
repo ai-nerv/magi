@@ -138,16 +138,29 @@ impl Editor {
             .map(|t| t.at.elapsed())
     }
 
-    /// Insert text, splitting on newlines. Used for bracketed paste.
+    /// Insert text, splitting on newlines, in one splice. Used for bracketed paste.
     pub fn insert_str(&mut self, text: &str) {
-        for (i, chunk) in text.split('\n').enumerate() {
-            if i > 0 {
-                self.newline();
+        let byte = self.byte_offset();
+        let line = self.line_mut();
+        let tail = line.split_off(byte);
+        let mut pieces = text.split('\n');
+        let first = pieces.next().unwrap_or_default();
+        line.push_str(first);
+        let mut added: Vec<String> = pieces.map(str::to_owned).collect();
+        match added.last_mut() {
+            Some(last) => {
+                self.col = last.chars().count();
+                last.push_str(&tail);
+                let at = self.row + 1;
+                self.row += added.len();
+                self.lines.splice(at..at, added);
             }
-            for c in chunk.chars() {
-                self.insert(c);
+            None => {
+                line.push_str(&tail);
+                self.col += first.chars().count();
             }
         }
+        self.history_pos = None;
     }
 
     pub fn newline(&mut self) {
@@ -636,6 +649,36 @@ mod tests {
         let e = editor_with("a\nb");
         assert_eq!(e.lines(), ["a", "b"]);
         assert_eq!(e.cursor(), (1, 1));
+    }
+
+    #[test]
+    fn a_paste_lands_between_what_was_either_side_of_the_cursor() {
+        let mut e = editor_with("héad\ntail");
+        e.goto(0, 2);
+        e.insert_str("1\n22\n333");
+        assert_eq!(e.lines(), ["hé1", "22", "333ad", "tail"]);
+        assert_eq!(e.cursor(), (2, 3));
+        e.insert_str("ü");
+        assert_eq!(e.lines()[2], "333üad");
+        assert_eq!(e.cursor(), (2, 4));
+    }
+
+    #[test]
+    fn a_megabyte_paste_is_one_splice_not_a_keystroke_each() {
+        let one_line = "x".repeat(1 << 20);
+        let many_lines = format!("{}\n", "y".repeat(99)).repeat(10 << 10);
+        for text in [one_line, many_lines] {
+            let mut e = editor_with("ab");
+            e.left();
+            let started = std::time::Instant::now();
+            e.insert_str(&text);
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(2),
+                "{:?}",
+                started.elapsed()
+            );
+            assert_eq!(e.text(), format!("a{text}b"));
+        }
     }
 
     #[test]
