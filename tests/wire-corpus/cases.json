@@ -1,0 +1,22 @@
+{
+  "about": "Family wire conformance corpus. Byte-identical in every repository under tests/wire-corpus/. A server harness sends each server case to its own `serve` socket; a client harness serves each client case to its own family client from a fake socket. `then` says whether the connection must still answer a following verbs call (open) or must be closed by the server (closed); `any` leaves it to the program.",
+  "cap": 16777216,
+  "server": [
+    {"file": "server/verbs-json.frame", "expect": {"ok": true, "encoding": "json"}, "then": "open"},
+    {"file": "server/verbs-cbor.frame", "expect": {"ok": true, "encoding": "cbor"}, "then": "open"},
+    {"file": "server/verbs-json.frame", "split": "bytewise", "expect": {"ok": true, "encoding": "json"}, "then": "open"},
+    {"file": "server/zero-length.frame", "expect": {"ok": false}, "then": "any"},
+    {"file": "server/garbage.frame", "expect": {"ok": false}, "then": "any"},
+    {"file": "server/unknown-verb.frame", "expect": {"ok": false, "error_contains": "no-such-verb-for-the-corpus"}, "then": "open"},
+    {"file": "server/oversize.header", "expect": {"ok": false, "fault": "failed"}, "then": "closed"}
+  ],
+  "client": [
+    {"file": "client/no-family.frame", "expect": "accepted"},
+    {"file": "client/failed.frame", "expect": "failed"},
+    {"file": "client/newer-family.frame", "expect": "refused"},
+    {"file": "client/zero-length.frame", "expect": "error_and_close"},
+    {"file": "client/oversize.header", "expect": "error_and_close_without_allocating"},
+    {"file": "client/truncated-body.frame", "expect": "error_and_close"},
+    {"file": "client/short-body.frame", "eof_after": true, "expect": "error_and_close"}
+  ]
+}

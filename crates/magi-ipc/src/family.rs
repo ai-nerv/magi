@@ -98,17 +98,16 @@ impl Fault {
     }
 }
 
-/// One held connection: balthasar serves many calls per connection, so the stream is kept.
+/// One held connection: balthasar serves many calls per connection, so the stream is kept between
+/// calls. Each call takes it out and puts it back only when a whole reply came back; a call that
+/// failed, or was dropped where it stood, takes the connection with it, and the next call dials
+/// again. One reply per call, in order, so an abandoned reply is never read as the next answer.
 pub struct Family {
-    stream: UnixStream,
+    stream: Option<UnixStream>,
     scratch: Vec<u8>,
     /// Which encoding calls go out in; replies are read in whichever came back. JSON by default.
     wire: crate::Wire,
     path: PathBuf,
-    /// Whether a call went out whose reply was never read to the end. One reply per call, in
-    /// order, so an abandoned one is still in the stream: the next call would read it as its own
-    /// answer, and every answer after that belongs to the call before it.
-    adrift: bool,
 }
 
 impl Family {
@@ -117,21 +116,11 @@ impl Family {
         let path = path.as_ref().to_path_buf();
         let stream = connected(&path).await?;
         Ok(Self {
-            stream,
+            stream: Some(stream),
             scratch: Vec::new(),
             wire: crate::Wire::default(),
             path,
-            adrift: false,
         })
-    }
-
-    /// Take the connection down and open another to the same socket, dropping whatever the old one
-    /// still owed. The only way back into step: a reply cannot be skipped without reading it, and
-    /// reading it means waiting for a call this side has already given up on.
-    async fn reopen(&mut self) -> Result<(), Fault> {
-        self.stream = connected(&self.path).await?;
-        self.adrift = false;
-        Ok(())
     }
 
     /// Connect to the newest socket in `dir` that takes the connection. With no directory, only
@@ -182,53 +171,59 @@ impl Family {
         patience: std::time::Duration,
     ) -> Result<Vec<serde_json::Value>, Fault> {
         let frame = frame(self.wire, verb, &args)?;
-        // Whatever the abandoned call still owes arrives on this stream and nowhere else, so the
-        // stream goes rather than the answer being skipped.
-        if self.adrift {
-            self.reopen().await?;
-        }
-        // Set before the write, not after: a `call` dropped where it stands — a caller's own
-        // timeout around this one — leaves a request on the wire either way.
-        self.adrift = true;
-        tokio::time::timeout(patience, self.stream.write_all(&frame))
+        let mut stream = match self.stream.take() {
+            Some(stream) => stream,
+            None => connected(&self.path).await?,
+        };
+        tokio::time::timeout(patience, stream.write_all(&frame))
             .await
             .map_err(|_| Fault::Unavailable(format!("sending {verb}: not taken in {patience:?}")))?
             .map_err(|e| Fault::Unavailable(format!("sending {verb}: {e}")))?;
 
         // A socket that accepts the connection and then never replies is the ordinary shape of a
         // wedged process, so every asynchronous call is on a clock here rather than at the caller.
-        tokio::time::timeout(patience, self.read_reply(verb))
-            .await
-            .map_err(|_| Fault::Unavailable(format!("{verb}: no answer in {patience:?}")))?
-    }
-
-    /// Read one framed reply and unwrap the family's envelope.
-    async fn read_reply(&mut self, verb: &str) -> Result<Vec<serde_json::Value>, Fault> {
-        let mut head = [0_u8; 4];
-        self.stream
-            .read_exact(&mut head)
-            .await
-            .map_err(|e| Fault::Unavailable(format!("awaiting {verb}: {e}")))?;
-
-        let len = u32::from_be_bytes(head) as usize;
-        if len > MAX_FRAME_BYTES {
-            return Err(Fault::Malformed(format!("{len} byte reply to {verb}")));
+        let reply =
+            tokio::time::timeout(patience, read_reply(&mut stream, &mut self.scratch, verb))
+                .await
+                .map_err(|_| Fault::Unavailable(format!("{verb}: no answer in {patience:?}")))?;
+        // A refusal is a whole reply, and leaves nothing owed on the stream.
+        if matches!(&reply, Ok(_) | Err(Fault::Refused(_) | Fault::Failed(_))) {
+            self.stream = Some(stream);
         }
-        self.scratch.clear();
-        self.scratch.resize(len, 0);
-        self.stream
-            .read_exact(&mut self.scratch)
-            .await
-            .map_err(|e| Fault::Unavailable(format!("reading {verb}: {e}")))?;
-        // The whole frame is off the wire, so the next call starts where a reply does. Before the
-        // envelope is read: a refusal is an answer, and answering leaves nothing owed.
-        self.adrift = false;
-
-        // Read in whichever encoding came back rather than in the one we asked in.
-        let reply: serde_json::Value = crate::Wire::read(&self.scratch)
-            .map_err(|e| Fault::Malformed(format!("{verb}: {e}")))?;
-        unwrap(&reply, verb)
+        reply
     }
+}
+
+/// Read one framed reply and unwrap the family's envelope. A declared length of nothing, or past
+/// the cap, is refused before anything is allocated for it.
+async fn read_reply(
+    stream: &mut UnixStream,
+    scratch: &mut Vec<u8>,
+    verb: &str,
+) -> Result<Vec<serde_json::Value>, Fault> {
+    let mut head = [0_u8; 4];
+    stream
+        .read_exact(&mut head)
+        .await
+        .map_err(|e| Fault::Unavailable(format!("awaiting {verb}: {e}")))?;
+
+    let len = u32::from_be_bytes(head) as usize;
+    if len == 0 || len > MAX_FRAME_BYTES {
+        return Err(Fault::Malformed(format!(
+            "a {len} byte reply to {verb}; a frame carries 1 to {MAX_FRAME_BYTES}"
+        )));
+    }
+    scratch.clear();
+    scratch.resize(len, 0);
+    stream
+        .read_exact(scratch)
+        .await
+        .map_err(|e| Fault::Unavailable(format!("reading {verb}: {e}")))?;
+
+    // Read in whichever encoding came back rather than in the one we asked in.
+    let reply: serde_json::Value =
+        crate::Wire::read(scratch).map_err(|e| Fault::Malformed(format!("{verb}: {e}")))?;
+    unwrap(&reply, verb)
 }
 
 /// The newest revision of the family wire this understands, duplicated in each sibling.
@@ -353,7 +348,7 @@ fn unwrap(reply: &serde_json::Value, verb: &str) -> Result<Vec<serde_json::Value
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(0);
     if spoken > u64::from(FAMILY) {
-        return Err(Fault::Malformed(format!(
+        return Err(Fault::Refused(format!(
             "{verb}: this peer speaks version {spoken} of the family wire and this build \
              understands {FAMILY}; upgrade magi"
         )));
@@ -398,6 +393,7 @@ mod tests {
             "ok": true, "family": super::FAMILY as u64 + 1, "n": 0, "result": []
         });
         let why = super::unwrap(&ahead, "verbs").expect_err("a newer peer is refused");
+        assert!(matches!(why, super::Fault::Refused(_)), "{why:?}");
         let said = why.to_string();
         assert!(said.contains("family wire"), "{said}");
         assert!(said.contains("upgrade"), "it says what to do: {said}");

@@ -9,12 +9,11 @@ use std::time::Duration;
 /// How long a picker will wait before drawing without balthasar, on a write and on a read.
 const PATIENCE: Duration = Duration::from_millis(2000);
 
-/// One held connection.
+/// One held connection, taken out for each call and put back only when a whole reply came back:
+/// a call that failed takes the connection with it, and the next call dials again.
 pub struct Family {
-    stream: UnixStream,
+    stream: Option<UnixStream>,
     path: PathBuf,
-    /// Whether a call went out whose reply was not read to the end; the next call dials again.
-    adrift: bool,
 }
 
 /// Open a stream with both deadlines set, served by this user or not at all.
@@ -32,9 +31,8 @@ impl Family {
     pub fn dial(path: impl AsRef<Path>) -> Result<Self, Fault> {
         let path = path.as_ref();
         Ok(Self {
-            stream: opened(path)?,
+            stream: Some(opened(path)?),
             path: path.to_path_buf(),
-            adrift: false,
         })
     }
 
@@ -64,40 +62,50 @@ impl Family {
     }
 
     /// Send one call and wait for its answer. A call over the frame cap is refused here and
-    /// never sent; a call abandoned partway leaves the connection to be dialled again.
+    /// never sent.
     pub fn call(
         &mut self,
         verb: &str,
         args: Vec<serde_json::Value>,
     ) -> Result<Vec<serde_json::Value>, Fault> {
         let frame = frame(crate::Wire::Json, verb, &args)?;
-        if self.adrift {
-            self.stream = opened(&self.path)?;
-            self.adrift = false;
-        }
-        self.adrift = true;
-        self.stream
+        let mut stream = match self.stream.take() {
+            Some(stream) => stream,
+            None => opened(&self.path)?,
+        };
+        stream
             .write_all(&frame)
             .map_err(|e| Fault::Unavailable(format!("sending {verb}: {e}")))?;
-
-        let mut head = [0_u8; 4];
-        self.stream
-            .read_exact(&mut head)
-            .map_err(|e| Fault::Unavailable(format!("awaiting {verb}: {e}")))?;
-        let len = u32::from_be_bytes(head) as usize;
-        if len > super::MAX_FRAME_BYTES {
-            return Err(Fault::Malformed(format!("{len} byte reply to {verb}")));
+        let reply = read_reply(&mut stream, verb);
+        // A refusal is a whole reply, and leaves nothing owed on the stream.
+        if matches!(&reply, Ok(_) | Err(Fault::Refused(_) | Fault::Failed(_))) {
+            self.stream = Some(stream);
         }
-        let mut rest = vec![0_u8; len];
-        self.stream
-            .read_exact(&mut rest)
-            .map_err(|e| Fault::Unavailable(format!("reading {verb}: {e}")))?;
-        self.adrift = false;
-
-        let reply: serde_json::Value =
-            crate::Wire::read(&rest).map_err(|e| Fault::Malformed(format!("{verb}: {e}")))?;
-        unwrap(&reply, verb)
+        reply
     }
+}
+
+/// Read one framed reply and unwrap the family's envelope. A declared length of nothing, or past
+/// the cap, is refused before anything is allocated for it.
+fn read_reply(stream: &mut UnixStream, verb: &str) -> Result<Vec<serde_json::Value>, Fault> {
+    let mut head = [0_u8; 4];
+    stream
+        .read_exact(&mut head)
+        .map_err(|e| Fault::Unavailable(format!("awaiting {verb}: {e}")))?;
+    let len = u32::from_be_bytes(head) as usize;
+    if len == 0 || len > super::MAX_FRAME_BYTES {
+        return Err(Fault::Malformed(format!(
+            "a {len} byte reply to {verb}; a frame carries 1 to {}",
+            super::MAX_FRAME_BYTES
+        )));
+    }
+    let mut rest = vec![0_u8; len];
+    stream
+        .read_exact(&mut rest)
+        .map_err(|e| Fault::Unavailable(format!("reading {verb}: {e}")))?;
+    let reply: serde_json::Value =
+        crate::Wire::read(&rest).map_err(|e| Fault::Malformed(format!("{verb}: {e}")))?;
+    unwrap(&reply, verb)
 }
 
 #[cfg(test)]
