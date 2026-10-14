@@ -64,13 +64,30 @@ impl Family {
     }
 
     /// Send one call and wait for its answer. A call over the frame cap is refused here and
-    /// never sent.
+    /// never sent; one refused for its key is made once more with a newly published key.
     pub fn call(
         &mut self,
         verb: &str,
         args: Vec<serde_json::Value>,
     ) -> Result<Vec<serde_json::Value>, Fault> {
-        let frame = frame(crate::Wire::Json, verb, &args, self.key.as_ref())?;
+        let reply = self.once(verb, &args);
+        if matches!(&reply, Err(Fault::Refused(why)) if why == super::keys::REFUSED)
+            && let Some(fresh) = super::keys::published(&self.path)
+            && self.key.as_ref().map(super::keys::Key::as_str) != Some(fresh.as_str())
+        {
+            self.key = Some(fresh);
+            return self.once(verb, &args);
+        }
+        reply
+    }
+
+    /// One call and its reply, the connection kept only when the reply came back whole.
+    fn once(
+        &mut self,
+        verb: &str,
+        args: &[serde_json::Value],
+    ) -> Result<Vec<serde_json::Value>, Fault> {
+        let frame = frame(crate::Wire::Json, verb, args, self.key.as_ref())?;
         let mut stream = match self.stream.take() {
             Some(stream) => stream,
             None => opened(&self.path)?,

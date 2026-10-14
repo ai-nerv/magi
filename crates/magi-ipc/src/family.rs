@@ -186,13 +186,34 @@ impl Family {
 
     /// The same, waiting `patience` rather than the clock a feature keeps. For the calls whose
     /// failure costs the conversation rather than a feature — see [`DURABLE`].
+    ///
+    /// A call refused for its key is made once more with the key the memory layer now publishes
+    /// beside its socket, when that is a different one: the layer was started again by another.
     pub async fn call_within(
         &mut self,
         verb: &str,
         args: Vec<serde_json::Value>,
         patience: std::time::Duration,
     ) -> Result<Vec<serde_json::Value>, Fault> {
-        let frame = frame(self.wire, verb, &args, self.key.as_ref())?;
+        let reply = self.once(verb, &args, patience).await;
+        if matches!(&reply, Err(Fault::Refused(why)) if why == keys::REFUSED)
+            && let Some(fresh) = keys::published(&self.path)
+            && self.key.as_ref().map(keys::Key::as_str) != Some(fresh.as_str())
+        {
+            self.key = Some(fresh);
+            return self.once(verb, &args, patience).await;
+        }
+        reply
+    }
+
+    /// One call and its reply, the connection kept only when the reply came back whole.
+    async fn once(
+        &mut self,
+        verb: &str,
+        args: &[serde_json::Value],
+        patience: std::time::Duration,
+    ) -> Result<Vec<serde_json::Value>, Fault> {
+        let frame = frame(self.wire, verb, args, self.key.as_ref())?;
         let mut stream = match self.stream.take() {
             Some(stream) => stream,
             None => connected(&self.path).await?,
@@ -651,6 +672,64 @@ mod tests {
         assert_eq!(ours[0]["key"], json!(key));
         let theirs = heard_theirs.join().expect("theirs");
         assert!(theirs[0].get("key").is_none(), "{}", theirs[0]);
+    }
+
+    /// A memory layer started again by another: it answers a write only with `key`, and refuses
+    /// any other the way balthasar does. Hands back the key each call carried.
+    fn restarted(path: &Path, key: &str) -> std::thread::JoinHandle<Vec<serde_json::Value>> {
+        use std::io::{Read, Write};
+
+        let listener = std::os::unix::net::UnixListener::bind(path).expect("bind");
+        let key = key.to_owned();
+        std::thread::spawn(move || {
+            let mut carried = Vec::new();
+            let Ok((mut stream, _)) = listener.accept() else {
+                return carried;
+            };
+            for _ in 0..2 {
+                let mut head = [0_u8; 4];
+                if stream.read_exact(&mut head).is_err() {
+                    break;
+                }
+                let mut body = vec![0_u8; u32::from_be_bytes(head) as usize];
+                stream.read_exact(&mut body).expect("body");
+                let call: serde_json::Value = serde_json::from_slice(&body).expect("json");
+                carried.push(call["key"].clone());
+                let reply = if call["key"] == json!(key) {
+                    json!({ "ok": true, "n": 1, "result": [call["call"].clone()] })
+                } else {
+                    json!({ "ok": false, "fault": "refused", "error": keys::REFUSED })
+                };
+                let reply = reply.to_string();
+                let mut framed = (reply.len() as u32).to_be_bytes().to_vec();
+                framed.extend_from_slice(reply.as_bytes());
+                stream.write_all(&framed).expect("reply");
+            }
+            carried
+        })
+    }
+
+    #[tokio::test]
+    async fn a_write_refused_for_its_key_is_made_again_with_the_key_now_published() {
+        use std::io::Write;
+        let dir = magi_model::scratch::Scratch::new("magi-family-rekeyed", "one");
+        let socket = dir.join("api@again.sock");
+        let (old, new) = (
+            crate::random_hex(32).expect("random"),
+            crate::random_hex(32).expect("random"),
+        );
+        hold_key(&socket, &old);
+        crate::private_file(&crate::key_path(&socket))
+            .expect("create")
+            .write_all(new.as_bytes())
+            .expect("write");
+        let served = restarted(&socket, &new);
+
+        let mut open = Family::dial(&socket).await.expect("dial");
+        let answered = open.call("observe", Vec::new()).await.expect("observe");
+        assert_eq!(answered, vec![json!("observe")]);
+        drop(open);
+        assert_eq!(served.join().expect("served"), vec![json!(old), json!(new)]);
     }
 
     /// A caller that gives up on a call leaves its answer in the stream. Read as the next call's,

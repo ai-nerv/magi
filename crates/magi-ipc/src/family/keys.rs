@@ -1,8 +1,12 @@
-//! The keys this process handed the memory layers it started, by the socket each listens on. A
-//! call to one of those sockets carries its key; a call to any other carries none.
+//! The keys of the memory layers this process talks to, by the socket each listens on: the key it
+//! handed one it started, or the `<socket>.key` one it did not start published. A call to one of
+//! those sockets carries its key; a call to any other carries none.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+
+/// What a memory layer says when a call that writes came without its key, or with another.
+pub(super) const REFUSED: &str = "a call to serve needs the key it was started with";
 
 /// One key, never printed: its `Debug` says only that it is there.
 #[derive(Clone)]
@@ -32,16 +36,34 @@ pub fn hold_key(socket: &Path, key: &str) {
     held.push((socket.to_path_buf(), Key(key.to_owned())));
 }
 
-/// The key held for `socket`, matched as it is named or as it resolves.
+/// The key held for `socket`, matched as it is named or as it resolves; else, for a memory layer's
+/// socket, the one published beside it, which is then held.
 pub(super) fn held_for(socket: &Path) -> Option<Key> {
-    let held = HELD.lock().ok()?;
-    if let Some((_, key)) = held.iter().find(|(path, _)| path == socket) {
-        return Some(key.clone());
-    }
-    let wanted = resolved(socket)?;
-    held.iter()
-        .find(|(path, _)| resolved(path).as_ref() == Some(&wanted))
-        .map(|(_, key)| key.clone())
+    let found = {
+        let held = HELD.lock().ok()?;
+        held.iter()
+            .find(|(path, _)| path == socket)
+            .or_else(|| {
+                let wanted = resolved(socket)?;
+                held.iter()
+                    .find(|(path, _)| resolved(path).as_ref() == Some(&wanted))
+            })
+            .map(|(_, key)| key.clone())
+    };
+    found.or_else(|| published(socket))
+}
+
+/// The key a memory layer published as `<socket>.key`, read with the owner and mode check every
+/// key file gets, and held from here on. `None` for a socket that is not a memory layer's.
+pub(super) fn published(socket: &Path) -> Option<Key> {
+    let memory = socket
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with("api@") && name.ends_with(".sock"))
+        || super::named().as_deref() == Some(socket);
+    let key = memory.then(|| crate::read_key(socket)).flatten()?;
+    hold_key(socket, &key);
+    Some(Key(key))
 }
 
 /// Whether a key is held for `socket`.
@@ -103,6 +125,42 @@ mod tests {
         let mut out = (body.len() as u32).to_be_bytes().to_vec();
         out.extend_from_slice(&body);
         out
+    }
+
+    /// `key` written as `<socket>.key` with `mode`.
+    fn published_as(socket: &Path, key: &str, mode: u32) {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        let path = crate::key_path(socket);
+        crate::private_file(&path)
+            .expect("create")
+            .write_all(format!("{key}\n").as_bytes())
+            .expect("write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+    }
+
+    #[test]
+    fn a_memory_layer_this_did_not_start_is_reached_with_the_key_it_published() {
+        let dir = magi_model::scratch::Scratch::new("magi-keys", "published");
+        let theirs = dir.join("api@theirs.sock");
+        published_as(&theirs, KEY, 0o600);
+        assert_eq!(
+            held_for(&theirs).map(|k| k.as_str().to_owned()),
+            Some(KEY.to_owned())
+        );
+
+        let loose = dir.join("api@loose.sock");
+        published_as(&loose, KEY, 0o644);
+        assert!(
+            held_for(&loose).is_none(),
+            "a key others can read is no key"
+        );
+        let host = dir.join("host.sock");
+        published_as(&host, KEY, 0o600);
+        assert!(
+            held_for(&host).is_none(),
+            "only a memory layer's key file is read"
+        );
     }
 
     #[test]

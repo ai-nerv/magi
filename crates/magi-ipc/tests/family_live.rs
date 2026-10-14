@@ -193,3 +193,97 @@ async fn a_second_peer_without_the_key_cannot_observe_into_the_session() {
         .expect("replay");
     assert_eq!(back.len(), 1, "only what the session said: {back:?}");
 }
+
+/// `balthasar serve` started by hand in `dir`, handed no key, and the socket it bound once it has
+/// published a key other than `before`; `None` when it never does.
+fn by_hand_serve(
+    dir: &std::path::Path,
+    before: Option<&str>,
+) -> Option<(std::process::Child, std::path::PathBuf)> {
+    let child = std::process::Command::new("balthasar")
+        .args(["serve", "--instance", "again", "--scope", "project"])
+        .current_dir(dir)
+        .env("XDG_RUNTIME_DIR", dir.join("r"))
+        .env("HOME", dir.join("h"))
+        .env("XDG_CONFIG_HOME", dir.join("c"))
+        .env("XDG_DATA_HOME", dir.join("d"))
+        .env_remove("MAGI_API_SOCKET")
+        .env_remove("MAGI_MEMORY_INSTANCE")
+        .env_remove("MAGI_BALTHASAR_INSTANCE")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let socket = dir.join("r/memory/api@again.sock");
+    let published = magi_ipc::key_path(&socket);
+    let mut deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut bound = false;
+    while std::time::Instant::now() < deadline {
+        let said = std::fs::read_to_string(&published).ok();
+        if said
+            .as_deref()
+            .is_some_and(|key| Some(key) != before && key.ends_with('\n'))
+        {
+            return Some((child, socket));
+        }
+        // Answering and publishing nothing a second later is a build from before published keys.
+        if !bound && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+            bound = true;
+            deadline = deadline.min(std::time::Instant::now() + std::time::Duration::from_secs(1));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let mut child = child;
+    let _ = child.kill();
+    let _ = child.wait();
+    None
+}
+
+#[tokio::test]
+async fn a_memory_layer_started_again_by_hand_is_written_to_with_the_key_it_published() {
+    let dir = Scratch::new("fl", "again");
+    std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
+        .create(dir.join("r"))
+        .expect("a private runtime directory");
+    let Some((mut first, socket)) = by_hand_serve(&dir, None) else {
+        eprintln!("skipping: no balthasar here publishes its own key");
+        return;
+    };
+    let turn = |cursor: u64, text: &str| serde_json::json!({ "cursor": cursor, "role": "user", "kind": "prose", "text": text, "raw": {} });
+    let mut family = Family::dial(&socket).await.expect("dial");
+    family
+        .call_within(
+            "observe",
+            vec![serde_json::json!("s"), turn(1, "before")],
+            magi_ipc::family::DURABLE,
+        )
+        .await
+        .expect("written with the key it published");
+
+    let _ = first.kill();
+    let _ = first.wait();
+    let left = std::fs::read_to_string(magi_ipc::key_path(&socket)).ok();
+    let (mut second, _) = by_hand_serve(&dir, left.as_deref()).expect("started again");
+    let gone = family.call("verbs", Vec::new()).await;
+    assert!(
+        matches!(gone, Err(Fault::Unavailable(_))),
+        "the connection to the first went with it: {gone:?}"
+    );
+    family
+        .call_within(
+            "observe",
+            vec![serde_json::json!("s"), turn(2, "after")],
+            magi_ipc::family::DURABLE,
+        )
+        .await
+        .expect("written with the key it published this time");
+
+    let back = by_hand(
+        &socket,
+        &serde_json::json!({ "call": "replay", "args": ["s"] }),
+    );
+    assert_eq!(back["n"], 2, "a read needs no key, and both landed: {back}");
+    let _ = second.kill();
+    let _ = second.wait();
+}
