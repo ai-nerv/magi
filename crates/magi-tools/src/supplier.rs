@@ -10,18 +10,25 @@
 
 use crate::holding::{CONFIGURE, CONFIGURE_WAS};
 use crate::question::Asks;
-use crate::{Cancel, Ops, Output, Tool};
+use crate::{Cancel, Ops, Output, Tool, Uncancelled};
 use magi_proto::tooling::{Call, Card, Ran, Shown, Wondering};
 use magi_proto::wondering::Answered;
-use std::collections::HashMap;
-use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 #[cfg(test)]
 mod containment;
+mod door;
+mod waiting;
 #[cfg(test)]
 mod wondering;
+
+/// The newest revision of the family's reply shape this build reads.
+const FAMILY: u64 = 1;
+
+/// How long `program tools` may take to list what it offers.
+const LISTING: Duration = Duration::from_secs(30);
 
 /// The program that fills the `tools` role when no configuration names one, found on `PATH`.
 pub const CASPER: &str = "casper";
@@ -81,18 +88,18 @@ pub fn cards_from(program: &str) -> Vec<Card> {
 /// call, so the configuration goes on every spawn. Empty means "whatever it is by default".
 #[must_use]
 pub fn cards_configured(program: &str, configured: &str) -> Vec<Card> {
-    let Ok(out) = std::process::Command::new(program)
+    let mut command = std::process::Command::new(program);
+    command
         .arg("tools")
         .env(CONFIGURE, configured)
-        .env(CONFIGURE_WAS, configured)
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-    else {
-        magi_model::noted!("tools: {program} tools could not be started");
-        return Vec::new();
-    };
-    listed(rows(&out.stdout).unwrap_or_default())
+        .env(CONFIGURE_WAS, configured);
+    match waiting::output(command, None, &Uncancelled, LISTING) {
+        Ok(out) => listed(rows(&out).unwrap_or_default()),
+        Err(why) => {
+            magi_model::noted!("tools: {program} tools: {why}");
+            Vec::new()
+        }
+    }
 }
 
 /// The cards in a reply's rows, whichever of the two shapes they arrived in. Flat is the contract;
@@ -106,16 +113,42 @@ fn listed(rows: Vec<serde_json::Value>) -> Vec<Card> {
         .collect()
 }
 
-/// The rows of a family reply, or nothing when it was not one.
-fn rows(body: &[u8]) -> Option<Vec<serde_json::Value>> {
-    let reply: serde_json::Value = serde_json::from_slice(body).ok()?;
-    if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
-        return None;
+/// The rows of a family reply, or why there are none: not the family's shape, written in a newer
+/// `family`, a refusal in the program's own words, or an `n` that disagrees with what came.
+fn rows(body: &[u8]) -> Result<Vec<serde_json::Value>, String> {
+    let reply: serde_json::Value = serde_json::from_slice(body)
+        .map_err(|_| "answered something that is not the family's reply".to_owned())?;
+    if let Some(family) = reply.get("family")
+        && family.as_u64().is_none_or(|revision| revision > FAMILY)
+    {
+        return Err(format!(
+            "answered in family {family}, newer than this magi reads"
+        ));
     }
-    reply
+    if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
+        let error = reply
+            .get("error")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("refused without saying why");
+        let fault = reply
+            .get("fault")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("refused");
+        return Err(format!("{fault}: {error}"));
+    }
+    let result = reply
         .get("result")
         .and_then(serde_json::Value::as_array)
-        .cloned()
+        .ok_or_else(|| "answered with no result".to_owned())?;
+    match reply.get("n").map(serde_json::Value::as_u64) {
+        None => Ok(result.clone()),
+        Some(Some(n)) if usize::try_from(n).is_ok_and(|n| n == result.len()) => Ok(result.clone()),
+        Some(_) => Err(format!(
+            "said it answered {} rows and sent {}",
+            reply["n"],
+            result.len()
+        )),
+    }
 }
 
 /// Hand one call to `program` and read back what it produced.
@@ -132,71 +165,49 @@ pub fn run(program: &str, call: &Call) -> Result<Ran, String> {
 /// # Errors
 /// A refusal — the program could not be started, or would not take the call.
 pub fn run_configured(program: &str, call: &Call, configured: &str) -> Result<Ran, String> {
-    run_jailed(program, call, configured, None)
+    run_jailed(program, call, configured, None, &Uncancelled)
 }
 
-/// The same, inside the jail `jail` describes when `Some`, carried in [`crate::holding::JAIL`].
+/// The same, inside the jail `jail` describes when `Some`, carried in [`crate::holding::JAIL`],
+/// and stopped when `cancel` says so.
 ///
 /// # Errors
-/// A refusal — the program could not be started, or would not take the call.
+/// A refusal — the program could not be started, would not take the call, or was stopped.
 pub fn run_jailed(
     program: &str,
     call: &Call,
     configured: &str,
     jail: Option<&str>,
+    cancel: &dyn Cancel,
 ) -> Result<Ran, String> {
-    use std::io::Write;
     let context = crate::holding::Context {
         configure: configured.to_owned(),
         jail: jail.map(str::to_owned),
         cwd: (!call.cwd.is_empty()).then(|| PathBuf::from(&call.cwd)),
     };
-    // The library door, when it is asked for and a session daemon can be reached. A socket that
-    // fails falls through to a spawn rather than failing the call.
+    // The library door when asked for. Only a call that never left falls back to a spawn.
     if library_door()
-        && let Some(path) = serving(program, &context)
+        && let Some((path, key)) = door::serving(program, &context)
     {
-        match over_socket(&path, call) {
+        match door::over_socket(&path, &key, call, cancel) {
             Ok(ran) => return Ok(ran),
-            Err(why) => {
+            Err(door::Failed::Sent(why)) => return Err(format!("{program}: {why}")),
+            Err(door::Failed::Unsent(why)) => {
                 magi_model::noted!("tools: {program} socket call fell back to a spawn: {why}");
             }
         }
     }
     let body =
         serde_json::to_vec(call).map_err(|why| format!("this call will not encode: {why}"))?;
-
     let mut spawning = std::process::Command::new(program);
     spawning.arg("run");
     context.apply(&mut spawning);
-    let mut child = spawning
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|why| {
-            magi_model::noted!("tools: {program} run could not be started: {why}");
-            format!("{program} could not be started: {why}")
-        })?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        // Written and closed. The program reads to end of file, so a handle left open is a call
-        // that never starts, and a half-written body reads back as an unreadable answer.
-        if let Err(why) = stdin.write_all(&body) {
-            magi_model::noted!("tools: the call to {program} was not fully written: {why}");
-        }
-    }
-    let out = child
-        .wait_with_output()
-        .map_err(|why| format!("{program} did not finish: {why}"))?;
-
-    let rows = rows(&out.stdout).ok_or_else(|| {
-        // Anything else is a program that answered something this build cannot read.
-        format!("{program} answered something unreadable")
-    })?;
-    let first = rows
-        .first()
-        .cloned()
+    let out = waiting::output(spawning, Some(body), cancel, door::PATIENCE)
+        .map_err(|why| format!("{program} {why}"))?;
+    let first = rows(&out)
+        .map_err(|why| format!("{program} {why}"))?
+        .into_iter()
+        .next()
         .ok_or_else(|| format!("{program} answered nothing"))?;
     serde_json::from_value(first).map_err(|why| format!("{program}: {why}"))
 }
@@ -204,92 +215,6 @@ pub fn run_jailed(
 /// Whether this session was told to reach the tools program on its socket.
 fn library_door() -> bool {
     std::env::var(DOOR).is_ok_and(|value| value.trim() == "library")
-}
-
-/// The sockets of the `serve` daemons this session has started, by (program, settings, jail).
-fn daemons() -> &'static Mutex<HashMap<String, PathBuf>> {
-    static DAEMONS: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
-    DAEMONS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// The socket of a running `program serve` for this session's settings and jail, spawned the first
-/// time and reused after. The daemon ties itself to magi and dies with it; magi keeps only its
-/// path. `None` when it cannot start, and the caller falls back to a spawn.
-fn serving(program: &str, context: &crate::holding::Context) -> Option<PathBuf> {
-    // casper binds only under `$XDG_RUNTIME_DIR/casper`; with none, the library door is unavailable.
-    let dir = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?).join("casper");
-    let key =
-        serde_json::to_string(&(program, &context.configure, &context.jail, &context.cwd)).ok()?;
-    let mut running = daemons().lock().ok()?;
-    if let Some(path) = running.get(&key) {
-        if UnixStream::connect(path).is_ok() {
-            return Some(path.clone());
-        }
-        running.remove(&key);
-    }
-    let path = dir.join(format!(
-        "magi-{}-{}.sock",
-        std::process::id(),
-        running.len()
-    ));
-    let mut spawning = std::process::Command::new(program);
-    spawning
-        .arg("serve")
-        .arg("--at")
-        .arg(&path)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
-    context.apply(&mut spawning);
-    let mut child = spawning.spawn().ok()?;
-    // The bind is announced on stdout; connecting before it would race the socket into existence.
-    let announced = child.stdout.take().is_some_and(|out| {
-        let mut line = String::new();
-        std::io::BufRead::read_line(&mut std::io::BufReader::new(out), &mut line).is_ok()
-            && line.contains("listening")
-    });
-    if !announced {
-        return None;
-    }
-    running.insert(key, path.clone());
-    Some(path)
-}
-
-/// Hand one call to a running daemon over its socket, wrapped as the `run` verb, and read the reply.
-fn over_socket(path: &Path, call: &Call) -> Result<Ran, String> {
-    let framed = serde_json::to_vec(&serde_json::json!({ "call": "run", "args": [call] }))
-        .map_err(|why| format!("this call will not encode: {why}"))?;
-    let mut stream =
-        UnixStream::connect(path).map_err(|why| format!("connect {}: {why}", path.display()))?;
-    write_frame(&mut stream, &framed).map_err(|why| why.to_string())?;
-    let body = read_frame(&mut stream).map_err(|why| why.to_string())?;
-    let rows = rows(&body).ok_or_else(|| "the socket answered something unreadable".to_owned())?;
-    let first = rows
-        .first()
-        .cloned()
-        .ok_or_else(|| "the socket answered nothing".to_owned())?;
-    serde_json::from_value(first).map_err(|why| why.to_string())
-}
-
-/// Write one length-prefixed frame: a 4-byte big-endian length, then the body (duplicated framing).
-fn write_frame(to: &mut impl std::io::Write, body: &[u8]) -> std::io::Result<()> {
-    let len = u32::try_from(body.len()).map_err(|_| std::io::Error::other("frame too long"))?;
-    to.write_all(&len.to_be_bytes())?;
-    to.write_all(body)?;
-    to.flush()
-}
-
-/// Read one length-prefixed frame's body.
-fn read_frame(from: &mut impl std::io::Read) -> std::io::Result<Vec<u8>> {
-    let mut header = [0_u8; 4];
-    from.read_exact(&mut header)?;
-    let want = u32::from_be_bytes(header) as usize;
-    if want > (1 << 20) {
-        return Err(std::io::Error::other("that is too much to read at once"));
-    }
-    let mut body = vec![0_u8; want];
-    from.read_exact(&mut body)?;
-    Ok(body)
 }
 
 /// One tool the role's program supplied, as magi's registry sees it.
@@ -393,7 +318,7 @@ impl Tool for SuppliedTool {
         self.card.deferred
     }
 
-    fn run(&self, arguments: &serde_json::Value, ops: &dyn Ops, _cancel: &dyn Cancel) -> Output {
+    fn run(&self, arguments: &serde_json::Value, ops: &dyn Ops, cancel: &dyn Cancel) -> Output {
         let mut call = Call {
             tool: self.card.name.clone(),
             args: arguments.clone(),
@@ -417,7 +342,13 @@ impl Tool for SuppliedTool {
         // hold the turn open forever. Wider than the two a person is ever asked, because a question
         // put to magi costs patience rather than attention: a search scores a batch at a time.
         for _ in 0..8 {
-            let ran = match run_jailed(&self.program, &call, &self.configured, jail.as_deref()) {
+            let ran = match run_jailed(
+                &self.program,
+                &call,
+                &self.configured,
+                jail.as_deref(),
+                cancel,
+            ) {
                 // A refusal is still something the model reads, and it can try another way round.
                 Err(why) => return Output::error(why),
                 Ok(ran) => ran,
@@ -556,12 +487,31 @@ mod tests {
 
     #[test]
     fn a_reply_that_is_not_the_familys_shape_yields_nothing() {
-        assert!(rows(b"not json at all").is_none());
-        assert!(rows(br#"{"ok":false,"error":"no"}"#).is_none());
+        assert!(rows(b"not json at all").is_err());
         assert_eq!(
             rows(br#"{"ok":true,"n":1,"result":[1]}"#).map(|r| r.len()),
-            Some(1)
+            Ok(1)
         );
+    }
+
+    #[test]
+    fn rows_honour_family_n_and_fault_and_say_the_refusal() {
+        let why = rows(br#"{"ok":false,"fault":"failed","error":"the jail would not start"}"#)
+            .expect_err("refused");
+        assert!(
+            why.contains("the jail would not start") && why.contains("failed"),
+            "{why}"
+        );
+        assert!(rows(br#"{"ok":false}"#).is_err());
+        let newer = rows(br#"{"ok":true,"family":2,"n":1,"result":[1]}"#).expect_err("newer");
+        assert!(newer.contains("family 2"), "{newer}");
+        assert!(rows(br#"{"ok":true,"family":1,"n":1,"result":[1]}"#).is_ok());
+        assert!(
+            rows(br#"{"ok":true,"result":[1]}"#).is_ok(),
+            "before `n` and `family` existed"
+        );
+        assert!(rows(br#"{"ok":true,"n":2,"result":[1]}"#).is_err());
+        assert!(rows(br#"{"ok":true,"n":"one","result":[1]}"#).is_err());
     }
 
     #[test]

@@ -4,6 +4,7 @@ use super::*;
 use crate::holding::Answers;
 use magi_proto::wondering::Wonder;
 use std::os::unix::fs::PermissionsExt;
+use std::sync::Mutex;
 
 /// An answerer that says one thing and remembers what it was asked.
 struct Told(Mutex<Vec<(Wonder, serde_json::Value)>>);
