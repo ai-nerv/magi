@@ -310,7 +310,7 @@ the program's own tests.
 | magi | the floor | one per session, its own CBOR protocol for a front end | Coordinates rather than being coordinated: no `needs`, no `configure`. |
 | casper | the floor, plus `tools`, `run`, `surface`, `serve` | `tools` and `run`, kept open across a session | What `run` runs, it runs inside the jail `serve` was spawned with — the one the coordinator set in casper's environment, never one a call named — and only for a caller presenting the key the coordinator handed `serve` on its standard input. A peer of another user is turned away. With the jail off the socket runs commands as the person, which is what the person chose; it is a remote shell exactly as far as the person's own shell is. The command line stays the spawn-per-call door; the socket is the same surface, reached without a spawn each time. |
 | melchior | the floor, plus `models`, `ask`, `serve`, `fork`, `auth` | the session surface | The only one with a `tool` door: the coordination vocabulary a model calls, reached as `melchior tool --verb X`. `identity` and `tell` on the socket are `whoami` and `send` there, and are not aliases — one answers a program with a record, the other a model with a paragraph. |
-| balthasar | the floor, plus its own memory verbs | the same memory verbs | Some verbs are owner-only: a socket peer may propose but may not pin, write globally, or purge, and may not sign its report as the user's judgment. `export` and `dataset` answer `--json` as one object per line rather than framed: they are a corpus, not an answer, and `import` reads back what `export` writes. |
+| balthasar | the floor, plus its own memory verbs | the same memory verbs | Some verbs are owner-only: a socket peer may propose but may not pin, write globally, or purge, and may not sign its report as the user's judgment. A call on the socket that writes or issues work is answered only with the key `serve` was started with: the one the coordinator handed it on its standard input or, handed none, one it mints and writes beside its socket as `<socket>.key` (0600, in its 0700 runtime directory, removed when it exits) for whoever started it. A call that only reads needs no key. It records for the agent `serve` was spawned for, never one a caller's environment names. `export` and `dataset` answer `--json` as one object per line rather than framed: they are a corpus, not an answer, and `import` reads back what `export` writes. |
 
 ---
 
@@ -388,8 +388,9 @@ call is cancelled, and reaps it.
 **The uid is the boundary between people. Within one uid, the jail is the boundary.** A command a
 tool runs inside the jail reaches no family socket: the runtime directory is not in its mount
 namespace, the abstract socket namespace is scoped away, and on the path without bubblewrap it
-cannot open a Unix socket at all. Everything unjailed and running as this uid could edit the
-person's own configuration, and no protocol here pretends otherwise.
+cannot open a Unix socket at all. Every socket it opens is IPv4, IPv6, routing netlink or, under
+bubblewrap only, Unix; any other address family is refused. Everything unjailed and running as
+this uid could edit the person's own configuration, and no protocol here pretends otherwise.
 
 **Who a caller is, read from its environment, is attribution and never authority.** A program may
 read a peer's `/proc/<pid>/environ` to learn which session a call comes from, once, when the
@@ -418,7 +419,7 @@ receives none of them.
 | `MAGI_GRANTS` | magi, for a forked child | magi | grants that narrow the child's own |
 | `MAGI_NO_SPAWN` | magi | magi | that a session may not start another |
 | `MAGI_MELCHIOR_PROJECT` / `_ID` / `_ROLE` / `_PARENT` / `_SESSION` | melchior, magi | melchior | which session a process belongs to (attribution) |
-| `MAGI_MEMORY_AGENT` / `BALTHASAR_AGENT` | magi | balthasar | which agent a transcript belongs to (attribution) |
+| `MAGI_MEMORY_AGENT` / `BALTHASAR_AGENT` | magi, on `serve`'s spawn | balthasar | which agent a `serve` records for; in a caller's environment, attribution only |
 | `NERV_GIVEN` | magi | balthasar, melchior | the per-session directory of settings a coordinator gave |
 | `MAGI_API_SOCKET` | the person | magi | a balthasar to use instead of starting one |
 | `MAGI_HOST_SOCKET` / `MAGI_PARENT_HOST_SOCKET` | magi | magi | where a session, or its parent, answers |

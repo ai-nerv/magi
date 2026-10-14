@@ -47,7 +47,7 @@ send next.
 | verb | shape | what magi does with it |
 |---|---|---|
 | `observe` | `(session, turn) -> ok` | Streams every turn as it settles. Without this nothing is recorded and the session has no history at all. Insert-only: the same turn again at its cursor is a retry and answers ok; a different one is refused (`cursor N already holds a different turn`), and `amend` is how a turn changes. A missing or non-whole cursor is refused. A turn not made durable is `fault: "failed"`. A row with `role: "trace"` is kept beside the turns, never at one's place; `replay` does not return it, `scroll` carries it under `traces`. |
-| `replay` | `(session) -> [turn]` | Everything a run said, in order. This is what `--resume` reads back. |
+| `replay` | `(session, {from, bytes, raw}) -> [turn]` | Everything a run said, in order. This is what `--resume` reads back, a page at a time with `{from, bytes}`. A row too large for a frame comes back `truncated: true` with `raw_bytes`, the length of the raw record it left out, and the next page starts after it; `{from: cursor, raw: offset, bytes}` reads that record back a piece at a time, each piece carrying `offset` and, until the last, `next`. |
 | `sessions` | `-> [session]` | The runs this project has had. `--resume` with no id asks this **first**, to find which run was newest, and only then replays it. |
 
 Plus the family floor from `FAMILY.md` — `verbs` and `client` — which every program owes whatever
@@ -71,8 +71,8 @@ drawn wrong, and only running a program against it found out.
 The optional `run` field on an observed or amended turn identifies the scratch-memory run
 separately from the transcript key passed as the first argument. Transcripts may share a run,
 but their cursor spaces remain independent. The binding is durable and cannot be reassigned.
-Omitting `run` retains an existing binding or defaults to the transcript key. Agent identity
-remains connection-pinned; `run` never selects another agent's scratch. Implementations that
+Omitting `run` retains an existing binding or defaults to the transcript key. The agent is the
+one `serve` was started for; `run` never selects another agent's scratch. Implementations that
 do not support this extension may ignore the field.
 `resume` also returns the durable `run` for a transcript; a restarting coordinator retains it
 instead of rebinding the transcript to its new process's run. Without this field, the transcript
@@ -101,6 +101,19 @@ key is the scratch run.
 **The four model-facing verbs — `recall`, `remember`, `forget`, `why` — are declared
 independently.** magi declares a tool for each verb the role answers and omits the rest, so a
 memory layer that can search but not explain gets three tools and no `why`.
+
+**A memory layer's socket takes writes from the session that started it.** magi starts one
+`serve` per session and writes a key on its standard input: one line of 64 lowercase hex
+characters, read before anything is bound; a malformed line refuses the start. A `serve` handed no
+line (its input ends, or is a terminal) mints its own key and writes it beside its socket as
+`<socket>.key`, created 0600 and new in its 0700 runtime directory and removed when it exits; one
+handed a key writes no file. A call that writes or issues work carries the key as `"key"`; without
+it, or with another, it is refused (`fault: "refused"`, `a call to serve needs the key it was
+started with`) and the connection stays open. A call that only reads needs no key. A magi that did
+not start the `serve` it talks to reads `<socket>.key` with the owner and mode check it applies to
+its host's controller key, and reads it again once when a write is refused for the key. The agent
+a call is recorded for is the one `serve` was started for, `MAGI_MEMORY_AGENT` in its own
+environment; what a caller's environment names is attribution only.
 
 ---
 
