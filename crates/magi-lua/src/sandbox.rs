@@ -197,6 +197,7 @@ fn text(value: &Value<'_>) -> String {
 #[cfg(test)]
 mod tests {
     use crate::Engine;
+    use std::collections::BTreeSet;
 
     fn probe(expression: &str) -> String {
         let mut engine = Engine::new();
@@ -253,6 +254,136 @@ mod tests {
         );
         // And the VM is still usable afterwards.
         engine.run("magi.after = 1", "after.lua").expect("runs");
+    }
+
+    /// Every name a fresh VM holds, two tables deep: globals, their fields, and those fields'.
+    const WALK: &str = "local names = {}
+        local function walk(held, prefix, depth)
+          for key, value in pairs(held) do
+            local name = prefix .. tostring(key)
+            names[#names + 1] = name
+            if type(value) == 'table' and value ~= _G and depth < 2 then
+              walk(value, name .. '.', depth + 1)
+            end
+          end
+        end
+        walk(_G, '', 0)
+        table.sort(names)
+        return table.concat(names, ' ')";
+
+    /// The names `walked` found beyond `allowed`, and those of `allowed` it did not find, with
+    /// `optional` neither required nor refused.
+    fn against(walked: &str, allowed: &str, optional: &str) -> (Vec<String>, Vec<String>) {
+        let found: BTreeSet<&str> = walked.split_whitespace().collect();
+        let allowed: BTreeSet<&str> = allowed.split_whitespace().collect();
+        let optional: BTreeSet<&str> = optional.split_whitespace().collect();
+        let added = found
+            .iter()
+            .filter(|name| !allowed.contains(*name) && !optional.contains(*name))
+            .map(ToString::to_string)
+            .collect();
+        let gone = allowed
+            .difference(&found)
+            .map(ToString::to_string)
+            .collect();
+        (added, gone)
+    }
+
+    /// What a config VM lends, and nothing else: an addition fails here until it is listed.
+    const CONFIG_ALLOWED: &str = "
+        _G _VERSION assert collectgarbage error getmetatable ipairs load next pairs pcall print
+        rawequal rawget rawlen rawset select setmetatable tonumber tostring type warn xpcall
+        __magi_tools __magi_watching __stream __stream.connect
+        magi magi.agent magi.fs magi.fs.ls magi.fs.write magi.json magi.json.decode
+        magi.json.encode magi.load magi.mux magi.provider magi.self magi.shell magi.stream
+        magi.stream.connect magi.tool magi.ui magi.watch
+        coroutine coroutine.close coroutine.continue coroutine.create coroutine.isyieldable
+        coroutine.resume coroutine.running coroutine.status coroutine.wrap coroutine.yield
+        coroutine.yieldto
+        math math.abs math.acos math.asin math.atan math.ceil math.cos math.deg math.exp
+        math.floor math.fmod math.huge math.log math.max math.maxinteger math.min math.mininteger
+        math.modf math.pi math.rad math.random math.randomseed math.sin math.sqrt math.tan
+        math.tointeger math.type math.ult
+        os os.clock os.date os.difftime os.getenv os.time
+        string string.byte string.char string.dump string.find string.format string.gmatch
+        string.gsub string.len string.lower string.match string.pack string.packsize string.rep
+        string.reverse string.sub string.unpack string.upper
+        table table.clear table.concat table.freeze table.insert table.interceptall
+        table.isfrozen table.move table.pack table.remove table.sort table.unpack
+        utf8 utf8.char utf8.charpattern utf8.codepoint utf8.codes utf8.len utf8.offset
+    ";
+
+    /// What the process names once a session is open, which a test elsewhere in this binary may do.
+    const CONFIG_OPTIONAL: &str = "magi.session magi.balthasar_at magi.melchior_at";
+
+    /// What a project file's data-only VM lends: the core library, minus code and the outside.
+    const PROJECT_ALLOWED: &str = "
+        _G _VERSION assert error getmetatable ipairs next pairs pcall rawequal rawget rawlen
+        rawset select setmetatable tonumber tostring type xpcall
+        magi magi.agent magi.load magi.mux magi.provider magi.shell magi.tool magi.ui magi.watch
+        coroutine coroutine.close coroutine.continue coroutine.create coroutine.isyieldable
+        coroutine.resume coroutine.running coroutine.status coroutine.wrap coroutine.yield
+        coroutine.yieldto
+        math math.abs math.acos math.asin math.atan math.ceil math.cos math.deg math.exp
+        math.floor math.fmod math.huge math.log math.max math.maxinteger math.min math.mininteger
+        math.modf math.pi math.rad math.random math.randomseed math.sin math.sqrt math.tan
+        math.tointeger math.type math.ult
+        string string.byte string.char string.dump string.find string.format string.gmatch
+        string.gsub string.len string.lower string.match string.pack string.packsize string.rep
+        string.reverse string.sub string.unpack string.upper
+        table table.clear table.concat table.freeze table.insert table.interceptall
+        table.isfrozen table.move table.pack table.remove table.sort table.unpack
+        utf8 utf8.char utf8.charpattern utf8.codepoint utf8.codes utf8.len utf8.offset
+    ";
+
+    #[test]
+    fn each_vm_lends_exactly_its_allowlist() {
+        let walked = probe(&format!("(function() {WALK} end)()"));
+        let (added, gone) = against(&walked, CONFIG_ALLOWED, CONFIG_OPTIONAL);
+        assert!(added.is_empty(), "the config VM lends, unlisted: {added:?}");
+        assert!(
+            gone.is_empty(),
+            "listed, and the config VM no longer lends: {gone:?}"
+        );
+        let walked = project_probe(&format!("(function() {WALK} end)()"));
+        let (added, gone) = against(&walked, PROJECT_ALLOWED, "");
+        assert!(
+            added.is_empty(),
+            "the data-only VM lends, unlisted: {added:?}"
+        );
+        assert!(
+            gone.is_empty(),
+            "listed, and the data-only VM no longer lends: {gone:?}"
+        );
+        for refused in [
+            "debug",
+            "io",
+            "package",
+            "require",
+            "dofile",
+            "loadfile",
+            "os.execute",
+        ] {
+            assert!(
+                !CONFIG_ALLOWED
+                    .split_whitespace()
+                    .any(|name| name == refused)
+            );
+        }
+        for refused in [
+            "load",
+            "print",
+            "warn",
+            "collectgarbage",
+            "os",
+            "magi.stream",
+        ] {
+            assert!(
+                !PROJECT_ALLOWED
+                    .split_whitespace()
+                    .any(|name| name == refused)
+            );
+        }
     }
 
     /// What one expression comes to in a project's VM.
