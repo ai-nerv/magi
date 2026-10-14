@@ -38,6 +38,41 @@ struct Ours {
 /// and the loop below stops the moment the child exits.
 const PATIENCE: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// The last lines the balthasar this process started wrote to its stderr, kept as they arrive so
+/// the pipe never fills.
+static SAID: Mutex<std::collections::VecDeque<String>> =
+    Mutex::new(std::collections::VecDeque::new());
+
+/// The thread reading that stderr.
+static DRAINING: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+
+/// How many of its lines are kept, and how long one may be.
+const KEPT: (usize, u64) = (16, 64 * 1024);
+
+/// Read `pipe` to its end on a thread of its own, logging each line and keeping the last few.
+fn drain(pipe: impl std::io::Read + Send + 'static) -> std::thread::JoinHandle<()> {
+    use std::io::{BufRead, Read};
+    std::thread::spawn(move || {
+        let mut pipe = std::io::BufReader::new(pipe);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            match pipe.by_ref().take(KEPT.1).read_until(b'\n', &mut line) {
+                Ok(0) | Err(_) => return,
+                Ok(_) => {}
+            }
+            let text = String::from_utf8_lossy(&line).trim_end().to_owned();
+            magi_model::noted!("memory: {text}");
+            if let Ok(mut said) = SAID.lock() {
+                said.push_back(text);
+                while said.len() > KEPT.0 {
+                    said.pop_front();
+                }
+            }
+        }
+    })
+}
+
 /// What came of trying to convene this session's store.
 #[derive(Debug)]
 pub enum Started {
@@ -96,7 +131,12 @@ pub async fn start(program: &str, instance: &str, project: &Path, agent: Option<
         .stderr(Stdio::piped())
         .spawn();
     let child = match child {
-        Ok(child) => child,
+        Ok(mut child) => {
+            if let (Some(pipe), Ok(mut reading)) = (child.stderr.take(), DRAINING.lock()) {
+                *reading = Some(drain(pipe));
+            }
+            child
+        }
         Err(why) => {
             return Started::Refused(format!("`{program} serve` could not be started: {why}"));
         }
@@ -182,20 +222,23 @@ fn exited() -> Option<std::process::ExitStatus> {
 /// What a balthasar that would not start said on its way out: the last line only, read after the
 /// child has exited, so the pipe is closed and this cannot block.
 fn last_words() -> String {
-    use std::io::Read;
-    let mut said = String::new();
-    if let Ok(mut held) = STARTED.lock()
-        && let Some(ours) = held.as_mut()
-        && let Some(pipe) = ours.child.stderr.as_mut()
-    {
-        let _ = pipe.read_to_string(&mut said);
+    // The child has exited, so its stderr ends shortly; the reader is given a moment to get there.
+    let reading = DRAINING.lock().ok().and_then(|mut held| held.take());
+    if let Some(reading) = reading {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        while !reading.is_finished() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
-    said.lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
+    SAID.lock()
+        .ok()
+        .and_then(|said| {
+            said.iter()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .map(|line| line.trim().to_owned())
+        })
         .unwrap_or_default()
-        .trim()
-        .to_owned()
 }
 
 /// End the balthasar this process started and clear its path, reaping before the unlink: after
@@ -461,5 +504,30 @@ mod tests {
             "an explicit socket means somebody else's balthasar — not ours to start, and not a \
              refusal either"
         );
+    }
+
+    #[test]
+    fn a_memory_layer_that_says_a_great_deal_is_never_left_blocked_on_its_stderr() {
+        let _alone = alone();
+        let mut child = Command::new("sh")
+            .args([
+                "-c",
+                "head -c 300000 /dev/zero | tr '\\0' 'x' >&2; echo >&2; echo 'last-words-marker' >&2",
+            ])
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("a talkative child");
+        let reading = drain(child.stderr.take().expect("piped"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while child.try_wait().expect("wait").is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the child blocked on a full pipe"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        reading.join().expect("drained");
+        let said = SAID.lock().expect("said");
+        assert_eq!(said.back().map(String::as_str), Some("last-words-marker"));
     }
 }
