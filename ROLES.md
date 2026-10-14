@@ -172,6 +172,10 @@ fills it.
 
 Plus the family floor.
 
+`ask` refuses before sending once its run has spent `spend_cap_usd` (10 unless set; `0` or `false`
+for no cap). The refusal is `failed` with `why: "invalid"`, and a coordinator ends the turn with it
+rather than retrying.
+
 Everything else melchior answers — the session surface, the coordination vocabulary on its `tool`
 door — belongs to the `coordination` role, which is not written down yet because nothing has ever
 tried to fill it separately. See the open question at the end.
