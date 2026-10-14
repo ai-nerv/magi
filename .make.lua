@@ -555,6 +555,26 @@ make.recipe{ name = "test-live-guard", desc = "the required integration prerequi
 make.recipe{ name = "family-path", desc = "the binary selected by the build recipe",
              run = function() print("NERV_BINARY=" .. binary_path()) end }
 
+make.recipe{ name = "nix-build", desc = "the static Nix package, into result/bin/" .. BIN,
+             run = function() sh.nix("build", "--accept-flake-config", ".#" .. BIN, "-L") end }
+
+make.recipe{ name = "nix-check", desc = "the flake's outputs and the package's install checks",
+             run = function() sh.nix("flake", "check", "--accept-flake-config", "-L") end }
+
+-- Substituted only: no local or remote builder may build it, so a cache miss fails here.
+make.recipe{
+  name = "nix-download-check",
+  desc = "fetch the package from the cache, building nothing, and run it",
+  run = function()
+    sh.nix("build", "--accept-flake-config", "--no-update-lock-file",
+           "--max-jobs", "0", "--builders", "", ".#" .. BIN)
+    local ran = oslo.run{ "result/bin/" .. BIN, "verbs", "--json", capture = true }
+    assert(ran.ok and (ran.out or ""):find('"ok":true', 1, true),
+           "result/bin/" .. BIN .. " verbs --json did not answer ok")
+    print(("%s answers verbs from the cache"):format(BIN))
+  end,
+}
+
 make.recipe{ name = "check", desc = "type-check every target",
              run = function() sh.cargo("check", "--all-targets", "--release") end }
 
