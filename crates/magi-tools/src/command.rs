@@ -17,6 +17,7 @@
 use crate::{Cancel, Ops, Output, Sending, Tool};
 use std::collections::BTreeMap;
 use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::time::{Duration, Instant};
 
 /// Bytes read from a child before it is cut off.
@@ -143,14 +144,21 @@ impl Tool for CommandTool {
         self.parameters.clone()
     }
 
-    fn run(&self, arguments: &serde_json::Value, ops: &dyn Ops, _cancel: &dyn Cancel) -> Output {
+    fn run(&self, arguments: &serde_json::Value, ops: &dyn Ops, cancel: &dyn Cancel) -> Output {
         let rendered = render(&self.args, arguments);
         // Asked before anything is started. A tool that runs and then asks has already done the
         // thing the question was about.
         if let Err(why) = ops.allow(&self.name, &self.action(&rendered)) {
             return Output::error(why);
         }
-        match spawn(&self.program, &rendered, &self.env, ops, self.timeout) {
+        match spawn(
+            &self.program,
+            &rendered,
+            &self.env,
+            ops,
+            self.timeout,
+            cancel,
+        ) {
             Ok(finished) => finished.into_output(&self.program),
             Err(why) => Output::error(why),
         }
@@ -207,10 +215,12 @@ fn spawn(
     env: &BTreeMap<String, String>,
     ops: &dyn Ops,
     timeout: Duration,
+    cancel: &dyn Cancel,
 ) -> Result<Finished, String> {
     let mut command = std::process::Command::new(program);
     command
         .args(args)
+        .process_group(0)
         .current_dir(ops.cwd())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -237,25 +247,45 @@ fn spawn(
         match child.try_wait() {
             Ok(Some(status)) => break status.code(),
             Ok(None) => {
-                if Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!(
+                let ended = if cancel.is_cancelled() {
+                    Some(format!("{program} was cancelled"))
+                } else if Instant::now() >= deadline {
+                    Some(format!(
                         "{program} was still running after {}s",
                         timeout.as_secs()
-                    ));
+                    ))
+                } else {
+                    None
+                };
+                if let Some(why) = ended {
+                    stop_group(&mut child);
+                    let _ = child.wait();
+                    return Err(why);
                 }
                 std::thread::sleep(POLL);
             }
             Err(why) => return Err(format!("{program} could not be waited for: {why}")),
         }
     };
+    // Whatever it left running in its group would hold the pipes the drains are reading.
+    stop_group(&mut child);
 
     Ok(Finished {
         out: out.map(collect).unwrap_or_default(),
         err: err.map(collect).unwrap_or_default(),
         code,
     })
+}
+
+/// Kill the child's process group, and the child.
+fn stop_group(child: &mut std::process::Child) {
+    if let Some(group) = i32::try_from(child.id())
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+    {
+        let _ = rustix::process::kill_process_group(group, rustix::process::Signal::Kill);
+    }
+    let _ = child.kill();
 }
 
 /// Read a pipe to its end on a thread of its own, up to [`MAX_READ`].
@@ -630,6 +660,28 @@ mod running_tests {
             "{}",
             out.content
         );
+    }
+
+    #[test]
+    fn a_cancel_stops_the_program_and_what_it_started() {
+        struct After(Instant);
+        impl Cancel for After {
+            fn is_cancelled(&self) -> bool {
+                Instant::now() >= self.0
+            }
+        }
+        let tool = CommandTool::new(
+            "waiting",
+            "",
+            json!({ "type": "object" }),
+            "sh",
+            vec!["-c".to_owned(), "sleep 1000 & sleep 1000".to_owned()],
+        );
+        let started = Instant::now();
+        let cancel = After(Instant::now() + Duration::from_millis(200));
+        let out = tool.run(&json!({}), &Real::new(std::env::temp_dir()), &cancel);
+        assert!(out.is_error && out.content.contains("cancelled"), "{out:?}");
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]
