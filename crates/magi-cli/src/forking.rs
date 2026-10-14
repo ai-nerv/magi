@@ -4,8 +4,8 @@
 //! the child inherits arrives in one `environment` block melchior wrote, with two exceptions:
 //!
 //! - `BALTHASAR_AGENT` is set here, to the child's own id, in the child's own spawn environment.
-//!   balthasar reads the agent out of the connecting peer's `/proc/<pid>/environ` — the block the
-//!   kernel wrote at `exec` — and a child that inherited its parent's would share its `memory.db`.
+//!   The child's `balthasar serve` is started with it and records for that agent, and a child that
+//!   inherited its parent's would share its `memory.db`.
 //! - `MAGI_API_SOCKET` is removed rather than passed on. Set, [`crate::balthasar::start`] answers
 //!   `Started::Theirs` and convenes none, so the child would record into a store that dies with the
 //!   parent — and a session that cannot record does not start.

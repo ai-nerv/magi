@@ -12,13 +12,13 @@ use std::sync::Mutex;
 /// The balthasar this process started, so it can be ended and its path cleared.
 static STARTED: Mutex<Option<Ours>> = Mutex::new(None);
 
-/// What the memory role reads a connection's agent out of, spelled here because magi is what sets
-/// it: the coupling is a variable name and nothing else. Both, for one release — a memory layer
-/// that has not been rebuilt reads only the second, and would file this session under `main`.
+/// What the memory role reads the agent it records for out of, spelled here because magi is what
+/// sets it: the coupling is a variable name and nothing else. Both, for one release — a memory
+/// layer that has not been rebuilt reads only the second, and would file this session under `main`.
 pub const AGENT: [&str; 2] = ["MAGI_MEMORY_AGENT", "BALTHASAR_AGENT"];
 
-/// The id out of `project/role/id`. Told to the balthasar magi spawns, not set on this process:
-/// balthasar reads it out of the peer's `/proc/<pid>/environ`, which `setenv` never touches.
+/// The id out of `project/role/id`. Told to the balthasar magi spawns, in the environment it is
+/// started with, and not set on this process.
 pub fn agent_of(named: &str) -> Option<&str> {
     named
         .split('/')
