@@ -478,7 +478,16 @@ mod tests {
         } else {
             session.env(magi_tools::builtin::NO_SPAWN, "1");
         }
-        session.spawn().expect("a stand-in session")
+        let session = session.spawn().expect("a stand-in session");
+        // A spawn returns once the exec is past its point of no return, before the new
+        // environment is in place.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while std::fs::read(format!("/proc/{}/environ", session.id())).is_ok_and(|e| e.is_empty())
+            && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        session
     }
 
     #[test]
