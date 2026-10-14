@@ -9,6 +9,50 @@ use std::process::Command;
 /// `TERM=dumb` says. It keeps what an agent ran out of the history a person scrolls back through.
 pub const ALWAYS: &[(&str, &str)] = &[("OSLO_PROFILE", "magi")];
 
+/// The variables FAMILY.md lists as carrying capability, which a program that is not one of the
+/// family never receives. melchior's attribution, `MAGI_MELCHIOR_PROJECT` and the rest, is not
+/// here: `melchior tool` reads it to say which session is calling.
+pub const CAPABILITY: &[&str] = &[
+    "CASPER_JAIL",
+    "CASPER_CONFIGURE",
+    "MAGI_TOOLS_CONFIGURE",
+    "MAGI_GRANTS",
+    "MAGI_NO_SPAWN",
+    "MAGI_MEMORY_AGENT",
+    "BALTHASAR_AGENT",
+    "NERV_GIVEN",
+    "MAGI_API_SOCKET",
+    "MAGI_HOST_SOCKET",
+    "MAGI_PARENT_HOST_SOCKET",
+    "MAGI_SESSION_PID",
+    "MAGI_COORD_PROGRAM",
+    "MAGI_TOOLS_DOOR",
+    "MAGI_MEMORY_DOOR",
+    "MAGI_AGENT_DOOR",
+    "NERV_LOG",
+    "MELCHIOR_CONFIG",
+    "MAGI_MELCHIOR_TOKEN",
+    "MAGI_MELCHIOR_TOKEN_FILE",
+];
+
+/// Whether `name` carries capability: one of [`CAPABILITY`], or a `*_DEBUG_LOG`.
+#[must_use]
+pub fn carries_capability(name: &str) -> bool {
+    CAPABILITY.contains(&name) || name.ends_with("_DEBUG_LOG")
+}
+
+/// Take every capability variable this process holds out of what `command` inherits.
+pub fn without_capability(command: &mut Command) {
+    for name in CAPABILITY {
+        command.env_remove(name);
+    }
+    for (name, _) in std::env::vars_os() {
+        if name.to_str().is_some_and(carries_capability) {
+            command.env_remove(name);
+        }
+    }
+}
+
 /// Apply magi's environment to `command`. `extra` is whatever the configuration added, applied
 /// second so a config can override one of the mandatory pairs deliberately.
 pub fn apply(command: &mut Command, extra: &BTreeMap<String, String>) {

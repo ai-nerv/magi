@@ -213,7 +213,37 @@ pub fn narrow(held: &[Grant], requested: &[Grant]) -> Vec<Grant> {
 /// asked about instead. Deliberately not a parser: refusing to answer is the safe direction.
 #[must_use]
 pub fn chains(command: &str) -> bool {
-    command.contains([';', '&', '|', '`', '$', '(', ')', '<', '>', '\n'])
+    let mut quote = None;
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some('\''), '\'') | (Some('"'), '"') => quote = None,
+            (Some('"'), '\\') | (None, '\\') => {
+                chars.next();
+            }
+            (Some('"'), '$' | '`') => return true,
+            (Some(_), _) => {}
+            (None, '\'' | '"') => quote = Some(c),
+            (None, ';' | '&' | '|' | '`' | '$' | '(' | ')' | '<' | '>' | '\n') => return true,
+            (None, _) => {}
+        }
+    }
+    quote.is_some()
+}
+
+/// One argument as a shell would read it back verbatim: bare when nothing in it is special,
+/// otherwise in single quotes. What an argument-vector transport shows and is judged by.
+#[must_use]
+pub fn quoted(argument: &str) -> String {
+    let plain = !argument.is_empty()
+        && argument
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c));
+    if plain {
+        argument.to_owned()
+    } else {
+        format!("'{}'", argument.replace('\'', "'\\''"))
+    }
 }
 
 /// Whether a command line begins by assigning a variable, `PATH=/tmp/x git …`: the program it
@@ -676,6 +706,25 @@ mod chaining_tests {
                 !any_git().covers(&run(hostile)),
                 "a program grant must not cover: {hostile}"
             );
+        }
+    }
+
+    #[test]
+    fn what_is_quoted_does_not_chain_and_what_expands_still_does() {
+        assert!(any_git().covers(&run("git commit -m 'a; b | c > d'")));
+        assert!(any_git().covers(&run("git commit -m \"a; b\"")));
+        assert!(any_git().covers(&run("git grep foo\\;bar")));
+        for hostile in [
+            "git commit -m \"$(rm -rf ~)\"",
+            "git commit -m \"`id`\"",
+            "git log 'unterminated",
+            "git log '' ; rm x",
+        ] {
+            assert!(!any_git().covers(&run(hostile)), "{hostile}");
+        }
+        for argument in ["a; rm -rf ~", "it's\nhere", "$(id)", "", "plain/path.rs"] {
+            let shown = format!("git {}", quoted(argument));
+            assert!(!chains(&shown), "{argument:?} as {shown}");
         }
     }
 

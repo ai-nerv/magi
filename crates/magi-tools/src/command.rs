@@ -91,10 +91,14 @@ impl CommandTool {
         out
     }
 
-    /// What a person is asked before this runs.
+    /// What a person is asked before this runs: the argument vector, each argument quoted, so it
+    /// is judged by its program and an argument holding `;` or a newline chains nothing.
     fn action(&self, rendered: &[String]) -> magi_proto::permit::Action {
-        let mut shown = vec![self.program.clone()];
-        shown.extend(rendered.iter().cloned());
+        use magi_proto::permit::quoted;
+        let shown: Vec<String> = std::iter::once(&self.program)
+            .chain(rendered)
+            .map(|argument| quoted(argument))
+            .collect();
         magi_proto::permit::Action::Run {
             command: shown.join(" "),
             program: self.program.clone(),
@@ -211,7 +215,13 @@ fn spawn(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    crate::environ::apply(&mut command, env);
+    crate::environ::without_capability(&mut command);
+    let kept: BTreeMap<String, String> = env
+        .iter()
+        .filter(|(name, _)| !crate::environ::carries_capability(name))
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect();
+    crate::environ::apply(&mut command, &kept);
 
     let mut child = command
         .spawn()
@@ -540,6 +550,57 @@ mod running_tests {
             !marker.exists(),
             "the gate refused and the program ran anyway"
         );
+    }
+
+    #[test]
+    fn an_argument_vector_is_judged_by_its_program() {
+        // A grant on `echo` covers it whatever the arguments hold: they are data, not a line.
+        let grant = magi_proto::permit::Grant {
+            verb: "run".to_owned(),
+            scope: magi_proto::permit::Scope::Program {
+                program: "echo".to_owned(),
+            },
+        };
+        let ops = Real::gated(
+            std::env::temp_dir(),
+            crate::permit::Ledger::with(vec![grant]),
+            std::sync::Arc::new(crate::approve::DenyAll),
+        );
+        let out =
+            echo(vec!["{text}"]).run(&json!({ "text": "a; rm -rf ~\nb" }), &ops, &Uncancelled);
+        assert!(!out.is_error, "{out:?}");
+        assert_eq!(out.content, "a; rm -rf ~\nb\n");
+    }
+
+    #[test]
+    fn what_carries_capability_never_reaches_the_program() {
+        let env = BTreeMap::from(
+            [
+                ("MAGI_GRANTS", "[]"),
+                ("CASPER_JAIL", "{}"),
+                ("MAGI_HOST_SOCKET", "/x"),
+                ("BALTHASAR_DEBUG_LOG", "/tmp/log"),
+                ("MAGI_MELCHIOR_ID", "alpha-rho"),
+                ("MAGI_MELCHIOR_PROJECT", "magi"),
+            ]
+            .map(|(k, v)| (k.to_owned(), v.to_owned())),
+        );
+        let tool =
+            CommandTool::new("env", "", json!({ "type": "object" }), "env", vec![]).with_env(env);
+        let out = tool.run(&json!({}), &Real::new(std::env::temp_dir()), &Uncancelled);
+        for gone in [
+            "MAGI_GRANTS=",
+            "CASPER_JAIL=",
+            "MAGI_HOST_SOCKET=",
+            "BALTHASAR_DEBUG_LOG=",
+        ] {
+            assert!(!out.content.contains(gone), "{gone} reached it");
+        }
+        assert!(
+            out.content.contains("MAGI_MELCHIOR_ID=alpha-rho"),
+            "attribution is kept"
+        );
+        assert!(out.content.contains("MAGI_MELCHIOR_PROJECT=magi"));
     }
 
     #[test]
