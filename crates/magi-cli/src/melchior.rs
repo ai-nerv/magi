@@ -327,8 +327,6 @@ impl Melchior {
             let _ = child.kill();
             return None;
         };
-        magi_host::coordinated_at(std::path::Path::new(&at));
-
         let told = child.stdin.take();
         Some((
             Self {

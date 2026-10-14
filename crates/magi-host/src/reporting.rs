@@ -226,24 +226,17 @@ pub(crate) async fn finish(
     hand_in(backend, body).await
 }
 
-/// Where this session's melchior answers, once it has said.
-static COORDINATOR: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
-
-/// Say where this session's melchior answers.
-pub(crate) fn coordinated_at(socket: &std::path::Path) {
-    let _ = COORDINATOR.set(socket.to_path_buf());
-}
-
 /// The longest report handed in on argv: one argument may not pass 128 KiB.
 const ARGV_MOST: usize = 120 * 1024;
 
-/// Hand in a report as `--message`, or over this session's own socket when it is too long for an
-/// argument. With no socket to use, the end of a long one is cut and said to be.
+/// Hand in a report as `--message`, or over the socket this session's melchior named
+/// ([`magi_lua::coordinator_at`], the one the agent tool's library door dials) when it is too long
+/// for an argument. With no socket to use, the end of a long one is cut and said to be.
 async fn hand_in(backend: &Backend, mut body: String) -> Result<(), String> {
     let coordinated = !backend.environ.contains_key("MAGI_COORD_PROGRAM");
     if body.len() > ARGV_MOST
         && coordinated
-        && let Some(socket) = COORDINATOR.get()
+        && let Some(socket) = magi_lua::coordinator_at()
     {
         let mut family = magi_ipc::family::Family::dial(socket)
             .await
@@ -338,5 +331,52 @@ mod tests {
         let said = std::fs::read_to_string(&published).expect("published");
         assert!(said.len() <= ARGV_MOST, "{}", said.len());
         assert!(said.ends_with("too long to hand in on a command line.]"));
+    }
+
+    #[tokio::test]
+    async fn a_long_report_goes_to_the_socket_the_agent_tool_dials() {
+        use std::io::{Read, Write};
+        let dir = magi_model::scratch::Scratch::new("magi-handin", "socket");
+        let socket = dir.join("melchior.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+        let heard = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept");
+            let mut head = [0_u8; 4];
+            stream.read_exact(&mut head).expect("head");
+            let mut body = vec![0_u8; u32::from_be_bytes(head) as usize];
+            stream.read_exact(&mut body).expect("body");
+            let reply = br#"{"ok":true,"family":1,"n":0,"result":[]}"#;
+            let mut framed = (reply.len() as u32).to_be_bytes().to_vec();
+            framed.extend_from_slice(reply);
+            stream.write_all(&framed).expect("reply");
+            serde_json::from_slice::<serde_json::Value>(&body).expect("json")
+        });
+        magi_lua::name_coordinator(&socket);
+        assert_eq!(
+            magi_lua::coordinator_at(),
+            Some(socket.to_str().expect("utf-8"))
+        );
+
+        let mut catalog = crate::catalog::Catalog::empty();
+        catalog.cards = vec![magi_proto::ask::Card {
+            id: "fake/m".into(),
+            provider: "fake".into(),
+            name: "m".into(),
+            api: "openai-completions".into(),
+            context_window: Some(1000),
+            max_output: Some(100),
+            reasons: false,
+            ready: true,
+            needs: None,
+        }];
+        let mut backend = catalog.backend("fake/m").expect("a backend");
+        backend.environ.remove("MAGI_COORD_PROGRAM");
+        let long = "r".repeat(ARGV_MOST + 1);
+        hand_in(&backend, long.clone()).await.expect("handed in");
+
+        let call = heard.join().expect("the fake melchior");
+        assert_eq!(call["call"], "tool");
+        assert_eq!(call["args"][0]["verb"], "report");
+        assert_eq!(call["args"][0]["message"], long.as_str());
     }
 }

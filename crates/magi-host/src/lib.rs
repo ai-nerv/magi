@@ -50,11 +50,6 @@ type Draining = (
 );
 static DRAINING: std::sync::OnceLock<Draining> = std::sync::OnceLock::new();
 
-/// Say where this session's coordination layer answers, for what is too long to hand it on argv.
-pub fn coordinated_at(socket: &std::path::Path) {
-    reporting::coordinated_at(socket);
-}
-
 /// Hand over anything a turn settled that has not reached balthasar yet. Called on the way out,
 /// after the last turn and before the socket goes. A failure is logged rather than returned: the
 /// last exchange is then missing from the store, and the next run's `--resume` comes back short.
