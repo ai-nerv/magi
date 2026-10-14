@@ -6,14 +6,34 @@ use magi_tui::Editor;
 use magi_tui::overlay::Overlay;
 use magi_tui::scrollback::Scrollback;
 
-/// Add two token counts. `Usage` is four independent counters; missing one reads low in the footer.
+/// Add two token counts, each saturating rather than wrapping on a bogus figure. `Usage` is four
+/// independent counters; missing one reads low in the footer.
 fn add(total: magi_proto::Usage, next: magi_proto::Usage) -> magi_proto::Usage {
     magi_proto::Usage {
-        input: total.input + next.input,
-        output: total.output + next.output,
-        cache_read: total.cache_read + next.cache_read,
-        cache_write: total.cache_write + next.cache_write,
-        cost_micros: total.cost_micros + next.cost_micros,
+        input: total.input.saturating_add(next.input),
+        output: total.output.saturating_add(next.output),
+        cache_read: total.cache_read.saturating_add(next.cache_read),
+        cache_write: total.cache_write.saturating_add(next.cache_write),
+        cost_micros: total.cost_micros.saturating_add(next.cost_micros),
+    }
+}
+
+#[cfg(test)]
+mod summing {
+    #[test]
+    fn a_bogus_figure_saturates_rather_than_wrapping_or_panicking() {
+        let huge = magi_proto::Usage {
+            input: u64::MAX,
+            cost_micros: u64::MAX,
+            ..magi_proto::Usage::default()
+        };
+        let one = magi_proto::Usage {
+            input: 1,
+            cost_micros: 1,
+            ..magi_proto::Usage::default()
+        };
+        let sum = super::add(huge, one);
+        assert_eq!((sum.input, sum.cost_micros), (u64::MAX, u64::MAX));
     }
 }
 
