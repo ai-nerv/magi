@@ -306,3 +306,58 @@ async fn a_run_past_one_frame_comes_back_whole() {
         "not all of it came back"
     );
 }
+
+/// Whether the balthasar behind `socket` keeps a cursor's row once written: one that predates it
+/// overwrites a turn with whatever is observed at its cursor, traces included.
+async fn insert_only(socket: &std::path::Path, name: &str) -> bool {
+    let mut family = Family::dial(socket).await.expect("dial");
+    let session = format!("magi-probe-{}-{name}", std::process::id());
+    let turn = |text: &str| {
+        serde_json::json!({
+            "run": session, "cursor": 1, "role": "user", "kind": "user", "text": text,
+        })
+    };
+    let args = |text: &str| vec![serde_json::json!(session), turn(text)];
+    family
+        .call("observe", args("first"))
+        .await
+        .expect("observe");
+    match family.call("observe", args("second")).await {
+        Err(magi_ipc::family::Fault::Refused(why)) => why.contains("already holds"),
+        _ => false,
+    }
+}
+
+/// A permission trace lands at the cursor of the tool call it was about. Kept apart from the entry
+/// there, so the entry still replays with its raw and the session can still be resumed.
+#[tokio::test]
+async fn a_trace_at_an_entrys_cursor_leaves_the_entry_and_its_raw() {
+    let Some((mut scribe, held)) = scribe("trace").await else {
+        return;
+    };
+    if !insert_only(held.0.socket(), "trace").await {
+        magi_testkit::live::unavailable("balthasar predates traces kept apart from turns");
+        return;
+    }
+    let call = Entry::Tool {
+        id: ToolCallId::new("t1"),
+        name: "shell".into(),
+        args: "{\"command\":\"ls\"}".into(),
+        result: None,
+        thought_signature: Some("opaque".into()),
+    };
+    scribe
+        .observe(Cursor(1), &call, &Default::default())
+        .await
+        .expect("observe");
+    scribe
+        .noticed(Cursor(1), "permission", "allowed: shell ls")
+        .await
+        .expect("trace");
+    let back = scribe.replay().await.expect("the entry still replays");
+    assert_eq!(
+        back,
+        vec![(Cursor(1), call)],
+        "the trace replaced the entry"
+    );
+}
