@@ -185,7 +185,11 @@ impl Registry {
                 Output {
                     // Masked before it is capped, so a credential cannot survive by being in the
                     // half that got cut, and before anything sees it.
-                    content: crate::bound::apply(name, crate::masking::apply(output.content)),
+                    content: crate::bound::apply(
+                        name,
+                        crate::masking::apply(output.content),
+                        &ops.cwd(),
+                    ),
                     is_error: output.is_error,
                     // What the person is shown, masked the same way: the painting is the file.
                     shown: crate::masking::painted(output.shown),
@@ -284,7 +288,7 @@ impl Registry {
         };
         self.finished(&name, &ran, &output);
         Output {
-            content: crate::bound::apply(&name, crate::masking::apply(output.content)),
+            content: crate::bound::apply(&name, crate::masking::apply(output.content), &ops.cwd()),
             is_error: output.is_error,
             shown: crate::masking::painted(output.shown),
             unlocks: Vec::new(),

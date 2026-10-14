@@ -481,13 +481,14 @@ impl Ops for Real {
     }
 
     /// The jail profile from the grants this session holds. `None` when isolation is off; otherwise
-    /// the write directories, network toggle, and a `/tmp` shared across this project's commands,
-    /// conservative on an empty ledger, not open.
+    /// the write directories, this project's spill directory, the network toggle, and a `/tmp`
+    /// shared across this project's commands, conservative on an empty ledger, not open.
     fn jail(&self) -> Option<String> {
         if !self.isolate {
             return None;
         }
-        let (write, reach) = self.jail_reach();
+        let (mut write, reach) = self.jail_reach();
+        write.extend(crate::bound::spill_dir(&self.root));
         let mut profile = serde_json::json!({ "write": write, "reach": reach });
         if let Some(tmp) = self.shared_tmp()
             && let Some(fields) = profile.as_object_mut()
@@ -593,6 +594,23 @@ mod tests {
             if let Some(tmp) = ops.shared_tmp() {
                 let _ = std::fs::remove_dir_all(tmp);
             }
+        }
+    }
+
+    #[test]
+    fn the_jail_is_handed_this_projects_spill_directory_and_nothing_above_it() {
+        let (ops, dir) = rooted("spills");
+        let ops = ops.isolating(true);
+        let profile: serde_json::Value =
+            serde_json::from_str(&ops.jail().expect("a profile")).expect("json");
+        let spills = crate::bound::spill_dir(&dir).expect("made");
+        let write = profile["write"].as_array().expect("a write list");
+        assert!(write.contains(&serde_json::json!(spills)), "{profile}");
+        let above = serde_json::json!(spills.parent().expect("the user's"));
+        assert!(!write.contains(&above), "{profile}");
+        let _ = std::fs::remove_dir(&spills);
+        if let Some(tmp) = ops.shared_tmp() {
+            let _ = std::fs::remove_dir_all(tmp);
         }
     }
 
