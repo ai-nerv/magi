@@ -8,6 +8,7 @@ use serde_json::Value;
 pub fn fetch(program: &str, model: &str) -> Result<Details, String> {
     let out = std::process::Command::new(program)
         .args(["card", "--model", model, "--json"])
+        .env(magi_host::driving::GIVEN, magi_host::driving::given_dir())
         .stderr(std::process::Stdio::null())
         .output()
         .map_err(|why| format!("{program} could not be asked: {why}"))?;

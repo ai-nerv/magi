@@ -119,6 +119,7 @@ fn melchior(program: &str) -> Vec<Card> {
     let Ok(out) = std::process::Command::new(program)
         .arg("models")
         .arg("--json")
+        .env(magi_host::driving::GIVEN, magi_host::driving::given_dir())
         .stderr(std::process::Stdio::null())
         .output()
     else {
@@ -172,6 +173,25 @@ mod tests {
         let card = card(false);
         assert_eq!(card.needs.as_deref(), Some("P_KEY"));
         print_card(&card, None);
+    }
+
+    #[test]
+    fn melchior_is_told_which_sessions_settings_to_read() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = magi_model::scratch::Scratch::new("magi-models", "given");
+        let fake = dir.join("melchior");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\nprintf '{\"ok\":true,\"n\":1,\"result\":[{\"id\":\"%s\",\"provider\":\"p\",\
+             \"name\":\"m\",\"api\":\"x\",\"reasons\":false,\"ready\":true}]}' \"$NERV_GIVEN\"\n",
+        )
+        .expect("write");
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let cards = melchior(&fake.display().to_string());
+        assert_eq!(
+            cards.first().map(|card| card.id.clone()),
+            Some(magi_host::driving::given_dir().display().to_string())
+        );
     }
 
     #[test]

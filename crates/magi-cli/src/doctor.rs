@@ -197,6 +197,7 @@ fn answers_models(name: &str) -> Option<usize> {
     let out = std::process::Command::new(name)
         .arg("models")
         .arg("--json")
+        .env(magi_host::driving::GIVEN, magi_host::driving::given_dir())
         .stderr(std::process::Stdio::null())
         .output()
         .ok()?;
