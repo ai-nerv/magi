@@ -210,7 +210,7 @@ fn agent_argv(call: serde_json::Value) -> Vec<String> {
         .iter()
         .map(|a| a.as_str().unwrap_or_default().to_owned())
         .collect();
-    magi_tools::command::render(&args, &call)
+    magi_tools::command::render(&args, &call).expect("rendered")
 }
 
 #[test]

@@ -139,7 +139,10 @@ impl Tool for CommandTool {
     }
 
     fn run(&self, arguments: &serde_json::Value, ops: &dyn Ops, cancel: &dyn Cancel) -> Output {
-        let rendered = render(&self.args, arguments);
+        let rendered = match render(&self.args, arguments) {
+            Ok(rendered) => rendered,
+            Err(why) => return Output::error(format!("{}: {why}", self.name)),
+        };
         // Asked before anything is started. A tool that runs and then asks has already done the
         // thing the question was about.
         if let Err(why) = ops.allow(&self.name, &self.action(&rendered)) {
@@ -317,29 +320,52 @@ fn collect(handle: std::thread::JoinHandle<String>) -> String {
 ///   element, so a list of paths is a list of paths.
 /// - Values are never interpreted. This is an argument vector, not a command line: nothing here
 ///   splits on whitespace, expands a glob, or reads a `;`.
-#[must_use]
-pub fn render(templates: &[String], arguments: &serde_json::Value) -> Vec<String> {
+/// - A value is never read as an option. An argument that begins with a value is refused when
+///   that value begins with `-`, unless a literal `--` earlier in the templates ended the options.
+///
+/// # Errors
+/// When a value would begin an argument with `-` before any `--`.
+pub fn render(templates: &[String], arguments: &serde_json::Value) -> Result<Vec<String>, String> {
     let mut out = Vec::new();
+    let mut ended = false;
     for template in templates {
         if let Some(name) = whole_placeholder(template) {
-            match arguments.get(name) {
-                None | Some(serde_json::Value::Null) => {}
-                Some(serde_json::Value::Array(items)) => {
-                    out.extend(items.iter().map(scalar));
-                }
-                Some(value) => out.push(scalar(value)),
+            let values = match arguments.get(name) {
+                None | Some(serde_json::Value::Null) => continue,
+                Some(serde_json::Value::Array(items)) => items.iter().map(scalar).collect(),
+                Some(value) => vec![scalar(value)],
+            };
+            for value in values {
+                out.push(operand(name, value, ended)?);
             }
             continue;
         }
-        if embedded(template)
-            .iter()
-            .any(|name| !given(arguments, name))
-        {
+        let named = embedded(template);
+        if named.iter().any(|name| !given(arguments, name)) {
             continue;
         }
-        out.push(substitute(template, arguments));
+        let rendered = substitute(template, arguments);
+        match named.first() {
+            Some(name) if template.starts_with('{') => {
+                out.push(operand(name, rendered, ended)?);
+            }
+            _ => out.push(rendered),
+        }
+        ended |= template == "--";
     }
-    out
+    Ok(out)
+}
+
+/// `value`, refused when it would be read as an option: it begins with `-` and nothing has ended
+/// the options.
+fn operand(name: &str, value: String, ended: bool) -> Result<String, String> {
+    if ended || !value.starts_with('-') {
+        return Ok(value);
+    }
+    Err(format!(
+        "the value of `{name}` begins with `-`, and with no `--` before it in this tool's \
+         arguments the program would read it as an option: {value:?}"
+    ))
 }
 
 /// Whether the call actually carries a value for `name`.
@@ -408,8 +434,44 @@ mod render_tests {
     use serde_json::json;
 
     fn rendered(templates: &[&str], arguments: &serde_json::Value) -> Vec<String> {
+        attempted(templates, arguments).expect("rendered")
+    }
+
+    fn attempted(templates: &[&str], arguments: &serde_json::Value) -> Result<Vec<String>, String> {
         let templates: Vec<String> = templates.iter().map(|t| (*t).to_owned()).collect();
         render(&templates, arguments)
+    }
+
+    #[test]
+    fn a_value_that_would_be_read_as_an_option_is_refused() {
+        for (templates, arguments) in [
+            (vec!["{pattern}"], json!({ "pattern": "--pre=sh" })),
+            (vec!["-n", "{paths}"], json!({ "paths": ["a.rs", "-rf"] })),
+            (vec!["{name}.txt"], json!({ "name": "-x" })),
+            (vec!["{count}"], json!({ "count": -1 })),
+        ] {
+            let why = attempted(&templates, &arguments).expect_err("refused");
+            assert!(why.contains("begins with `-`"), "{templates:?}: {why}");
+        }
+    }
+
+    #[test]
+    fn after_a_double_dash_a_value_is_a_value_whatever_it_begins_with() {
+        assert_eq!(
+            rendered(
+                &["-n", "--", "{pattern}"],
+                &json!({ "pattern": "--pre=sh" })
+            ),
+            ["-n", "--", "--pre=sh"]
+        );
+    }
+
+    #[test]
+    fn a_value_inside_a_flag_is_that_flags_value() {
+        assert_eq!(
+            rendered(&["--max-count={limit}"], &json!({ "limit": -1 })),
+            ["--max-count=-1"]
+        );
     }
 
     #[test]
@@ -555,6 +617,26 @@ mod running_tests {
         let ops = Real::new(std::env::temp_dir());
         let out = echo(vec!["{text}"]).run(&json!({ "text": "a; echo b" }), &ops, &Uncancelled);
         assert_eq!(out.content.trim(), "a; echo b", "a shell got involved");
+    }
+
+    #[test]
+    fn a_value_that_looks_like_a_flag_never_reaches_the_program_as_one() {
+        let dir = Scratch::new("magi-dashed", "one");
+        let marker = dir.join("ran");
+        let tool = CommandTool::new(
+            "touching",
+            "",
+            json!({ "type": "object", "properties": { "text": { "type": "string" } } }),
+            "touch",
+            vec!["{text}".to_owned(), marker.display().to_string()],
+        );
+        let out = tool.run(
+            &json!({ "text": "--no-create" }),
+            &Real::new(dir.to_path_buf()),
+            &Uncancelled,
+        );
+        assert!(out.is_error && out.content.contains("`text`"), "{out:?}");
+        assert!(!marker.exists(), "the program ran");
     }
 
     #[test]

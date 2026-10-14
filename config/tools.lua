@@ -124,10 +124,11 @@ do -- the memory role
 
   if DOOR == "command" then
     -- The core verbs through balthasar's command line, one exec per call. `{arg}` is filled from
-    -- the call, its own token dropped when absent. `history` and the injection/outcome loop below
-    -- are the library door's, and are not offered here.
+    -- the call, its own token dropped when absent, and after `--` so it is never read as an option.
+    -- `history` and the injection/outcome loop below are the library door's, and are not offered
+    -- here.
     for name, shape in pairs(MEMORY) do
-      local argv = { name }
+      local argv = { name, "--" }
       for _, key in ipairs(shape.args) do
         argv[#argv + 1] = "{" .. key .. "}"
       end
