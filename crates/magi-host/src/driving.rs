@@ -39,8 +39,27 @@ pub fn given_dir() -> std::path::PathBuf {
 /// When a level cannot be made, or is not a directory of this user's alone.
 pub fn prepare_given() -> std::io::Result<std::path::PathBuf> {
     let runtime = magi_ipc::runtime_dir("magi")?;
-    magi_ipc::private_dir(&runtime.join("given"))?;
+    let given = runtime.join("given");
+    magi_ipc::private_dir(&given)?;
+    sweep_given(&given);
     magi_ipc::private_dir(&given_dir())
+}
+
+/// Take down what sessions that never reached their exit left: a directory named for a process
+/// that is gone.
+fn sweep_given(given: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(given) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(|n| n.parse::<u32>().ok()) else {
+            continue;
+        };
+        if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 /// Take [`given_dir`] down with the session it belonged to.
@@ -188,6 +207,22 @@ pub(crate) async fn ran(
 mod tests {
     use super::*;
     use magi_proto::setup::Kind;
+
+    #[test]
+    fn a_given_directory_outlives_only_a_live_session() {
+        let given = magi_model::scratch::Scratch::new("magi-given", "sweep");
+        let gone = given.join(u32::MAX.to_string());
+        let alive = given.join(std::process::id().to_string());
+        let other = given.join("not-a-pid");
+        for dir in [&gone, &alive, &other] {
+            std::fs::create_dir(dir).expect("mkdir");
+            std::fs::write(dir.join("melchior.lua"), "").expect("write");
+        }
+        sweep_given(&given);
+        assert!(!gone.exists(), "a dead session's directory was left");
+        assert!(alive.exists(), "a live session's directory was taken");
+        assert!(other.exists(), "a name that is no pid was taken");
+    }
 
     #[tokio::test]
     async fn a_sibling_that_never_answers_is_stopped_at_the_deadline() {
