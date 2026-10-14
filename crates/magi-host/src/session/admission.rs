@@ -79,6 +79,7 @@ impl Session {
         Ok(Some(self.reserve(request)))
     }
 
+    #[allow(clippy::expect_used)]
     fn reserve(&mut self, request: Request) -> (u64, Request) {
         self.admission.next = self
             .admission

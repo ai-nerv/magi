@@ -343,11 +343,9 @@ impl Session {
         self.entries()
             .iter()
             .enumerate()
-            .filter(|(i, _)| self.cursor_at(*i).is_some_and(|c| c > from))
-            .flat_map(|(index, entry)| {
-                let cursor = self.cursor_at(index).expect("journal cursor");
-                events_for(cursor, entry)
-            })
+            .filter_map(|(index, entry)| Some((self.cursor_at(index)?, entry)))
+            .filter(|(cursor, _)| *cursor > from)
+            .flat_map(|(cursor, entry)| events_for(cursor, entry))
             .collect()
     }
 

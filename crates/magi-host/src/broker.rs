@@ -392,15 +392,16 @@ pub(crate) async fn refresh_cards(
     }
     let reply: serde_json::Value = serde_json::from_slice(&out.stdout)
         .map_err(|_| "Invalid model listing; keeping the previous list.".to_owned())?;
-    if reply["ok"] != true || reply["refreshed"] != true {
+    let yes = |field: &str| reply.get(field).and_then(serde_json::Value::as_bool) == Some(true);
+    if !yes("ok") || !yes("refreshed") {
         return Err(
             "Model provider did not confirm refresh; update Melchior. Keeping the previous list."
                 .into(),
         );
     }
-    let cards = serde_json::from_value(reply["result"].clone())
+    let cards = serde_json::from_value(reply.get("result").cloned().unwrap_or_default())
         .map_err(|_| "Invalid model cards; keeping the previous list.".to_owned())?;
-    let failed = serde_json::from_value(reply["failed"].clone())
+    let failed = serde_json::from_value(reply.get("failed").cloned().unwrap_or_default())
         .map_err(|_| "Invalid refresh status; keeping the previous list.".to_owned())?;
     Ok((cards, failed))
 }

@@ -64,16 +64,18 @@ pub(crate) async fn prepare(
             continue;
         }
         let value = read(backend, &receipt.who).await?;
-        let body = value["report"]
-            .as_str()
+        let body = value
+            .get("report")
+            .and_then(serde_json::Value::as_str)
             .ok_or("stored report has no body")?;
         let revision = format!("{:x}", Sha256::digest(body.as_bytes()));
         let expected_digest = value
             .get("digest")
             .and_then(serde_json::Value::as_str)
             .unwrap_or(&receipt.revision);
-        let current = value["revision"]
-            .as_str()
+        let current = value
+            .get("revision")
+            .and_then(serde_json::Value::as_str)
             .filter(|revision| {
                 revision.len() == 64 && revision.bytes().all(|byte| byte.is_ascii_hexdigit())
             })
@@ -141,7 +143,7 @@ pub(crate) async fn finish(
         let explicit = entries.iter().any(|entry| matches!(entry,
             Entry::Tool { name, args, result: Some(result), .. }
             if name == "agent" && !result.is_error && serde_json::from_str::<serde_json::Value>(args)
-                .is_ok_and(|args| args["verb"] == "report" && args.get("who").is_none_or(|who| who.as_str().is_none_or(str::is_empty)))
+                .is_ok_and(|args| args.get("verb").and_then(serde_json::Value::as_str) == Some("report") && args.get("who").is_none_or(|who| who.as_str().is_none_or(str::is_empty)))
         ));
         let last = entries.iter().rev().find_map(|entry| match entry {
             Entry::Assistant {
@@ -194,8 +196,9 @@ pub(crate) async fn finish(
             .get("MAGI_MELCHIOR_ID")
             .ok_or("cannot finalize the explicit report without the child's identity")?;
         let value = read(backend, id).await?;
-        let body = value["report"]
-            .as_str()
+        let body = value
+            .get("report")
+            .and_then(serde_json::Value::as_str)
             .ok_or("the explicit report has no stored body")?;
         if answer.trim().is_empty() {
             body.to_owned()

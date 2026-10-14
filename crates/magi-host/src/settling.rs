@@ -105,10 +105,12 @@ impl Paused {
                 task: Some(task),
                 owner: self.tasks.clone(),
             };
-            let outcome =
-                tokio::time::timeout_at(deadline, borrowed.task.as_mut().expect("borrowed helper"))
-                    .await
-                    .map_err(|_| "old session helpers have not settled; retry resume later")?;
+            let Some(running) = borrowed.task.as_mut() else {
+                continue;
+            };
+            let outcome = tokio::time::timeout_at(deadline, running)
+                .await
+                .map_err(|_| "old session helpers have not settled; retry resume later")?;
             borrowed.task.take();
             outcome.map_err(|why| format!("old session helper stopped: {why}"))??;
         }

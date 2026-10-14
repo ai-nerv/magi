@@ -46,12 +46,12 @@ pub fn live(session: &Session) -> Vec<u64> {
     crate::context::live_entries(entries)
         .live
         .into_iter()
-        .filter(|&at| match &entries[at] {
-            Entry::Notice { .. } => false,
-            Entry::Assistant {
+        .filter(|&at| match entries.get(at) {
+            None | Some(Entry::Notice { .. }) => false,
+            Some(Entry::Assistant {
                 error, stop_reason, ..
-            } => error.is_none() && *stop_reason != Some(magi_model::StopReason::Error),
-            _ => true,
+            }) => error.is_none() && *stop_reason != Some(magi_model::StopReason::Error),
+            Some(_) => true,
         })
         .filter_map(|at| session.cursor_at(at).map(|c| c.0))
         .collect()
@@ -105,15 +105,16 @@ pub fn render(session: &Session, layout: &Layout) -> Context {
         let at = slot
             .cursor()
             .and_then(|cursor| session.position(magi_proto::Cursor(cursor)))
-            .filter(|at| alive.contains(at));
+            .filter(|at| alive.contains(at))
+            .and_then(|at| Some((at, entries.get(at)?)));
         match (slot, at) {
-            (Slot::Item { .. }, Some(at)) => {
-                built.entry(&entries[at], view.masks.get(&at).map(String::as_str));
+            (Slot::Item { .. }, Some((at, entry))) => {
+                built.entry(entry, view.masks.get(&at).map(String::as_str));
             }
-            (Slot::Stub { text, .. }, Some(at)) => {
+            (Slot::Stub { text, .. }, Some((at, entry))) => {
                 let stub = Some(text.as_str()).filter(|t| !t.is_empty());
                 built.entry(
-                    &entries[at],
+                    entry,
                     stub.or_else(|| view.masks.get(&at).map(String::as_str)),
                 );
             }
@@ -239,9 +240,15 @@ async fn ask(scribe: &crate::scribe::Held, asked: serde_json::Value) -> Option<L
                 .ok(),
             Err(magi_ipc::family::Fault::Refused(why)) => {
                 magi_model::noted!("layout: refused ({why}); asking for a plan instead");
-                let window = asked["window"].as_u64().unwrap_or(0);
+                let window = asked
+                    .get("window")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
                 let plan = open.plan_for(window).await.ok()?;
-                Some(from_plan(&plan, &cursors(&asked["live"])))
+                Some(from_plan(
+                    &plan,
+                    &cursors(asked.get("live").unwrap_or(&serde_json::Value::Null)),
+                ))
             }
             Err(why) => {
                 magi_model::noted!("layout: balthasar could not be asked: {why}");
@@ -397,8 +404,11 @@ pub async fn lay(
     magi_model::noted!(
         "layout: asking for round {} of {} live entries in a {} window",
         prompt.round,
-        asked["live"].as_array().map_or(0, Vec::len),
-        asked["window"]
+        asked
+            .get("live")
+            .and_then(serde_json::Value::as_array)
+            .map_or(0, Vec::len),
+        asked.get("window").unwrap_or(&serde_json::Value::Null)
     );
     let mut layout = if backend.context_window.is_some() {
         ask(scribe, asked.clone()).await

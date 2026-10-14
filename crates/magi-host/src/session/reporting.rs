@@ -28,8 +28,9 @@ impl Session {
         }
         let value: serde_json::Value = serde_json::from_str(text)
             .map_err(|why| format!("invalid report notification: {why}"))?;
-        let revision = value["revision"]
-            .as_str()
+        let revision = value
+            .get("revision")
+            .and_then(serde_json::Value::as_str)
             .filter(|revision| {
                 revision.len() == 64 && revision.bytes().all(|byte| byte.is_ascii_hexdigit())
             })

@@ -135,7 +135,8 @@ pub(super) fn beside(session: &crate::session::Session, cursor: Cursor, entry: &
         },
         Entry::Tool { id, .. } => {
             let at = session.position(cursor).unwrap_or(0);
-            let before = &session.entries()[..at.min(session.entries().len())];
+            let entries = session.entries();
+            let before = entries.get(..at).unwrap_or(entries);
             Beside {
                 group: before
                     .iter()

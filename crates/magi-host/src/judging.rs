@@ -355,7 +355,7 @@ impl Judge for Helper {
             })
             .ok()?;
         match answer.recv_timeout(PATIENCE).ok()? {
-            magi_proto::wondering::Answered::Told { said } => read(said["text"].as_str()?),
+            magi_proto::wondering::Answered::Told { said } => read(said.get("text")?.as_str()?),
             magi_proto::wondering::Answered::Refused { .. } => None,
         }
     }
@@ -425,7 +425,9 @@ fn read(text: &str) -> Option<Advice> {
     let said: serde_json::Value = serde_json::from_str(text.get(from..=to)?).ok()?;
     let mut advice: Advice = serde_json::from_value(said.clone()).ok()?;
     // A model that decides says how sure it was, beside the answer it gave.
-    advice.sure = said["_decided"]["safe"]["p"].as_f64();
+    advice.sure = said
+        .pointer("/_decided/safe/p")
+        .and_then(serde_json::Value::as_f64);
     Some(advice)
 }
 

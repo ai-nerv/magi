@@ -341,7 +341,12 @@ impl Scribe {
     ) -> Result<Vec<serde_json::Value>, Fault> {
         let args = |entry: &Entry| -> Result<Vec<serde_json::Value>, Fault> {
             let mut turn = turn(cursor, entry, beside)?;
-            turn["run"] = serde_json::Value::String(self.session.clone());
+            if let Some(fields) = turn.as_object_mut() {
+                fields.insert(
+                    "run".into(),
+                    serde_json::Value::String(self.session.clone()),
+                );
+            }
             Ok(vec![
                 serde_json::Value::String(self.transcript.clone()),
                 turn,

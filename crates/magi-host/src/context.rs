@@ -25,8 +25,12 @@ pub fn of_entries(entries: &[Entry]) -> Context {
         ));
     }
     // Carried with the entry, because a mask names an entry by its index in the transcript.
-    for at in view.live {
-        built.entry(&entries[at], view.masks.get(&at).map(String::as_str));
+    for (at, entry) in view
+        .live
+        .into_iter()
+        .filter_map(|at| Some((at, entries.get(at)?)))
+    {
+        built.entry(entry, view.masks.get(&at).map(String::as_str));
     }
     built.finish()
 }
@@ -129,8 +133,8 @@ impl Built {
                 result,
                 thought_signature,
             } => {
-                if let Some(at) = self.open {
-                    self.messages[at].content.push(Content::ToolCall {
+                if let Some(open) = self.open.and_then(|at| self.messages.get_mut(at)) {
+                    open.content.push(Content::ToolCall {
                         id: id.to_string(),
                         name: name.clone(),
                         arguments: serde_json::from_str(args).unwrap_or(serde_json::Value::Null),
@@ -296,7 +300,7 @@ pub fn rewind_point(entries: &[Entry]) -> Option<usize> {
         .live
         .into_iter()
         .rev()
-        .find(|&i| matches!(entries[i], Entry::User { .. }))
+        .find(|&i| matches!(entries.get(i), Some(Entry::User { .. })))
 }
 
 /// The last thing the person actually asked, among what is still live — what a recall is keyed on.
@@ -305,7 +309,7 @@ pub fn rewind_point(entries: &[Entry]) -> Option<usize> {
 pub fn last_asked(session: &Session) -> Option<String> {
     let entries = session.entries();
     let at = rewind_point(entries)?;
-    match &entries[at] {
+    match entries.get(at)? {
         Entry::User { text, .. } if !text.trim().is_empty() => Some(text.clone()),
         _ => None,
     }
