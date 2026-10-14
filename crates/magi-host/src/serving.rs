@@ -34,6 +34,19 @@ pub(super) fn controller_key(listener: &UnixListener) -> Result<Arc<str>, HostEr
 /// How long a connection has to say who it is.
 const ATTACHING: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// How many connections a session serves at once.
+pub(super) const SEATS: usize = 64;
+
+/// Turn away a connection past [`SEATS`], saying so, rather than dropping it unanswered.
+pub(super) async fn busy(stream: UnixStream) {
+    let mut writer = FrameWriter::new(stream);
+    let refused = HarnessEvent::Refused {
+        cursor: Cursor::ZERO,
+        message: format!("busy: this session already serves {SEATS} connections"),
+    };
+    let _ = tokio::time::timeout(ATTACHING, writer.write(&refused)).await;
+}
+
 /// One attached UI. It controls the session when its `Attach` carries the key, and otherwise
 /// watches: every command but leaving is refused.
 pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(), HostError> {
@@ -259,8 +272,15 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
                 match event {
                     // Awaited in the branch body, not as a select arm: a cancelled write desyncs.
                     Ok(event) => writer.write(&event).await?,
-                    // A UI that fell behind reattaches with its cursor; the journal holds it all.
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    // A screen that fell behind has lost deltas it cannot ask for again, so it is
+                    // handed the whole session as it now stands.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        let now = {
+                            let held = session.lock().await;
+                            held.snapshot(held.cursor())
+                        };
+                        writer.write(&now).await?;
+                    }
                     Err(_) => break,
                 }
             }

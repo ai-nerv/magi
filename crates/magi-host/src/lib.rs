@@ -147,6 +147,7 @@ pub async fn serve_on(
 ) -> Result<(), HostError> {
     // Told once, here, because this is the only place that knows both.
     session.set_choices(catalog.choices());
+    session.run_helpers_on(tokio::runtime::Handle::current());
     session.set_model(backend.as_ref().map(|backend| magi_proto::ModelInfo {
         name: backend.model.clone(),
         context_window: backend.context_window.unwrap_or(0),
@@ -353,15 +354,32 @@ pub async fn serve_on(
     };
     // No idle timer. Nothing outlives its UI now, so there is nothing to sweep, and a UI whose
     // connection hiccuped would have had its own session close the socket underneath it.
+    let seats = Arc::new(tokio::sync::Semaphore::new(serving::SEATS));
     loop {
-        let stream = listener.accept().await?.0;
+        let stream = match listener.accept().await {
+            Ok((stream, _)) => stream,
+            Err(why) if magi_ipc::transient(&why) => {
+                magi_model::noted!("session: accept failed for now: {why}");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                continue;
+            }
+            Err(why) => {
+                magi_model::noted!("session: the socket stopped accepting: {why}");
+                return Err(why.into());
+            }
+        };
         // A session serves one user; any other uid is refused rather than authenticated.
         match PeerCred::of(&stream) {
             Ok(cred) if cred.is_same_user() => {}
             _ => continue,
         }
+        let Ok(seat) = Arc::clone(&seats).try_acquire_owned() else {
+            tokio::spawn(serving::busy(stream));
+            continue;
+        };
         let served = served.clone();
         tokio::spawn(async move {
+            let _seat = seat;
             let _ = connection(stream, served).await;
         });
     }

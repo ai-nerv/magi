@@ -31,6 +31,11 @@ impl Session {
         self.helpers.clone()
     }
 
+    /// Run this session's helper and between-turn tasks on `runtime`.
+    pub(crate) fn run_helpers_on(&mut self, runtime: tokio::runtime::Handle) {
+        self.helpers = crate::settling::Tasks::on(runtime);
+    }
+
     pub fn restored(id: SessionId, rows: Vec<(Cursor, Entry)>) -> Result<Self, JournalError> {
         let journal = Journal::restore(id.clone(), rows)?;
         let mut session = Self::recorded(id, Vec::new());
@@ -84,7 +89,7 @@ impl Session {
         self.journal = journal;
         self.admission.reports = Default::default();
         self.cancel = Default::default();
-        self.helpers = Default::default();
+        self.helpers = self.helpers.fresh();
         self.hints.clear();
         self.laid = None;
         self.rested = None;

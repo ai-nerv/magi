@@ -710,3 +710,62 @@ async fn a_connection_without_the_key_watches_and_changes_nothing() {
         "a watcher's prompt reached the transcript"
     );
 }
+
+/// A session at its limit of connections says so to the next one rather than dropping it.
+#[tokio::test]
+async fn a_session_with_every_seat_taken_says_it_is_busy() {
+    let (_dir, socket) = start("busy").await;
+    let mut held = Vec::new();
+    for _ in 0..64 {
+        held.push(magi_ipc::connect(&socket).await.expect("connect"));
+    }
+    let stream = magi_ipc::connect(&socket).await.expect("connect");
+    let (read_half, _write_half) = stream.into_split();
+    let said = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        FrameReader::new(read_half).read::<HarnessEvent>(),
+    )
+    .await
+    .expect("answered, not left hanging")
+    .expect("an event");
+    assert!(
+        matches!(&said, HarnessEvent::Refused { message, .. } if message.starts_with("busy")),
+        "{said:?}"
+    );
+}
+
+/// A screen too slow to keep up is handed the session whole, not left showing a cut message.
+#[tokio::test]
+async fn a_screen_that_falls_behind_is_handed_the_whole_session_again() {
+    let (_dir, socket) = start("lagged").await;
+    let (mut slow, _) = Client::attach(&socket, Cursor::ZERO).await;
+    let (fast, _) = Client::attach(&socket, Cursor::ZERO).await;
+    let Client {
+        mut reader,
+        mut writer,
+    } = fast;
+    let draining =
+        tokio::spawn(async move { while reader.read::<HarnessEvent>().await.is_ok() {} });
+    for n in 0..600 {
+        let text = format!("{n} {}", "x".repeat(4 * 1024));
+        let prompt = UiCommand::SubmitPrompt {
+            text,
+            aside: String::new(),
+        };
+        writer.write(&prompt).await.expect("submit");
+    }
+    let mut resynced = false;
+    for _ in 0..4096 {
+        let next = tokio::time::timeout(std::time::Duration::from_secs(2), slow.reader.read());
+        match next.await {
+            Ok(Ok(HarnessEvent::SessionSnapshot { .. })) => {
+                resynced = true;
+                break;
+            }
+            Ok(Ok(_)) => {}
+            _ => break,
+        }
+    }
+    assert!(resynced, "the screen that fell behind was never resynced");
+    draining.abort();
+}
