@@ -56,6 +56,7 @@ fn workspace(name: &str) -> Option<Scratch> {
         return None;
     }
     let dir = Scratch::new("mh", name).settling();
+    let _ = dir.private("r");
     for under in ["p", "r", "c", "d"] {
         std::fs::create_dir_all(dir.join(under)).expect("mkdir");
     }

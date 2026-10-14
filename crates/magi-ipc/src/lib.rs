@@ -15,7 +15,7 @@ pub use binding::{clear_stale, lock_path, unbind};
 pub use codec::{FrameReader, FrameWriter, MAX_FRAME_BYTES};
 pub use encoding::Wire;
 pub use peer::PeerCred;
-pub use runtime::{private_dir, runtime_base, runtime_dir, transient, trusted_xdg};
+pub use runtime::{private_dir, private_dirs, runtime_base, runtime_dir, transient, trusted_xdg};
 pub use secret::{drop_key, key_path, mint_key, random_hex, read_key, same_key};
 
 use std::io;
@@ -43,23 +43,17 @@ pub enum IpcError {
     Disconnected,
 }
 
-/// Where the daemon listens and the UI dials: `$XDG_RUNTIME_DIR`, or the temp dir where unset.
+/// Where the daemon listens and the UI dials: magi's runtime directory — see [`runtime_base`].
 #[must_use]
 pub fn default_socket_path() -> PathBuf {
-    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    runtime_dir.join("magi").join("host.sock")
+    runtime_base("magi").join("host.sock")
 }
 
 /// The socket a daemon serving `cwd` listens on. Per-directory, because `magi` in two repositories
 /// is two conversations; the name is a digest because a socket path has a length limit.
 #[must_use]
 pub fn socket_for(cwd: &Path) -> PathBuf {
-    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    runtime_dir.join("magi").join(format!(
+    runtime_base("magi").join(format!(
         "{:016x}.sock",
         digest(cwd.as_os_str().as_encoded_bytes())
     ))
@@ -81,7 +75,8 @@ fn digest(bytes: &[u8]) -> u64 {
 /// there is a refusal. A fresh controller key goes beside it, in `<socket>.key`.
 pub async fn bind(path: &Path) -> Result<UnixListener, IpcError> {
     if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
+        std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
+            .create(parent)?;
     }
     let lock = binding::take(path)?;
     let listener = UnixListener::bind(path)?;
@@ -110,7 +105,7 @@ mod tests {
     #[test]
     fn socket_path_lives_under_a_runtime_dir() {
         let path = default_socket_path();
-        assert!(path.ends_with("magi/host.sock"), "got {}", path.display());
+        assert_eq!(path, runtime_base("magi").join("host.sock"));
     }
 }
 

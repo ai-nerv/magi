@@ -53,6 +53,19 @@ pub fn private_dir(path: &Path) -> io::Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
+/// Make `path` and whatever is missing above it, each new one `0700`, then prove `path` itself is a
+/// directory private to this user — see [`private_dir`].
+///
+/// # Errors
+/// As [`private_dir`].
+pub fn private_dirs(path: &Path) -> io::Result<PathBuf> {
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)?;
+    private_dir(path)
+}
+
 /// A real directory, owned by this uid, with no group or other permissions.
 fn private(held: &std::fs::Metadata) -> bool {
     held.file_type().is_dir() && held.uid() == uid() && held.mode() & 0o077 == 0
@@ -120,5 +133,66 @@ mod tests {
         assert!(transient(&emfile));
         let gone = io::Error::from_raw_os_error(rustix::io::Errno::BADF.raw_os_error());
         assert!(!transient(&gone));
+    }
+
+    /// Run this test binary's `probe` test with `env`, so a variable is set in a child and not here.
+    fn probed(probe: &str, env: &[(&str, &std::ffi::OsStr)]) -> bool {
+        let mut child = std::process::Command::new(std::env::current_exe().expect("test binary"));
+        child
+            .args(["--exact", probe])
+            .env("MAGI_RUNTIME_PROBE", "1");
+        for (name, value) in env {
+            child.env(name, value);
+        }
+        child.status().expect("probe").success()
+    }
+
+    #[test]
+    fn an_empty_or_unsafe_runtime_directory_is_not_used() {
+        if std::env::var_os("MAGI_RUNTIME_PROBE").is_some() {
+            let base = runtime_base("magi");
+            assert_eq!(base, std::env::temp_dir().join(format!("magi-{}", uid())));
+            return;
+        }
+        let probe = "runtime::tests::an_empty_or_unsafe_runtime_directory_is_not_used";
+        let dir = magi_model::scratch::Scratch::new("magi-runtime", "xdg");
+        let open = dir.join("open");
+        std::fs::create_dir(&open).expect("mkdir");
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let empty = std::ffi::OsStr::new("");
+        assert!(
+            probed(probe, &[("XDG_RUNTIME_DIR", empty)]),
+            "empty is unset"
+        );
+        assert!(
+            probed(probe, &[("XDG_RUNTIME_DIR", open.as_os_str())]),
+            "open to others"
+        );
+        assert!(
+            probed(
+                probe,
+                &[("XDG_RUNTIME_DIR", std::ffi::OsStr::new("relative/run"))]
+            ),
+            "not absolute"
+        );
+    }
+
+    #[test]
+    fn a_fallback_directory_open_to_others_is_refused() {
+        if std::env::var_os("MAGI_RUNTIME_PROBE").is_some() {
+            let refused = runtime_dir("magi").expect_err("refused");
+            assert!(refused.to_string().contains("magi-"), "{refused}");
+            return;
+        }
+        let dir = magi_model::scratch::Scratch::new("magi-runtime", "fallback");
+        let planted = dir.join(format!("magi-{}", uid()));
+        std::fs::create_dir(&planted).expect("mkdir");
+        std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o777)).expect("chmod");
+        let probe = "runtime::tests::a_fallback_directory_open_to_others_is_refused";
+        let empty = std::ffi::OsStr::new("");
+        assert!(probed(
+            probe,
+            &[("XDG_RUNTIME_DIR", empty), ("TMPDIR", dir.as_os_str())]
+        ));
     }
 }

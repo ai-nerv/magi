@@ -36,10 +36,7 @@ pub fn project(named: Option<&str>) -> String {
 /// the UI talks to its own session whether or not the agent layer is there.
 #[must_use]
 pub fn socket_for(project: &str, key: &str) -> std::path::PathBuf {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    socket_in(&runtime.join("magi").join(safe(project)), key)
+    socket_in(&magi_ipc::runtime_base("magi").join(safe(project)), key)
 }
 
 /// The same name, in a directory somebody already has, so the `.host` suffix lives in one place:

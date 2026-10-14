@@ -36,6 +36,8 @@ pub async fn start(
     let cwd = cwd.display().to_string();
     let id = magi_proto::SessionId::new(recorded_as(run, key));
     // Told before started: a sibling reads what a coordinator said as it comes up.
+    magi_host::driving::prepare_given()
+        .context("the directory this session's settings are handed over in")?;
     if let Some(loaded) = loaded {
         crate::driving::settle(loaded).await;
     }
@@ -83,7 +85,8 @@ pub async fn start(
     let session = magi_host::session::Session::restored(id, carried)?;
     // Nothing outlives its process, so a stale socket here was left by a crash and is cleared.
     if let Some(parent) = socket.parent() {
-        tokio::fs::create_dir_all(parent).await?;
+        magi_ipc::private_dirs(parent)
+            .with_context(|| format!("the session's socket directory {}", parent.display()))?;
         sweep(parent);
     }
     let listener = magi_ipc::bind(socket)
@@ -119,6 +122,7 @@ pub async fn start(
 /// Take the socket back down: a path nothing answers would meet the next `magi` as a name taken.
 pub fn done(socket: &Path) {
     magi_ipc::unbind(socket);
+    magi_host::driving::forget_given();
     // And the directory, if this was the last session: `remove_dir` refuses a non-empty one.
     if let Some(parent) = socket.parent() {
         let _ = std::fs::remove_dir(parent);

@@ -63,6 +63,7 @@ fn workspace(name: &str) -> Scratch {
         std::fs::create_dir_all(dir.join(under)).expect("mkdir");
     }
     std::fs::create_dir_all(dir.join("p/.git")).expect("mkdir");
+    let _ = dir.private("r");
     dir
 }
 

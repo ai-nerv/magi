@@ -28,11 +28,24 @@ pub const GIVEN: &str = "NERV_GIVEN";
 /// This session's own: what it tells a sibling governs the sibling it starts, and no other session's.
 #[must_use]
 pub fn given_dir() -> std::path::PathBuf {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map_or_else(std::env::temp_dir, std::path::PathBuf::from)
-        .join("magi")
+    magi_ipc::runtime_base("magi")
         .join("given")
         .join(std::process::id().to_string())
+}
+
+/// Make [`given_dir`] private to this user, each level of it, before any sibling is told of it.
+///
+/// # Errors
+/// When a level cannot be made, or is not a directory of this user's alone.
+pub fn prepare_given() -> std::io::Result<std::path::PathBuf> {
+    let runtime = magi_ipc::runtime_dir("magi")?;
+    magi_ipc::private_dir(&runtime.join("given"))?;
+    magi_ipc::private_dir(&given_dir())
+}
+
+/// Take [`given_dir`] down with the session it belonged to.
+pub fn forget_given() {
+    let _ = std::fs::remove_dir_all(given_dir());
 }
 
 /// Hand a sibling a chunk of its own config Lua.

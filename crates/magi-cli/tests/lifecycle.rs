@@ -18,6 +18,7 @@ const WITHIN: Duration = Duration::from_secs(10);
 /// out its own patience and carries on without memory.
 fn workspace(name: &str, tie: Tie) -> Scratch {
     let dir = Scratch::new("ml", name);
+    let _ = dir.private("run");
     for under in ["run", "sessions", "bin"] {
         std::fs::create_dir_all(dir.join(under)).expect("mkdir");
     }

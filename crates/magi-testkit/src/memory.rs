@@ -16,6 +16,10 @@ impl Serving {
     /// When it started and never answered, which is a failure and not a skip.
     pub async fn start(dir: &Path, instance: &str) -> Option<Self> {
         let runtime = dir.join("r");
+        // Private, or the family does not take it for a runtime directory and falls back.
+        std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
+            .create(&runtime)
+            .expect("a private runtime directory");
         let child = std::process::Command::new("balthasar")
             .arg("serve")
             .arg("--instance")

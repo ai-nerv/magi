@@ -23,6 +23,7 @@ fn installed() -> bool {
 /// directory beneath it. Short names, because a unix socket path may not exceed `SUN_LEN`.
 fn workspace(name: &str) -> Scratch {
     let dir = Scratch::new("mr", name);
+    let _ = dir.private("run");
     for under in ["run", "sessions", "data", ".git"] {
         std::fs::create_dir_all(dir.join(under)).expect("mkdir");
     }
