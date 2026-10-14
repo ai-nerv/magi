@@ -43,6 +43,9 @@ impl Opening {
             .as_ref()
             .map(|(melchior, _)| melchior.named.clone())
             .unwrap_or_default();
+        if let Some((_, at)) = &started {
+            magi_lua::name_coordinator(at);
+        }
         // What melchior said, and only otherwise what magi can work out: a run derived here would
         // name one no other agent of it reads off the directory.
         let run = started

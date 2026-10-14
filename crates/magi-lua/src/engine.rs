@@ -109,6 +109,21 @@ pub fn balthasar_at() -> Option<&'static str> {
     SESSION.get().and_then(|(_, at)| at.as_deref())
 }
 
+/// Where this session's coordination program said it listens. Process-global for the reason
+/// [`SESSION`] is.
+static COORDINATOR: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Say where this session's melchior listens, from its own `listening` line, so a tool reaches
+/// that socket and not whichever is newest. Called once; later calls are ignored.
+pub fn name_coordinator(at: &std::path::Path) {
+    let _ = COORDINATOR.set(at.display().to_string());
+}
+
+#[must_use]
+pub fn coordinator_at() -> Option<&'static str> {
+    COORDINATOR.get().map(String::as_str)
+}
+
 /// Which program fills each role here, as `ROLES.md` names them. Process-global for the reason
 /// [`SESSION`] is: a magi fills each role once, for as long as it runs.
 static ROLES: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
@@ -348,6 +363,11 @@ impl Engine {
             if let Some(at) = balthasar_at() {
                 let at = luna::String::from_slice(&ctx, at.as_bytes());
                 magi.set(ctx, "balthasar_at", at).ok();
+            }
+            // And where its melchior listens, for the agent tool's library door.
+            if let Some(at) = coordinator_at() {
+                let at = luna::String::from_slice(&ctx, at.as_bytes());
+                magi.set(ctx, "melchior_at", at).ok();
             }
             // And which program fills each role, so a tool description names the job.
             if !roles().is_empty() {

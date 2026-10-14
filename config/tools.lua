@@ -398,19 +398,25 @@ do -- agent
     }
 
     if DOOR == "library" then
-      -- The client library, over the socket melchior's `serve` bound, calling the `tool` verb --
-      -- `nil` is this session's own melchior. A refusal comes back as `nil, why`, handled here.
+      -- The client library, over the socket this session's own melchior said it bound
+      -- (`magi.melchior_at`), calling the `tool` verb. A refusal comes back as `nil, why`.
       spec.transport = { kind = "lua" }
       spec.run = function(args)
         args = args or {}
         if not args.verb or args.verb == "" then
           return { content = 'agent needs a `verb`; `verb: "help"` lists them', is_error = true }
         end
+        if not magi.melchior_at then
+          return {
+            content = "this session does not know where its melchior listens; the command door reaches it",
+            is_error = true,
+          }
+        end
         local map = { verb = args.verb }
         for _, key in ipairs({ "who", "message", "about", "role", "sort" }) do
           if args[key] ~= nil and args[key] ~= "" then map[key] = args[key] end
         end
-        local said, why = mel.fetch(nil, "tool", map)
+        local said, why = mel.fetch({ path = magi.melchior_at }, "tool", map)
         if not said then return { content = tostring(why), is_error = true } end
         return { content = said }
       end
