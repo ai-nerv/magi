@@ -255,7 +255,7 @@ impl magi_tools::approve::Approver for Judged {
                 ),
             );
         }
-        if self.rules.ask.iter().any(|rule| rule.names(action)) {
+        if self.rules.ask.iter().any(|rule| rule.names(action)) || self.unsure(action) {
             let advice = self.judge.judge(tool, action);
             return self.person.ask_advised(tool, action, advice.as_ref());
         }
@@ -287,6 +287,24 @@ impl magi_tools::approve::Approver for Judged {
             .iter()
             .chain(&self.rules.ask)
             .any(|rule| rule.names(action))
+            || self.unsure(action)
+    }
+}
+
+impl Judged {
+    /// Whether `action` is a command whose programs cannot be read for certain while a rule
+    /// names a program: whether that rule applies is then the person's to say.
+    fn unsure(&self, action: &Action) -> bool {
+        let Action::Run { command, .. } = action else {
+            return false;
+        };
+        magi_proto::permit::ambiguous(command)
+            && self
+                .rules
+                .deny
+                .iter()
+                .chain(&self.rules.ask)
+                .any(|rule| rule.verb == "run" && matches!(rule.scope, Scope::Program { .. }))
     }
 }
 

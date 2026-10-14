@@ -223,6 +223,33 @@ fn a_file_the_next_session_runs_is_never_an_edit_auto_approves() {
 }
 
 #[test]
+fn a_command_a_deny_rule_cannot_read_for_certain_is_the_persons() {
+    let rules = Rules {
+        deny: vec![rule("run", "rm")],
+        ask: Vec::new(),
+    };
+    let person = Person::who(true);
+    let gate = gate(Mode::Auto, Some(true), &person, rules);
+    assert!(
+        !allowed(&gate.ask("shell", &run("sh -c 'rm -rf ~'"))),
+        "named through sh -c"
+    );
+    assert!(
+        !allowed(&gate.ask("shell", &run("\\rm -rf ~"))),
+        "named through a backslash"
+    );
+    assert_eq!(person.times(), 0, "refused outright, nobody asked");
+    assert!(gate.overrides(&run("\"$X\" -rf ~")));
+    assert!(allowed(&gate.ask("shell", &run("$(printf r)m -rf ~"))));
+    assert_eq!(
+        person.times(),
+        1,
+        "unsure goes to the person, not the second model"
+    );
+    assert!(!gate.overrides(&run("cargo test")));
+}
+
+#[test]
 fn edits_lets_a_write_into_the_project_through_and_nothing_else() {
     let person = Person::who(false);
     let gate = gate(Mode::Edits, None, &person, Rules::default());

@@ -126,27 +126,26 @@ impl Grant {
         if self.verb != action.verb() && !reads_under_write {
             return false;
         }
+        if matches!(action, Action::Network { host } if host.is_empty()) {
+            return false;
+        }
         match &self.scope {
             // Never stored: it was spent on the call that asked.
             Scope::Once => false,
             Scope::Anything => true,
             Scope::Exact => false,
-            // A host belongs here as well as a path. `offers` has always produced a
-            // `Directory` for `Action::Network` — a socket lives at a path, and "any socket
-            // under this directory" is the useful width — but this arm answered only about
-            // reads and writes, so every network grant ever made was inert and the person was
-            // asked again on the next connect.
+            // A host belongs here as well as a path: a socket lives at a path, and "any socket
+            // under this directory" is the useful width.
             Scope::Directory { path } => match action {
-                Action::Read { path: at }
-                | Action::Write { path: at }
-                | Action::Network { host: at } => under(at, path),
-                _ => false,
+                Action::Read { path: at } | Action::Write { path: at } => under(at, path),
+                Action::Network { host } => reaches(host, path),
+                Action::Run { .. } => false,
             },
             Scope::Program { program } => match action {
                 Action::Run {
                     program: p,
                     command,
-                } => p == program && !chains(command),
+                } => p == program && !chains(command) && !assigns(command),
                 _ => false,
             },
         }
@@ -164,16 +163,13 @@ impl Grant {
         }
         match (&self.scope, action) {
             (Scope::Anything, _) => true,
-            (Scope::Program { program }, Action::Run { command, .. }) => command
-                .split(|c: char| c.is_whitespace() || ";&|`$()<>".contains(c))
-                .map(|word| word.rsplit('/').next().unwrap_or(word))
-                .any(|word| word == program),
-            (
-                Scope::Directory { path },
-                Action::Read { path: at }
-                | Action::Write { path: at }
-                | Action::Network { host: at },
-            ) => under(at, path),
+            (Scope::Program { program }, Action::Run { command, .. }) => words(command)
+                .iter()
+                .any(|word| word.rsplit('/').next().unwrap_or(word) == program),
+            (Scope::Directory { path }, Action::Read { path: at } | Action::Write { path: at }) => {
+                under(at, path)
+            }
+            (Scope::Directory { path }, Action::Network { host }) => reaches(host, path),
             _ => false,
         }
     }
@@ -218,6 +214,46 @@ pub fn narrow(held: &[Grant], requested: &[Grant]) -> Vec<Grant> {
 #[must_use]
 pub fn chains(command: &str) -> bool {
     command.contains([';', '&', '|', '`', '$', '(', ')', '<', '>', '\n'])
+}
+
+/// Whether a command line begins by assigning a variable, `PATH=/tmp/x git …`: the program it
+/// names then runs with what the assignment changed, so no program grant covers it.
+#[must_use]
+pub fn assigns(command: &str) -> bool {
+    command.split_whitespace().next().is_some_and(|word| {
+        word.split_once('=').is_some_and(|(name, _)| {
+            name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+    })
+}
+
+/// The words of a command line as a shell would see the program names in them: split at
+/// whitespace and at what chains commands, with quotes and backslashes taken out of each, so
+/// `"rm"`, `\rm` and the payload of `sh -c 'rm …'` all read as `rm`.
+#[must_use]
+pub fn words(command: &str) -> Vec<String> {
+    command
+        .split(|c: char| c.is_whitespace() || ";&|`$()<>".contains(c))
+        .map(|word| word.chars().filter(|c| !"'\"\\".contains(*c)).collect())
+        .filter(|word: &String| !word.is_empty())
+        .collect()
+}
+
+/// Whether a command line names its programs in a way [`words`] cannot read for certain: a
+/// variable, a substitution, ANSI-C quoting, a glob, or an `eval`.
+#[must_use]
+pub fn ambiguous(command: &str) -> bool {
+    command.contains(['$', '`', '*', '?', '[', '{'])
+        || words(command)
+            .iter()
+            .any(|word| matches!(word.as_str(), "eval" | "exec" | "source" | "."))
+}
+
+/// Whether a network grant over `root` reaches `host`. Neither may be empty: an empty root is
+/// every host there is, and an empty host is nowhere anybody could be asked about.
+fn reaches(host: &str, root: &str) -> bool {
+    !host.is_empty() && !root.trim_end_matches('/').is_empty() && under(host, root)
 }
 
 /// Whether `path` is inside `root`.
@@ -289,6 +325,35 @@ mod handover {
         for command in ["ls", "echo warm", "firmware --update"] {
             assert!(!rule.names(&run(command)), "{command}");
         }
+    }
+
+    #[test]
+    fn a_rule_against_a_program_sees_through_quotes_backslashes_and_sh_c() {
+        let rule = program("rm");
+        let run = |command: &str| Action::Run {
+            command: command.into(),
+            program: command.split_whitespace().next().unwrap_or_default().into(),
+        };
+        for command in [
+            "\"rm\" -rf x",
+            "'rm' -rf x",
+            "\\rm -rf x",
+            "r''m -rf x",
+            "sh -c 'rm -rf ~'",
+            "bash -c \"true; rm -rf ~\"",
+            "zsh -c rm\\ -rf\\ x",
+        ] {
+            assert!(rule.names(&run(command)), "{command}");
+        }
+        for unsure in [
+            "$(echo rm) x",
+            "$'\\x72m' x",
+            "eval \"$X\"",
+            "/bin/r? -rf x",
+        ] {
+            assert!(ambiguous(unsure), "{unsure}");
+        }
+        assert!(!ambiguous("git status --short"));
     }
 
     #[test]
@@ -437,6 +502,29 @@ mod tests {
         assert!(!grant.covers(&Action::Network {
             host: "/run/user/1000/other/casper.sock".to_owned(),
         }));
+    }
+
+    #[test]
+    fn an_empty_host_or_root_never_meets_a_network_grant() {
+        let to = |host: &str| Action::Network {
+            host: host.to_owned(),
+        };
+        let over = |path: &str| Grant {
+            verb: "reach".to_owned(),
+            scope: Scope::Directory {
+                path: path.to_owned(),
+            },
+        };
+        assert!(!over("").covers(&to("example.com")), "an empty root");
+        assert!(!over("/").covers(&to("example.com")), "a root of nothing");
+        assert!(!over("example.com").covers(&to("")), "an empty host");
+        assert!(over("example.com").covers(&to("example.com")));
+        let anything = Grant {
+            verb: "reach".to_owned(),
+            scope: Scope::Anything,
+        };
+        assert!(!anything.covers(&to("")), "not even anything");
+        assert!(!over("").names(&to("example.com")));
     }
 
     #[test]
@@ -589,6 +677,25 @@ mod chaining_tests {
                 "a program grant must not cover: {hostile}"
             );
         }
+    }
+
+    #[test]
+    fn a_leading_assignment_is_no_program_a_grant_covers() {
+        for hostile in [
+            "PATH=/tmp/x git status",
+            "LD_PRELOAD=/tmp/evil.so git status",
+            "GIT_EXTERNAL_DIFF=/tmp/x git diff",
+        ] {
+            let action = Action::Run {
+                command: hostile.to_owned(),
+                program: "git".to_owned(),
+            };
+            assert!(!any_git().covers(&action), "{hostile}");
+        }
+        assert!(
+            any_git().covers(&run("git log --format=%H")),
+            "an `=` later on is fine"
+        );
     }
 
     #[test]
