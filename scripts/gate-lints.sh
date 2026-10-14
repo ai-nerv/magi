@@ -40,7 +40,7 @@ for denied in unsafe_code unused; do
     fail=1
   }
 done
-for denied in unwrap_used dbg_macro todo; do
+for denied in unwrap_used expect_used indexing_slicing dbg_macro todo; do
   code "$MANIFEST" | grep -q "^$denied *= *\"deny\"" || {
     echo "gate-lints: the workspace no longer denies \`clippy::$denied\`" >&2
     fail=1
