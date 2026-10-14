@@ -91,6 +91,7 @@ impl Client {
     async fn submit(&mut self, text: &str) {
         self.writer
             .write(&UiCommand::SubmitPrompt {
+                images: Vec::new(),
                 text: text.into(),
                 aside: String::new(),
             })
@@ -338,6 +339,7 @@ async fn an_amended_entry_is_not_announced_as_a_new_one() {
             name: "edit".into(),
             args: "{}".into(),
             result: Some(ToolResult {
+                images: Vec::new(),
                 output: "done".into(),
                 is_error: false,
                 shown: None,
@@ -689,6 +691,7 @@ async fn a_connection_without_the_key_watches_and_changes_nothing() {
             UiCommand::SubmitPrompt {
                 text: "do it".into(),
                 aside: String::new(),
+                images: Vec::new(),
             },
             UiCommand::SetMode {
                 mode: "auto".into(),
@@ -753,6 +756,7 @@ async fn a_screen_that_falls_behind_is_handed_the_whole_session_again() {
         let prompt = UiCommand::SubmitPrompt {
             text,
             aside: String::new(),
+            images: Vec::new(),
         };
         writer.write(&prompt).await.expect("submit");
     }

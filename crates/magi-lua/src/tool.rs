@@ -105,6 +105,10 @@ impl Tool for LuaTool {
         let answer = self.engine.borrow_mut().call_tool(&self.name, arguments);
         match answer {
             Some(value) => Output {
+                images: value
+                    .get("images")
+                    .and_then(|images| serde_json::from_value(images.clone()).ok())
+                    .unwrap_or_default(),
                 content: value
                     .get("content")
                     .and_then(|c| c.as_str())
@@ -149,7 +153,7 @@ pub fn assemble(
     // Nothing when the program is not installed, so a session then has no tools at all, which
     // `ROLES.md` says is legal.
     let mut supplied = std::collections::BTreeSet::new();
-    for tool in magi_tools::supplier::SuppliedTool::pinned(tooling, asker, holder, knows) {
+    for tool in magi_tools::supplier::SuppliedTool::pinned(tooling, asker, holder, knows, environ) {
         supplied.insert(tool.name().to_owned());
         registry.register(Box::new(tool));
     }
@@ -362,6 +366,44 @@ mod tests {
         );
         assert!(output.is_error);
         assert_eq!(output.content, "no such thing");
+    }
+
+    #[test]
+    fn a_lua_tool_may_answer_with_images_held_to_the_limits() {
+        let (registry, _) = built(
+            r#"
+            magi.tool("look", {
+              transport = { kind = "lua" },
+              run = function(args)
+                return { content = "a picture", images = { { data = args.data, media_type = "image/png" } } }
+              end,
+            })
+            "#,
+        );
+        let call = |data: &str| {
+            registry.call(
+                "look",
+                &serde_json::json!({ "data": data }),
+                &ops(),
+                &magi_tools::Uncancelled,
+            )
+        };
+        let shown = call("iVBORw0K");
+        assert!(!shown.is_error, "{}", shown.content);
+        assert_eq!(
+            shown.images,
+            [magi_model::Image {
+                data: "iVBORw0K".into(),
+                media_type: "image/png".into(),
+            }]
+        );
+        let broken = call("not base64!");
+        assert!(broken.is_error && broken.images.is_empty(), "{broken:?}");
+        assert!(
+            broken.content.contains("invalid base64"),
+            "{}",
+            broken.content
+        );
     }
 
     #[test]

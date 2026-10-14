@@ -86,6 +86,7 @@ fn backend(mind: &Mind, window: u64) -> Backend {
 
 fn user(id: &str, text: &str) -> Entry {
     Entry::User {
+        images: Vec::new(),
         id: MessageId::new(id),
         text: text.into(),
         aside: String::new(),
@@ -471,6 +472,7 @@ fn earlier_reads(held: &mut Session) {
             name: "read".into(),
             args: format!("{{\"path\":\"part{n}.txt\"}}"),
             result: Some(ToolResult {
+                images: Vec::new(),
                 output: output(n),
                 is_error: false,
                 shown: None,
@@ -513,6 +515,7 @@ async fn an_old_result_too_big_for_the_window_goes_as_its_stub() {
                 name: "read".into(),
                 args: format!("{{\"path\":\"part{n}.txt\"}}"),
                 result: Some(ToolResult {
+                    images: Vec::new(),
                     output: output(n),
                     is_error: false,
                     shown: None,

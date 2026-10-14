@@ -70,13 +70,26 @@ impl Built {
             | Entry::Compaction { .. }
             | Entry::Notice { .. }
             | Entry::Masked { .. } => {}
-            Entry::User { text, aside, .. } => {
+            Entry::User {
+                text,
+                aside,
+                images,
+                ..
+            } => {
                 // The aside goes with it, under a rule, so the model can tell it from the prompt.
                 self.user(if aside.is_empty() {
                     text.clone()
                 } else {
                     format!("{text}\n\n---\n{aside}")
                 });
+                if let Some(message) = self.messages.last_mut() {
+                    message
+                        .content
+                        .extend(images.iter().map(|image| Content::Image {
+                            data: image.data.clone(),
+                            media_type: image.media_type.clone(),
+                        }));
+                }
             }
             // Somebody addressed this session, so it is a user turn — but not the user. Named
             // rather than dropped: swallowing a message another agent sent is worth no tidiness.
@@ -149,6 +162,11 @@ impl Built {
                     self.messages.push(Message {
                         role: Role::Tool,
                         content: vec![Content::ToolResult {
+                            images: if stub.is_some() {
+                                Vec::new()
+                            } else {
+                                result.images.clone()
+                            },
                             id: id.to_string(),
                             name: name.clone(),
                             content,
@@ -233,6 +251,7 @@ fn repair(messages: Vec<Message>) -> Vec<Message> {
                 role: Role::Tool,
                 content: vec![Content::ToolResult {
                     id,
+                    images: Vec::new(),
                     name,
                     content: NEVER_ANSWERED.to_owned(),
                     is_error: true,
@@ -316,6 +335,10 @@ pub fn last_asked(session: &Session) -> Option<String> {
 }
 
 #[cfg(test)]
+#[path = "context/images.rs"]
+mod images;
+
+#[cfg(test)]
 mod context_tests {
     use super::*;
     use magi_journal::JournalError;
@@ -331,6 +354,7 @@ mod context_tests {
     /// One tool-using round, exactly as the turn loop journals it.
     fn tool_round(session: &mut Session) -> Result<(), JournalError> {
         session.commit(Entry::User {
+            images: Vec::new(),
             id: MessageId::new("u1"),
             text: "read the file".into(),
             aside: String::new(),
@@ -352,6 +376,7 @@ mod context_tests {
             name: "read".into(),
             args: r#"{"path":"a.rs"}"#.into(),
             result: Some(ToolResult {
+                images: Vec::new(),
                 output: "contents".into(),
                 is_error: false,
                 shown: None,
@@ -472,6 +497,7 @@ mod context_tests {
                 name: "read".into(),
                 args: "{}".into(),
                 result: Some(ToolResult {
+                    images: Vec::new(),
                     output: "x".into(),
                     is_error: false,
                     shown: None,
@@ -525,6 +551,7 @@ mod branch_tests {
     fn exchange(session: &mut Session, n: usize) {
         session
             .commit(Entry::User {
+                images: Vec::new(),
                 id: MessageId::new(format!("u{n}")),
                 text: format!("question {n}"),
                 aside: String::new(),

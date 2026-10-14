@@ -79,6 +79,7 @@ async fn ask(socket: &Path, prompt: String, aside: String) -> Result<()> {
     }
     writer
         .write(&UiCommand::SubmitPrompt {
+            images: Vec::new(),
             text: prompt,
             aside,
         })

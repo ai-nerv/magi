@@ -32,6 +32,8 @@ use serde::{Deserialize, Serialize};
 /// they are not the same content, and a tool with nothing to add leaves the second empty.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Output {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<magi_model::Image>,
     pub content: String,
     /// Whether the tool failed. A tool that ran and reported a problem is still a result, not an
     /// error: the model needs to read what went wrong in order to do something about it.

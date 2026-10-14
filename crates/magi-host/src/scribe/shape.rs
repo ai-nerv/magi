@@ -99,6 +99,7 @@ fn cut_short(row: &serde_json::Value) -> Result<(Cursor, Entry), Fault> {
             id: MessageId::new(id),
             text,
             aside: String::new(),
+            images: Vec::new(),
         },
         ("assistant", Some("prose" | "thinking")) => Entry::Assistant {
             id: MessageId::new(id),
@@ -118,6 +119,7 @@ fn cut_short(row: &serde_json::Value) -> Result<(Cursor, Entry), Fault> {
                 is_error: row.get("error").and_then(serde_json::Value::as_bool) == Some(true)
                     || row.get("ok").and_then(serde_json::Value::as_bool) == Some(false),
                 shown: None,
+                images: Vec::new(),
             }),
             thought_signature: None,
         },
@@ -267,11 +269,22 @@ fn cut_note(gone: usize) -> String {
 pub(crate) fn tokens(entry: &Entry) -> u64 {
     use magi_model::estimate::tokens as of;
     match entry {
-        Entry::User { text, aside, .. } => of(text) + of(aside),
+        Entry::User {
+            text,
+            aside,
+            images,
+            ..
+        } => of(text) + of(aside) + images.len() as u64 * magi_model::estimate::IMAGE_TOKENS,
         Entry::Assistant { text, thinking, .. } => of(text) + of(thinking),
         Entry::Tool {
             name, args, result, ..
-        } => of(name) + of(args) + result.as_ref().map_or(0, |r| of(&r.output)),
+        } => {
+            of(name)
+                + of(args)
+                + result.as_ref().map_or(0, |r| {
+                    of(&r.output) + r.images.len() as u64 * magi_model::estimate::IMAGE_TOKENS
+                })
+        }
         other => of(&text(other)),
     }
 }

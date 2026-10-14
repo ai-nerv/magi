@@ -38,6 +38,10 @@ async fn an_entry_survives_the_round_trip_unaltered() {
         return;
     };
     let entry = Entry::User {
+        images: vec![magi_model::Image {
+            data: "saved-image".into(),
+            media_type: "image/png".into(),
+        }],
         id: MessageId::new("u1"),
         text: "what did we decide".into(),
         aside: "context nobody is shown".into(),
@@ -92,6 +96,10 @@ async fn a_tool_signature_is_not_flattened_into_the_projection() {
         name: "shell".into(),
         args: "{\"command\":\"ls\"}".into(),
         result: Some(ToolResult {
+            images: vec![magi_model::Image {
+                data: "saved-tool-image".into(),
+                media_type: "image/png".into(),
+            }],
             output: "a\nb\n".into(),
             is_error: false,
             shown: None,
@@ -149,6 +157,7 @@ async fn cursor_order_is_what_comes_back_not_arrival_order() {
         return;
     };
     let at = |n: u64| Entry::User {
+        images: Vec::new(),
         id: MessageId::new(format!("u{n}")),
         text: format!("message {n}"),
         aside: String::new(),
@@ -190,6 +199,7 @@ async fn what_a_session_commits_reaches_balthasar_when_it_is_flushed() {
     {
         let mut held = session.lock().await;
         held.commit(Entry::User {
+            images: Vec::new(),
             id: MessageId::new("u1"),
             text: "asked".into(),
             aside: String::new(),
@@ -261,6 +271,7 @@ async fn agents_of_one_run_do_not_overwrite_each_others_transcript() {
     let mut child = Scribe::over(family, Some(held.0.socket().to_owned()), &id)
         .recording_as(format!("{id}@child"));
     let said = |text: &str| Entry::User {
+        images: Vec::new(),
         id: MessageId::new("u1"),
         text: text.into(),
         aside: String::new(),
@@ -296,6 +307,7 @@ async fn a_9_and_a_15_mib_observe_keep_the_connection_and_what_follows() {
         id: MessageId::new("u"),
         text,
         aside: String::new(),
+        images: Vec::new(),
     };
     for (cursor, size) in [(1, 0), (2, 9 << 20), (3, 15 << 20), (4, 0)] {
         let text = format!("{cursor}:{}", "x".repeat(size));
@@ -340,6 +352,7 @@ async fn a_run_past_one_frame_comes_back_whole() {
     };
     for n in 1..=12 {
         let entry = Entry::User {
+            images: Vec::new(),
             id: MessageId::new(format!("u{n}")),
             text: "x".repeat(1_000_000),
             aside: String::new(),

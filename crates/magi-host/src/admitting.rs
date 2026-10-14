@@ -138,8 +138,7 @@ pub fn counted(context: &Context) -> u64 {
         .map_or(0, magi_model::estimate::tokens);
     let tools = serde_json::to_string(&context.tools)
         .map_or(0, |tools| magi_model::estimate::tokens(&tools));
-    let body = serde_json::to_string(&context.messages)
-        .map_or(0, |body| magi_model::estimate::tokens(&body));
+    let body = magi_model::estimate::messages(&context.messages);
     system.saturating_add(tools).saturating_add(body)
 }
 

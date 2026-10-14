@@ -48,6 +48,7 @@ mod tests {
         let record = Record::Entry {
             cursor: Cursor(3),
             entry: Entry::User {
+                images: Vec::new(),
                 id: MessageId::new("m1"),
                 text: "hi".into(),
                 aside: String::new(),
@@ -65,6 +66,7 @@ mod tests {
         let record = Record::Entry {
             cursor: Cursor(1),
             entry: Entry::User {
+                images: Vec::new(),
                 id: MessageId::new("m1"),
                 text: "two\nlines".into(),
                 aside: String::new(),

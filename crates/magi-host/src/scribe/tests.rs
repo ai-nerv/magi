@@ -50,6 +50,7 @@ fn read(output: &str, failed: bool) -> Entry {
         name: "read".into(),
         args: "{}".into(),
         result: Some(ToolResult {
+            images: Vec::new(),
             output: output.into(),
             is_error: failed,
             shown: None,
@@ -61,6 +62,7 @@ fn read(output: &str, failed: bool) -> Entry {
 #[test]
 fn every_variant_gets_a_kind_of_its_own_where_it_needs_one() {
     let user = Entry::User {
+        images: Vec::new(),
         id: MessageId::new("u1"),
         text: "hi".into(),
         aside: String::new(),
@@ -88,6 +90,7 @@ fn a_tool_changes_kind_when_its_result_lands() {
     assert_eq!(kind(&call), "tool_call");
     if let Entry::Tool { result, .. } = &mut call {
         *result = Some(ToolResult {
+            images: Vec::new(),
             output: "done".into(),
             is_error: false,
             shown: None,
@@ -221,6 +224,7 @@ fn a_tool_belongs_to_the_message_that_called_it() {
         crate::session::Session::recorded(magi_proto::SessionId::new("s"), Vec::new());
     session
         .commit(Entry::User {
+            images: Vec::new(),
             id: MessageId::new("u1"),
             text: "go".into(),
             aside: String::new(),

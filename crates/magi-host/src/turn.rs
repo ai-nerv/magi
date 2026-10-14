@@ -48,8 +48,8 @@ async fn one_turn(
     let outcome = {
         // Raced against the interrupt rather than polled after it: a model mid-answer holds this
         // future for as long as it keeps talking, and a flag checked on return stops nothing.
-        let streaming = crate::broker::ask_through(
-            &backend.mind,
+        let streaming = crate::broker::ask_using(
+            (&backend.mind, &backend.environ),
             &backend.model,
             &context,
             &backend.wants,
@@ -397,11 +397,10 @@ pub async fn run(
             crate::catalog::reserved(backend.wants.max_tokens, backend.max_output),
         );
         if admission.admitted() {
-            let _ = session
+            session
                 .lock()
                 .await
-                .publisher()
-                .send(crate::admitting::reported(admission, "admitted"));
+                .report_admission(crate::admitting::reported(admission, "admitted"));
         } else {
             magi_model::noted!(
                 "turn: this request does not fit: {admission:?} ({}, enforcing={})",
@@ -420,11 +419,10 @@ pub async fn run(
                         crate::laying::refit(session, scribe, &mut prompt, &said).await
                     {
                         replans += 1;
-                        let _ = session
+                        session
                             .lock()
                             .await
-                            .publisher()
-                            .send(crate::admitting::reported(admission, "replanned"));
+                            .report_admission(crate::admitting::reported(admission, "replanned"));
                         tighter = Some(context);
                         continue;
                     }
@@ -434,11 +432,10 @@ pub async fn run(
                 } else {
                     "refused"
                 };
-                let _ = session
+                session
                     .lock()
                     .await
-                    .publisher()
-                    .send(crate::admitting::reported(admission, outcome));
+                    .report_admission(crate::admitting::reported(admission, outcome));
                 return Err(crate::HostError::Refused(crate::admitting::refusal(
                     admission,
                 )));
@@ -511,6 +508,7 @@ pub async fn run(
                     // No description emits one yet; the journal must hold what the model layer does.
                     thought_signature: None,
                     result: Some(magi_proto::ToolResult {
+                        images: Vec::new(),
                         output: "The response was truncated before this call was complete. \
                                  Re-issue it with complete arguments."
                             .to_owned(),
@@ -598,6 +596,7 @@ pub async fn run(
                     args: call.arguments.clone(),
                     thought_signature: None,
                     result: Some(magi_proto::ToolResult {
+                        images: output.images,
                         output: output.content,
                         is_error: output.is_error,
                         // The other face, carried into the transcript so the renderer can draw what

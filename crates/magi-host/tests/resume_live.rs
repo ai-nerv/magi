@@ -11,6 +11,7 @@ use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
 fn user(id: &str, text: &str) -> Entry {
     Entry::User {
+        images: Vec::new(),
         id: MessageId::new(id),
         text: text.into(),
         aside: String::new(),
@@ -233,6 +234,7 @@ async fn resume_binding(name: &str, target: &str, cursors: [u64; 2], identity: b
     }
     writer
         .write(&UiCommand::SubmitPrompt {
+            images: Vec::new(),
             text: "new B prompt".into(),
             aside: String::new(),
         })

@@ -176,9 +176,48 @@ fn expire(dir: &std::path::Path) {
     }
 }
 
+/// Hold a result's images to the limits a message's are: past them they are all dropped, and the
+/// result fails and says why.
+#[must_use]
+pub fn attachments(mut output: crate::Output) -> crate::Output {
+    if let Err(why) = magi_model::validate_images(&output.images) {
+        output.images.clear();
+        output.is_error = true;
+        output
+            .content
+            .push_str(&format!("\n[Image attachments omitted: {why}]"));
+    }
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn images_past_the_limits_are_dropped_and_the_result_says_why() {
+        let image = magi_model::Image {
+            data: "iVBORw0K".into(),
+            media_type: "image/png".into(),
+        };
+        let with = |images: Vec<magi_model::Image>| crate::Output {
+            images,
+            content: "seen".into(),
+            ..crate::Output::default()
+        };
+        let kept = attachments(with(vec![image.clone()]));
+        assert_eq!((kept.images.len(), kept.is_error), (1, false));
+        assert_eq!(kept.content, "seen");
+        let dropped = attachments(with(std::iter::repeat_n(image, 5).collect()));
+        assert!(dropped.images.is_empty() && dropped.is_error);
+        assert!(
+            dropped
+                .content
+                .starts_with("seen\n[Image attachments omitted: At most four"),
+            "{}",
+            dropped.content
+        );
+    }
 
     /// The session these tests spill for. Only its name is used.
     const ROOT: &str = "/magi-bound-tests";

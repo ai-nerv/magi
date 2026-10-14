@@ -93,6 +93,7 @@ async fn configured(name: &str, mind: &Mind, broken: bool) -> Fixture {
 async fn prompt(writer: &mut Writer, text: &str) {
     writer
         .write(&UiCommand::SubmitPrompt {
+            images: Vec::new(),
             text: text.into(),
             aside: String::new(),
         })
@@ -165,6 +166,7 @@ async fn two_clients_keep_each_prompt_and_answer_in_order() {
     let (mut second, mut send_second) = attach(&path, Cursor(0)).await;
     send_first
         .write(&UiCommand::SubmitPrompt {
+            images: Vec::new(),
             text: "first prompt".into(),
             aside: String::new(),
         })
@@ -177,6 +179,7 @@ async fn two_clients_keep_each_prompt_and_answer_in_order() {
     .await;
     send_second
         .write(&UiCommand::SubmitPrompt {
+            images: Vec::new(),
             text: "second prompt".into(),
             aside: String::new(),
         })

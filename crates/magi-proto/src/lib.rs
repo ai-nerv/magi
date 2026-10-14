@@ -21,6 +21,7 @@ pub mod ask;
 mod ids;
 pub mod judging;
 pub mod laying;
+pub mod monitoring;
 pub mod permit;
 pub mod setup;
 pub mod surfacing;
@@ -58,9 +59,17 @@ pub use magi_model::Usage;
 /// One model a session could switch to, carrying why it cannot be used when it cannot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelChoice {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub vision: bool,
     pub name: String,
     pub context_window: u64,
     pub requirement: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pricing: Option<ask::Pricing>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub popularity_rank: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<magi_model::Capabilities>,
     /// Environment variables that would make it ready. Checked by the UI against its own
     /// environment: a daemon outlives the shell that started it and never sees a later export.
     #[serde(default)]
@@ -162,6 +171,8 @@ impl ErrorClass {
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum Entry {
     User {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<magi_model::Image>,
         id: MessageId,
         text: String,
         /// Context the model is given with this prompt. Journalled, and rendered nowhere.
@@ -263,6 +274,8 @@ pub enum HarnessEvent {
         judging: crate::judging::Judging,
     },
     UserMessage {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<magi_model::Image>,
         cursor: Cursor,
         id: MessageId,
         text: String,
@@ -503,7 +516,7 @@ impl HarnessEvent {
 /// UI → daemon: the closed list of what a client may ask of a session.
 #[path = "commanding.rs"]
 mod commanding;
-pub use commanding::UiCommand;
+pub use commanding::{Environment, UiCommand};
 
 /// A framed message in either direction; the version rides every frame.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

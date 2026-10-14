@@ -27,6 +27,7 @@ fn targeted_updates_preserve_later_entries_and_refuse_wrong_identity() {
     let mut s = session();
     let cursor = s.commit(assistant("partial")).expect("valid entry");
     let user = Entry::User {
+        images: Vec::new(),
         id: MessageId::new("u2"),
         text: "later".into(),
         aside: String::new(),

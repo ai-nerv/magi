@@ -41,6 +41,7 @@ mod repair_tests {
             name: "read".into(),
             args: r#"{"path":"a.rs"}"#.into(),
             result: answered.then(|| ToolResult {
+                images: Vec::new(),
                 output: "contents".into(),
                 is_error: false,
                 shown: None,
@@ -84,6 +85,7 @@ mod repair_tests {
         let (mut session, _dir) = session("unanswered");
         session
             .commit(Entry::User {
+                images: Vec::new(),
                 id: MessageId::new("u1"),
                 text: "read it".into(),
                 aside: String::new(),
@@ -140,6 +142,7 @@ mod repair_tests {
         let (mut session, _dir) = session("orphan");
         session
             .commit(Entry::User {
+                images: Vec::new(),
                 id: MessageId::new("u1"),
                 text: "read it".into(),
                 aside: String::new(),

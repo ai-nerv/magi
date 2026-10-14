@@ -223,6 +223,7 @@ impl Turn {
             .map(|call| Message {
                 role: Role::Tool,
                 content: vec![Content::ToolResult {
+                    images: Vec::new(),
                     id: call.id.clone(),
                     name: call.name.clone(),
                     content: "The response was truncated before this call was complete. \

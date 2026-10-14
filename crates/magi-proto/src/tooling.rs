@@ -36,6 +36,8 @@ pub struct Call {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Ran {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<magi_model::Image>,
     /// What the model reads. Empty for a tool that has not finished: sending the model an
     /// empty result would end the call it is still in.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -73,6 +75,8 @@ impl Hints {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolResult {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<magi_model::Image>,
     pub output: String,
     pub is_error: bool,
     /// What the person sees, when a tool said more than the text. Optional on the wire as well as

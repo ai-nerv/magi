@@ -10,6 +10,7 @@ fn tool(id: &str, text: &str) -> Entry {
         name: "read".into(),
         args: "{}".into(),
         result: Some(ToolResult {
+            images: Vec::new(),
             output: text.into(),
             is_error: false,
             shown: None,

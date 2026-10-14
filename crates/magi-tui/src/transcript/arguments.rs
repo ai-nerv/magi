@@ -32,6 +32,7 @@ fn the_opened_block_actually_carries_it() {
         name: "shell".into(),
         args: args(),
         result: Some(magi_proto::ToolResult {
+            images: Vec::new(),
             output: "done".into(),
             is_error: false,
             shown: None,

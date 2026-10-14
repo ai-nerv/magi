@@ -11,6 +11,7 @@ mod spacing {
 
     fn user(text: &str) -> Entry {
         Entry::User {
+            images: Vec::new(),
             id: MessageId::new(text),
             text: text.into(),
             aside: String::new(),
@@ -23,6 +24,7 @@ mod spacing {
             name: "shell".into(),
             args: r#"{"command":"ls"}"#.into(),
             result: Some(ToolResult {
+                images: Vec::new(),
                 output: "out".into(),
                 is_error: false,
                 shown: None,

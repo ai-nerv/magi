@@ -58,7 +58,7 @@ pub enum Sending {
     /// This tool has nothing to overlap; call [`Tool::run`].
     Inline,
     /// It never went out, and this is why.
-    Refused(Output),
+    Refused(Box<Output>),
 }
 
 /// Every tool the session can reach, keyed by name, so a later declaration replaces an earlier one
@@ -180,9 +180,10 @@ impl Registry {
                         ));
                     }
                 };
-                let output = tool.run(&arguments, ops, cancel);
+                let output = crate::bound::attachments(tool.run(&arguments, ops, cancel));
                 self.finished(name, &arguments, &output);
                 Output {
+                    images: output.images,
                     // Masked before it is capped, so a credential cannot survive by being in the
                     // half that got cut, and before anything sees it.
                     content: crate::bound::apply(
@@ -253,7 +254,7 @@ impl Registry {
         let state = match tool.send(&checked, ops) {
             Sending::Sent => State::Sent(checked),
             Sending::Inline => State::Inline(checked),
-            Sending::Refused(output) => State::Answered(output),
+            Sending::Refused(output) => State::Answered(*output),
         };
         Prepared {
             name: name.to_owned(),
@@ -286,8 +287,10 @@ impl Registry {
                 None => Output::error(format!("{name} is gone")),
             },
         };
+        let output = crate::bound::attachments(output);
         self.finished(&name, &ran, &output);
         Output {
+            images: output.images,
             content: crate::bound::apply(&name, crate::masking::apply(output.content), &ops.cwd()),
             is_error: output.is_error,
             shown: crate::masking::painted(output.shown),

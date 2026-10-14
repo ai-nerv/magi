@@ -60,12 +60,14 @@ async fn a_screen_that_never_reads_is_let_go_and_holds_nobody_up() {
         let prompt = UiCommand::SubmitPrompt {
             text,
             aside: String::new(),
+            images: Vec::new(),
         };
         writer.write(&prompt).await.expect("submit");
     }
     let last = UiCommand::SubmitPrompt {
         text: "last".into(),
         aside: String::new(),
+        images: Vec::new(),
     };
     writer.write(&last).await.expect("submit");
 

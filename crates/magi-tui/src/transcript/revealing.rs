@@ -10,6 +10,7 @@ fn rows(detail: Detail, width: u16) -> Vec<String> {
         "shell",
         r#"{"command":"grep -rn 'a pattern long enough to need cutting' crates/"}"#,
         Some(&magi_proto::ToolResult {
+            images: Vec::new(),
             output: format!("{LONG}\nshort\n{LONG}"),
             is_error: false,
             shown: None,

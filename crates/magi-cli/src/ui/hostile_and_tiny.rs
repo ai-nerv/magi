@@ -82,6 +82,7 @@ fn no_rows_or_one_while_scrolled_draws_and_does_not_panic() {
                 cursor: Cursor(n + 1),
                 id: MessageId::new(format!("u{n}")),
                 text: format!("question number {n}"),
+                images: Vec::new(),
             });
         }
         let mut terminal = drawn(&mut app, 60, 16);

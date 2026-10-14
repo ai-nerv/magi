@@ -69,6 +69,7 @@ impl Drop for Peer {
 
 fn user(text: &str) -> Entry {
     Entry::User {
+        images: Vec::new(),
         id: MessageId::new(text),
         text: text.into(),
         aside: String::new(),

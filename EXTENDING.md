@@ -133,6 +133,10 @@ magi.tool("name", {
 })
 ```
 
+A result may also carry `images = { { data = "<base64>", media_type = "image/png" } }`: at most
+four, each PNG, JPEG, GIF, WebP or BMP and at most 128 KiB before encoding. A result that breaks
+those limits loses its images and is marked failed, with the reason appended to its content.
+
 `transport` is not optional and there is no default: a tool with a `run` and no transport is
 refused at load with "missing field `transport`", because the registry has no way to guess that
 the function is the point. The other kinds are declarations rather than code — `command` spawns

@@ -28,6 +28,7 @@ fn called(id: &str, output: &str) -> Entry {
         name: "shell".to_owned(),
         args: r#"{"command":"cargo test"}"#.to_owned(),
         result: Some(ToolResult {
+            images: Vec::new(),
             output: output.to_owned(),
             is_error: false,
             shown: None,

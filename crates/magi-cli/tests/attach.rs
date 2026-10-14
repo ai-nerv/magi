@@ -162,7 +162,10 @@ fn fold(mut entries: Vec<Entry>, events: &[HarnessEvent]) -> Vec<Entry> {
             | HarnessEvent::Drew { .. }
             | HarnessEvent::Unsurfaced { .. }
             | HarnessEvent::Granted { .. } => {}
-            HarnessEvent::UserMessage { id, text, .. } => entries.push(Entry::User {
+            HarnessEvent::UserMessage {
+                id, text, images, ..
+            } => entries.push(Entry::User {
+                images,
                 id,
                 text,
                 aside: String::new(),

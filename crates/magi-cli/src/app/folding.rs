@@ -93,6 +93,7 @@ mod clicking {
             name: "shell".to_owned(),
             args: r#"{"command":"ls"}"#.to_owned(),
             result: Some(magi_proto::ToolResult {
+                images: Vec::new(),
                 output: (0..40)
                     .map(|n| format!("line {n}"))
                     .collect::<Vec<_>>()
@@ -243,6 +244,7 @@ mod clicking {
     fn a_click_on_something_that_is_not_a_tool_call_does_nothing() {
         let mut app = App::new();
         app.entries = vec![Entry::User {
+            images: Vec::new(),
             id: MessageId::new("u1".to_owned()),
             text: "a question".to_owned(),
             aside: String::new(),

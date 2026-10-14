@@ -14,6 +14,56 @@ pub use usage::{Cost, Usage};
 
 use serde::{Deserialize, Serialize};
 
+/// Provider-advertised modalities and native thinking levels.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Capabilities {
+    #[serde(default)]
+    pub input: Vec<String>,
+    #[serde(default)]
+    pub output: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<Vec<String>>,
+}
+
+/// One inline raster image, base64 encoded.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Image {
+    pub data: String,
+    pub media_type: String,
+}
+
+/// Whether `images` fit one message: at most four, each a known raster type, at most 128 KiB
+/// before encoding and valid base64.
+///
+/// # Errors
+/// The first limit broken, said for the person.
+pub fn validate_images(images: &[Image]) -> Result<(), String> {
+    if images.len() > 4 {
+        return Err("At most four image attachments per message.".into());
+    }
+    for image in images {
+        if !matches!(
+            image.media_type.as_str(),
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/bmp"
+        ) {
+            return Err("Unsupported image media type.".into());
+        }
+        if image.data.is_empty() || image.data.len() > (128usize * 1024).div_ceil(3) * 4 {
+            return Err("Image attachment is empty or exceeds the 128 KiB inline limit. Resize it with Casper.".into());
+        }
+        let data = image.data.trim_end_matches('=');
+        if !image.data.len().is_multiple_of(4)
+            || image.data.len() - data.len() > 2
+            || !data
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/')
+        {
+            return Err("Image attachment has invalid base64.".into());
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
@@ -68,6 +118,8 @@ pub enum Content {
         thought_signature: Option<String>,
     },
     ToolResult {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<Image>,
         id: String,
         /// Tool name. Some dialects require it on the result as well as the call.
         name: String,
@@ -173,6 +225,35 @@ pub struct Context {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn images_are_at_most_four_known_rasters_of_bounded_valid_base64() {
+        let image = |data: &str, media_type: &str| Image {
+            data: data.into(),
+            media_type: media_type.into(),
+        };
+        let png = image("iVBORw0K", "image/png");
+        let many = |n| std::iter::repeat_n(png.clone(), n).collect::<Vec<_>>();
+        assert_eq!(validate_images(&[]), Ok(()));
+        assert_eq!(validate_images(&many(4)), Ok(()));
+        assert!(validate_images(&many(5)).is_err());
+        for (data, media_type) in [
+            ("iVBORw0K", "image/svg+xml"),
+            ("", "image/png"),
+            ("iVBORw0", "image/png"),
+            ("iVBO!w0K", "image/png"),
+            ("iV======", "image/png"),
+        ] {
+            assert!(
+                validate_images(&[image(data, media_type)]).is_err(),
+                "{data:?} {media_type}"
+            );
+        }
+        let largest = "A".repeat((128usize * 1024).div_ceil(3) * 4);
+        assert_eq!(validate_images(&[image(&largest, "image/jpeg")]), Ok(()));
+        let larger = format!("{largest}AAAA");
+        assert!(validate_images(&[image(&larger, "image/jpeg")]).is_err());
+    }
 
     #[test]
     fn a_user_message_carries_its_text() {

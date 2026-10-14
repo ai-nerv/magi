@@ -124,6 +124,7 @@ mod tests {
         let mut reader = FrameReader::new(server);
 
         let sent = UiCommand::SubmitPrompt {
+            images: Vec::new(),
             aside: String::new(),
             text: "hello".into(),
         };

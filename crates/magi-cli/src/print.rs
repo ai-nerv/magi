@@ -73,8 +73,12 @@ mod reporting {
     }
 }
 
-/// Submit one prompt and collect the answer.
-pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
+/// Submit one prompt, its images read through `images`, and collect the answer.
+pub async fn run(
+    socket: &Path,
+    prompt: String,
+    images: &crate::attachments::Reader,
+) -> Result<Outcome> {
     let stream = magi_ipc::connect(socket).await?;
     let (read_half, write_half) = stream.into_split();
     let mut reader = FrameReader::new(read_half);
@@ -98,10 +102,17 @@ pub async fn run(socket: &Path, prompt: String) -> Result<Outcome> {
         anyhow::bail!("the session did not open with a snapshot");
     }
     writer
-        .write(&UiCommand::SubmitPrompt {
-            text: prompt,
-            aside: String::new(),
-        })
+        .write(
+            &crate::attachments::prepare(
+                UiCommand::SubmitPrompt {
+                    images: Vec::new(),
+                    text: prompt,
+                    aside: String::new(),
+                },
+                images,
+            )
+            .await?,
+        )
         .await?;
 
     let mut text = String::new();

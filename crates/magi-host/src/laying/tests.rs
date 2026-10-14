@@ -9,6 +9,7 @@ fn recorded(entries: &[Entry]) -> Session {
 
 fn user(text: &str) -> Entry {
     Entry::User {
+        images: Vec::new(),
         id: MessageId::new(text),
         text: text.into(),
         aside: String::new(),
@@ -33,6 +34,7 @@ fn tool(id: &str, output: &str) -> Entry {
         name: "read".into(),
         args: "{}".into(),
         result: Some(ToolResult {
+            images: Vec::new(),
             output: output.into(),
             is_error: false,
             shown: None,
@@ -542,12 +544,16 @@ mod mem_accounting_capability_negotiation {
     fn backend() -> crate::catalog::Backend {
         let mut held = crate::catalog::Catalog::empty();
         held.cards = vec![magi_proto::ask::Card {
+            vision: false,
             id: "local/a".to_owned(),
             provider: "local".to_owned(),
             name: "a".to_owned(),
             api: "openai-completions".to_owned(),
             context_window: Some(32_000),
             max_output: Some(4_096),
+            pricing: None,
+            popularity_rank: None,
+            capabilities: None,
             reasons: false,
             ready: true,
             needs: None,
