@@ -58,6 +58,11 @@
             stripAllList = [ "bin" ];
 
             doCheck = false;
+            # Source paths baked into the binary name /build, wherever the build ran.
+            preBuild = ''
+              export RUSTFLAGS="''${RUSTFLAGS:-} --remap-path-prefix=$NIX_BUILD_TOP=/build"
+              export NIX_CFLAGS_COMPILE="''${NIX_CFLAGS_COMPILE:-} -ffile-prefix-map=$NIX_BUILD_TOP=/build"
+            '';
             postInstall = ''
               mkdir -p "$out/share/magi"
               cp -r config "$out/share/magi/"

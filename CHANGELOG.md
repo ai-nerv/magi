@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.7.1] - 2026-10-14
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Reproducible across build dirs
+
 ## [0.7.0] - 2026-10-14
 
 ### <!-- 0 -->⛰️  Features
