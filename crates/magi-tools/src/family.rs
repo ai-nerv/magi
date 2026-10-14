@@ -29,6 +29,51 @@ fn safe_runtime(said: Option<PathBuf>) -> Option<PathBuf> {
     (meta.is_dir() && meta.uid() == uid() && meta.mode() & 0o077 == 0).then_some(dir)
 }
 
+/// Where `program` keeps what is private to this user at run time: `<runtime>/<program>`, else
+/// `<tmp>/<program>-<uid>`.
+#[must_use]
+pub fn own_dir(program: &str) -> PathBuf {
+    runtime_dir().map_or_else(
+        || std::env::temp_dir().join(format!("{program}-{}", uid())),
+        |runtime| runtime.join(program),
+    )
+}
+
+/// Make `dir`, mode 0700 when it is new, and check what is there: a directory and not a link,
+/// owned by this uid, closed to group and other. Anything else is refused by name.
+///
+/// # Errors
+/// When it cannot be made, or what is there fails the check.
+pub fn private_dir(dir: &Path) -> std::io::Result<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Err(why) if why.kind() != std::io::ErrorKind::AlreadyExists => return Err(why),
+        _ => {}
+    }
+    let meta = std::fs::symlink_metadata(dir)?;
+    if !meta.is_dir() || meta.uid() != uid() || meta.mode() & 0o077 != 0 {
+        return Err(std::io::Error::other(format!(
+            "{} is not a directory private to this user",
+            dir.display()
+        )));
+    }
+    Ok(dir.to_owned())
+}
+
+/// Create `path` new, mode 0600, never through a link.
+///
+/// # Errors
+/// When it exists already or cannot be made.
+pub fn private_file(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+        .open(path)
+}
+
 /// Every directory a family program may bind in: `<runtime>/<program>` and
 /// `<tmp>/<program>-<uid>`, canonicalised where they exist.
 #[must_use]
@@ -173,6 +218,33 @@ mod tests {
         let link = root.join("link.sock");
         std::os::unix::fs::symlink(&stranger, &link).expect("symlink");
         assert!(family_socket_under(&link, &roots).is_none(), "a symlink");
+    }
+
+    #[test]
+    fn a_private_directory_is_made_closed_and_one_that_is_open_is_refused() {
+        let dir = Scratch::new("magi-fam", "private");
+        let made = private_dir(&dir.join("mine")).expect("made");
+        let mode = std::fs::metadata(&made)
+            .expect("there")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700);
+        std::fs::create_dir(dir.join("open")).expect("mkdir");
+        std::fs::set_permissions(dir.join("open"), std::fs::Permissions::from_mode(0o777))
+            .expect("chmod");
+        let why = private_dir(&dir.join("open")).expect_err("refused");
+        assert!(why.to_string().contains("open"), "{why}");
+        std::os::unix::fs::symlink(&made, dir.join("link")).expect("symlink");
+        assert!(private_dir(&dir.join("link")).is_err(), "a link to one");
+
+        let file = made.join("f");
+        drop(private_file(&file).expect("new"));
+        let mode = std::fs::metadata(&file)
+            .expect("there")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        assert!(private_file(&file).is_err(), "never opened twice");
     }
 
     #[test]

@@ -125,8 +125,9 @@ fn spill(tool: &str, content: &str) -> Option<PathBuf> {
     // Per user. The temporary directory is shared: a fixed name there belongs to whoever created it
     // first, and every later user either fails to write or writes into a directory somebody owns.
     let uid = rustix::process::getuid().as_raw();
-    let dir = std::env::temp_dir().join(format!("magi-output-{uid}"));
-    std::fs::create_dir_all(&dir).ok()?;
+    let dir = crate::family::private_dir(&std::env::temp_dir().join(format!("magi-output-{uid}")))
+        .map_err(|why| magi_model::noted!("spill: {why}"))
+        .ok()?;
     expire(&dir);
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -136,7 +137,7 @@ fn spill(tool: &str, content: &str) -> Option<PathBuf> {
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
         .collect();
     let path = dir.join(format!("{safe}-{stamp}.txt"));
-    let mut file = std::fs::File::create(&path).ok()?;
+    let mut file = crate::family::private_file(&path).ok()?;
     file.write_all(content.as_bytes()).ok()?;
     Some(path)
 }
@@ -230,6 +231,19 @@ mod tests {
             .expect("a note");
         assert!(note.contains("of 10000 lines"), "{note}");
         assert!(note.contains("/magi-output-"), "it names the spill: {note}");
+    }
+
+    #[test]
+    fn a_spill_is_private_to_this_user() {
+        use std::os::unix::fs::PermissionsExt;
+        let out = apply("bash", lines_of(10_000));
+        let path = std::path::PathBuf::from(spilled_path(&out).expect("a path"));
+        let mode = |at: &std::path::Path| {
+            std::fs::metadata(at).expect("there").permissions().mode() & 0o777
+        };
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(path.parent().expect("a directory")), 0o700);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
