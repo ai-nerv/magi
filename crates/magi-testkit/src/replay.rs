@@ -315,6 +315,7 @@ mod tests {
                 session: None,
                 from_cursor: Cursor::ZERO,
                 draws: false,
+                key: None,
             })
             .await
             .expect("attach");
@@ -367,6 +368,7 @@ mod tests {
                 session: None,
                 from_cursor: Cursor(2),
                 draws: false,
+                key: None,
             })
             .await
             .expect("attach");

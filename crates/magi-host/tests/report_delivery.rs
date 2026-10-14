@@ -115,6 +115,7 @@ async fn attach(fixture: &Fixture) -> (Reader, Writer) {
             session: None,
             from_cursor: Cursor(0),
             draws: false,
+            key: magi_ipc::read_key(&fixture.dir.join("s.sock")),
         })
         .await
         .expect("fixture operation succeeds");

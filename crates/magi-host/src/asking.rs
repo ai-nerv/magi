@@ -159,7 +159,9 @@ impl magi_tools::approve::Approver for Asker {
             return Decision::Deny;
         }
         let n = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let id = ToolCallId::new(format!("p{n}"));
+        let Some(id) = unguessable('p', n) else {
+            return Decision::Deny;
+        };
         let asked = HarnessEvent::PermissionAsked {
             cursor: (self.cursor)(),
             id: id.clone(),
@@ -186,7 +188,7 @@ impl magi_tools::question::Asks for Asker {
             return None;
         }
         let n = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let id = ToolCallId::new(format!("q{n}"));
+        let id = unguessable('q', n)?;
         let asked = HarnessEvent::Asked {
             cursor: (self.cursor)(),
             id: id.clone(),
@@ -240,6 +242,11 @@ impl Person {
     }
 }
 
+/// A question's id: its kind, its number and random hex, so it cannot be answered by guessing.
+fn unguessable(kind: char, n: u64) -> Option<ToolCallId> {
+    let hex = magi_ipc::random_hex(8).ok()?;
+    Some(ToolCallId::new(format!("{kind}{n}-{hex}")))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,16 +323,22 @@ mod tests {
     #[test]
     fn a_question_is_published_with_the_widths_it_can_be_answered_at() {
         let (pending, asker, seen) = asker(true);
+        let watching = Arc::clone(&seen);
         let answering = std::thread::spawn(move || {
             for _ in 0..200 {
-                let id = ToolCallId::new("p0");
-                pending.answer(
-                    &id,
-                    Decision::Allow {
-                        scope: magi_proto::permit::Scope::Once,
-                        lifetime: magi_proto::permit::Lifetime::Session,
-                    },
-                );
+                // A guess at the id, which must not land.
+                pending.answer(&ToolCallId::new("p0"), Decision::Deny);
+                let asked = watching.lock().ok().and_then(|seen| seen.first().cloned());
+                if let Some(HarnessEvent::PermissionAsked { id, .. }) = asked {
+                    pending.answer(
+                        &id,
+                        Decision::Allow {
+                            scope: magi_proto::permit::Scope::Once,
+                            lifetime: magi_proto::permit::Lifetime::Session,
+                        },
+                    );
+                    return;
+                }
                 std::thread::sleep(Duration::from_millis(5));
             }
         });

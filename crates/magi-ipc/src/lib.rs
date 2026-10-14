@@ -7,10 +7,12 @@ mod codec;
 mod encoding;
 pub mod family;
 mod peer;
+mod secret;
 
 pub use codec::{FrameReader, FrameWriter, MAX_FRAME_BYTES};
 pub use encoding::Wire;
 pub use peer::PeerCred;
+pub use secret::{drop_key, key_path, mint_key, random_hex, read_key, same_key};
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -72,6 +74,7 @@ fn digest(bytes: &[u8]) -> u64 {
 
 /// Bind a listener, clearing a stale socket left by a previous run: a dead socket file makes `bind`
 /// fail with `EADDRINUSE` even though nothing is listening. A path that still answers is left alone.
+/// A fresh controller key goes beside it, in `<socket>.key`.
 pub async fn bind(path: &Path) -> Result<UnixListener, IpcError> {
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent).await?;
@@ -79,7 +82,9 @@ pub async fn bind(path: &Path) -> Result<UnixListener, IpcError> {
     if tokio::fs::metadata(path).await.is_ok() && UnixStream::connect(path).await.is_err() {
         tokio::fs::remove_file(path).await?;
     }
-    Ok(UnixListener::bind(path)?)
+    let listener = UnixListener::bind(path)?;
+    mint_key(path)?;
+    Ok(listener)
 }
 
 /// Connect to a listening daemon.

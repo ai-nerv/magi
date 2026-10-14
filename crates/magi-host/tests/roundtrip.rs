@@ -34,6 +34,10 @@ struct Client {
 
 impl Client {
     async fn attach(socket: &Path, from: Cursor) -> (Self, Vec<Entry>) {
+        Self::attach_as(socket, from, magi_ipc::read_key(socket)).await
+    }
+
+    async fn attach_as(socket: &Path, from: Cursor, key: Option<String>) -> (Self, Vec<Entry>) {
         let stream = magi_ipc::connect(socket).await.expect("connect");
         let (read_half, write_half) = stream.into_split();
         let mut client = Self {
@@ -46,6 +50,7 @@ impl Client {
                 session: None,
                 from_cursor: from,
                 draws: false,
+                key,
             })
             .await
             .expect("attach");
@@ -71,6 +76,7 @@ impl Client {
                 session: None,
                 from_cursor: Cursor::ZERO,
                 draws: false,
+                key: magi_ipc::read_key(socket),
             })
             .await
             .expect("attach");
@@ -668,4 +674,39 @@ async fn a_prompt_written_by_a_client_that_hangs_up_is_still_run() {
             other => panic!("round {round}: expected a user entry, got {other:?}"),
         }
     }
+}
+
+/// Without the key in `<socket>.key` a connection watches: whatever it asks for is refused, and
+/// the session does not move.
+#[tokio::test]
+async fn a_connection_without_the_key_watches_and_changes_nothing() {
+    let (_dir, socket) = start("watcher").await;
+    for key in [None, Some("0".repeat(64))] {
+        let (mut watcher, _) = Client::attach_as(&socket, Cursor::ZERO, key).await;
+        for command in [
+            UiCommand::SubmitPrompt {
+                text: "do it".into(),
+                aside: String::new(),
+            },
+            UiCommand::SetMode {
+                mode: "auto".into(),
+            },
+            UiCommand::TakeGrants { grants: Vec::new() },
+            UiCommand::Interrupt,
+        ] {
+            let verb = command.verb();
+            watcher.writer.write(&command).await.expect("sent");
+            match watcher.next().await {
+                HarnessEvent::Refused { message, .. } => {
+                    assert!(message.contains("controller key"), "{verb}: {message}");
+                }
+                other => panic!("{verb} was not refused: {other:?}"),
+            }
+        }
+    }
+    let (_controller, entries) = Client::attach(&socket, Cursor(u64::MAX)).await;
+    assert!(
+        entries.is_empty(),
+        "a watcher's prompt reached the transcript"
+    );
 }

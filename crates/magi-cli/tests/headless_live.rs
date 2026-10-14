@@ -218,6 +218,7 @@ async fn attaches_to(screen: &Path) {
             session: None,
             from_cursor: Cursor(0),
             draws: true,
+            key: magi_ipc::read_key(screen),
         })
         .await
         .expect("attach");

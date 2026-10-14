@@ -119,6 +119,7 @@ pub async fn start(
 /// Take the socket back down: a path nothing answers would meet the next `magi` as a name taken.
 pub fn done(socket: &Path) {
     let _ = std::fs::remove_file(socket);
+    magi_ipc::drop_key(socket);
     // And the directory, if this was the last session: `remove_dir` refuses a non-empty one.
     if let Some(parent) = socket.parent() {
         let _ = std::fs::remove_dir(parent);
@@ -138,6 +139,7 @@ fn sweep(dir: &Path) {
             && std::os::unix::net::UnixStream::connect(&path).is_err()
         {
             let _ = std::fs::remove_file(&path);
+            magi_ipc::drop_key(&path);
         }
     }
 }

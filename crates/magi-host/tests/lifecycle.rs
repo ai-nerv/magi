@@ -17,6 +17,7 @@ async fn attach(path: &std::path::Path, cursor: Cursor) -> (Reader, Writer) {
             session: None,
             from_cursor: cursor,
             draws: false,
+            key: magi_ipc::read_key(path),
         })
         .await
         .expect("attach");

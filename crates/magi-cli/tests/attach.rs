@@ -51,6 +51,7 @@ async fn attach(path: &Path, from: Cursor, take: usize) -> (Vec<Entry>, Vec<Harn
             session: None,
             from_cursor: from,
             draws: false,
+            key: magi_ipc::read_key(path),
         })
         .await
         .expect("attach");

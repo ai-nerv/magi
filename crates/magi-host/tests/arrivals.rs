@@ -68,6 +68,7 @@ async fn arrival_of(sort: &str, name: &str) -> (Vec<HarnessEvent>, bool) {
             session: None,
             from_cursor: Cursor(0),
             draws: false,
+            key: magi_ipc::read_key(&path),
         })
         .await
         .expect("attach");

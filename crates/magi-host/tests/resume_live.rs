@@ -67,6 +67,7 @@ async fn attach(
             session: None,
             from_cursor: Cursor(0),
             draws: false,
+            key: magi_ipc::read_key(path),
         })
         .await
         .expect("attach");
