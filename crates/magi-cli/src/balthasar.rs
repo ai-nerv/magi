@@ -523,11 +523,20 @@ mod tests {
         std::fs::write(
             &program,
             format!(
-                "#!/bin/sh\nhead -n 1 > '{at}/stdin'\nenv > '{at}/env'\necho \"$@\" > '{at}/argv'\n"
+                "#!/bin/sh\n[ \"$1\" = --probe ] && exit 0\nhead -n 1 > '{at}/stdin'\nenv > '{at}/env'\necho \"$@\" > '{at}/argv'\n"
             ),
         )
         .expect("write");
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        // `ETXTBSY` while a fork on another thread still holds the descriptor it was written by.
+        while let Err(why) = std::process::Command::new(&program).arg("--probe").status() {
+            assert_eq!(
+                why.raw_os_error(),
+                Some(26),
+                "the stand-in will not run: {why}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         let key = magi_ipc::random_hex(32).expect("random");
 
         let mut child = spawned(
