@@ -20,7 +20,7 @@ pub const BYTES: usize = 4 * magi_tools::family::FRAME_CAP;
 ///
 /// # Errors
 /// When the value holds a function or a key that is not a name, holds itself, nests deeper than
-/// [`DEEPEST`], or comes to more than [`NODES`] values or [`BYTES`] of text.
+/// `DEEPEST`, or comes to more than `NODES` values or `BYTES` of text.
 pub fn json_from_lua<'gc>(
     ctx: luna::Context<'gc>,
     value: Value<'gc>,
@@ -34,8 +34,8 @@ pub fn json_from_lua<'gc>(
 /// a tool spec holds its `run` function beside describable fields. `None` when nothing is left.
 ///
 /// # Errors
-/// When the value holds itself, nests deeper than [`DEEPEST`], or comes to more than [`NODES`]
-/// values or [`BYTES`] of text.
+/// When the value holds itself, nests deeper than `DEEPEST`, or comes to more than `NODES`
+/// values or `BYTES` of text.
 pub fn declaration_from_lua<'gc>(
     ctx: luna::Context<'gc>,
     value: Value<'gc>,
