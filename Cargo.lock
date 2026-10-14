@@ -590,6 +590,8 @@ dependencies = [
  "magi-proto",
  "magi-testkit",
  "magi-tools",
+ "rune",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",
@@ -872,6 +874,11 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "rune"
+version = "0.1.5"
+source = "git+https://github.com/onix-os/rune?rev=d5f8db0574a42079d5c2360bd642088fbc0f58db#d5f8db0574a42079d5c2360bd642088fbc0f58db"
 
 [[package]]
 name = "rustix"

@@ -69,11 +69,12 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
         (&*worker, &models, &*pending, &person, &scribe);
     let (read_half, write_half) = stream.into_split();
     let mut reader = FrameReader::new(read_half);
-    let mut writer = crate::sending::Screen::within(FrameWriter::new(write_half), writing);
+    let mut writer = FrameWriter::new(write_half);
 
     let first = tokio::time::timeout(ATTACHING, reader.read::<UiCommand>())
         .await
         .map_err(|_| std::io::Error::from(std::io::ErrorKind::TimedOut))??;
+    let controlling = |key: Option<String>| key.is_some_and(|key| magi_ipc::same_key(&key, &held));
     let (from, draws, controls) = match first {
         UiCommand::Attach {
             from_cursor,
@@ -81,12 +82,37 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
             key,
             ..
         } => {
-            let controls = key.is_some_and(|key| magi_ipc::same_key(&key, &held));
+            let controls = controlling(key);
             (from_cursor, draws && controls, controls)
+        }
+        UiCommand::AttachLatest { draws, key } => {
+            let controls = controlling(key);
+            (session.lock().await.cursor(), draws && controls, controls)
+        }
+        // Read-only, and less than a watcher's attach would show.
+        UiCommand::Inspect => {
+            let details = session.lock().await.details(pending.counts());
+            tokio::time::timeout(writing, writer.write(&details))
+                .await
+                .map_err(|_| std::io::Error::from(std::io::ErrorKind::TimedOut))??;
+            return Ok(());
+        }
+        // A child's question for this session's person, which only a controller may put.
+        UiCommand::Review { tool, action, key } => {
+            if !controlling(key) {
+                let refused = magi_proto::permit::Decision::Deny;
+                let refused = tokio::time::timeout(writing, writer.write(&refused)).await;
+                return refused
+                    .map_err(|_| std::io::Error::from(std::io::ErrorKind::TimedOut))?
+                    .map_err(Into::into);
+            }
+            let approver = Arc::clone(&person.approver);
+            return crate::reviewing::review(approver, tool, action, reader, writer, writing).await;
         }
         // Anything before an attach is a peer that does not speak the protocol.
         _ => return Ok(()),
     };
+    let mut writer = crate::sending::Screen::within(writer, writing);
     // Whether anybody here can draw rows a tool asks for. Held for the life of the connection, so
     // a UI that goes away takes its screen with it.
     let _drawing = crate::holder::Drawing::attach(&person.surfaces, draws);
@@ -143,6 +169,16 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
                     }
                 }
                 match command {
+                    Some(UiCommand::Environment(request)) => {
+                        let (text, changed) = environment::change(request, &session, worker, models, person, scribe).await;
+                        let cursor = session.lock().await.cursor();
+                        writer.write(&HarnessEvent::Noticed { cursor, text }).await?;
+                        if changed {
+                            let models = Arc::clone(models);
+                            let session = Arc::clone(&session);
+                            refreshing.spawn(async move { models.refresh(&session).await });
+                        }
+                    }
                     Some(UiCommand::RefreshModels) => {
                         if refreshing.is_empty() {
                             let models = Arc::clone(models);
@@ -154,8 +190,8 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
                         | UiCommand::TakeGrants { .. } | UiCommand::DeclareNeeds)) => {
                         use session::admission::Request;
                         let request = match command {
-                            UiCommand::SubmitPrompt { text, aside } => Request::Opening(Entry::User {
-                                id: MessageId::new("queued"), text, aside,
+                            UiCommand::SubmitPrompt { text, aside, images } => Request::Opening(Entry::User {
+                                id: MessageId::new("queued"), text, aside, images,
                             }),
                             UiCommand::Arrived { who, kin, sort, text } =>
                                 Request::Opening(Entry::From { who, kin, sort, text }),
@@ -270,8 +306,10 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
                         let held = session.lock().await;
                         held.cancel().request();
                         person.surfaces.close_all();
+                        pending.cancel();
                     }
-                    Some(UiCommand::Attach { .. }) => {}
+                    Some(UiCommand::Attach { .. } | UiCommand::AttachLatest { .. }
+                        | UiCommand::Review { .. } | UiCommand::Inspect) => {}
                     Some(UiCommand::Detach) | None => break,
                 }
             }

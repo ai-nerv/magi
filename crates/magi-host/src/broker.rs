@@ -126,8 +126,32 @@ pub async fn ask_through(
     on_delta: impl FnMut(Delta),
     on_retry: impl FnMut(Retry),
 ) -> Result<(), Trouble> {
+    ask_using(
+        (program, &std::collections::BTreeMap::new()),
+        model,
+        context,
+        wants,
+        on_delta,
+        on_retry,
+    )
+    .await
+}
+
+/// Stream a request with this session's environment overlay.
+///
+/// # Errors
+/// As [`ask`].
+pub async fn ask_using(
+    (program, environ): (&str, &std::collections::BTreeMap<String, String>),
+    model: &str,
+    context: &Context,
+    wants: &Wants,
+    on_delta: impl FnMut(Delta),
+    on_retry: impl FnMut(Retry),
+) -> Result<(), Trouble> {
     let asked = Asked {
         program,
+        environ,
         model,
         context,
         wants,
@@ -138,6 +162,7 @@ pub async fn ask_through(
 /// Who is asked what, for one turn.
 struct Asked<'a> {
     program: &'a str,
+    environ: &'a std::collections::BTreeMap<String, String>,
     model: &'a str,
     context: &'a Context,
     wants: &'a Wants,
@@ -152,6 +177,7 @@ async fn asking(
 ) -> Result<(), Trouble> {
     let Asked {
         program,
+        environ,
         model,
         context,
         wants,
@@ -170,6 +196,7 @@ async fn asking(
 
     // JSON rather than CBOR, though melchior reads both: what crosses here is read constantly.
     let mut child = tokio::process::Command::new(program)
+        .envs(environ)
         .arg("ask")
         .env(crate::driving::GIVEN, crate::driving::given_dir())
         .arg("--json")
@@ -312,10 +339,26 @@ pub async fn value(
     context: &Context,
     wants: &Wants,
 ) -> Result<serde_json::Value, Trouble> {
+    value_using(
+        (program, &std::collections::BTreeMap::new()),
+        model,
+        context,
+        wants,
+    )
+    .await
+}
+
+/// Collect a typed answer with this session's environment overlay.
+pub async fn value_using(
+    target: (&str, &std::collections::BTreeMap<String, String>),
+    model: &str,
+    context: &Context,
+    wants: &Wants,
+) -> Result<serde_json::Value, Trouble> {
     let mut text = String::new();
     let mut args = String::new();
-    ask_through(
-        program,
+    ask_using(
+        target,
         model,
         context,
         wants,
@@ -376,9 +419,11 @@ pub async fn cards(program: &str) -> Vec<magi_proto::ask::Card> {
 /// Fetch fresh model cards with a bounded child lifetime.
 pub(crate) async fn refresh_cards(
     program: &str,
+    environ: &std::collections::BTreeMap<String, String>,
 ) -> Result<(Vec<magi_proto::ask::Card>, Vec<String>), String> {
     let mut command = tokio::process::Command::new(program);
     command
+        .envs(environ)
         .args(["models", "--json", "--refresh"])
         .env(crate::driving::GIVEN, crate::driving::given_dir())
         .stderr(std::process::Stdio::null())
@@ -386,7 +431,9 @@ pub(crate) async fn refresh_cards(
     let out = tokio::time::timeout(std::time::Duration::from_secs(30), command.output())
         .await
         .map_err(|_| "Model refresh timed out; keeping the previous list.".to_owned())?
-        .map_err(|_| "Could not start the model provider; keeping the previous list.".to_owned())?;
+        .map_err(|why| {
+            format!("Could not start the model provider: {why}; keeping the previous list.")
+        })?;
     if !out.status.success() {
         return Err("Model provider failed; keeping the previous list.".into());
     }
@@ -533,6 +580,7 @@ mod tests {
         let program = mind.program().display().to_string();
         let asked = Asked {
             program: &program,
+            environ: &std::collections::BTreeMap::new(),
             model: "fake/m",
             context: &Context::default(),
             wants: &Wants::default(),

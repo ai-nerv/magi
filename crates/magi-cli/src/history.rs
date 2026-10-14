@@ -47,7 +47,7 @@ pub fn remember(prompt: &str) {
 
 fn remember_in(path: &Path, prompt: &str) -> std::io::Result<()> {
     let prompt = prompt.trim();
-    if prompt.is_empty() {
+    if prompt.is_empty() || matches!(prompt.split_whitespace().next(), Some(":env" | ":source")) {
         return Ok(());
     }
     let Some(parent) = path.parent() else {

@@ -27,9 +27,16 @@ enum Work {
 pub struct Worker {
     jobs: mpsc::Sender<Job>,
     reporting: Option<Backend>,
+    granted: Arc<std::sync::Mutex<Vec<magi_proto::permit::Grant>>>,
 }
 
 impl Worker {
+    pub(crate) fn backend(&self) -> Option<Backend> {
+        let mut backend = self.reporting.clone()?;
+        backend.grants = self.granted.lock().ok()?.clone();
+        Some(backend)
+    }
+
     /// Start a worker owning `backend`. The thread lives as long as the daemon, and is not pooled:
     /// there is one VM because there is one description of each protocol.
     #[must_use]
@@ -58,6 +65,8 @@ impl Worker {
         scribe: crate::scribe::Held,
     ) -> Self {
         let reporting = backend.clone();
+        let granted = Arc::new(std::sync::Mutex::new(backend.grants.clone()));
+        let held_grants = Arc::clone(&granted);
         let (jobs, mut queue) = mpsc::channel::<Job>(32);
         std::thread::spawn(move || {
             let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
@@ -174,6 +183,9 @@ impl Worker {
                     .unwrap_or_else(|why| {
                         Err(format!("this turn stopped on an internal error: {why}"))
                     });
+                    if let Ok(mut granted) = held_grants.lock() {
+                        *granted = ops.held();
+                    }
                     let _ = job.done.send(outcome);
                 }
             });
@@ -181,6 +193,7 @@ impl Worker {
         Self {
             jobs,
             reporting: Some(reporting),
+            granted,
         }
     }
 
@@ -289,7 +302,12 @@ async fn declare(session: &Arc<Mutex<Session>>, backend: &Backend, ops: &dyn mag
     // Bounded: a mind that never answers must not hold the worker thread for the life of the daemon.
     let asked = tokio::time::timeout(
         std::time::Duration::from_secs(120),
-        crate::broker::value(&backend.mind, &backend.model, &context, &wants),
+        crate::broker::value_using(
+            (&backend.mind, &backend.environ),
+            &backend.model,
+            &context,
+            &wants,
+        ),
     );
     let answer = match asked.await {
         Err(_) => {
@@ -362,6 +380,7 @@ mod tests {
         let worker = Worker {
             jobs,
             reporting: None,
+            granted: Default::default(),
         };
 
         let _dir = Scratch::new("magi-worker", "one");
@@ -383,6 +402,7 @@ mod tests {
         let worker = Worker {
             jobs,
             reporting: None,
+            granted: Default::default(),
         };
 
         let _dir = Scratch::new("magi-worker2", "one");
@@ -397,6 +417,7 @@ mod tests {
             .lock()
             .await
             .commit(Entry::User {
+                images: Vec::new(),
                 id: magi_proto::MessageId::new("u1"),
                 text: "still works".into(),
                 aside: String::new(),

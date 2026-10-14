@@ -11,6 +11,7 @@ mod catching;
 pub mod context;
 pub mod declaring;
 pub mod driving;
+mod environment;
 pub mod helping;
 pub mod holder;
 pub mod judging;
@@ -20,6 +21,7 @@ pub mod paths;
 pub mod remember;
 mod reporting;
 mod resuming;
+mod reviewing;
 pub mod scribe;
 mod sending;
 pub mod session;
@@ -294,12 +296,13 @@ async fn serve_writing(
     // The same channel a surface asks down: the second model is one more thing to ask it for.
     let (asking, asked) = tokio::sync::mpsc::unbounded_channel();
     let judge_asks = asking.clone();
+    let models = Arc::new(refreshing::Models::new(catalog.clone()));
     let knows = {
         tokio::spawn(crate::knowing::serve(
             asked,
             Arc::clone(&scribe),
             Arc::clone(&session),
-            backend.clone(),
+            Arc::clone(&models),
         ));
         let held = session.lock().await;
         let cwd = catalog.cwd.display().to_string();
@@ -322,19 +325,17 @@ async fn serve_writing(
             .knowing(Arc::clone(&knows) as Arc<dyn magi_tools::holding::Answers>),
         )
     };
-    let asker = {
-        let events = session.lock().await.publisher();
-        let watched = events.clone();
-        Arc::new(crate::asking::Asker::new(
+    let asker = Arc::new(
+        crate::asking::Asker::serving(
+            Arc::clone(&session),
             Arc::clone(&pending),
-            Box::new(move |event| {
-                let _ = events.send(event);
-            }),
-            // Transient rather than journalled, and the UI tracks the highest cursor with a max.
-            Box::new(|| Cursor::ZERO),
-            Box::new(move || watched.receiver_count() > 0),
-        ))
-    };
+            catalog
+                .environ
+                .get("MAGI_PARENT_HOST_SOCKET")
+                .map(Into::into),
+        )
+        .await,
+    );
     let person = crate::asking::Person::of(
         asker,
         holds,
@@ -359,7 +360,7 @@ async fn serve_writing(
     let served = Served {
         session,
         worker,
-        models: Arc::new(refreshing::Models::new(catalog)),
+        models,
         pending,
         person,
         scribe,
@@ -442,8 +443,6 @@ pub fn open_session(now: u64, whose: &str) -> Session {
     )
 }
 
-/// Put the rules, the mode and the second model in front of whoever a session's tools ask. The
-/// person is still there behind them, and is who every doubt comes back to.
 async fn guard(
     mut person: crate::asking::Person,
     asking: tokio::sync::mpsc::UnboundedSender<crate::knowing::Wondering>,
@@ -482,12 +481,16 @@ mod no_model_tests {
         Catalog {
             chosen: Some(name.to_owned()),
             cards: vec![magi_proto::ask::Card {
+                vision: false,
                 id: "paid/x".to_owned(),
                 provider: "Paid Co".to_owned(),
                 name: "x".to_owned(),
                 api: "openai-completions".to_owned(),
                 context_window: Some(1000),
                 max_output: Some(100),
+                pricing: None,
+                popularity_rank: None,
+                capabilities: None,
                 reasons: false,
                 ready: false,
                 needs: Some("MAGI_TEST_NOT_SET".to_owned()),

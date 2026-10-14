@@ -75,6 +75,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["preserve_order"] }
 sha2 = "0.10"
 thiserror = "2.0"
+rune = { git = "https://github.com/onix-os/rune", rev = "d5f8db0574a42079d5c2360bd642088fbc0f58db" }
 tokio-stream = "0.1"
 unicode-width = "0.2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "fs", "time", "sync", "signal", "process"] }

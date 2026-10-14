@@ -365,7 +365,7 @@ pub fn handle(
                 return Action::Ignore;
             }
             match editor.submit() {
-                Some(text) if text.starts_with(':') => Action::Command(text),
+                Some(text) if text.trim_start().starts_with(':') => Action::Command(text),
                 Some(text) => Action::Submit(text),
                 None => Action::Ignore,
             }
