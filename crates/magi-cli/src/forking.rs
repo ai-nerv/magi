@@ -45,10 +45,10 @@ pub fn fork(
     role_description: Option<&str>,
     prompt: Option<&str>,
 ) -> Result<()> {
-    if std::env::var_os(magi_tools::builtin::NO_SPAWN).is_some() {
+    let parent = session_pid()?;
+    if !has_leave(parent) {
         bail!("this session was started without leave to start children of its own");
     }
-    let parent = session_pid()?;
     let loaded = crate::config::load().ok();
     let program = loaded.as_ref().map_or_else(
         || magi_host::broker::MELCHIOR.to_owned(),
@@ -97,6 +97,19 @@ fn session_pid_from(said: Option<&str>) -> Result<u32> {
                  started — where ${SESSION_PID} says so."
             )
         })
+}
+
+/// Whether the session `pid` was started with leave to start children: `MAGI_NO_SPAWN` absent from
+/// the environment the kernel recorded when it was started. Read there rather than from this
+/// process, whose own `MAGI_NO_SPAWN` is what `spawn` hands a child that may not delegate. A
+/// session whose environment cannot be read has no leave.
+fn has_leave(pid: u32) -> bool {
+    let wanted = format!("{}=", magi_tools::builtin::NO_SPAWN);
+    std::fs::read(format!("/proc/{pid}/environ")).is_ok_and(|environ| {
+        !environ
+            .split(|byte| *byte == 0)
+            .any(|entry| entry.starts_with(wanted.as_bytes()))
+    })
 }
 
 /// Ask this session's melchior to name a child and mint its secret over argv. `melchior fork` calls
@@ -456,29 +469,63 @@ mod tests {
         assert_eq!(parsed.prompt.as_deref(), Some("-p rm everything"));
     }
 
+    /// A process standing in for a session, started with or without leave to spawn.
+    fn a_session(leave: bool) -> std::process::Child {
+        let mut session = Command::new("sleep");
+        session.arg("30");
+        if leave {
+            session.env_remove(magi_tools::builtin::NO_SPAWN);
+        } else {
+            session.env(magi_tools::builtin::NO_SPAWN, "1");
+        }
+        session.spawn().expect("a stand-in session")
+    }
+
     #[test]
     fn a_session_without_leave_to_spawn_forks_nothing() {
-        // Probed in a child process, so the variable is set in its environment and not this one's.
-        if std::env::var_os("MAGI_FORK_PROBE").is_some() {
-            let why = fork(None, None, None).expect_err("refused").to_string();
-            assert!(why.contains("without leave"), "{why}");
+        // Probed in a child process, so the variables are set in its environment and not this one's.
+        if let Ok(expected) = std::env::var("MAGI_FORK_PROBE") {
+            let why = fork(None, None, None)
+                .expect_err("nothing to mint with")
+                .to_string();
+            assert_eq!(
+                why.contains("without leave"),
+                expected == "refused",
+                "{why}"
+            );
             return;
         }
-        let ran = Command::new(std::env::current_exe().expect("test binary"))
-            .args([
+        let dir = magi_model::scratch::Scratch::new("magi-fork", "leave");
+        let probe = |session: &std::process::Child, own: bool, expected: &str| {
+            let mut ran = Command::new(std::env::current_exe().expect("test binary"));
+            ran.args([
                 "--exact",
                 "forking::tests::a_session_without_leave_to_spawn_forks_nothing",
             ])
-            .env("MAGI_FORK_PROBE", "1")
-            .env(magi_tools::builtin::NO_SPAWN, "1")
-            .env(SESSION_PID, "1")
-            .output()
-            .expect("probe");
-        assert!(
-            ran.status.success(),
-            "{}",
-            String::from_utf8_lossy(&ran.stdout)
-        );
+            .env("MAGI_FORK_PROBE", expected)
+            .env(SESSION_PID, session.id().to_string())
+            .env("PATH", &*dir)
+            .env("XDG_CONFIG_HOME", &*dir)
+            .env_remove(magi_tools::builtin::NO_SPAWN);
+            if own {
+                ran.env(magi_tools::builtin::NO_SPAWN, "1");
+            }
+            let ran = ran.output().expect("probe");
+            assert!(
+                ran.status.success(),
+                "{}",
+                String::from_utf8_lossy(&ran.stdout)
+            );
+        };
+        let (mut with, mut without) = (a_session(true), a_session(false));
+        assert!(has_leave(with.id()) && !has_leave(without.id()));
+        probe(&without, false, "refused");
+        // What `spawn` hands a child that may not delegate does not stop the fork carrying it.
+        probe(&with, true, "allowed");
+        for session in [&mut with, &mut without] {
+            let _ = session.kill();
+            let _ = session.wait();
+        }
     }
     /// A runnable stand-in for the magi a fork would start, written into `dir`. A script, not
     /// a mock, because what is under test is the argv and the environment block the kernel writes.
