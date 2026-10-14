@@ -273,9 +273,11 @@ pub fn alive() -> bool {
 fn ended(Ours { mut child, sockets }: Ours) {
     let _ = child.kill();
     let _ = child.wait();
-    // Every name it may have answered under; absent when it never got as far as binding.
+    // Every name it may have answered under, and the lock it held each by; absent when it never
+    // got as far as binding. Reaped first, so nothing holds them now.
     for socket in &sockets {
         let _ = std::fs::remove_file(socket);
+        let _ = std::fs::remove_file(magi_ipc::lock_path(socket));
     }
 }
 
@@ -424,6 +426,7 @@ mod tests {
         let older = dir.join("api@00000000000000000003-gamma-old.sock");
         let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
         let elder = std::os::unix::net::UnixListener::bind(&older).expect("bind");
+        std::fs::write(magi_ipc::lock_path(&socket), b"").expect("a lock it held");
         // A stand-in for balthasar: running and holding the socket open, so this is a kill.
         let child = Command::new("sleep")
             .arg("30")
@@ -443,6 +446,10 @@ mod tests {
         assert!(
             !older.exists(),
             "the name it also answered under outlived the session"
+        );
+        assert!(
+            !magi_ipc::lock_path(&socket).exists(),
+            "the lock it held outlived the session"
         );
         assert!(
             !Path::new(&format!("/proc/{id}")).exists(),
