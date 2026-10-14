@@ -11,7 +11,17 @@ use magi_proto::ask::Card;
 /// choosing a model wants to see what exists, not a list narrowed to whatever happens to be
 /// exported in this shell.
 pub fn print(all: bool, how: crate::verbs::As) {
-    let loaded = crate::config::load().ok();
+    let loaded = match crate::config::for_session() {
+        Ok(loaded) => loaded,
+        Err(why) => {
+            if how.framed() {
+                crate::verbs::say(&magi_ipc::family::Reply::refused(why.to_string()), how);
+                return;
+            }
+            eprintln!("magi: {why}");
+            std::process::exit(1);
+        }
+    };
     let default = loaded
         .as_ref()
         .and_then(|loaded| loaded.config.string("model").map(str::to_owned));

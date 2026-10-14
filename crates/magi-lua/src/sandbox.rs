@@ -20,6 +20,50 @@ const REMOVED: &[(&str, &str)] = &[
 
 const REMOVED_TABLES: &[&str] = &["io", "package", "dofile", "loadfile", "require"];
 
+/// Globals a project's file must not have, beyond what [`luna::Lua::core`] never loads: `load`
+/// compiles code, `collectgarbage` steers the collector, `warn` and `print` write to the terminal,
+/// and the rest read files, spawn, read the environment or reach inside other frames.
+const REMOVED_FROM_PROJECTS: &[&str] = &[
+    "load",
+    "loadstring",
+    "dofile",
+    "loadfile",
+    "require",
+    "collectgarbage",
+    "warn",
+    "print",
+    "io",
+    "os",
+    "package",
+    "debug",
+];
+
+/// Take away everything but data from a VM that runs a project's own file.
+///
+/// # Panics
+/// If a removal did not take, for the reason [`apply`] gives.
+pub fn apply_project(lua: &mut Lua) {
+    lua.enter(|ctx| {
+        for name in REMOVED_FROM_PROJECTS {
+            ctx.set_global(name, Value::Nil);
+        }
+        for name in REMOVED_FROM_PROJECTS {
+            assert!(
+                ctx.get_global_value(name).is_nil(),
+                "the project sandbox could not remove the global `{name}`"
+            );
+        }
+        if let Value::Table(magi) = ctx.get_global_value("magi") {
+            for name in ["stream", "fs", "json", "self", "clients"] {
+                assert!(
+                    magi.get_value(ctx, name).is_nil(),
+                    "a project VM was handed `magi.{name}`"
+                );
+            }
+        }
+    });
+}
+
 /// Take away what a config must not be able to do.
 ///
 /// # Panics
@@ -97,6 +141,106 @@ mod tests {
     fn a_config_cannot_load_arbitrary_files() {
         for expression in ["dofile", "loadfile", "require", "package"] {
             assert_eq!(probe(expression), "nil", "{expression} is still reachable");
+        }
+    }
+
+    #[test]
+    fn a_config_that_loops_is_stopped_and_named() {
+        let mut engine = Engine::new();
+        let error = engine
+            .run("while true do end", "loop.lua")
+            .expect_err("a loop is stopped");
+        let said = error.to_string();
+        assert!(
+            said.contains("loop.lua") && said.contains("budget"),
+            "{said}"
+        );
+        // And the VM is still usable afterwards.
+        engine.run("magi.after = 1", "after.lua").expect("runs");
+    }
+
+    /// What one expression comes to in a project's VM.
+    fn project_probe(expression: &str) -> String {
+        let mut engine = Engine::project(&serde_json::Map::new());
+        engine
+            .run(
+                &format!("magi.answer = tostring({expression})"),
+                "probe.lua",
+            )
+            .expect("run");
+        engine
+            .assigned()
+            .into_iter()
+            .find(|(name, _)| name == "answer")
+            .and_then(|(_, value)| value?.as_str().map(str::to_owned))
+            .unwrap_or_else(|| "<absent>".to_owned())
+    }
+
+    #[test]
+    fn a_project_file_has_no_socket_filesystem_environment_or_load() {
+        for expression in [
+            "load",
+            "loadstring",
+            "dofile",
+            "loadfile",
+            "require",
+            "os",
+            "io",
+            "package",
+            "debug",
+            "collectgarbage",
+            "print",
+            "magi.stream",
+            "magi.fs",
+            "magi.json",
+            "__stream",
+        ] {
+            assert_eq!(
+                project_probe(expression),
+                "nil",
+                "{expression} is reachable"
+            );
+        }
+        assert_ne!(
+            project_probe("string.format"),
+            "nil",
+            "plain data still works"
+        );
+    }
+
+    #[test]
+    fn a_project_file_that_loops_is_stopped() {
+        let mut engine = Engine::project(&serde_json::Map::new());
+        let error = engine
+            .run("while true do end", ".magi.lua")
+            .expect_err("stopped");
+        assert!(error.to_string().contains("budget"), "{error}");
+        let mut engine = Engine::project(&serde_json::Map::new());
+        let error = engine
+            .run(
+                "local t = {} for i = 1, 1e9 do t[i] = string.rep('x', 1024) end",
+                ".magi.lua",
+            )
+            .expect_err("stopped");
+        assert!(
+            error.to_string().contains("memory") || error.to_string().contains("budget"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_project_file_may_not_declare_a_tool_a_watcher_or_a_load() {
+        for call in [
+            "magi.tool('mine', {})",
+            "magi.watch('mine', {})",
+            "magi.load('tools.lua')",
+        ] {
+            let mut engine = Engine::project(&serde_json::Map::new());
+            let error = engine.run(call, ".magi.lua").expect_err("refused");
+            assert!(
+                error.to_string().contains("project file"),
+                "{call}: {error}"
+            );
         }
     }
 

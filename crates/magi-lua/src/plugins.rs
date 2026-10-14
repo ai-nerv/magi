@@ -115,13 +115,17 @@ pub fn runtimepath(roots: &Roots) -> Vec<(PathBuf, Trust)> {
 }
 
 /// Whether a project directory is one the owner vouched for, by `magi.trusted` in the owner's own
-/// configuration. A directory under a vouched-for one counts. An empty string is not a root — it
-/// would `starts_with` every path there is.
+/// configuration. A directory under a vouched-for one counts. Only an absolute path is a root:
+/// an empty string `starts_with` every path there is. Both sides are resolved where they exist.
 #[must_use]
 pub fn vouched_for(trusted: &[String], project: &Path) -> bool {
+    let real = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_owned());
+    let project = real(project);
     trusted
         .iter()
-        .any(|root| !root.is_empty() && project.starts_with(root))
+        .map(Path::new)
+        .filter(|root| root.is_absolute())
+        .any(|root| project.starts_with(real(root)))
 }
 
 /// Every `.lua` directly in a directory, alphabetically rather than by whatever the filesystem
@@ -287,6 +291,10 @@ mod tests {
             &["/home/you".to_owned()],
             Path::new("/home/other")
         ));
+        assert!(
+            !vouched_for(&[".".to_owned(), "home".to_owned()], Path::new("home/x")),
+            "a relative entry is no directory"
+        );
     }
 
     #[test]

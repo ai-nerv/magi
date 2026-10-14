@@ -23,10 +23,12 @@ fn source(relative: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
-/// A socket path this VM is allowed to dial: `magi.stream` refuses anything outside the runtime
-/// directories, and it stays short enough for `SUN_LEN`.
-fn socket_path(tag: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("mg-ds-{tag}-{}.sock", std::process::id()))
+/// A socket path this VM is allowed to dial: `magi.stream` refuses anything outside the family's
+/// own directories, and it stays short enough for `SUN_LEN`.
+fn socket_path(tag: &str) -> (magi_tools::family::FamilyScratch, std::path::PathBuf) {
+    let dir = magi_tools::family::FamilyScratch::new(tag);
+    let path = dir.join("s.sock");
+    (dir, path)
 }
 
 /// The verb a request frame names, without a JSON parser.
@@ -145,7 +147,7 @@ fn until_written(written: &std::sync::mpsc::Receiver<String>, verb: &str) {
 fn a_reconnecting_client_is_in_step_on_the_next_call() {
     // magi's own client dials per call, so an abandoned reply dies with its connection. Driven the
     // same way, so the claim is measured rather than read off the source.
-    let path = socket_path("magi");
+    let (_dir, path) = socket_path("ds");
     let written = listen(&path);
     let mut caller = Caller::new(&source("lua/magi.lua"), "magi.lua", &path);
 

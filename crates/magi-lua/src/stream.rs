@@ -17,44 +17,23 @@ use std::time::Duration;
 
 /// The most a single `recv` will be asked for, so a peer claiming an enormous frame cannot make
 /// us allocate for it before a byte has arrived.
-const MAX_RECV: usize = 16 * 1024 * 1024;
+const MAX_RECV: usize = magi_tools::family::FRAME_CAP;
 
 type Handle = Rc<RefCell<Option<UnixStream>>>;
 
-/// Whether `path` is a socket a config may dial: this user's own socket directories and nothing
-/// else. Narrowed rather than asked, because a config file is read before a session exists and
-/// before any `Ops` is lent, which is exactly when an untrusted `.magi.lua` runs. Every legitimate
-/// caller puts its sockets under `$XDG_RUNTIME_DIR`. Lexical, on a normalised path, so a name
-/// cannot climb out of the directory it appears to be in.
-fn dialable(path: &std::path::Path) -> bool {
-    roots().iter().any(|root| under(path, root))
+/// The path to dial when `path` is one of the family's own sockets, and nothing otherwise: its
+/// directory, resolved, under `<runtime>/<program>` or `<tmp>/<program>-<uid>` for one of the
+/// family's programs, and the entry a socket this uid owns.
+fn dialable(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    magi_tools::family::family_socket(path).or_else(|| this_sessions_memory(path))
 }
 
-/// Where this user's sockets may live. Both roots, not one: `magi_ipc::family::socket_dir` falls
-/// back to the temporary directory when `$XDG_RUNTIME_DIR` is unset, so a rule naming one root
-/// refuses the family's own sockets on half the machines there are.
-fn roots() -> Vec<std::path::PathBuf> {
-    let mut out = vec![std::env::temp_dir()];
-    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
-        out.push(std::path::PathBuf::from(runtime));
-    }
-    out
-}
-
-/// Whether `path`, once `..` is resolved, is inside `root`. Split out so a test can pass a root of
-/// its own: the alternative is `set_var`, which is `unsafe` and denied here.
-fn under(path: &std::path::Path, root: &std::path::Path) -> bool {
-    let mut out = std::path::PathBuf::new();
-    for part in path.components() {
-        match part {
-            std::path::Component::ParentDir => {
-                out.pop();
-            }
-            std::path::Component::CurDir => {}
-            other => out.push(other),
-        }
-    }
-    out.starts_with(root)
+/// The memory socket this session was named with, and only that one, held to the same checks.
+fn this_sessions_memory(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let named = std::path::Path::new(crate::balthasar_at()?);
+    let root = named.parent()?.canonicalize().ok()?;
+    let real = magi_tools::family::family_socket_under(path, std::slice::from_ref(&root))?;
+    (real == root.join(named.file_name()?)).then_some(real)
 }
 
 pub fn table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
@@ -69,16 +48,16 @@ pub fn table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
 
         // Refused as an ordinary answer, the way a failed connect is: raising would make a config
         // that probed for an absent sibling die instead of carrying on.
-        if !dialable(std::path::Path::new(&path)) {
+        let Some(path) = dialable(std::path::Path::new(&path)) else {
             stack.replace(
                 ctx,
                 (
                     Value::Nil,
-                    "a socket outside the runtime directory is not this VM's to open",
+                    "only the family's own sockets are this VM's to open",
                 ),
             );
             return Ok(CallbackReturn::Return);
-        }
+        };
 
         // A stale socket left by a killed peer accepts and never answers.
         let timeout = match timeout_ms {
@@ -88,6 +67,9 @@ pub fn table<'gc>(ctx: Context<'gc>) -> Table<'gc> {
         };
 
         match UnixStream::connect(&path) {
+            Ok(socket) if !magi_tools::family::peer_is_us(&socket) => {
+                stack.replace(ctx, (Value::Nil, "the socket answered as another user"));
+            }
             Ok(socket) => {
                 let _ = socket.set_read_timeout(Some(timeout));
                 let _ = socket.set_write_timeout(Some(timeout));
@@ -173,31 +155,24 @@ fn handle_table<'gc>(ctx: Context<'gc>, socket: Handle) -> Table<'gc> {
 
 #[cfg(test)]
 mod tests {
-    use super::under;
+    use super::dialable;
     use std::path::Path;
 
     #[test]
-    fn only_a_socket_directory_of_this_users_is_dialable() {
-        // This callback has no `Ops` in scope, so `ops.allow` is never consulted. Tested against a
-        // root of our choosing: reading the real one means `set_var`, which is `unsafe`.
-        let root = Path::new("/run/user/1000");
-
-        assert!(under(
-            Path::new("/run/user/1000/balthasar/api@1.sock"),
-            root
-        ));
-        assert!(
-            under(Path::new("/run/user/1000/oslo/shell.sock"), root),
-            "a sibling's own socket"
-        );
-        assert!(!under(Path::new("/var/run/docker.sock"), root));
-        assert!(!under(Path::new("/etc/passwd"), root));
-        assert!(
-            !under(
-                Path::new("/run/user/1000/../../../var/run/docker.sock"),
-                root
-            ),
-            "`..` is resolved before the prefix is compared"
-        );
+    fn nothing_beside_the_family_is_dialable() {
+        // The session bus and every other listener sharing the runtime directory are refused,
+        // whether or not anything listens there.
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        for path in [
+            runtime.join("bus"),
+            runtime.join("systemd/private"),
+            runtime.join("magi/../bus"),
+            Path::new("/var/run/docker.sock").to_path_buf(),
+            Path::new("/etc/passwd").to_path_buf(),
+        ] {
+            assert!(dialable(&path).is_none(), "{}", path.display());
+        }
     }
 }

@@ -351,15 +351,71 @@ fn a_project_cannot_name_the_program_that_fills_a_role() {
 }
 
 #[test]
-fn a_project_may_still_write_a_siblings_settings_table() {
-    // The control: what is privileged is the name. A table under the same key is what that
-    // sibling is told, and refusing it would refuse every project that tunes its model.
-    let dir = workspace("tuned");
-    project(&dir, "magi.melchior = { max_tokens = 4000 }\n");
+fn a_project_may_not_write_a_siblings_settings_table() {
+    // A sibling's table is what that program is told to be, and casper's names commands and
+    // endpoints: only the person's own configuration says it.
+    for setting in [
+        "magi.melchior = { max_tokens = 4000 }\n",
+        "magi.casper = { web = { allow_private = true } }\n",
+        "magi.env = { PATH = \"./bin\" }\n",
+        "magi.roles = { coordination = \"./coordinator\" }\n",
+    ] {
+        let dir = workspace("tuned");
+        project(&dir, setting);
+        let output = magi(&dir, &["tools"]);
+        let said = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "`{setting}` was honoured: {said}");
+        assert!(
+            said.contains("only your own configuration"),
+            "and it says why: {said}"
+        );
+    }
+}
+
+#[test]
+fn a_project_may_still_choose_how_the_screen_looks() {
+    let dir = workspace("looks");
+    project(&dir, "magi.ui.accent = 2\nmagi.thinking = \"high\"\n");
     let output = magi(&dir, &["tools"]);
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+#[test]
+fn a_project_file_that_loops_is_stopped_rather_than_hanging_startup() {
+    let dir = workspace("loops");
+    project(&dir, "while true do end\n");
+    let output = magi(&dir, &["tools"]);
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{said}");
+    assert!(said.contains("budget"), "{said}");
+}
+
+#[test]
+fn the_refusal_ends_every_kind_of_session_before_it_starts() {
+    // Interactive, `-p` and headless all read the configuration in the same prologue; a refusal
+    // there is fatal and printed, and no session is started on a configuration of nothing.
+    let dir = workspace("sessions");
+    project(&dir, "magi.env = { LD_PRELOAD = \"./x.so\" }\n");
+    for args in [&[][..], &["-p", "hello"][..], &["--headless", "hello"][..]] {
+        let mut command = Command::new(magi_testkit::live::binary(env!("CARGO_BIN_EXE_magi")));
+        magi_testkit::only_its_own_store(&mut command);
+        let output = command
+            .current_dir(dir.join("project"))
+            .env("XDG_CONFIG_HOME", dir.join("config"))
+            .env("XDG_RUNTIME_DIR", dir.join("run"))
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("run magi");
+        let said = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{args:?} started: {said}");
+        assert!(
+            said.contains("magi.env") && said.contains("only your own configuration"),
+            "{args:?}: {said}"
+        );
+    }
 }

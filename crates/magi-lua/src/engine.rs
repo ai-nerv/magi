@@ -50,7 +50,22 @@ pub struct Engine {
     installed: std::collections::HashSet<String>,
     /// The session's `Ops`, for `magi.fs.write`. Empty in every path but a real session.
     lent: crate::fs::Lent,
+    /// The fuel one chunk may spend before it is stopped.
+    budget: i64,
 }
+
+/// Fuel a configuration file may spend: roughly one unit per VM instruction.
+pub const CONFIG_BUDGET: i64 = 200_000_000;
+
+/// Fuel one tool call or watcher may spend; a client decoding a large reply in Lua costs more.
+pub const CALL_BUDGET: i64 = 2_000_000_000;
+
+/// Fuel and memory a project's own file may spend. It assigns settings and nothing more.
+pub const PROJECT_BUDGET: i64 = 5_000_000;
+const PROJECT_MEMORY: usize = 64 * 1024 * 1024;
+
+/// Fuel handed to one `Executor::step`, between which the budget is checked.
+const SLICE: i32 = 8192;
 
 impl Engine {
     /// Set this VM's current session and memory socket.
@@ -125,11 +140,34 @@ impl Engine {
             config: Rc::new(RefCell::new(Config::default())),
             lent: Rc::new(RefCell::new(None)),
             installed: std::collections::HashSet::new(),
+            budget: CONFIG_BUDGET,
         };
         engine.install();
         // After install, so a removal cannot be undone by something the installer adds.
         crate::sandbox::apply(&mut engine.lua);
         engine
+    }
+
+    /// A VM for a file that arrived with a checkout: the core library without `os`, `io`,
+    /// `package`, `debug` or `load`, a `magi` table holding only `seed`, and a small budget.
+    #[must_use]
+    pub fn project(seed: &serde_json::Map<String, serde_json::Value>) -> Self {
+        let mut engine = Self {
+            lua: Lua::core(),
+            config: Rc::new(RefCell::new(Config::default())),
+            lent: Rc::new(RefCell::new(None)),
+            installed: std::collections::HashSet::new(),
+            budget: PROJECT_BUDGET,
+        };
+        engine.install_project(seed);
+        crate::sandbox::apply_project(&mut engine.lua);
+        engine.lua.set_memory_limit(Some(PROJECT_MEMORY));
+        engine
+    }
+
+    /// Change the fuel each later chunk may spend.
+    pub fn set_budget(&mut self, fuel: i64) {
+        self.budget = fuel;
     }
 
     #[must_use]
@@ -148,6 +186,13 @@ impl Engine {
     }
 
     pub fn run(&mut self, source: &str, chunk: &str) -> Result<(), LuaError> {
+        let budget = self.budget;
+        self.run_within(source, chunk, budget)
+    }
+
+    /// Run one chunk on at most `budget` fuel. A chunk that spends it, or outgrows the memory
+    /// limit, is stopped and reported as failing.
+    fn run_within(&mut self, source: &str, chunk: &str, budget: i64) -> Result<(), LuaError> {
         let executor = self
             .lua
             .try_enter(|ctx| {
@@ -158,13 +203,49 @@ impl Engine {
                 file: chunk.to_owned(),
                 message: e.to_string(),
             })?;
+        let failed = |message: String| LuaError::Runtime {
+            file: chunk.to_owned(),
+            message,
+        };
 
+        let mut left = budget;
+        loop {
+            let mut fuel = luna::Fuel::with(SLICE);
+            let finished = self
+                .lua
+                .enter(|ctx| ctx.fetch(&executor).step(ctx, &mut fuel))
+                .map_err(|e| failed(e.to_string()))?;
+            if finished {
+                break;
+            }
+            left -= i64::from(SLICE) - i64::from(fuel.remaining());
+            let waiting = self.lua.enter(|ctx| ctx.fetch(&executor).is_waiting());
+            self.lua.run_finalizers();
+            let over = self
+                .lua
+                .memory_limit()
+                .is_some_and(|limit| self.lua.total_memory() > limit);
+            if over {
+                self.lua.gc_collect();
+            }
+            let over = self
+                .lua
+                .memory_limit()
+                .is_some_and(|limit| self.lua.total_memory() > limit);
+            if waiting || over || left <= 0 {
+                self.lua.enter(|ctx| ctx.fetch(&executor).stop(&ctx));
+                return Err(failed(if waiting {
+                    "waited on something this VM cannot drive".to_owned()
+                } else if over {
+                    "used more memory than it may and was stopped".to_owned()
+                } else {
+                    format!("ran past its budget of {budget} instructions and was stopped")
+                }));
+            }
+        }
         self.lua
-            .execute::<()>(&executor)
-            .map_err(|e| LuaError::Runtime {
-                file: chunk.to_owned(),
-                message: e.to_string(),
-            })
+            .try_enter(|ctx| ctx.fetch(&executor).take_result::<()>(ctx)?)
+            .map_err(|e| failed(e.to_string()))
     }
 
     /// Install the `magi` global and its registrars. Settings are plain fields, read back after
@@ -175,29 +256,7 @@ impl Engine {
         let lent = Rc::clone(&self.lent);
         self.lua.enter(|ctx| {
             let magi = Table::new(&ctx);
-
-            for (name, owner, what) in MOVED {
-                let held = Rc::clone(&config);
-                let callback = Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
-                    let (id, _spec): (Value, Value) = stack.consume(ctx)?;
-                    let id = match id {
-                        Value::String(id) => String::from_utf8_lossy(id.as_bytes()).into_owned(),
-                        _ => {
-                            return Err(raise(
-                                ctx,
-                                &format!("magi.{name}: the first argument must be a name"),
-                            ));
-                        }
-                    };
-                    held.borrow_mut().unkept.push(format!(
-                        "magi.{name}({id:?}) does nothing: {what} {owner}'s, and magi keeps no \
-                         copy. Declare it in {owner}'s own configuration"
-                    ));
-                    stack.replace(ctx, ());
-                    Ok(CallbackReturn::Return)
-                });
-                magi.set(ctx, *name, callback).ok();
-            }
+            signposts(ctx, magi, &config);
 
             // The one way a config reaches another file; `init.lua` is the entry point, and what
             // it does not name does not run.
@@ -348,6 +407,126 @@ const MOVED: &[(&str, &str, &str)] = &[
     ("mux", "hexe", "the multiplexer is"),
 ];
 
+/// Registrars a project's file is refused, and what each would have declared.
+const REFUSED_TO_PROJECTS: &[(&str, &str)] = &[
+    (
+        "tool",
+        "a tool can name a command to run, so only your own configuration can add one",
+    ),
+    (
+        "watch",
+        "a watcher runs after every tool call, so only your own configuration can add one",
+    ),
+    (
+        "load",
+        "a loaded file is a program, so only your own configuration can load one",
+    ),
+];
+
+/// Install the [`MOVED`] signposts on `magi`, each noting what it was asked and doing nothing.
+fn signposts<'gc>(ctx: luna::Context<'gc>, magi: Table<'gc>, config: &Rc<RefCell<Config>>) {
+    for (name, owner, what) in MOVED {
+        let held = Rc::clone(config);
+        let callback = Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
+            let (id, _spec): (Value, Value) = stack.consume(ctx)?;
+            let id = match id {
+                Value::String(id) => String::from_utf8_lossy(id.as_bytes()).into_owned(),
+                _ => {
+                    return Err(raise(
+                        ctx,
+                        &format!("magi.{name}: the first argument must be a name"),
+                    ));
+                }
+            };
+            held.borrow_mut().unkept.push(format!(
+                "magi.{name}({id:?}) does nothing: {what} {owner}'s, and magi keeps no \
+                 copy. Declare it in {owner}'s own configuration"
+            ));
+            stack.replace(ctx, ());
+            Ok(CallbackReturn::Return)
+        });
+        magi.set(ctx, *name, callback).ok();
+    }
+}
+
+impl Engine {
+    /// The `magi` table a project's file sees: `seed` as plain data, the signposts, and
+    /// registrars that raise.
+    fn install_project(&mut self, seed: &serde_json::Map<String, serde_json::Value>) {
+        let config = Rc::clone(&self.config);
+        let mut mine = std::collections::HashSet::new();
+        self.lua.enter(|ctx| {
+            let magi = Table::new(&ctx);
+            signposts(ctx, magi, &config);
+            for (name, why) in REFUSED_TO_PROJECTS {
+                let refuse = Callback::from_fn(&ctx, move |ctx, _exec, stack| {
+                    let named = match stack.get(0) {
+                        Value::String(id) => {
+                            format!("{:?} ", String::from_utf8_lossy(id.as_bytes()).into_owned())
+                        }
+                        _ => String::new(),
+                    };
+                    Err(raise(
+                        ctx,
+                        &format!(
+                            "magi.{name}({named}) was called by a project file and is refused: \
+                             {why}"
+                        ),
+                    ))
+                });
+                magi.set(ctx, *name, refuse).ok();
+            }
+            for (key, _) in magi.iter(ctx) {
+                if let Value::String(name) = key {
+                    mine.insert(String::from_utf8_lossy(name.as_bytes()).into_owned());
+                }
+            }
+            magi.set(ctx, "ui", Table::new(&ctx)).ok();
+            for (name, value) in seed {
+                let value = crate::convert::lua_from_json(ctx, value);
+                magi.set(ctx, name.as_str(), value).ok();
+            }
+            ctx.set_global("magi", magi);
+        });
+        self.installed = mine;
+    }
+
+    /// Every field a file left on `magi` beyond the registrars, with its value where it has one
+    /// as data. What a project's file assigned, for the caller to accept or refuse by name.
+    #[must_use]
+    pub fn assigned(&mut self) -> Vec<(String, Option<serde_json::Value>)> {
+        let mut out = Vec::new();
+        let installed = &self.installed;
+        self.lua.enter(|ctx| {
+            let Value::Table(magi) = ctx.get_global_value("magi") else {
+                return;
+            };
+            for (key, value) in magi.iter(ctx) {
+                let name = match key {
+                    Value::String(name) => String::from_utf8_lossy(name.as_bytes()).into_owned(),
+                    other => other.display().to_string(),
+                };
+                if !installed.contains(&name) {
+                    out.push((name, json_from_lua(ctx, value, 0)));
+                }
+            }
+        });
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    /// Set one field on `magi` as data, so the next harvest keeps it.
+    pub fn assign(&mut self, name: &str, value: &serde_json::Value) {
+        self.lua.enter(|ctx| {
+            if let Value::Table(magi) = ctx.get_global_value("magi") {
+                let value = crate::convert::lua_from_json(ctx, value);
+                magi.set(ctx, name, value).ok();
+            }
+        });
+        self.harvest();
+    }
+}
+
 fn raise<'gc>(ctx: luna::Context<'gc>, message: &str) -> luna::Error<'gc> {
     luna::Error::from_value(Value::String(luna::String::from_slice(
         &ctx,
@@ -404,7 +583,7 @@ impl Engine {
              \x20 if type(w) == \"table\" and w.run then pcall(w.run, __magi_watch_event) end\n\
              end"
         );
-        let _ = self.run(&source, "watch.lua");
+        let _ = self.run_within(&source, "watch.lua", CALL_BUDGET);
     }
 
     pub fn call_tool(
@@ -431,7 +610,7 @@ impl Engine {
                __magi_tool_result = answer\n\
              end"
         );
-        let ran = self.run(&source, "tool.lua");
+        let ran = self.run_within(&source, "tool.lua", CALL_BUDGET);
         ran.ok()?;
 
         let mut out = None;

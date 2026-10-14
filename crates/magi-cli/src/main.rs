@@ -167,7 +167,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
     // Only a session has a prologue, so an argument error arrives without a layer being started.
-    let opening = (cli.command.is_none() && !(cli.print && cli.prompt.is_none())).then(|| {
+    let opening = match (cli.command.is_none() && !(cli.print && cli.prompt.is_none())).then(|| {
         opening::Opening::begin(
             cli.socket.clone(),
             melchior::Role {
@@ -175,7 +175,14 @@ fn main() -> Result<()> {
                 description: cli.role_description.as_deref(),
             },
         )
-    });
+    }) {
+        Some(Err(why)) => {
+            eprintln!("magi: {why}");
+            std::process::exit(1);
+        }
+        Some(Ok(opening)) => Some(opening),
+        None => None,
+    };
     // `fork` is not a session: a prologue here would name a second one and throw it away.
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()

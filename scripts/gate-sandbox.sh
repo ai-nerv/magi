@@ -24,9 +24,12 @@ ROOT="${GATE_ROOT:-crates}"
 
 ENGINE="$ROOT/magi-lua/src/engine.rs"
 SANDBOX="$ROOT/magi-lua/src/sandbox.rs"
+STREAM="$ROOT/magi-lua/src/stream.rs"
+FAMILY="$ROOT/magi-tools/src/family.rs"
 PLUGINS="$ROOT/magi-lua/src/plugins.rs"
 DISCOVERED="$ROOT/magi-cli/src/config/discovered.rs"
 TRUST="$ROOT/magi-cli/src/config/mod.rs"
+PROJECT="$ROOT/magi-cli/src/config/project.rs"
 
 fail=0
 
@@ -64,15 +67,30 @@ body() {
   '
 }
 
-# ---- one VM, in one place ---------------------------------------------------------------------
-built=$(sites 'Lua::full()\|Lua::new()\|Lua::new_with\|unsafe_new')
+# One declaration, from the line naming it to the line that ends it, which may be the same line.
+decl() {
+  code "$1" | awk -v pat="$2" '
+    !inside && $0 ~ pat { inside = 1 }
+    inside { print }
+    inside && /;[[:space:]]*$/ { exit }
+  '
+}
+
+# A file's code before its tests.
+shipped() {
+  code "$1" | sed '/#\[cfg(test)\]/,$d'
+}
+
+# ---- two VMs, in one place ---------------------------------------------------------------------
+# The machine's VM and a project file's data-only VM, both built in the engine and nowhere else.
+built=$(sites 'Lua::full()\|Lua::core()\|Lua::empty()\|Lua::new()\|Lua::new_with\|unsafe_new')
 count=$(printf '%s' "$built" | grep -c . || true)
-if [ "$count" -ne 1 ]; then
-  echo "gate-sandbox: a Lua VM is built in $count places; there is one sandbox and it is applied once:" >&2
+if [ "$count" -ne 2 ]; then
+  echo "gate-sandbox: a Lua VM is built in $count places; there are two and each is sandboxed once:" >&2
   printf '%s\n' "$built" | sed 's/^/  /' >&2
   fail=1
-elif ! printf '%s' "$built" | grep -q "^$ENGINE:"; then
-  echo "gate-sandbox: the VM is no longer built in $ENGINE:" >&2
+elif printf '%s\n' "$built" | grep -v "^$ENGINE:" | grep -q .; then
+  echo "gate-sandbox: a VM is built outside $ENGINE:" >&2
   printf '%s\n' "$built" | sed 's/^/  /' >&2
   fail=1
 fi
@@ -82,6 +100,78 @@ fi
 # test helper or a second `impl` would be a full standard library everywhere it matters.
 body "$ENGINE" 'pub fn new[(][)] -> Self' | grep -q 'sandbox::apply(' || {
   echo "gate-sandbox: $ENGINE builds a VM and does not apply the sandbox to it" >&2
+  fail=1
+}
+
+# ---- a project's VM is data -----------------------------------------------------------------------
+# The core library only, the project sandbox applied, a memory ceiling, and no socket or
+# filesystem lent: `stream` and `fs` are how a checkout would reach the session bus and the disk.
+project_vm=$(body "$ENGINE" 'pub fn project[(]')
+for wanted in 'Lua::core()' 'sandbox::apply_project(' 'set_memory_limit(' 'install_project('; do
+  printf '%s\n' "$project_vm" | grep -qF "$wanted" || {
+    echo "gate-sandbox: the project VM no longer calls $wanted" >&2
+    fail=1
+  }
+done
+installed=$(body "$ENGINE" 'fn install_project[(]')
+for lent in 'stream::table' 'fs::table' 'json::table' '"stream"' '"fs"'; do
+  if printf '%s\n' "$installed" | grep -qF "$lent"; then
+    echo "gate-sandbox: the project VM is lent $lent" >&2
+    fail=1
+  fi
+done
+for gone in load loadstring dofile loadfile require collectgarbage io os package debug; do
+  decl "$SANDBOX" '^const REMOVED_FROM_PROJECTS' | grep -q "\"$gone\"" || {
+    echo "gate-sandbox: a project VM keeps \`$gone\`" >&2
+    fail=1
+  }
+done
+
+# ---- every VM runs on a budget ---------------------------------------------------------------------
+# One way to run a chunk, and it counts fuel: `execute` and `finish` run to completion whatever the
+# chunk does, so a `while true do end` would stall the program that ran it.
+if code "$ENGINE" | grep -q '\.execute::<\|\.finish(\|execute_async'; then
+  echo "gate-sandbox: $ENGINE runs a chunk without a budget" >&2
+  fail=1
+fi
+body "$ENGINE" 'fn run_within[(]' | grep -q 'Fuel::with(' || {
+  echo "gate-sandbox: chunks are no longer run a slice of fuel at a time" >&2
+  fail=1
+}
+body "$ENGINE" 'fn run_within[(]' | grep -q 'left <= 0' || {
+  echo "gate-sandbox: nothing stops a chunk that has spent its budget" >&2
+  fail=1
+}
+
+# ---- a VM dials the family and nothing else ----------------------------------------------------
+# Not "anything under the runtime directory": the session bus, systemd and the agents live there.
+body "$STREAM" '^fn dialable[(]' | grep -q 'family_socket(' || {
+  echo "gate-sandbox: magi.stream no longer asks whether a path is one of the family's sockets" >&2
+  fail=1
+}
+if shipped "$STREAM" | grep -q 'temp_dir()\|XDG_RUNTIME_DIR'; then
+  echo "gate-sandbox: magi.stream decides what is dialable by directory again" >&2
+  fail=1
+fi
+programs=$(decl "$FAMILY" '^pub const PROGRAMS')
+for program in magi casper melchior memory balthasar; do
+  printf '%s\n' "$programs" | grep -q "\"$program\"" || {
+    echo "gate-sandbox: \`$program\` is no longer one of the family's socket directories" >&2
+    fail=1
+  }
+done
+expected=5
+listed_programs=$(printf '%s\n' "$programs" | grep -o '"[a-z]*"' | grep -c . || true)
+[ "$listed_programs" -eq "$expected" ] || {
+  echo "gate-sandbox: the family's socket directories are $listed_programs, not $expected" >&2
+  fail=1
+}
+body "$FAMILY" '^pub fn family_socket_under[(]' | grep -q 'is_socket()' || {
+  echo "gate-sandbox: a dialable path is no longer checked to be a socket" >&2
+  fail=1
+}
+body "$FAMILY" '^pub fn family_socket_under[(]' | grep -q 'uid()' || {
+  echo "gate-sandbox: a dialable socket is no longer checked to be this uid's" >&2
   fail=1
 }
 
@@ -119,35 +209,50 @@ printf '%s\n' "$loader" | grep -q 'acknowledged::cleared(' || {
 
 # ---- and a checkout cannot govern the session ---------------------------------------------------
 # The third door into the same room. The sandbox says what a config *can call*; this says what a
-# project's own file may *assign*. `confine` is the wall, `allow` is what happens without asking,
-# and `trusted` decides which files these rules apply to at all — a `.magi.lua` that could set the
-# last one would exempt itself from the other two.
+# project's own file may *assign*: an allowlist, held to exactly the settings that choose a model or
+# how the screen looks. Adding one is a visible edit here as well as there.
 #
-# The list and the comparison are both checked. `PRIVILEGED_SETTINGS` with nothing consulting it
-# is a constant, and `altered()` over an empty list refuses nothing.
-#
-# Read out of the declaration rather than looked for in the file. `"confine"` also appears in
-# `boolean("confine")` further down, so a whole-file grep would have found the reader of the
-# setting and reported the guard on it as present.
-listed=$(code "$TRUST" | sed -n '/^const PRIVILEGED_SETTINGS/,/];/p')
-if [ -z "$listed" ]; then
-  echo "gate-sandbox: nothing names the settings a project file may not assign" >&2
+# Read out of the declaration rather than looked for in the file, so a reader of a setting further
+# down is not mistaken for the list.
+allowed=$(decl "$PROJECT" '^pub const PROJECT_SETTINGS')
+if [ -z "$allowed" ]; then
+  echo "gate-sandbox: nothing names the settings a project file may assign" >&2
   fail=1
 fi
-for setting in confine allow trusted; do
-  printf '%s\n' "$listed" | grep -q "\"$setting\"" || {
-    echo "gate-sandbox: \`magi.$setting\` is no longer privileged; a project file could set it" >&2
+for setting in model thinking ui; do
+  printf '%s\n' "$allowed" | grep -q "\"$setting\"" || {
+    echo "gate-sandbox: \`magi.$setting\` is missing from what a project file may set" >&2
     fail=1
   }
 done
-holds "$TRUST" 'machine.altered(' \
-  "nothing compares the privileged settings against what they were before .magi.lua ran" || fail=1
-# Fatal rather than printed: by the time this is noticed the value the project file wanted is the
-# value the config holds, and there is nothing sensible to carry on with.
-code "$TRUST" | grep -A6 'machine.altered(' | grep -q 'return Err' || {
-  echo "gate-sandbox: a project file altering a privileged setting no longer ends the run" >&2
+listed_settings=$(printf '%s\n' "$allowed" | grep -o '"[a-z_]*"' | grep -c . || true)
+[ "$listed_settings" -eq 3 ] || {
+  echo "gate-sandbox: a project file may set $listed_settings settings; the list is three" >&2
   fail=1
 }
+# The privileged settings, by name: the wall, what runs without asking, which files the rules
+# apply to, the environment every spawn gets, which program fills a role, and every program's table.
+for setting in confine allow trusted isolation may_spawn mode ask deny env roles agents agent_talk \
+               project system helpers tools memory melchior casper balthasar; do
+  if printf '%s\n' "$allowed" | grep -q "\"$setting\""; then
+    echo "gate-sandbox: \`magi.$setting\` is privileged and a project file may set it" >&2
+    fail=1
+  fi
+done
+holds "$PROJECT" 'HELD_WITHIN' \
+  "nothing keeps the safety model out of what a project file chooses" || fail=1
+# Fatal rather than printed: a project file that asked for more than it may has not said what it
+# meant, and a session started on what was left would be a different session.
+body "$PROJECT" '^pub fn apply[(]' | grep -q 'return Err' || {
+  echo "gate-sandbox: a project file setting what it may not no longer ends the run" >&2
+  fail=1
+}
+code "$TRUST" | grep -q 'project::apply(&mut engine, &local)?' || {
+  echo "gate-sandbox: the configuration no longer runs a project file apart, or drops its refusal" >&2
+  fail=1
+}
+holds "$PLUGINS" 'is_absolute()' \
+  "an empty or relative \`magi.trusted\` entry would vouch for every directory" || fail=1
 
 [ "$fail" -eq 0 ] || { echo "gate-sandbox: failed" >&2; exit 1; }
 echo "gate-sandbox: ok"

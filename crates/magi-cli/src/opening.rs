@@ -15,11 +15,13 @@ pub struct Opening {
 }
 
 impl Opening {
-    /// Read the configuration and start the layer, so this session has a name to be filed under.
-    #[must_use]
-    pub fn begin(socket: Option<std::path::PathBuf>, role: crate::melchior::Role<'_>) -> Self {
+    /// Read the configuration and start the layer, or refuse before anything starts.
+    pub fn begin(
+        socket: Option<std::path::PathBuf>,
+        role: crate::melchior::Role<'_>,
+    ) -> Result<Self, magi_lua::LuaError> {
         // Loaded once: a second `load` re-runs every configuration file and repeats every refusal.
-        let loaded = crate::config::load().ok();
+        let loaded = crate::config::for_session()?;
         let project =
             crate::session::project(loaded.as_ref().and_then(|l| l.config.string("project")));
 
@@ -50,7 +52,7 @@ impl Opening {
             .or_else(|| crate::melchior::run_of(&named));
         let agent = crate::balthasar::agent_of(&named).map(str::to_owned);
 
-        Self {
+        Ok(Self {
             loaded,
             project,
             key,
@@ -59,6 +61,6 @@ impl Opening {
             started,
             run,
             agent,
-        }
+        })
     }
 }

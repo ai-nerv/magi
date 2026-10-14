@@ -129,7 +129,7 @@ impl Catalog {
             helpers: Helpers::default(),
             transcript: None,
             confine: false,
-            isolate: false,
+            isolate: true,
             grants: Vec::new(),
             mode: magi_proto::judging::Mode::default(),
             rules: magi_proto::judging::Rules::default(),

@@ -226,3 +226,32 @@ fn a_project_config_is_applied_after_a_machine_one() {
     let paths = crate::search_paths();
     assert!(paths.last().expect("a path").ends_with(".magi.lua"));
 }
+
+#[test]
+fn a_dial_to_the_session_bus_is_refused() {
+    // A listener of this uid, outside every family directory, and the bus where the runtime
+    // directory has one: both answer as a refusal rather than a connection.
+    let dir = magi_model::scratch::Scratch::new("magi-dial", "bus");
+    let bus = dir.join("bus");
+    let _listening = std::os::unix::net::UnixListener::bind(&bus).expect("bind");
+    let mut tried = vec![bus.display().to_string()];
+    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").filter(|v| !v.is_empty()) {
+        tried.push(
+            std::path::Path::new(&runtime)
+                .join("bus")
+                .display()
+                .to_string(),
+        );
+    }
+    for path in tried {
+        let config = run(&format!(
+            r#"local h, why = magi.stream.connect({path:?}, 200)
+               magi.answer = tostring(h) .. "|" .. tostring(why)"#
+        ));
+        let said = config.string("answer").expect("an answer");
+        assert!(
+            said.starts_with("nil|") && said.contains("family"),
+            "{path}: {said}"
+        );
+    }
+}

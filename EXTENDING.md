@@ -193,8 +193,11 @@ neighbouring program's file harmless.
 ## 4. What a project file may not do
 
 A `.magi.lua` or `.balthasar.lua` arrives with a checkout, and cloning a repository must not be a
-way to run code. Those files may *choose* among what your own configuration offers; they may not
-declare a command to run, an endpoint to send text to, or how your transcripts are read.
+way to run code. Those files run in a VM of their own with no socket, no filesystem, no
+environment and no `load`, under an instruction budget, and may *choose* among what your own
+configuration offers. In magi that is `magi.model` (but not the `safety` helper), `magi.thinking`
+and `magi.ui`. Any other setting, a tool, a watcher or a `magi.load` is refused by name, and the
+session does not start.
 
 `magi.trusted = { "/home/you/work" }` in your own configuration lifts that for directories you
 vouch for, ancestors included. It is a decision that belongs to a person, made once, in the file

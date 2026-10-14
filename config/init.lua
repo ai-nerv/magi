@@ -180,8 +180,8 @@ you found none.]],
 --
 -- magi.env = { PAGER = "cat", RUST_LOG = "warn" }
 
--- Directories whose `.magi.lua` is as trusted as this file. A project file may otherwise set
--- settings but not declare a provider, a tool or a peer.
+-- Directories whose `.magi.lua` is as trusted as this file. A project file may otherwise set only
+-- `magi.model`, `magi.thinking` and `magi.ui`, and anything else it says stops the session.
 --
 -- magi.trusted = { "/home/you/work" }
 

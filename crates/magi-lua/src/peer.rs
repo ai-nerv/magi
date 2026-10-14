@@ -176,7 +176,7 @@ mod tests {
         use std::io::{Read, Write};
         use std::os::unix::net::UnixListener;
 
-        let dir = magi_model::scratch::Scratch::new("magi-stream", "one");
+        let dir = magi_tools::family::FamilyScratch::new("one");
         let path = dir.join("s.sock");
         let listener = UnixListener::bind(&path).expect("bind");
         let server = std::thread::spawn(move || {
