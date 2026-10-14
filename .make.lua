@@ -672,7 +672,8 @@ make.recipe{
       print(said)
       error("cargo machete failed")
     end
-    local shelled = oslo.run{ "nix", "develop", "--command", "cargo", "machete" }
+    local shelled = oslo.run{ "nix", "--extra-experimental-features", "nix-command flakes",
+                              "develop", "--command", "cargo", "machete" }
     assert(shelled.ok, "cargo machete failed")
   end,
 }
@@ -684,9 +685,10 @@ local function cargo_tool(tool, args, failed)
     local argv = { "cargo", tool }
     for _, arg in ipairs(args) do argv[#argv + 1] = arg end
     if not oslo.run{ "cargo", tool, "--version", capture = true }.ok then
-      table.insert(argv, 1, "--command")
-      table.insert(argv, 1, "develop")
-      table.insert(argv, 1, "nix")
+      for _, word in ipairs{ "--command", "develop", "nix-command flakes",
+                             "--extra-experimental-features", "nix" } do
+        table.insert(argv, 1, word)
+      end
     end
     assert(oslo.run(argv).ok, failed)
   end
