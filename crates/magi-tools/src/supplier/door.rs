@@ -1,6 +1,6 @@
 //! The library door: one `serve` per session settings, reached over its socket. `serve` is handed
 //! a key on its standard input when it starts and every call carries it. A call whose request was
-//! partly written is never made again, because it may already have run.
+//! partly written is never made again.
 
 use crate::Cancel;
 use crate::family::{FRAME_CAP, peer_is_us};
@@ -140,8 +140,7 @@ fn secret() -> Option<String> {
     Some(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-/// Spawn on one long-lived thread, so a parent-death signal a daemon arms is tied to a thread
-/// that lives as long as the session rather than to whichever worker asked.
+/// Spawn on one long-lived thread, the one a daemon's parent-death signal is then tied to.
 fn spawn_kept(command: std::process::Command) -> std::io::Result<Child> {
     type Asked = (
         std::process::Command,

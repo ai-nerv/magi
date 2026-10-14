@@ -1,6 +1,6 @@
-//! A project's own `.magi.lua`. It arrived with a checkout, so it runs in a VM of its own with no
-//! socket, filesystem, environment or `load`, and may set only [`PROJECT_SETTINGS`]. Anything else
-//! it assigns is refused by name, and the refusal is fatal.
+//! A project's own `.magi.lua`, run in a VM of its own with no socket, filesystem, environment or
+//! `load`. It may set only [`PROJECT_SETTINGS`]; anything else it assigns is refused by name, and
+//! the refusal is fatal.
 
 use magi_lua::{Engine, LuaError};
 use std::path::Path;

@@ -163,7 +163,7 @@ impl Judged {
 
     /// A write this session's own directory takes, and not into the repository's records or a
     /// file the next session runs: what `edits` exists to stop asking about. Judged on the path
-    /// as written and as it resolves on disk, so a symlink cannot carry a write out.
+    /// as written and as it resolves on disk.
     fn an_edit_here(&self, action: &Action) -> bool {
         use magi_tools::ops::{real_path, runs_later};
         let Action::Write { path } = action else {

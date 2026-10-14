@@ -1,7 +1,7 @@
 //! The prompts you have typed before: one file for every project, not one per project. One prompt
 //! per line, in the shape every shell's `history` has, with a prompt's own newlines and
-//! backslashes escaped so a prompt of several lines is still one line. Rewritten whole each time,
-//! to a private file renamed into place under a lock, so a crash leaves the old history or the new.
+//! backslashes escaped so a prompt of several lines is still one line. Rewritten whole each time:
+//! a private file, written under a lock and renamed into place.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};

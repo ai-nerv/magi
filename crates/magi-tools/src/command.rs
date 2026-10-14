@@ -92,8 +92,8 @@ impl CommandTool {
         out
     }
 
-    /// What a person is asked before this runs: the argument vector, each argument quoted, so it
-    /// is judged by its program and an argument holding `;` or a newline chains nothing.
+    /// What a person is asked before this runs: the program and each argument, quoted as a shell
+    /// would read them back.
     fn action(&self, rendered: &[String]) -> magi_proto::permit::Action {
         use magi_proto::permit::quoted;
         let shown: Vec<String> = std::iter::once(&self.program)

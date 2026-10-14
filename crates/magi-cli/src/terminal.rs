@@ -99,7 +99,7 @@ impl Drop for Session {
     }
 }
 
-/// Whether a [`Session`] holds the terminal, so that restoring it happens once.
+/// Whether a [`Session`] holds the terminal; restoring it clears this.
 static HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Every keyboard flag still pushed, the mouse, the cursor, the screen and bracketed paste, as a
@@ -124,9 +124,8 @@ fn restore() {
     }
 }
 
-/// Restore the terminal before a panic's message is printed, when that panic ends the process:
-/// always under `panic = "abort"`, and from the main thread otherwise, since a task's panic is
-/// caught and the screen is still in use.
+/// Restore the terminal before a panic's message is printed: always under `panic = "abort"`, and
+/// for a panic on the main thread otherwise.
 fn guard_panics() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {

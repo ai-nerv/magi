@@ -105,7 +105,7 @@ body "$ENGINE" 'pub fn new[(][)] -> Self' | grep -q 'sandbox::apply(' || {
 
 # ---- a project's VM is data -----------------------------------------------------------------------
 # The core library only, the project sandbox applied, a memory ceiling, and no socket or
-# filesystem lent: `stream` and `fs` are how a checkout would reach the session bus and the disk.
+# filesystem lent.
 project_vm=$(body "$ENGINE" 'pub fn project[(]')
 for wanted in 'Lua::core()' 'sandbox::apply_project(' 'set_memory_limit(' 'install_project('; do
   printf '%s\n' "$project_vm" | grep -qF "$wanted" || {
@@ -128,8 +128,7 @@ for gone in load loadstring dofile loadfile require collectgarbage io os package
 done
 
 # ---- every VM runs on a budget ---------------------------------------------------------------------
-# One way to run a chunk, and it counts fuel: `execute` and `finish` run to completion whatever the
-# chunk does, so a `while true do end` would stall the program that ran it.
+# One way to run a chunk, and it counts fuel; `execute` and `finish` count none.
 if code "$ENGINE" | grep -q '\.execute::<\|\.finish(\|execute_async'; then
   echo "gate-sandbox: $ENGINE runs a chunk without a budget" >&2
   fail=1
@@ -144,7 +143,7 @@ body "$ENGINE" 'fn run_within[(]' | grep -q 'left <= 0' || {
 }
 
 # ---- a VM dials the family and nothing else ----------------------------------------------------
-# Not "anything under the runtime directory": the session bus, systemd and the agents live there.
+# By the family's own directory names, never by the runtime directory alone.
 body "$STREAM" '^fn dialable[(]' | grep -q 'family_socket(' || {
   echo "gate-sandbox: magi.stream no longer asks whether a path is one of the family's sockets" >&2
   fail=1
@@ -210,10 +209,9 @@ printf '%s\n' "$loader" | grep -q 'acknowledged::cleared(' || {
 # ---- and a checkout cannot govern the session ---------------------------------------------------
 # The third door into the same room. The sandbox says what a config *can call*; this says what a
 # project's own file may *assign*: an allowlist, held to exactly the settings that choose a model or
-# how the screen looks. Adding one is a visible edit here as well as there.
+# how the screen looks.
 #
-# Read out of the declaration rather than looked for in the file, so a reader of a setting further
-# down is not mistaken for the list.
+# Read out of the declaration rather than looked for in the file.
 allowed=$(decl "$PROJECT" '^pub const PROJECT_SETTINGS')
 if [ -z "$allowed" ]; then
   echo "gate-sandbox: nothing names the settings a project file may assign" >&2
@@ -241,8 +239,7 @@ for setting in confine allow trusted isolation may_spawn mode ask deny env roles
 done
 holds "$PROJECT" 'HELD_WITHIN' \
   "nothing keeps the safety model out of what a project file chooses" || fail=1
-# Fatal rather than printed: a project file that asked for more than it may has not said what it
-# meant, and a session started on what was left would be a different session.
+# A refusal ends the run.
 body "$PROJECT" '^pub fn apply[(]' | grep -q 'return Err' || {
   echo "gate-sandbox: a project file setting what it may not no longer ends the run" >&2
   fail=1

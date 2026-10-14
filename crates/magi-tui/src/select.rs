@@ -256,7 +256,7 @@ mod tests {
 
     #[test]
     fn a_selection_read_after_the_screen_shrank_reads_what_is_left() {
-        // The area a selection was made over can outlive a resize; reading past the buffer panicked.
+        // The area a selection was made over can outlive a resize.
         let buffer = drawn(&["hello"]);
         let mut sel = Selection::begin(0, 0);
         sel.drag_to(4, 30);

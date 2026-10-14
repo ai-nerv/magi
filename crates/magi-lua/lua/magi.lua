@@ -292,7 +292,7 @@ function Session:call(name, ...)
 
   local head, cut = exactly(handle, 4)
   if not head then handle:close(); return nil, cut end
-  -- Checked before a byte of the body is asked for: a declared length is a claim, not a promise.
+  -- The declared length is checked against the cap before the body is read.
   local want = be32(head)
   if want == 0 or want > CAP then
     handle:close()
