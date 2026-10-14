@@ -97,7 +97,7 @@ async fn one_turn(
                             retries_seen.push((attempt, max_attempts, delay_ms));
                             magi_model::noted!("ask: attempt {attempt} of {max_attempts} failed; again in {delay_ms}ms");
                             // What the attempt published has to be taken back, to nothing.
-                            turn = Turn::new();
+                            turn = retried(&turn);
                             let mut held = session.lock().await;
                             held.revise_at(cursor, assistant(&id, &turn))?;
                             // Nothing ever set this, so an overload showed "Thinking" for a minute.
@@ -126,7 +126,7 @@ async fn one_turn(
                 delay_ms,
             } => {
                 retries_seen.push((attempt, max_attempts, delay_ms));
-                turn = Turn::new();
+                turn = retried(&turn);
                 let mut held = session.lock().await;
                 held.revise_at(cursor, assistant(&id, &turn))?;
                 held.set_status(AgentStatus::Retrying {
@@ -159,7 +159,7 @@ async fn one_turn(
                     text: None,
                     thinking: turn.signature().map(str::to_owned),
                 },
-                usage: magi_proto::Usage::default(),
+                usage: turn.usage(),
             },
         )?;
         held.set_status(AgentStatus::Idle);
@@ -187,7 +187,7 @@ async fn one_turn(
                 stop_reason: Some(StopReason::Error),
                 error: Some(error.message),
                 signatures: magi_proto::Signatures::default(),
-                usage: magi_proto::Usage::default(),
+                usage: turn.usage(),
             },
         )?;
         // An overflow is not the end of the turn: `run` may yet be handed a tighter layout, and
@@ -264,6 +264,17 @@ enum Arrival {
 }
 
 /// The assistant entry for a turn in its current state.
+/// A turn begun again after a failed attempt: what that attempt said is taken back, and what it
+/// cost is kept, because it was paid for. melchior's next `Spent` is the whole ask's, and replaces it.
+fn retried(turn: &Turn) -> Turn {
+    let mut again = Turn::new();
+    let paid = turn.usage();
+    if paid != magi_proto::Usage::default() {
+        again.apply(Delta::Usage(paid));
+    }
+    again
+}
+
 fn assistant(id: &MessageId, turn: &Turn) -> Entry {
     Entry::Assistant {
         id: id.clone(),
