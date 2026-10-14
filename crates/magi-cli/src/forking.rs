@@ -527,6 +527,49 @@ mod tests {
             let _ = session.wait();
         }
     }
+
+    #[test]
+    fn a_child_writing_stderr_after_fork_exits_neither_dies_nor_blocks() {
+        // The fork runs in a probe process, which exits once the child is started.
+        if let Ok(dir) = std::env::var("MAGI_FORK_STDERR_PROBE") {
+            let dir = std::path::Path::new(&dir);
+            start(&dir.join("magi"), &minted(), 4242, None, None, dir).expect("started");
+            return;
+        }
+        let dir = magi_model::scratch::Scratch::new("magi-forking", "late");
+        let done = dir.join("done");
+        a_harness(
+            &dir,
+            &format!(
+                "set -e\nsleep 2\nhead -c 262144 /dev/zero | tr '\\0' x >&2\necho kept > {}\n",
+                done.display()
+            ),
+        );
+        let probe = Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "forking::tests::a_child_writing_stderr_after_fork_exits_neither_dies_nor_blocks",
+            ])
+            .env("MAGI_FORK_STDERR_PROBE", &*dir)
+            .output()
+            .expect("probe");
+        assert!(
+            probe.status.success(),
+            "{}",
+            String::from_utf8_lossy(&probe.stdout)
+        );
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while !done.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "the child died or blocked writing its stderr"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let logged = std::fs::metadata(dir.join("iota-mu.log")).expect("the log");
+        assert!(logged.len() >= 262_144, "{} bytes logged", logged.len());
+    }
+
     /// A runnable stand-in for the magi a fork would start, written into `dir`. A script, not
     /// a mock, because what is under test is the argv and the environment block the kernel writes.
     fn a_harness(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
