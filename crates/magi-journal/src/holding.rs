@@ -6,6 +6,7 @@ use magi_proto::{MessageId, StopReason};
 /// A user entry, said shortly.
 fn user(text: &str) -> Entry {
     Entry::User {
+        images: Vec::new(),
         id: MessageId::new(text),
         text: text.to_owned(),
         aside: String::new(),

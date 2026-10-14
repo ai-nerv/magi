@@ -312,6 +312,7 @@ impl Screen {
             .block_on(writer.write(&UiCommand::SubmitPrompt {
                 text: text.to_owned(),
                 aside: String::new(),
+                images: Vec::new(),
             }))
             .expect("submitted");
     }

@@ -128,6 +128,7 @@ async fn what_the_model_was_asked_is_the_conversation_so_far() {
         .lock()
         .await
         .commit(Entry::User {
+            images: Vec::new(),
             id: magi_proto::MessageId::new("u1"),
             text: "what holds the transcript?".into(),
             aside: String::new(),
@@ -249,6 +250,7 @@ async fn a_compacted_session_sends_the_summary_and_not_the_history() {
         let mut held = session.lock().await;
         for i in 0..12 {
             held.commit(Entry::User {
+                images: Vec::new(),
                 aside: String::new(),
                 id: magi_proto::MessageId::new(format!("u{i}")),
                 text: format!("forgotten message {i}"),
@@ -262,6 +264,7 @@ async fn a_compacted_session_sends_the_summary_and_not_the_history() {
         })
         .expect("commit");
         held.commit(Entry::User {
+            images: Vec::new(),
             id: magi_proto::MessageId::new("u99"),
             text: "carry on".into(),
             aside: String::new(),

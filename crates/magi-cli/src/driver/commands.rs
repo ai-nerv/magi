@@ -82,6 +82,14 @@ pub(super) fn run_command(input: &str, app: &mut App) -> Control {
             app.show_help();
             Control::Continue
         }
+        ":env" | ":source" => Control::Send(UiCommand::Environment(magi_proto::Environment {
+            source: input.split_whitespace().next() == Some(":source"),
+            input: input
+                .trim_start()
+                .split_once(char::is_whitespace)
+                .map_or("", |(_, rest)| rest.trim())
+                .to_owned(),
+        })),
         // With a name it is the session's to do: only it knows the catalog and whether the name
         // reaches anything.
         ":model" => match input.split_whitespace().nth(1) {
@@ -146,6 +154,25 @@ pub(super) fn run_command(input: &str, app: &mut App) -> Control {
 mod quitting {
     use super::{Control, run_command};
     use crate::app::App;
+
+    #[test]
+    fn environment_commands_keep_expansions_for_the_session_host() {
+        for (text, source, input) in [
+            (":env KEY=new_val:$KEY", false, "KEY=new_val:$KEY"),
+            (":source \"/some/weird file\"", true, "\"/some/weird file\""),
+        ] {
+            let command = run_command(text, &mut App::new());
+            assert_eq!(
+                command,
+                Control::Send(magi_proto::UiCommand::Environment(
+                    magi_proto::Environment {
+                        source,
+                        input: input.into()
+                    }
+                ))
+            );
+        }
+    }
 
     fn ran(input: &str) -> bool {
         matches!(run_command(input, &mut App::new()), Control::Quit)

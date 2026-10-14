@@ -481,8 +481,27 @@ make.recipe{ name = "test", desc = "the suite",
              run = function() sh.cargo("test", "--all-targets", "--release") end }
 make.alias("t", "test")
 
+make.recipe{ name = "test-environment", desc = "session environment imports and subprocess propagation",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "environment")
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "environment")
+               sh.cargo("test", "--release", "-p", "magi-cli", "--bin", "magi", "environment")
+               sh.cargo("test", "--release", "-p", "magi-tui", "--lib", "environment")
+               sh.cargo("test", "--release", "-p", "magi-tools", "--lib", "environment")
+             end }
+
+make.recipe{ name = "test-environment-live", desc = "offline terminal environment acceptance",
+             run = function()
+               build_binary(false)
+               assert(oslo.run{ "sh", "scripts/acceptance-environment.sh", binary_path() }.ok,
+                      "environment terminal acceptance failed")
+             end }
+
 make.recipe{ name = "test-model-refresh", desc = "live model picker and discovery refresh fixtures",
              run = function()
+               sh.cargo("test", "--release", "-p", "magi-tui", "picker::")
+               sh.cargo("test", "--release", "-p", "magi-cli", "models::")
+               sh.cargo("test", "--release", "-p", "magi-cli", "app::tests::picking")
                sh.cargo("test", "--release", "-p", "magi-host", "refresh")
                sh.cargo("test", "--release", "-p", "magi-cli", "refresh")
              end }
@@ -522,13 +541,41 @@ make.recipe{ name = "test-report-delivery", desc = "mandatory reports and interr
                sh.cargo("test", "--release", "-p", "magi-cli", "--bin", "magi", "inheriting::")
              end }
 
+make.recipe{ name = "test-child-permissions", desc = "headless permission forwarding and cancellation",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "asking::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "reviewing::")
+               sh.cargo("test", "--release", "-p", "magi-tools", "--lib", "builtin::tests::")
+               sh.cargo("test", "--release", "-p", "magi-tools", "--lib", "command::")
+               sh.cargo("test", "--release", "-p", "magi-cli", "--bin", "magi", "inheriting::")
+             end }
+
 make.recipe{ name = "test-layout-display", desc = "layout display and token shares",
              run = function() sh.cargo("test", "--release", "-p", "magi-tui", "--lib", "laid::tests::") end }
+
+make.recipe{ name = "test-agent-details", desc = "agent telemetry, tree details and tail attachment",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "monitoring")
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "monitoring::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "asking::")
+               sh.cargo("test", "--release", "-p", "magi-cli", "--bin", "magi", "monitoring::")
+               sh.cargo("test", "--release", "-p", "magi-cli", "--bin", "magi", "connecting::swapping::")
+               sh.cargo("test", "--release", "-p", "magi-cli", "--bin", "magi", "crewing::tests::")
+               sh.cargo("test", "--release", "-p", "magi-cli", "--bin", "magi", "agent_tail")
+               sh.cargo("test", "--release", "-p", "magi-tui", "--lib", "agents::")
+             end }
 
 make.recipe{ name = "test-note-projection", desc = "rule and observation provider channels",
              run = function()
                sh.cargo("test", "--release", "-p", "magi-host", "--lib", "laying::tests::")
                sh.cargo("test", "--release", "-p", "magi-host", "--test", "laying_live", "projection::")
+             end }
+
+make.recipe{ name = "test-agent-details-live", desc = "offline agents tree and tail terminal acceptance",
+             run = function()
+               build_binary(false)
+               assert(oslo.run{ "sh", "scripts/acceptance-agents.sh", binary_path() }.ok,
+                      "agents terminal acceptance failed")
              end }
 
 make.recipe{ name = "test-helper-retries", desc = "helper attempt boundaries and truncated calls",

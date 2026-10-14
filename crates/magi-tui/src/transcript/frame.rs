@@ -117,6 +117,7 @@ mod framing {
                 name: "read".into(),
                 args: r#"{"path":"src/main.rs"}"#.into(),
                 result: Some(ToolResult {
+                    images: Vec::new(),
                     output: "one\ntwo".into(),
                     is_error: false,
                     shown: None,
@@ -196,6 +197,7 @@ mod framing {
         // An affordance on something that will not move is an affordance that lies.
         let shown = text_of(&entry_lines(
             &Entry::User {
+                images: Vec::new(),
                 id: magi_proto::MessageId::new("m1"),
                 text: "hello".into(),
                 aside: String::new(),
@@ -277,6 +279,7 @@ mod nesting {
     fn filled(width: u16) -> Vec<Vec<bool>> {
         entry_lines(
             &Entry::User {
+                images: Vec::new(),
                 id: MessageId::new("m1"),
                 text: "hello".into(),
                 aside: String::new(),
@@ -427,6 +430,7 @@ mod emptiness {
     fn a_call_that_produced_nothing_is_not_a_box_either() {
         // A `write` that reports nothing has an outcome but no body.
         let shown = call(Some(ToolResult {
+            images: Vec::new(),
             output: String::new(),
             is_error: false,
             shown: None,
@@ -442,6 +446,7 @@ mod emptiness {
     #[test]
     fn a_call_with_output_grows_its_box() {
         let shown = call(Some(ToolResult {
+            images: Vec::new(),
             output: "one line".into(),
             is_error: false,
             shown: None,
@@ -484,6 +489,7 @@ mod alignment {
         // An answer and the box above it should begin in the same column.
         let block = text_of(&entry_lines(
             &Entry::User {
+                images: Vec::new(),
                 id: MessageId::new("m1"),
                 text: "hello".into(),
                 aside: String::new(),
@@ -533,6 +539,7 @@ mod alignment {
                 name: "read".into(),
                 args: r#"{"path":"src/main.rs"}"#.into(),
                 result: Some(ToolResult {
+                    images: Vec::new(),
                     output: "one".into(),
                     is_error: false,
                     shown: None,
@@ -573,6 +580,7 @@ mod wide {
         for width in [24u16, 40, 56] {
             let shown = text_of(&entry_lines(
                 &Entry::User {
+                    images: Vec::new(),
                     id: MessageId::new("m1"),
                     text: WIDE.into(),
                     aside: String::new(),
@@ -595,6 +603,7 @@ mod wide {
                     name: "shell".into(),
                     args: format!(r#"{{"command":"echo {WIDE}"}}"#),
                     result: Some(ToolResult {
+                        images: Vec::new(),
                         output: format!("{WIDE}\n{WIDE}"),
                         is_error: false,
                         shown: None,

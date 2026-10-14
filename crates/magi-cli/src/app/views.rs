@@ -160,6 +160,13 @@ impl App {
                 working_for: them.working_for,
                 waiting: them.waiting,
                 claim: them.claim.clone(),
+                details: self
+                    .agent_details
+                    .get(&them.id)
+                    .filter(|(socket, _, at)| {
+                        them.ui.as_ref() == Some(socket) && at.elapsed().as_secs() < 5
+                    })
+                    .and_then(|(_, details, _)| details.clone()),
             })
             .collect();
         // The cursor stays on whoever it was on across a rebuild; a fresh view starts on the agent
@@ -171,12 +178,15 @@ impl App {
             .and_then(|open| open.chosen().map(ToOwned::to_owned))
             .or_else(|| attached.map(ToOwned::to_owned))
             .or_else(|| mine.map(ToOwned::to_owned));
-        let rendered = magi_tui::agents::view(&agents, &self.folded);
+        let rendered = magi_tui::agents::view_with_width(&agents, &self.folded, card_width());
         let mut pane = magi_tui::pane::Pane::new("agents", rendered.rows)
             .selectable(rendered.picks)
             .saying(magi_tui::agents::empty());
         if !on.is_some_and(|id| pane.point_at(&id)) {
             pane.first();
+        }
+        if let Some(previous) = self.pane.as_ref().filter(|pane| pane.title == "agents") {
+            pane.keep_scroll(previous);
         }
         self.pane = Some(pane);
     }

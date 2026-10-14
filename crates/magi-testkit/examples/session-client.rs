@@ -43,6 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(text) = flags.get("prompt") {
         writer
             .write(&UiCommand::SubmitPrompt {
+                images: Vec::new(),
                 text: text.clone(),
                 aside: String::new(),
             })

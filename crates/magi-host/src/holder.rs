@@ -296,6 +296,7 @@ mod tests {
         };
         for jail in [None, Some(r#"{"reach":false,"write":[]}"#.to_owned())] {
             let context = Context {
+                environ: Default::default(),
                 configure: "trusted-config".into(),
                 jail,
                 cwd: Some(dir.to_path_buf()),

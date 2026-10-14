@@ -5,7 +5,7 @@ use tokio::sync::{Mutex, RwLock};
 
 pub(crate) struct Models {
     pub catalog: RwLock<crate::catalog::Catalog>,
-    fetching: Mutex<()>,
+    pub(crate) fetching: Mutex<()>,
 }
 
 impl Models {
@@ -20,8 +20,8 @@ impl Models {
         let Ok(_fetching) = self.fetching.try_lock() else {
             return;
         };
-        let program = self.catalog.read().await.mind.clone();
-        let result = crate::broker::refresh_cards(&program).await;
+        let configured = self.catalog.read().await.clone();
+        let result = crate::broker::refresh_cards(&configured.mind, &configured.environ).await;
         let mut catalog = self.catalog.write().await;
         let warning = match result {
             Ok((mut cards, failed)) => {

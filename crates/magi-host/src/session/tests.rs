@@ -60,6 +60,7 @@ fn user(text: &str) -> Entry {
         id: MessageId::new(text),
         text: text.to_owned(),
         aside: String::new(),
+        images: Vec::new(),
     }
 }
 

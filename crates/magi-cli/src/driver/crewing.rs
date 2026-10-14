@@ -16,6 +16,13 @@ pub(super) async fn direct(app: &mut App, to: &mpsc::Sender<UiCommand>, command:
     if app.attached.is_some() && crate::app::for_screen(&command) {
         return;
     }
+    let command = match crate::attachments::prepare(command, &app.reader).await {
+        Ok(command) => command,
+        Err(why) => {
+            app.show_notice(format!("Image attachment failed: {why:#}"));
+            return;
+        }
+    };
     // An answer that was really sent closes its question, and the next one still open takes the
     // screen. Only here, past the refusals above: a question a view-only screen could not answer
     // is still open.

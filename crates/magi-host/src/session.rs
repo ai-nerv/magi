@@ -2,6 +2,7 @@
 
 pub(crate) mod admission;
 mod fitting;
+mod monitoring;
 pub(crate) mod reporting;
 mod resuming;
 use fitting::{SNAPSHOT_BUDGET, newest_within};
@@ -45,6 +46,7 @@ pub struct Session {
     hints: std::collections::BTreeMap<String, magi_proto::tooling::Hints>,
     /// The layout the last request was built from, for a request balthasar cannot answer.
     laid: Option<magi_proto::laying::Layout>,
+    request_context: Option<magi_proto::monitoring::RequestContext>,
     /// When the last turn ended, so balthasar can tell a quick follow-up from a return.
     rested: Option<std::time::Instant>,
     /// Helper jobs a layout handed out that nothing waited for: run once the turn is over.
@@ -85,6 +87,7 @@ impl Session {
             pending: std::collections::BTreeMap::new(),
             hints: std::collections::BTreeMap::new(),
             laid: None,
+            request_context: None,
             rested: None,
             deferred: Vec::new(),
             helpers_spent: std::sync::Arc::default(),
@@ -192,6 +195,9 @@ impl Session {
     }
 
     pub fn set_model(&mut self, model: Option<magi_proto::ModelInfo>) {
+        if self.model != model {
+            self.request_context = None;
+        }
         self.model = model;
         // A resumed session's turns are counted once there is a model to count them under.
         for entry in self.journal.entries().to_vec() {
@@ -589,7 +595,10 @@ fn grown(before: &str, now: &str) -> String {
 fn events_for(cursor: Cursor, entry: &Entry) -> Vec<HarnessEvent> {
     match entry {
         // The aside is deliberately not replayed: it is context for the model and no UI renders it.
-        Entry::User { id, text, .. } => vec![HarnessEvent::UserMessage {
+        Entry::User {
+            id, text, images, ..
+        } => vec![HarnessEvent::UserMessage {
+            images: images.clone(),
             cursor,
             id: id.clone(),
             text: text.clone(),

@@ -165,6 +165,7 @@ async fn idle(reader: &mut Reader) {
 async fn prompt(writer: &mut Writer) {
     writer
         .write(&UiCommand::SubmitPrompt {
+            images: Vec::new(),
             text: "scan and report".into(),
             aside: String::new(),
         })
@@ -235,6 +236,32 @@ async fn escape_during_report_handling_retriggers_without_another_notification()
         !mind.overlapped(),
         "retry must wait for the interrupted turn to stop"
     );
+}
+
+#[tokio::test]
+async fn cancelling_the_automatic_report_retry_stops_without_losing_the_report() {
+    let mind = Mind::controlled("report-retry-stop");
+    let fixture = fixture("stop", &mind, false, false).await;
+    let (mut reader, mut writer) = attach(&fixture).await;
+    report(&mut writer, &fixture, "demo/main/child").await;
+    prefix(&mut reader, 1).await;
+    writer
+        .write(&UiCommand::Interrupt)
+        .await
+        .expect("interrupt");
+    prefix(&mut reader, 2).await;
+    writer
+        .write(&UiCommand::Interrupt)
+        .await
+        .expect("interrupt retry");
+    idle(&mut reader).await;
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert_eq!(mind.asked(), 2, "cancel must not restart indefinitely");
+    prompt(&mut writer).await;
+    prefix(&mut reader, 3).await;
+    assert!(mind.asks()[2].contains("Verified finding"));
+    mind.release(2);
+    idle(&mut reader).await;
 }
 
 #[tokio::test]

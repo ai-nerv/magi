@@ -6,6 +6,21 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "command")]
 pub enum UiCommand {
+    Inspect,
+    AttachLatest {
+        #[serde(default)]
+        draws: bool,
+        /// As [`Self::Attach`]'s: without it the connection only watches.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+    },
+    Review {
+        tool: String,
+        action: permit::Action,
+        /// The parent's controller key; a review without it is refused.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+    },
     Attach {
         session: Option<SessionId>,
         from_cursor: Cursor,
@@ -31,6 +46,8 @@ pub enum UiCommand {
         cols: u16,
     },
     SubmitPrompt {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<magi_model::Image>,
         text: String,
         /// Context for the model that is not what the person typed; see [`crate::Entry::User::aside`].
         #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -46,6 +63,7 @@ pub enum UiCommand {
     },
     Interrupt,
     RefreshModels,
+    Environment(Environment),
     SetModel {
         name: String,
     },
@@ -114,11 +132,30 @@ pub enum UiCommand {
     Detach,
 }
 
+/// A transient environment request, with its contents omitted from diagnostics.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub struct Environment {
+    pub source: bool,
+    pub input: String,
+}
+
+impl std::fmt::Debug for Environment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Environment")
+            .field("source", &self.source)
+            .finish_non_exhaustive()
+    }
+}
+
 impl UiCommand {
     /// The command's wire name, for a log line that must carry nothing a command holds.
     #[must_use]
     pub const fn verb(&self) -> &'static str {
         match self {
+            Self::Inspect => "inspect",
+            Self::AttachLatest { .. } => "attach_latest",
+            Self::Review { .. } => "review",
+            Self::Environment(_) => "environment",
             Self::Attach { .. } => "attach",
             Self::Sized { .. } => "sized",
             Self::FloatSized { .. } => "float_sized",
@@ -148,7 +185,10 @@ impl UiCommand {
     /// Whether a connection that only watches may send this.
     #[must_use]
     pub const fn watches(&self) -> bool {
-        matches!(self, Self::Attach { .. } | Self::Detach)
+        matches!(
+            self,
+            Self::Attach { .. } | Self::AttachLatest { .. } | Self::Inspect | Self::Detach
+        )
     }
 }
 
@@ -163,6 +203,15 @@ mod verbs {
             UiCommand::DeclareNeeds,
             UiCommand::SetMode { mode: "x".into() },
             UiCommand::TakeGrants { grants: Vec::new() },
+            UiCommand::Inspect,
+            UiCommand::AttachLatest {
+                draws: false,
+                key: None,
+            },
+            UiCommand::Environment(Environment {
+                source: false,
+                input: "A=1".into(),
+            }),
         ] {
             let wire = serde_json::to_value(&command).expect("encode");
             assert_eq!(wire["command"], command.verb(), "{command:?}");
@@ -177,6 +226,33 @@ mod verbs {
             !UiCommand::SetMode {
                 mode: "auto".into()
             }
+            .watches()
+        );
+    }
+
+    #[test]
+    fn a_watcher_may_look_but_not_review_or_change_the_environment() {
+        assert!(UiCommand::Inspect.watches());
+        assert!(
+            UiCommand::AttachLatest {
+                draws: true,
+                key: None
+            }
+            .watches()
+        );
+        assert!(
+            !UiCommand::Review {
+                tool: "read".into(),
+                action: permit::Action::Read { path: "/".into() },
+                key: None,
+            }
+            .watches()
+        );
+        assert!(
+            !UiCommand::Environment(Environment {
+                source: true,
+                input: "PATH=/x".into(),
+            })
             .watches()
         );
     }

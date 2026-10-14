@@ -56,18 +56,49 @@ pub fn render(picker: &Picker, width: u16) -> Vec<Line<'static>> {
         spans.extend(row.spans);
         ratatui::text::Line::from(spans)
     }));
-    out.extend(shown.iter().enumerate().map(|(offset, choice)| {
-        crate::menu::row(
+    let table = (!picker.columns().is_empty()).then(|| super::table::Table::new(picker, width));
+    if let Some(table) = &table {
+        out.push(table.header());
+    }
+    out.extend(shown.iter().enumerate().flat_map(|(offset, choice)| {
+        let selected = window.start + offset == picker.selected;
+        if let Some(table) = &table {
+            return vec![table.choice(choice, selected, picker.query())];
+        }
+        let row = crate::menu::row(
             &crate::menu::Row {
                 value: &choice.value,
-                detail: &choice.detail,
-                selected: window.start + offset == picker.selected,
+                detail: if picker.detail_below {
+                    ""
+                } else {
+                    &choice.detail
+                },
+                selected,
                 ready: choice.ready,
                 value_width,
             },
             picker.query(),
             width,
-        )
+        );
+        if picker.detail_below {
+            let mut rows = vec![row];
+            for detail in choice.detail.split('\n') {
+                rows.push(crate::menu::row(
+                    &crate::menu::Row {
+                        value: "",
+                        detail,
+                        selected,
+                        ready: choice.ready,
+                        value_width: 0,
+                    },
+                    "",
+                    width,
+                ));
+            }
+            rows
+        } else {
+            vec![row]
+        }
     }));
     // The question last, under the row it is about, so the row stays under your eye while you
     // decide and the list does not move.

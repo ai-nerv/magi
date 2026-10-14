@@ -72,6 +72,7 @@ fn ran(dir: &std::path::Path, wonder: &serde_json::Value, knows: Arc<Told>) -> O
 
 fn once(dir: &std::path::Path, wonder: &serde_json::Value, knows: Arc<Told>) -> Output {
     let supplied = SuppliedTool {
+        environ: Default::default(),
         card: serde_json::from_value(serde_json::json!({
             "name": "probe", "description": "probe", "parameters": {}
         }))

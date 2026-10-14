@@ -1,6 +1,7 @@
 //! The magi UI process: one multi-call binary, so out-of-process pieces ship as a single artifact.
 
 mod app;
+mod attachments;
 mod balthasar;
 mod child;
 mod clipboard;
@@ -290,7 +291,13 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
                     return Err(why);
                 }
             };
-            let outcome = print::run(&socket, prompt).await;
+            let reader = attachments::Reader::of(
+                loaded
+                    .as_ref()
+                    .map(crate::config::tooling)
+                    .unwrap_or_default(),
+            );
+            let outcome = print::run(&socket, prompt, &reader).await;
             // Before the socket goes: the turn's own flush runs on a task this exit can outrun.
             magi_host::drain().await;
             balthasar::stop();

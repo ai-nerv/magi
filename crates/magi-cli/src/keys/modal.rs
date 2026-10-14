@@ -307,7 +307,7 @@ fn act(deed: vim::Deed, editor: &mut Editor, modal: &mut Modal, _tall: bool) -> 
 /// Send what is in the buffer.
 fn submit(editor: &mut Editor) -> Action {
     match editor.submit() {
-        Some(text) if text.starts_with(':') => Action::Command(text),
+        Some(text) if text.trim_start().starts_with(':') => Action::Command(text),
         Some(text) => Action::Submit(text),
         None => Action::Ignore,
     }

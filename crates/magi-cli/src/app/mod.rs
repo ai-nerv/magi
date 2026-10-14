@@ -60,6 +60,14 @@ pub struct App {
     pub modal: crate::keys::Modal,
     /// Pushed by melchior for the `$` popup: a completion offered on a keystroke cannot go look.
     pub reachable: Vec<crate::melchior::Peer>,
+    pub agent_details: std::collections::BTreeMap<
+        String,
+        (
+            std::path::PathBuf,
+            Option<magi_proto::monitoring::AgentDetails>,
+            std::time::Instant,
+        ),
+    >,
     /// Whose session is on screen, `None` for this one's own; see [`crewing`].
     pub attached: Option<crate::melchior::Peer>,
     pub waiting: usize,
@@ -108,6 +116,8 @@ pub struct App {
     pub mind: String,
     /// Which program offers the tools, asked for casper's float.
     pub tools_program: String,
+    /// What an image attached to a prompt is read through.
+    pub reader: crate::attachments::Reader,
     /// What the provider published about a model, by its name, once asked; and an answer on its way.
     pub details: Option<(String, Result<magi_tui::model_card::Details, String>)>,
     pub details_rx: Option<std::sync::mpsc::Receiver<crate::app::views::Answered>>,
@@ -173,6 +183,7 @@ impl App {
             landing: magi_tui::decrypt::Landing::default(),
             modal: crate::keys::Modal::default(),
             reachable: Vec::new(),
+            agent_details: std::collections::BTreeMap::new(),
             attached: None,
             waiting: 0,
             granted: Vec::new(),
@@ -199,6 +210,7 @@ impl App {
             about: std::collections::BTreeMap::new(),
             mind: "melchior".to_owned(),
             tools_program: "casper".to_owned(),
+            reader: crate::attachments::Reader::default(),
             details: None,
             details_rx: None,
             attach_wanted: None,
@@ -448,11 +460,7 @@ impl App {
             .iter()
             .map(|choice| magi_tui::picker::Choice {
                 value: choice.name.clone(),
-                detail: if choice.requirement.is_empty() {
-                    magi_tui::footer::format_tokens(choice.context_window)
-                } else {
-                    choice.requirement.clone()
-                },
+                detail: crate::models::table_cells(choice),
                 ready: choice.requirement.is_empty(),
             })
             .collect();
@@ -466,6 +474,7 @@ impl App {
             .and_then(|picker| picker.current().map(|choice| choice.value.clone()))
             .or_else(|| self.model.as_ref().map(|m| m.name.clone()));
         let mut picker = magi_tui::picker::Picker::new("Model", choices, current.as_deref());
+        picker.table(crate::models::COLUMNS);
         for ch in query.chars() {
             picker.push(ch);
         }

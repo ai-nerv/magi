@@ -30,6 +30,7 @@ mod tests {
 
     fn header_of(err: bool) -> Line<'static> {
         let result = magi_proto::ToolResult {
+            images: Vec::new(),
             output: "out".to_owned(),
             is_error: err,
             shown: None,
@@ -92,6 +93,7 @@ mod tests {
         // Painted with the block's own background this row joined the previous block's bottom
         // padding into one two-row band, and three calls in a row read as a single wall.
         let result = magi_proto::ToolResult {
+            images: Vec::new(),
             output: "out".to_owned(),
             is_error: false,
             shown: None,

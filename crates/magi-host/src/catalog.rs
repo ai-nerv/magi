@@ -195,8 +195,12 @@ impl Catalog {
             .cards
             .iter()
             .map(|card| magi_proto::ModelChoice {
+                vision: card.vision,
                 name: card.id.clone(),
                 context_window: card.context_window.unwrap_or(0),
+                pricing: card.pricing.clone(),
+                popularity_rank: card.popularity_rank,
+                capabilities: card.capabilities.clone(),
                 requirement: match (&card.needs, card.ready) {
                     (_, true) => String::new(),
                     (Some(variable), _) => format!("set {variable}"),
@@ -262,6 +266,10 @@ mod tests {
             api: "openai-completions".to_owned(),
             context_window: Some(1000),
             max_output: Some(100),
+            pricing: None,
+            popularity_rank: None,
+            capabilities: None,
+            vision: false,
             reasons: false,
             ready,
             needs: if ready {
@@ -281,6 +289,22 @@ mod tests {
             ],
             ..Catalog::empty()
         }
+    }
+
+    #[test]
+    fn choices_preserve_capability_metadata() {
+        let mut catalog = catalog();
+        catalog.cards[0].capabilities = Some(magi_model::Capabilities {
+            input: vec!["text".into(), "image".into()],
+            output: vec!["text".into()],
+            thinking: Some(vec!["low".into(), "high".into()]),
+        });
+        let choice = catalog
+            .choices()
+            .into_iter()
+            .find(|choice| choice.name == "local/a")
+            .expect("local model");
+        assert_eq!(choice.capabilities, catalog.cards[0].capabilities);
     }
 
     #[test]

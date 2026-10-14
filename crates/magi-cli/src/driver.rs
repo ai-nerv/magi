@@ -42,6 +42,7 @@ pub async fn run(
         app.about = crate::config::agents::descriptions(loaded);
         app.mind = crate::config::mind(loaded);
         app.tools_program = crate::config::tooling_program(loaded);
+        app.reader = crate::attachments::Reader::of(crate::config::tooling(loaded));
     }
     app.view_only = view_only;
     // Whether casper answers is asked once, off the UI thread: the probe starts the program.
@@ -93,6 +94,7 @@ pub async fn run(
     magi_tui::decrypt::begin();
     let mut terminal_events = EventStream::new();
     let mut ticker = tokio::time::interval(Duration::from_millis(magi_tui::metric::frame_ms()));
+    let mut agent_details = monitoring::Poller::new();
 
     let (event_tx, mut event_rx) = mpsc::channel::<HarnessEvent>(256);
     let (command_tx, command_rx) = mpsc::channel::<UiCommand>(32);
@@ -146,12 +148,16 @@ pub async fn run(
 
     // Sent once the connection task exists: the channel buffers it until after the attach.
     if let Some(text) = prompt {
-        let _ = command_tx
-            .send(UiCommand::SubmitPrompt {
+        direct(
+            &mut app,
+            &command_tx,
+            UiCommand::SubmitPrompt {
+                images: Vec::new(),
                 text,
                 aside: seat.remind(String::new()),
-            })
-            .await;
+            },
+        )
+        .await;
     }
 
     let mut dirty = true;
@@ -364,7 +370,7 @@ pub async fn run(
                                 direct(
                                     &mut app,
                                     &command_tx,
-                                    UiCommand::SubmitPrompt { text, aside },
+                                    UiCommand::SubmitPrompt { text, aside, images: Vec::new() },
                                 )
                                 .await;
                                 dirty = true;
@@ -564,6 +570,7 @@ pub async fn run(
                 app.advance();
                 app.poll_details();
                 app.poll_tools();
+                agent_details.pump(&mut app);
                 // Done on the frame rather than where the state changes: melchior and the socket both
                 // answer with whatever they were last told.
                 let mut ended = false;
@@ -688,7 +695,7 @@ pub async fn run(
                     direct(
                         &mut app,
                         &command_tx,
-                        UiCommand::SubmitPrompt { text: occasion, aside },
+                        UiCommand::SubmitPrompt { text: occasion, aside, images: Vec::new() },
                     )
                     .await;
                 }
@@ -715,6 +722,7 @@ pub(super) fn float_room() -> (u16, u16) {
 
 /// The socket to the session, and redialling one that dropped.
 mod connecting;
+mod monitoring;
 use connecting::connection_loop;
 
 /// Which agent the screen is pointed at, and what may be sent to one that is not ours.

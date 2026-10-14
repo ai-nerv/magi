@@ -31,6 +31,7 @@ async fn a_prompt_typed_at_a_peer_reaches_it() {
         &mut app,
         &to,
         UiCommand::SubmitPrompt {
+            images: Vec::new(),
             text: "do the thing".into(),
             aside: String::new(),
         },
@@ -56,6 +57,7 @@ async fn a_view_only_screen_sends_no_prompt_and_says_so_once() {
             &mut app,
             &to,
             UiCommand::SubmitPrompt {
+                images: Vec::new(),
                 text: "x".into(),
                 aside: String::new(),
             },

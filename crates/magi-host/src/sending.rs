@@ -89,6 +89,7 @@ mod tests {
             cursor: Cursor(3),
             id: MessageId::new("u3"),
             text: "y".repeat(magi_ipc::MAX_FRAME_BYTES + 1),
+            images: Vec::new(),
         };
         let reading = tokio::spawn(async move {
             let first: HarnessEvent = reader.read().await.expect("the cut event");
@@ -127,6 +128,7 @@ mod tests {
             cursor: Cursor(1),
             id: MessageId::new("u1"),
             text: "y".repeat(64 * 1024),
+            images: Vec::new(),
         };
         let started = std::time::Instant::now();
         let given_up = screen.write(&event).await.expect_err("never taken");

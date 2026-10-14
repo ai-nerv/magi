@@ -101,11 +101,11 @@ pub fn refused(wonder: Wonder, because: &str) -> Answered {
 
 /// Serve questions from `asked` out of `scribe`, until nothing is asking any more. Its own task,
 /// because a question belongs to the session and not to whichever UI was attached when it arrived.
-pub async fn serve(
+pub(crate) async fn serve(
     mut asked: tokio::sync::mpsc::UnboundedReceiver<Wondering>,
     scribe: std::sync::Arc<tokio::sync::Mutex<Option<crate::scribe::Scribe>>>,
     session: std::sync::Arc<tokio::sync::Mutex<crate::session::Session>>,
-    backend: Option<crate::turn::Backend>,
+    models: std::sync::Arc<crate::refreshing::Models>,
 ) {
     while let Some(asking) = asked.recv().await {
         let answered = match asking.wonder {
@@ -122,7 +122,12 @@ pub async fn serve(
             Wonder::Helper => {
                 let tasks = session.lock().await.helpers();
                 let session = std::sync::Arc::clone(&session);
-                let backend = backend.clone();
+                let catalog = models.catalog.read().await;
+                let backend = session
+                    .lock()
+                    .await
+                    .model_name()
+                    .and_then(|name| catalog.backend(&name));
                 let _ = tasks.spawn(async move {
                     let answered = helper(&session, backend, &asking.args).await;
                     let _ = asking.back.send(answered);
@@ -397,7 +402,9 @@ mod tests {
             asked,
             std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             std::sync::Arc::clone(&session),
-            None,
+            std::sync::Arc::new(crate::refreshing::Models::new(
+                crate::catalog::Catalog::empty(),
+            )),
         ));
         session
             .lock()
@@ -425,7 +432,9 @@ mod tests {
             asked,
             std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             a_session(),
-            None,
+            std::sync::Arc::new(crate::refreshing::Models::new(
+                crate::catalog::Catalog::empty(),
+            )),
         ));
         let knows = Knows::of(&magi_proto::SessionId::new("s-1"), "/tmp").asking(asking);
         let answered = tokio::task::spawn_blocking(move || {
@@ -447,7 +456,9 @@ mod tests {
             asked,
             std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             std::sync::Arc::clone(&session),
-            None,
+            std::sync::Arc::new(crate::refreshing::Models::new(
+                crate::catalog::Catalog::empty(),
+            )),
         ));
         let knows = std::sync::Arc::new(
             Knows::of(&magi_proto::SessionId::new("s-1"), "/tmp").asking(asking),

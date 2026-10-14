@@ -12,6 +12,7 @@ mod tests {
             "write",
             r#"{"path":"/tmp/x","contents":"one\ntwo"}"#,
             Some(&magi_proto::ToolResult {
+                images: Vec::new(),
                 output: "wrote /tmp/x".to_owned(),
                 is_error: false,
                 shown: None,
@@ -108,6 +109,7 @@ mod tests {
     #[test]
     fn the_label_carries_the_outcome() {
         let failed = &magi_proto::ToolResult {
+            images: Vec::new(),
             output: "no".to_owned(),
             is_error: true,
             shown: None,
@@ -128,6 +130,7 @@ mod tests {
         // With a result, because a call that has produced nothing is drawn as a plain line
         // rather than a box — there is no edge for a handle to sit in until there is a body.
         let done = magi_proto::ToolResult {
+            images: Vec::new(),
             output: "done".to_owned(),
             is_error: false,
             shown: None,

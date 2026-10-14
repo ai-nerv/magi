@@ -51,11 +51,11 @@ fn the_command_palette_marks_the_selection_and_shows_details() {
             "❯ :help         show keybindings and commands",
             "  :clear        start a fresh conversation",
             "  :model        the model, or :model <name> to swi",
+            "  :env          set session variables: KEY=value:$",
+            "  :source       import standalone exports from a f",
             "  :permissions  ask the model what it needs, and d",
             "  :resume       continue a session from this direc",
             "  :archives     sessions put away, and where they",
-            "  :rename       name this session, and stop it bei",
-            "  :trace        what this session has done, as it",
         ]
     );
 }

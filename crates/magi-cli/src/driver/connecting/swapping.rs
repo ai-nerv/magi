@@ -105,9 +105,7 @@ async fn a_peer_is_asked_for_its_history_from_the_beginning() {
 
     let asked = swapped.peer.lock().expect("heard").clone();
     match asked.first() {
-        Some(UiCommand::Attach { from_cursor, .. }) => {
-            assert_eq!(*from_cursor, Cursor::ZERO, "{asked:?}");
-        }
+        Some(UiCommand::AttachLatest { .. }) => {}
         other => panic!("expected an attach, got {other:?}"),
     }
 }
@@ -119,7 +117,7 @@ async fn only_our_own_session_is_told_there_is_a_screen_here() {
 
     let asked = swapped.own.lock().expect("heard").clone();
     assert!(
-        matches!(asked.first(), Some(UiCommand::Attach { draws, .. }) if *draws),
+        matches!(asked.first(), Some(UiCommand::AttachLatest { draws, .. }) if *draws),
         "{asked:?}"
     );
     assert!(
@@ -129,7 +127,7 @@ async fn only_our_own_session_is_told_there_is_a_screen_here() {
 
     let asked = swapped.peer.lock().expect("heard").clone();
     assert!(
-        matches!(asked.first(), Some(UiCommand::Attach { draws, .. }) if !*draws),
+        matches!(asked.first(), Some(UiCommand::AttachLatest { draws, .. }) if !*draws),
         "{asked:?}"
     );
     assert!(
@@ -156,6 +154,7 @@ async fn a_prompt_sent_while_on_a_peer_reaches_it() {
     swapped
         .commands
         .send(UiCommand::SubmitPrompt {
+            images: Vec::new(),
             text: "for the agent on screen".into(),
             aside: String::new(),
         })

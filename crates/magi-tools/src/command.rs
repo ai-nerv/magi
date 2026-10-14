@@ -139,6 +139,9 @@ impl Tool for CommandTool {
     }
 
     fn run(&self, arguments: &serde_json::Value, ops: &dyn Ops, cancel: &dyn Cancel) -> Output {
+        if cancel.is_cancelled() {
+            return Output::error("cancelled before this command ran");
+        }
         let rendered = match render(&self.args, arguments) {
             Ok(rendered) => rendered,
             Err(why) => return Output::error(format!("{}: {why}", self.name)),
@@ -170,10 +173,10 @@ impl Tool for CommandTool {
 }
 
 /// What a program did.
-struct Finished {
-    out: String,
-    err: String,
-    code: Option<i32>,
+pub(crate) struct Finished {
+    pub(crate) out: String,
+    pub(crate) err: String,
+    pub(crate) code: Option<i32>,
 }
 
 impl Finished {
@@ -229,7 +232,20 @@ fn spawn(
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
     crate::environ::apply(&mut command, &kept);
+    capture(&mut command, program, timeout, cancel)
+}
 
+/// Run a prepared command, collecting what it printed, until it ends, `timeout` passes or
+/// `cancel` is raised.
+pub(crate) fn capture(
+    command: &mut std::process::Command,
+    program: &str,
+    timeout: Duration,
+    cancel: &dyn Cancel,
+) -> Result<Finished, String> {
+    if cancel.is_cancelled() {
+        return Err(format!("{program} was cancelled before it ran"));
+    }
     let mut child = command
         .spawn()
         .map_err(|why| format!("{program} could not be run: {why}"))?;
@@ -429,140 +445,7 @@ fn scalar(value: &serde_json::Value) -> String {
 
 /// Building the argument vector from a call.
 #[cfg(test)]
-mod render_tests {
-    use super::*;
-    use serde_json::json;
-
-    fn rendered(templates: &[&str], arguments: &serde_json::Value) -> Vec<String> {
-        attempted(templates, arguments).expect("rendered")
-    }
-
-    fn attempted(templates: &[&str], arguments: &serde_json::Value) -> Result<Vec<String>, String> {
-        let templates: Vec<String> = templates.iter().map(|t| (*t).to_owned()).collect();
-        render(&templates, arguments)
-    }
-
-    #[test]
-    fn a_value_that_would_be_read_as_an_option_is_refused() {
-        for (templates, arguments) in [
-            (vec!["{pattern}"], json!({ "pattern": "--pre=sh" })),
-            (vec!["-n", "{paths}"], json!({ "paths": ["a.rs", "-rf"] })),
-            (vec!["{name}.txt"], json!({ "name": "-x" })),
-            (vec!["{count}"], json!({ "count": -1 })),
-        ] {
-            let why = attempted(&templates, &arguments).expect_err("refused");
-            assert!(why.contains("begins with `-`"), "{templates:?}: {why}");
-        }
-    }
-
-    #[test]
-    fn after_a_double_dash_a_value_is_a_value_whatever_it_begins_with() {
-        assert_eq!(
-            rendered(
-                &["-n", "--", "{pattern}"],
-                &json!({ "pattern": "--pre=sh" })
-            ),
-            ["-n", "--", "--pre=sh"]
-        );
-    }
-
-    #[test]
-    fn a_value_inside_a_flag_is_that_flags_value() {
-        assert_eq!(
-            rendered(&["--max-count={limit}"], &json!({ "limit": -1 })),
-            ["--max-count=-1"]
-        );
-    }
-
-    #[test]
-    fn a_literal_argument_is_passed_through() {
-        assert_eq!(rendered(&["--json", "-n"], &json!({})), ["--json", "-n"]);
-    }
-
-    #[test]
-    fn a_placeholder_takes_the_value_from_the_call() {
-        assert_eq!(
-            rendered(&["{pattern}"], &json!({ "pattern": "TODO" })),
-            ["TODO"]
-        );
-    }
-
-    #[test]
-    fn a_placeholder_inside_a_flag_is_substituted() {
-        assert_eq!(
-            rendered(&["--max-count={limit}"], &json!({ "limit": 20 })),
-            ["--max-count=20"]
-        );
-    }
-
-    #[test]
-    fn an_absent_bare_placeholder_is_dropped() {
-        assert!(rendered(&["{limit}"], &json!({})).is_empty());
-    }
-
-    #[test]
-    fn an_absent_argument_takes_its_flag_with_it() {
-        // The one that got `rg` a `--glob=` with nothing after it. `--max-count=` is read by
-        // most programs as malformed rather than as unset, and by the rest as a value of "".
-        assert!(rendered(&["--max-count={limit}"], &json!({})).is_empty());
-        assert!(rendered(&["--glob={glob}"], &json!({ "pattern": "x" })).is_empty());
-    }
-
-    #[test]
-    fn a_null_argument_counts_as_absent() {
-        // A model that sends `{"glob": null}` has said nothing, not said empty.
-        assert!(rendered(&["--glob={glob}"], &json!({ "glob": null })).is_empty());
-    }
-
-    #[test]
-    fn a_template_naming_two_arguments_needs_both() {
-        assert!(rendered(&["{a}-{b}"], &json!({ "a": "x" })).is_empty());
-        assert_eq!(
-            rendered(&["{a}-{b}"], &json!({ "a": "x", "b": "y" })),
-            ["x-y"]
-        );
-    }
-
-    #[test]
-    fn an_array_argument_expands_to_one_argument_each() {
-        assert_eq!(
-            rendered(&["{paths}"], &json!({ "paths": ["a.rs", "b.rs"] })),
-            ["a.rs", "b.rs"]
-        );
-    }
-
-    #[test]
-    fn a_string_arrives_without_its_json_quotes() {
-        // A path argument must be `src/main.rs`, not `"src/main.rs"` with the quotes in it.
-        assert_eq!(
-            rendered(&["{path}"], &json!({ "path": "src/main.rs" })),
-            ["src/main.rs"]
-        );
-    }
-
-    #[test]
-    fn a_value_is_never_shell_interpreted() {
-        // The security property this transport rests on: an argument vector is not a command
-        // line. Nothing here splits on whitespace, expands a glob, or reads a `;`.
-        let hostile = "a; rm -rf /; echo $(whoami) `id` && :";
-        assert_eq!(
-            rendered(&["{pattern}"], &json!({ "pattern": hostile })),
-            [hostile]
-        );
-    }
-
-    #[test]
-    fn a_placeholder_the_schema_does_not_declare_is_reported() {
-        let tool = CommandTool::new(
-            "grep",
-            "",
-            json!({ "type": "object", "properties": { "pattern": { "type": "string" } } }),
-            "rg",
-            vec!["{pattern}".to_owned(), "--max-count={limit}".to_owned()],
-        );
-        assert_eq!(tool.placeholders(), ["pattern", "limit"]);
-    }
-}
+mod render_tests;
 
 /// Running the program.
 #[cfg(test)]
@@ -572,6 +455,43 @@ mod running_tests {
     use crate::ops::Real;
     use magi_model::scratch::Scratch;
     use serde_json::json;
+
+    #[test]
+    fn cancelling_a_running_command_kills_and_reaps_it() {
+        struct Started(std::path::PathBuf);
+        impl Cancel for Started {
+            fn is_cancelled(&self) -> bool {
+                std::fs::read_to_string(&self.0).is_ok_and(|pid| pid.trim().parse::<u32>().is_ok())
+            }
+        }
+        let dir = Scratch::new("command", "cancel");
+        let pidfile = dir.join("pid");
+        let tool = CommandTool::new(
+            "wait",
+            "wait",
+            json!({"type":"object"}),
+            "sh",
+            vec![
+                "-c".into(),
+                "echo $$ > \"$1\"; exec sleep 30".into(),
+                "fixture".into(),
+                pidfile.display().to_string(),
+            ],
+        );
+        let began = Instant::now();
+        let out = tool.run(
+            &json!({}),
+            &Real::new(dir.to_path_buf()),
+            &Started(pidfile.clone()),
+        );
+        assert!(out.is_error && out.content.contains("cancelled"), "{out:?}");
+        assert!(began.elapsed() < Duration::from_secs(5));
+        let pid = std::fs::read_to_string(pidfile).expect("started");
+        assert!(
+            !std::path::Path::new(&format!("/proc/{}", pid.trim())).exists(),
+            "child must be reaped"
+        );
+    }
 
     /// An `Ops` that refuses every call, to prove the gate is asked before anything runs.
     struct Refusing(std::path::PathBuf);

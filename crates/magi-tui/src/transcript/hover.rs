@@ -34,6 +34,7 @@ mod pointing {
                 name: "shell".into(),
                 args: "{}".into(),
                 result: Some(magi_proto::ToolResult {
+                    images: Vec::new(),
                     output: "out".into(),
                     is_error: false,
                     shown: None,

@@ -9,8 +9,9 @@ pub const CONFIGURE_WAS: &str = "CASPER_CONFIGURE";
 pub const JAIL: &str = "CASPER_JAIL";
 
 /// Coordinator-owned settings for one tool invocation and its surfaces.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct Context {
+    pub environ: std::collections::BTreeMap<String, String>,
     pub configure: String,
     pub jail: Option<String>,
     pub cwd: Option<std::path::PathBuf>,
@@ -19,6 +20,7 @@ pub struct Context {
 impl Context {
     /// Apply settings without inheriting an ambient jail selector.
     pub fn apply(&self, command: &mut std::process::Command) {
+        crate::environ::apply(command, &self.environ);
         command
             .env(CONFIGURE, &self.configure)
             .env(CONFIGURE_WAS, &self.configure)
@@ -26,6 +28,17 @@ impl Context {
         if let Some(cwd) = &self.cwd {
             command.current_dir(cwd);
         }
+    }
+}
+
+impl std::fmt::Debug for Context {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Context")
+            .field("configure", &self.configure)
+            .field("jail", &self.jail)
+            .field("cwd", &self.cwd)
+            .field("environment_keys", &self.environ.keys().collect::<Vec<_>>())
+            .finish()
     }
 }
 
@@ -81,6 +94,7 @@ mod tests {
         let mut command = std::process::Command::new("unused");
         command.env(JAIL, "stale");
         let context = Context {
+            environ: Default::default(),
             configure: "configured".to_owned(),
             cwd: Some("/workspace".into()),
             jail: None,

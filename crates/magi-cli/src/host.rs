@@ -102,7 +102,12 @@ pub async fn start(
         None => magi_host::catalog::Catalog::empty(),
     };
     let mut backend = crate::config::backend(&catalog);
-    stamp(&mut backend, &mut catalog, environ);
+    let mut environ = environ.clone();
+    environ.insert("MAGI_HOST_SOCKET".into(), socket.display().to_string());
+    if child && let Ok(parent) = std::env::var("MAGI_PARENT_HOST_SOCKET") {
+        environ.insert("MAGI_PARENT_HOST_SOCKET".into(), parent);
+    }
+    stamp(&mut backend, &mut catalog, &environ);
     catalog.transcript = transcript;
     if child {
         catalog.helpers.no_notes = true;
@@ -218,12 +223,16 @@ mod tests {
     fn catalog() -> magi_host::catalog::Catalog {
         let mut catalog = magi_host::catalog::Catalog::empty();
         catalog.cards = vec![magi_proto::ask::Card {
+            vision: false,
             id: "fake/m".into(),
             provider: "fake".into(),
             name: "m".into(),
             api: "openai-completions".into(),
             context_window: Some(1000),
             max_output: Some(100),
+            pricing: None,
+            popularity_rank: None,
+            capabilities: None,
             reasons: false,
             ready: true,
             needs: None,

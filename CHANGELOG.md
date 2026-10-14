@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.7.0] - 2026-10-14
+
+### <!-- 0 -->⛰️  Features
+
+- :env and :source session variables
+- Live details and tail attach
+- Route child approvals to the parent
+- MCP tools supplied through casper
+- Models as a table with prices
+- Attach images to prompts and results
+
+### <!-- 3 -->📚 Documentation
+
+- Images, MCP, agents and environment
+- Image as a tools role extension
+
+### <!-- 6 -->🧪 Testing
+
+- Role checks in a file of their own
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Recipes for the new feature suites
+
 ## [0.6.1] - 2026-10-14
 
 ### <!-- 3 -->📚 Documentation

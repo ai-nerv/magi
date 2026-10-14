@@ -444,6 +444,7 @@ do -- agent
   end
 end
 
+-- External MCP definitions live in ~/.local/share/casper/mcp/ and are supplied by Casper.
 -- There is no `process` or `mcp` transport, and no in-magi shell: running a tool is casper's, and
 -- an external tool server belongs behind the `tools` role, not inside magi. The two transports a
 -- declaration here may use are `lua` (a function in this VM, for reaching a sibling like the memory

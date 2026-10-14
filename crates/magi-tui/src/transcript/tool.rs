@@ -248,6 +248,7 @@ mod diff_tests {
             name: "edit".into(),
             args: r#"{"path": "a.rs"}"#.into(),
             result: Some(ToolResult {
+                images: Vec::new(),
                 output: output.to_owned(),
                 is_error: false,
                 shown: None,
@@ -303,6 +304,7 @@ mod diff_tests {
             name: "edit".into(),
             args: "{}".into(),
             result: Some(ToolResult {
+                images: Vec::new(),
                 output: "-was\n+now\n".into(),
                 is_error: true,
                 shown: None,
@@ -441,6 +443,7 @@ mod detail_tests {
             name: "bash".into(),
             args: r#"{"command": "ls"}"#.into(),
             result: Some(ToolResult {
+                images: Vec::new(),
                 output: (0..lines)
                     .map(|i| format!("line {i}"))
                     .collect::<Vec<_>>()
@@ -519,6 +522,7 @@ mod fold_tests {
             .map(|i| format!("line {i}\n"))
             .collect::<String>();
         let result = magi_proto::ToolResult {
+            images: Vec::new(),
             output: body,
             is_error: false,
             shown: None,
@@ -584,6 +588,7 @@ mod block_tests {
     fn the_name_says_what_happened() {
         // The outcome is the name's foreground now, not a filled chip.
         let ok = ToolResult {
+            images: Vec::new(),
             output: "hi".into(),
             is_error: false,
             shown: None,

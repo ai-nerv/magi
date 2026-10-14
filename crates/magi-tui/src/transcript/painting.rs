@@ -12,6 +12,7 @@ fn block_of(shown: Option<Shown>, output: &str, detail: Detail) -> Vec<Line<'sta
         "patch",
         "{}",
         Some(&magi_proto::ToolResult {
+            images: Vec::new(),
             output: output.to_owned(),
             is_error: false,
             shown,
@@ -118,6 +119,7 @@ fn a_failed_call_is_still_drawn_as_failed() {
         "patch",
         "{}",
         Some(&magi_proto::ToolResult {
+            images: Vec::new(),
             output: "+now".to_owned(),
             is_error: true,
             shown: Some(Shown::Painted {

@@ -75,6 +75,7 @@ mod reduction {
                 cursor: Cursor(2),
                 id: ToolCallId::new("t1"),
                 result: ToolResult {
+                    images: Vec::new(),
                     output: "ok".into(),
                     is_error: false,
                     shown: None,
@@ -129,6 +130,7 @@ mod reduction {
             session: magi_proto::SessionId::new("s"),
             entries: vec![
                 Entry::User {
+                    images: Vec::new(),
                     id: MessageId::new("m1"),
                     text: "asked".into(),
                     aside: String::new(),
@@ -159,6 +161,7 @@ mod reduction {
             cursor: Cursor::ZERO,
             session: magi_proto::SessionId::new("s"),
             entries: vec![Entry::User {
+                images: Vec::new(),
                 id: MessageId::new("m9"),
                 text: "restored".into(),
                 aside: String::new(),
@@ -176,6 +179,7 @@ mod reduction {
     fn clearing_the_view_empties_the_transcript_but_keeps_the_position() {
         let mut app = app_with(vec![
             HarnessEvent::UserMessage {
+                images: Vec::new(),
                 cursor: Cursor(1),
                 id: MessageId::new("m1"),
                 text: "hi".into(),
@@ -397,6 +401,10 @@ mod onboarding_tests {
                 name: "p/m".into(),
                 context_window: 1000,
                 requirement: "set P_KEY".into(),
+                pricing: None,
+                popularity_rank: None,
+                capabilities: None,
+                vision: false,
                 wants_vars: Vec::new(),
                 reasoning: false,
             }],
@@ -446,6 +454,7 @@ mod onboarding_tests {
         app.apply(snapshot(
             None,
             vec![Entry::User {
+                images: Vec::new(),
                 id: MessageId::new("u1"),
                 text: "hello".into(),
                 aside: String::new(),
@@ -474,6 +483,10 @@ mod picking {
                 name: "p/m".into(),
                 context_window: 1000,
                 requirement: String::new(),
+                pricing: None,
+                popularity_rank: None,
+                capabilities: None,
+                vision: false,
                 wants_vars: Vec::new(),
                 reasoning: true,
             }],
@@ -495,6 +508,57 @@ mod picking {
     }
 
     #[test]
+    fn model_picker_keeps_context_prices_and_popularity_for_unready_models() {
+        let mut app = app_with_a_reasoning_model();
+        app.choices[0].name = "openrouter/vendor/very-long-model-name-with-context".into();
+        app.choices[0].pricing = Some(magi_proto::ask::Pricing {
+            input: Some("0.3".into()),
+            output: Some("1.2".into()),
+        });
+        app.choices[0].popularity_rank = Some(7);
+        app.choices[0].capabilities = Some(magi_model::Capabilities {
+            input: vec!["text".into(), "image".into()],
+            output: vec!["text".into()],
+            thinking: Some(vec!["low".into(), "medium".into(), "high".into()]),
+        });
+        app.choices[0].requirement = "set KEY".into();
+        app.open_model_picker();
+        let picker = app.overlay.as_ref().expect("picker").list().expect("list");
+        assert_eq!(
+            picker.current().expect("choice").detail,
+            "1.0k\t$0.3\t$1.2\t#7\ttext,image→text\tlow,medium,high"
+        );
+        let rendered = magi_tui::picker::render(picker, 180);
+        assert_eq!(rendered.len(), 3, "heading, columns, one model row");
+        assert_eq!(picker.height(), 3);
+        let shown = rendered
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(shown.contains("ORwk") && shown.contains("#7"), "{shown}");
+        assert!(
+            shown.contains("In$/M") && shown.contains("Out$/M"),
+            "{shown}"
+        );
+        assert!(shown.contains("$0.3") && shown.contains("$1.2"), "{shown}");
+        assert!(
+            !shown.contains("Needs") && !shown.contains("set KEY"),
+            "{shown}"
+        );
+        assert!(!picker.current().expect("choice").ready);
+        assert!(shown.contains(&app.choices[0].name), "{shown}");
+        let narrow = magi_tui::picker::render(picker, 76);
+        assert!(narrow[2].to_string().contains(&app.choices[0].name));
+        assert_eq!(narrow.len(), 3);
+        assert!(shown.contains("text,image→text"), "{shown}");
+        assert!(
+            shown.contains("Thinking") && shown.contains("low,medium,high"),
+            "{shown}"
+        );
+    }
+
+    #[test]
     fn model_refresh_updates_open_picker_without_losing_filter_or_reopening_closed_picker() {
         let mut app = app_with_a_reasoning_model();
         app.open_model_picker();
@@ -505,6 +569,10 @@ mod picking {
             .push('m');
         let mut new = app.choices[0].clone();
         new.name = "p/model-new".into();
+        new.capabilities = Some(magi_model::Capabilities {
+            thinking: Some(vec!["off".into(), "on".into()]),
+            ..Default::default()
+        });
         app.apply(HarnessEvent::ModelsRefreshed {
             choices: vec![new.clone()],
             warning: None,
@@ -516,6 +584,7 @@ mod picking {
             .expect("refreshed picker");
         assert_eq!(picker.query(), "m");
         assert_eq!(picker.choices[0].value, "p/model-new");
+        assert!(picker.choices[0].detail.ends_with("\toff,on"));
         assert_eq!(app.model.as_ref().expect("unchanged model").name, "p/m");
         app.overlay = None;
         app.picking = None;
@@ -561,6 +630,10 @@ mod picking {
                 name: "p/plain".into(),
                 context_window: 1000,
                 requirement: String::new(),
+                pricing: None,
+                popularity_rank: None,
+                capabilities: None,
+                vision: false,
                 wants_vars: Vec::new(),
                 reasoning: false,
             }],
@@ -622,6 +695,7 @@ mod model_switch {
         // the footer leaves no mark where a reader is actually looking.
         let mut app = App::new();
         app.apply(HarnessEvent::UserMessage {
+            images: Vec::new(),
             cursor: Cursor(1),
             id: MessageId::new("u1"),
             text: "hello".into(),
@@ -653,6 +727,7 @@ mod model_switch {
         // A reconnect replays the model; it has not changed.
         let mut app = App::new();
         app.apply(HarnessEvent::UserMessage {
+            images: Vec::new(),
             cursor: Cursor(1),
             id: MessageId::new("u1"),
             text: "hello".into(),
@@ -676,6 +751,7 @@ mod clearing {
     fn with_a_conversation() -> App {
         let mut app = App::new();
         app.apply(HarnessEvent::UserMessage {
+            images: Vec::new(),
             cursor: Cursor(1),
             id: MessageId::new("u1"),
             text: "hello".into(),

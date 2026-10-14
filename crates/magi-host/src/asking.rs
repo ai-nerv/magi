@@ -6,16 +6,47 @@
 use magi_proto::permit::{Action, Decision};
 use magi_proto::{Cursor, HarnessEvent, ToolCallId};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// How long a question waits before it answers itself with a refusal.
 const PATIENCE: Duration = Duration::from_secs(300);
 
+thread_local! {
+    /// Raised when whoever the questions asked on this thread are for has gone.
+    static WITHDRAWN: std::cell::RefCell<Option<Arc<AtomicBool>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run `ask` so that every question it puts on this thread is withdrawn once `withdrawn` is
+/// raised, rather than left open until it times out.
+pub(crate) fn withdrawable<T>(withdrawn: Arc<AtomicBool>, ask: impl FnOnce() -> T) -> T {
+    struct Scope;
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            WITHDRAWN.with(|held| held.replace(None));
+        }
+    }
+    WITHDRAWN.with(|held| held.replace(Some(withdrawn)));
+    let _scope = Scope;
+    ask()
+}
+
+/// Whether the questions asked on this thread have been withdrawn.
+fn withdrawn() -> bool {
+    WITHDRAWN.with(|held| {
+        held.borrow()
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::SeqCst))
+    })
+}
+
 /// The questions currently outstanding. Two maps, because a permission comes back as a
 /// [`Decision`] and a general question as the id of a chosen option.
 #[derive(Default)]
 pub struct Pending {
+    forwarding: std::sync::atomic::AtomicUsize,
     waiting: Mutex<HashMap<ToolCallId, std::sync::mpsc::Sender<Decision>>>,
     choosing: Mutex<HashMap<ToolCallId, std::sync::mpsc::Sender<String>>>,
     /// Each open question as it was published, in the order asked. A question is an event and is
@@ -24,6 +55,30 @@ pub struct Pending {
 }
 
 impl Pending {
+    pub fn counts(&self) -> (usize, usize) {
+        let mut approvals = self.forwarding.load(std::sync::atomic::Ordering::Relaxed);
+        let mut questions = 0;
+        for event in self.open() {
+            match event {
+                HarnessEvent::PermissionAsked { .. } => approvals += 1,
+                HarnessEvent::Asked { .. } => questions += 1,
+                _ => {}
+            }
+        }
+        (approvals, questions)
+    }
+
+    pub fn cancel(&self) {
+        if let Ok(mut waiting) = self.waiting.lock() {
+            waiting.clear();
+        }
+        if let Ok(mut choosing) = self.choosing.lock() {
+            choosing.clear();
+        }
+        if let Ok(mut asked) = self.asked.lock() {
+            asked.clear();
+        }
+    }
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -122,9 +177,34 @@ pub struct Asker {
     cursor: Box<dyn Fn() -> Cursor + Send + Sync>,
     attached: Box<dyn Fn() -> bool + Send + Sync>,
     next: std::sync::atomic::AtomicU64,
+    parent: Option<std::path::PathBuf>,
+    stopped: Box<dyn Fn() -> bool + Send + Sync>,
 }
 
 impl Asker {
+    pub(crate) async fn serving(
+        session: Arc<tokio::sync::Mutex<crate::session::Session>>,
+        pending: Arc<Pending>,
+        parent: Option<std::path::PathBuf>,
+    ) -> Self {
+        let events = session.lock().await.publisher();
+        let watched = events.clone();
+        Self::new(
+            pending,
+            Box::new(move |event| {
+                let _ = events.send(event);
+            }),
+            Box::new(|| Cursor::ZERO),
+            Box::new(move || watched.receiver_count() > 0),
+        )
+        .forwarded(parent)
+        .cancellable(Box::new(move || {
+            session
+                .try_lock()
+                .is_ok_and(|held| held.busy() && held.cancel().is_requested())
+        }))
+    }
+
     /// An asker that publishes with `publish` and numbers its questions from zero.
     #[must_use]
     pub fn new(
@@ -139,7 +219,36 @@ impl Asker {
             cursor,
             attached,
             next: std::sync::atomic::AtomicU64::new(0),
+            parent: None,
+            stopped: Box::new(|| false),
         }
+    }
+
+    pub fn forwarded(mut self, parent: Option<std::path::PathBuf>) -> Self {
+        self.parent = parent;
+        self
+    }
+
+    pub fn cancellable(mut self, stopped: Box<dyn Fn() -> bool + Send + Sync>) -> Self {
+        self.stopped = stopped;
+        self
+    }
+
+    /// Whether the turn was stopped, or whoever this question is for has gone.
+    fn halted(&self) -> bool {
+        (self.stopped)() || withdrawn()
+    }
+
+    fn wait<T>(&self, receiver: &std::sync::mpsc::Receiver<T>) -> Option<T> {
+        let until = std::time::Instant::now() + PATIENCE;
+        while !self.halted() && std::time::Instant::now() < until {
+            match receiver.recv_timeout(Duration::from_millis(50)) {
+                Ok(answer) => return Some(answer),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
+            }
+        }
+        None
     }
 }
 
@@ -154,8 +263,14 @@ impl magi_tools::approve::Approver for Asker {
         action: &Action,
         advice: Option<&magi_proto::judging::Advice>,
     ) -> Decision {
+        if self.halted() {
+            return Decision::Deny;
+        }
+        if let Some(socket) = self.parent.as_deref() {
+            let _waiting = Forwarding::new(&self.pending);
+            return super::reviewing::forward(socket, tool, action, &|| self.halted());
+        }
         if !(self.attached)() {
-            // Nobody is looking. Saying yes here would make the gate a formality on unwatched runs.
             return Decision::Deny;
         }
         let n = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -175,15 +290,34 @@ impl magi_tools::approve::Approver for Asker {
         };
         (self.publish)(asked);
 
-        let answer = receiver.recv_timeout(PATIENCE).unwrap_or(Decision::Deny);
+        let answer = self.wait(&receiver).unwrap_or(Decision::Deny);
         self.pending.forget(&id);
         answer
     }
 }
 
+struct Forwarding<'a>(&'a Pending);
+
+impl<'a> Forwarding<'a> {
+    fn new(pending: &'a Pending) -> Self {
+        pending
+            .forwarding
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self(pending)
+    }
+}
+
+impl Drop for Forwarding<'_> {
+    fn drop(&mut self) {
+        self.0
+            .forwarding
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 impl magi_tools::question::Asks for Asker {
     fn ask(&self, tool: &str, ask: &magi_proto::tooling::Ask) -> Option<String> {
-        if !(self.attached)() {
+        if self.halted() || !(self.attached)() {
             // Nobody is looking, so nobody can answer; choosing on their behalf is what this prevents.
             return None;
         }
@@ -201,7 +335,7 @@ impl magi_tools::question::Asks for Asker {
         (self.publish)(asked);
 
         // The same patience a permission gets. An unanswered question is not a refusal — the tool decides.
-        let answer = receiver.recv_timeout(PATIENCE).ok();
+        let answer = self.wait(&receiver);
         self.pending.drop_choice(&id);
         answer
     }
@@ -250,6 +384,60 @@ fn unguessable(kind: char, n: u64) -> Option<ToolCallId> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn monitoring_counts_local_questions_and_forwarded_approvals() {
+        let pending = Pending::new();
+        pending.opened(
+            &ToolCallId::new("p"),
+            HarnessEvent::PermissionAsked {
+                cursor: Cursor::ZERO,
+                id: ToolCallId::new("p"),
+                tool: "read".into(),
+                action: read(),
+                offers: Vec::new(),
+                advice: None,
+            },
+        );
+        pending.opened(
+            &ToolCallId::new("q"),
+            HarnessEvent::Asked {
+                cursor: Cursor::ZERO,
+                id: ToolCallId::new("q"),
+                tool: "choice".into(),
+                question: "pick".into(),
+                options: Vec::new(),
+                detail: Vec::new(),
+            },
+        );
+        assert_eq!(pending.counts(), (1, 1));
+        {
+            let _forwarding = Forwarding::new(&pending);
+            assert_eq!(pending.counts(), (2, 1));
+        }
+        assert_eq!(pending.counts(), (1, 1));
+        pending.cancel();
+        assert_eq!(pending.counts(), (0, 0));
+    }
+
+    #[test]
+    fn cancelling_closes_permission_and_choice_waiters() {
+        let pending = Pending::new();
+        let event = HarnessEvent::Noticed {
+            cursor: Cursor::ZERO,
+            text: "test".into(),
+        };
+        let permission = pending
+            .register(ToolCallId::new("p"), event.clone())
+            .expect("register");
+        let choice = pending
+            .awaiting(ToolCallId::new("q"), event)
+            .expect("register");
+        pending.cancel();
+        assert!(permission.recv().is_err());
+        assert!(choice.recv().is_err());
+        assert!(pending.open().is_empty());
+    }
 
     #[test]
     fn a_question_still_open_is_told_to_whoever_attaches_next() {
@@ -307,6 +495,36 @@ mod tests {
         Action::Read {
             path: "/etc/shadow".to_owned(),
         }
+    }
+
+    #[test]
+    fn a_withdrawn_question_is_closed_at_once_and_the_thread_forgets_the_withdrawal() {
+        use magi_tools::approve::Approver;
+        let (pending, asker, seen) = asker(true);
+        let asker = Arc::new(asker);
+        let flag = Arc::new(AtomicBool::new(false));
+        let asking = {
+            let (asker, flag) = (Arc::clone(&asker), Arc::clone(&flag));
+            std::thread::spawn(move || {
+                let decided = withdrawable(flag, || asker.ask("read", &read()));
+                (decided, withdrawn())
+            })
+        };
+        while pending.open().is_empty() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let began = std::time::Instant::now();
+        flag.store(true, Ordering::SeqCst);
+        let (decided, still) = asking.join().expect("join");
+        assert_eq!(decided, Decision::Deny);
+        assert!(began.elapsed() < Duration::from_secs(2));
+        assert!(pending.open().is_empty(), "the question was left open");
+        assert!(!still, "the withdrawal outlived its scope");
+        assert_eq!(seen.lock().map(|seen| seen.len()).unwrap_or(0), 1);
+        assert!(
+            !withdrawn(),
+            "another thread's withdrawal leaked onto this one"
+        );
     }
 
     #[test]

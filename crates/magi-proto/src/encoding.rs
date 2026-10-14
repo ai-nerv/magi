@@ -20,6 +20,7 @@ fn transport_errors_retry_and_auth_errors_do_not() {
 #[test]
 fn every_event_reports_its_cursor() {
     let event = HarnessEvent::UserMessage {
+        images: Vec::new(),
         cursor: Cursor(7),
         id: MessageId::new("m1"),
         text: "hi".into(),

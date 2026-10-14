@@ -48,6 +48,7 @@ fn render_entries(entries: &[Entry], width: u16) -> Vec<String> {
 fn a_conversation_renders_the_way_pi_lays_it_out() {
     let entries = vec![
         Entry::User {
+            images: Vec::new(),
             id: MessageId::new("m1"),
             text: "run the tests".into(),
             aside: String::new(),
@@ -66,6 +67,7 @@ fn a_conversation_renders_the_way_pi_lays_it_out() {
             name: "bash".into(),
             args: r#"{"command": "cargo test"}"#.into(),
             result: Some(ToolResult {
+                images: Vec::new(),
                 output: "test result: ok. 42 passed".into(),
                 is_error: false,
                 shown: None,
@@ -128,6 +130,7 @@ fn a_failed_tool_still_shows_its_output() {
         name: "bash".into(),
         args: "{}".into(),
         result: Some(ToolResult {
+            images: Vec::new(),
             output: "error: could not compile".into(),
             is_error: true,
             shown: None,
@@ -167,6 +170,7 @@ fn thinking_renders_above_the_response() {
 #[test]
 fn every_row_of_a_user_box_spans_the_full_width() {
     let entry = Entry::User {
+        images: Vec::new(),
         id: MessageId::new("m1"),
         text: "short".into(),
         aside: String::new(),
@@ -199,7 +203,10 @@ fn the_recorded_sample_replays_into_a_transcript() {
         cursor = event.cursor();
 
         match event {
-            HarnessEvent::UserMessage { id, text, .. } => entries.push(Entry::User {
+            HarnessEvent::UserMessage {
+                id, text, images, ..
+            } => entries.push(Entry::User {
+                images,
                 id,
                 text,
                 aside: String::new(),
@@ -291,7 +298,10 @@ fn visual() {
         }
         let event: HarnessEvent = serde_json::from_str(line).expect("event");
         match event {
-            HarnessEvent::UserMessage { id, text, .. } => entries.push(Entry::User {
+            HarnessEvent::UserMessage {
+                id, text, images, ..
+            } => entries.push(Entry::User {
+                images,
                 id,
                 text,
                 aside: String::new(),

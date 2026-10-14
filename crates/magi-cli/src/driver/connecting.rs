@@ -44,16 +44,18 @@ pub(super) async fn connection_loop(
         let mut reader = FrameReader::new(read_half);
         let mut writer = FrameWriter::new(write_half);
 
-        if writer
-            .write(&UiCommand::Attach {
+        let key = magi_ipc::read_key(&socket);
+        let attach = if from_cursor == Cursor::ZERO {
+            UiCommand::AttachLatest { draws, key }
+        } else {
+            UiCommand::Attach {
                 session: None,
                 from_cursor,
                 draws,
-                key: magi_ipc::read_key(&socket),
-            })
-            .await
-            .is_err()
-        {
+                key,
+            }
+        };
+        if writer.write(&attach).await.is_err() {
             tokio::time::sleep(RECONNECT_DELAY).await;
             continue;
         }

@@ -81,10 +81,13 @@ impl App {
                     self.show_notice(said);
                 }
             }
-            HarnessEvent::UserMessage { id, text, .. } => {
+            HarnessEvent::UserMessage {
+                id, text, images, ..
+            } => {
                 // No aside. It is context for the model and the transcript never shows it, so
                 // there is nothing here for one to be.
                 self.entries.push(Entry::User {
+                    images,
                     id,
                     text,
                     aside: String::new(),

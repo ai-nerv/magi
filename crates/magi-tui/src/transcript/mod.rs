@@ -342,6 +342,7 @@ mod tests {
     #[test]
     fn a_user_message_is_a_framed_full_width_box() {
         let entry = Entry::User {
+            images: Vec::new(),
             id: MessageId::new("m1"),
             text: "hello".into(),
             aside: String::new(),
@@ -367,6 +368,7 @@ mod tests {
     fn a_user_message_is_tagged_and_costs_no_extra_row_for_it() {
         // The tag rides the padding row rather than growing a line per message.
         let entry = Entry::User {
+            images: Vec::new(),
             id: MessageId::new("m1"),
             text: "hello".into(),
             aside: String::new(),
@@ -507,6 +509,7 @@ mod tests {
             args: "{}".into(),
             result: Some(ToolResult {
                 output,
+                images: Vec::new(),
                 is_error: false,
                 shown: None,
             }),
@@ -578,6 +581,7 @@ mod tab_tests {
             name: "read".into(),
             args: "{}".into(),
             result: Some(ToolResult {
+                images: Vec::new(),
                 output: "     1\tfn main() {\n     3\t}\n".into(),
                 is_error: false,
                 shown: None,

@@ -10,6 +10,7 @@ use tokio::sync::Mutex;
 
 fn later(id: &str) -> Entry {
     Entry::User {
+        images: Vec::new(),
         id: MessageId::new(id),
         text: id.into(),
         aside: String::new(),

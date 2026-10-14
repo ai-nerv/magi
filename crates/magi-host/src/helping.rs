@@ -144,8 +144,8 @@ pub(crate) async fn run_accounted(job: &Job, backend: &Backend) -> Result<Answer
     let attempt = std::sync::Mutex::new(attempt::Attempt::default());
     let asked = tokio::time::timeout(
         patience,
-        crate::broker::ask_through(
-            &backend.mind,
+        crate::broker::ask_using(
+            (&backend.mind, &backend.environ),
             &model,
             &context,
             &wants,

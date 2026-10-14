@@ -17,11 +17,104 @@ fn agent(id: &str, parent: Option<&str>) -> Agent {
         waiting: 0,
         claim: None,
         about: None,
+        details: None,
     }
 }
 
 fn open() -> BTreeSet<String> {
     BTreeSet::new()
+}
+
+fn details() -> magi_proto::monitoring::AgentDetails {
+    magi_proto::monitoring::AgentDetails {
+        model: Some(magi_proto::ModelInfo {
+            name: "openrouter/provider/full-model-name-without-truncation".into(),
+            context_window: 128000,
+        }),
+        thinking: "high".into(),
+        status: magi_proto::AgentStatus::Idle,
+        approvals: 1,
+        questions: 0,
+        cost_micros: 12500,
+        context: Some(magi_proto::monitoring::RequestContext {
+            input: 24000,
+            capacity: 128000,
+            limit: 64000,
+            estimated: true,
+        }),
+    }
+}
+
+#[test]
+fn telemetry_displays_model_waits_context_and_thinking() {
+    let mut held = agent("worker", None);
+    held.details = Some(details());
+    let rendered = view(&[held], &open());
+    let said = rendered
+        .rows
+        .iter()
+        .map(text)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(said.contains("waiting for approval (1)"), "{said}");
+    assert!(said.contains("openrouter/provider/full-model-name-without-truncation"));
+    assert!(said.contains("thinking: high"));
+    assert!(said.contains("last input: ~24000 / 128000 (18.8%); limit 64000"));
+    assert!(said.contains("reported cost: $0.0125"));
+}
+
+#[test]
+fn input_questions_are_distinct_from_queued_messages() {
+    let mut held = agent("worker", None);
+    held.waiting = 2;
+    let mut details = details();
+    details.approvals = 0;
+    details.questions = 1;
+    held.details = Some(details);
+    let said = doing(&held);
+    assert!(said.contains("waiting for input (1)"));
+    assert!(said.contains("✉2"));
+}
+
+#[test]
+fn long_model_names_wrap_and_every_row_stays_selectable() {
+    let mut held = agent("worker", None);
+    let mut details = details();
+    let name = "x".repeat(180);
+    details
+        .model
+        .as_mut()
+        .expect("model")
+        .name
+        .clone_from(&name);
+    held.details = Some(details);
+    let agents = [held];
+    for width in [58, 122] {
+        let rendered = view_with_width(&agents, &open(), width);
+        assert!(
+            rendered
+                .rows
+                .iter()
+                .all(|row| row.width() <= usize::from(width))
+        );
+        assert_eq!(
+            rendered
+                .rows
+                .iter()
+                .map(text)
+                .collect::<String>()
+                .matches('x')
+                .count(),
+            180
+        );
+        assert!(
+            rendered
+                .picks
+                .iter()
+                .skip(2)
+                .all(|pick| pick.as_deref() == Some("worker"))
+        );
+    }
 }
 
 /// The ids in draw order, each with the depth its rail implies (three rail cells per level).
@@ -77,13 +170,13 @@ fn an_orphan_whose_parent_is_not_here_is_listed_and_not_hidden() {
 }
 
 #[test]
-fn every_agent_is_three_rows_and_every_row_selects_it() {
+fn every_agent_row_selects_it() {
     let held = vec![agent("alpha", None), agent("beta", Some("alpha"))];
     let rendered = view(&held, &open());
     assert_eq!(rendered.rows.len(), rendered.picks.len());
     assert_eq!(
         rendered.rows.len(),
-        2 + 2 * 3,
+        2 + 2 * 4,
         "the count, a blank, two entries"
     );
     assert_eq!(rendered.picks[0], None, "the count line selects nothing");
@@ -96,7 +189,9 @@ fn every_agent_is_three_rows_and_every_row_selects_it() {
         .collect();
     assert_eq!(
         picked,
-        vec!["alpha", "alpha", "alpha", "beta", "beta", "beta"]
+        vec![
+            "alpha", "alpha", "alpha", "alpha", "beta", "beta", "beta", "beta"
+        ]
     );
 }
 
@@ -107,7 +202,7 @@ fn the_rail_runs_unbroken_down_to_a_child() {
     let held = vec![agent("alpha", None), agent("beta", Some("alpha"))];
     let rendered = view(&held, &open());
     let under = text(&rendered.rows[3]);
-    let child = text(&rendered.rows[5]);
+    let child = text(&rendered.rows[6]);
     assert!(under.starts_with('│'), "{under:?}");
     assert!(child.starts_with('└'), "{child:?}");
 }
@@ -121,7 +216,7 @@ fn a_folded_branch_hides_everything_under_it_and_says_how_much() {
     ];
     let folded: BTreeSet<String> = ["alpha".to_owned()].into();
     let rendered = view(&held, &folded);
-    assert_eq!(rendered.rows.len(), 2 + 3, "only alpha is drawn");
+    assert_eq!(rendered.rows.len(), 2 + 4, "only alpha is drawn");
     assert!(text(&rendered.rows[2]).contains("▸ 2 folded"));
     let under = text(&rendered.rows[3]);
     assert!(!under.starts_with('│'), "no rail to children not drawn");
@@ -133,7 +228,7 @@ fn the_third_row_says_what_the_agent_is_for() {
     held[1].about = Some("reviews what the others wrote".to_owned());
     let rendered = view(&held, &open());
     assert!(text(&rendered.rows[4]).contains("the root of this run"));
-    assert!(text(&rendered.rows[7]).contains("reviews what the others wrote"));
+    assert!(text(&rendered.rows[8]).contains("reviews what the others wrote"));
 }
 
 /// The whole point of the phase: `finished` reads differently from `idle`, and a coordinator
@@ -147,7 +242,7 @@ fn the_phase_shows_in_the_entry() {
             body: String::new(),
             hidden: 0,
         };
-        entry(&placed)
+        entry(&placed, u16::MAX)
             .iter()
             .map(text)
             .collect::<Vec<_>>()

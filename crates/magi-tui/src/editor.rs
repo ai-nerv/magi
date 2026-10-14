@@ -101,7 +101,12 @@ impl Editor {
             return None;
         }
         let text = self.text();
-        self.history.push(text.clone());
+        if !matches!(text.split_whitespace().next(), Some(":env" | ":source")) {
+            self.history.push(text.clone());
+        } else {
+            self.undo.clear();
+            self.typed.clear();
+        }
         self.clear();
         Some(text)
     }
@@ -629,6 +634,24 @@ impl Editor {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn environment_commands_are_not_recalled_or_undone() {
+        let mut editor = super::Editor::with_history(vec!["safe prompt".into()]);
+        for command in [
+            ":env KEY=sentinel",
+            ":source /private/file",
+            "  :env KEY=sentinel",
+        ] {
+            editor.insert_str(command);
+            assert!(editor.submit().is_some());
+            editor.undo();
+            assert!(editor.is_blank());
+            editor.history_prev();
+            assert_eq!(editor.text(), "safe prompt");
+            editor.clear();
+        }
+    }
+
     use super::*;
 
     fn editor_with(text: &str) -> Editor {

@@ -68,6 +68,11 @@ pub fn commands() -> Vec<Candidate> {
         (":help", "show keybindings and commands"),
         (":clear", "start a fresh conversation"),
         (":model", "the model, or :model <name> to switch"),
+        (":env", "set session variables: KEY=value:$KEY"),
+        (
+            ":source",
+            "import standalone exports from a file; never execute it",
+        ),
         (":permissions", "ask the model what it needs, and decide"),
         (":resume", "continue a session from this directory"),
         (

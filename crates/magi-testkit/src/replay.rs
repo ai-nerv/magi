@@ -66,8 +66,11 @@ impl Recording {
                 HarnessEvent::PermissionAsked { .. }
                 | HarnessEvent::Asked { .. }
                 | HarnessEvent::Noticed { .. } => {}
-                HarnessEvent::UserMessage { id, text, .. } => {
+                HarnessEvent::UserMessage {
+                    id, text, images, ..
+                } => {
                     entries.push(Entry::User {
+                        images,
                         id,
                         text,
                         aside: String::new(),
@@ -236,6 +239,13 @@ impl FakeHarness {
         let mut writer = FrameWriter::new(write_half);
 
         let from = match reader.read::<UiCommand>().await? {
+            UiCommand::AttachLatest { .. } => self
+                .recording
+                .events()
+                .iter()
+                .map(HarnessEvent::cursor)
+                .max()
+                .unwrap_or(Cursor::ZERO),
             UiCommand::Attach { from_cursor, .. } => from_cursor,
             _ => Cursor::ZERO,
         };

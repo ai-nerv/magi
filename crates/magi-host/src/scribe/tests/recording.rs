@@ -91,6 +91,7 @@ fn said(text: &str) -> Entry {
         id: MessageId::new("u"),
         text: text.into(),
         aside: String::new(),
+        images: Vec::new(),
     }
 }
 

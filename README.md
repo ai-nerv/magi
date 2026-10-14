@@ -82,7 +82,7 @@ same person for the same permission, and is capped and masked on the way back.
 
 | Kind | What it is |
 |---|---|
-| `supplied` | from the tools program (casper) — one exec per call. Every tool that does anything to the machine |
+| `supplied` | from the tools program (casper), over its command or persistent socket door. Machine tools and external MCP tools |
 | `builtin` | compiled in: `spawn` — magi's only one, and coordination, not machine work |
 | `lua` | a function in the config's own VM — how the memory tools reach balthasar |
 | `command` | one exec per call, arguments built from the call — how `agent` reaches melchior |
@@ -90,7 +90,15 @@ same person for the same permission, and is capped and masked on the way back.
 The machine tools all arrive from **casper**, which is another program and supplies the whole set.
 That makes it the largest trust assumption magi makes, and `magi.casper_sha256` pins it to the bytes
 you set it up against. magi runs no tool of its own beyond `spawn`; there is no in-magi shell, no
-process peer, no MCP — running a tool is casper's.
+process peer or direct MCP transport — running a tool is casper's. Casper discovers server
+definitions from `$XDG_DATA_HOME/casper/mcp/*.json` (default `~/.local/share/casper/mcp/`).
+No other application's registry or project folder is scanned.
+`tools` with `path = "mcp"` lists configured servers and discovered tools. MCP calls
+prefer its persistent socket door to retain server sessions. A lost remote response is not
+replayed through the command door. `MAGI_TOOLS_DOOR=command` explicitly chooses one-shot sessions.
+
+See Casper's [MCP client setup](https://github.com/ai-nerv/casper/blob/main/docs/MCP_CLIENT.md)
+for stdio, HTTP and Blender examples.
 
 casper is the default for the `tools` role, not a requirement: `magi.tools = "workbench"` hands the
 role to any program that answers `ROLES.md`'s core, and `magi.workbench_sha256` pins that one
@@ -184,6 +192,17 @@ With `melchior` installed, a session can reach the other sessions in the same pr
 model calls one `agent` tool — `list`, `send`, `inbox`, `reply` — and magi's whole knowledge of
 the layer is one file, `magi-cli/src/melchior.rs`, that spawns it and reads lines.
 
+`:agents` shows the run's tree with each agent's current model, thinking setting, activity,
+approval/input waits, and last admitted input against its context window and input limit.
+`~` marks estimated tokens; unmeasured context and unreachable hosts are shown explicitly.
+Reported session cost appears when available. Model names wrap rather than truncate. Details
+refresh through read-only host queries while the panel is open, about every two seconds;
+these queries neither subscribe as an approval screen nor call a model.
+
+Opening another agent starts with a transcript snapshot at the tail, not a visible replay of
+its history. New output follows the tail until you scroll up; PageUp/PageDown browse history,
+and Shift+End returns to following new output.
+
 Two walls decide who can be reached. The **project** wall is the filesystem: another checkout's
 sessions are not refused, they are simply not there. The **instance** wall is the front door: a
 main speaks for its instance, and its subagents are private, so `agent_talk` is `mains` by
@@ -197,7 +216,8 @@ has a waking sort. Notes alone do not start a reply.
 
 One main may ask another to **adopt** it. Consent is a person's: the request surfaces as a
 prompt on the other side, and accepting hands down exactly the grants the parent already holds
-— never more. A child that wants something outside them is refused and told to ask its parent.
+— never more. Spawned children forward requests outside their grants to their parent's
+permission policy and approval prompt. No blanket read, write, shell or network grant is added.
 
 A session can also be *started* under another. `melchior fork` mints a name and a secret; the
 harness spawns with what it was handed, and the session that comes up is a **child** — it writes
@@ -223,7 +243,9 @@ loads the stored report into the conversation and verifies its content digest. S
 revisions deduplicate notifications, not equal text from separate turns. Automatic loading
 carries at most 40,000 UTF-8 bytes per report; a longer report includes an explicit paged-read
 instruction. Escape cancels the current turn only: reports arriving afterward wake it again,
-and an interrupted report-handling turn is retried without another notification. Pending
+and an interrupted report-handling turn gets one automatic retry without another notification.
+Canceling that retry stops it; unread reports remain available for the next prompt. Interrupting
+also releases outstanding permission and choice waits. Pending
 receipts last for the live session; forced process termination or unavailable coordination
 can still prevent delivery. These hooks do not reconstruct pending receipts after a restart.
 
@@ -367,10 +389,81 @@ A provider or a protocol declared twice replaces rather than appends, which is w
 an override and a loop over a directory of machines safe to re-run. A file that exists and does
 not load is fatal: it expressed an intention that has not been carried out.
 
+## Session environment
+
+```
+:source /some/bash/file
+:source "$HOME/a file with spaces.sh"
+:env OPENROUTER_API_KEY=your-key
+:env PATH=/another/bin:$PATH
+:env KEY="new value:${KEY}" OTHER='literal $KEY'
+```
+
+These commands update this session's environment overlay, not your parent shell or configuration
+files. Future model requests, helpers, command tools and newly spawned subagents use it. Existing
+subagents and already running commands are not changed. Set variables while the session is idle;
+busy sessions refuse the update without changing anything. Model readiness updates immediately,
+and a background catalog refresh follows. If your configured model was waiting for its missing key,
+it becomes active once that key is set; an already active model is never switched. Without a
+configured model, use `:model <name>` to select one.
+
+Rune parses the source file without executing it. Only standalone top-level scalar
+`export KEY=value` statements are imported, in file order. Other commands, unexported assignments,
+functions, conditionals, pipelines and here-document contents are ignored. Exports requiring
+command/process substitution, arithmetic, ANSI-C quoting or parameter operators are skipped and
+counted. Malformed shell syntax refuses the whole file. Regular UTF-8 files are limited to 256 KiB.
+
+`:env` accepts multiple assignments and expands `$KEY` and `${KEY}` against the session's current
+environment before that command, as shell `export` does. Earlier export statements in a source
+file affect later ones. Undefined variables become empty;
+single quotes and backslash escapes preserve literal dollars. Colons, equals signs and quoted
+spaces remain part of the value. Unsupported expansion in `:env` refuses the entire update.
+Values are omitted from notices, command diagnostics, prompt history and durable session records.
+They still exist in process memory and child environments, and tools explicitly printing them can
+expose them. The OpenRouter variable is **`OPENROUTER_API_KEY`**, not `OPENROUTER_KEY`.
+
 ## Model discovery
 
 `:model` opens the picker and refreshes provider catalogs through Melchior, bypassing its
 discovery cache. The list updates without restarting the session or changing the active model.
+Each model shows context and published input/output prices in USD per million tokens. Unknown
+prices are `—`, not zero. OpenRouter entries also show `OR wk #N`, their position in its catalog
+sorted by last week's token usage; this is popularity on OpenRouter, not a quality score.
+
+Each model also shows advertised input/output modalities and native thinking levels.
+OpenRouter supplies architecture and reasoning metadata; Ollama supplies `/api/show`
+capabilities and `thinking.values` (boolean controls appear as `off,on`). Missing thinking
+levels are shown as `available (levels unknown)`, not guessed from the model name. Missing
+output metadata is `—`. These are provider capabilities, not a promise that Magi supports
+every advertised modality; Magi currently accepts text and images. The separate `:thinking`
+picker still uses Magi's neutral levels and the provider adapter's mappings.
+
+The model picker is a table with one row per model: Model, Ctx, In$/M, Out$/M, ORwk,
+Modality (input→output), and Thinking. Model names are never abbreviated and take priority
+over metadata widths; the visible rows determine the name column's width. A terminal narrower
+than a model name cannot show that entire name on one physical line.
+Narrow terminals abbreviate modalities as T=text, I=image, A=audio, V=video, F=file;
+thinking as 0=off/none, i=minimal, l=low, m=medium, h=high, xh=xhigh, x=max.
+`on(?)` means thinking is available but its levels are unpublished. Long cells use ellipses.
 Failed providers keep their previous choices with a warning; successful empty catalogs remove
 models that are no longer available. Closing the picker does not reopen it when refresh
 finishes. Magi and Melchior both need builds supporting this refresh protocol.
+
+## Image inputs
+
+Attach a raster file in a prompt with `@photo.png`, including in `magi -p "Inspect @photo.png"`.
+For spaces, use `@"path with spaces/photo.png"`. Casper's `read` tool and MCP image results
+also deliver native image attachments, not base64 prose. Supported inputs are PNG, JPEG,
+GIF (first frame), WebP and BMP; SVG stays text. No browser is involved.
+
+Casper validates and resizes raster inputs: at most 20 MiB source bytes, an 8192-pixel source
+dimension limit, a 64 MiB decoder allocation limit, a 1536-pixel inline edge, and 128 KiB
+encoded image bytes per attachment. Dense images can be reduced further to fit the byte limit.
+Prompts and MCP results accept up to four images. Inline images are persisted with the
+transcript and survive resume. Balthasar receives text projections plus estimated image-token
+costs, not base64 in searchable prose; an elided tool image remains in the raw journal and can
+be read again through the tool's recovery hint. The 50% input-context admission gate still applies.
+
+Text-only models receive an explicit image-omission note. Switching to a vision model restores
+the stored images when those entries are in the selected context. This implementation covers
+image inputs, not audio/video inputs or image generation.
