@@ -90,6 +90,7 @@ async fn after(
 ) {
     loop {
         let (owner, request) = admitted;
+        let began = session.lock().await.cursor();
         let outcome = crate::catching::caught(handle(&session, request, worker.as_ref(), &missing))
             .await
             .unwrap_or_else(|why| Err(format!("this request stopped on an internal error: {why}")));
@@ -101,12 +102,30 @@ async fn after(
         })
         .await
         .unwrap_or_else(|why| Err(magi_ipc::family::Fault::Failed(why)));
-        crate::scribe::told(&mut *session.lock().await, &flushed);
-        let Some(next) = session.lock().await.finish(owner) else {
+        let mut held = session.lock().await;
+        crate::scribe::told(&mut held, &flushed);
+        // A turn the memory layer did not take ends on an error rather than as a recorded one.
+        if let Err(why) = &flushed
+            && why.is_fatal()
+            && answered_since(&held, began)
+        {
+            error(&mut held, format!("this turn was not recorded: {why}"));
+        }
+        let Some(next) = held.finish(owner) else {
             return;
         };
         admitted = next;
     }
+}
+
+/// Whether an answer that is not an error was committed after `began`.
+fn answered_since(held: &Session, began: magi_proto::Cursor) -> bool {
+    held.entries()
+        .iter()
+        .enumerate()
+        .rev()
+        .map_while(|(at, entry)| held.cursor_at(at).filter(|&c| c > began).map(|_| entry))
+        .any(|entry| matches!(entry, Entry::Assistant { error: None, .. }))
 }
 
 /// One admitted request, run to its end.
