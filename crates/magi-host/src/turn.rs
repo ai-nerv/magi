@@ -311,7 +311,11 @@ async fn permissions(
             noted.about,
             if noted.allowed { "allowed" } else { "refused" }
         );
-        magi_model::noted!("permit: {said}");
+        magi_model::noted!(
+            "permit: {} {}",
+            noted.verb,
+            if noted.allowed { "allowed" } else { "refused" }
+        );
         let mut open = scribe.lock().await;
         if let Some(scribe) = open.as_mut()
             && let Err(why) = scribe.noticed(cursor, "permission", &said).await
@@ -559,19 +563,14 @@ pub async fn run(
                 }
                 _ => magi_tools::Output::error("cancelled before this tool ran"),
             };
+            // The arguments and the stub stay out of the log: a command line can carry a secret.
             magi_model::noted!(
-                "tool: {} {} {} in {}ms, {} bytes{}",
+                "tool: {} {} in {}ms, {} bytes of arguments, {} bytes back",
                 call.name,
-                trimmed(&call.arguments),
                 if output.is_error { "failed" } else { "ok" },
                 began.elapsed().as_millis(),
+                call.arguments.len(),
                 output.content.len(),
-                output
-                    .hints
-                    .brief
-                    .as_deref()
-                    .map(|brief| format!(", stub `{brief}`"))
-                    .unwrap_or_default()
             );
             // The other half of the loop: what the turn did with what it was given, the only signal
             // balthasar has. After the tool, before the entry is amended, and off with no ledger.
@@ -620,15 +619,6 @@ pub async fn run(
     })?;
     held.set_status(AgentStatus::Idle);
     Ok(())
-}
-
-/// Arguments as a log line shows them: one line, and not all of a long one.
-fn trimmed(text: &str) -> String {
-    let flat = text.replace('\n', " ");
-    match flat.char_indices().nth(100) {
-        Some((cut, _)) => format!("{}…", &flat[..cut]),
-        None => flat,
-    }
 }
 
 /// The calls a finished turn is waiting on, if any.
