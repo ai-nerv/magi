@@ -600,7 +600,8 @@ impl App {
         } else {
             now.saturating_sub(1)
         };
-        (next != now).then(|| self.set_thinking_here(levels[next]))
+        let level = *levels.get(next)?;
+        (next != now).then(|| self.set_thinking_here(level))
     }
 
     /// Take the row the card's cursor is on: the thinking level steps up and wraps, and the model
@@ -615,7 +616,8 @@ impl App {
             "thinking" if self.model_reasons => {
                 let levels = magi_tui::model_card::LEVELS;
                 let now = levels.iter().position(|l| *l == self.thinking).unwrap_or(0);
-                Some(self.set_thinking_here(levels[(now + 1) % levels.len()]))
+                let level = *levels.get((now + 1) % levels.len())?;
+                Some(self.set_thinking_here(level))
             }
             // A provider row, or the router's own: marked at once, then asked of the session.
             _ if id.starts_with("provider:") => {

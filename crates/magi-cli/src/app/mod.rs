@@ -307,8 +307,10 @@ impl App {
                 continue;
             }
             let busy = 1.0 - since / BUSY_SECS;
-            if since < 0.08 || Self::roll(self.scan_phase, nth) < 0.3 + 0.5 * busy {
-                lit[nth] = 1.0;
+            if (since < 0.08 || Self::roll(self.scan_phase, nth) < 0.3 + 0.5 * busy)
+                && let Some(slot) = lit.get_mut(nth)
+            {
+                *slot = 1.0;
             }
         }
         lit
@@ -519,7 +521,9 @@ impl App {
     /// Recompute the completion popup. The command menu only opens on the command line.
     pub fn refresh_completion(&mut self, list_paths: &dyn Fn(&str) -> Vec<String>) {
         let (row, col) = self.editor.cursor();
-        let line = self.editor.lines()[row].clone();
+        let Some(line) = self.editor.lines().get(row).cloned() else {
+            return;
+        };
         // `$` offers whoever is listening, read on the keystroke: a dead instance did not deregister.
         let resolved = magi_tui::complete::resolve_with(&line, col, list_paths, &|_| {
             self.reachable.iter().map(|them| them.id.clone()).collect()

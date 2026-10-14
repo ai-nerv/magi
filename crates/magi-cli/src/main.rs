@@ -259,7 +259,9 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
             let Some(prompt) = cli.prompt else {
                 anyhow::bail!("`-p` needs a prompt: magi -p \"…\"");
             };
-            let opening = opening.expect("a session's prologue runs before the runtime");
+            let Some(opening) = opening else {
+                anyhow::bail!("a session's prologue did not run before the runtime");
+            };
             let loaded = opening.loaded;
             // Held for the run, so its socket is up while the turn is.
             let _layer = opening.started;
@@ -302,7 +304,9 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
         }
         None => {
             // The configuration, the layer and this session's name, settled before the runtime.
-            let opening = opening.expect("a session's prologue runs before the runtime");
+            let Some(opening) = opening else {
+                anyhow::bail!("a session's prologue did not run before the runtime");
+            };
             let loaded = opening.loaded;
             let project = opening.project;
             let started = opening.started;

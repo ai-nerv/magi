@@ -122,7 +122,7 @@ pub fn matches(pattern: &str, text: &str) -> bool {
                 at += 1;
                 here += 1;
             }
-            Some(c) if *c == text[here] => {
+            Some(c) if text.get(here) == Some(c) => {
                 at += 1;
                 here += 1;
             }
@@ -137,7 +137,11 @@ pub fn matches(pattern: &str, text: &str) -> bool {
         }
     }
     // Trailing stars match the empty rest of the string; anything else left over does not.
-    pattern[at..].iter().all(|c| *c == '*')
+    pattern
+        .get(at..)
+        .unwrap_or_default()
+        .iter()
+        .all(|c| *c == '*')
 }
 
 /// The patterns people write, and the ones they do not.

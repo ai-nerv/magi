@@ -193,8 +193,8 @@ fn vouched_for(config: &Config, cwd: &std::path::Path) -> bool {
 
 /// Replace a compiled-in file with the installed one of the same name, or add it.
 fn layer(files: &mut Vec<(String, String)>, name: String, source: String) {
-    match files.iter().position(|(n, _)| *n == name) {
-        Some(at) => files[at] = (name, source),
+    match files.iter_mut().find(|(n, _)| *n == name) {
+        Some(held) => *held = (name, source),
         None => files.push((name, source)),
     }
 }

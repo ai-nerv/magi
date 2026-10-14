@@ -15,13 +15,19 @@ pub fn fetch(program: &str) -> Vec<magi_tui::tooling::Tool> {
     let Ok(reply) = serde_json::from_slice::<serde_json::Value>(&done.stdout) else {
         return Vec::new();
     };
-    reply["result"]
-        .as_array()
+    reply
+        .get("result")
+        .and_then(serde_json::Value::as_array)
         .map(Vec::as_slice)
         .unwrap_or_default()
         .iter()
         .map(|row| {
-            let said = |key: &str| row[key].as_str().unwrap_or_default().to_owned();
+            let said = |key: &str| {
+                row.get(key)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned()
+            };
             magi_tui::tooling::Tool {
                 name: said("name"),
                 group: said("group"),
