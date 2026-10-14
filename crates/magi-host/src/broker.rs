@@ -5,7 +5,14 @@
 use magi_model::Context;
 use magi_model::Delta;
 use magi_proto::ask::{Ask, Refusal, Said, Wants};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+/// How long melchior may say nothing during a turn before the turn is given up: past its longest
+/// backoff and the slowest first token.
+const QUIET: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// The longest one line from melchior may be; a longer one is skipped.
+const LINE_MOST: u64 = 16 * 1024 * 1024;
 
 /// What went wrong asking, when the asking itself failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,9 +123,39 @@ pub async fn ask_through(
     model: &str,
     context: &Context,
     wants: &Wants,
+    on_delta: impl FnMut(Delta),
+    on_retry: impl FnMut(Retry),
+) -> Result<(), Trouble> {
+    let asked = Asked {
+        program,
+        model,
+        context,
+        wants,
+    };
+    asking(asked, on_delta, on_retry, QUIET).await
+}
+
+/// Who is asked what, for one turn.
+struct Asked<'a> {
+    program: &'a str,
+    model: &'a str,
+    context: &'a Context,
+    wants: &'a Wants,
+}
+
+/// One turn, given up when melchior says nothing for `quiet`.
+async fn asking(
+    asked: Asked<'_>,
     mut on_delta: impl FnMut(Delta),
     mut on_retry: impl FnMut(Retry),
+    quiet: std::time::Duration,
 ) -> Result<(), Trouble> {
+    let Asked {
+        program,
+        model,
+        context,
+        wants,
+    } = asked;
     let stream = stream_of(model, context);
     let asking = Ask {
         model: model.to_owned(),
@@ -152,11 +189,15 @@ pub async fn ask_through(
 
     if let Some(mut stdin) = child.stdin.take() {
         // Written and closed: melchior reads to end of file, so a handle left open is a turn that
-        // never starts.
-        if let Err(why) = stdin.write_all(&body).await {
-            magi_model::noted!("broker: the ask to {program} was not fully written: {why}");
+        // never starts. On the idle clock, because a melchior that never reads it is a hang.
+        let written = tokio::time::timeout(quiet, async {
+            stdin.write_all(&body).await?;
+            stdin.shutdown().await
+        })
+        .await;
+        if !matches!(written, Ok(Ok(()))) {
+            magi_model::noted!("broker: the ask to {program} was not fully written");
         }
-        let _ = stdin.shutdown().await;
     }
 
     let Some(stdout) = child.stdout.take() else {
@@ -166,9 +207,30 @@ pub async fn ask_through(
         });
     };
 
-    let mut lines = BufReader::new(stdout).lines();
+    let mut lines = BufReader::new(stdout);
     let mut ended = None;
-    while let Ok(Some(line)) = lines.next_line().await {
+    let mut raw = Vec::new();
+    loop {
+        raw.clear();
+        let read = tokio::time::timeout(quiet, async {
+            (&mut lines)
+                .take(LINE_MOST)
+                .read_until(b'\n', &mut raw)
+                .await
+        })
+        .await;
+        match read {
+            Ok(Ok(0)) | Ok(Err(_)) => break,
+            Ok(Ok(_)) => {}
+            Err(_) => {
+                let _ = child.kill().await;
+                return Err(Trouble {
+                    message: format!("{program} said nothing for {quiet:?}; the turn was stopped"),
+                    why: Refusal::Transport,
+                });
+            }
+        }
+        let line = String::from_utf8_lossy(&raw);
         if line.trim().is_empty() {
             continue;
         }
@@ -276,15 +338,14 @@ pub async fn value(
 /// What melchior says this machine can talk to, asked once when a session starts. Empty when
 /// melchior is not installed or would not answer, which is not an error.
 pub async fn cards(program: &str) -> Vec<magi_proto::ask::Card> {
-    let Ok(out) = tokio::process::Command::new(program)
-        .arg("models")
-        .arg("--json")
-        .stderr(std::process::Stdio::null())
-        .output()
-        .await
-    else {
-        magi_model::noted!("broker: {program} models could not be started");
-        return Vec::new();
+    let mut asking = tokio::process::Command::new(program);
+    asking.arg("models").arg("--json");
+    let out = match crate::driving::ran(asking, None, crate::driving::ASKED).await {
+        Ok(out) => out,
+        Err(why) => {
+            magi_model::noted!("broker: {program} models: {why}");
+            return Vec::new();
+        }
     };
     let Ok(reply) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else {
         magi_model::noted!(
@@ -455,5 +516,53 @@ mod tests {
         .await
         .expect_err("no melchior");
         assert!(trouble.message.contains("melchior"), "{trouble:?}");
+    }
+
+    #[tokio::test]
+    async fn a_melchior_that_goes_quiet_ends_the_turn_and_is_stopped() {
+        let mind = magi_testkit::Mind::stalling(
+            "broker-quiet",
+            &[&magi_testkit::mind::text_line("partial")],
+        );
+        let program = mind.program().display().to_string();
+        let asked = Asked {
+            program: &program,
+            model: "fake/m",
+            context: &Context::default(),
+            wants: &Wants::default(),
+        };
+        let mut said = String::new();
+        let started = std::time::Instant::now();
+        let ended = asking(
+            asked,
+            |delta| {
+                if let Delta::Text(text) = delta {
+                    said.push_str(&text);
+                }
+            },
+            |_| {},
+            std::time::Duration::from_millis(300),
+        )
+        .await;
+        let trouble = ended.expect_err("a quiet melchior is not a finished turn");
+        assert!(
+            trouble.message.contains("said nothing"),
+            "{}",
+            trouble.message
+        );
+        assert_eq!(
+            said, "partial",
+            "what arrived before the silence still arrived"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        let pid = mind.stalled_pid().expect("melchior started");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::path::Path::new(&format!("/proc/{pid}")).exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the quiet melchior was left running"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
     }
 }

@@ -7,15 +7,14 @@ use magi_proto::setup::{Applied, Need};
 /// What a sibling says it takes. Empty when it is not installed or will not answer, which is not
 /// an error: a sibling that cannot be asked cannot be told either.
 pub async fn needs(program: &str) -> Vec<Need> {
-    let Ok(out) = tokio::process::Command::new(program)
-        .arg("needs")
-        .arg("--json")
-        .stderr(std::process::Stdio::null())
-        .output()
-        .await
-    else {
-        magi_model::noted!("driving: {program} needs could not be started");
-        return Vec::new();
+    let mut asking = tokio::process::Command::new(program);
+    asking.arg("needs").arg("--json");
+    let out = match ran(asking, None, ASKED).await {
+        Ok(out) => out,
+        Err(why) => {
+            magi_model::noted!("driving: {program} needs: {why}");
+            return Vec::new();
+        }
     };
     flat(rows(&out.stdout))
         .into_iter()
@@ -42,33 +41,14 @@ pub fn given_dir() -> std::path::PathBuf {
 /// When the sibling could not be started, would not answer, or refused the chunk outright. A
 /// setting it declined is not an error: it comes back in [`Applied::refused`].
 pub async fn configure(program: &str, source: &str) -> Result<Applied, String> {
-    let mut child = tokio::process::Command::new(program)
+    let mut telling = tokio::process::Command::new(program);
+    telling
         .arg("configure")
         .arg("--json")
-        .env(GIVEN, given_dir())
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|why| {
-            magi_model::noted!("driving: {program} configure could not be started: {why}");
-            format!("{program} could not be started: {why}")
-        })?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        use tokio::io::AsyncWriteExt;
-        // Half of a Lua file is still a Lua file, and the sibling would apply it; the log at least
-        // says the pipe went.
-        if let Err(why) = stdin.write_all(source.as_bytes()).await {
-            magi_model::noted!("driving: the configuration for {program} was cut short: {why}");
-        }
-        // Closed, because the far side reads to end of file.
-        let _ = stdin.shutdown().await;
-    }
-    let out = child
-        .wait_with_output()
+        .env(GIVEN, given_dir());
+    let out = ran(telling, Some(source.as_bytes()), ASKED)
         .await
-        .map_err(|why| format!("{program} did not finish: {why}"))?;
+        .map_err(|why| format!("{program} configure: {why}"))?;
 
     let reply: serde_json::Value =
         serde_json::from_slice(&out.stdout).map_err(|why| format!("{program}: {why}"))?;
@@ -154,10 +134,65 @@ fn rows(body: &[u8]) -> Vec<serde_json::Value> {
         .unwrap_or_default()
 }
 
+/// How long a sibling has to answer a question asked while a session starts.
+pub(crate) const ASKED: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Run `command` to its end within `patience`, handing it `input` on stdin, and collect what it
+/// wrote. Past the deadline, or dropped, it is killed; stderr goes nowhere.
+///
+/// # Errors
+/// When it could not be started, or did not finish in time.
+pub(crate) async fn ran(
+    mut command: tokio::process::Command,
+    input: Option<&[u8]>,
+    patience: std::time::Duration,
+) -> Result<std::process::Output, String> {
+    use tokio::io::AsyncWriteExt;
+    command
+        .kill_on_drop(true)
+        .stdin(match input {
+            Some(_) => std::process::Stdio::piped(),
+            None => std::process::Stdio::null(),
+        })
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null());
+    let work = async {
+        let mut child = command.spawn()?;
+        if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+            // Closed after, because the far side reads to end of file.
+            stdin.write_all(input).await?;
+            stdin.shutdown().await?;
+        }
+        child.wait_with_output().await
+    };
+    tokio::time::timeout(patience, work)
+        .await
+        .map_err(|_| format!("no answer within {patience:?}; it was stopped"))?
+        .map_err(|why| why.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use magi_proto::setup::Kind;
+
+    #[tokio::test]
+    async fn a_sibling_that_never_answers_is_stopped_at_the_deadline() {
+        let started = std::time::Instant::now();
+        for input in [None, Some(vec![b'x'; 4 * 1024 * 1024])] {
+            let mut stuck = tokio::process::Command::new("sleep");
+            stuck.arg("30");
+            let why = ran(
+                stuck,
+                input.as_deref(),
+                std::time::Duration::from_millis(200),
+            )
+            .await
+            .expect_err("stopped");
+            assert!(why.contains("no answer"), "{why}");
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
 
     fn need(name: &str, kind: Kind) -> Need {
         Need {

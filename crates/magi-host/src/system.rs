@@ -11,6 +11,9 @@ const PROJECT_FILE: &str = "AGENTS.md";
 /// How much of a project file is taken. It rides on every request in the session.
 const PROJECT_LIMIT: usize = 32_000;
 
+/// `O_NONBLOCK`, so opening a FIFO where the file belongs does not wait for a writer.
+const PROJECT_NONBLOCK: i32 = 0o4000;
+
 /// Where a session sits among the agents of its run, which decides what it is told about working
 /// with them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,22 +172,66 @@ fn environment(cwd: &Path, now: &str) -> String {
 /// The branch, when the directory is a repository and is on one. `branch --show-current` rather
 /// than `rev-parse HEAD`, which fails with no commits and answers "HEAD" on a detached checkout.
 fn git_branch(cwd: &Path) -> Option<String> {
-    let output = std::process::Command::new("git")
+    use std::io::Read;
+    let mut child = std::process::Command::new("git")
         .args(["branch", "--show-current"])
         .current_dir(cwd)
-        .output()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
         .ok()?;
-    output
-        .status
+    // Waited on with a deadline, and killed and reaped past it: a hook or a lock can hang git.
+    let deadline = std::time::Instant::now() + GIT_PATIENCE;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    let mut said = String::new();
+    child
+        .stdout
+        .take()?
+        .take(4096)
+        .read_to_string(&mut said)
+        .ok()?;
+    status
         .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .then(|| said.trim().to_owned())
         .filter(|branch| !branch.is_empty())
 }
 
+/// How long `git` has to name the branch.
+const GIT_PATIENCE: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// What the project asked for, if it asked. Read from the session root only, not searched upward:
 /// a file two directories above the one you work in is one you did not know you were agreeing to.
+/// A regular file only, opened without waiting and read no further than the limit, so a FIFO or a
+/// device standing in its place costs nothing.
 fn project_notes(cwd: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(cwd.join(PROJECT_FILE)).ok()?;
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(PROJECT_NONBLOCK)
+        .open(cwd.join(PROJECT_FILE))
+        .ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut raw = Vec::new();
+    file.take(PROJECT_LIMIT as u64 * 4 + 4)
+        .read_to_end(&mut raw)
+        .ok()?;
+    let text = String::from_utf8_lossy(&raw);
     let text = text.trim();
     if text.is_empty() {
         return None;
@@ -351,5 +398,23 @@ mod tests {
         let role = built.find("# Your role: reviewer").expect("the role");
         assert!(seat < role, "{built}");
         assert!(built.contains("Edit nothing."), "{built}");
+    }
+
+    #[test]
+    fn notes_that_are_not_a_file_cost_nothing() {
+        // A FIFO would block the open and `/dev/zero` would never end.
+        let dir = scratch("not-a-file");
+        let made = std::process::Command::new("mkfifo")
+            .arg(dir.join(PROJECT_FILE))
+            .status()
+            .expect("mkfifo");
+        assert!(made.success());
+        let started = std::time::Instant::now();
+        assert_eq!(project_notes(&dir), None);
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+
+        let other = scratch("endless");
+        std::os::unix::fs::symlink("/dev/zero", other.join(PROJECT_FILE)).expect("symlink");
+        assert_eq!(project_notes(&other), None);
     }
 }
