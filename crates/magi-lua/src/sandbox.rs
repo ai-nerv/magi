@@ -4,7 +4,7 @@
 //! process transport becomes a preference rather than the only way to run a command. Removed
 //! rather than never installed: a short list of what must not be reachable is auditable.
 
-use luna::{Lua, Value};
+use luna::{Callback, CallbackReturn, Context, IntoValue, Lua, MetaMethod, Value};
 
 /// Globals a config must not have, and why each is on the list. `os.execute` and `io.popen` spawn.
 /// `os.remove`, `os.rename` and `os.tmpname` write outside the `Ops` seam. `os.exit` would let a
@@ -18,7 +18,11 @@ const REMOVED: &[(&str, &str)] = &[
     ("os", "setlocale"),
 ];
 
-const REMOVED_TABLES: &[&str] = &["io", "package", "dofile", "loadfile", "require"];
+/// Globals removed whole. `debug` reaches other frames and sets metatables past `setmetatable`.
+const REMOVED_TABLES: &[&str] = &["io", "package", "dofile", "loadfile", "require", "debug"];
+
+/// What a metatable carrying `__gc` is told.
+const FINALIZED: &str = "setmetatable: a metatable with __gc is refused; no finalizer runs here";
 
 /// Globals a project's file must not have, beyond what [`luna::Lua::core`] never loads: `load`
 /// compiles code, `collectgarbage` steers the collector, `warn` and `print` write to the terminal,
@@ -61,7 +65,34 @@ pub fn apply_project(lua: &mut Lua) {
                 );
             }
         }
+        guard(ctx, "setmetatable", finalized);
     });
+}
+
+/// A check on a call's first two arguments, naming why it refuses them.
+type Refusal = for<'gc> fn(Context<'gc>, Value<'gc>, Value<'gc>) -> Option<&'static str>;
+
+/// Put `refuses` in front of the global `name`, which then runs as it did.
+fn guard(ctx: Context<'_>, name: &'static str, refuses: Refusal) {
+    let Value::Function(original) = ctx.get_global_value(name) else {
+        return;
+    };
+    let guarded = Callback::from_fn_with(&ctx, original, move |original, ctx, _exec, stack| {
+        if let Some(why) = refuses(ctx, stack.get(0), stack.get(1)) {
+            return Err(why.into_value(ctx).into());
+        }
+        Ok(CallbackReturn::Call {
+            function: *original,
+            then: None,
+        })
+    });
+    ctx.set_global(name, guarded);
+}
+
+/// A metatable carrying `__gc`, which would enrol its object for a finalizer.
+fn finalized<'gc>(ctx: Context<'gc>, _: Value<'gc>, metatable: Value<'gc>) -> Option<&'static str> {
+    matches!(metatable, Value::Table(metatable) if !metatable.get_value(ctx, MetaMethod::Gc).is_nil())
+        .then_some(FINALIZED)
 }
 
 /// Take away what a config must not be able to do.
@@ -95,6 +126,7 @@ pub fn apply(lua: &mut Lua) {
                 "the sandbox could not remove the global `{name}`"
             );
         }
+        guard(ctx, "setmetatable", finalized);
     });
 }
 
@@ -206,6 +238,19 @@ mod tests {
             "nil",
             "plain data still works"
         );
+    }
+
+    #[test]
+    fn a_metatable_carrying_gc_is_refused_in_either_vm_and_any_other_is_taken() {
+        let refused = "select(2, pcall(setmetatable, {}, { __gc = function() end }))";
+        let kept = "(function() local t = {} \
+                    return setmetatable(t, { __index = { x = 7 } }) == t and t.x end)()";
+        for said in [probe(refused), project_probe(refused)] {
+            assert!(said.contains("__gc"), "{said}");
+        }
+        assert_eq!(probe(kept), "7");
+        assert_eq!(project_probe(kept), "7");
+        assert_eq!(probe("debug"), "nil");
     }
 
     #[test]

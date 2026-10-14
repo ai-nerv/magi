@@ -235,7 +235,6 @@ impl Engine {
             }
             left -= i64::from(SLICE) - i64::from(fuel.remaining());
             let waiting = self.lua.enter(|ctx| ctx.fetch(&executor).is_waiting());
-            self.lua.run_finalizers();
             let over = self
                 .lua
                 .memory_limit()
@@ -727,3 +726,7 @@ impl Engine {
 #[cfg(test)]
 #[path = "engine/naming.rs"]
 mod naming;
+
+#[cfg(test)]
+#[path = "engine/bounds.rs"]
+mod bounds;

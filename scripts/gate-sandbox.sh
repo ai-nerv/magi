@@ -182,9 +182,21 @@ body "$FAMILY" '^pub fn family_socket_under[(]' | grep -q 'uid()' || {
 for gone in execute exit remove rename tmpname setlocale; do
   holds "$SANDBOX" "\"$gone\"" "os.$gone is no longer removed from the VM" || fail=1
 done
-for gone in io package dofile loadfile require; do
+for gone in io package dofile loadfile require debug; do
   holds "$SANDBOX" "\"$gone\"" "the global \`$gone\` is no longer removed from the VM" || fail=1
 done
+
+# ---- and nothing is queued for a finalizer -----------------------------------------------------
+for vm in '^pub fn apply[(]' '^pub fn apply_project[(]'; do
+  body "$SANDBOX" "$vm" | grep -q 'guard(ctx, "setmetatable", finalized)' || {
+    echo "gate-sandbox: a VM's setmetatable no longer refuses __gc" >&2
+    fail=1
+  }
+done
+if code "$ENGINE" | grep -q 'run_finalizers('; then
+  echo "gate-sandbox: $ENGINE runs finalizers, which no budget meters" >&2
+  fail=1
+fi
 
 # ---- fetched code still has to be let in --------------------------------------------------------
 # The other half of the boundary. A file under `site/pack/` arrived from somewhere else and can
