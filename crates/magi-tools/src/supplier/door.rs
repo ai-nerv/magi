@@ -171,6 +171,20 @@ pub(super) fn over_socket(
     let body =
         serde_json::to_vec(&serde_json::json!({ "call": "run", "args": [call], "key": key }))
             .map_err(|why| Failed::Unsent(format!("this call will not encode: {why}")))?;
+    let first = exchange(path, &body, cancel)?
+        .into_iter()
+        .next()
+        .ok_or_else(|| Failed::Sent("the socket answered nothing".to_owned()))?;
+    serde_json::from_value(first).map_err(|why| Failed::Sent(why.to_string()))
+}
+
+/// Send one framed call on a connection of its own and read the rows of its reply. The connection
+/// goes with the call, whatever came back.
+fn exchange(
+    path: &std::path::Path,
+    body: &[u8],
+    cancel: &dyn Cancel,
+) -> Result<Vec<serde_json::Value>, Failed> {
     let mut stream = UnixStream::connect(path)
         .map_err(|why| Failed::Unsent(format!("connect {}: {why}", path.display())))?;
     if !peer_is_us(&stream) {
@@ -179,14 +193,9 @@ pub(super) fn over_socket(
             path.display()
         )));
     }
-    write_frame(&mut stream, &body)?;
+    write_frame(&mut stream, body)?;
     let reply = read_frame(&mut stream, cancel).map_err(Failed::Sent)?;
-    let rows = super::rows(&reply).map_err(Failed::Sent)?;
-    let first = rows
-        .into_iter()
-        .next()
-        .ok_or_else(|| Failed::Sent("the socket answered nothing".to_owned()))?;
-    serde_json::from_value(first).map_err(|why| Failed::Sent(why.to_string()))
+    super::rows(&reply).map_err(Failed::Sent)
 }
 
 /// Write one length-prefixed frame within [`MID_FRAME`]. Refused before a byte goes out when it
@@ -271,6 +280,9 @@ pub(super) fn read_frame(from: &mut UnixStream, cancel: &dyn Cancel) -> Result<V
     fill(&mut body, &mut got, &mut begun)?;
     Ok(body)
 }
+
+#[cfg(test)]
+mod corpus;
 
 #[cfg(test)]
 mod tests {
