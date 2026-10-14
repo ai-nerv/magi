@@ -21,7 +21,7 @@ pub trait Ops: Send + Sync {
         } else {
             self.cwd().join(path)
         };
-        normalise(&joined)
+        real_path(&joined)
     }
 
     /// Read a file.
@@ -212,18 +212,18 @@ impl Real {
         } else {
             self.root.join(path)
         };
-        let normalised = normalise(&joined);
+        let real = real_path(&joined);
         if !self.confined {
-            return Ok(normalised);
+            return Ok(real);
         }
-        let root = normalise(&self.root);
-        if !normalised.starts_with(&root) {
+        let root = real_path(&self.root);
+        if !real.starts_with(&root) {
             return Err(format!(
                 "{} is outside this session's directory, and `magi.confine` is on",
                 path.display()
             ));
         }
-        Ok(normalised)
+        Ok(real)
     }
 
     /// The same action with any `Read`/`Write` path resolved against the root, so the gate sees
@@ -369,11 +369,31 @@ impl Ops for Real {
     }
 
     fn write(&self, path: &Path, contents: &str) -> Result<(), String> {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let written = if path.is_absolute() {
+            path.to_owned()
+        } else {
+            self.root.join(path)
+        };
+        if std::fs::symlink_metadata(normalise(&written)).is_ok_and(|meta| meta.is_symlink()) {
+            return Err(format!(
+                "{} is a symbolic link; write to what it points at instead",
+                path.display()
+            ));
+        }
         let path = self.resolve(path)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
-        std::fs::write(&path, contents).map_err(|e| format!("{}: {e}", path.display()))
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
+            .open(&path)
+            .and_then(|mut file| file.write_all(contents.as_bytes()))
+            .map_err(|e| format!("{}: {e}", path.display()))
     }
 
     /// Consult the ledger, and ask if it has nothing to say. The answer is recorded before it is
@@ -578,6 +598,32 @@ mod tests {
     fn walled(name: &str) -> (Real, Scratch) {
         let dir = Scratch::new("magi-wall", name);
         (Real::confined(dir.to_path_buf()), dir)
+    }
+
+    #[test]
+    fn a_symlink_is_seen_through_before_gating_and_never_written_through() {
+        let (ops, dir) = rooted("links");
+        std::fs::create_dir_all(dir.join(".git/hooks")).expect("mkdir");
+        std::os::unix::fs::symlink(dir.join(".git/hooks"), dir.join("h")).expect("symlink");
+        std::os::unix::fs::symlink(dir.join(".git/config"), dir.join("c")).expect("symlink");
+        let real = |path: &str| ops.resolved(Path::new(path));
+        assert_eq!(real("h/post-checkout"), real(".git/hooks/post-checkout"));
+        assert_eq!(real("c"), real(".git/config"), "a link to nothing yet");
+
+        let refused = ops.write(Path::new("c"), "[core]").expect_err("refused");
+        assert!(refused.contains("symbolic link"), "{refused}");
+        assert!(
+            !dir.join(".git/config").exists(),
+            "the write went through the link"
+        );
+
+        let walled = Real::confined(dir.join("inner"));
+        std::fs::create_dir_all(dir.join("inner")).expect("mkdir");
+        std::os::unix::fs::symlink("/etc", dir.join("inner/x")).expect("symlink");
+        assert!(
+            walled.read(Path::new("x/hostname")).is_err(),
+            "out through a link"
+        );
     }
 
     #[test]
