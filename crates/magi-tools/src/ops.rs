@@ -226,6 +226,41 @@ impl Real {
         Ok(real)
     }
 
+    /// Open `real`, the path [`Self::resolve`] answered for `asked`: beneath the root when confined,
+    /// through no link otherwise, and never through its leaf.
+    fn open(
+        &self,
+        asked: &Path,
+        real: &Path,
+        flags: rustix::fs::OFlags,
+        mode: u32,
+    ) -> Result<std::fs::File, String> {
+        let flags = flags | rustix::fs::OFlags::NOFOLLOW;
+        let mode = rustix::fs::Mode::from_raw_mode(mode);
+        let opened = if self.confined {
+            let root = real_path(&self.root);
+            let inside = real.strip_prefix(&root).unwrap_or(real);
+            let inside = if inside.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                inside
+            };
+            opening::beneath(&root, inside, flags, mode)
+        } else {
+            opening::unlinked(real, flags, mode)
+        };
+        opened.map_err(|why| {
+            if opening::escaped(&why) {
+                format!(
+                    "{} resolves outside this session's directory, and `magi.confine` is on",
+                    asked.display()
+                )
+            } else {
+                format!("{}: {why}", real.display())
+            }
+        })
+    }
+
     /// The same action with any `Read`/`Write` path resolved against the root, so the gate sees
     /// what the deed will act on. `Run` and `Network` carry no path and pass through unchanged.
     fn resolved_action(&self, action: &magi_proto::permit::Action) -> magi_proto::permit::Action {
@@ -363,14 +398,18 @@ impl Ops for Real {
         self.root.clone()
     }
 
-    fn read(&self, path: &Path) -> Result<String, String> {
-        let path = self.resolve(path)?;
-        std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))
+    fn read(&self, asked: &Path) -> Result<String, String> {
+        use std::io::Read;
+        let path = self.resolve(asked)?;
+        let mut text = String::new();
+        self.open(asked, &path, rustix::fs::OFlags::RDONLY, 0)?
+            .read_to_string(&mut text)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(text)
     }
 
     fn write(&self, path: &Path, contents: &str) -> Result<(), String> {
         use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
         let written = if path.is_absolute() {
             path.to_owned()
         } else {
@@ -382,17 +421,15 @@ impl Ops for Real {
                 path.display()
             ));
         }
-        let path = self.resolve(path)?;
+        let asked = path;
+        let path = self.resolve(asked)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
-            .open(&path)
-            .and_then(|mut file| file.write_all(contents.as_bytes()))
+        use rustix::fs::OFlags;
+        let flags = OFlags::WRONLY | OFlags::CREATE | OFlags::TRUNC;
+        self.open(asked, &path, flags, 0o666)?
+            .write_all(contents.as_bytes())
             .map_err(|e| format!("{}: {e}", path.display()))
     }
 
@@ -732,3 +769,6 @@ mod reach_tests {
 #[path = "ops/gating.rs"]
 #[cfg(test)]
 mod gating;
+
+#[path = "ops/opening.rs"]
+mod opening;
