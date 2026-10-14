@@ -20,6 +20,7 @@ pub struct Scratch {
 impl Scratch {
     /// A fresh directory, named after `prefix` and `name`. Panics if it cannot be created.
     #[must_use]
+    #[allow(clippy::expect_used)]
     pub fn new(prefix: &str, name: &str) -> Self {
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!("{prefix}-{}-{n}-{name}", std::process::id()));
@@ -100,6 +101,7 @@ impl Scratch {
     /// A directory in here only this user may enter, as a runtime directory must be. Panics if it
     /// cannot be made.
     #[must_use]
+    #[allow(clippy::expect_used)]
     pub fn private(&self, name: &str) -> PathBuf {
         use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
         let path = self.path.join(name);

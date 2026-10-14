@@ -14,6 +14,7 @@ impl Serving {
     ///
     /// # Panics
     /// When it started and never answered, which is a failure and not a skip.
+    #[allow(clippy::expect_used)]
     pub async fn start(dir: &Path, instance: &str) -> Option<Self> {
         let runtime = dir.join("r");
         // Private, or the family does not take it for a runtime directory and falls back.
