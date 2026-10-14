@@ -209,6 +209,22 @@ every package a merge conflict.
 runs, in all four, so what arrives by being installed is held to the same rule as what arrives by
 being named. What a *tool* runs is a separate question, and it goes through the declared runner.
 
+**A file that arrived with a checkout is data, not a program.** A project's own file —
+`.magi.lua`, `.balthasar.lua`, anything a repository carries for one of these programs — runs in
+a VM of its own with no socket, no filesystem, no environment and no `load`, under an instruction
+budget, and may set only the settings its program lists as a project's to set. Everything else it
+assigns is refused by name, and the refusal is fatal to the session that read it. A directory the
+person has named as trusted in their own configuration is the one exception, and only the person's
+own file can name it.
+
+**Every VM runs under a budget.** A configuration, a hook or a plugin that loops is stopped and
+reported as failing; it never stalls the program that ran it.
+
+**A socket a VM may dial is one of the family's, by name.** A program's Lua stream reaches the
+sockets of these four programs in their runtime directories and nothing else — not "anything under
+the runtime directory", which is also where the session bus, the agents and the user's systemd
+listen.
+
 **A file that raises costs itself and nothing else.** Somebody else's package failing is reported
 and skipped; a program's own configuration failing is fatal, because a config that will not parse
 has not expressed an intention.
@@ -291,9 +307,126 @@ the program's own tests.
 | program | command line | socket | deliberate differences |
 |---|---|---|---|
 | magi | the floor | one per session, its own CBOR protocol for a front end | Coordinates rather than being coordinated: no `needs`, no `configure`. |
-| casper | the floor, plus `tools`, `run`, `surface`, `serve` | `tools` and `run`, kept open across a session | **The socket is not a remote shell**, and that is the point: what `run` runs, it runs inside the jail `serve` was spawned with — the one the coordinator set in casper's environment, never one a call named. A peer of another user is turned away; a same-user peer gets that same jail, which it could not escape however it asked. The command line stays the spawn-per-call door; the socket is the same surface, reached without a spawn each time. |
+| casper | the floor, plus `tools`, `run`, `surface`, `serve` | `tools` and `run`, kept open across a session | What `run` runs, it runs inside the jail `serve` was spawned with — the one the coordinator set in casper's environment, never one a call named — and only for a caller presenting the key the coordinator handed `serve` on its standard input. A peer of another user is turned away. With the jail off the socket runs commands as the person, which is what the person chose; it is a remote shell exactly as far as the person's own shell is. The command line stays the spawn-per-call door; the socket is the same surface, reached without a spawn each time. |
 | melchior | the floor, plus `models`, `ask`, `serve`, `fork`, `auth` | the session surface | The only one with a `tool` door: the coordination vocabulary a model calls, reached as `melchior tool --verb X`. `identity` and `tell` on the socket are `whoami` and `send` there, and are not aliases — one answers a program with a record, the other a model with a paragraph. |
 | balthasar | the floor, plus its own memory verbs | the same memory verbs | Some verbs are owner-only: a socket peer may propose but may not pin, write globally, or purge, and may not sign its report as the user's judgment. `export` and `dataset` answer `--json` as one object per line rather than framed: they are a corpus, not an answer, and `import` reads back what `export` writes. |
+
+---
+
+## Frames
+
+On a socket, every call and every reply is one frame: four bytes of length, big-endian and
+unsigned, then that many bytes of body in one of the two encodings above.
+
+**A frame is at most 16 MiB (16 777 216 bytes), in all four, in both directions.** One number,
+because a writer that allows more than its reader is a connection that closes for no reason the
+writer can see — balthasar read at 8 MiB while magi wrote at 16, and a pasted prompt silently
+stopped a session being recorded. Every reader checks the declared length before allocating for
+it. Every writer checks before sending a byte: a call that would not fit is refused locally and
+never sent.
+
+**A frame of length zero is malformed**, answered with a refusal like any body that will not
+decode.
+
+**An oversized call is answered, not dropped.** A reader that meets a declared length over the
+cap answers one refusal — `fault: "failed"`, naming the cap — and then closes, because it cannot
+skip a body it will not read and stay in step. A reply that would be over the cap is never
+written: the program answers that call with the same refusal instead, and the connection stays in
+step. A caller can always tell "too large" from "the program died".
+
+**A row over the cap is split, never a reason a stream cannot continue.** A verb that pages
+returns at least one row per page only when that row fits; one that does not is returned
+truncated and marked so, and the next page starts after it.
+
+---
+
+## Where sockets live
+
+**The runtime directory is trusted only when it is safe.** `$XDG_RUNTIME_DIR` is used when it is
+an absolute path to a directory owned by this uid with no group or other permissions. Empty is
+unset. Otherwise each program uses `<tmp>/<program>-<uid>`, where `<tmp>` is the system temporary
+directory. Every directory a program creates for its sockets, notes or settings is created mode
+`0700` and then checked with `lstat`: a directory, not a symlink, owned by this uid, with no group
+or other permissions. A check that fails is a refusal naming the path, never a fallback to
+somewhere less safe.
+
+**A stale socket is one nothing answers.** A program unlinks a socket path only when connecting to
+it fails with `ECONNREFUSED` and `lstat` says it is a socket owned by this uid, and only while it
+holds an exclusive `flock` on `<socket>.lock`, which it keeps for as long as it listens. A timeout,
+a full backlog, `EAGAIN`, `EMFILE` or a refusal reply is a live program having a bad moment, not a
+corpse. On exit a program unlinks its socket only if the path is still the inode it bound.
+
+**A client checks who answered.** After connecting, a client reads the server's `SO_PEERCRED`
+and closes if the uid is not its own.
+
+---
+
+## Deadlines and limits
+
+**Every connection has deadlines, on both sides.** A server stops waiting for the rest of a frame
+30 seconds after its first byte, closes a connection idle for 5 minutes, and gives up on a write
+after 30 seconds. A client puts the same deadline on writing a call as on reading its reply. A
+deadline that passes is a failure to send or read a whole frame, and the rule above applies: the
+connection is closed.
+
+**A busy server says so.** A program at its limit of connections answers the next one with a
+single refusal — `fault: "failed"`, error beginning `busy` — and closes it. It does not drop the
+connection silently, and it does not stop listening.
+
+**An accept that fails is a moment, not an ending.** `EMFILE`, `ENFILE`, `ENOBUFS` and
+`ECONNABORTED` are logged and retried after a pause; the listener keeps listening.
+
+**A child process has a deadline too.** A program that waits on another — a sibling's `models`,
+a distiller, a tool — waits with a deadline, kills what it started when the deadline passes or the
+call is cancelled, and reaps it.
+
+---
+
+## Who may call
+
+**The uid is the boundary between people. Within one uid, the jail is the boundary.** A command a
+tool runs inside the jail reaches no family socket: the runtime directory is not in its mount
+namespace, the abstract socket namespace is scoped away, and on the path without bubblewrap it
+cannot open a Unix socket at all. Everything unjailed and running as this uid could edit the
+person's own configuration, and no protocol here pretends otherwise.
+
+**Who a caller is, read from its environment, is attribution and never authority.** A program may
+read a peer's `/proc/<pid>/environ` to learn which session a call comes from, once, when the
+connection is accepted. It never falls back to a name the call itself carries. A verb that grants,
+stops, adopts, hands over or controls requires a secret minted for that relationship.
+
+**A secret never travels in an environment variable, an argument or a log.** It is handed over on
+an inherited pipe or in a `0600` file inside a `0700` runtime directory, read once, and redacted
+wherever a call is logged.
+
+**Grants only narrow.** A grant handed from one session to another is intersected with what the
+receiving session already holds, never added to it.
+
+---
+
+## Environment that carries capability
+
+A variable on this list changes what a program may do. Each program removes every one of them from
+the environment of anything it starts that is not a member of this family, and a jailed command
+receives none of them.
+
+| variable | set by | read by | what it carries |
+|---|---|---|---|
+| `CASPER_JAIL` | magi | casper | the jail a tool call runs in |
+| `CASPER_CONFIGURE` / `MAGI_TOOLS_CONFIGURE` | magi | casper | casper's settings for one spawn |
+| `MAGI_GRANTS` | magi, for a forked child | magi | grants that narrow the child's own |
+| `MAGI_NO_SPAWN` | magi | magi | that a session may not start another |
+| `MAGI_MELCHIOR_PROJECT` / `_ID` / `_ROLE` / `_PARENT` / `_SESSION` | melchior, magi | melchior | which session a process belongs to (attribution) |
+| `MAGI_MEMORY_AGENT` / `BALTHASAR_AGENT` | magi | balthasar | which agent a transcript belongs to (attribution) |
+| `NERV_GIVEN` | magi | balthasar, melchior | the per-session directory of settings a coordinator gave |
+| `MAGI_API_SOCKET` | the person | magi | a balthasar to use instead of starting one |
+| `MAGI_HOST_SOCKET` / `MAGI_PARENT_HOST_SOCKET` | magi | magi | where a session, or its parent, answers |
+| `MAGI_SESSION_PID` | magi | magi | the session a child watches |
+| `MAGI_COORD_PROGRAM` | magi, from the person's configuration | magi | the program that fills the coordination role |
+| `MAGI_TOOLS_DOOR` / `MAGI_MEMORY_DOOR` / `MAGI_AGENT_DOOR` | the person | magi | which door reaches a sibling |
+| `*_DEBUG_LOG`, `NERV_LOG` | the person | all four | where a log is appended, created `0600` |
+| `MELCHIOR_CONFIG` | the person | melchior | another configuration file |
+| provider keys | the person | melchior | credentials, which only melchior reads |
 
 ---
 
