@@ -121,12 +121,22 @@ mod tests {
         std::fs::write(
             &editor,
             format!(
-                "#!/bin/sh\nstat -c '%a' \"$1\" \"$(dirname \"$1\")\" > '{}'\n",
+                "#!/bin/sh\n[ \"$1\" = --probe ] && exit 0\n\
+                 stat -c '%a' \"$1\" \"$(dirname \"$1\")\" > '{}'\n",
                 said.display()
             ),
         )
         .expect("write");
         std::fs::set_permissions(&editor, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        // `ETXTBSY` while a fork on another thread still holds the descriptor it was written by.
+        while let Err(why) = Command::new(&editor).arg("--probe").status() {
+            assert_eq!(
+                why.raw_os_error(),
+                Some(26),
+                "the editor will not run: {why}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         edit_with(&editor.display().to_string(), "secret").expect("edit runs");
         let modes = std::fs::read_to_string(&said).expect("the editor ran");
         assert_eq!(modes.split_whitespace().collect::<Vec<_>>(), ["600", "700"]);

@@ -187,6 +187,15 @@ mod tests {
         )
         .expect("write");
         std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        // `ETXTBSY` while a fork on another thread still holds the descriptor it was written by.
+        while let Err(why) = std::process::Command::new(&fake).output() {
+            assert_eq!(
+                why.raw_os_error(),
+                Some(26),
+                "the stand-in will not run: {why}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         let cards = melchior(&fake.display().to_string());
         assert_eq!(
             cards.first().map(|card| card.id.clone()),
