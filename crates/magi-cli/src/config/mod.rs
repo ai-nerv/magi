@@ -525,8 +525,36 @@ mod pinning_tests {
         // The same rule, for the configuration everybody already has: `magi.casper` is the tools
         // program's table because casper is the tools program, not because it is spelled casper.
         let tooling = tooling(&from(r#"magi.casper = { off = true }"#));
-        assert_eq!(tooling.program, "casper");
+        assert_eq!(
+            std::path::Path::new(&tooling.program).file_name(),
+            Some(std::ffi::OsStr::new("casper")),
+            "found once, by its own name"
+        );
         assert_eq!(tooling.configure, r#"{"off":true}"#);
+    }
+
+    #[test]
+    fn the_tools_program_is_resolved_once_to_an_executable_absolute_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = magi_model::scratch::Scratch::new("magi-locate", "bin");
+        let plain = dir.join("plain");
+        std::fs::write(&plain, "#!/bin/sh\n").expect("write");
+        assert_eq!(
+            magi_tools::supplier::located(&plain.display().to_string()),
+            plain.display().to_string(),
+            "not executable, so not resolved"
+        );
+        std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let found = magi_tools::supplier::located(&plain.display().to_string());
+        assert!(std::path::Path::new(&found).is_absolute());
+        assert_eq!(
+            std::path::Path::new(&found),
+            plain.canonicalize().expect("real")
+        );
+        assert_eq!(
+            magi_tools::supplier::located("magi-no-such-tool"),
+            "magi-no-such-tool"
+        );
     }
 }
 

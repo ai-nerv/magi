@@ -468,7 +468,7 @@ pub fn tooling(loaded: &Loaded) -> magi_tools::supplier::Tooling {
     magi_tools::supplier::Tooling {
         pin: pinned(loaded, &program),
         configure: configured(loaded, &program),
-        program,
+        program: magi_tools::supplier::located(&program),
         kinds: super::agents::kinds(loaded),
     }
 }
