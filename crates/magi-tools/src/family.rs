@@ -5,7 +5,7 @@
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 
-pub use magi_ipc::{Wire, peer_is_us, private_dir, private_file, uid};
+pub use magi_ipc::{Wire, peer_is_us, private_dir, private_file, runtime_base, uid};
 
 /// The most bytes one frame may carry, in either direction.
 pub const FRAME_CAP: usize = magi_ipc::family::MAX_FRAME_BYTES;
