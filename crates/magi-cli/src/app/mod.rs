@@ -80,9 +80,8 @@ pub struct App {
     pub selection: Option<magi_tui::select::Selection>,
     /// Blocks showing the opposite of `detail`, by membership, so the fold key still moves the rest.
     pub flipped: std::collections::BTreeSet<ToolCallId>,
-    pub owners: Vec<Option<ToolCallId>>,
-    /// Parallel to the scrollback, for every block: an assistant message has no id to key on.
-    pub blocks: Vec<Option<usize>>,
+    /// The transcript as blocks, each holding the rows it last drew.
+    pub stack: magi_tui::transcript::Stack,
     /// Recorded by the drawing pass, which is the only thing that knows where the prompt begins.
     pub live_rows: std::ops::Range<u16>,
     /// `None` when nothing holds rows, so a pointer over a picker is not translated for a closed surface.
@@ -191,8 +190,7 @@ impl App {
             hovering: None,
             selection: None,
             flipped: std::collections::BTreeSet::new(),
-            owners: Vec::new(),
-            blocks: Vec::new(),
+            stack: magi_tui::transcript::Stack::new(),
             surface: None,
             live_rows: 0..0,
             surface_rect: None,
@@ -341,9 +339,17 @@ impl App {
         f32::from(u16::try_from(mixed % 1000).unwrap_or(0)) / 1000.0
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn entries(&self) -> &[Entry] {
         &self.entries
+    }
+
+    /// Bring the transcript's blocks up to the entries at `width`, and the scrollback to its length.
+    pub fn lay_out(&mut self, width: u16) {
+        self.stack
+            .update(&self.entries, width, self.detail, &self.flipped);
+        self.scrollback.set_len(self.stack.len());
     }
 
     /// Every token this session has spent, folded from the transcript: a running total would double on reattach.

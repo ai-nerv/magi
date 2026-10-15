@@ -13,6 +13,7 @@ mod block;
 mod frame;
 mod hover;
 mod shell;
+mod stack;
 mod tool;
 
 use frame::{MARGIN, inside};
@@ -20,6 +21,7 @@ use tool::STEP;
 
 pub use block::{Block, Head, is_header};
 pub use hover::hovered;
+pub use stack::Stack;
 pub use tool::Detail;
 
 #[must_use]
@@ -37,8 +39,8 @@ pub struct Laid {
     pub blocks: Vec<Option<usize>>,
 }
 
-/// Render the whole transcript, recording which block owns each line. `flipped` names the tool calls
-/// showing the opposite of `detail`, so the global fold key still moves every block not clicked.
+/// The whole transcript as one list of rows, recording which block owns each. `flipped` names the
+/// tool calls showing the opposite of `detail`.
 #[must_use]
 pub fn laid_out(
     entries: &[Entry],
@@ -46,34 +48,17 @@ pub fn laid_out(
     detail: Detail,
     flipped: &BTreeSet<ToolCallId>,
 ) -> Laid {
-    let mut laid = Laid {
-        lines: Vec::new(),
-        owners: Vec::new(),
-        blocks: Vec::new(),
-    };
-    for (nth, entry) in entries.iter().enumerate() {
-        let id = match entry {
-            Entry::Tool { id, .. } => Some(id.clone()),
-            _ => None,
-        };
-        let shown = match &id {
-            Some(id) if flipped.contains(id) => detail.other(),
-            _ => detail,
-        };
-        let lines = entry_lines(entry, width, shown);
-        // One blank row before every entry and never two, decided here because the gap is a fact
-        // about two entries meeting. Nothing before the first.
-        if !laid.lines.is_empty() && !blank_row(laid.lines.last()) && !blank_row(lines.first()) {
-            laid.lines.push(Line::default());
-            laid.owners.push(None);
-            laid.blocks.push(None);
-        }
-        laid.owners.extend(std::iter::repeat_n(id, lines.len()));
-        laid.blocks
-            .extend(std::iter::repeat_n(Some(nth), lines.len()));
-        laid.lines.extend(lines);
+    let mut stack = Stack::new();
+    stack.update(entries, width, detail, flipped);
+    let rows = 0..stack.len();
+    Laid {
+        lines: stack.rows(rows.clone()),
+        owners: rows
+            .clone()
+            .map(|at| stack.at(at).and_then(|(nth, _)| stack.call(nth).cloned()))
+            .collect(),
+        blocks: rows.map(|at| stack.at(at).map(|(nth, _)| nth)).collect(),
     }
-    laid
 }
 
 /// Whether a row is a gap: nothing but space, and nothing painted behind it.

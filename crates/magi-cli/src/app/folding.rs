@@ -25,7 +25,7 @@ impl App {
             // A pointer that has left the transcript lights nothing, and the handle it was over
             // has to go dark: a highlight left behind points at something nobody is aiming at.
             .filter(|(line, column)| {
-                self.scrollback
+                self.stack
                     .line(*line)
                     .is_some_and(|drawn| magi_tui::transcript::hovered(&mut drawn.clone(), *column))
             });
@@ -45,10 +45,15 @@ impl App {
         }
         let into = usize::from(row - self.live_rows.start);
         let line = self.scrollback.hidden_above() + into;
-        let Some(Some(id)) = self.owners.get(line).cloned() else {
+        let Some(id) = self
+            .stack
+            .at(line)
+            .and_then(|(nth, _)| self.stack.call(nth))
+            .cloned()
+        else {
             return false;
         };
-        if !on_the_handle(self.scrollback.line(line), column, width) {
+        if !on_the_handle(self.stack.line(line), column, width) {
             return false;
         }
         if !self.flipped.remove(&id) {
@@ -111,11 +116,16 @@ mod clicking {
     /// with a rule the renderer has stopped following.
     impl App {
         fn handle(&self) -> Option<(u16, u16)> {
-            for (line, owner) in self.owners.iter().enumerate() {
-                if owner.is_none() {
+            for line in 0..self.stack.len() {
+                if self
+                    .stack
+                    .at(line)
+                    .and_then(|(nth, _)| self.stack.call(nth))
+                    .is_none()
+                {
                     continue;
                 }
-                let Some(drawn) = self.scrollback.line(line) else {
+                let Some(drawn) = self.stack.line(line) else {
                     continue;
                 };
                 let mut at = 0_u16;
@@ -155,15 +165,8 @@ mod clicking {
     fn laid() -> App {
         let mut app = App::new();
         app.entries = vec![call("t1")];
-        let laid = magi_tui::transcript::laid_out(
-            app.entries(),
-            60,
-            magi_tui::transcript::Detail::Preview,
-            &app.flipped,
-        );
-        app.live_rows = 0..u16::try_from(laid.lines.len()).expect("short enough");
-        app.owners = laid.owners;
-        app.scrollback.set_lines(laid.lines);
+        app.lay_out(60);
+        app.live_rows = 0..u16::try_from(app.stack.len()).expect("short enough");
         app
     }
 
@@ -183,16 +186,12 @@ mod clicking {
         let folded = app.scrollback.len();
         let (row, column) = app.handle().expect("a handle");
         app.toggle_at(row, column, 60);
-        let opened = magi_tui::transcript::laid_out(
-            app.entries(),
-            60,
-            magi_tui::transcript::Detail::Preview,
-            &app.flipped,
-        );
+        app.lay_out(60);
+        assert_eq!(app.stack.drawn(), 1, "only the block that was opened");
         assert!(
-            opened.lines.len() > folded,
+            app.scrollback.len() > folded,
             "{} is not more than {folded}",
-            opened.lines.len()
+            app.scrollback.len()
         );
     }
 
@@ -249,33 +248,20 @@ mod clicking {
             text: "a question".to_owned(),
             aside: String::new(),
         }];
-        let laid = magi_tui::transcript::laid_out(
-            app.entries(),
-            60,
-            magi_tui::transcript::Detail::Preview,
-            &app.flipped,
-        );
-        app.live_rows = 0..u16::try_from(laid.lines.len()).expect("short");
-        app.owners = laid.owners;
+        app.lay_out(60);
+        app.live_rows = 0..u16::try_from(app.stack.len()).expect("short");
         assert!(!app.toggle_at(1, 57, 60));
         assert!(app.flipped.is_empty());
     }
 
     #[test]
     fn a_click_lands_on_the_block_under_it_after_scrolling() {
-        // The row is a screen coordinate and the owner list is a transcript coordinate; the
+        // The row is a screen coordinate and the stack's rows are a transcript coordinate; the
         // scroll offset is the whole of the difference between them, and forgetting it makes
         // every click wrong by however far the reader has scrolled.
         let mut app = App::new();
         app.entries = vec![call("t1"), call("t2")];
-        let laid = magi_tui::transcript::laid_out(
-            app.entries(),
-            60,
-            magi_tui::transcript::Detail::Preview,
-            &app.flipped,
-        );
-        app.owners = laid.owners;
-        app.scrollback.set_lines(laid.lines);
+        app.lay_out(60);
         app.live_rows = 0..10;
         app.scrollback.to_top();
 
@@ -283,7 +269,11 @@ mod clicking {
         // to does not matter; that a screen row still finds the right transcript line does.
         for _ in 0..40 {
             if let Some((row, column)) = app.handle() {
-                let hit = app.owners[app.scrollback.hidden_above() + usize::from(row)].clone();
+                let hit = app
+                    .stack
+                    .at(app.scrollback.hidden_above() + usize::from(row))
+                    .and_then(|(nth, _)| app.stack.call(nth))
+                    .cloned();
                 assert!(app.toggle_at(row, column, 60), "the handle was there");
                 assert_eq!(app.flipped.len(), 1, "exactly one block was hit");
                 assert!(
@@ -311,11 +301,12 @@ impl App {
         }
         let into = usize::from(row - self.live_rows.start);
         let line = self.scrollback.hidden_above() + into;
-        if !on_the_copy(self.scrollback.line(line), column, width) {
+        if !on_the_copy(self.stack.line(line), column, width) {
             return None;
         }
-        let block = (*self.blocks.get(line)?)?;
-        Some(said_by(&self.scrollback, &self.blocks, block))
+        let (nth, _) = self.stack.at(line)?;
+        let (_, rows) = self.stack.block(nth)?;
+        Some(said_by(rows))
     }
 }
 
@@ -343,20 +334,10 @@ fn on_the_copy(line: Option<&ratatui::text::Line<'static>>, column: u16, width: 
     false
 }
 
-/// Every row `block` drew, as text, with the chrome taken off.
-fn said_by(
-    scrollback: &magi_tui::scrollback::Scrollback,
-    blocks: &[Option<usize>],
-    block: usize,
-) -> String {
+/// Every row a block drew, as text, with the chrome taken off.
+fn said_by(drawn: &[ratatui::text::Line<'static>]) -> String {
     let mut rows: Vec<String> = Vec::new();
-    for (line, owner) in blocks.iter().enumerate() {
-        if *owner != Some(block) {
-            continue;
-        }
-        let Some(drawn) = scrollback.line(line) else {
-            continue;
-        };
+    for drawn in drawn {
         let text: String = drawn
             .spans
             .iter()
@@ -411,24 +392,16 @@ mod copying {
             usage: magi_proto::Usage::default(),
             signatures: magi_proto::Signatures::default(),
         }];
-        let laid = magi_tui::transcript::laid_out(
-            app.entries(),
-            60,
-            magi_tui::transcript::Detail::Preview,
-            &app.flipped,
-        );
-        app.owners = laid.owners;
-        app.blocks = laid.blocks;
-        app.live_rows = 0..u16::try_from(laid.lines.len()).expect("short");
-        app.scrollback.set_lines(laid.lines);
+        app.lay_out(60);
+        app.live_rows = 0..u16::try_from(app.stack.len()).expect("short");
         app
     }
 
     /// The row and column of the copy chip, found the way a pointer would.
     fn chip(app: &App) -> (u16, u16) {
-        for row in 0..1000 {
-            let Some(line) = app.scrollback.line(row) else {
-                break;
+        for row in 0..app.stack.len() {
+            let Some(line) = app.stack.line(row) else {
+                continue;
             };
             let mut at = 0_u16;
             for span in &line.spans {
@@ -464,12 +437,10 @@ mod copying {
     fn a_row_indented_with_multibyte_blanks_is_copied_without_panicking() {
         // An ideographic space is three bytes and one character, a no-break space two: an inset
         // counted in bytes cut the second row in the middle of a character.
-        let mut scrollback = magi_tui::scrollback::Scrollback::new();
-        scrollback.set_lines(vec![
+        let copied = super::said_by(&[
             ratatui::text::Line::from("  \u{3000}全角の字下げ"),
             ratatui::text::Line::from("  \u{a0}\u{a0}nbsp"),
         ]);
-        let copied = super::said_by(&scrollback, &[Some(0), Some(0)], 0);
         assert_eq!(copied, "全角の字下げ\n\u{a0}nbsp");
     }
 
@@ -479,15 +450,8 @@ mod copying {
         if let Some(magi_proto::Entry::Assistant { thinking, .. }) = app.entries.first_mut() {
             *thinking = "first, the cause".to_owned();
         }
-        let laid = magi_tui::transcript::laid_out(
-            app.entries(),
-            60,
-            magi_tui::transcript::Detail::Preview,
-            &app.flipped,
-        );
-        app.blocks = laid.blocks;
-        app.live_rows = 0..u16::try_from(laid.lines.len()).expect("short");
-        app.scrollback.set_lines(laid.lines);
+        app.lay_out(60);
+        app.live_rows = 0..u16::try_from(app.stack.len()).expect("short");
         let (row, column) = chip(&app);
         let copied = app.copy_at(row, column, 60).expect("the chip was there");
         assert!(!copied.contains(magi_tui::glyph::seam()), "{copied:?}");

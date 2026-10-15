@@ -134,40 +134,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
 
     // The whole transcript is ours and the reader's scroll position decides what shows. An empty
     // session draws nothing.
-    let mut laid = transcript::laid_out(app.entries(), area.width, app.detail, &app.flipped);
-    // After the layout and before the lines are handed over: the highlight is a fact about the
-    // pointer, and re-rendering is what clears it.
-    if let Some((line, column)) = app.hovering
-        && let Some(under) = laid.lines.get_mut(line)
-    {
-        transcript::hovered(under, column);
-    }
-    // A tool that is waiting on the person says so on its own row, where a press answers it:
-    // without this it reads the same as one that is merely slow.
-    let waiting = app.waiting_calls();
-    if !waiting.is_empty() {
-        let mut said: Vec<&magi_proto::ToolCallId> = Vec::new();
-        for (line, owner) in laid.owners.iter().enumerate() {
-            let Some(call) = owner.as_ref().filter(|call| waiting.contains(call)) else {
-                continue;
-            };
-            // Once a block, on the first of its rows under the header that says anything.
-            let blank = laid.lines.get(line).is_none_or(|row| {
-                transcript::is_header(row)
-                    || row.spans.iter().all(|span| span.content.trim().is_empty())
-            });
-            if blank || said.contains(&call) {
-                continue;
-            }
-            said.push(call);
-            if let Some(row) = laid.lines.get_mut(line) {
-                crate::app::marked(row);
-            }
-        }
-    }
-    app.owners = laid.owners;
-    app.blocks = laid.blocks;
-    app.scrollback.set_lines(laid.lines);
+    app.lay_out(area.width);
     // Each edge with something past it takes a row for its rule, so both sit against the text.
     let above = app.scrollback.hidden_above() > 0;
     let live_area = Rect {
@@ -178,7 +145,35 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
         ..live_area
     }
     .intersection(area);
-    let view = app.scrollback.view(live_area.height).to_vec();
+    let shown = app.scrollback.view(live_area.height);
+    let mut view = app.stack.rows(shown.clone());
+    // Over the rows on screen and never the stack's own: the highlight is a fact about the pointer.
+    if let Some((line, column)) = app.hovering
+        && let Some(under) = line
+            .checked_sub(shown.start)
+            .and_then(|at| view.get_mut(at))
+    {
+        transcript::hovered(under, column);
+    }
+    // A tool waiting on the person says so on the first of its rows under the header that says
+    // anything, where a press answers it.
+    for call in app.waiting_calls() {
+        let Some((start, rows)) = app.stack.find(&call).and_then(|nth| app.stack.block(nth)) else {
+            continue;
+        };
+        let Some(within) = rows.iter().position(|row| {
+            !transcript::is_header(row)
+                && row.spans.iter().any(|span| !span.content.trim().is_empty())
+        }) else {
+            continue;
+        };
+        if let Some(row) = (start + within)
+            .checked_sub(shown.start)
+            .and_then(|at| view.get_mut(at))
+        {
+            crate::app::marked(row);
+        }
+    }
     // Bottom-aligned: a transcript grows towards the prompt.
     let used = u16::try_from(view.len()).unwrap_or(live_area.height);
     let anchored = Rect {
@@ -773,3 +768,6 @@ mod where_the_rows_landed {
 
 #[cfg(test)]
 mod hostile_and_tiny;
+
+#[cfg(test)]
+mod stacking;

@@ -366,8 +366,7 @@ mod wheeling {
     /// An app with a long transcript, and a float over it holding more rows than fit.
     fn showing() -> App {
         let mut app = App::new();
-        app.scrollback
-            .set_lines((0..500).map(|n| Line::from(format!("line {n}"))).collect());
+        app.scrollback.set_len(500);
         app.pane = Some(magi_tui::pane::Pane::new(
             "test",
             (0..500).map(|n| Line::from(format!("row {n}"))).collect(),

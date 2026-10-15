@@ -67,8 +67,7 @@ impl App {
         self.selection = None;
         self.hovering = None;
         self.flipped.clear();
-        self.owners.clear();
-        self.blocks.clear();
+        self.stack = magi_tui::transcript::Stack::new();
         self.waiting = 0;
     }
 

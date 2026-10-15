@@ -177,7 +177,12 @@ impl App {
             return false;
         }
         let line = self.scrollback.hidden_above() + usize::from(row - self.live_rows.start);
-        let Some(Some(call)) = self.owners.get(line).cloned() else {
+        let Some(call) = self
+            .stack
+            .at(line)
+            .and_then(|(nth, _)| self.stack.call(nth))
+            .cloned()
+        else {
             return false;
         };
         self.ask_of(&call).is_some_and(|ask| self.present(&ask))
