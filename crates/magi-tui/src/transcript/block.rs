@@ -1,9 +1,8 @@
 //! A block: one transcript entry drawn as a rectangle of its own colour. Its header is the first
-//! row inside it, in the screen's own colour, and a row of the fill closes it.
+//! row inside it, its rule in the screen's own colour, and a row of the fill closes it.
 //!
 //! ```text
-//!  ▒──[ NAME ]──[ ✓ ]──────────────────────[ ⧉ ]──[ ▸ ]──▒
-//!  ▒                                                      ▒
+//!  ▒══[ NAME ]══[ ✓ ]══════════════════════[ ⧉ ]══[ ▸ ]══▒
 //!  ▒  …the block's own rows…                              ▒
 //!  ▒                                                      ▒
 //! ```
@@ -17,6 +16,8 @@ use ratatui::text::{Line, Span};
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Head {
     pub label: String,
+    /// The label's own colour; without one it is drawn like the rule.
+    pub ink: Option<Color>,
     /// A chip beside the label, in a colour of its own.
     pub mark: Option<(&'static str, Color)>,
     /// The fold handle, on a block that folds.
@@ -49,13 +50,12 @@ impl Block {
         Style::default().bg(self.fill)
     }
 
-    /// The block at `width`: its header, then its rows between two rows of fill.
+    /// The block at `width`: its header, then its rows and a row of fill closing them.
     #[must_use]
     pub fn lines(self, width: u16) -> Vec<Line<'static>> {
         let style = self.style();
         let mut out = vec![header(&self.head, self.fill, width)];
         if !self.rows.is_empty() {
-            out.push(frame::breath(width, style));
             out.extend(self.rows);
             out.push(frame::breath(width, style));
         }
@@ -125,7 +125,10 @@ fn rule(head: &Head, fill: Color, room: usize) -> Vec<Span<'static>> {
     let mut spans = vec![edge(lead)];
     if let Some(label) = label {
         spans.push(Span::styled("[ ", knock));
-        spans.push(Span::styled(label, knock.add_modifier(Modifier::BOLD)));
+        let ink = head
+            .ink
+            .map_or(knock, |ink| Style::default().fg(ink).bg(fill));
+        spans.push(Span::styled(label, ink.add_modifier(Modifier::BOLD)));
         spans.push(Span::styled(" ]", knock));
     }
     if let Some((mark, ink)) = mark {

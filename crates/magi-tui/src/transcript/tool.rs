@@ -59,6 +59,7 @@ pub(super) fn of(
     };
     let head = super::Head {
         label: name.to_owned(),
+        ink: Some(outcome),
         mark: Some((mark, outcome)),
         fold: Some(detail),
         copy: true,

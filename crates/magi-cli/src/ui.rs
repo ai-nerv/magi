@@ -536,7 +536,8 @@ mod continues_past_the_edge {
 
     #[test]
     fn the_lower_rule_sits_against_the_text_it_is_about() {
-        // A rule with a blank row above it marks nothing.
+        // Between the last words and the rule: at most the block's closing row of fill and the gap
+        // after it.
         let rows = drawn(30, 10);
         let lower = *rules(&rows).last().expect("a rule below");
         let last = rows[..lower]
@@ -544,7 +545,7 @@ mod continues_past_the_edge {
             .rposition(|row| !row.trim().is_empty())
             .expect("something above it");
         assert!(
-            lower - last <= 2,
+            lower - last <= 3,
             "the rule drifted off the transcript: {rows:#?}"
         );
         let box_top = rows

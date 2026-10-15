@@ -7,6 +7,7 @@ const FILL: Color = Color::Indexed(237);
 fn head() -> Head {
     Head {
         label: "shell".into(),
+        ink: None,
         mark: Some((glyph::outcome_ok(), Color::Green)),
         fold: Some(Detail::Preview),
         copy: true,
@@ -80,6 +81,21 @@ fn the_rule_and_the_label_are_drawn_in_the_screens_own_colour() {
 }
 
 #[test]
+fn a_label_with_a_colour_of_its_own_keeps_it() {
+    let mut inked = head();
+    inked.ink = Some(Color::Magenta);
+    let line = header(&inked, FILL, 60);
+    let label = line
+        .spans
+        .iter()
+        .find(|span| span.content == "shell")
+        .expect("the label");
+    assert_eq!(label.style.fg, Some(Color::Magenta));
+    assert_eq!(label.style.bg, Some(FILL));
+    assert!(!label.style.add_modifier.contains(Modifier::REVERSED));
+}
+
+#[test]
 fn the_mark_keeps_its_own_colour() {
     let line = header(&head(), FILL, 60);
     let mark = line
@@ -123,7 +139,7 @@ fn a_block_with_nothing_inside_is_its_header_alone() {
 #[test]
 fn a_block_is_one_rectangle_of_its_fill() {
     let lines = with_rows(2, 40);
-    assert_eq!(lines.len(), 5, "header, fill, two rows, fill");
+    assert_eq!(lines.len(), 4, "header, two rows, fill");
     for line in &lines {
         let cells = grounds(line);
         assert_eq!(cells.len(), 40);

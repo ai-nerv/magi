@@ -89,7 +89,7 @@ mod tests {
     }
 
     #[test]
-    fn the_name_is_a_label_in_the_screens_own_colour() {
+    fn the_name_is_a_label_in_the_outcomes_colour() {
         let lines = block("write", "{}", None, 50, Detail::Preview);
         let name = lines[0]
             .spans
@@ -101,8 +101,9 @@ mod tests {
             "write",
             "the brackets belong to the rule, not the name"
         );
-        assert_eq!(name.style.fg, Some(colour::tool_bg()));
-        assert!(name.style.add_modifier.contains(Modifier::REVERSED));
+        assert_eq!(name.style.fg, Some(colour::tool_title()));
+        assert_eq!(name.style.bg, Some(colour::tool_bg()));
+        assert!(!name.style.add_modifier.contains(Modifier::REVERSED));
         assert!(name.style.add_modifier.contains(Modifier::BOLD));
     }
 

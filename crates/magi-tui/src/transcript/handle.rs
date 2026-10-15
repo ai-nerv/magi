@@ -68,10 +68,12 @@ mod tests {
     }
 
     #[test]
-    fn the_name_does_not_change_with_the_outcome() {
+    fn the_name_states_the_outcome() {
         let ok = header_of(false);
         let failed = header_of(true);
-        assert_eq!(named(&ok).style, named(&failed).style);
+        assert_eq!(named(&ok).style.fg, Some(colour::tool_ok()));
+        assert_eq!(named(&failed).style.fg, Some(colour::tool_failed()));
+        assert_eq!(named(&ok).style.bg, Some(colour::tool_bg()), "on the fill");
     }
 
     #[test]

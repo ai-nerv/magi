@@ -89,7 +89,7 @@ fn blank_row(line: Option<&Line<'static>>) -> bool {
 #[must_use]
 pub fn block_of(entry: &Entry, width: u16, detail: Detail) -> Option<Block> {
     match entry {
-        Entry::User { text, .. } => Some(said("USER", text, width)),
+        Entry::User { text, .. } => Some(said("USER", colour::said_by_you(), text, width)),
         Entry::Assistant {
             text,
             thinking,
@@ -190,13 +190,14 @@ fn from(who: &str, kin: &str, sort: &str, text: &str, width: u16) -> Block {
     } else {
         label
     };
-    said(&label, text, width)
+    said(&label, colour::said_by_agent(), text, width)
 }
 
 /// A message: its sender's label in the header, and what it says inside.
-fn said(label: &str, text: &str, width: u16) -> Block {
+fn said(label: &str, tag: ratatui::style::Color, text: &str, width: u16) -> Block {
     let head = Head {
         label: label.to_owned(),
+        ink: Some(tag),
         copy: true,
         ..Head::default()
     };
@@ -338,16 +339,30 @@ mod tests {
         };
         let lines = entry_lines(&entry, 20, Detail::Preview);
         let rendered = text_of(&lines);
-        assert_eq!(
-            rendered.len(),
-            4,
-            "the header, a row of fill, the body, a row of fill"
-        );
-        assert_eq!(rendered[2], "    hello           ");
+        assert_eq!(rendered.len(), 3, "the header, the body, a row of fill");
+        assert_eq!(rendered[1], "    hello           ");
         assert!(is_head(&rendered[0]), "{rendered:?}");
-        assert!(rendered[3].trim().is_empty(), "{rendered:?}");
-        assert!(!rendered[2].contains('│'), "{rendered:?}");
+        assert!(rendered[2].trim().is_empty(), "{rendered:?}");
+        assert!(!rendered[1].contains('│'), "{rendered:?}");
         assert!(rendered.iter().all(|l| l.chars().count() == 20));
+    }
+
+    #[test]
+    fn a_user_message_is_labelled_in_its_own_colour() {
+        let entry = Entry::User {
+            images: Vec::new(),
+            id: MessageId::new("m1"),
+            text: "hello".into(),
+            aside: String::new(),
+        };
+        let lines = entry_lines(&entry, 20, Detail::Preview);
+        let label = lines[0]
+            .spans
+            .iter()
+            .find(|span| span.content == "USER")
+            .expect("the label");
+        assert_eq!(label.style.fg, Some(colour::said_by_you()));
+        assert_eq!(label.style.bg, Some(colour::message_bg()));
     }
 
     #[test]
@@ -360,7 +375,7 @@ mod tests {
         };
         let rendered = text_of(&entry_lines(&entry, 20, Detail::Preview));
         assert!(rendered[0].contains("[ USER ]"), "{rendered:?}");
-        assert_eq!(rendered.len(), 4, "the label grew a row: {rendered:?}");
+        assert_eq!(rendered.len(), 3, "the label grew a row: {rendered:?}");
     }
 
     #[test]
