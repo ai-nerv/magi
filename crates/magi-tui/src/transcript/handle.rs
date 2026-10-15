@@ -6,7 +6,8 @@ use super::*;
 
 mod tests {
     use super::*;
-    /// The span carrying the tool's name, which is what states the outcome.
+    use ratatui::style::Modifier;
+    /// The span carrying the tool's name.
     fn named(line: &Line<'static>) -> Span<'static> {
         line.spans
             .iter()
@@ -46,31 +47,20 @@ mod tests {
     }
 
     #[test]
-    fn the_handle_belongs_to_the_frame_rather_than_the_name() {
-        // The name says what this block *is* and carries a colour for it. The handle is the same
-        // affordance on every block that has one, so it is drawn like the line it sits in — and
-        // a reader is not asked to read meaning into a shape that never varies.
+    fn the_handle_is_drawn_like_the_rule_it_sits_in() {
         let line = header_of(false);
-        let name = line
-            .spans
-            .iter()
-            .find(|s| s.content.contains("shell"))
-            .expect("the name")
-            .clone();
         let handle = handle_span(&line);
-        assert_eq!(handle.style.fg, Some(colour::block_frame()));
-        assert_ne!(handle.style.fg, name.style.fg, "the handle apes the name");
+        assert_eq!(handle.style.fg, Some(colour::tool_bg()));
+        assert!(handle.style.add_modifier.contains(Modifier::REVERSED));
     }
 
     #[test]
-    fn the_brackets_are_the_frames_too() {
-        // Only the text inside them is the block's own colour. Painted with it, the punctuation
-        // read as the signal and every block wore a solid tag.
+    fn the_brackets_are_the_rules_too() {
         let line = header_of(false);
         for span in line.spans.iter().filter(|s| s.content.contains('[')) {
-            assert_eq!(
-                span.style.fg,
-                Some(colour::block_frame()),
+            assert_eq!(span.style.fg, Some(colour::tool_bg()), "{:?}", span.content);
+            assert!(
+                span.style.add_modifier.contains(Modifier::REVERSED),
                 "{:?}",
                 span.content
             );
@@ -78,14 +68,10 @@ mod tests {
     }
 
     #[test]
-    fn only_the_name_states_the_outcome() {
+    fn the_name_does_not_change_with_the_outcome() {
         let ok = header_of(false);
         let failed = header_of(true);
-        assert_ne!(
-            named(&ok).style.fg,
-            named(&failed).style.fg,
-            "the name should state the outcome"
-        );
+        assert_eq!(named(&ok).style, named(&failed).style);
     }
 
     #[test]
@@ -102,12 +88,12 @@ mod tests {
         assert_eq!(
             lines.first().expect("a leading row").spans[0].style.bg,
             None,
-            "the gap between blocks carries no background"
+            "the header's first column is the screen's"
         );
         assert_eq!(
             lines.last().expect("a trailing row").spans[0].style.bg,
             None,
-            "the bottom edge is outside the fill too"
+            "and so is the closing row's"
         );
     }
 }

@@ -61,7 +61,7 @@ fn nothing_reaches_past_the_frame_either_way() {
 fn a_preview_is_still_one_row_a_line() {
     // A preview is a glance, and a wrapped one is not scannable.
     let shown = rows(Detail::Preview, 56);
-    assert_eq!(shown.len(), 9, "{shown:#?}");
+    assert_eq!(shown.len(), 8, "{shown:#?}");
 }
 
 #[test]

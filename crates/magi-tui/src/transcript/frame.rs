@@ -1,112 +1,77 @@
-//! The edges of a block: where it starts, where it stops, and what is set into them.
-//!
-//! ```text
-//! ───[ TOOL ]───────────────────────────────[ v ]───
-//!    …the block's own rows, one column further in…
-//! ─────────────────────────────────────────────────
-//! ```
-//!
-//! No corners and no sides: a rule opens the block and a rule closes it. Sides would cost two
-//! columns of every row, taken out of the text on a narrow terminal.
+//! The fill of a block: the columns it covers, and the rows set inside it. The header that opens a
+//! block is [`super::block`]'s.
 
-use crate::colour;
-use crate::glyph;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
-/// Columns between a block's frame and everything inside it, on each side. Also the left margin for
-/// everything not in a box — prose, thinking, notices — so a mixed screen has one text column.
+/// Columns between a block's edge and everything inside it, on each side. Also the left margin for
+/// everything not in a block, so a mixed screen has one text column.
 pub(super) const MARGIN: usize = 2;
 
-/// How wide the inside of a block is — and how wide everything outside one is set.
+/// How wide the inside of a block is, and how wide everything outside one is set.
 pub(super) fn held(width: u16) -> u16 {
     width.saturating_sub(u16::try_from(MARGIN * 2).unwrap_or(4))
 }
 
-/// The top edge of a block, with its name set into it and a handle on the right. `handle` is the
-/// fold state — `>` shut, `v` open — left off entirely for a block that does not fold. `copy` puts
-/// a second chip inboard of the handle. `mark` is a chip right after the name: `·` while the call
-/// is out, `✓` or `✗` when it lands.
-pub(super) fn top(
-    label: &str,
-    chip: Style,
-    mark: Option<(&str, Style)>,
-    handle: Option<&str>,
-    copy: bool,
-    width: u16,
-) -> Line<'static> {
-    // A block's frame is not the prompt's border: the record sits further back than what you type in.
-    let edge = Style::default().fg(colour::block_frame());
-    // The brackets belong to the frame, not to the name; only the name carries a colour of its own.
+/// How far past the margin the fill reaches, on each side.
+pub(super) const BLEED: usize = 1;
+
+/// Where a filled row starts, and how wide the colour is.
+pub(super) fn fill_of(width: u16) -> (usize, usize) {
+    let outer = MARGIN.saturating_sub(BLEED);
+    (outer, usize::from(held(width)) + (MARGIN - outer) * 2)
+}
+
+/// One of a block's own rows: `line`, `lead` columns in from the block's left edge, on `style`.
+/// A span with no colour of its own behind it takes the fill's.
+pub(super) fn inside(line: Line<'static>, width: u16, style: Style, lead: usize) -> Line<'static> {
+    let (outer, room) = fill_of(width);
+    let used: usize = line
+        .spans
+        .iter()
+        .map(|s| crate::wrap::columns(&s.content))
+        .sum();
+    let pad = lead.saturating_sub(outer).min(room);
+    let trailing = room.saturating_sub(used + pad);
+
     let mut spans = vec![
-        Span::styled(glyph::block_edge().to_owned(), edge),
-        Span::styled(glyph::block_edge().repeat(2), edge),
+        Span::raw(" ".repeat(outer)),
+        Span::styled(" ".repeat(pad), style),
     ];
-    // No name, no chip. An empty label drew `[  ]`, a bracket around nothing.
-    let mut used = if label.is_empty() {
-        3
-    } else {
-        spans.push(Span::styled("[ ".to_owned(), edge));
-        spans.push(Span::styled(label.to_owned(), chip));
-        spans.push(Span::styled(" ]".to_owned(), edge));
-        3 + crate::wrap::columns(&format!("[ {label} ]"))
-    };
-    // The chips, in the order they are given up when the edge runs out — the handle last, because
-    // folding depends on it. Pushing them anyway made the row wider than the frame.
-    let held = handle.map_or(0, |handle| crate::wrap::columns(handle) + 6);
-    let worn_mark = mark.map_or(0, |(mark, _)| crate::wrap::columns(mark) + 6);
-    let worn_copy = crate::wrap::columns(glyph::copy()) + 6;
-    let room = usize::from(width);
-    let copy = copy && used + held + worn_mark + worn_copy < room;
-    let mark = mark.filter(|_| used + held + worn_mark < room);
-
-    if let Some((glyph, ink)) = mark {
-        // Two edge cells between the two chips, so the pair reads as two things, not one long tag.
-        spans.push(Span::styled(glyph::block_edge().repeat(2), edge));
-        spans.push(Span::styled("[ ".to_owned(), edge));
-        spans.push(Span::styled(glyph.to_owned(), ink));
-        spans.push(Span::styled(" ]".to_owned(), edge));
-        used += 2 + crate::wrap::columns(&format!("[ {glyph} ]"));
-    }
-
-    let worn = held + usize::from(copy) * worn_copy;
-    // The name, and then edge. What a call was given is the block's first row, not this one.
-    let fill = usize::from(width).saturating_sub(used + worn + 1);
-    spans.push(Span::styled(glyph::block_edge().repeat(fill), edge));
-    if copy {
-        // The frame's, like the handle: the same affordance on every block that has one.
-        spans.push(Span::styled(format!("[ {} ]", glyph::copy()), edge));
-        spans.push(Span::styled(glyph::block_edge().repeat(2), edge));
-    }
-    if let Some(handle) = handle {
-        // The arrow is the frame's too, not about this block the way its name is.
-        spans.push(Span::styled(format!("[ {handle} ]"), edge));
-        spans.push(Span::styled(glyph::block_edge().repeat(2), edge));
-    }
-    spans.push(Span::styled(glyph::block_edge().to_owned(), edge));
+    spans.extend(
+        line.spans
+            .into_iter()
+            .map(|span| Span::styled(span.content, style.patch(span.style))),
+    );
+    spans.push(Span::styled(" ".repeat(trailing), style));
+    spans.push(Span::raw(" ".repeat(outer)));
     Line::from(spans)
 }
 
-/// The bottom edge, corner to corner. Plain: what became of a call is drawn beside the call itself,
-/// at the top of the block.
-pub(super) fn bottom(width: u16) -> Line<'static> {
-    let edge = Style::default().fg(colour::block_frame());
+/// A row of nothing but the block's own fill.
+pub(super) fn breath(width: u16, style: Style) -> Line<'static> {
+    inside(Line::default(), width, style, MARGIN)
+}
+
+/// The seam between two parts of a block, inside the fill.
+pub(super) fn rule(width: u16, style: Style) -> Line<'static> {
+    let (outer, room) = fill_of(width);
+    let span = room.saturating_sub(2);
     Line::from(vec![
-        Span::styled(glyph::block_edge().to_owned(), edge),
-        Span::styled(
-            glyph::block_edge().repeat(usize::from(width).saturating_sub(2)),
-            edge,
-        ),
-        Span::styled(glyph::block_edge().to_owned(), edge),
+        Span::raw(" ".repeat(outer)),
+        Span::styled(" ", style),
+        Span::styled("─".repeat(span), style.fg(crate::colour::tool_seam())),
+        Span::styled(" ", style),
+        Span::raw(" ".repeat(outer)),
     ])
 }
 
-/// The frame: where a block starts, where it stops, and that nothing runs under its edges.
+/// Where a block starts and stops, and that every row of it is the width.
 #[cfg(test)]
 mod framing {
     use crate::transcript::Detail;
     use crate::transcript::entry_lines;
-    use crate::transcript::tests::text_of;
+    use crate::transcript::tests::{is_head, text_of};
     use magi_proto::Entry;
     use magi_proto::{ToolCallId, ToolResult};
 
@@ -130,24 +95,20 @@ mod framing {
     }
 
     #[test]
-    fn a_block_is_a_top_edge_a_body_and_a_bottom_edge() {
-        let rule = crate::glyph::block_edge();
+    fn a_block_is_a_header_a_body_and_a_closing_row_of_fill() {
         let shown = tool(Detail::Full, 60);
-        let top = shown
-            .iter()
-            .position(|l| l.starts_with(rule))
-            .expect("a top");
-        assert!(shown[top].ends_with(rule), "{shown:#?}");
-        let bottom = shown.last().expect("a bottom");
-        assert!(
-            bottom.starts_with(rule) && bottom.ends_with(rule),
+        assert!(is_head(&shown[0]), "{shown:#?}");
+        let last = shown.last().expect("a closing row");
+        assert!(last.trim().is_empty(), "{shown:#?}");
+        assert_eq!(
+            shown.iter().filter(|row| is_head(row)).count(),
+            1,
             "{shown:#?}"
         );
     }
 
     #[test]
     fn nothing_is_drawn_down_the_sides() {
-        // A full box costs two columns of every row, out of the text on a narrow terminal.
         for line in tool(Detail::Full, 60).iter().skip(1) {
             assert!(!line.contains('│'), "{line:?}");
         }
@@ -155,7 +116,6 @@ mod framing {
 
     #[test]
     fn every_row_is_exactly_the_width() {
-        // Edges and body are laid out by different code, and a mismatch is a ragged right margin.
         for width in [20u16, 33, 60, 120] {
             for line in tool(Detail::Full, width) {
                 assert_eq!(
@@ -168,8 +128,7 @@ mod framing {
     }
 
     #[test]
-    fn the_body_sits_inside_the_edges() {
-        // One column in, so text does not run under the corner it shares a row with.
+    fn the_body_sits_inside_the_fill() {
         let shown = tool(Detail::Full, 60);
         let body = shown.iter().find(|l| l.contains("one")).expect("the body");
         assert!(body.starts_with("    one"), "{body:?}");
@@ -177,7 +136,6 @@ mod framing {
 
     #[test]
     fn the_handle_says_which_way_the_block_will_go() {
-        // `>` on a shut block, `v` on an open one: what the key will do, not what state it is in.
         assert!(
             tool(Detail::Preview, 60)
                 .iter()
@@ -194,7 +152,6 @@ mod framing {
 
     #[test]
     fn a_block_that_cannot_be_folded_carries_no_handle() {
-        // An affordance on something that will not move is an affordance that lies.
         let shown = text_of(&entry_lines(
             &Entry::User {
                 images: Vec::new(),
@@ -213,69 +170,14 @@ mod framing {
     }
 }
 
-/// One of a block's own rows: the coloured box, shrunk to sit inside the frame. The fill spans
-/// `1..width-1`, leaving the corners' two columns as the terminal's own; the gap puts it inside.
-/// How far past the frame's margin the fill reaches, on each side.
-///
-/// The colour stands one column wider than anything that has to line up with it, so a filled
-/// block reads as a block rather than as a highlighter drawn over the words.
-pub(super) const BLEED: usize = 1;
-
-/// Where a filled row starts, and how wide the colour is. One place, because the fill, the blank
-/// rows that breathe around it and the seam through it all have to end in the same column.
-pub(super) fn fill_of(width: u16) -> (usize, usize) {
-    let outer = MARGIN.saturating_sub(BLEED);
-    (outer, usize::from(held(width)) + (MARGIN - outer) * 2)
-}
-
-pub(super) fn inside(line: Line<'static>, width: u16, style: Style, lead: usize) -> Line<'static> {
-    let (outer, room) = fill_of(width);
-    let used: usize = line
-        .spans
-        .iter()
-        .map(|s| crate::wrap::columns(&s.content))
-        .sum();
-    // `lead` counts from the block's left edge, and everything before `outer` is outside the fill.
-    let pad = lead.saturating_sub(outer).min(room);
-    let trailing = room.saturating_sub(used + pad);
-
-    let mut spans = vec![
-        Span::raw(" ".repeat(outer)),
-        Span::styled(" ".repeat(pad), style),
-    ];
-    spans.extend(line.spans);
-    spans.push(Span::styled(" ".repeat(trailing), style));
-    spans.push(Span::raw(" ".repeat(outer)));
-    Line::from(spans)
-}
-
-/// A row of nothing but the block's own fill, one under the top edge and one above the bottom.
-/// Filled rather than skipped: a bare blank row reads as a gap between two blocks.
-pub(super) fn breath(width: u16, style: Style) -> Line<'static> {
-    inside(Line::default(), width, style, MARGIN)
-}
-
-/// The seam between what a call was asked and what it answered, inside the fill rather than across it.
-pub(super) fn rule(width: u16, style: Style) -> Line<'static> {
-    let (outer, room) = fill_of(width);
-    // One column of fill at each end, or the rule meets the frame and makes two boxes.
-    let span = room.saturating_sub(2);
-    Line::from(vec![
-        Span::raw(" ".repeat(outer)),
-        Span::styled(" ", style),
-        Span::styled("─".repeat(span), style.fg(crate::colour::tool_seam())),
-        Span::styled(" ", style),
-        Span::raw(" ".repeat(outer)),
-    ])
-}
-
-/// The frame is outside, the fill is inside.
+/// The fill stands inside the screen's outermost columns, header included.
 #[cfg(test)]
 mod nesting {
+    use crate::transcript::block::ground;
     use crate::transcript::{Detail, entry_lines};
     use magi_proto::{Entry, MessageId};
 
-    /// Every column of a rendered row, and whether the block's fill is painted behind it.
+    /// Every column of a rendered row, and whether a colour is painted behind it.
     fn filled(width: u16) -> Vec<Vec<bool>> {
         entry_lines(
             &Entry::User {
@@ -293,7 +195,7 @@ mod nesting {
                 .iter()
                 .flat_map(|span| {
                     std::iter::repeat_n(
-                        span.style.bg.is_some(),
+                        ground(span.style).is_some(),
                         crate::wrap::columns(&span.content),
                     )
                 })
@@ -303,32 +205,12 @@ mod nesting {
     }
 
     #[test]
-    fn the_fill_stands_one_column_inside_the_rule() {
-        // It reaches a column further out on each side than anything that lines up with it, so it
-        // reads as a block rather than as a highlighter drawn over the words -- but not the whole
-        // width, or it would meet the rule and the block would lose its shape. See [`BLEED`].
-        let rows = filled(30);
-        let body = &rows[1];
-        assert!(!body[0], "the fill reaches the very first column");
-        assert!(!body[29], "and the very last");
-        assert!(
-            body[1] && body[28],
-            "the fill should stand one column inside each end"
-        );
-    }
-
-    #[test]
-    fn the_edges_carry_no_fill_of_their_own() {
-        // An edge painted with the block's own background is a border drawn on what it contains.
-        let rows = filled(30);
-        for (at, on) in rows[0].iter().enumerate() {
-            // Except the label chip, which carries its own colour because it is a chip.
-            assert!(!on || (3..12).contains(&at), "column {at} of the top edge");
+    fn the_fill_stands_one_column_inside_each_end() {
+        for row in filled(30) {
+            assert!(!row[0], "the fill reaches the very first column");
+            assert!(!row[29], "and the very last");
+            assert!(row[1..29].iter().all(|on| *on), "{row:?}");
         }
-        assert!(
-            rows.last().expect("a bottom edge").iter().all(|on| !on),
-            "the bottom edge is painted with the block's fill"
-        );
     }
 
     #[test]
@@ -341,45 +223,10 @@ mod nesting {
     }
 }
 
-/// A call with nothing to show yet: one line, no box, because framing it drew two edges with a gap
-/// between them. No handle, since nothing is folded away. It grows its box when it has a result.
-pub(super) fn lone(
-    label: &str,
-    chip: Style,
-    beside: Vec<Span<'static>>,
-    width: u16,
-) -> Line<'static> {
-    let named = format!("[ {label} ]");
-    // A call with no result yet is the one still out, so this row always wears the running dot.
-    let waiting = format!("{} ", glyph::running());
-    let mut spans = vec![
-        Span::raw(" ".repeat(MARGIN)),
-        Span::styled(waiting.clone(), Style::default().fg(colour::tool_title())),
-        Span::styled("[ ".to_owned(), Style::default().fg(colour::block_frame())),
-        Span::styled(label.to_owned(), chip),
-        Span::styled(" ]".to_owned(), Style::default().fg(colour::block_frame())),
-    ];
-    let mut used = MARGIN + crate::wrap::columns(&waiting) + crate::wrap::columns(&named);
-    if !beside.is_empty() {
-        let mut said = vec![Span::raw(" ")];
-        said.extend(beside);
-        let kept = super::shell::clipped(said, usize::from(width).saturating_sub(used));
-        used += kept
-            .iter()
-            .map(|s| crate::wrap::columns(&s.content))
-            .sum::<usize>();
-        spans.extend(kept);
-    }
-    spans.push(Span::raw(
-        " ".repeat(usize::from(width).saturating_sub(used)),
-    ));
-    Line::from(spans.clone())
-}
-
-/// A box is drawn only when there is something to put in it.
+/// A call is a block from the moment it is made.
 #[cfg(test)]
-mod emptiness {
-    use crate::transcript::tests::text_of;
+mod pending {
+    use crate::transcript::tests::{is_head, text_of};
     use crate::transcript::{Detail, entry_lines};
     use magi_proto::{Entry, ToolCallId, ToolResult};
 
@@ -398,37 +245,19 @@ mod emptiness {
     }
 
     #[test]
-    fn a_call_waiting_on_a_permission_is_not_a_box() {
-        // A call stopped on a prompt has produced nothing, and framing it drew an empty box.
+    fn a_call_still_out_is_a_block_with_what_it_was_given() {
         let shown = call(None);
+        assert!(is_head(&shown[0]), "{shown:#?}");
+        assert!(shown[0].contains("[ shell ]"), "{shown:#?}");
         assert!(
-            shown
-                .iter()
-                .all(|l| !l.starts_with(crate::glyph::block_edge())),
-            "an empty box was drawn: {shown:#?}"
-        );
-        assert!(
-            shown.iter().any(|l| l.contains("[ shell ]")),
-            "and it says nothing about what is being asked: {shown:#?}"
-        );
-    }
-
-    #[test]
-    fn nor_does_it_offer_a_handle() {
-        // Nothing is folded away. Offering to open it would be offering something not there.
-        let shown = call(None);
-        assert!(
-            shown
-                .iter()
-                .all(|l| !l.contains(crate::glyph::expand())
-                    && !l.contains(crate::glyph::collapse())),
+            shown[0].contains(&format!("[ {} ]", crate::glyph::running())),
             "{shown:#?}"
         );
+        assert!(shown.iter().any(|l| l.contains("git log -1")), "{shown:#?}");
     }
 
     #[test]
-    fn a_call_that_produced_nothing_is_not_a_box_either() {
-        // A `write` that reports nothing has an outcome but no body.
+    fn a_call_that_produced_nothing_says_how_it_ended() {
         let shown = call(Some(ToolResult {
             images: Vec::new(),
             output: String::new(),
@@ -436,32 +265,33 @@ mod emptiness {
             shown: None,
         }));
         assert!(
-            shown
-                .iter()
-                .all(|l| !l.starts_with(crate::glyph::block_edge())),
+            shown[0].contains(&format!("[ {} ]", crate::glyph::outcome_ok())),
             "{shown:#?}"
         );
+        assert!(shown.iter().any(|l| l.contains("git log -1")), "{shown:#?}");
     }
 
     #[test]
-    fn a_call_with_output_grows_its_box() {
+    fn a_call_with_output_shows_it_under_what_it_was_given() {
         let shown = call(Some(ToolResult {
             images: Vec::new(),
             output: "one line".into(),
             is_error: false,
             shown: None,
         }));
-        // Two rules, which is what a box is now: one to open it and one to close it.
-        let rules = shown
+        let asked = shown
             .iter()
-            .filter(|l| l.starts_with(crate::glyph::block_edge()))
-            .count();
-        assert!(rules >= 2, "{shown:#?}");
-        assert!(shown.iter().any(|l| l.contains("one line")), "{shown:#?}");
+            .position(|l| l.contains("git log -1"))
+            .expect("the command");
+        let said = shown
+            .iter()
+            .position(|l| l.contains("one line"))
+            .expect("the output");
+        assert!(asked < said, "{shown:#?}");
     }
 }
 
-/// Prose and blocks share one text column, so only the frames reach past it.
+/// Prose and blocks share one text column.
 #[cfg(test)]
 mod alignment {
     use crate::transcript::tests::text_of;
@@ -485,8 +315,7 @@ mod alignment {
     }
 
     #[test]
-    fn prose_starts_where_a_block_starts() {
-        // An answer and the box above it should begin in the same column.
+    fn an_answer_starts_where_a_question_starts() {
         let block = text_of(&entry_lines(
             &Entry::User {
                 images: Vec::new(),
@@ -499,7 +328,6 @@ mod alignment {
         ));
         let prose = said("hello");
         let column = |line: &str| line.len() - line.trim_start().len();
-        // Found by the text, not by a row number: a block pads inside its frame and prose does not.
         let saying = |rows: &[String]| {
             rows.iter()
                 .find(|row| row.contains("hello"))
@@ -514,25 +342,18 @@ mod alignment {
     }
 
     #[test]
-    fn prose_stops_where_a_block_stops() {
-        // The right margin too. The edges are exempt: a frame spans the whole width.
+    fn an_answer_stops_inside_its_block() {
         let long = "word ".repeat(40);
-        // A frame row is one that opens on the rule: there are no corners to look for now.
-        let framing = |line: &str| line.starts_with(crate::glyph::block_edge());
-        for line in said(&long)
-            .iter()
-            .filter(|l| !l.trim().is_empty() && !framing(l))
-        {
+        for line in said(&long).iter().skip(1) {
             assert!(
-                line.chars().count() <= 40 - super::MARGIN,
-                "{line:?} reaches past the frame"
+                line.trim_end().chars().count() <= 40 - super::MARGIN,
+                "{line:?} reaches past the fill"
             );
         }
     }
 
     #[test]
-    fn only_the_frame_reaches_the_first_and_last_column() {
-        // Everything with content is inside, and the two outermost columns belong to the edges.
+    fn nothing_reaches_the_first_column() {
         let shown = text_of(&entry_lines(
             &Entry::Tool {
                 id: ToolCallId::new("t1"),
@@ -549,24 +370,21 @@ mod alignment {
             40,
             Detail::Full,
         ));
-        for line in shown.iter().filter(|l| !l.trim().is_empty()) {
-            let edge = line.starts_with(crate::glyph::block_edge());
-            if !edge {
-                let first = line.chars().next().expect("a column");
-                assert_eq!(first, ' ', "{line:?} starts in the frame's column");
-            }
+        for line in &shown {
+            let first = line.chars().next().expect("a column");
+            assert_eq!(first, ' ', "{line:?} starts in the screen's column");
         }
     }
 }
 
-/// A glyph two columns wide does not push a row past the frame.
+/// A glyph two columns wide does not push a row past the fill.
 #[cfg(test)]
 mod wide {
     use crate::transcript::tests::text_of;
     use crate::transcript::{Detail, entry_lines};
     use magi_proto::{Entry, MessageId, ToolCallId, ToolResult};
 
-    /// Two columns each on a terminal, one `char` each in Rust — which is the whole problem.
+    /// Two columns each on a terminal, one `char` each in Rust.
     const WIDE: &str = "日本語のテキストがここにあります、これは長い行です";
 
     /// Measured with the width table itself, never with the code under test.
@@ -576,7 +394,6 @@ mod wide {
 
     #[test]
     fn a_message_of_wide_glyphs_still_fills_the_width_exactly() {
-        // Everything counted characters, so one wide glyph pushed a row a column past the frame.
         for width in [24u16, 40, 56] {
             let shown = text_of(&entry_lines(
                 &Entry::User {
@@ -621,7 +438,6 @@ mod wide {
 
     #[test]
     fn a_cut_ends_no_wider_than_it_was_asked_for() {
-        // Cutting at `width - 1` characters produced a run wider than the budget for a wide glyph.
         for room in 4..20 {
             let cut = super::super::clip(WIDE, room);
             assert!(

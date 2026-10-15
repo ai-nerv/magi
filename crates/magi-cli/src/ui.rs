@@ -151,11 +151,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
             let Some(call) = owner.as_ref().filter(|call| waiting.contains(call)) else {
                 continue;
             };
-            // Once a block, on the first of its rows that says anything.
-            let blank = laid
-                .lines
-                .get(line)
-                .is_none_or(|row| row.spans.iter().all(|span| span.content.trim().is_empty()));
+            // Once a block, on the first of its rows under the header that says anything.
+            let blank = laid.lines.get(line).is_none_or(|row| {
+                transcript::is_header(row)
+                    || row.spans.iter().all(|span| span.content.trim().is_empty())
+            });
             if blank || said.contains(&call) {
                 continue;
             }

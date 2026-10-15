@@ -2,9 +2,10 @@
 
 use super::*;
 
-/// Light up the fold handle at `column` of `line`, if the pointer is over one.
+/// Light up the chip at `column` of `line`, if the pointer is over one, by inverting it against
+/// the header it sits in.
 ///
-/// Only the handle: the name chip looks identical but a click on it does nothing. Returns whether
+/// Only the handles: the name chip looks identical but a click on it does nothing. Returns whether
 /// anything changed, so a caller can skip a redraw when the pointer moved within the same chip.
 pub fn hovered(line: &mut Line<'static>, column: u16) -> bool {
     let handles = [glyph::expand(), glyph::collapse(), glyph::copy()];
@@ -13,7 +14,11 @@ pub fn hovered(line: &mut Line<'static>, column: u16) -> bool {
         let wide = u16::try_from(span.content.chars().count()).unwrap_or(0);
         let under = (at..at.saturating_add(wide)).contains(&column);
         if under && handles.iter().any(|glyph| span.content.contains(glyph)) {
-            span.style = span.style.add_modifier(Modifier::REVERSED);
+            span.style = if span.style.add_modifier.contains(Modifier::REVERSED) {
+                span.style.remove_modifier(Modifier::REVERSED)
+            } else {
+                span.style.add_modifier(Modifier::REVERSED)
+            };
             return true;
         }
         at = at.saturating_add(wide);
@@ -87,17 +92,18 @@ mod pointing {
     }
 
     #[test]
-    fn a_lit_handle_is_reversed_and_nothing_else_is() {
+    fn a_lit_handle_is_inverted_and_nothing_else_is() {
         let line = edge();
         let column = *lit(&line).first().expect("something lit");
         let mut under = line.clone();
         assert!(hovered(&mut under, column));
-        let reversed = under
+        let changed = under
             .spans
             .iter()
-            .filter(|span| span.style.add_modifier.contains(Modifier::REVERSED))
+            .zip(&line.spans)
+            .filter(|(now, was)| now.style != was.style)
             .count();
-        assert_eq!(reversed, 1, "exactly the chip under the pointer");
+        assert_eq!(changed, 1, "exactly the chip under the pointer");
     }
 
     #[test]

@@ -1,6 +1,5 @@
-//! Transcript entries to styled lines, in Pi's shapes: a user message is a full-width padded box on
-//! `userMessageBg`, an assistant message is bare markdown after one blank line, a tool call is a
-//! padded box whose background carries its outcome.
+//! Transcript entries to styled lines. A message, an answer and a tool call are each a [`Block`];
+//! a notice and a rule across the transcript are not.
 
 use crate::colour;
 use crate::glyph;
@@ -10,14 +9,16 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use std::collections::BTreeSet;
 
+mod block;
 mod frame;
 mod hover;
 mod shell;
 mod tool;
 
-use frame::{MARGIN, bottom, inside, top};
+use frame::{MARGIN, inside};
 use tool::STEP;
 
+pub use block::{Block, Head, is_header};
 pub use hover::hovered;
 pub use tool::Detail;
 
@@ -75,20 +76,20 @@ pub fn laid_out(
     laid
 }
 
-/// Whether a row carries nothing but space, by what it says rather than how it is styled: a tool
-/// block's gap is a run of spaces and an assistant message's is an empty `Line`.
+/// Whether a row is a gap: nothing but space, and nothing painted behind it.
 fn blank_row(line: Option<&Line<'static>>) -> bool {
     line.is_none_or(|line| {
-        line.spans
-            .iter()
-            .all(|span| span.content.chars().all(char::is_whitespace))
+        line.spans.iter().all(|span| {
+            span.content.chars().all(char::is_whitespace) && block::ground(span.style).is_none()
+        })
     })
 }
 
+/// The block `entry` is drawn as, when it is drawn as one.
 #[must_use]
-pub fn entry_lines(entry: &Entry, width: u16, detail: Detail) -> Vec<Line<'static>> {
+pub fn block_of(entry: &Entry, width: u16, detail: Detail) -> Option<Block> {
     match entry {
-        Entry::User { text, .. } => user(text, width),
+        Entry::User { text, .. } => Some(said("USER", text, width)),
         Entry::Assistant {
             text,
             thinking,
@@ -98,14 +99,24 @@ pub fn entry_lines(entry: &Entry, width: u16, detail: Detail) -> Vec<Line<'stati
         } => assistant(text, thinking, *stop_reason, error.as_deref(), width),
         Entry::Tool {
             name, args, result, ..
-        } => tool::block(name, args, result.as_ref(), width, detail),
-        Entry::Notice { text } => notice(text, width),
+        } => Some(tool::of(name, args, result.as_ref(), width, detail)),
         Entry::From {
             who,
             kin,
             sort,
             text,
-        } => from(who, kin, sort, text, width),
+        } => Some(from(who, kin, sort, text, width)),
+        _ => None,
+    }
+}
+
+#[must_use]
+pub fn entry_lines(entry: &Entry, width: u16, detail: Detail) -> Vec<Line<'static>> {
+    if let Some(block) = block_of(entry, width, detail) {
+        return block.lines(width);
+    }
+    match entry {
+        Entry::Notice { text } => notice(text, width),
         Entry::Compaction { replaces, .. } => {
             marker(&format!(" {replaces} earlier messages summarised "), width)
         }
@@ -122,6 +133,9 @@ pub fn entry_lines(entry: &Entry, width: u16, detail: Detail) -> Vec<Line<'stati
             },
             width,
         ),
+        Entry::User { .. } | Entry::Assistant { .. } | Entry::Tool { .. } | Entry::From { .. } => {
+            Vec::new()
+        }
     }
 }
 
@@ -160,14 +174,9 @@ fn marker(label: &str, width: u16) -> Vec<Line<'static>> {
     ]
 }
 
-/// A framed full-width block, labelled `USER` in its top edge.
-fn user(text: &str, width: u16) -> Vec<Line<'static>> {
-    said("USER", colour::said_by_you(), text, width)
-}
-
-/// The same box, labelled with the name its sender goes by: its role and its id, as the footer
-/// shows an agent. One from another project keeps its whole name, since the id alone is not it.
-fn from(who: &str, kin: &str, sort: &str, text: &str, width: u16) -> Vec<Line<'static>> {
+/// The same block as a message of yours, labelled with the name its sender goes by: its role and
+/// its id, as the footer shows an agent. One from another project keeps its whole name.
+fn from(who: &str, kin: &str, sort: &str, text: &str, width: u16) -> Block {
     // The id alone: the project is this session's own, so printing it repeats a word every message.
     let id = who.rsplit('/').next().unwrap_or(who);
     let label = match kin {
@@ -181,105 +190,87 @@ fn from(who: &str, kin: &str, sort: &str, text: &str, width: u16) -> Vec<Line<'s
     } else {
         label
     };
-    said(&label, colour::said_by_agent(), text, width)
+    said(&label, text, width)
 }
 
-/// A framed block with its tag set into the top edge rather than on a row of its own.
-fn said(label: &str, tag: ratatui::style::Color, text: &str, width: u16) -> Vec<Line<'static>> {
-    let style = Style::default()
-        .bg(colour::message_bg())
-        .fg(colour::message_text());
-    // Dark chip, coloured text — the other way round from a tool block, which is the one that folds.
-    // In the tag's own colour on nothing: a filled chip on an unfilled frame reads as a sticker.
-    let chip = Style::default().fg(tag).add_modifier(Modifier::BOLD);
-    // A step in from the fill on both sides, or the box reads as a highlight behind the words.
-    let lead = MARGIN + STEP;
-    let inner = frame::held(width).saturating_sub(u16::try_from(STEP * 2).unwrap_or(4));
-    let body = markdown::render(text, inner, style);
-
-    // No handle: neither of these folds.
-    let mut out = vec![
-        top(label, chip, None, None, true, width),
-        frame::breath(width, style),
-    ];
-    for line in body {
-        out.push(inside(line, width, style, lead));
-    }
-    out.push(frame::breath(width, style));
-    out.push(bottom(width));
-    out
+/// A message: its sender's label in the header, and what it says inside.
+fn said(label: &str, text: &str, width: u16) -> Block {
+    let head = Head {
+        label: label.to_owned(),
+        copy: true,
+        ..Head::default()
+    };
+    let mut block = Block::new(head, colour::message_bg());
+    let style = block.style().fg(colour::message_text());
+    block.rows = prose(text, style, width);
+    block
 }
 
-/// Bare markdown with no background, preceded by one blank line.
+/// An answer: its thinking, then what it says, then why it stopped if it stopped early. `None`
+/// when there is none of the three.
 fn assistant(
     text: &str,
     thinking: &str,
     stop_reason: Option<StopReason>,
     error: Option<&str>,
     width: u16,
-) -> Vec<Line<'static>> {
-    let base = Style::default().fg(colour::text());
-    let inner = frame::held(width);
-    let mut out = Vec::new();
-
-    if !thinking.trim().is_empty() || !text.trim().is_empty() {
-        out.push(Line::default());
-    }
+) -> Option<Block> {
+    let head = Head {
+        copy: true,
+        ..Head::default()
+    };
+    let mut block = Block::new(head, colour::answer_bg());
+    let ground = block.style();
+    let mut rows = Vec::new();
 
     if !thinking.trim().is_empty() {
-        let style = Style::default()
-            .fg(colour::thinking())
-            .add_modifier(Modifier::ITALIC);
-        for line in markdown::render(thinking.trim(), inner, style) {
-            out.push(indent(line));
-        }
-        if !text.trim().is_empty() {
-            out.push(Line::default());
-        }
+        let style = ground.fg(colour::thinking()).add_modifier(Modifier::ITALIC);
+        rows.extend(prose(thinking.trim(), style, width));
     }
-
-    // Rails around the answer and only the answer, because a copy chip has to sit in an edge and
-    // thinking is not the answer. No fill, or the transcript is a stack of coloured slabs.
     if !text.trim().is_empty() {
-        // A step in from the rails, so an answer and the question above it begin in one column.
-        let held = frame::held(width).saturating_sub(u16::try_from(STEP * 2).unwrap_or(4));
-        out.push(frame::top("", base, None, None, true, width));
-        for line in markdown::render(text.trim(), held, base) {
-            out.push(indent(step(line)));
+        if !rows.is_empty() {
+            rows.push(frame::rule(width, ground));
         }
-        out.push(bottom(width));
+        rows.extend(prose(text.trim(), ground.fg(colour::text()), width));
     }
 
-    // Surfaced here even when tool calls follow: a length stop can land before a call's arguments
-    // are complete, and the tool block would show nothing.
-    match stop_reason {
-        // A limit, not a fault: the model did what it could within the budget it was given.
-        Some(StopReason::Length) => {
-            out.push(Line::default());
-            out.push(indent(Line::from(Span::styled(
-                "Response hit the length limit and stopped here.",
-                Style::default().fg(colour::warning()),
-            ))));
+    let stopped = match stop_reason {
+        Some(StopReason::Length) => Some((
+            "Response hit the length limit and stopped here.".to_owned(),
+            colour::warning(),
+        )),
+        Some(StopReason::Aborted) => Some((
+            error.map_or_else(|| "Interrupted.".to_owned(), ToOwned::to_owned),
+            colour::dim(),
+        )),
+        Some(StopReason::Error) => Some((
+            format!("Error: {}", error.unwrap_or("Unknown error")),
+            colour::error(),
+        )),
+        _ => None,
+    };
+    if let Some((note, ink)) = stopped {
+        if !rows.is_empty() {
+            rows.push(frame::breath(width, ground));
         }
-        // Not an error: you pressed escape and it obeyed.
-        Some(StopReason::Aborted) => {
-            out.push(Line::default());
-            out.push(indent(Line::from(Span::styled(
-                error.map_or_else(|| "Interrupted.".to_owned(), ToOwned::to_owned),
-                Style::default().fg(colour::dim()),
-            ))));
-        }
-        Some(StopReason::Error) => {
-            out.push(Line::default());
-            out.push(indent(Line::from(Span::styled(
-                format!("Error: {}", error.unwrap_or("Unknown error")),
-                Style::default().fg(colour::error()),
-            ))));
-        }
-        _ => {}
+        let line = Line::from(Span::styled(note, ground.fg(ink)));
+        rows.push(inside(line, width, ground, MARGIN + STEP));
     }
 
-    out
+    if rows.is_empty() {
+        return None;
+    }
+    block.rows = rows;
+    Some(block)
+}
+
+/// Markdown set inside a block, a step in from its fill on both sides.
+fn prose(text: &str, style: Style, width: u16) -> Vec<Line<'static>> {
+    let inner = frame::held(width).saturating_sub(u16::try_from(STEP * 2).unwrap_or(4));
+    markdown::render(text, inner, style)
+        .into_iter()
+        .map(|line| inside(line, width, style, MARGIN + STEP))
+        .collect()
 }
 
 fn clip(text: &str, width: usize) -> String {
@@ -311,13 +302,6 @@ fn indent(line: Line<'static>) -> Line<'static> {
     Line::from(spans)
 }
 
-/// One more step in, for prose that sits inside rails of its own.
-fn step(line: Line<'static>) -> Line<'static> {
-    let mut spans = vec![Span::raw(" ".repeat(STEP))];
-    spans.extend(line.spans);
-    Line::from(spans)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,6 +314,11 @@ mod tests {
             .collect()
     }
 
+    /// Whether a row, as text, is a block's header.
+    pub(super) fn is_head(row: &str) -> bool {
+        row.trim_start().starts_with(crate::glyph::block_edge()) && row.contains("[ ")
+    }
+
     fn from(who: &str, kin: &str, sort: &str) -> Entry {
         Entry::From {
             who: who.into(),
@@ -340,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn a_user_message_is_a_framed_full_width_box() {
+    fn a_user_message_is_a_full_width_block() {
         let entry = Entry::User {
             images: Vec::new(),
             id: MessageId::new("m1"),
@@ -351,22 +340,18 @@ mod tests {
         let rendered = text_of(&lines);
         assert_eq!(
             rendered.len(),
-            5,
-            "an edge, a row of fill, the body, a row of fill, an edge"
+            4,
+            "the header, a row of fill, the body, a row of fill"
         );
-        // Inside the frame and not pressed against the rule above it.
         assert_eq!(rendered[2], "    hello           ");
-        let rule = crate::glyph::block_edge();
-        assert!(rendered[0].starts_with(rule) && rendered[0].ends_with(rule));
-        assert!(rendered[4].starts_with(rule) && rendered[4].ends_with(rule));
-        // No sides: two columns of every row taken off the text where they are least affordable.
+        assert!(is_head(&rendered[0]), "{rendered:?}");
+        assert!(rendered[3].trim().is_empty(), "{rendered:?}");
         assert!(!rendered[2].contains('│'), "{rendered:?}");
         assert!(rendered.iter().all(|l| l.chars().count() == 20));
     }
 
     #[test]
-    fn a_user_message_is_tagged_and_costs_no_extra_row_for_it() {
-        // The tag rides the padding row rather than growing a line per message.
+    fn a_user_message_is_labelled_in_its_header() {
         let entry = Entry::User {
             images: Vec::new(),
             id: MessageId::new("m1"),
@@ -375,12 +360,7 @@ mod tests {
         };
         let rendered = text_of(&entry_lines(&entry, 20, Detail::Preview));
         assert!(rendered[0].contains("[ USER ]"), "{rendered:?}");
-        // Five: the two edges, a row of fill inside each, and the text. The tag is not one of them.
-        assert_eq!(rendered.len(), 5, "the tag grew a row: {rendered:?}");
-        assert!(
-            rendered[0].starts_with(crate::glyph::block_edge()),
-            "the tag rides the top edge: {rendered:?}"
-        );
+        assert_eq!(rendered.len(), 4, "the label grew a row: {rendered:?}");
     }
 
     #[test]
@@ -457,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn an_assistant_message_has_no_background_fill() {
+    fn an_answer_is_a_block_on_a_fill_of_its_own() {
         let entry = Entry::Assistant {
             id: MessageId::new("m2"),
             text: "sure".into(),
@@ -468,19 +448,52 @@ mod tests {
             usage: magi_proto::Usage::default(),
         };
         let lines = entry_lines(&entry, 20, Detail::Preview);
-        // Rails, but no fill: the edge is there to carry a copy chip.
+        assert!(is_header(&lines[0]), "{lines:#?}");
+        let body = lines
+            .iter()
+            .find(|line| text_of(std::slice::from_ref(*line))[0].contains("sure"))
+            .expect("the answer");
+        let inner = &body.spans[1..body.spans.len() - 1];
         assert!(
-            lines
+            inner
                 .iter()
-                .flat_map(|line| line.spans.iter())
-                .all(|span| span.style.bg.is_none()),
-            "{lines:#?}"
+                .all(|span| span.style.bg == Some(colour::answer_bg())),
+            "{body:#?}"
         );
-        // A step in from the rails, so an answer and the question above it begin in one column.
         assert!(
-            text_of(&lines).contains(&"    sure".to_owned()),
+            text_of(&lines)
+                .iter()
+                .any(|row| row.starts_with("    sure")),
             "{lines:#?}"
         );
+    }
+
+    #[test]
+    fn thinking_and_the_answer_share_one_block() {
+        let entry = Entry::Assistant {
+            id: MessageId::new("m2"),
+            text: "sure".into(),
+            thinking: "let me see".into(),
+            stop_reason: Some(StopReason::EndTurn),
+            error: None,
+            signatures: magi_proto::Signatures::default(),
+            usage: magi_proto::Usage::default(),
+        };
+        let rows = text_of(&entry_lines(&entry, 30, Detail::Preview));
+        assert_eq!(
+            rows.iter().filter(|row| is_head(row)).count(),
+            1,
+            "{rows:#?}"
+        );
+        let thought = rows
+            .iter()
+            .position(|r| r.contains("let me see"))
+            .expect("thinking");
+        let answer = rows
+            .iter()
+            .position(|r| r.contains("sure"))
+            .expect("answer");
+        assert!(thought < answer, "{rows:#?}");
     }
 
     #[test]
@@ -494,7 +507,10 @@ mod tests {
         };
         let rendered = text_of(&entry_lines(&entry, 40, Detail::Preview));
         assert!(rendered[0].contains("read"), "{:?}", rendered[0]);
-        assert!(rendered[0].contains("a.rs"), "{:?}", rendered[0]);
+        assert!(
+            rendered.iter().any(|row| row.contains("a.rs")),
+            "{rendered:?}"
+        );
     }
 
     #[test]

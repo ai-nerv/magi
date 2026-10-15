@@ -108,6 +108,7 @@ palette! {
     rule = at(245), "The rule above and below a quotation.";
 
     message_bg = at(237), "Behind something you said.";
+    answer_bg = at(236), "Behind an answer.";
     message_text = at(255), "Something you said.";
     said_by_you = PINK, "The `USER` tag on something you said.";
     said_by_agent = CYAN, "The tag on a message from another instance.";
