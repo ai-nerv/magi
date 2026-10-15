@@ -18,6 +18,8 @@ use magi_proto::{Entry, SessionId, StopReason};
 use magi_testkit::Mind;
 use magi_testkit::mind::{failed_line, retrying_line, stop_line, text_line};
 
+#[path = "turn/overflowing.rs"]
+mod overflowing;
 #[path = "turn/ownership.rs"]
 mod ownership;
 #[path = "turn/truncated.rs"]

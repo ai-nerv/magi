@@ -72,6 +72,15 @@ impl Admission {
         matches!(self, Self::Admitted { .. })
     }
 
+    /// What the request came to, and zero for one never counted.
+    #[must_use]
+    pub const fn counted(self) -> u64 {
+        match self {
+            Self::Admitted { counted, .. } | Self::Over { counted, .. } => counted,
+            Self::Blocked(_) => 0,
+        }
+    }
+
     /// How far over the limit it was, and zero for anything else.
     #[must_use]
     pub const fn over_by(self) -> u64 {
