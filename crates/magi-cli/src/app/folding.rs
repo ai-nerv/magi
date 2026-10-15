@@ -362,9 +362,11 @@ fn said_by(
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
-        // The edges are the block, not what it says. Both of them open on the rule, where every
-        // row of the block's own words opens on its inset.
-        if text.trim_start().starts_with(magi_tui::glyph::block_edge()) {
+        // The header and the seams are the block, not what it says.
+        let opening = text.trim_start();
+        if opening.starts_with(magi_tui::glyph::block_edge())
+            || opening.starts_with(magi_tui::glyph::seam())
+        {
             continue;
         }
         rows.push(text.trim_end().to_owned());
@@ -469,6 +471,27 @@ mod copying {
         ]);
         let copied = super::said_by(&scrollback, &[Some(0), Some(0)], 0);
         assert_eq!(copied, "全角の字下げ\n\u{a0}nbsp");
+    }
+
+    #[test]
+    fn a_seam_inside_the_block_is_not_copied() {
+        let mut app = answering("Here is the fix.");
+        if let Some(magi_proto::Entry::Assistant { thinking, .. }) = app.entries.first_mut() {
+            *thinking = "first, the cause".to_owned();
+        }
+        let laid = magi_tui::transcript::laid_out(
+            app.entries(),
+            60,
+            magi_tui::transcript::Detail::Preview,
+            &app.flipped,
+        );
+        app.blocks = laid.blocks;
+        app.live_rows = 0..u16::try_from(laid.lines.len()).expect("short");
+        app.scrollback.set_lines(laid.lines);
+        let (row, column) = chip(&app);
+        let copied = app.copy_at(row, column, 60).expect("the chip was there");
+        assert!(!copied.contains(magi_tui::glyph::seam()), "{copied:?}");
+        assert!(copied.contains("Here is the fix."), "{copied:?}");
     }
 
     #[test]

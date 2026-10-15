@@ -60,7 +60,10 @@ pub(super) fn rule(width: u16, style: Style) -> Line<'static> {
     Line::from(vec![
         Span::raw(" ".repeat(outer)),
         Span::styled(" ", style),
-        Span::styled("─".repeat(span), style.fg(crate::colour::tool_seam())),
+        Span::styled(
+            crate::glyph::seam().repeat(span),
+            style.fg(crate::colour::tool_seam()),
+        ),
         Span::styled(" ", style),
         Span::raw(" ".repeat(outer)),
     ])

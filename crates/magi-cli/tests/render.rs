@@ -99,7 +99,7 @@ fn a_conversation_renders_the_way_pi_lays_it_out() {
             "",
             "    cargo test",
             // The seam between what the call was given and what it answered.
-            "  ────────────────────────────────────────",
+            "  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
             "    test result: ok. 42 passed",
             "",
         ]
