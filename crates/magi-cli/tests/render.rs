@@ -83,23 +83,23 @@ fn a_conversation_renders_the_way_pi_lays_it_out() {
             // Each block is one rectangle of its fill: the header is its first row, then a row of
             // fill, its rows, and a row of fill closing it. The fill stops a column short of each
             // side of the screen.
-            "  ──[ USER ]───────────────────────[ ⧉ ]──",
+            "  ══[ USER ]═══════════════════════[ ⧉ ]══",
             "",
             "    run the tests",
             "",
             "", // the gap between blocks, unpainted
             // An answer is a block too, with no label.
-            "  ─────────────────────────────────[ ⧉ ]──",
+            "  ═════════════════════════════════[ ⧉ ]══",
             "",
             "    Running them now.",
             "",
             "",
             // The name, a mark for what became of the call, the copy chip and the fold handle.
-            "  ──[ bash ]──[ ✓ ]─────────[ ⧉ ]──[ ▸ ]──",
+            "  ══[ bash ]══[ ✓ ]═════════[ ⧉ ]══[ ▸ ]══",
             "",
             "    cargo test",
             // The seam between what the call was given and what it answered.
-            "  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
+            "  ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─",
             "    test result: ok. 42 passed",
             "",
         ]

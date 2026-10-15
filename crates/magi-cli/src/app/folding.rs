@@ -365,7 +365,7 @@ fn said_by(
         // The header and the seams are the block, not what it says.
         let opening = text.trim_start();
         if opening.starts_with(magi_tui::glyph::block_edge())
-            || opening.starts_with(magi_tui::glyph::seam())
+            || opening.starts_with(magi_tui::glyph::seam().trim())
         {
             continue;
         }

@@ -177,7 +177,7 @@ mod tests {
             .enumerate()
             .skip(1)
             .take(shown.len().saturating_sub(2))
-            .filter(|(_, l)| l.starts_with(crate::glyph::seam()))
+            .filter(|(_, l)| l.starts_with(crate::glyph::seam().trim()))
             .map(|(nth, _)| nth)
             .collect();
         assert_eq!(at.len(), 1, "{shown:#?}");

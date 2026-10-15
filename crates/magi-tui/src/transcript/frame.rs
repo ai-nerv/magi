@@ -61,12 +61,27 @@ pub(super) fn rule(width: u16, style: Style) -> Line<'static> {
         Span::raw(" ".repeat(outer)),
         Span::styled(" ", style),
         Span::styled(
-            crate::glyph::seam().repeat(span),
+            repeated(crate::glyph::seam(), span),
             style.fg(crate::colour::tool_seam()),
         ),
         Span::styled(" ", style),
         Span::raw(" ".repeat(outer)),
     ])
+}
+
+/// `pattern` over and over, exactly `width` columns of it.
+fn repeated(pattern: &str, width: usize) -> String {
+    let mut out = String::new();
+    let mut used = 0;
+    for c in pattern.chars().cycle().take(width.saturating_mul(4)) {
+        let wide = crate::wrap::columns(c.encode_utf8(&mut [0u8; 4]));
+        if wide == 0 || used + wide > width {
+            break;
+        }
+        used += wide;
+        out.push(c);
+    }
+    out + &" ".repeat(width - used)
 }
 
 /// Where a block starts and stops, and that every row of it is the width.
@@ -108,6 +123,15 @@ mod framing {
             1,
             "{shown:#?}"
         );
+    }
+
+    #[test]
+    fn a_seam_pattern_fills_exactly_its_width() {
+        assert_eq!(super::repeated("─ ", 5), "─ ─ ─");
+        assert_eq!(super::repeated("─ ", 6), "─ ─ ─ ");
+        assert_eq!(super::repeated("日 ", 4), "日  ");
+        assert_eq!(super::repeated("日", 3), "日 ");
+        assert_eq!(super::repeated("", 3), "   ");
     }
 
     #[test]
