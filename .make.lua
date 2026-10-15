@@ -619,6 +619,21 @@ make.recipe{
   end,
 }
 
+-- The three programs `packages.default` ships beside magi, moved to the newest each has released:
+-- their `main`, which only ever holds a release.
+make.recipe{
+  name = "siblings",
+  desc = "move the flake's casper, melchior and balthasar to their latest release",
+  run = function()
+    sh.nix("flake", "update", "casper", "melchior", "balthasar")
+    if oslo.run{ "git", "diff", "--quiet", "--", "flake.lock" }.ok then
+      print("casper, melchior and balthasar are already at their latest release")
+      return
+    end
+    sh.git("commit", "-q", "-m", "build(nix): the siblings' latest releases", "--", "flake.lock")
+  end,
+}
+
 make.recipe{ name = "check", desc = "type-check every target",
              run = function() sh.cargo("check", "--all-targets", "--release") end }
 
