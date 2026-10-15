@@ -1,5 +1,5 @@
 {
-  description = "magi, and its Rust development shell";
+  description = "magi and the three programs it convenes, and its Rust development shell";
 
   nixConfig = {
     extra-substituters = [ "https://ai-nerv.cachix.org" ];
@@ -18,10 +18,24 @@
     # exists to produce.
     rust-overlay.url = "github:oxalica/rust-overlay";
     rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
+    # The three programs magi convenes, each from its own flake with nothing followed, so each is
+    # the very derivation its release published to the cache. `make siblings` moves them.
+    casper.url = "github:ai-nerv/casper";
+    melchior.url = "github:ai-nerv/melchior";
+    balthasar.url = "github:ai-nerv/balthasar";
   };
 
   outputs =
-    { nixpkgs, flake-utils, nixgl, rust-overlay, ... }:
+    {
+      nixpkgs,
+      flake-utils,
+      nixgl,
+      rust-overlay,
+      casper,
+      melchior,
+      balthasar,
+      ...
+    }:
     let
       manifest = builtins.fromTOML (builtins.readFile ./Cargo.toml);
 
@@ -120,20 +134,34 @@
               ];
             };
           };
-          app = {
+          siblings = [
+            casper.packages.${system}.casper
+            melchior.packages.${system}.melchior
+            balthasar.packages.${system}.balthasar
+          ];
+          # All four, with magi wrapped so it finds the three it shipped with ahead of any other.
+          nerv = pkgs.symlinkJoin {
+            name = "nerv-${manifest.workspace.package.version}";
+            paths = [ magi ] ++ siblings;
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            postBuild = ''
+              wrapProgram $out/bin/magi --prefix PATH : ${lib.makeBinPath siblings}
+            '';
+          };
+          app = pkg: {
             type = "app";
-            program = "${magi}/bin/magi";
+            program = "${pkg}/bin/magi";
             meta.description = "Run magi";
           };
         in
         {
           packages = {
-            default = magi;
+            default = nerv;
             inherit magi;
           };
           apps = {
-            default = app;
-            magi = app;
+            default = app nerv;
+            magi = app magi;
           };
           checks = {
             inherit magi;

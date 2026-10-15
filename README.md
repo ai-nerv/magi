@@ -348,20 +348,28 @@ it. The toolchain is the flake's, so a release is built with the compiler the ga
 
 ## Nix
 
-Each release tag publishes a static build for x86_64 and aarch64 Linux to the `ai-nerv` cache,
-with `config/` under `share/magi/`.
+This flake is the way in: its default package is magi together with the three programs it
+convenes, casper, melchior and balthasar, each the build its own release published to the
+`ai-nerv` cache for x86_64 and aarch64 Linux. magi is wrapped to find those three ahead of
+anything else on `PATH`. `packages.magi` is magi alone, with `config/` under `share/magi/`.
 
 ```sh
 cachix use ai-nerv
-nix run github:ai-nerv/magi -- verbs
-nix build github:ai-nerv/magi
+nix run github:ai-nerv/magi                    # magi, with its siblings
+nix profile install github:ai-nerv/magi        # all four
 ```
 
-The flake names the cache itself, so `--accept-flake-config` does the same as `cachix use`. In
-another flake, take `inputs.magi.packages.${system}.default`, and configure the cache on the
-consuming machine: an input's `nixConfig` is not inherited.
+Each program reads its configuration from `~/.config/<name>`; copy each `share/<name>/config/`
+there once, as `make install` does from a checkout. `casper grammar fetch` gets the grammars
+`code` parses with.
 
-Here, `make nix-build` builds it into `result/`, and `make nix-check` checks the flake.
+The flake names the cache itself, so `--accept-flake-config` does the same as `cachix use`. In
+another flake, take `inputs.magi.packages.${system}.default`, leave its inputs unfollowed so the
+derivations stay the cached ones, and configure the cache on the consuming machine: an input's
+`nixConfig` is not inherited.
+
+Here, `make nix-build` builds it into `result/`, `make nix-check` checks the flake, and
+`make siblings` moves casper, melchior and balthasar to their latest release.
 
 ## Configuration
 

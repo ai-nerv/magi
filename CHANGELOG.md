@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.7.3] - 2026-10-15
+
+### Build
+
+- Ship magi with its siblings
+
 ## [0.7.2] - 2026-10-15
 
 ### <!-- 1 -->🐛 Bug Fixes
