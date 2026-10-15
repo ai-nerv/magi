@@ -90,6 +90,8 @@ pub(super) fn of(
             lead,
         ));
     }
+    // Whether the tool's own painting already shows everything the call was given.
+    let mut covered = false;
     if let Some(result) = result {
         // What the tool painted for the person, drawn on its own terms and however long it runs:
         // the model may be told one line ("wrote a.rs") while the person is shown the whole file.
@@ -108,7 +110,13 @@ pub(super) fn of(
             Some(lines) => {
                 // casper's painting as it stands: code in its roles, and each row of an edit on
                 // the ground of what happened to it.
+                covered = shows_every_argument(args, lines);
                 for spans in lines.iter().take(shown) {
+                    // A rule the tool drew across its painting is the block's own seam.
+                    if ruled(spans) {
+                        rows.push(super::frame::rule(width, style));
+                        continue;
+                    }
                     let on = crate::painted::row(spans, style);
                     let line = crate::painted::line(spans, on);
                     rows.extend(wrapped(line, on, detail, width, body, lead));
@@ -146,6 +154,9 @@ pub(super) fn of(
         }
     }
 
+    if covered {
+        said.clear();
+    }
     // Only between two things: a rule under the only thing in the box reads as a heading.
     let seam = !said.is_empty() && !rows.is_empty();
     block.rows = said;
@@ -154,6 +165,42 @@ pub(super) fn of(
     }
     block.rows.extend(rows);
     block
+}
+
+/// Whether a painted row is nothing but a rule across it.
+fn ruled(spans: &[magi_proto::tooling::Span]) -> bool {
+    let text: String = spans.iter().map(|span| span.text.as_str()).collect();
+    let text = text.trim();
+    text.chars().count() >= 3 && text.chars().all(|c| c == '─')
+}
+
+/// Whether a painting already shows every argument the call was given: each line of each value is
+/// somewhere in what it drew.
+fn shows_every_argument(args: &str, painted: &[Vec<magi_proto::tooling::Span>]) -> bool {
+    let Ok(serde_json::Value::Object(fields)) = serde_json::from_str::<serde_json::Value>(args)
+    else {
+        return false;
+    };
+    let drawn = painted
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|span| span.text.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    !fields.is_empty()
+        && fields.values().all(|value| {
+            let text = match value {
+                serde_json::Value::String(text) => text.clone(),
+                other => other.to_string(),
+            };
+            text.lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .all(|line| drawn.contains(line))
+        })
 }
 
 /// How wide the body of a tool's block is on a screen `width` columns wide: what a surface drawn in

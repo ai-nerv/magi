@@ -183,3 +183,78 @@ fn a_painted_row_sits_on_the_block_it_is_in() {
         "a painted row lost the block's fill"
     );
 }
+
+/// A call whose result painted `rows`, given `args`.
+fn painted_call(args: &str, rows: Vec<Vec<Painted>>, is_error: bool) -> Vec<String> {
+    block(
+        "execute",
+        args,
+        Some(&magi_proto::ToolResult {
+            images: Vec::new(),
+            output: "4".to_owned(),
+            is_error,
+            shown: Some(Shown::Painted { lines: rows }),
+        }),
+        60,
+        Detail::Full,
+    )
+    .iter()
+    .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+    .collect()
+}
+
+fn script() -> Vec<Vec<Painted>> {
+    vec![
+        vec![Painted::new(Role::Text, "x = 2+2")],
+        vec![Painted::new(Role::Text, "print(x)")],
+        vec![Painted::new(Role::Dim, "──────")],
+        vec![Painted::new(Role::Text, "4")],
+    ]
+}
+
+#[test]
+fn a_painting_that_shows_every_argument_is_not_told_them_again() {
+    let rows = painted_call(r#"{"code":"x = 2+2\nprint(x)"}"#, script(), false);
+    assert_eq!(
+        rows.iter().filter(|row| row.contains("print(x)")).count(),
+        1,
+        "{rows:#?}"
+    );
+    assert!(
+        !rows.iter().any(|row| row.contains("x = 2+2 print(x)")),
+        "{rows:#?}"
+    );
+}
+
+#[test]
+fn a_painting_missing_an_argument_keeps_the_row_that_says_it() {
+    let rows = painted_call(
+        r#"{"code":"x = 2+2\nprint(x)","timeout":90}"#,
+        script(),
+        false,
+    );
+    assert!(
+        rows.iter().any(|row| row.contains("x = 2+2 print(x), 90")),
+        "{rows:#?}"
+    );
+}
+
+#[test]
+fn a_rule_a_tool_painted_is_drawn_as_the_blocks_seam() {
+    let rows = painted_call(r#"{"code":"x = 2+2\nprint(x)"}"#, script(), false);
+    let seam = rows
+        .iter()
+        .find(|row| row.trim_start().starts_with(crate::glyph::seam()))
+        .expect("a seam");
+    assert!(!rows.iter().any(|row| row.contains("──────")), "{rows:#?}");
+    assert_eq!(seam.trim().chars().count(), 60 - 4, "{seam:?}");
+}
+
+#[test]
+fn a_failed_call_still_says_what_it_was_given() {
+    let rows = painted_call(r#"{"code":"x = 2+2\nprint(x)"}"#, script(), true);
+    assert!(
+        rows.iter().any(|row| row.contains("x = 2+2 print(x)")),
+        "{rows:#?}"
+    );
+}
