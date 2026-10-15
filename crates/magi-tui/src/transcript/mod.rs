@@ -21,8 +21,8 @@ use tool::STEP;
 
 pub use block::{Block, Head, is_header};
 pub use hover::hovered;
-pub use stack::Stack;
-pub use tool::Detail;
+pub use stack::{Live, Stack};
+pub use tool::{Detail, body_left, body_width};
 
 #[must_use]
 pub fn render(entries: &[Entry], width: u16, detail: Detail) -> Vec<Line<'static>> {
@@ -49,7 +49,7 @@ pub fn laid_out(
     flipped: &BTreeSet<ToolCallId>,
 ) -> Laid {
     let mut stack = Stack::new();
-    stack.update(entries, width, detail, flipped);
+    stack.update(entries, width, detail, flipped, None);
     let rows = 0..stack.len();
     Laid {
         lines: stack.rows(rows.clone()),

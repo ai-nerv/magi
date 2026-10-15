@@ -1,6 +1,7 @@
 //! What a stack keeps, what it draws again, and where each block lands.
 
 use super::*;
+use magi_proto::tooling::Span;
 use magi_proto::{MessageId, ToolResult};
 
 fn user(text: &str) -> Entry {
@@ -41,7 +42,7 @@ fn call(id: &str) -> Entry {
 
 fn stacked(entries: &[Entry]) -> Stack {
     let mut stack = Stack::new();
-    stack.update(entries, 40, Detail::Preview, &BTreeSet::new());
+    stack.update(entries, 40, Detail::Preview, &BTreeSet::new(), None);
     stack
 }
 
@@ -50,7 +51,7 @@ fn an_unchanged_transcript_draws_nothing_again() {
     let entries = [user("one"), answer("two"), call("t1")];
     let mut stack = stacked(&entries);
     assert_eq!(stack.drawn(), 3);
-    stack.update(&entries, 40, Detail::Preview, &BTreeSet::new());
+    stack.update(&entries, 40, Detail::Preview, &BTreeSet::new(), None);
     assert_eq!(stack.drawn(), 0);
 }
 
@@ -59,7 +60,7 @@ fn a_growing_answer_draws_only_itself_again() {
     let mut entries = vec![user("one"), answer("tw")];
     let mut stack = stacked(&entries);
     entries[1] = answer("two, and more");
-    stack.update(&entries, 40, Detail::Preview, &BTreeSet::new());
+    stack.update(&entries, 40, Detail::Preview, &BTreeSet::new(), None);
     assert_eq!(stack.drawn(), 1);
     let shown: String = stack
         .rows(0..stack.len())
@@ -73,7 +74,7 @@ fn a_growing_answer_draws_only_itself_again() {
 fn a_new_width_draws_everything_again() {
     let entries = [user("one"), call("t1")];
     let mut stack = stacked(&entries);
-    stack.update(&entries, 60, Detail::Preview, &BTreeSet::new());
+    stack.update(&entries, 60, Detail::Preview, &BTreeSet::new(), None);
     assert_eq!(stack.drawn(), 2);
 }
 
@@ -82,7 +83,7 @@ fn flipping_one_call_draws_only_that_call_again() {
     let entries = [call("t1"), call("t2")];
     let mut stack = stacked(&entries);
     let flipped: BTreeSet<ToolCallId> = [ToolCallId::new("t2")].into();
-    stack.update(&entries, 40, Detail::Preview, &flipped);
+    stack.update(&entries, 40, Detail::Preview, &flipped, None);
     assert_eq!(stack.drawn(), 1);
 }
 
@@ -129,7 +130,7 @@ fn a_row_past_the_end_is_nobodys() {
 #[test]
 fn a_shorter_transcript_drops_what_it_no_longer_has() {
     let mut stack = stacked(&[user("one"), user("two")]);
-    stack.update(&[], 40, Detail::Preview, &BTreeSet::new());
+    stack.update(&[], 40, Detail::Preview, &BTreeSet::new(), None);
     assert!(stack.is_empty());
     assert_eq!(stack.at(0), None);
 }
@@ -140,4 +141,153 @@ fn a_call_is_found_by_its_id() {
     assert_eq!(stack.find(&ToolCallId::new("t2")), Some(2));
     assert_eq!(stack.call(2), Some(&ToolCallId::new("t2")));
     assert_eq!(stack.call(0), None);
+}
+
+fn frame(text: &str) -> Vec<Vec<Span>> {
+    vec![vec![Span::new(magi_proto::tooling::Role::Text, text)]]
+}
+
+fn text(stack: &Stack) -> Vec<String> {
+    stack
+        .rows(0..stack.len())
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect()
+        })
+        .collect()
+}
+
+fn live<'a>(id: &'a ToolCallId, drawn: &'a [Vec<Span>]) -> Option<Live<'a>> {
+    Some(Live {
+        id,
+        tool: "dino",
+        about: "a game",
+        drawn,
+    })
+}
+
+#[test]
+fn a_live_call_draws_its_frame_in_its_own_block() {
+    let entries = [user("play"), call("t1")];
+    let id = ToolCallId::new("t1");
+    let drawn = frame("the dinosaur runs");
+    let mut stack = Stack::new();
+    stack.update(
+        &entries,
+        40,
+        Detail::Preview,
+        &BTreeSet::new(),
+        live(&id, &drawn),
+    );
+    let rows = text(&stack);
+    let header = rows
+        .iter()
+        .position(|row| row.contains("[ dino ]"))
+        .expect("the live block's header");
+    assert!(rows[header + 1].contains("the dinosaur runs"), "{rows:#?}");
+    assert!(
+        !rows[header].contains(crate::glyph::expand()),
+        "nothing to fold: {rows:#?}"
+    );
+    assert!(
+        rows.iter()
+            .filter(|row| !row.is_empty())
+            .all(|row| crate::wrap::columns(row) == 40),
+        "{rows:#?}"
+    );
+}
+
+#[test]
+fn a_new_frame_draws_only_its_block_again() {
+    let entries = [user("play"), call("t1")];
+    let id = ToolCallId::new("t1");
+    let (one, two) = (frame("one"), frame("two"));
+    let mut stack = Stack::new();
+    stack.update(
+        &entries,
+        40,
+        Detail::Preview,
+        &BTreeSet::new(),
+        live(&id, &one),
+    );
+    stack.update(
+        &entries,
+        40,
+        Detail::Preview,
+        &BTreeSet::new(),
+        live(&id, &one),
+    );
+    assert_eq!(stack.drawn(), 0, "the same frame twice");
+    stack.update(
+        &entries,
+        40,
+        Detail::Preview,
+        &BTreeSet::new(),
+        live(&id, &two),
+    );
+    assert_eq!(stack.drawn(), 1);
+    assert!(text(&stack).iter().any(|row| row.contains("two")));
+}
+
+#[test]
+fn before_its_first_frame_a_live_block_says_what_it_is_for() {
+    let entries = [call("t1")];
+    let id = ToolCallId::new("t1");
+    let mut stack = Stack::new();
+    stack.update(
+        &entries,
+        40,
+        Detail::Preview,
+        &BTreeSet::new(),
+        live(&id, &[]),
+    );
+    assert!(text(&stack).iter().any(|row| row.contains("a game")));
+}
+
+#[test]
+fn when_the_tool_lets_go_the_block_is_the_call_again() {
+    let entries = [call("t1")];
+    let id = ToolCallId::new("t1");
+    let drawn = frame("the dinosaur runs");
+    let mut stack = Stack::new();
+    stack.update(
+        &entries,
+        40,
+        Detail::Preview,
+        &BTreeSet::new(),
+        live(&id, &drawn),
+    );
+    stack.update(&entries, 40, Detail::Preview, &BTreeSet::new(), None);
+    assert_eq!(stack.drawn(), 1);
+    let rows = text(&stack);
+    assert!(rows[0].contains("[ shell ]"), "{rows:#?}");
+    assert!(
+        !rows.iter().any(|row| row.contains("dinosaur")),
+        "{rows:#?}"
+    );
+}
+
+#[test]
+fn a_frame_wider_than_the_block_is_cut_at_its_edge() {
+    let entries = [call("t1")];
+    let id = ToolCallId::new("t1");
+    let drawn = frame(&"x".repeat(200));
+    let mut stack = Stack::new();
+    stack.update(
+        &entries,
+        40,
+        Detail::Preview,
+        &BTreeSet::new(),
+        live(&id, &drawn),
+    );
+    assert!(
+        text(&stack)
+            .iter()
+            .all(|row| crate::wrap::columns(row) == 40),
+        "{:#?}",
+        text(&stack)
+    );
 }

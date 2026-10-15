@@ -160,6 +160,7 @@ pub fn for_screen(command: &UiCommand) -> bool {
         command,
         UiCommand::Sized { .. }
             | UiCommand::FloatSized { .. }
+            | UiCommand::BlockSized { .. }
             | UiCommand::Keyed { .. }
             | UiCommand::Moused { .. }
     )

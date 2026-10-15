@@ -226,16 +226,17 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
         width: columns.end - columns.start,
         height: 1,
     });
-    app.surface_rect = app.holding().map(|held| match held.place {
-        magi_proto::tooling::Place::Float => {
-            magi_tui::pane::Pane::surface_inside(magi_tui::pane::Pane::area(area))
-        }
-        magi_proto::tooling::Place::Prompt => Rect {
+    app.surface_rect = app.holding().and_then(|held| match held.place {
+        magi_proto::tooling::Place::Float => Some(magi_tui::pane::Pane::surface_inside(
+            magi_tui::pane::Pane::area(area),
+        )),
+        magi_proto::tooling::Place::Prompt => Some(Rect {
             x: prompt_area.x + prompt::INSET,
             y: prompt_area.y + u16::try_from(prompt_lines.menu.start).unwrap_or(u16::MAX),
             width: area.width.saturating_sub(prompt::INSET + 1),
             height: u16::try_from(prompt_lines.menu.len()).unwrap_or(u16::MAX),
-        },
+        }),
+        magi_proto::tooling::Place::Block => app.block_rect(&held.id, area.width),
     });
     frame.render_widget(Paragraph::new(prompt_lines.lines), prompt_area);
     frame.render_widget(

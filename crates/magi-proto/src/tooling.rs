@@ -122,7 +122,7 @@ pub struct Surface {
     /// answers input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tick: Option<u16>,
-    /// Where it is drawn: rows in the prompt box, or the whole float over the conversation.
+    /// Where it is drawn: rows in the prompt box, the whole float, or rows in its own call's block.
     #[serde(default, skip_serializing_if = "Place::is_prompt")]
     pub place: Place,
     /// The tool whose surface fills it, when not the one that asked: a picker handing the screen
@@ -140,6 +140,8 @@ pub enum Place {
     Prompt,
     /// The whole float, as big as the terminal allows; what it asked for is not consulted.
     Float,
+    /// Rows inside its own call's block in the transcript: as many as it asked for, of what fits.
+    Block,
 }
 
 impl Place {

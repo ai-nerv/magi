@@ -74,6 +74,26 @@ impl super::App {
         self.surface.as_ref().filter(|_| !self.questioned())
     }
 
+    /// Where the body of `id`'s block is on a screen `width` wide, when any of it is in view: what a
+    /// surface drawn in its own block is measured against.
+    #[must_use]
+    pub fn block_rect(&self, id: &ToolCallId, width: u16) -> Option<ratatui::layout::Rect> {
+        let (start, rows) = self.stack.find(id).and_then(|nth| self.stack.block(nth))?;
+        // Under the header, and above the row of fill that closes the block.
+        let body = u16::try_from(rows.len().saturating_sub(2)).ok()?;
+        let top = (start + 1).checked_sub(self.scrollback.hidden_above())?;
+        let y = self.live_rows.start.checked_add(u16::try_from(top).ok()?)?;
+        if !self.live_rows.contains(&y) {
+            return None;
+        }
+        Some(ratatui::layout::Rect {
+            x: magi_tui::transcript::body_left(),
+            y,
+            width: magi_tui::transcript::body_width(width),
+            height: body.min(self.live_rows.end - y),
+        })
+    }
+
     /// Turn a screen cell into one of the tenant's own, when it landed on its rows. `None`
     /// anywhere else: a surface hears about the pointer over its rows and nothing more.
     #[must_use]

@@ -183,7 +183,9 @@ impl Holder {
                         .grant(surface.rows, surface.place)
                         .unwrap_or_default(),
                     cols: match surface.place {
-                        magi_proto::tooling::Place::Float => self.held.width(surface.place),
+                        magi_proto::tooling::Place::Float | magi_proto::tooling::Place::Block => {
+                            self.held.width(surface.place)
+                        }
                         magi_proto::tooling::Place::Prompt => cols,
                     },
                     holds,

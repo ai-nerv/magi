@@ -293,6 +293,10 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
                     Some(UiCommand::FloatSized { rows, cols }) => {
                         person.surfaces.floated(rows, cols);
                     }
+                    // And a block's inside, which a surface asking for its own block is given.
+                    Some(UiCommand::BlockSized { rows, cols }) => {
+                        person.surfaces.blocked(rows, cols);
+                    }
                     // A key aimed at rows a tool is holding, not interpreted on the way through.
                     Some(UiCommand::Keyed { id, key, state }) => {
                         person.surfaces.keyed(&id, key, state);

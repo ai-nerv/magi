@@ -347,8 +347,19 @@ impl App {
 
     /// Bring the transcript's blocks up to the entries at `width`, and the scrollback to its length.
     pub fn lay_out(&mut self, width: u16) {
+        // A surface drawing in its own block shows there even while a question has the keyboard.
+        let live = self
+            .surface
+            .as_ref()
+            .filter(|held| held.place == magi_proto::tooling::Place::Block)
+            .map(|held| magi_tui::transcript::Live {
+                id: &held.id,
+                tool: &held.tool,
+                about: &held.about,
+                drawn: &held.drawn,
+            });
         self.stack
-            .update(&self.entries, width, self.detail, &self.flipped);
+            .update(&self.entries, width, self.detail, &self.flipped, live);
         self.scrollback.set_len(self.stack.len());
     }
 

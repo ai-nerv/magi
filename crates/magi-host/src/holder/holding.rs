@@ -43,6 +43,10 @@ pub struct Holding {
     /// given whole. Zero until one says.
     float_rows: std::sync::atomic::AtomicU16,
     float_cols: std::sync::atomic::AtomicU16,
+    /// A block's inside, as the client last reported it: the most a surface drawn in its own
+    /// call's block is given. Zero until one says.
+    block_rows: std::sync::atomic::AtomicU16,
+    block_cols: std::sync::atomic::AtomicU16,
 }
 
 /// One attached client's ability to draw, for as long as it is attached. A guard, because the
@@ -205,14 +209,23 @@ impl Holding {
 
     /// Note the float's inside, and tell anything drawing on the screen.
     pub fn floated(&self, rows: u16, cols: u16) {
-        let taller = self
-            .float_rows
-            .swap(rows, std::sync::atomic::Ordering::Relaxed)
-            != rows;
-        let wider = self
-            .float_cols
-            .swap(cols, std::sync::atomic::Ordering::Relaxed)
-            != cols;
+        self.noted((&self.float_rows, &self.float_cols), rows, cols);
+    }
+
+    /// Note a block's inside, and tell anything drawing on the screen.
+    pub fn blocked(&self, rows: u16, cols: u16) {
+        self.noted((&self.block_rows, &self.block_cols), rows, cols);
+    }
+
+    /// Keep `rows` and `cols` in `at`, and wake every surface when either changed.
+    fn noted(
+        &self,
+        at: (&std::sync::atomic::AtomicU16, &std::sync::atomic::AtomicU16),
+        rows: u16,
+        cols: u16,
+    ) {
+        let taller = at.0.swap(rows, std::sync::atomic::Ordering::Relaxed) != rows;
+        let wider = at.1.swap(cols, std::sync::atomic::Ordering::Relaxed) != cols;
         if !taller && !wider {
             return;
         }
@@ -223,13 +236,15 @@ impl Holding {
         }
     }
 
-    /// The rows a surface gets where it asked to be drawn: the float whole, once the client has
-    /// said how big it is, or what it asked for of the prompt's room.
+    /// The rows a surface gets where it asked to be drawn: the float whole, what it asked for of a
+    /// block's room, or of the prompt's, once the client has said how big each is.
     #[must_use]
     pub fn grant(&self, wanted: u16, place: magi_proto::tooling::Place) -> Option<u16> {
         let float = self.float_rows.load(std::sync::atomic::Ordering::Relaxed);
+        let block = self.block_rows.load(std::sync::atomic::Ordering::Relaxed);
         match place {
             magi_proto::tooling::Place::Float if float > 0 => Some(float),
+            magi_proto::tooling::Place::Block if block > 0 => Some(wanted.min(block)),
             _ => self.granting(wanted),
         }
     }
@@ -238,8 +253,10 @@ impl Holding {
     #[must_use]
     pub fn width(&self, place: magi_proto::tooling::Place) -> u16 {
         let float = self.float_cols.load(std::sync::atomic::Ordering::Relaxed);
+        let block = self.block_cols.load(std::sync::atomic::Ordering::Relaxed);
         match place {
             magi_proto::tooling::Place::Float if float > 0 => float,
+            magi_proto::tooling::Place::Block if block > 0 => block,
             _ => self.across(),
         }
     }
@@ -418,6 +435,49 @@ mod screens {
                 &magi_tools::holding::Context::default()
             ),
             None
+        );
+    }
+}
+
+/// A surface drawn in its own call's block is given the block's inside.
+#[cfg(test)]
+mod blocks {
+    use super::*;
+    use magi_proto::tooling::Place;
+    use std::time::Duration;
+
+    #[test]
+    fn a_block_surface_gets_what_it_asked_for_of_the_blocks_room() {
+        let held = Holding::new();
+        held.sized(Some(5), 120, false);
+        held.blocked(30, 114);
+        assert_eq!(held.grant(8, Place::Block), Some(8));
+        assert_eq!(held.grant(80, Place::Block), Some(30));
+        assert_eq!(held.width(Place::Block), 114);
+        assert_eq!(held.width(Place::Prompt), 120, "the prompt keeps its own");
+    }
+
+    #[test]
+    fn before_a_block_is_measured_it_is_granted_like_the_prompt() {
+        let held = Holding::new();
+        held.sized(Some(5), 120, false);
+        assert_eq!(held.grant(8, Place::Block), held.grant(8, Place::Prompt));
+        assert_eq!(held.width(Place::Block), 120);
+    }
+
+    #[test]
+    fn a_block_that_changed_size_reaches_everything_drawing() {
+        let held = Holding::new();
+        let nudges = held.opening(ToolCallId::new("s0")).expect("registered");
+        held.blocked(30, 114);
+        assert!(matches!(
+            nudges.recv_timeout(Duration::from_secs(1)),
+            Ok(Nudge::Room(..))
+        ));
+        held.blocked(30, 114);
+        assert!(
+            nudges.recv_timeout(Duration::from_millis(50)).is_err(),
+            "nothing changed"
         );
     }
 }
