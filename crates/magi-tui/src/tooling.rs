@@ -117,7 +117,7 @@ fn calls(held: &Held<'_>) -> Rendered {
     let total: usize = held.calls.iter().map(|(_, n)| *n).sum();
     let room = usize::from(held.width.saturating_sub(28)).clamp(4, 40);
     for (name, count) in held.calls {
-        let filled = if most == 0 { 0 } else { count * room / most };
+        let filled = (count * room).checked_div(most).unwrap_or(0);
         out.push(
             Line::from(vec![
                 Span::raw(format!("{name:<12}")),

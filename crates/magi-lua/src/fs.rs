@@ -27,8 +27,7 @@ pub fn table<'gc>(ctx: Context<'gc>, lent: Lent) -> Table<'gc> {
         let out = Table::new(&ctx);
         // An unreadable directory is an empty listing, not a raise: a client probes several.
         if let Ok(entries) = std::fs::read_dir(&path) {
-            let mut index = 1_i64;
-            for entry in entries.flatten() {
+            for (index, entry) in (1_i64..).zip(entries.flatten()) {
                 let record = Table::new(&ctx);
                 let name = entry.file_name().to_string_lossy().into_owned();
                 record
@@ -46,7 +45,6 @@ pub fn table<'gc>(ctx: Context<'gc>, lent: Lent) -> Table<'gc> {
                     record.set(ctx, "mtime", mtime.as_secs() as i64).ok();
                 }
                 out.set(ctx, index, record).ok();
-                index += 1;
             }
         }
         stack.replace(ctx, out);

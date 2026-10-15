@@ -345,6 +345,19 @@ const REPLANS: u32 = 3;
 /// What a turn ends with when the provider refused a request as too long and nothing in it can go.
 const NOTHING_LEFT: &str = "the provider refused this request as too long, and there is nothing left to leave out of it: the instructions, the prompt and what it is working from are all it holds. A model with a larger window, or a new session, is what would fit.";
 
+/// `context` as it would go, with the declarations and instructions on it, when it comes to less
+/// than `refused`: the request a provider refused as too long.
+fn smaller(
+    mut context: magi_model::Context,
+    tools: &[magi_model::Tool],
+    backend: &Backend,
+    refused: u64,
+) -> Option<magi_model::Context> {
+    context.tools = tools.to_vec();
+    context.system.clone_from(&backend.system);
+    (crate::admitting::counted(&context) < refused).then_some(context)
+}
+
 /// Run a prompt to completion: provider, tools, provider, until the turn ends. Every result is
 /// journalled as its own entry, so the transcript shows what was asked and what came back.
 pub async fn run(
@@ -441,8 +454,8 @@ pub async fn run(
                 )));
             }
         }
-        // What went, by slot, so a tighter layout that is not tighter can be told from one that is.
-        let sent = session.lock().await.laid().map(|laid| laid.slots.clone());
+        // What it came to, so what follows a refusal can be held to less.
+        let sent = admission.counted();
         let round = one_turn(session, backend, context, &cancel, (scribe, &prompt)).await?;
 
         for (attempt, of, delay_ms) in &round.retries {
@@ -464,10 +477,9 @@ pub async fn run(
             if let Some(context) =
                 crate::laying::overflowed(session, scribe, &mut prompt, &round.said).await
             {
-                // The same slots are the same request, and a provider that just refused it as too
-                // long refuses it again. Nothing is left to leave out, so that is said instead.
-                let again = session.lock().await.laid().map(|laid| laid.slots.clone());
-                if again.is_none() || again != sent {
+                // Only a smaller request may follow one refused as too long: the same one, or one
+                // laid out differently and no smaller, is refused again. What is left is said.
+                if let Some(context) = smaller(context, &tools, backend, sent) {
                     tighter = Some(context);
                     continue;
                 }
@@ -476,8 +488,7 @@ pub async fn run(
                 if crate::helping::for_the_turn(session, backend, scribe, &prompt.spent).await {
                     let context =
                         crate::laying::lay(session, backend, &tools, scribe, &mut prompt).await;
-                    let again = session.lock().await.laid().map(|laid| laid.slots.clone());
-                    if again != sent {
+                    if let Some(context) = smaller(context, &tools, backend, sent) {
                         tighter = Some(context);
                         continue;
                     }
