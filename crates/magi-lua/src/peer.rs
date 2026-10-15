@@ -57,7 +57,7 @@ pub fn socket_of(name: &str) -> Option<std::path::PathBuf> {
             .collect();
     // Newest first: a socket left behind by a frontend that was killed looks exactly like a
     // live one until something connects to it.
-    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found.sort_by_key(|b| std::cmp::Reverse(b.0));
     found.into_iter().next().map(|(_, path)| path)
 }
 
