@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.7.4] - 2026-10-15
+
+### <!-- 9 -->◀️ Revert
+
+- Magi's flake is magi alone
+
 ## [0.7.3] - 2026-10-15
 
 ### Build
