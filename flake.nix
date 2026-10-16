@@ -167,7 +167,7 @@
         # Pinned to the version the shell already had, so this change adds a target and
         # nothing else: a newer rustc brings newer clippy lints, and `make verify` denies
         # warnings. Raise it deliberately, not as a side effect of wanting musl.
-        rustToolchain = pkgs.rust-bin.stable."1.95.0".default.override {
+        rustToolchain = pkgs.rust-bin.stable."1.96.0".default.override {
           extensions = [ "rust-src" "rust-analyzer" "clippy" "rustfmt" ];
           targets = [ "x86_64-unknown-linux-musl" ];
         };
