@@ -71,8 +71,8 @@ glyphs! {
     block_bottom_right = "┘", "Where it ends.";
     block_edge = "═", "Repeated along a transcript block's header.";
     seam = "╌", "The pattern repeated along the seam between two parts of a block.";
-    expand = "▸", "On the top edge of a folded tool block: click to open it.";
-    collapse = "▾", "On the top edge of an open tool block: click to fold it.";
+    expand = "▸", "On the header of a folded block: click to open it.";
+    collapse = "▾", "On the header of an open block: click to fold it to its header.";
     copy = "⧉", "On the top edge of a block: click to put what it says on the clipboard.";
     running = "·", "Beside a call that has been made and has not come back.";
     focused = "●", "Beside a running block that has the keyboard.";

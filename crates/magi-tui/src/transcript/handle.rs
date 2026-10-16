@@ -21,10 +21,7 @@ mod tests {
     fn handle_span(line: &Line<'static>) -> Span<'static> {
         line.spans
             .iter()
-            .find(|s| {
-                s.content.contains(crate::glyph::expand())
-                    || s.content.contains(crate::glyph::collapse())
-            })
+            .find(|s| s.content.contains(crate::glyph::collapse()))
             .expect("the handle")
             .clone()
     }

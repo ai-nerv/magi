@@ -158,7 +158,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
             .checked_sub(shown.start)
             .and_then(|at| view.get_mut(at))
     {
-        transcript::hovered(under, column);
+        if app.stack.toggles(line) {
+            transcript::lit(under);
+        } else {
+            transcript::hovered(under, column);
+        }
     }
     // A tool waiting on the person says so on the first of its rows under the header that says
     // anything, where a press answers it.

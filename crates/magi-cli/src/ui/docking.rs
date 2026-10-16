@@ -54,10 +54,10 @@ pub(super) fn draw(
     }
 }
 
-/// The badge with the running-blocks chip in front of it, when anything runs and there is a badge
-/// to stand beside.
+/// The badge with the running-blocks chip in front of it, when anything runs unpinned and there is
+/// a badge to stand beside.
 pub(super) fn badge(app: &App, cost: String) -> String {
-    let running = app.running().count();
+    let running = app.unpinned().count();
     if running == 0 || cost.is_empty() {
         return cost;
     }

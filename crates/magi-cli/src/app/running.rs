@@ -45,6 +45,11 @@ impl App {
         self.surfaces.iter().filter(|held| held.detach)
     }
 
+    /// The running blocks that are not pinned above the prompt: what the list of them holds.
+    pub fn unpinned(&self) -> impl Iterator<Item = &Surfacing> {
+        self.running().filter(|held| !held.pinned)
+    }
+
     /// What a pinned block above the prompt is drawn from, and whether it is open.
     #[must_use]
     pub fn docking(&self) -> Vec<(Live<'_>, bool, ToolCallId)> {
@@ -112,10 +117,9 @@ impl App {
             return;
         }
         let (rows, picks) = self
-            .running()
+            .unpinned()
             .map(|held| {
-                let at = if held.pinned { "  pinned" } else { "" };
-                let row = ratatui::text::Line::from(format!("{}  {}{at}", held.tool, held.about));
+                let row = ratatui::text::Line::from(format!("{}  {}", held.tool, held.about));
                 (row, Some(held.id.to_string()))
             })
             .unzip();
@@ -134,11 +138,10 @@ impl App {
             return;
         };
         let id = held.id.clone();
-        let seen = held.pinned
-            || held
-                .call
-                .as_ref()
-                .is_some_and(|call| self.header_in_view(call));
+        let seen = held
+            .call
+            .as_ref()
+            .is_some_and(|call| self.header_in_view(call));
         if seen {
             self.flash = Some((id, std::time::Instant::now()));
             return;

@@ -32,6 +32,16 @@ pub fn hovered(line: &mut Line<'static>, column: u16) -> bool {
     false
 }
 
+/// Light up a row that is a button as a whole, such as the one showing more of a block: what it
+/// says is inverted, and the fill around it is not.
+pub fn lit(line: &mut Line<'static>) {
+    for span in &mut line.spans {
+        if !span.content.trim().is_empty() {
+            span.style = span.style.add_modifier(Modifier::REVERSED);
+        }
+    }
+}
+
 /// What lights up under the pointer, and what does not.
 #[cfg(test)]
 mod pointing {
@@ -59,7 +69,7 @@ mod pointing {
         .find(|line| {
             line.spans
                 .iter()
-                .any(|span| span.content.contains(glyph::expand()))
+                .any(|span| span.content.contains(glyph::collapse()))
         })
         .expect("a top edge")
     }

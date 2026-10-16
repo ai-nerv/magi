@@ -21,7 +21,7 @@ use frame::{MARGIN, inside};
 use tool::STEP;
 
 pub use block::{Block, Head, is_header};
-pub use hover::hovered;
+pub use hover::{hovered, lit};
 pub use live::{body_left, body_width, docked};
 pub use stack::{Live, Stack};
 pub use tool::Detail;
@@ -51,7 +51,7 @@ pub fn laid_out(
     flipped: &BTreeSet<ToolCallId>,
 ) -> Laid {
     let mut stack = Stack::new();
-    stack.update(entries, width, detail, flipped, &[]);
+    stack.update(entries, width, detail, flipped, &[], &BTreeSet::new());
     let rows = 0..stack.len();
     Laid {
         lines: stack.rows(rows.clone()),
@@ -185,6 +185,7 @@ fn said(label: &str, tag: ratatui::style::Color, text: &str, width: u16) -> Bloc
     let head = Head {
         label: label.to_owned(),
         ink: Some(tag),
+        fold: Some(false),
         copy: true,
         ..Head::default()
     };
@@ -204,6 +205,7 @@ fn assistant(
     width: u16,
 ) -> Option<Block> {
     let head = Head {
+        fold: Some(false),
         copy: true,
         ..Head::default()
     };
@@ -342,7 +344,7 @@ mod tests {
             text: "hello".into(),
             aside: String::new(),
         };
-        let lines = entry_lines(&entry, 20, Detail::Preview);
+        let lines = entry_lines(&entry, 30, Detail::Preview);
         let label = lines[0]
             .spans
             .iter()
@@ -360,7 +362,7 @@ mod tests {
             text: "hello".into(),
             aside: String::new(),
         };
-        let rendered = text_of(&entry_lines(&entry, 20, Detail::Preview));
+        let rendered = text_of(&entry_lines(&entry, 30, Detail::Preview));
         assert!(rendered[0].contains("[ USER ]"), "{rendered:?}");
         assert_eq!(rendered.len(), 3, "the label grew a row: {rendered:?}");
     }
@@ -416,7 +418,7 @@ mod tests {
         assert!(!plain[0].contains("note"), "{plain:?}");
         let urgent = text_of(&entry_lines(
             &from("magi/alpha-rho", "main", "attention"),
-            40,
+            60,
             Detail::Preview,
         ));
         assert!(urgent[0].contains("attention"), "{urgent:?}");

@@ -49,7 +49,7 @@ fn handle(terminal: &Terminal<TestBackend>) -> (u16, u16) {
     let buffer = terminal.backend().buffer();
     for y in 0..buffer.area.height {
         for x in 0..buffer.area.width {
-            if buffer[(x, y)].symbol() == magi_tui::glyph::expand() {
+            if buffer[(x, y)].symbol() == magi_tui::glyph::collapse() {
                 return (y, x);
             }
         }
@@ -146,7 +146,7 @@ fn a_surface_in_its_own_block_is_drawn_in_the_transcript() {
     let shown = rows(&terminal);
     let header = shown
         .iter()
-        .position(|row| row.contains("[ dino ]"))
+        .position(|row| row.contains("[ dino · a game ]"))
         .expect("the live block's header");
     assert!(
         shown[header + 1].contains("the dinosaur runs"),
@@ -267,6 +267,20 @@ fn the_prompt_counts_the_blocks_left_running_beside_its_usage() {
 }
 
 #[test]
+fn a_pinned_block_is_not_counted_beside_the_usage() {
+    let (mut app, mut terminal) = left_running();
+    app.toggle_pin(&ToolCallId::new("s1"));
+    with_usage(&mut app, &mut terminal);
+    let shown = rows(&terminal);
+    let badge = shown
+        .iter()
+        .find(|row| row.contains("12%"))
+        .expect("the usage badge");
+    assert!(!badge.contains(" 1   12% "), "{badge:?}");
+    assert!(app.live_rect.is_none(), "no list to open");
+}
+
+#[test]
 fn a_pinned_block_sits_above_the_prompt_and_its_place_says_so() {
     let (mut app, mut terminal) = left_running();
     app.toggle_pin(&ToolCallId::new("s1"));
@@ -276,10 +290,12 @@ fn a_pinned_block_sits_above_the_prompt_and_its_place_says_so() {
         .iter()
         .position(|row| row.starts_with('╭'))
         .expect("the prompt");
-    assert!(shown[prompt - 2].contains("[ screen ]"), "{shown:#?}");
-    assert!(shown[prompt - 1].contains("system monitor"), "{shown:#?}");
     assert!(
-        shown[..prompt - 2]
+        shown[prompt - 1].contains("[ screen · system monitor ]"),
+        "folded, it is one line: {shown:#?}"
+    );
+    assert!(
+        shown[..prompt - 1]
             .iter()
             .any(|row| row.contains("pinned above the prompt")),
         "{shown:#?}"

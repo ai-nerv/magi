@@ -7,7 +7,7 @@
 //!  ▒                                                      ▒
 //! ```
 
-use super::{Detail, frame};
+use super::frame;
 use crate::glyph;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -20,8 +20,8 @@ pub struct Head {
     pub ink: Option<Color>,
     /// A chip beside the label, in a colour of its own.
     pub mark: Option<(&'static str, Color)>,
-    /// The fold handle, on a block that folds.
-    pub fold: Option<Detail>,
+    /// The fold handle, on a block that folds: whether it is folded to this header.
+    pub fold: Option<bool>,
     /// The pin chip, on a running block: whether it is pinned already.
     pub pin: Option<bool>,
     pub copy: bool,
@@ -34,6 +34,8 @@ pub struct Block {
     pub fill: Color,
     /// The rows under the header, each already set inside the fill.
     pub rows: Vec<Line<'static>>,
+    /// Which of `rows` shows more or less of it.
+    pub toggle: Option<usize>,
 }
 
 impl Block {
@@ -43,7 +45,20 @@ impl Block {
             head,
             fill,
             rows: Vec::new(),
+            toggle: None,
         }
+    }
+
+    /// Whether it is folded to its header.
+    #[must_use]
+    pub fn folded(&self) -> bool {
+        self.head.fold == Some(true)
+    }
+
+    /// The row of its [`lines`](Self::lines) that shows more or less of it.
+    #[must_use]
+    pub fn toggle_row(&self) -> Option<usize> {
+        self.toggle.filter(|_| !self.folded()).map(|row| row + 1)
     }
 
     /// The ground every row of the block is painted on.
@@ -52,12 +67,13 @@ impl Block {
         Style::default().bg(self.fill)
     }
 
-    /// The block at `width`: its header, then its rows and a row of fill closing them.
+    /// The block at `width`: its header, then its rows and a row of fill closing them. Folded, its
+    /// header alone.
     #[must_use]
     pub fn lines(self, width: u16) -> Vec<Line<'static>> {
         let style = self.style();
         let mut out = vec![header(&self.head, self.fill, width)];
-        if !self.rows.is_empty() {
+        if !self.rows.is_empty() && !self.folded() {
             out.extend(self.rows);
             out.push(frame::breath(width, style));
         }
@@ -105,9 +121,12 @@ fn rule(head: &Head, fill: Color, room: usize) -> Vec<Span<'static>> {
 
     let handle = head
         .fold
-        .map(|detail| match detail {
-            Detail::Preview => glyph::expand(),
-            Detail::Full => glyph::collapse(),
+        .map(|folded| {
+            if folded {
+                glyph::expand()
+            } else {
+                glyph::collapse()
+            }
         })
         .filter(|handle| lead + chip(handle) + 2 <= room);
     let held = handle.map_or(0, |handle| chip(handle) + 2);

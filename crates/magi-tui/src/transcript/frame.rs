@@ -162,13 +162,7 @@ mod framing {
     }
 
     #[test]
-    fn the_handle_says_which_way_the_block_will_go() {
-        assert!(
-            tool(Detail::Preview, 60)
-                .iter()
-                .any(|l| l.contains(&format!("[ {} ]", crate::glyph::expand()))),
-            "a folded block does not offer to open"
-        );
+    fn an_open_block_offers_to_fold() {
         assert!(
             tool(Detail::Full, 60)
                 .iter()
@@ -178,7 +172,7 @@ mod framing {
     }
 
     #[test]
-    fn a_block_that_cannot_be_folded_carries_no_handle() {
+    fn a_message_folds_like_any_other_block() {
         let shown = text_of(&entry_lines(
             &Entry::User {
                 images: Vec::new(),
@@ -190,8 +184,7 @@ mod framing {
             Detail::Preview,
         ));
         assert!(
-            !shown[0].contains(&format!("[ {} ]", crate::glyph::expand()))
-                && !shown[0].contains(&format!("[ {} ]", crate::glyph::collapse())),
+            shown[0].contains(&format!("[ {} ]", crate::glyph::collapse())),
             "{shown:#?}"
         );
     }

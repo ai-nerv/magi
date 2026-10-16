@@ -42,7 +42,14 @@ fn call(id: &str) -> Entry {
 
 fn stacked(entries: &[Entry]) -> Stack {
     let mut stack = Stack::new();
-    stack.update(entries, 40, Detail::Preview, &BTreeSet::new(), &[]);
+    stack.update(
+        entries,
+        40,
+        Detail::Preview,
+        &BTreeSet::new(),
+        &[],
+        &BTreeSet::new(),
+    );
     stack
 }
 
@@ -51,7 +58,14 @@ fn an_unchanged_transcript_draws_nothing_again() {
     let entries = [user("one"), answer("two"), call("t1")];
     let mut stack = stacked(&entries);
     assert_eq!(stack.drawn(), 3);
-    stack.update(&entries, 40, Detail::Preview, &BTreeSet::new(), &[]);
+    stack.update(
+        &entries,
+        40,
+        Detail::Preview,
+        &BTreeSet::new(),
+        &[],
+        &BTreeSet::new(),
+    );
     assert_eq!(stack.drawn(), 0);
 }
 
@@ -60,7 +74,14 @@ fn a_growing_answer_draws_only_itself_again() {
     let mut entries = vec![user("one"), answer("tw")];
     let mut stack = stacked(&entries);
     entries[1] = answer("two, and more");
-    stack.update(&entries, 40, Detail::Preview, &BTreeSet::new(), &[]);
+    stack.update(
+        &entries,
+        40,
+        Detail::Preview,
+        &BTreeSet::new(),
+        &[],
+        &BTreeSet::new(),
+    );
     assert_eq!(stack.drawn(), 1);
     let shown: String = stack
         .rows(0..stack.len())
@@ -74,7 +95,14 @@ fn a_growing_answer_draws_only_itself_again() {
 fn a_new_width_draws_everything_again() {
     let entries = [user("one"), call("t1")];
     let mut stack = stacked(&entries);
-    stack.update(&entries, 60, Detail::Preview, &BTreeSet::new(), &[]);
+    stack.update(
+        &entries,
+        60,
+        Detail::Preview,
+        &BTreeSet::new(),
+        &[],
+        &BTreeSet::new(),
+    );
     assert_eq!(stack.drawn(), 2);
 }
 
@@ -83,8 +111,101 @@ fn flipping_one_call_draws_only_that_call_again() {
     let entries = [call("t1"), call("t2")];
     let mut stack = stacked(&entries);
     let flipped: BTreeSet<ToolCallId> = [ToolCallId::new("t2")].into();
-    stack.update(&entries, 40, Detail::Preview, &flipped, &[]);
+    stack.update(
+        &entries,
+        40,
+        Detail::Preview,
+        &flipped,
+        &[],
+        &BTreeSet::new(),
+    );
     assert_eq!(stack.drawn(), 1);
+}
+
+#[test]
+fn folding_a_block_leaves_its_header_and_draws_only_it_again() {
+    let entries = [user("one"), answer("two"), call("t1")];
+    let mut stack = stacked(&entries);
+    let folded: BTreeSet<usize> = [1].into();
+    stack.update(
+        &entries,
+        40,
+        Detail::Preview,
+        &BTreeSet::new(),
+        &[],
+        &folded,
+    );
+    assert_eq!(stack.drawn(), 1);
+    let (_, rows) = stack.block(1).expect("the answer");
+    assert_eq!(rows.len(), 1, "its header alone");
+    assert!(crate::transcript::is_header(&rows[0]));
+}
+
+fn long(id: &str) -> Entry {
+    let output = (0..40).map(|n| format!("line {n}\n")).collect();
+    Entry::Tool {
+        id: ToolCallId::new(id),
+        name: "shell".into(),
+        args: r#"{"command":"seq"}"#.into(),
+        result: Some(ToolResult {
+            images: Vec::new(),
+            output,
+            is_error: false,
+            shown: None,
+        }),
+        thought_signature: None,
+    }
+}
+
+#[test]
+fn the_row_that_shows_more_is_known_and_a_fold_hides_it() {
+    let entries = [user("one"), long("t1")];
+    let mut stack = stacked(&entries);
+    let at = (0..stack.len())
+        .find(|at| stack.toggles(*at))
+        .expect("a long result says how much it left");
+    let said: String = stack
+        .line(at)
+        .expect("a row")
+        .spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert!(said.contains("more lines"), "{said}");
+    stack.update(
+        &entries,
+        40,
+        Detail::Preview,
+        &BTreeSet::new(),
+        &[],
+        &[1].into(),
+    );
+    assert!(!(0..stack.len()).any(|at| stack.toggles(at)));
+}
+
+#[test]
+fn a_whole_result_offers_to_show_less() {
+    let entries = [long("t1")];
+    let mut stack = Stack::new();
+    stack.update(
+        &entries,
+        40,
+        Detail::Full,
+        &BTreeSet::new(),
+        &[],
+        &BTreeSet::new(),
+    );
+    let at = (0..stack.len())
+        .find(|at| stack.toggles(*at))
+        .expect("a toggle");
+    let said: String = stack
+        .line(at)
+        .expect("a row")
+        .spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert!(said.contains("show less"), "{said}");
 }
 
 #[test]
@@ -130,7 +251,14 @@ fn a_row_past_the_end_is_nobodys() {
 #[test]
 fn a_shorter_transcript_drops_what_it_no_longer_has() {
     let mut stack = stacked(&[user("one"), user("two")]);
-    stack.update(&[], 40, Detail::Preview, &BTreeSet::new(), &[]);
+    stack.update(
+        &[],
+        40,
+        Detail::Preview,
+        &BTreeSet::new(),
+        &[],
+        &BTreeSet::new(),
+    );
     assert!(stack.is_empty());
     assert_eq!(stack.at(0), None);
 }
@@ -184,16 +312,17 @@ fn a_live_call_draws_its_frame_in_its_own_block() {
         Detail::Preview,
         &BTreeSet::new(),
         &[live(&id, &drawn)],
+        &BTreeSet::new(),
     );
     let rows = text(&stack);
     let header = rows
         .iter()
-        .position(|row| row.contains("[ dino ]"))
+        .position(|row| row.contains("[ dino · a game ]"))
         .expect("the live block's header");
     assert!(rows[header + 1].contains("the dinosaur runs"), "{rows:#?}");
     assert!(
-        !rows[header].contains(crate::glyph::expand()),
-        "nothing to fold: {rows:#?}"
+        rows[header].contains(crate::glyph::collapse()),
+        "it folds like any block: {rows:#?}"
     );
     assert!(
         rows.iter()
@@ -201,6 +330,25 @@ fn a_live_call_draws_its_frame_in_its_own_block() {
             .all(|row| crate::wrap::columns(row) == 40),
         "{rows:#?}"
     );
+}
+
+#[test]
+fn a_folded_live_block_is_its_header_alone() {
+    let entries = [call("t1")];
+    let id = ToolCallId::new("t1");
+    let drawn = frame("the dinosaur runs");
+    let mut stack = Stack::new();
+    stack.update(
+        &entries,
+        40,
+        Detail::Preview,
+        &BTreeSet::new(),
+        &[live(&id, &drawn)],
+        &[0].into(),
+    );
+    let rows = text(&stack);
+    assert_eq!(rows.len(), 1, "{rows:#?}");
+    assert!(rows[0].contains(crate::glyph::expand()), "{rows:#?}");
 }
 
 #[test]
@@ -215,6 +363,7 @@ fn a_new_frame_draws_only_its_block_again() {
         Detail::Preview,
         &BTreeSet::new(),
         &[live(&id, &one)],
+        &BTreeSet::new(),
     );
     stack.update(
         &entries,
@@ -222,6 +371,7 @@ fn a_new_frame_draws_only_its_block_again() {
         Detail::Preview,
         &BTreeSet::new(),
         &[live(&id, &one)],
+        &BTreeSet::new(),
     );
     assert_eq!(stack.drawn(), 0, "the same frame twice");
     stack.update(
@@ -230,6 +380,7 @@ fn a_new_frame_draws_only_its_block_again() {
         Detail::Preview,
         &BTreeSet::new(),
         &[live(&id, &two)],
+        &BTreeSet::new(),
     );
     assert_eq!(stack.drawn(), 1);
     assert!(text(&stack).iter().any(|row| row.contains("two")));
@@ -246,6 +397,7 @@ fn before_its_first_frame_a_live_block_says_what_it_is_for() {
         Detail::Preview,
         &BTreeSet::new(),
         &[live(&id, &[])],
+        &BTreeSet::new(),
     );
     assert!(text(&stack).iter().any(|row| row.contains("a game")));
 }
@@ -262,8 +414,16 @@ fn when_the_tool_lets_go_the_block_is_the_call_again() {
         Detail::Preview,
         &BTreeSet::new(),
         &[live(&id, &drawn)],
+        &BTreeSet::new(),
     );
-    stack.update(&entries, 40, Detail::Preview, &BTreeSet::new(), &[]);
+    stack.update(
+        &entries,
+        40,
+        Detail::Preview,
+        &BTreeSet::new(),
+        &[],
+        &BTreeSet::new(),
+    );
     assert_eq!(stack.drawn(), 1);
     let rows = text(&stack);
     assert!(rows[0].contains("[ shell ]"), "{rows:#?}");
@@ -285,6 +445,7 @@ fn a_frame_wider_than_the_block_is_cut_at_its_edge() {
         Detail::Preview,
         &BTreeSet::new(),
         &[live(&id, &drawn)],
+        &BTreeSet::new(),
     );
     assert!(
         text(&stack)

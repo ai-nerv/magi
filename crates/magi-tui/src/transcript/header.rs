@@ -34,25 +34,16 @@ mod tests {
     }
 
     #[test]
-    fn a_folded_block_offers_to_open() {
-        let shown = rows(Detail::Preview);
-        assert!(
-            shown
-                .iter()
-                .any(|l| l.contains(&format!("[ {} ]", crate::glyph::expand()))),
-            "nothing says this can be opened: {shown:#?}"
-        );
-    }
-
-    #[test]
-    fn an_open_block_offers_to_fold() {
-        let shown = rows(Detail::Full);
-        assert!(
-            shown
-                .iter()
-                .any(|l| l.contains(&format!("[ {} ]", crate::glyph::collapse()))),
-            "and nothing says it can be closed again: {shown:#?}"
-        );
+    fn an_open_block_offers_to_fold_however_much_it_shows() {
+        for detail in [Detail::Preview, Detail::Full] {
+            let shown = rows(detail);
+            assert!(
+                shown
+                    .iter()
+                    .any(|l| l.contains(&format!("[ {} ]", crate::glyph::collapse()))),
+                "nothing says it can be folded: {shown:#?}"
+            );
+        }
     }
 
     #[test]
@@ -68,7 +59,7 @@ mod tests {
         assert!(
             shown
                 .iter()
-                .any(|l| l.contains(&format!("[ {} ]", crate::glyph::expand())))
+                .any(|l| l.contains(&format!("[ {} ]", crate::glyph::collapse())))
         );
     }
 
@@ -83,7 +74,7 @@ mod tests {
             .expect("a header");
         assert_eq!(header, 0, "the block's first row is its header");
         assert!(
-            shown[header].contains(&format!("[ {} ]", crate::glyph::expand())),
+            shown[header].contains(&format!("[ {} ]", crate::glyph::collapse())),
             "the handle is set into the top edge: {shown:#?}"
         );
     }
@@ -152,7 +143,7 @@ mod tests {
                 "row must fill the width at {width}"
             );
             assert!(
-                header.contains(&format!("[ {} ]", crate::glyph::expand())),
+                header.contains(&format!("[ {} ]", crate::glyph::collapse())),
                 "at {width}: {header:?}"
             );
         }

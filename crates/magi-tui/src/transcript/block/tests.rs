@@ -9,7 +9,7 @@ fn head() -> Head {
         label: "shell".into(),
         ink: None,
         mark: Some((glyph::outcome_ok(), Color::Green)),
-        fold: Some(Detail::Preview),
+        fold: Some(false),
         pin: None,
         copy: true,
     }
@@ -112,7 +112,7 @@ fn the_mark_keeps_its_own_colour() {
 fn the_handle_is_the_last_thing_given_up() {
     let shown = text(&header(&head(), FILL, 22));
     assert!(
-        shown.contains(&format!("[ {} ]", glyph::expand())),
+        shown.contains(&format!("[ {} ]", glyph::collapse())),
         "{shown:?}"
     );
     assert!(!shown.contains(glyph::copy()), "{shown:?}");
@@ -125,7 +125,7 @@ fn a_long_label_is_cut_rather_than_pushing_the_handle_off() {
     let shown = text(&header(&long, FILL, 30));
     assert!(shown.contains(glyph::ellipsis()), "{shown:?}");
     assert!(
-        shown.contains(&format!("[ {} ]", glyph::expand())),
+        shown.contains(&format!("[ {} ]", glyph::collapse())),
         "{shown:?}"
     );
 }
@@ -135,6 +135,32 @@ fn a_block_with_nothing_inside_is_its_header_alone() {
     let lines = with_rows(0, 40);
     assert_eq!(lines.len(), 1);
     assert!(is_header(&lines[0]));
+}
+
+#[test]
+fn a_folded_block_is_one_line_that_offers_to_open() {
+    let mut block = Block::new(
+        Head {
+            fold: Some(true),
+            ..head()
+        },
+        FILL,
+    );
+    block.rows = vec![Line::from("row"), Line::from("more")];
+    block.toggle = Some(1);
+    assert_eq!(block.toggle_row(), None, "nothing to press while folded");
+    let lines = block.lines(40);
+    assert_eq!(lines.len(), 1);
+    assert!(text(&lines[0]).contains(&format!("[ {} ]", glyph::expand())));
+}
+
+#[test]
+fn the_row_that_shows_more_counts_the_header() {
+    let mut block = Block::new(head(), FILL);
+    block.rows = vec![Line::from("row"), Line::from("more")];
+    block.toggle = Some(1);
+    let at = block.toggle_row().expect("open, it has one");
+    assert_eq!(text(&block.lines(40)[at]), "more");
 }
 
 #[test]

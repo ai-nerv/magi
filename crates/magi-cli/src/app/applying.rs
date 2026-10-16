@@ -55,6 +55,7 @@ impl App {
                 self.choices = choices;
                 let empty = entries.is_empty();
                 self.entries = entries;
+                self.folds.clear();
                 // Turns from before this screen are counted under the model it found running.
                 if let Some(model) = self.model.as_ref().map(|m| m.name.clone()) {
                     for entry in &self.entries {

@@ -88,6 +88,8 @@ pub struct App {
     pub selection: Option<magi_tui::select::Selection>,
     /// Blocks showing the opposite of `detail`, by membership, so the fold key still moves the rest.
     pub flipped: std::collections::BTreeSet<ToolCallId>,
+    /// Blocks folded to their header, by their place in `entries`.
+    pub folds: std::collections::BTreeSet<usize>,
     /// The transcript as blocks, each holding the rows it last drew.
     pub stack: magi_tui::transcript::Stack,
     /// Recorded by the drawing pass, which is the only thing that knows where the prompt begins.
@@ -198,6 +200,7 @@ impl App {
             hovering: None,
             selection: None,
             flipped: std::collections::BTreeSet::new(),
+            folds: std::collections::BTreeSet::new(),
             stack: magi_tui::transcript::Stack::new(),
             surfaces: Vec::new(),
             focus: None,
@@ -362,8 +365,14 @@ impl App {
     pub fn lay_out(&mut self, width: u16) {
         // A surface drawing in its own block shows there even while a question has the keyboard.
         let lives = running::lives(&self.surfaces, self.focus.as_ref());
-        self.stack
-            .update(&self.entries, width, self.detail, &self.flipped, &lives);
+        self.stack.update(
+            &self.entries,
+            width,
+            self.detail,
+            &self.flipped,
+            &lives,
+            &self.folds,
+        );
         self.scrollback.set_len(self.stack.len());
     }
 
@@ -459,6 +468,7 @@ impl App {
     /// Drop the transcript without touching the daemon: the journal is append-only and `/clear` only hides it.
     pub fn clear_view(&mut self) {
         self.entries.clear();
+        self.folds.clear();
     }
 
     /// Append a local notice. Notices are UI-side only and never reach the journal.

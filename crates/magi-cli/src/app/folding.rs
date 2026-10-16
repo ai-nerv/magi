@@ -25,14 +25,16 @@ impl App {
             // A pointer that has left the transcript lights nothing, and the handle it was over
             // has to go dark: a highlight left behind points at something nobody is aiming at.
             .filter(|(line, column)| {
-                self.stack
-                    .line(*line)
-                    .is_some_and(|drawn| magi_tui::transcript::hovered(&mut drawn.clone(), *column))
+                self.stack.toggles(*line)
+                    || self.stack.line(*line).is_some_and(|drawn| {
+                        magi_tui::transcript::hovered(&mut drawn.clone(), *column)
+                    })
             });
         was != self.hovering
     }
 
-    /// Fold or unfold the tool block whose handle is at `row`, `column`.
+    /// Fold the block whose handle is at `row`, `column` to its header, or open it again; or show
+    /// more or less of the tool block whose row saying so is at `row`.
     ///
     /// Returns whether the handle was there. **The handle, not the block.** Every row a block
     /// drew used to answer a click anywhere along it, which made most of the screen a button:
@@ -45,21 +47,44 @@ impl App {
         }
         let into = usize::from(row - self.live_rows.start);
         let line = self.scrollback.hidden_above() + into;
-        let Some(id) = self
-            .stack
-            .at(line)
-            .and_then(|(nth, _)| self.stack.call(nth))
-            .cloned()
-        else {
+        let Some((nth, _)) = self.stack.at(line) else {
             return false;
         };
+        if self.stack.toggles(line) {
+            let Some(id) = self.stack.call(nth).cloned() else {
+                return false;
+            };
+            if !self.flipped.remove(&id) {
+                self.flipped.insert(id);
+            }
+            return true;
+        }
         if !on_the_handle(self.stack.line(line), column, width) {
             return false;
         }
-        if !self.flipped.remove(&id) {
-            self.flipped.insert(id);
+        if !self.folds.remove(&nth) {
+            self.folds.insert(nth);
+            self.let_go_of_block(nth);
         }
         true
+    }
+
+    /// Give the keyboard back from a running block drawing in block `nth`, now that it is folded.
+    fn let_go_of_block(&mut self, nth: usize) {
+        let Some(call) = self.stack.call(nth) else {
+            return;
+        };
+        let holds = self.focus.as_ref().is_some_and(|focus| {
+            self.running().any(|held| {
+                held.id == *focus
+                    && !held.pinned
+                    && !held.viewing
+                    && held.call.as_ref() == Some(call)
+            })
+        });
+        if holds {
+            self.let_go();
+        }
     }
 }
 
@@ -117,14 +142,6 @@ mod clicking {
     impl App {
         fn handle(&self) -> Option<(u16, u16)> {
             for line in 0..self.stack.len() {
-                if self
-                    .stack
-                    .at(line)
-                    .and_then(|(nth, _)| self.stack.call(nth))
-                    .is_none()
-                {
-                    continue;
-                }
                 let Some(drawn) = self.stack.line(line) else {
                     continue;
                 };
@@ -171,28 +188,46 @@ mod clicking {
     }
 
     #[test]
-    fn a_click_on_a_block_flips_it_and_a_second_click_puts_it_back() {
+    fn a_click_on_a_block_folds_it_and_a_second_click_opens_it() {
         let mut app = laid();
         let (row, column) = app.handle().expect("the block has a handle");
         assert!(app.toggle_at(row, column, 60), "that is the handle");
-        assert_eq!(app.flipped.len(), 1);
+        assert_eq!(app.folds, [0].into());
         assert!(app.toggle_at(row, column, 60));
-        assert!(app.flipped.is_empty(), "the same click undoes it");
+        assert!(app.folds.is_empty(), "the same click undoes it");
+        assert!(app.flipped.is_empty(), "and neither showed more of it");
     }
 
     #[test]
-    fn unfolding_a_block_makes_it_taller() {
+    fn folding_a_block_leaves_one_line() {
         let mut app = laid();
-        let folded = app.scrollback.len();
         let (row, column) = app.handle().expect("a handle");
         app.toggle_at(row, column, 60);
         app.lay_out(60);
-        assert_eq!(app.stack.drawn(), 1, "only the block that was opened");
-        assert!(
-            app.scrollback.len() > folded,
-            "{} is not more than {folded}",
-            app.scrollback.len()
-        );
+        assert_eq!(app.stack.drawn(), 1, "only the block that was folded");
+        assert_eq!(app.scrollback.len(), 1, "its header alone");
+    }
+
+    /// Where the row showing more of a block is on screen.
+    fn more_row(app: &App) -> u16 {
+        (0..app.stack.len())
+            .find(|at| app.stack.toggles(*at))
+            .and_then(|at| u16::try_from(at).ok())
+            .expect("a long result says how much it left")
+    }
+
+    #[test]
+    fn the_row_saying_how_much_was_left_shows_it_and_then_less() {
+        let mut app = laid();
+        let short = app.scrollback.len();
+        assert!(app.toggle_at(more_row(&app), 0, 60), "that row is a button");
+        assert_eq!(app.flipped.len(), 1);
+        assert!(app.folds.is_empty(), "showing more is not folding");
+        app.lay_out(60);
+        assert!(app.scrollback.len() > short, "the whole result is longer");
+        app.live_rows = 0..u16::try_from(app.stack.len()).expect("short enough");
+        assert!(app.toggle_at(more_row(&app), 0, 60), "and it offers less");
+        assert!(app.flipped.is_empty());
     }
 
     #[test]
@@ -214,7 +249,7 @@ mod clicking {
                 "column {at} of the header should not be a button"
             );
         }
-        assert!(app.flipped.is_empty(), "nothing was folded");
+        assert!(app.folds.is_empty(), "nothing was folded");
         assert!(app.toggle_at(row, column, 60), "and the handle still is");
     }
 
@@ -224,7 +259,7 @@ mod clicking {
         let mut app = laid();
         let (row, column) = app.handle().expect("a handle");
         assert!(!app.toggle_at(row + 2, column, 60), "that is output");
-        assert!(app.flipped.is_empty());
+        assert!(app.flipped.is_empty() && app.folds.is_empty());
     }
 
     #[test]
@@ -236,11 +271,11 @@ mod clicking {
             !app.toggle_at(below, column, 60),
             "the prompt is not a tool block"
         );
-        assert!(app.flipped.is_empty());
+        assert!(app.folds.is_empty());
     }
 
     #[test]
-    fn a_click_on_something_that_is_not_a_tool_call_does_nothing() {
+    fn a_message_folds_like_a_call() {
         let mut app = App::new();
         app.entries = vec![Entry::User {
             images: Vec::new(),
@@ -250,8 +285,13 @@ mod clicking {
         }];
         app.lay_out(60);
         app.live_rows = 0..u16::try_from(app.stack.len()).expect("short");
-        assert!(!app.toggle_at(1, 57, 60));
-        assert!(app.flipped.is_empty());
+        let (row, column) = app.handle().expect("a message has a handle");
+        assert!(
+            !app.toggle_at(row + 1, column, 60),
+            "its words are not a button"
+        );
+        assert!(app.toggle_at(row, column, 60));
+        assert_eq!(app.folds, [0].into());
     }
 
     #[test]
@@ -272,12 +312,11 @@ mod clicking {
                 let hit = app
                     .stack
                     .at(app.scrollback.hidden_above() + usize::from(row))
-                    .and_then(|(nth, _)| app.stack.call(nth))
-                    .cloned();
+                    .map(|(nth, _)| nth);
                 assert!(app.toggle_at(row, column, 60), "the handle was there");
-                assert_eq!(app.flipped.len(), 1, "exactly one block was hit");
+                assert_eq!(app.folds.len(), 1, "exactly one block was hit");
                 assert!(
-                    app.flipped.contains(&hit.expect("an owner")),
+                    app.folds.contains(&hit.expect("an owner")),
                     "and the right one"
                 );
                 return;

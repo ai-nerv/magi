@@ -1,7 +1,7 @@
 //! The transcript as a stack of blocks. Each block keeps the rows it last drew, and draws again only
 //! when its entry, the width, how much of it is shown or the frame a tool drew in it changes.
 
-use super::{Detail, blank_row, entry_lines};
+use super::{Detail, blank_row, block_of, entry_lines};
 use magi_proto::tooling::Span;
 use magi_proto::{Entry, ToolCallId};
 use ratatui::text::Line;
@@ -14,7 +14,7 @@ pub struct Live<'a> {
     /// The tool call whose block it draws in.
     pub call: &'a ToolCallId,
     pub tool: &'a str,
-    /// What it is, for the person: drawn until its first frame, and on its folded row.
+    /// What it is, for the person: in its header, and drawn until its first frame.
     pub title: &'a str,
     pub drawn: &'a [Vec<Span>],
     /// Where it is drawn while it is drawn somewhere else; its block shows only this.
@@ -62,10 +62,13 @@ impl Seen {
 struct Slot {
     entry: Entry,
     shown: Detail,
+    folded: bool,
     width: u16,
     /// What a live block was drawn from.
     live: Option<Seen>,
     rows: Vec<Line<'static>>,
+    /// Which of `rows` shows more or less of it.
+    toggle: Option<usize>,
     /// A blank row above it, parting it from the block before.
     gap: bool,
 }
@@ -88,7 +91,7 @@ impl Stack {
 
     /// Bring the stack up to `entries` at `width`, drawing again only the blocks that changed.
     /// `flipped` names the tool calls shown the other way from `detail`; `lives`, the calls whose
-    /// tools draw in their blocks.
+    /// tools draw in their blocks; `folded`, the blocks folded to their header, by place.
     pub fn update(
         &mut self,
         entries: &[Entry],
@@ -96,6 +99,7 @@ impl Stack {
         detail: Detail,
         flipped: &BTreeSet<ToolCallId>,
         lives: &[Live<'_>],
+        folded: &BTreeSet<usize>,
     ) {
         self.slots.truncate(entries.len());
         self.drawn = 0;
@@ -104,6 +108,7 @@ impl Stack {
                 Entry::Tool { id, .. } if flipped.contains(id) => detail.other(),
                 _ => detail,
             };
+            let fold = folded.contains(&nth);
             let frame = match entry {
                 Entry::Tool { id, .. } => lives.iter().find(|live| live.call == id),
                 _ => None,
@@ -111,6 +116,7 @@ impl Stack {
             let kept = self.slots.get(nth).is_some_and(|slot| {
                 slot.width == width
                     && slot.shown == shown
+                    && slot.folded == fold
                     && slot.entry == *entry
                     && match (&slot.live, frame) {
                         (Some(seen), Some(live)) => seen.matches(live),
@@ -121,16 +127,26 @@ impl Stack {
             if kept {
                 continue;
             }
-            let rows = match frame {
-                Some(live) => super::live::block(live, width, None).lines(width),
+            let block = match frame {
+                Some(live) => Some(super::live::block(live, width, fold)),
+                None => block_of(entry, width, shown).map(|mut block| {
+                    block.head.fold = Some(fold);
+                    block
+                }),
+            };
+            let toggle = block.as_ref().and_then(super::Block::toggle_row);
+            let rows = match block {
+                Some(block) => block.lines(width),
                 None => entry_lines(entry, width, shown),
             };
             let slot = Slot {
                 entry: entry.clone(),
                 shown,
+                folded: fold,
                 width,
                 live: frame.map(Seen::of),
                 rows,
+                toggle,
                 gap: false,
             };
             self.drawn += 1;
@@ -220,6 +236,14 @@ impl Stack {
             self.starts.get(nth)? + usize::from(slot.gap),
             slot.rows.as_slice(),
         ))
+    }
+
+    /// Whether row `at` of the transcript shows more or less of its block.
+    #[must_use]
+    pub fn toggles(&self, at: usize) -> bool {
+        self.at(at).is_some_and(|(nth, within)| {
+            self.slots.get(nth).and_then(|slot| slot.toggle) == Some(within)
+        })
     }
 
     /// The tool call block `nth` draws, when it draws one.

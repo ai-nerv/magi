@@ -80,6 +80,42 @@ fn a_pinned_block_is_drawn_above_the_prompt_folded_until_opened() {
 }
 
 #[test]
+fn a_pinned_block_is_not_in_the_list_of_running_blocks() {
+    let mut app = running();
+    app.toggle_pin(&s0());
+    assert_eq!(app.running().count(), 1, "still running");
+    assert_eq!(app.unpinned().count(), 0);
+    app.press_running();
+    let listed = app.pane.as_ref().and_then(|pane| pane.selected(0));
+    assert_eq!(listed, None, "nothing to pick: {:?}", app.pane.is_some());
+}
+
+#[test]
+fn folding_a_running_block_gives_the_keyboard_back() {
+    let mut app = running();
+    app.focus_on(&s0());
+    let (row, column) = (0..app.stack.len())
+        .find_map(|line| {
+            let drawn = app.stack.line(line)?;
+            let mut at = 0_u16;
+            for span in &drawn.spans {
+                if span.content.contains(magi_tui::glyph::collapse()) {
+                    return Some((u16::try_from(line).ok()?, at + 2));
+                }
+                at += u16::try_from(span.content.chars().count()).ok()?;
+            }
+            None
+        })
+        .expect("a running block folds like any block");
+    assert!(app.toggle_at(row, column, 60));
+    assert!(app.holding().is_none(), "the prompt has the keys");
+    app.lay_out(60);
+    let (_, rows) = app.stack.block(0).expect("its block");
+    assert_eq!(rows.len(), 1, "its header alone");
+    assert_eq!(app.running().count(), 1, "and it runs on");
+}
+
+#[test]
 fn unpinning_puts_it_back_in_the_conversation() {
     let mut app = running();
     app.toggle_pin(&s0());

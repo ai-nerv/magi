@@ -61,7 +61,7 @@ pub(super) fn of(
         label: name.to_owned(),
         ink: Some(outcome),
         mark: Some((mark, outcome)),
-        fold: Some(detail),
+        fold: Some(false),
         pin: None,
         copy: true,
     };
@@ -77,6 +77,7 @@ pub(super) fn of(
     // Gathered before anything is framed: whether there is a box depends on there being rows.
     let mut rows: Vec<Line<'static>> = Vec::new();
     let mut said: Vec<Line<'static>> = Vec::new();
+    let mut toggles = false;
     // What the call was given, as the block's first row, where it has the width to be read.
     let asked = summarize(args, detail);
     if let Some(command) = super::shell::asked(name, args, detail, style, width, body, lead) {
@@ -142,16 +143,20 @@ pub(super) fn of(
             }
         }
         // The affordance goes on the fold, where a reader looks when the rest is missing.
-        if total > shown {
+        let note = if total > shown {
+            Some(format!("… {} more lines · ctrl+o", total - shown))
+        } else {
+            (detail == Detail::Full && total > usize::from(crate::metric::preview_lines()))
+                .then(|| "… show less · ctrl+o".to_owned())
+        };
+        if let Some(note) = note {
             rows.push(super::frame::inside(
-                Line::from(Span::styled(
-                    format!("… {} more lines · ctrl+o", total - shown),
-                    style.fg(colour::tool_fold()),
-                )),
+                Line::from(Span::styled(note, style.fg(colour::tool_fold()))),
                 width,
                 style,
                 lead,
             ));
+            toggles = true;
         }
     }
 
@@ -165,6 +170,7 @@ pub(super) fn of(
         block.rows.push(super::frame::rule(width, style));
     }
     block.rows.extend(rows);
+    block.toggle = block.rows.len().checked_sub(1).filter(|_| toggles);
     block
 }
 
