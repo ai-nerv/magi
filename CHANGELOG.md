@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.7.5] - 2026-10-16
+
+### <!-- 0 -->⛰️  Features
+
+- Fold any block, list only unpinned
+- Running blocks survive reattach
+- Running blocks, pinned and found again
+- A surface may draw in its own block
+- Transcript as a stack of cached blocks
+- Coloured labels, header on the body
+- Double-line header, spaced dash seam
+- Dashed seam inside a block
+- Draw every entry as a block
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Say what a call was given once
+
+### Build
+
+- Move to 1.96
+
 ## [0.7.4] - 2026-10-15
 
 ### <!-- 9 -->◀️ Revert
