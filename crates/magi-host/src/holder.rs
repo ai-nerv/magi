@@ -20,6 +20,10 @@ const PATIENCE: Duration = Duration::from_secs(900);
 /// the session ended; a surface that wants no ticks is simply not sent one when this elapses.
 const IDLE: Duration = Duration::from_millis(250);
 
+/// How long a surface left running may go with no screen to draw it on: long enough for a screen
+/// that reconnects to find it still there.
+const ALONE: Duration = Duration::from_secs(30);
+
 /// What a detached surface's call is answered with, the moment its rows are open.
 pub const DETACHED: &str = "running";
 
@@ -93,8 +97,9 @@ impl magi_tools::holding::Holds for Holder {
         let id = ToolCallId::new(format!("s{n}"));
         let keys = self.lane.held.opening(id.clone())?;
 
-        // Told before the tenant is spawned, so the rows exist by the time the first frame arrives.
-        (self.lane.publish)(HarnessEvent::Surfaced {
+        // Told before the tenant is spawned, so the rows exist by the time the first frame arrives;
+        // kept, so a screen that arrives later is told too.
+        let opened = HarnessEvent::Surfaced {
             cursor: Cursor::ZERO,
             id: id.clone(),
             tool: tool.to_owned(),
@@ -103,7 +108,9 @@ impl magi_tools::holding::Holds for Holder {
             place: surface.place,
             call: context.call.clone(),
             detach: surface.detach,
-        });
+        };
+        self.lane.held.opened(&id, &opened, surface.detach);
+        (self.lane.publish)(opened);
 
         let Some(child) = self.spawn(tool, surface, context) else {
             self.lane.close(&id);
@@ -204,9 +211,13 @@ impl Lane {
             .tick
             .map_or(IDLE, |ms| Duration::from_millis(ms.into()));
         let began = std::time::Instant::now();
+        let mut seen = began;
 
         while answered.is_none() {
-            let tired = patience.map_or(!self.held.on_a_screen(), |most| began.elapsed() > most);
+            if self.held.on_a_screen() {
+                seen = std::time::Instant::now();
+            }
+            let tired = patience.map_or(seen.elapsed() > ALONE, |most| began.elapsed() > most);
             if tired {
                 break;
             }
@@ -275,11 +286,13 @@ impl Lane {
             }
             match serde_json::from_str(line.trim()) {
                 Ok(FromSurface::Draw { lines, cursor }) => {
-                    (self.publish)(HarnessEvent::Drew {
+                    let drawn = HarnessEvent::Drew {
                         id: id.clone(),
                         lines,
                         cursor,
-                    });
+                    };
+                    self.held.drew(id, &drawn);
+                    (self.publish)(drawn);
                     return None;
                 }
                 Ok(FromSurface::Done { answered }) => return Some(answered),

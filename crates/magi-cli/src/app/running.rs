@@ -258,6 +258,30 @@ impl App {
         true
     }
 
+    /// Note the pointer over a chip in a pinned block's header, and say whether that changed what
+    /// is lit, so a redraw is asked for only when it did.
+    pub fn hover_dock(&mut self, row: u16, column: u16, width: u16) -> bool {
+        let now = self
+            .docked
+            .iter()
+            .find(|(_, at)| row == at.y)
+            .and_then(|(id, _)| {
+                let header = self
+                    .docking()
+                    .into_iter()
+                    .find(|(_, _, held)| held == id)
+                    .and_then(|(live, open, _)| {
+                        magi_tui::transcript::docked(&live, open, width)
+                            .into_iter()
+                            .next()
+                    })?;
+                chip_under(&header, column).map(|_| (id.clone(), column))
+            });
+        let changed = now != self.dock_hover;
+        self.dock_hover = now;
+        changed
+    }
+
     /// The transcript row a screen row shows, and the block it belongs to.
     fn transcript_row(&self, row: u16) -> Option<(usize, usize)> {
         if !self.live_rows.contains(&row) {

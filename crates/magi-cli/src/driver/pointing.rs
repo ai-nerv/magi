@@ -104,6 +104,7 @@ pub(crate) fn on_the_screen(
                 }
             }
             changed |= app.hover_at(mouse.row, mouse.column);
+            changed |= app.hover_dock(mouse.row, mouse.column, width);
             if !changed {
                 return Pointing::Nothing;
             }

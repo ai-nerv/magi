@@ -313,3 +313,28 @@ fn an_open_pinned_block_draws_its_frame_above_the_prompt_alone() {
     let at = app.surface_rect.expect("it has the keyboard");
     assert_eq!(usize::from(at.y), frames[0]);
 }
+
+#[test]
+fn a_chip_on_a_pinned_block_lights_under_the_pointer() {
+    let (mut app, mut terminal) = left_running();
+    app.toggle_pin(&ToolCallId::new("s1"));
+    with_usage(&mut app, &mut terminal);
+    let row = app.docked.first().expect("docked").1.y;
+    let buffer = terminal.backend().buffer();
+    let column = (0..WIDTH)
+        .find(|x| buffer[(*x, row)].symbol() == magi_tui::glyph::expand())
+        .expect("the dock's handle");
+    assert!(
+        app.hover_dock(row, column, WIDTH),
+        "the pointer is on its handle"
+    );
+    assert!(
+        !app.hover_dock(row, column, WIDTH),
+        "and moving within it changes nothing"
+    );
+    let before = terminal.backend().buffer()[(column, row)].modifier;
+    with_usage(&mut app, &mut terminal);
+    let after = terminal.backend().buffer()[(column, row)].modifier;
+    assert_ne!(before, after, "the chip is inverted on screen");
+    assert!(app.hover_dock(row, 0, WIDTH), "off the chip, it goes dark");
+}

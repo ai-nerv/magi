@@ -137,6 +137,11 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
     for asked in pending.open() {
         writer.write(&asked).await?;
     }
+    // Nor is a surface: whatever is open, a block left running among them, is told again with
+    // the last frame it drew.
+    for shown in person.surfaces.on_show() {
+        writer.write(&shown).await?;
+    }
 
     // Commands are read in their own task because `FrameReader::read` is not cancel-safe: it takes
     // a length then a body, and a `select!` dropping it between the two parses body as a length.

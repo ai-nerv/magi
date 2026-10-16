@@ -28,11 +28,17 @@ pub(super) fn draw(
     lit: Option<&ToolCallId>,
 ) {
     app.docked.clear();
+    let hover = app.dock_hover.clone();
     let mut y = area.y;
     for (id, mut lines) in docked {
         let height = u16::try_from(lines.len())
             .unwrap_or(u16::MAX)
             .min((area.y + area.height).saturating_sub(y));
+        if let Some((_, column)) = hover.as_ref().filter(|(over, _)| *over == id)
+            && let Some(header) = lines.first_mut()
+        {
+            transcript::hovered(header, *column);
+        }
         if lit == Some(&id) {
             flash(&mut lines);
         }

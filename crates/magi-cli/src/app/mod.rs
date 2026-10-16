@@ -58,6 +58,8 @@ pub struct App {
     /// Where the running-blocks chip landed, and each pinned block above the prompt.
     pub live_rect: Option<ratatui::layout::Rect>,
     pub docked: Vec<(ToolCallId, ratatui::layout::Rect)>,
+    /// The chip in a pinned block's header the pointer is over, by column.
+    pub dock_hover: Option<(ToolCallId, u16)>,
     pub detail: magi_tui::transcript::Detail,
     /// `project/role/id` when melchior is running, which does the naming; the project alone otherwise.
     pub named: String,
@@ -202,6 +204,7 @@ impl App {
             flash: None,
             live_rect: None,
             docked: Vec::new(),
+            dock_hover: None,
             live_rows: 0..0,
             surface_rect: None,
             corner_rect: None,
