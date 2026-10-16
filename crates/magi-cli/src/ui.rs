@@ -7,6 +7,9 @@ use crate::app::App;
 use magi_tui::footer::{self, FooterData};
 use magi_tui::metric;
 use magi_tui::{fold, prompt, status, transcript};
+
+/// Running blocks pinned above the prompt, counted beside the usage, and flashed to be found.
+mod docking;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::Paragraph;
@@ -53,7 +56,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
     let around = metric::footer_rows() + more_rows + 1;
     // The box wears the usage, cut to a third of the width first — the strip is reserved on every
     // row, so anything long here takes the whole prompt with it. See `magi_tui::corner`.
-    let badge = app.corner.fitted(footer_data, area.width);
+    let badge = docking::badge(app, app.corner.fitted(footer_data, area.width));
     let text_rows = prompt::text_rows(&app.editor, rows, area.width, &badge);
     let room = usize::from(rows.saturating_sub(around)).saturating_sub(text_rows + 3);
     // The same number the menu is cut to: a surface is drawn in the menu's slot.
@@ -125,8 +128,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
 
     // Above the box: the transcript and its edge rules, and nothing else. Below it: one row, which
     // the footer draws.
-    let [live_area, prompt_area, footer_area] = Layout::vertical([
+    let docked = docking::lines(app, area.width);
+    let [live_area, dock_area, prompt_area, footer_area] = Layout::vertical([
         Constraint::Min(0),
+        Constraint::Length(docking::rows(&docked)),
         Constraint::Length(prompt_rows),
         Constraint::Length(metric::footer_rows()),
     ])
@@ -184,7 +189,12 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
     .intersection(area);
     // The rows the transcript landed on, which is what a click is measured against.
     app.live_rows = anchored.y..anchored.y + anchored.height;
+    let lit = app.flashing();
+    if let Some(lit) = lit.as_ref() {
+        docking::flash_in_view(app, lit, &mut view, &shown);
+    }
     frame.render_widget(Paragraph::new(view), anchored);
+    docking::draw(frame, app, dock_area, docked, lit.as_ref());
     if above && live_area.y > area.y {
         frame.render_widget(
             Paragraph::new(status::more(area.width)),
@@ -220,12 +230,14 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
     }
     // Where the tenant's rows and the usage badge actually landed, which is what a click on either
     // is measured against: the layout is the only thing that knows, and it knows it once.
-    app.corner_rect = prompt_lines.badge.as_ref().map(|(row, columns)| Rect {
+    let landed = |(row, columns): &(usize, std::ops::Range<u16>)| Rect {
         x: prompt_area.x + columns.start,
         y: prompt_area.y + u16::try_from(*row).unwrap_or(u16::MAX),
         width: columns.end - columns.start,
         height: 1,
-    });
+    };
+    app.corner_rect = prompt_lines.badge.as_ref().map(landed);
+    app.live_rect = prompt_lines.live.as_ref().map(landed);
     app.surface_rect = app.holding().and_then(|held| match held.place {
         magi_proto::tooling::Place::Float => Some(magi_tui::pane::Pane::surface_inside(
             magi_tui::pane::Pane::area(area),
@@ -236,7 +248,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
             width: area.width.saturating_sub(prompt::INSET + 1),
             height: u16::try_from(prompt_lines.menu.len()).unwrap_or(u16::MAX),
         }),
-        magi_proto::tooling::Place::Block => app.block_rect(&held.id, area.width),
+        magi_proto::tooling::Place::Block => docking::held_rect(app, held, area),
     });
     frame.render_widget(Paragraph::new(prompt_lines.lines), prompt_area);
     frame.render_widget(
@@ -305,7 +317,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
     // whatever it drew. Over any view, because while it is up it has the keyboard.
     if let Some(held) = app
         .holding()
-        .filter(|held| held.place == magi_proto::tooling::Place::Float)
+        .filter(|held| held.place == magi_proto::tooling::Place::Float || held.viewing)
     {
         let panel = magi_tui::pane::Pane::area(area);
         frame.render_widget(ratatui::widgets::Clear, panel);
@@ -668,6 +680,8 @@ mod where_the_rows_landed {
             rows: 2,
             about: "a game".to_owned(),
             place,
+            call: None,
+            detach: false,
         });
         app.apply(HarnessEvent::Drew {
             id: ToolCallId::new("s0"),

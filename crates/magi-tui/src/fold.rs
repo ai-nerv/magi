@@ -211,8 +211,21 @@ pub(crate) fn strip(
     if open {
         style = style.add_modifier(Modifier::BOLD);
     }
-    vec![Span::styled(format!(" {badge} "), style), Span::raw(" ")]
+    // Two chips when the badge carries two, each a block of its own with a space after it.
+    match badge.split_once(SEP) {
+        Some((first, second)) => vec![
+            Span::styled(format!(" {first} "), style),
+            Span::raw(" "),
+            Span::styled(format!(" {second} "), style),
+            Span::raw(" "),
+        ],
+        None => vec![Span::styled(format!(" {badge} "), style), Span::raw(" ")],
+    }
 }
+
+/// Between the two chips of a badge that carries two: as wide as what parts them once drawn, so
+/// everything that measures the badge by its length measures both.
+pub const SEP: &str = "   ";
 
 /// The box says which session you are typing into, and the text never runs under it.
 #[cfg(test)]

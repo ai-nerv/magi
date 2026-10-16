@@ -10,6 +10,7 @@ fn head() -> Head {
         ink: None,
         mark: Some((glyph::outcome_ok(), Color::Green)),
         fold: Some(Detail::Preview),
+        pin: None,
         copy: true,
     }
 }

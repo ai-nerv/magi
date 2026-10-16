@@ -42,7 +42,7 @@ fn call(id: &str) -> Entry {
 
 fn stacked(entries: &[Entry]) -> Stack {
     let mut stack = Stack::new();
-    stack.update(entries, 40, Detail::Preview, &BTreeSet::new(), None);
+    stack.update(entries, 40, Detail::Preview, &BTreeSet::new(), &[]);
     stack
 }
 
@@ -51,7 +51,7 @@ fn an_unchanged_transcript_draws_nothing_again() {
     let entries = [user("one"), answer("two"), call("t1")];
     let mut stack = stacked(&entries);
     assert_eq!(stack.drawn(), 3);
-    stack.update(&entries, 40, Detail::Preview, &BTreeSet::new(), None);
+    stack.update(&entries, 40, Detail::Preview, &BTreeSet::new(), &[]);
     assert_eq!(stack.drawn(), 0);
 }
 
@@ -60,7 +60,7 @@ fn a_growing_answer_draws_only_itself_again() {
     let mut entries = vec![user("one"), answer("tw")];
     let mut stack = stacked(&entries);
     entries[1] = answer("two, and more");
-    stack.update(&entries, 40, Detail::Preview, &BTreeSet::new(), None);
+    stack.update(&entries, 40, Detail::Preview, &BTreeSet::new(), &[]);
     assert_eq!(stack.drawn(), 1);
     let shown: String = stack
         .rows(0..stack.len())
@@ -74,7 +74,7 @@ fn a_growing_answer_draws_only_itself_again() {
 fn a_new_width_draws_everything_again() {
     let entries = [user("one"), call("t1")];
     let mut stack = stacked(&entries);
-    stack.update(&entries, 60, Detail::Preview, &BTreeSet::new(), None);
+    stack.update(&entries, 60, Detail::Preview, &BTreeSet::new(), &[]);
     assert_eq!(stack.drawn(), 2);
 }
 
@@ -83,7 +83,7 @@ fn flipping_one_call_draws_only_that_call_again() {
     let entries = [call("t1"), call("t2")];
     let mut stack = stacked(&entries);
     let flipped: BTreeSet<ToolCallId> = [ToolCallId::new("t2")].into();
-    stack.update(&entries, 40, Detail::Preview, &flipped, None);
+    stack.update(&entries, 40, Detail::Preview, &flipped, &[]);
     assert_eq!(stack.drawn(), 1);
 }
 
@@ -130,7 +130,7 @@ fn a_row_past_the_end_is_nobodys() {
 #[test]
 fn a_shorter_transcript_drops_what_it_no_longer_has() {
     let mut stack = stacked(&[user("one"), user("two")]);
-    stack.update(&[], 40, Detail::Preview, &BTreeSet::new(), None);
+    stack.update(&[], 40, Detail::Preview, &BTreeSet::new(), &[]);
     assert!(stack.is_empty());
     assert_eq!(stack.at(0), None);
 }
@@ -160,13 +160,16 @@ fn text(stack: &Stack) -> Vec<String> {
         .collect()
 }
 
-fn live<'a>(id: &'a ToolCallId, drawn: &'a [Vec<Span>]) -> Option<Live<'a>> {
-    Some(Live {
-        id,
+fn live<'a>(id: &'a ToolCallId, drawn: &'a [Vec<Span>]) -> Live<'a> {
+    Live {
+        call: id,
         tool: "dino",
-        about: "a game",
+        title: "a game",
         drawn,
-    })
+        away: None,
+        pin: None,
+        focused: false,
+    }
 }
 
 #[test]
@@ -180,7 +183,7 @@ fn a_live_call_draws_its_frame_in_its_own_block() {
         40,
         Detail::Preview,
         &BTreeSet::new(),
-        live(&id, &drawn),
+        &[live(&id, &drawn)],
     );
     let rows = text(&stack);
     let header = rows
@@ -211,14 +214,14 @@ fn a_new_frame_draws_only_its_block_again() {
         40,
         Detail::Preview,
         &BTreeSet::new(),
-        live(&id, &one),
+        &[live(&id, &one)],
     );
     stack.update(
         &entries,
         40,
         Detail::Preview,
         &BTreeSet::new(),
-        live(&id, &one),
+        &[live(&id, &one)],
     );
     assert_eq!(stack.drawn(), 0, "the same frame twice");
     stack.update(
@@ -226,7 +229,7 @@ fn a_new_frame_draws_only_its_block_again() {
         40,
         Detail::Preview,
         &BTreeSet::new(),
-        live(&id, &two),
+        &[live(&id, &two)],
     );
     assert_eq!(stack.drawn(), 1);
     assert!(text(&stack).iter().any(|row| row.contains("two")));
@@ -242,7 +245,7 @@ fn before_its_first_frame_a_live_block_says_what_it_is_for() {
         40,
         Detail::Preview,
         &BTreeSet::new(),
-        live(&id, &[]),
+        &[live(&id, &[])],
     );
     assert!(text(&stack).iter().any(|row| row.contains("a game")));
 }
@@ -258,9 +261,9 @@ fn when_the_tool_lets_go_the_block_is_the_call_again() {
         40,
         Detail::Preview,
         &BTreeSet::new(),
-        live(&id, &drawn),
+        &[live(&id, &drawn)],
     );
-    stack.update(&entries, 40, Detail::Preview, &BTreeSet::new(), None);
+    stack.update(&entries, 40, Detail::Preview, &BTreeSet::new(), &[]);
     assert_eq!(stack.drawn(), 1);
     let rows = text(&stack);
     assert!(rows[0].contains("[ shell ]"), "{rows:#?}");
@@ -281,7 +284,7 @@ fn a_frame_wider_than_the_block_is_cut_at_its_edge() {
         40,
         Detail::Preview,
         &BTreeSet::new(),
-        live(&id, &drawn),
+        &[live(&id, &drawn)],
     );
     assert!(
         text(&stack)

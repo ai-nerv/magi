@@ -62,6 +62,7 @@ pub(super) fn of(
         ink: Some(outcome),
         mark: Some((mark, outcome)),
         fold: Some(detail),
+        pin: None,
         copy: true,
     };
     let mut block = super::Block::new(head, colour::tool_bg());
@@ -201,56 +202,6 @@ fn shows_every_argument(args: &str, painted: &[Vec<magi_proto::tooling::Span>]) 
                 .filter(|line| !line.is_empty())
                 .all(|line| drawn.contains(line))
         })
-}
-
-/// How wide the body of a tool's block is on a screen `width` columns wide: what a surface drawn in
-/// its own block is given.
-#[must_use]
-pub fn body_width(width: u16) -> u16 {
-    width.saturating_sub(u16::try_from(super::frame::MARGIN * 2 + STEP).unwrap_or(6))
-}
-
-/// The column the body of a tool's block starts in.
-#[must_use]
-pub fn body_left() -> u16 {
-    u16::try_from(super::frame::MARGIN + STEP).unwrap_or(4)
-}
-
-/// A call whose tool draws in its own block: its header, and the tool's last frame as the body, or
-/// what the rows are for until the first frame arrives.
-pub(super) fn live(
-    name: &str,
-    about: &str,
-    drawn: &[Vec<magi_proto::tooling::Span>],
-    width: u16,
-) -> super::Block {
-    let head = super::Head {
-        label: name.to_owned(),
-        ink: Some(colour::tool_title()),
-        mark: Some((crate::glyph::running(), colour::tool_title())),
-        fold: None,
-        copy: false,
-    };
-    let mut block = super::Block::new(head, colour::tool_bg());
-    let style = block.style();
-    let lead = super::frame::MARGIN + STEP;
-    let room = usize::from(body_width(width));
-    let rows: Vec<Line<'static>> = if drawn.is_empty() {
-        vec![Line::from(Span::styled(
-            clip(about, room),
-            style.fg(colour::dim()),
-        ))]
-    } else {
-        crate::painted::lines(drawn, style)
-    };
-    block.rows = rows
-        .into_iter()
-        .map(|line| {
-            let kept = Line::from(super::shell::clipped(line.spans, room));
-            super::frame::inside(kept, width, style, lead)
-        })
-        .collect();
-    block
 }
 
 /// The colour a line of tool output is drawn in. Applied to every tool rather than to `edit` by

@@ -2,6 +2,9 @@
 //! blocking thread inside a turn, the person is behind an async socket, and the tenant is a spawned
 //! process — so the reservation goes out as an event, keys come back on a channel, and the blocking
 //! receive doubles as the clock. magi reserves; the tenant draws, and what comes back is blitted unread.
+//!
+//! A surface that asked to be detached answers its call at once and runs on, on a thread of its
+//! own, until the person closes it, its program ends, or no screen is left to draw it on.
 
 use magi_proto::surfacing::{FromSurface, ToSurface};
 use magi_proto::tooling::Surface;
@@ -17,6 +20,9 @@ const PATIENCE: Duration = Duration::from_secs(900);
 /// the session ended; a surface that wants no ticks is simply not sent one when this elapses.
 const IDLE: Duration = Duration::from_millis(250);
 
+/// What a detached surface's call is answered with, the moment its rows are open.
+pub const DETACHED: &str = "running";
+
 /// Which surfaces are open, and what reaches them.
 mod holding;
 mod tenant;
@@ -24,12 +30,18 @@ pub use holding::{Drawing, Holding, Nudge};
 
 /// Gives a tool rows by publishing, and drives its tenant over a spawn.
 pub struct Holder {
-    held: Arc<Holding>,
-    publish: Box<dyn Fn(HarnessEvent) + Send + Sync>,
+    lane: Lane,
     attached: Box<dyn Fn() -> bool + Send + Sync>,
-    knows: Arc<dyn magi_tools::holding::Answers>,
     program: String,
     next: std::sync::atomic::AtomicU64,
+}
+
+/// What a surface's loop reaches, whether it holds its call or runs on after it.
+#[derive(Clone)]
+struct Lane {
+    held: Arc<Holding>,
+    publish: Arc<dyn Fn(HarnessEvent) + Send + Sync>,
+    knows: Arc<dyn magi_tools::holding::Answers>,
 }
 
 impl Holder {
@@ -43,10 +55,12 @@ impl Holder {
         program: &str,
     ) -> Self {
         Self {
-            held,
-            publish,
+            lane: Lane {
+                held,
+                publish: Arc::from(publish),
+                knows: Arc::new(magi_tools::holding::Incurious),
+            },
             attached,
-            knows: Arc::new(magi_tools::holding::Incurious),
             program: program.to_owned(),
             next: std::sync::atomic::AtomicU64::new(0),
         }
@@ -55,7 +69,7 @@ impl Holder {
     /// Let its surfaces ask `knows` about the session.
     #[must_use]
     pub fn knowing(mut self, knows: Arc<dyn magi_tools::holding::Answers>) -> Self {
-        self.knows = knows;
+        self.lane.knows = knows;
         self
     }
 }
@@ -70,34 +84,50 @@ impl magi_tools::holding::Holds for Holder {
     ) -> Option<String> {
         // Nobody is looking, or nobody looking can draw. Reserving rows on a screen that does not
         // exist holds the turn open until the surface times out, on a keypress that never comes.
-        if !(self.attached)() || !self.held.on_a_screen() {
+        if !(self.attached)() || !self.lane.held.on_a_screen() {
             return None;
         }
         // A window too short for any of it is the same case as nobody looking.
-        let granted = self.held.grant(surface.rows, surface.place)?;
+        let granted = self.lane.held.grant(surface.rows, surface.place)?;
         let n = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let id = ToolCallId::new(format!("s{n}"));
-        let keys = self.held.opening(id.clone())?;
+        let keys = self.lane.held.opening(id.clone())?;
 
         // Told before the tenant is spawned, so the rows exist by the time the first frame arrives.
-        (self.publish)(HarnessEvent::Surfaced {
+        (self.lane.publish)(HarnessEvent::Surfaced {
             cursor: Cursor::ZERO,
             id: id.clone(),
             tool: tool.to_owned(),
             rows: granted,
             about: surface.about.clone(),
             place: surface.place,
+            call: context.call.clone(),
+            detach: surface.detach,
         });
 
+        let Some(child) = self.spawn(tool, surface, context) else {
+            self.lane.close(&id);
+            return None;
+        };
+        if surface.detach {
+            let lane = self.lane.clone();
+            let (surface, args, running) = (surface.clone(), args.clone(), id.clone());
+            let started = std::thread::Builder::new()
+                .name(format!("surface-{id}"))
+                .spawn(move || {
+                    lane.pump(child, &running, &surface, granted, &args, &keys, None);
+                    lane.close(&running);
+                });
+            if started.is_err() {
+                self.lane.close(&id);
+                return None;
+            }
+            return Some(DETACHED.to_owned());
+        }
         let answered = self
-            .spawn(tool, surface, context)
-            .and_then(|child| self.pump(child, &id, surface, granted, args, &keys));
-
-        self.held.close(&id);
-        (self.publish)(HarnessEvent::Unsurfaced {
-            cursor: Cursor::ZERO,
-            id,
-        });
+            .lane
+            .pump(child, &id, surface, granted, args, &keys, Some(PATIENCE));
+        self.lane.close(&id);
         answered
     }
 }
@@ -124,8 +154,21 @@ impl Holder {
             })
             .ok()
     }
+}
 
-    /// Exchange frames with the tenant until it is done.
+impl Lane {
+    /// Forget a surface and give its rows back.
+    fn close(&self, id: &ToolCallId) {
+        self.held.close(id);
+        (self.publish)(HarnessEvent::Unsurfaced {
+            cursor: Cursor::ZERO,
+            id: id.clone(),
+        });
+    }
+
+    /// Exchange frames with the tenant until it is done, or until `patience` has passed; with no
+    /// patience, until no screen is left to draw it on.
+    #[allow(clippy::too_many_arguments)]
     fn pump(
         &self,
         child: std::process::Child,
@@ -134,6 +177,7 @@ impl Holder {
         granted: u16,
         args: &serde_json::Value,
         nudges: &std::sync::mpsc::Receiver<Nudge>,
+        patience: Option<Duration>,
     ) -> Option<String> {
         let mut tenant = tenant::Tenant(child);
         let mut writing = tenant.0.stdin.take()?;
@@ -162,7 +206,8 @@ impl Holder {
         let began = std::time::Instant::now();
 
         while answered.is_none() {
-            if began.elapsed() > PATIENCE {
+            let tired = patience.map_or(!self.held.on_a_screen(), |most| began.elapsed() > most);
+            if tired {
                 break;
             }
             // The blocking receive is also the clock: a tick every time nobody has pressed anything.
@@ -295,6 +340,7 @@ mod tests {
             tick: None,
             place: magi_proto::tooling::Place::Prompt,
             tenant: Some("probe".into()),
+            detach: false,
         };
         for jail in [None, Some(r#"{"reach":false,"write":[]}"#.to_owned())] {
             let context = Context {
@@ -302,6 +348,7 @@ mod tests {
                 configure: "trusted-config".into(),
                 jail,
                 cwd: Some(dir.to_path_buf()),
+                call: None,
             };
             // Spawning a script this process has just written races every other thread's open
             // file descriptors across the fork, and loses with ETXTBSY. Bounded, so a tenant
@@ -345,6 +392,7 @@ mod tests {
             tick: Some(60),
             place: magi_proto::tooling::Place::Prompt,
             tenant: None,
+            detach: false,
         };
         assert_eq!(
             holder.hold(
@@ -386,6 +434,7 @@ mod tests {
             tick: None,
             place: magi_proto::tooling::Place::Prompt,
             tenant: None,
+            detach: false,
         };
         let _ = holder.hold(
             "dino",
@@ -414,6 +463,7 @@ mod tests {
             tick: None,
             place: magi_proto::tooling::Place::Prompt,
             tenant: None,
+            detach: false,
         };
         assert_eq!(
             holder.hold(
@@ -437,7 +487,9 @@ mod tests {
         );
         let mut empty = std::io::BufReader::new(&b""[..]);
         assert_eq!(
-            holder.take(&ToolCallId::new("s0"), &mut empty, &mut Vec::new()),
+            holder
+                .lane
+                .take(&ToolCallId::new("s0"), &mut empty, &mut Vec::new()),
             Some(String::new())
         );
     }
@@ -452,7 +504,9 @@ mod tests {
         );
         let mut odd = std::io::BufReader::new(&b"{\"event\":\"something_new\"}\n"[..]);
         assert_eq!(
-            holder.take(&ToolCallId::new("s0"), &mut odd, &mut Vec::new()),
+            holder
+                .lane
+                .take(&ToolCallId::new("s0"), &mut odd, &mut Vec::new()),
             None
         );
     }
@@ -482,7 +536,9 @@ mod tests {
         let mut both = std::io::BufReader::new(said.as_bytes());
         let mut answered = Vec::new();
         assert_eq!(
-            holder.take(&ToolCallId::new("s0"), &mut both, &mut answered),
+            holder
+                .lane
+                .take(&ToolCallId::new("s0"), &mut both, &mut answered),
             None,
             "the draw was the frame, not the question"
         );
@@ -521,7 +577,9 @@ mod tests {
         let mut both = std::io::BufReader::new(asked.as_bytes());
         let mut answered = Vec::new();
         assert_eq!(
-            holder.take(&ToolCallId::new("s0"), &mut both, &mut answered),
+            holder
+                .lane
+                .take(&ToolCallId::new("s0"), &mut both, &mut answered),
             Some("once".to_owned())
         );
         let back: ToSurface =
@@ -550,7 +608,9 @@ mod tests {
         let drew = br#"{"event":"draw","lines":[[{"role":"text","text":"hi"}]]}"#;
         let mut one = std::io::BufReader::new(&drew[..]);
         assert_eq!(
-            holder.take(&ToolCallId::new("s0"), &mut one, &mut Vec::new()),
+            holder
+                .lane
+                .take(&ToolCallId::new("s0"), &mut one, &mut Vec::new()),
             None
         );
         assert!(matches!(
@@ -605,6 +665,7 @@ mod tests {
             tick: None,
             place: magi_proto::tooling::Place::Prompt,
             tenant: None,
+            detach: false,
         };
         let answered = holder.hold(
             "quiet",
@@ -622,5 +683,77 @@ mod tests {
             !std::path::Path::new(&format!("/proc/{}", tenant.trim())).exists(),
             "the tenant outlived its surface"
         );
+    }
+
+    #[test]
+    fn a_detached_surface_answers_at_once_and_runs_until_it_is_closed() {
+        use magi_tools::holding::Holds;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = magi_model::scratch::Scratch::new("magi-holder", "detached");
+        let script = dir.join("tenant");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nwhile read -r line; do printf '%s\\n' '{\"event\":\"draw\",\"lines\":[]}'; done\n",
+        )
+        .expect("tenant script");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700))
+            .expect("executable");
+        let (held, mut holder, seen) = on_a_screen_of(20);
+        holder.program = script.display().to_string();
+        let surface = Surface {
+            rows: 4,
+            about: "htop".into(),
+            tick: Some(20),
+            place: magi_proto::tooling::Place::Block,
+            tenant: None,
+            detach: true,
+        };
+        let context = magi_tools::holding::Context {
+            call: Some(ToolCallId::new("c1")),
+            ..Default::default()
+        };
+        let started = std::time::Instant::now();
+        let mut answered = None;
+        for _ in 0..20 {
+            answered = holder.hold("screen", &surface, &serde_json::Value::Null, &context);
+            if answered.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(answered.as_deref(), Some(DETACHED));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "it waited on the tenant"
+        );
+
+        let opened = seen
+            .lock()
+            .expect("nothing panicked")
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                HarnessEvent::Surfaced {
+                    id, call, detach, ..
+                } => Some((id.clone(), call.clone(), *detach)),
+                _ => None,
+            })
+            .expect("the rows were reserved");
+        assert_eq!(opened.1, Some(ToolCallId::new("c1")), "its block is named");
+        assert!(opened.2);
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            held.is_open(&opened.0),
+            "still running after its call answered"
+        );
+
+        held.close(&opened.0);
+        let closed = (0..100).any(|_| {
+            std::thread::sleep(Duration::from_millis(20));
+            seen.lock().expect("nothing panicked").iter().any(
+                |event| matches!(event, HarnessEvent::Unsurfaced { id, .. } if *id == opened.0),
+            )
+        });
+        assert!(closed, "closing it gave the rows back");
     }
 }

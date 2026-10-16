@@ -8,14 +8,54 @@ use ratatui::text::Line;
 use std::collections::BTreeSet;
 use std::ops::Range;
 
-/// A tool drawing in its own call's block: the call, the tool that fills it, what it is for, and
-/// its last frame.
+/// A tool drawing in its own call's block.
 #[derive(Debug, Clone, Copy)]
 pub struct Live<'a> {
-    pub id: &'a ToolCallId,
+    /// The tool call whose block it draws in.
+    pub call: &'a ToolCallId,
     pub tool: &'a str,
-    pub about: &'a str,
+    /// What it is, for the person: drawn until its first frame, and on its folded row.
+    pub title: &'a str,
     pub drawn: &'a [Vec<Span>],
+    /// Where it is drawn while it is drawn somewhere else; its block shows only this.
+    pub away: Option<&'a str>,
+    /// Whether it is pinned, for one that may be; `None` for rows that hold their call.
+    pub pin: Option<bool>,
+    /// Whether it has the keyboard.
+    pub focused: bool,
+}
+
+/// What a live block was last drawn from.
+#[derive(Debug, Clone, PartialEq)]
+struct Seen {
+    tool: String,
+    title: String,
+    drawn: Vec<Vec<Span>>,
+    away: Option<String>,
+    pin: Option<bool>,
+    focused: bool,
+}
+
+impl Seen {
+    fn of(live: &Live<'_>) -> Self {
+        Self {
+            tool: live.tool.to_owned(),
+            title: live.title.to_owned(),
+            drawn: live.drawn.to_vec(),
+            away: live.away.map(ToOwned::to_owned),
+            pin: live.pin,
+            focused: live.focused,
+        }
+    }
+
+    fn matches(&self, live: &Live<'_>) -> bool {
+        self.tool == live.tool
+            && self.title == live.title
+            && self.drawn == live.drawn
+            && self.away.as_deref() == live.away
+            && self.pin == live.pin
+            && self.focused == live.focused
+    }
 }
 
 /// One entry, as it was last drawn.
@@ -23,8 +63,8 @@ struct Slot {
     entry: Entry,
     shown: Detail,
     width: u16,
-    /// The tool, purpose and frame a live block was drawn from.
-    live: Option<(String, String, Vec<Vec<Span>>)>,
+    /// What a live block was drawn from.
+    live: Option<Seen>,
     rows: Vec<Line<'static>>,
     /// A blank row above it, parting it from the block before.
     gap: bool,
@@ -47,15 +87,15 @@ impl Stack {
     }
 
     /// Bring the stack up to `entries` at `width`, drawing again only the blocks that changed.
-    /// `flipped` names the tool calls shown the other way from `detail`; `live`, a call whose tool
-    /// draws in its block.
+    /// `flipped` names the tool calls shown the other way from `detail`; `lives`, the calls whose
+    /// tools draw in their blocks.
     pub fn update(
         &mut self,
         entries: &[Entry],
         width: u16,
         detail: Detail,
         flipped: &BTreeSet<ToolCallId>,
-        live: Option<Live<'_>>,
+        lives: &[Live<'_>],
     ) {
         self.slots.truncate(entries.len());
         self.drawn = 0;
@@ -64,36 +104,32 @@ impl Stack {
                 Entry::Tool { id, .. } if flipped.contains(id) => detail.other(),
                 _ => detail,
             };
-            let frame =
-                live.filter(|live| matches!(entry, Entry::Tool { id, .. } if id == live.id));
+            let frame = match entry {
+                Entry::Tool { id, .. } => lives.iter().find(|live| live.call == id),
+                _ => None,
+            };
             let kept = self.slots.get(nth).is_some_and(|slot| {
                 slot.width == width
                     && slot.shown == shown
                     && slot.entry == *entry
-                    && slot.live.as_ref().map(|(tool, about, drawn)| {
-                        (tool.as_str(), about.as_str(), drawn.as_slice())
-                    }) == frame.map(|live| (live.tool, live.about, live.drawn))
+                    && match (&slot.live, frame) {
+                        (Some(seen), Some(live)) => seen.matches(live),
+                        (None, None) => true,
+                        _ => false,
+                    }
             });
             if kept {
                 continue;
             }
             let rows = match frame {
-                Some(live) => {
-                    super::tool::live(live.tool, live.about, live.drawn, width).lines(width)
-                }
+                Some(live) => super::live::block(live, width, None).lines(width),
                 None => entry_lines(entry, width, shown),
             };
             let slot = Slot {
                 entry: entry.clone(),
                 shown,
                 width,
-                live: frame.map(|live| {
-                    (
-                        live.tool.to_owned(),
-                        live.about.to_owned(),
-                        live.drawn.to_vec(),
-                    )
-                }),
+                live: frame.map(Seen::of),
                 rows,
                 gap: false,
             };

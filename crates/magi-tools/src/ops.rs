@@ -69,6 +69,11 @@ pub trait Ops: Send + Sync {
     fn jail(&self) -> Option<String> {
         None
     }
+
+    /// The tool call this work belongs to, when it belongs to one.
+    fn call(&self) -> Option<magi_proto::ToolCallId> {
+        None
+    }
 }
 
 /// Ops against the real machine, rooted at one directory. The root is where *relative* paths
@@ -788,5 +793,8 @@ mod reach_tests {
 #[cfg(test)]
 mod gating;
 
+#[path = "ops/calling.rs"]
+mod calling;
 #[path = "ops/opening.rs"]
 mod opening;
+pub use calling::Calling;

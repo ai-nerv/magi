@@ -50,8 +50,14 @@ pub struct App {
     pub picking: Option<Picking>,
     /// Every question the session has open, oldest first; `picking` is the one on screen.
     pub asks: Vec<HarnessEvent>,
-    /// One at a time: a turn runs its tool calls in order.
-    pub surface: Option<surfacing::Surfacing>,
+    /// Every surface open, and which of them has the keyboard: `None` is the prompt.
+    pub surfaces: Vec<surfacing::Surfacing>,
+    pub focus: Option<ToolCallId>,
+    /// A running block flashing to be found, since when.
+    pub flash: Option<(ToolCallId, std::time::Instant)>,
+    /// Where the running-blocks chip landed, and each pinned block above the prompt.
+    pub live_rect: Option<ratatui::layout::Rect>,
+    pub docked: Vec<(ToolCallId, ratatui::layout::Rect)>,
     pub detail: magi_tui::transcript::Detail,
     /// `project/role/id` when melchior is running, which does the naming; the project alone otherwise.
     pub named: String,
@@ -191,7 +197,11 @@ impl App {
             selection: None,
             flipped: std::collections::BTreeSet::new(),
             stack: magi_tui::transcript::Stack::new(),
-            surface: None,
+            surfaces: Vec::new(),
+            focus: None,
+            flash: None,
+            live_rect: None,
+            docked: Vec::new(),
             live_rows: 0..0,
             surface_rect: None,
             corner_rect: None,
@@ -348,18 +358,9 @@ impl App {
     /// Bring the transcript's blocks up to the entries at `width`, and the scrollback to its length.
     pub fn lay_out(&mut self, width: u16) {
         // A surface drawing in its own block shows there even while a question has the keyboard.
-        let live = self
-            .surface
-            .as_ref()
-            .filter(|held| held.place == magi_proto::tooling::Place::Block)
-            .map(|held| magi_tui::transcript::Live {
-                id: &held.id,
-                tool: &held.tool,
-                about: &held.about,
-                drawn: &held.drawn,
-            });
+        let lives = running::lives(&self.surfaces, self.focus.as_ref());
         self.stack
-            .update(&self.entries, width, self.detail, &self.flipped, live);
+            .update(&self.entries, width, self.detail, &self.flipped, &lives);
         self.scrollback.set_len(self.stack.len());
     }
 
@@ -590,6 +591,7 @@ mod folding;
 mod resetting;
 #[cfg(test)]
 mod retracting;
+mod running;
 mod sessions;
 mod siblings;
 pub mod surfacing;

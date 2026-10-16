@@ -121,6 +121,17 @@ pub(crate) fn on_the_screen(
                 app.press_corner();
                 return Pointing::Redraw;
             }
+            // The running-blocks chip beside it, and the blocks pinned above the prompt.
+            if app
+                .live_rect
+                .is_some_and(|at| within(at, mouse.row, mouse.column))
+            {
+                app.press_running();
+                return Pointing::Redraw;
+            }
+            if app.press_dock(mouse.row, mouse.column, width) {
+                return Pointing::Redraw;
+            }
             // A sibling's dot opens its menu, the same float the name and the badge open.
             if let Some(nth) = app
                 .sibling_rects
@@ -161,6 +172,9 @@ pub(crate) fn on_the_screen(
                     if let Some(ask) = app.press_pane_tab(mouse.row, mouse.column) {
                         return ask.map_or(Pointing::Redraw, Pointing::Ask);
                     }
+                    if app.press_running_row(mouse.row) {
+                        return Pointing::Redraw;
+                    }
                     if let Some(seat) = app.press_pane_row(mouse.row, mouse.column) {
                         return Pointing::Steer(seat);
                     }
@@ -174,6 +188,10 @@ pub(crate) fn on_the_screen(
             // A tool waiting on an answer: a press on its row brings that question up, whichever
             // one was showing, so they can be taken in any order.
             if app.ask_at(mouse.row) {
+                return Pointing::Redraw;
+            }
+            // A running block: its pin pins it above the prompt, its body gives it the keyboard.
+            if app.pin_at(mouse.row, mouse.column) || app.take_focus_at(mouse.row) {
                 return Pointing::Redraw;
             }
             if let Some(text) = app.copy_at(mouse.row, mouse.column, width) {

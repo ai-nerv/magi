@@ -22,6 +22,8 @@ pub struct Head {
     pub mark: Option<(&'static str, Color)>,
     /// The fold handle, on a block that folds.
     pub fold: Option<Detail>,
+    /// The pin chip, on a running block: whether it is pinned already.
+    pub pin: Option<bool>,
     pub copy: bool,
 }
 
@@ -109,6 +111,11 @@ fn rule(head: &Head, fill: Color, room: usize) -> Vec<Span<'static>> {
         })
         .filter(|handle| lead + chip(handle) + 2 <= room);
     let held = handle.map_or(0, |handle| chip(handle) + 2);
+    let pin = head
+        .pin
+        .map(|pinned| if pinned { glyph::unpin() } else { glyph::pin() })
+        .filter(|pin| lead + chip(pin) + 2 + held <= room);
+    let held = held + pin.map_or(0, |pin| chip(pin) + 2);
     let label_room = room.saturating_sub(lead + held + 4);
     let label =
         (!head.label.is_empty() && label_room > 0).then(|| super::clip(&head.label, label_room));
@@ -138,12 +145,8 @@ fn rule(head: &Head, fill: Color, room: usize) -> Vec<Span<'static>> {
         spans.push(Span::styled(" ]", knock));
     }
     spans.push(edge(run));
-    if copy {
-        spans.push(Span::styled(format!("[ {} ]", glyph::copy()), knock));
-        spans.push(edge(2));
-    }
-    if let Some(handle) = handle {
-        spans.push(Span::styled(format!("[ {handle} ]"), knock));
+    for chip in [copy.then(glyph::copy), pin, handle].into_iter().flatten() {
+        spans.push(Span::styled(format!("[ {chip} ]"), knock));
         spans.push(edge(2));
     }
     spans

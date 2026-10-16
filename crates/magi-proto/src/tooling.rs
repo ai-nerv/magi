@@ -129,6 +129,9 @@ pub struct Surface {
     /// over to what was picked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tenant: Option<String>,
+    /// Whether the call answers at once and the rows stay open until the person closes them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub detach: bool,
 }
 
 /// Where a surface is drawn.

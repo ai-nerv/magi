@@ -275,7 +275,7 @@ pub async fn run(
                         // never interpreted. Escape twice takes the screen back: a single one is
                         // forwarded, because a tenant can hold a pty where `esc` is the program's.
                         if let Some(held) = app.holding() {
-                            let id = held.id.clone();
+                            let (id, detach) = (held.id.clone(), held.detach);
                             // magi's own, never the tenant's: ctrl+c ends it, ctrl+d goes nowhere.
                             let ctrl = key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL);
                             if ctrl && matches!(key.code, crossterm::event::KeyCode::Char('c' | 'd'))
@@ -283,7 +283,7 @@ pub async fn run(
                                 if key.code == crossterm::event::KeyCode::Char('c')
                                     && key.kind == crossterm::event::KeyEventKind::Press
                                 {
-                                    app.surface = None;
+                                    app.unsurfaced(&id);
                                     escaped = false;
                                     direct(&mut app, &command_tx, UiCommand::Unsurface { id })
                                         .await;
@@ -294,7 +294,13 @@ pub async fn run(
                                 if key.code == crossterm::event::KeyCode::Esc {
                                     // Ended at the session too, or its program runs on unseen.
                                     if escaped {
-                                        app.surface = None;
+                                        // One that runs on keeps running; the prompt gets the keys.
+                                        if detach {
+                                            app.let_go();
+                                            escaped = false;
+                                            continue;
+                                        }
+                                        app.unsurfaced(&id);
                                         escaped = false;
                                         direct(&mut app, &command_tx, UiCommand::Unsurface { id })
                                             .await;
@@ -419,6 +425,10 @@ pub async fn run(
                             }
                             Action::Attach(id) if app.pane_titled("balthasar") => {
                                 floating::weigh(&mut app, &command_tx, &id).await;
+                                dirty = true;
+                            }
+                            Action::Attach(id) if app.pane_titled("running") => {
+                                app.pick_running(&id);
                                 dirty = true;
                             }
                             // On the model's card, Enter takes a setting and ←/→ step it.

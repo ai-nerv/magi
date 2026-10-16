@@ -102,14 +102,16 @@ fn playing() -> App {
     });
     app.apply(HarnessEvent::Surfaced {
         cursor: Cursor(5),
-        id: ToolCallId::new("t2"),
+        id: ToolCallId::new("s0"),
         tool: "dino".into(),
         rows: 2,
         about: "a game".into(),
         place: magi_proto::tooling::Place::Block,
+        call: Some(ToolCallId::new("t2")),
+        detach: false,
     });
     app.apply(HarnessEvent::Drew {
-        id: ToolCallId::new("t2"),
+        id: ToolCallId::new("s0"),
         lines: vec![
             vec![magi_proto::tooling::Span::new(
                 magi_proto::tooling::Role::Text,
@@ -202,4 +204,112 @@ fn a_block_surface_scrolled_out_of_view_hears_no_pointer() {
     app.scrollback.to_bottom();
     drawn(&mut app, &mut terminal);
     assert_eq!(app.surface_rect, None);
+}
+
+/// A call whose tool left `htop` running in its block, drawn with a usage badge to stand beside.
+fn left_running() -> (App, Terminal<TestBackend>) {
+    let mut app = conversation();
+    app.apply(HarnessEvent::ToolCallStarted {
+        cursor: Cursor(4),
+        id: ToolCallId::new("t3"),
+        name: "screen".into(),
+        args: r#"{"command":"htop","title":"system monitor"}"#.into(),
+    });
+    app.apply(HarnessEvent::Surfaced {
+        cursor: Cursor(5),
+        id: ToolCallId::new("s1"),
+        tool: "screen".into(),
+        rows: 2,
+        about: "system monitor".into(),
+        place: magi_proto::tooling::Place::Block,
+        call: Some(ToolCallId::new("t3")),
+        detach: true,
+    });
+    app.apply(HarnessEvent::Drew {
+        id: ToolCallId::new("s1"),
+        lines: vec![vec![magi_proto::tooling::Span::new(
+            magi_proto::tooling::Role::Text,
+            "load average 0.42",
+        )]],
+        cursor: None,
+    });
+    let terminal = Terminal::new(TestBackend::new(WIDTH, 30)).expect("terminal");
+    (app, terminal)
+}
+
+fn with_usage(app: &mut App, terminal: &mut Terminal<TestBackend>) {
+    let footer = FooterData {
+        context_window: 200_000,
+        context_percent: Some(12.0),
+        ..FooterData::default()
+    };
+    terminal
+        .draw(|frame| {
+            draw(frame, app, &footer);
+        })
+        .expect("draw");
+}
+
+#[test]
+fn the_prompt_counts_the_blocks_left_running_beside_its_usage() {
+    let (mut app, mut terminal) = left_running();
+    with_usage(&mut app, &mut terminal);
+    let shown = rows(&terminal);
+    let badge = shown
+        .iter()
+        .find(|row| row.contains("12%"))
+        .expect("the usage badge");
+    assert!(badge.contains(" 1   12% "), "{badge:?}");
+    let chip = app.live_rect.expect("the running chip");
+    let usage = app.corner_rect.expect("the usage chip");
+    assert!(chip.x + chip.width < usage.x, "two chips, side by side");
+    assert!(app.holding().is_none(), "the prompt keeps the keys");
+}
+
+#[test]
+fn a_pinned_block_sits_above_the_prompt_and_its_place_says_so() {
+    let (mut app, mut terminal) = left_running();
+    app.toggle_pin(&ToolCallId::new("s1"));
+    with_usage(&mut app, &mut terminal);
+    let shown = rows(&terminal);
+    let prompt = shown
+        .iter()
+        .position(|row| row.starts_with('╭'))
+        .expect("the prompt");
+    assert!(shown[prompt - 2].contains("[ screen ]"), "{shown:#?}");
+    assert!(shown[prompt - 1].contains("system monitor"), "{shown:#?}");
+    assert!(
+        shown[..prompt - 2]
+            .iter()
+            .any(|row| row.contains("pinned above the prompt")),
+        "{shown:#?}"
+    );
+    assert!(
+        !shown.iter().any(|row| row.contains("load average")),
+        "folded, its frame is drawn nowhere: {shown:#?}"
+    );
+}
+
+#[test]
+fn an_open_pinned_block_draws_its_frame_above_the_prompt_alone() {
+    let (mut app, mut terminal) = left_running();
+    let id = ToolCallId::new("s1");
+    app.toggle_pin(&id);
+    app.toggle_docked(&id);
+    with_usage(&mut app, &mut terminal);
+    let shown = rows(&terminal);
+    let prompt = shown
+        .iter()
+        .position(|row| row.starts_with('╭'))
+        .expect("the prompt");
+    let frames: Vec<usize> = shown
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row.contains("load average"))
+        .map(|(at, _)| at)
+        .collect();
+    assert_eq!(frames.len(), 1, "drawn in one place: {shown:#?}");
+    assert!(frames[0] < prompt && frames[0] + 3 >= prompt, "{shown:#?}");
+    let at = app.surface_rect.expect("it has the keyboard");
+    assert_eq!(usize::from(at.y), frames[0]);
 }

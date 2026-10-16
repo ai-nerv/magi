@@ -73,7 +73,11 @@ glyphs! {
     seam = "╌", "The pattern repeated along the seam between two parts of a block.";
     expand = "▸", "On the top edge of a folded tool block: click to open it.";
     collapse = "▾", "On the top edge of an open tool block: click to fold it.";
-    copy = "⧉", "On the top edge of a block: click to put what it says on the clipboard.";    running = "·", "Beside a call that has been made and has not come back.";
+    copy = "⧉", "On the top edge of a block: click to put what it says on the clipboard.";
+    running = "·", "Beside a call that has been made and has not come back.";
+    focused = "●", "Beside a running block that has the keyboard.";
+    pin = "↧", "On a running block's header: click to pin it above the prompt.";
+    unpin = "↥", "On a pinned block's header: click to put it back in the conversation.";
     outcome_ok = "✓", "Beside a call that came back without an error.";
     outcome_failed = "✗", "Beside a call that reported a problem.";
     quote_rule = "│ ", "Down the left of a block quote.";

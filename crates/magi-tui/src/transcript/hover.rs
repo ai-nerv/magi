@@ -8,7 +8,13 @@ use super::*;
 /// Only the handles: the name chip looks identical but a click on it does nothing. Returns whether
 /// anything changed, so a caller can skip a redraw when the pointer moved within the same chip.
 pub fn hovered(line: &mut Line<'static>, column: u16) -> bool {
-    let handles = [glyph::expand(), glyph::collapse(), glyph::copy()];
+    let handles = [
+        glyph::expand(),
+        glyph::collapse(),
+        glyph::copy(),
+        glyph::pin(),
+        glyph::unpin(),
+    ];
     let mut at = 0_u16;
     for span in &mut line.spans {
         let wide = u16::try_from(span.content.chars().count()).unwrap_or(0);

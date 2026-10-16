@@ -118,6 +118,9 @@ pub struct Boxed {
     /// Where the usage badge landed: the row within the box, and the columns it covers. `None` when
     /// there is no badge. A click on it opens the cost view.
     pub badge: Option<(usize, std::ops::Range<u16>)>,
+    /// Where the running-blocks chip landed, the same way, when the badge carries one. A click on it
+    /// opens the list of running blocks.
+    pub live: Option<(usize, std::ops::Range<u16>)>,
 }
 
 /// How far in from the left edge a menu row's text starts: the side, then a space.
@@ -197,9 +200,16 @@ pub fn render(
 
     // The strip sits on the middle text row, one down for the top border, from `fold::strip`'s numbers.
     let worn = u16::try_from(badge.chars().count() + 3).unwrap_or(u16::MAX);
+    let right = width.saturating_sub(1);
+    let start = right.saturating_sub(worn);
+    // With a running-blocks chip first, the usage chip starts after it and the space beside it.
+    let first = badge
+        .split_once(crate::fold::SEP)
+        .map(|(first, _)| u16::try_from(first.chars().count() + 2).unwrap_or(u16::MAX));
+    let live_at = first.map(|first| (1 + shown / 2, start..start + first));
     let badge_at = (!badge.is_empty()).then(|| {
-        let right = width.saturating_sub(1);
-        (1 + shown / 2, right.saturating_sub(worn)..right)
+        let after = first.map_or(start, |first| start + first + 1);
+        (1 + shown / 2, after..right)
     });
 
     let mut opened = 0..0;
@@ -227,6 +237,7 @@ pub fn render(
         lines: out,
         menu: opened,
         badge: badge_at,
+        live: live_at,
     }
 }
 

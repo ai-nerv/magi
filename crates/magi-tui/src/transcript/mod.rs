@@ -12,6 +12,7 @@ use std::collections::BTreeSet;
 mod block;
 mod frame;
 mod hover;
+mod live;
 mod shell;
 mod stack;
 mod tool;
@@ -21,8 +22,9 @@ use tool::STEP;
 
 pub use block::{Block, Head, is_header};
 pub use hover::hovered;
+pub use live::{body_left, body_width, docked};
 pub use stack::{Live, Stack};
-pub use tool::{Detail, body_left, body_width};
+pub use tool::Detail;
 
 #[must_use]
 pub fn render(entries: &[Entry], width: u16, detail: Detail) -> Vec<Line<'static>> {
@@ -49,7 +51,7 @@ pub fn laid_out(
     flipped: &BTreeSet<ToolCallId>,
 ) -> Laid {
     let mut stack = Stack::new();
-    stack.update(entries, width, detail, flipped, None);
+    stack.update(entries, width, detail, flipped, &[]);
     let rows = 0..stack.len();
     Laid {
         lines: stack.rows(rows.clone()),

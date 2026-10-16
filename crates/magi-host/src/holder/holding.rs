@@ -426,6 +426,7 @@ mod screens {
             tick: Some(60),
             place: magi_proto::tooling::Place::Prompt,
             tenant: None,
+            detach: false,
         };
         assert_eq!(
             holder.hold(

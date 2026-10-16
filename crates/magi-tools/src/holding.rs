@@ -15,6 +15,8 @@ pub struct Context {
     pub configure: String,
     pub jail: Option<String>,
     pub cwd: Option<std::path::PathBuf>,
+    /// The tool call the surface belongs to, when there is one.
+    pub call: Option<magi_proto::ToolCallId>,
 }
 
 impl Context {
@@ -37,6 +39,7 @@ impl std::fmt::Debug for Context {
             .field("configure", &self.configure)
             .field("jail", &self.jail)
             .field("cwd", &self.cwd)
+            .field("call", &self.call)
             .field("environment_keys", &self.environ.keys().collect::<Vec<_>>())
             .finish()
     }
@@ -98,6 +101,7 @@ mod tests {
             configure: "configured".to_owned(),
             cwd: Some("/workspace".into()),
             jail: None,
+            call: None,
         };
         context.apply(&mut command);
         let env: std::collections::BTreeMap<_, _> = command.get_envs().collect();
@@ -123,6 +127,7 @@ mod tests {
             tick: Some(60),
             place: magi_proto::tooling::Place::Prompt,
             tenant: None,
+            detach: false,
         };
         assert_eq!(
             Screenless.hold(

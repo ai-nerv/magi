@@ -190,13 +190,18 @@ impl App {
                 rows,
                 about,
                 place,
+                call,
+                detach,
                 ..
-            } => {
-                self.surfaced(id, tool, rows, about);
-                if let Some(held) = self.surface.as_mut() {
-                    held.place = place;
-                }
-            }
+            } => self.surfaced(super::surfacing::Opening {
+                id,
+                tool,
+                rows,
+                about,
+                place,
+                call,
+                detach,
+            }),
             HarnessEvent::Drew { id, lines, cursor } => self.drew(&id, lines, cursor),
             HarnessEvent::Unsurfaced { id, .. } => self.unsurfaced(&id),
             // A permission answered on a surface. Remembered here because a session lends what it
