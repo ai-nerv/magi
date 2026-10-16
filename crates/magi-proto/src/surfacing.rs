@@ -146,6 +146,7 @@ mod frames {
             tick: None,
             place: crate::tooling::Place::Prompt,
             tenant: None,
+            detach: false,
         });
         let wire = serde_json::to_string(&asked).expect("encodes");
         assert!(wire.contains(r#""shown":"surface""#), "{wire}");

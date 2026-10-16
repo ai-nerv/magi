@@ -80,45 +80,25 @@ fn a_conversation_renders_the_way_pi_lays_it_out() {
     assert_eq!(
         rendered,
         vec![
-            // A block opens on a rule with its name set into it, its rows one column further in,
-            // and closes on another. No corners and no sides: two columns of every row spent
-            // drawing a line nobody reads are two columns taken off the text.
-            // `[ ⧉ ]` puts what the block says on the clipboard, inboard of the fold handle so
-            // the older affordance stays where people already aim at it.
-            "───[ USER ]─────────────────────────[ ⧉ ]───",
-            "", // a row of the block's own fill, so the text is not against the edge
-            // A step in from the fill on both sides — and the fill stands one column wider than
-            // the text, so the box holds the words rather than reading as a highlight drawn
-            // behind them. See `transcript::frame::BLEED`.
+            // Each block is one rectangle of its fill: the header is its first row, then its rows
+            // and a row of fill closing it. The fill stops a column short of each side.
+            // Every block folds to its header from the handle on its right.
+            "  ══[ USER ]════════════════[ ⧉ ]══[ ▾ ]══",
             "    run the tests",
             "",
-            "────────────────────────────────────────────",
-            "", // assistant: leading blank
-            // Rails around the answer, so it has an edge to carry a copy chip — and no fill,
-            // because this is prose with a line above and below rather than a box.
-            "────────────────────────────────────[ ⧉ ]───",
-            // The same inset the message box above takes, so a question and its answer begin in
-            // the same column and the only things reaching past it are the frames.
-            "    Running them now.",
-            "────────────────────────────────────────────",
             "", // the gap between blocks, unpainted
-            // The name in the outcome's colour, and the fold handle at the far end of the same
-            // edge — `▸` shut, `▾` open, saying which way it will go. Nothing else on the edge:
-            // what the call was *given* is the block's first row, where it has room to be read.
-            // A second chip beside the name says what became of the call: `·` while it is out,
-            // `✓` or `✗` when it lands. Beside the name because that is the row a person reads to
-            // see what this block is, and what became of it is the other half of that.
-            "───[ bash ]──[ ✓ ]───────────[ ⧉ ]──[ ▸ ]───",
+            // An answer is a block too, with no label.
+            "  ══════════════════════════[ ⧉ ]══[ ▾ ]══",
+            "    Running them now.",
             "",
+            "",
+            // The name, a mark for what became of the call, the copy chip and the fold handle.
+            "  ══[ bash ]══[ ✓ ]═════════[ ⧉ ]══[ ▾ ]══",
             "    cargo test",
-            // The seam between what the call was given and what it answered, a column of block
-            // fill either side so it reads as something inside the box rather than a second edge.
-            "  ────────────────────────────────────────",
-            // The output sits a step further in than the edge, so the two are not one column of
-            // text under a coloured word.
+            // The seam between what the call was given and what it answered.
+            "  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌",
             "    test result: ok. 42 passed",
             "",
-            "────────────────────────────────────────────",
         ]
     );
 }

@@ -1,17 +1,14 @@
-//! A transcript buffer we own.
-//!
-//! The inline backend hands settled lines to the terminal and lets it keep the history. The
-//! alt-screen backend has no terminal history to hand them to, so it keeps them here — which
-//! is also what makes transcript search, selection, and jump-to-message possible later, none
-//! of which can reach into a terminal's own scrollback.
+//! Where the reader is in the transcript: which of its rows are on screen, and whether new output
+//! keeps the view at the end. The rows themselves are the stack's; see
+//! [`crate::transcript::Stack`].
 
-use ratatui::text::Line;
+use std::ops::Range;
 
-/// The full transcript, plus where the reader is looking.
+/// The reader's place in a transcript of `len` rows.
 #[derive(Default)]
 pub struct Scrollback {
-    lines: Vec<Line<'static>>,
-    /// Index of the first visible line.
+    len: usize,
+    /// Index of the first visible row.
     offset: usize,
     /// Whether new content should keep the view pinned to the end.
     ///
@@ -21,44 +18,31 @@ pub struct Scrollback {
 }
 
 impl Scrollback {
-    /// An empty buffer, following the tail.
+    /// An empty transcript, following the tail.
     #[must_use]
     pub fn new() -> Self {
         Self {
-            lines: Vec::new(),
+            len: 0,
             offset: 0,
             follow: true,
         }
     }
 
-    /// Replace the content.
-    ///
-    /// The whole transcript is re-rendered each frame rather than appended to, because a
-    /// streaming message rewraps as it grows and its earlier lines are not final.
-    pub fn set_lines(&mut self, lines: Vec<Line<'static>>) {
-        self.lines = lines;
+    /// How many rows the transcript holds now.
+    pub fn set_len(&mut self, len: usize) {
+        self.len = len;
     }
 
-    /// One line of the transcript, for a caller that has to know what is drawn where.
-    ///
-    /// A click is answered by what is under it rather than by a second list saying what ought
-    /// to be: the fold handle is wherever the renderer put it, and asking the line is how that
-    /// stays true when the renderer changes its mind.
-    #[must_use]
-    pub fn line(&self, at: usize) -> Option<&Line<'static>> {
-        self.lines.get(at)
-    }
-
-    /// How many lines the transcript holds.
+    /// How many rows the transcript holds.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.lines.len()
+        self.len
     }
 
     /// Whether the transcript is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.lines.is_empty()
+        self.len == 0
     }
 
     /// Whether the view is pinned to the newest output.
@@ -67,40 +51,43 @@ impl Scrollback {
         self.follow
     }
 
-    /// How many lines sit below the current view.
+    /// How many rows sit below the current view.
     ///
     /// Zero while following. A reader who has scrolled up sees a screen that looks exactly
     /// like the bottom of the transcript, and output arriving below it makes no sound.
     #[must_use]
     pub fn hidden_below(&self, height: u16) -> usize {
-        self.lines
-            .len()
-            .saturating_sub(self.offset + usize::from(height))
+        self.len.saturating_sub(self.offset + usize::from(height))
     }
 
-    /// The slice visible in a viewport `height` rows tall.
-    pub fn view(&mut self, height: u16) -> &[Line<'static>] {
+    /// How many rows sit above the current view.
+    #[must_use]
+    pub fn hidden_above(&self) -> usize {
+        self.offset
+    }
+
+    /// The rows visible in a viewport `height` rows tall.
+    pub fn view(&mut self, height: u16) -> Range<usize> {
         let height = usize::from(height);
-        let max = self.lines.len().saturating_sub(height);
+        let max = self.len.saturating_sub(height);
         if self.follow {
             self.offset = max;
         } else {
             self.offset = self.offset.min(max);
         }
-        let end = (self.offset + height).min(self.lines.len());
-        self.lines.get(self.offset..end).unwrap_or_default()
+        self.offset..(self.offset + height).min(self.len)
     }
 
     /// Scroll towards the start of the transcript.
-    pub fn scroll_up(&mut self, lines: usize) {
-        self.offset = self.offset.saturating_sub(lines);
+    pub fn scroll_up(&mut self, rows: usize) {
+        self.offset = self.offset.saturating_sub(rows);
         self.follow = false;
     }
 
     /// Scroll towards the end, resuming follow on arrival.
-    pub fn scroll_down(&mut self, lines: usize, height: u16) {
-        let max = self.lines.len().saturating_sub(usize::from(height));
-        self.offset = (self.offset + lines).min(max);
+    pub fn scroll_down(&mut self, rows: usize, height: u16) {
+        let max = self.len.saturating_sub(usize::from(height));
+        self.offset = (self.offset + rows).min(max);
         if self.offset >= max {
             self.follow = true;
         }
@@ -116,7 +103,7 @@ impl Scrollback {
         self.scroll_down(page(height), height);
     }
 
-    /// Jump to the first line.
+    /// Jump to the first row.
     pub fn to_top(&mut self) {
         self.offset = 0;
         self.follow = false;
@@ -139,27 +126,20 @@ pub(super) mod tests {
 
     pub(super) fn filled(n: usize) -> Scrollback {
         let mut buffer = Scrollback::new();
-        buffer.set_lines((0..n).map(|i| Line::from(format!("line{i}"))).collect());
+        buffer.set_len(n);
         buffer
-    }
-
-    pub(super) fn texts(lines: &[Line<'_>]) -> Vec<String> {
-        lines
-            .iter()
-            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
-            .collect()
     }
 
     #[test]
     fn a_new_buffer_follows_the_tail() {
         let mut buffer = filled(20);
-        assert_eq!(texts(buffer.view(3)), ["line17", "line18", "line19"]);
+        assert_eq!(buffer.view(3), 17..20);
     }
 
     #[test]
     fn content_shorter_than_the_viewport_shows_whole() {
         let mut buffer = filled(2);
-        assert_eq!(texts(buffer.view(10)), ["line0", "line1"]);
+        assert_eq!(buffer.view(10), 0..2);
     }
 
     #[test]
@@ -168,7 +148,7 @@ pub(super) mod tests {
         buffer.view(5);
         buffer.scroll_up(3);
         assert!(!buffer.is_following());
-        assert_eq!(texts(buffer.view(5))[0], "line12");
+        assert_eq!(buffer.view(5).start, 12);
     }
 
     #[test]
@@ -176,17 +156,17 @@ pub(super) mod tests {
         let mut buffer = filled(20);
         buffer.view(5);
         buffer.scroll_up(5);
-        let before = texts(buffer.view(5));
-        buffer.set_lines((0..40).map(|i| Line::from(format!("line{i}"))).collect());
-        assert_eq!(texts(buffer.view(5)), before, "the view stayed put");
+        let before = buffer.view(5);
+        buffer.set_len(40);
+        assert_eq!(buffer.view(5), before, "the view stayed put");
     }
 
     #[test]
     fn new_output_follows_for_a_reader_at_the_bottom() {
         let mut buffer = filled(20);
         buffer.view(5);
-        buffer.set_lines((0..40).map(|i| Line::from(format!("line{i}"))).collect());
-        assert_eq!(texts(buffer.view(5))[4], "line39");
+        buffer.set_len(40);
+        assert_eq!(buffer.view(5).end, 40);
     }
 
     #[test]
@@ -204,7 +184,7 @@ pub(super) mod tests {
         let mut buffer = filled(100);
         buffer.view(10);
         buffer.page_up(10);
-        assert_eq!(texts(buffer.view(10))[0], "line85");
+        assert_eq!(buffer.view(10).start, 85);
     }
 
     #[test]
@@ -212,9 +192,9 @@ pub(super) mod tests {
         let mut buffer = filled(50);
         buffer.view(5);
         buffer.to_top();
-        assert_eq!(texts(buffer.view(5))[0], "line0");
+        assert_eq!(buffer.view(5).start, 0);
         buffer.to_bottom();
-        assert_eq!(texts(buffer.view(5))[4], "line49");
+        assert_eq!(buffer.view(5).end, 50);
     }
 
     #[test]
@@ -222,7 +202,7 @@ pub(super) mod tests {
         let mut buffer = filled(10);
         buffer.view(5);
         buffer.scroll_up(1000);
-        assert_eq!(texts(buffer.view(5))[0], "line0");
+        assert_eq!(buffer.view(5).start, 0);
     }
 
     #[test]
@@ -235,14 +215,7 @@ pub(super) mod tests {
 
 #[cfg(test)]
 mod hidden_tests {
-    use super::*;
-    use ratatui::text::Line;
-
-    fn filled(n: usize) -> Scrollback {
-        let mut s = Scrollback::new();
-        s.set_lines((0..n).map(|i| Line::from(i.to_string())).collect());
-        s
-    }
+    use super::tests::filled;
 
     #[test]
     fn following_the_tail_hides_nothing() {
@@ -253,8 +226,6 @@ mod hidden_tests {
 
     #[test]
     fn scrolling_up_counts_what_is_below() {
-        // A scrolled screen looks exactly like the bottom of the transcript, and output
-        // arriving below it makes no sound.
         let mut s = filled(100);
         let _ = s.view(10);
         s.scroll_up(30);
@@ -284,7 +255,7 @@ mod hidden_tests {
 /// What a wheel notch does, which is what the driver hands straight to these.
 #[cfg(test)]
 mod wheel {
-    use super::tests::{filled, texts};
+    use super::tests::filled;
 
     #[test]
     fn a_notch_up_leaves_the_tail_and_a_notch_back_returns_to_it() {
@@ -310,20 +281,9 @@ mod wheel {
         for _ in 0..200 {
             buffer.scroll_up(3);
         }
-        let top = texts(buffer.view(10)).to_vec();
+        let top = buffer.view(10);
         buffer.scroll_up(3);
-        assert_eq!(texts(buffer.view(10)), top, "the top is the top");
-        assert_eq!(top[0], "line0", "and it is the first line");
-    }
-}
-
-impl Scrollback {
-    /// How many lines sit above the current view.
-    ///
-    /// The other half of [`Self::hidden_below`], and the one nothing asked for until the
-    /// transcript needed to say which edge it continues past.
-    #[must_use]
-    pub fn hidden_above(&self) -> usize {
-        self.offset
+        assert_eq!(buffer.view(10), top, "the top is the top");
+        assert_eq!(top.start, 0, "and it is the first row");
     }
 }

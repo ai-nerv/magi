@@ -71,6 +71,8 @@ pub(super) async fn connection_loop(
                 .await;
             let (rows, cols) = super::float_room();
             let _ = writer.write(&UiCommand::FloatSized { rows, cols }).await;
+            let (rows, cols) = super::block_room();
+            let _ = writer.write(&UiCommand::BlockSized { rows, cols }).await;
         }
 
         // Reads run in their own task because `FrameReader::read` is not cancel-safe: it takes a

@@ -45,6 +45,12 @@ pub enum UiCommand {
         rows: u16,
         cols: u16,
     },
+    /// A block's inside: the widest a surface drawn in its own call's block is, and the most rows
+    /// it may have.
+    BlockSized {
+        rows: u16,
+        cols: u16,
+    },
     SubmitPrompt {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<magi_model::Image>,
@@ -159,6 +165,7 @@ impl UiCommand {
             Self::Attach { .. } => "attach",
             Self::Sized { .. } => "sized",
             Self::FloatSized { .. } => "float_sized",
+            Self::BlockSized { .. } => "block_sized",
             Self::SubmitPrompt { .. } => "submit_prompt",
             Self::Arrived { .. } => "arrived",
             Self::Interrupt => "interrupt",
@@ -201,6 +208,7 @@ mod verbs {
         for command in [
             UiCommand::Interrupt,
             UiCommand::DeclareNeeds,
+            UiCommand::BlockSized { rows: 8, cols: 40 },
             UiCommand::SetMode { mode: "x".into() },
             UiCommand::TakeGrants { grants: Vec::new() },
             UiCommand::Inspect,

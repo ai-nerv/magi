@@ -60,15 +60,16 @@ impl App {
         self.picking = None;
         // Nothing here was answered: the session still has them open, and says so on the way back.
         self.asks.clear();
-        self.surface = None;
+        self.surfaces.clear();
+        self.focus = None;
         self.model = None;
         self.choices.clear();
         self.set_status(magi_proto::AgentStatus::Idle);
         self.selection = None;
         self.hovering = None;
         self.flipped.clear();
-        self.owners.clear();
-        self.blocks.clear();
+        self.folds.clear();
+        self.stack = magi_tui::transcript::Stack::new();
         self.waiting = 0;
     }
 
@@ -161,6 +162,7 @@ pub fn for_screen(command: &UiCommand) -> bool {
         command,
         UiCommand::Sized { .. }
             | UiCommand::FloatSized { .. }
+            | UiCommand::BlockSized { .. }
             | UiCommand::Keyed { .. }
             | UiCommand::Moused { .. }
     )

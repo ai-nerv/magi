@@ -104,6 +104,7 @@ pub(crate) fn on_the_screen(
                 }
             }
             changed |= app.hover_at(mouse.row, mouse.column);
+            changed |= app.hover_dock(mouse.row, mouse.column, width);
             if !changed {
                 return Pointing::Nothing;
             }
@@ -119,6 +120,17 @@ pub(crate) fn on_the_screen(
                 .is_some_and(|at| within(at, mouse.row, mouse.column))
             {
                 app.press_corner();
+                return Pointing::Redraw;
+            }
+            // The running-blocks chip beside it, and the blocks pinned above the prompt.
+            if app
+                .live_rect
+                .is_some_and(|at| within(at, mouse.row, mouse.column))
+            {
+                app.press_running();
+                return Pointing::Redraw;
+            }
+            if app.press_dock(mouse.row, mouse.column, width) {
                 return Pointing::Redraw;
             }
             // A sibling's dot opens its menu, the same float the name and the badge open.
@@ -161,6 +173,9 @@ pub(crate) fn on_the_screen(
                     if let Some(ask) = app.press_pane_tab(mouse.row, mouse.column) {
                         return ask.map_or(Pointing::Redraw, Pointing::Ask);
                     }
+                    if app.press_running_row(mouse.row) {
+                        return Pointing::Redraw;
+                    }
                     if let Some(seat) = app.press_pane_row(mouse.row, mouse.column) {
                         return Pointing::Steer(seat);
                     }
@@ -174,6 +189,10 @@ pub(crate) fn on_the_screen(
             // A tool waiting on an answer: a press on its row brings that question up, whichever
             // one was showing, so they can be taken in any order.
             if app.ask_at(mouse.row) {
+                return Pointing::Redraw;
+            }
+            // A running block: its pin pins it above the prompt, its body gives it the keyboard.
+            if app.pin_at(mouse.row, mouse.column) || app.take_focus_at(mouse.row) {
                 return Pointing::Redraw;
             }
             if let Some(text) = app.copy_at(mouse.row, mouse.column, width) {
@@ -366,8 +385,7 @@ mod wheeling {
     /// An app with a long transcript, and a float over it holding more rows than fit.
     fn showing() -> App {
         let mut app = App::new();
-        app.scrollback
-            .set_lines((0..500).map(|n| Line::from(format!("line {n}"))).collect());
+        app.scrollback.set_len(500);
         app.pane = Some(magi_tui::pane::Pane::new(
             "test",
             (0..500).map(|n| Line::from(format!("row {n}"))).collect(),

@@ -25,14 +25,16 @@ impl App {
             // A pointer that has left the transcript lights nothing, and the handle it was over
             // has to go dark: a highlight left behind points at something nobody is aiming at.
             .filter(|(line, column)| {
-                self.scrollback
-                    .line(*line)
-                    .is_some_and(|drawn| magi_tui::transcript::hovered(&mut drawn.clone(), *column))
+                self.stack.toggles(*line)
+                    || self.stack.line(*line).is_some_and(|drawn| {
+                        magi_tui::transcript::hovered(&mut drawn.clone(), *column)
+                    })
             });
         was != self.hovering
     }
 
-    /// Fold or unfold the tool block whose handle is at `row`, `column`.
+    /// Fold the block whose handle is at `row`, `column` to its header, or open it again; or show
+    /// more or less of the tool block whose row saying so is at `row`.
     ///
     /// Returns whether the handle was there. **The handle, not the block.** Every row a block
     /// drew used to answer a click anywhere along it, which made most of the screen a button:
@@ -45,16 +47,44 @@ impl App {
         }
         let into = usize::from(row - self.live_rows.start);
         let line = self.scrollback.hidden_above() + into;
-        let Some(Some(id)) = self.owners.get(line).cloned() else {
+        let Some((nth, _)) = self.stack.at(line) else {
             return false;
         };
-        if !on_the_handle(self.scrollback.line(line), column, width) {
+        if self.stack.toggles(line) {
+            let Some(id) = self.stack.call(nth).cloned() else {
+                return false;
+            };
+            if !self.flipped.remove(&id) {
+                self.flipped.insert(id);
+            }
+            return true;
+        }
+        if !on_the_handle(self.stack.line(line), column, width) {
             return false;
         }
-        if !self.flipped.remove(&id) {
-            self.flipped.insert(id);
+        if !self.folds.remove(&nth) {
+            self.folds.insert(nth);
+            self.let_go_of_block(nth);
         }
         true
+    }
+
+    /// Give the keyboard back from a running block drawing in block `nth`, now that it is folded.
+    fn let_go_of_block(&mut self, nth: usize) {
+        let Some(call) = self.stack.call(nth) else {
+            return;
+        };
+        let holds = self.focus.as_ref().is_some_and(|focus| {
+            self.running().any(|held| {
+                held.id == *focus
+                    && !held.pinned
+                    && !held.viewing
+                    && held.call.as_ref() == Some(call)
+            })
+        });
+        if holds {
+            self.let_go();
+        }
     }
 }
 
@@ -111,11 +141,8 @@ mod clicking {
     /// with a rule the renderer has stopped following.
     impl App {
         fn handle(&self) -> Option<(u16, u16)> {
-            for (line, owner) in self.owners.iter().enumerate() {
-                if owner.is_none() {
-                    continue;
-                }
-                let Some(drawn) = self.scrollback.line(line) else {
+            for line in 0..self.stack.len() {
+                let Some(drawn) = self.stack.line(line) else {
                     continue;
                 };
                 let mut at = 0_u16;
@@ -155,45 +182,52 @@ mod clicking {
     fn laid() -> App {
         let mut app = App::new();
         app.entries = vec![call("t1")];
-        let laid = magi_tui::transcript::laid_out(
-            app.entries(),
-            60,
-            magi_tui::transcript::Detail::Preview,
-            &app.flipped,
-        );
-        app.live_rows = 0..u16::try_from(laid.lines.len()).expect("short enough");
-        app.owners = laid.owners;
-        app.scrollback.set_lines(laid.lines);
+        app.lay_out(60);
+        app.live_rows = 0..u16::try_from(app.stack.len()).expect("short enough");
         app
     }
 
     #[test]
-    fn a_click_on_a_block_flips_it_and_a_second_click_puts_it_back() {
+    fn a_click_on_a_block_folds_it_and_a_second_click_opens_it() {
         let mut app = laid();
         let (row, column) = app.handle().expect("the block has a handle");
         assert!(app.toggle_at(row, column, 60), "that is the handle");
-        assert_eq!(app.flipped.len(), 1);
+        assert_eq!(app.folds, [0].into());
         assert!(app.toggle_at(row, column, 60));
-        assert!(app.flipped.is_empty(), "the same click undoes it");
+        assert!(app.folds.is_empty(), "the same click undoes it");
+        assert!(app.flipped.is_empty(), "and neither showed more of it");
     }
 
     #[test]
-    fn unfolding_a_block_makes_it_taller() {
+    fn folding_a_block_leaves_one_line() {
         let mut app = laid();
-        let folded = app.scrollback.len();
         let (row, column) = app.handle().expect("a handle");
         app.toggle_at(row, column, 60);
-        let opened = magi_tui::transcript::laid_out(
-            app.entries(),
-            60,
-            magi_tui::transcript::Detail::Preview,
-            &app.flipped,
-        );
-        assert!(
-            opened.lines.len() > folded,
-            "{} is not more than {folded}",
-            opened.lines.len()
-        );
+        app.lay_out(60);
+        assert_eq!(app.stack.drawn(), 1, "only the block that was folded");
+        assert_eq!(app.scrollback.len(), 1, "its header alone");
+    }
+
+    /// Where the row showing more of a block is on screen.
+    fn more_row(app: &App) -> u16 {
+        (0..app.stack.len())
+            .find(|at| app.stack.toggles(*at))
+            .and_then(|at| u16::try_from(at).ok())
+            .expect("a long result says how much it left")
+    }
+
+    #[test]
+    fn the_row_saying_how_much_was_left_shows_it_and_then_less() {
+        let mut app = laid();
+        let short = app.scrollback.len();
+        assert!(app.toggle_at(more_row(&app), 0, 60), "that row is a button");
+        assert_eq!(app.flipped.len(), 1);
+        assert!(app.folds.is_empty(), "showing more is not folding");
+        app.lay_out(60);
+        assert!(app.scrollback.len() > short, "the whole result is longer");
+        app.live_rows = 0..u16::try_from(app.stack.len()).expect("short enough");
+        assert!(app.toggle_at(more_row(&app), 0, 60), "and it offers less");
+        assert!(app.flipped.is_empty());
     }
 
     #[test]
@@ -215,7 +249,7 @@ mod clicking {
                 "column {at} of the header should not be a button"
             );
         }
-        assert!(app.flipped.is_empty(), "nothing was folded");
+        assert!(app.folds.is_empty(), "nothing was folded");
         assert!(app.toggle_at(row, column, 60), "and the handle still is");
     }
 
@@ -225,7 +259,7 @@ mod clicking {
         let mut app = laid();
         let (row, column) = app.handle().expect("a handle");
         assert!(!app.toggle_at(row + 2, column, 60), "that is output");
-        assert!(app.flipped.is_empty());
+        assert!(app.flipped.is_empty() && app.folds.is_empty());
     }
 
     #[test]
@@ -237,11 +271,11 @@ mod clicking {
             !app.toggle_at(below, column, 60),
             "the prompt is not a tool block"
         );
-        assert!(app.flipped.is_empty());
+        assert!(app.folds.is_empty());
     }
 
     #[test]
-    fn a_click_on_something_that_is_not_a_tool_call_does_nothing() {
+    fn a_message_folds_like_a_call() {
         let mut app = App::new();
         app.entries = vec![Entry::User {
             images: Vec::new(),
@@ -249,33 +283,25 @@ mod clicking {
             text: "a question".to_owned(),
             aside: String::new(),
         }];
-        let laid = magi_tui::transcript::laid_out(
-            app.entries(),
-            60,
-            magi_tui::transcript::Detail::Preview,
-            &app.flipped,
+        app.lay_out(60);
+        app.live_rows = 0..u16::try_from(app.stack.len()).expect("short");
+        let (row, column) = app.handle().expect("a message has a handle");
+        assert!(
+            !app.toggle_at(row + 1, column, 60),
+            "its words are not a button"
         );
-        app.live_rows = 0..u16::try_from(laid.lines.len()).expect("short");
-        app.owners = laid.owners;
-        assert!(!app.toggle_at(1, 57, 60));
-        assert!(app.flipped.is_empty());
+        assert!(app.toggle_at(row, column, 60));
+        assert_eq!(app.folds, [0].into());
     }
 
     #[test]
     fn a_click_lands_on_the_block_under_it_after_scrolling() {
-        // The row is a screen coordinate and the owner list is a transcript coordinate; the
+        // The row is a screen coordinate and the stack's rows are a transcript coordinate; the
         // scroll offset is the whole of the difference between them, and forgetting it makes
         // every click wrong by however far the reader has scrolled.
         let mut app = App::new();
         app.entries = vec![call("t1"), call("t2")];
-        let laid = magi_tui::transcript::laid_out(
-            app.entries(),
-            60,
-            magi_tui::transcript::Detail::Preview,
-            &app.flipped,
-        );
-        app.owners = laid.owners;
-        app.scrollback.set_lines(laid.lines);
+        app.lay_out(60);
         app.live_rows = 0..10;
         app.scrollback.to_top();
 
@@ -283,11 +309,14 @@ mod clicking {
         // to does not matter; that a screen row still finds the right transcript line does.
         for _ in 0..40 {
             if let Some((row, column)) = app.handle() {
-                let hit = app.owners[app.scrollback.hidden_above() + usize::from(row)].clone();
+                let hit = app
+                    .stack
+                    .at(app.scrollback.hidden_above() + usize::from(row))
+                    .map(|(nth, _)| nth);
                 assert!(app.toggle_at(row, column, 60), "the handle was there");
-                assert_eq!(app.flipped.len(), 1, "exactly one block was hit");
+                assert_eq!(app.folds.len(), 1, "exactly one block was hit");
                 assert!(
-                    app.flipped.contains(&hit.expect("an owner")),
+                    app.folds.contains(&hit.expect("an owner")),
                     "and the right one"
                 );
                 return;
@@ -311,11 +340,12 @@ impl App {
         }
         let into = usize::from(row - self.live_rows.start);
         let line = self.scrollback.hidden_above() + into;
-        if !on_the_copy(self.scrollback.line(line), column, width) {
+        if !on_the_copy(self.stack.line(line), column, width) {
             return None;
         }
-        let block = (*self.blocks.get(line)?)?;
-        Some(said_by(&self.scrollback, &self.blocks, block))
+        let (nth, _) = self.stack.at(line)?;
+        let (_, rows) = self.stack.block(nth)?;
+        Some(said_by(rows))
     }
 }
 
@@ -343,28 +373,20 @@ fn on_the_copy(line: Option<&ratatui::text::Line<'static>>, column: u16, width: 
     false
 }
 
-/// Every row `block` drew, as text, with the chrome taken off.
-fn said_by(
-    scrollback: &magi_tui::scrollback::Scrollback,
-    blocks: &[Option<usize>],
-    block: usize,
-) -> String {
+/// Every row a block drew, as text, with the chrome taken off.
+fn said_by(drawn: &[ratatui::text::Line<'static>]) -> String {
     let mut rows: Vec<String> = Vec::new();
-    for (line, owner) in blocks.iter().enumerate() {
-        if *owner != Some(block) {
-            continue;
-        }
-        let Some(drawn) = scrollback.line(line) else {
-            continue;
-        };
+    for drawn in drawn {
         let text: String = drawn
             .spans
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
-        // The edges are the block, not what it says. Both of them open on the rule, where every
-        // row of the block's own words opens on its inset.
-        if text.trim_start().starts_with(magi_tui::glyph::block_edge()) {
+        // The header and the seams are the block, not what it says.
+        let opening = text.trim_start();
+        if opening.starts_with(magi_tui::glyph::block_edge())
+            || opening.starts_with(magi_tui::glyph::seam().trim())
+        {
             continue;
         }
         rows.push(text.trim_end().to_owned());
@@ -409,24 +431,16 @@ mod copying {
             usage: magi_proto::Usage::default(),
             signatures: magi_proto::Signatures::default(),
         }];
-        let laid = magi_tui::transcript::laid_out(
-            app.entries(),
-            60,
-            magi_tui::transcript::Detail::Preview,
-            &app.flipped,
-        );
-        app.owners = laid.owners;
-        app.blocks = laid.blocks;
-        app.live_rows = 0..u16::try_from(laid.lines.len()).expect("short");
-        app.scrollback.set_lines(laid.lines);
+        app.lay_out(60);
+        app.live_rows = 0..u16::try_from(app.stack.len()).expect("short");
         app
     }
 
     /// The row and column of the copy chip, found the way a pointer would.
     fn chip(app: &App) -> (u16, u16) {
-        for row in 0..1000 {
-            let Some(line) = app.scrollback.line(row) else {
-                break;
+        for row in 0..app.stack.len() {
+            let Some(line) = app.stack.line(row) else {
+                continue;
             };
             let mut at = 0_u16;
             for span in &line.spans {
@@ -462,13 +476,25 @@ mod copying {
     fn a_row_indented_with_multibyte_blanks_is_copied_without_panicking() {
         // An ideographic space is three bytes and one character, a no-break space two: an inset
         // counted in bytes cut the second row in the middle of a character.
-        let mut scrollback = magi_tui::scrollback::Scrollback::new();
-        scrollback.set_lines(vec![
+        let copied = super::said_by(&[
             ratatui::text::Line::from("  \u{3000}全角の字下げ"),
             ratatui::text::Line::from("  \u{a0}\u{a0}nbsp"),
         ]);
-        let copied = super::said_by(&scrollback, &[Some(0), Some(0)], 0);
         assert_eq!(copied, "全角の字下げ\n\u{a0}nbsp");
+    }
+
+    #[test]
+    fn a_seam_inside_the_block_is_not_copied() {
+        let mut app = answering("Here is the fix.");
+        if let Some(magi_proto::Entry::Assistant { thinking, .. }) = app.entries.first_mut() {
+            *thinking = "first, the cause".to_owned();
+        }
+        app.lay_out(60);
+        app.live_rows = 0..u16::try_from(app.stack.len()).expect("short");
+        let (row, column) = chip(&app);
+        let copied = app.copy_at(row, column, 60).expect("the chip was there");
+        assert!(!copied.contains(magi_tui::glyph::seam()), "{copied:?}");
+        assert!(copied.contains("Here is the fix."), "{copied:?}");
     }
 
     #[test]

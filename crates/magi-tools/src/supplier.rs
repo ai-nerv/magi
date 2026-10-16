@@ -197,6 +197,7 @@ pub fn run_jailed(
         configure: configured.to_owned(),
         jail: jail.map(str::to_owned),
         cwd: (!call.cwd.is_empty()).then(|| PathBuf::from(&call.cwd)),
+        call: None,
     };
     run_context(program, call, &context, cancel)
 }
@@ -375,6 +376,7 @@ impl Tool for SuppliedTool {
             configure: self.configured.clone(),
             jail: jail.clone(),
             cwd: Some(PathBuf::from(&call.cwd)),
+            call: ops.call(),
         };
         // A call may stop and ask, and then go on. Bounded, because a tool that asked forever would
         // hold the turn open forever. Wider than the two a person is ever asked, because a question

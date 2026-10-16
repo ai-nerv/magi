@@ -4,7 +4,7 @@
 
 use super::clip;
 use crate::colour;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
 /// How much of a tool's output to show.
@@ -31,8 +31,8 @@ impl Detail {
 /// Columns the body sits in from the header. A step, not [`crate::metric::block_pad`]'s one column.
 pub(super) const STEP: usize = 2;
 
-/// A padded box whose title states the outcome: pending, success, or error. The name carries it, in
-/// the colour of what happened, because a palette index cannot be tinted in sixteen colours.
+/// A tool call's block, drawn by [`of`].
+#[cfg(test)]
 pub(super) fn block(
     name: &str,
     args: &str,
@@ -40,21 +40,33 @@ pub(super) fn block(
     width: u16,
     detail: Detail,
 ) -> Vec<Line<'static>> {
-    let outcome = match result {
-        None => colour::tool_title(),
-        Some(r) if r.is_error => colour::tool_failed(),
-        Some(_) => colour::tool_ok(),
-    };
-    let style = Style::default().bg(colour::tool_bg());
+    of(name, args, result, width, detail).lines(width)
+}
 
-    // The name in the outcome's own colour, on nothing: a filled chip on an unfilled frame reads as
-    // a sticker on the box rather than as its name.
-    let label = Style::default().fg(outcome).add_modifier(Modifier::BOLD);
-    // The handle sits at the far end of the same edge as the name.
-    let handle = match detail {
-        Detail::Preview => crate::glyph::expand(),
-        Detail::Full => crate::glyph::collapse(),
+/// A tool call as a block: its name and outcome in the header, then what it was given, a seam,
+/// and what it answered.
+pub(super) fn of(
+    name: &str,
+    args: &str,
+    result: Option<&magi_proto::ToolResult>,
+    width: u16,
+    detail: Detail,
+) -> super::Block {
+    let (mark, outcome) = match result {
+        None => (crate::glyph::running(), colour::tool_title()),
+        Some(r) if r.is_error => (crate::glyph::outcome_failed(), colour::tool_failed()),
+        Some(_) => (crate::glyph::outcome_ok(), colour::tool_ok()),
     };
+    let head = super::Head {
+        label: name.to_owned(),
+        ink: Some(outcome),
+        mark: Some((mark, outcome)),
+        fold: Some(false),
+        pin: None,
+        copy: true,
+    };
+    let mut block = super::Block::new(head, colour::tool_bg());
+    let style = block.style();
     // One step further in than the header. What a call was given is the first row, not a second
     // header: for an `edit` that would be the same thing twice.
     let lead = super::frame::MARGIN + STEP;
@@ -65,6 +77,7 @@ pub(super) fn block(
     // Gathered before anything is framed: whether there is a box depends on there being rows.
     let mut rows: Vec<Line<'static>> = Vec::new();
     let mut said: Vec<Line<'static>> = Vec::new();
+    let mut toggles = false;
     // What the call was given, as the block's first row, where it has the width to be read.
     let asked = summarize(args, detail);
     if let Some(command) = super::shell::asked(name, args, detail, style, width, body, lead) {
@@ -79,9 +92,8 @@ pub(super) fn block(
             lead,
         ));
     }
-    // No gap of its own: one blank row before every entry is laid on in `laid_out`, where both
-    // entries that need separating are in view.
-    let mut out: Vec<Line<'static>> = Vec::new();
+    // Whether the tool's own painting already shows everything the call was given.
+    let mut covered = false;
     if let Some(result) = result {
         // What the tool painted for the person, drawn on its own terms and however long it runs:
         // the model may be told one line ("wrote a.rs") while the person is shown the whole file.
@@ -100,7 +112,13 @@ pub(super) fn block(
             Some(lines) => {
                 // casper's painting as it stands: code in its roles, and each row of an edit on
                 // the ground of what happened to it.
+                covered = shows_every_argument(args, lines);
                 for spans in lines.iter().take(shown) {
+                    // A rule the tool drew across its painting is the block's own seam.
+                    if ruled(spans) {
+                        rows.push(super::frame::rule(width, style));
+                        continue;
+                    }
                     let on = crate::painted::row(spans, style);
                     let line = crate::painted::line(spans, on);
                     rows.extend(wrapped(line, on, detail, width, body, lead));
@@ -125,69 +143,71 @@ pub(super) fn block(
             }
         }
         // The affordance goes on the fold, where a reader looks when the rest is missing.
-        if total > shown {
+        let note = if total > shown {
+            Some(format!("… {} more lines · ctrl+o", total - shown))
+        } else {
+            (detail == Detail::Full && total > usize::from(crate::metric::preview_lines()))
+                .then(|| "… show less · ctrl+o".to_owned())
+        };
+        if let Some(note) = note {
             rows.push(super::frame::inside(
-                Line::from(Span::styled(
-                    format!("… {} more lines · ctrl+o", total - shown),
-                    style.fg(colour::tool_fold()),
-                )),
+                Line::from(Span::styled(note, style.fg(colour::tool_fold()))),
                 width,
                 style,
                 lead,
             ));
+            toggles = true;
         }
     }
 
-    // A box only when there is something to put in it: framing a call that has produced nothing
-    // drew two edges with a gap between them.
-    if rows.is_empty() {
-        // A running shell command is highlighted like the block it grows into; anything else is
-        // its arguments in grey.
-        let beside = super::shell::command_of(name, args).map_or_else(
-            || {
-                let said = summarize(args, detail);
-                let said = said.trim();
-                if said.is_empty() {
-                    Vec::new()
-                } else {
-                    vec![Span::styled(
-                        said.to_owned(),
-                        Style::default().fg(colour::dim()),
-                    )]
-                }
-            },
-            |command| super::shell::highlight(&flatten(&command), Style::default()),
-        );
-        out.push(super::frame::lone(name, label, beside, width));
-        return out;
+    if covered {
+        said.clear();
     }
-    // What became of the call, beside its name. Nothing is patched into the buffer: the transcript
-    // is rebuilt from the entries every frame.
-    let mark = match result {
-        None => crate::glyph::running(),
-        Some(r) if r.is_error => crate::glyph::outcome_failed(),
-        Some(_) => crate::glyph::outcome_ok(),
-    };
-    // `outcome` already is the colour of what happened, so the two chips say one thing in one colour.
-    out.push(super::frame::top(
-        name,
-        label,
-        Some((mark, Style::default().fg(outcome))),
-        Some(handle),
-        true,
-        width,
-    ));
     // Only between two things: a rule under the only thing in the box reads as a heading.
     let seam = !said.is_empty() && !rows.is_empty();
-    out.push(super::frame::breath(width, style));
-    out.extend(said);
+    block.rows = said;
     if seam {
-        out.push(super::frame::rule(width, style));
+        block.rows.push(super::frame::rule(width, style));
     }
-    out.extend(rows);
-    out.push(super::frame::breath(width, style));
-    out.push(super::frame::bottom(width));
-    out
+    block.rows.extend(rows);
+    block.toggle = block.rows.len().checked_sub(1).filter(|_| toggles);
+    block
+}
+
+/// Whether a painted row is nothing but a rule across it.
+fn ruled(spans: &[magi_proto::tooling::Span]) -> bool {
+    let text: String = spans.iter().map(|span| span.text.as_str()).collect();
+    let text = text.trim();
+    text.chars().count() >= 3 && text.chars().all(|c| c == '─')
+}
+
+/// Whether a painting already shows every argument the call was given: each line of each value is
+/// somewhere in what it drew.
+fn shows_every_argument(args: &str, painted: &[Vec<magi_proto::tooling::Span>]) -> bool {
+    let Ok(serde_json::Value::Object(fields)) = serde_json::from_str::<serde_json::Value>(args)
+    else {
+        return false;
+    };
+    let drawn = painted
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|span| span.text.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    !fields.is_empty()
+        && fields.values().all(|value| {
+            let text = match value {
+                serde_json::Value::String(text) => text.clone(),
+                other => other.to_string(),
+            };
+            text.lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .all(|line| drawn.contains(line))
+        })
 }
 
 /// The colour a line of tool output is drawn in. Applied to every tool rather than to `edit` by
@@ -572,21 +592,21 @@ mod block_tests {
     }
 
     #[test]
-    fn nothing_on_the_top_edge_paints_a_background() {
-        // The edge is drawn on the terminal's own background and the chips carry their colour in
-        // the foreground, so nothing on this row has a background at all.
-        for span in header(None).spans {
+    fn the_header_is_set_into_the_blocks_fill() {
+        let line = header(None);
+        let inner = &line.spans[1..line.spans.len() - 1];
+        for span in inner {
             assert_eq!(
-                span.style.bg, None,
-                "{:?} paints something behind itself on the frame",
+                super::super::block::ground(span.style),
+                Some(colour::tool_bg()),
+                "{:?} is not on the block's fill",
                 span.content
             );
         }
     }
 
     #[test]
-    fn the_name_says_what_happened() {
-        // The outcome is the name's foreground now, not a filled chip.
+    fn the_mark_says_what_happened() {
         let ok = ToolResult {
             images: Vec::new(),
             output: "hi".into(),
@@ -601,8 +621,16 @@ mod block_tests {
             header(result)
                 .spans
                 .iter()
-                .find(|s| s.content.contains("shell"))
-                .expect("the name")
+                .find(|s| {
+                    [
+                        crate::glyph::running(),
+                        crate::glyph::outcome_ok(),
+                        crate::glyph::outcome_failed(),
+                    ]
+                    .iter()
+                    .any(|mark| s.content == *mark)
+                })
+                .expect("the mark")
                 .style
                 .fg
         };

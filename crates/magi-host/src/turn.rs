@@ -579,7 +579,12 @@ pub async fn run(
             let output = match prepared {
                 // A call in flight is collected even after an interrupt: the peer runs it either way.
                 Some(prepared) if !cancel.is_requested() || prepared.in_flight() => {
-                    registry.finish(prepared, ops, &cancel)
+                    // Run as this call, so a surface it opens knows which block it belongs to.
+                    let calling = magi_tools::ops::Calling {
+                        ops,
+                        id: ToolCallId::new(call.id.clone()),
+                    };
+                    registry.finish(prepared, &calling, &cancel)
                 }
                 _ => magi_tools::Output::error("cancelled before this tool ran"),
             };

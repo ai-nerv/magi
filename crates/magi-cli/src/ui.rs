@@ -7,6 +7,9 @@ use crate::app::App;
 use magi_tui::footer::{self, FooterData};
 use magi_tui::metric;
 use magi_tui::{fold, prompt, status, transcript};
+
+/// Running blocks pinned above the prompt, counted beside the usage, and flashed to be found.
+mod docking;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::widgets::Paragraph;
@@ -53,7 +56,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
     let around = metric::footer_rows() + more_rows + 1;
     // The box wears the usage, cut to a third of the width first — the strip is reserved on every
     // row, so anything long here takes the whole prompt with it. See `magi_tui::corner`.
-    let badge = app.corner.fitted(footer_data, area.width);
+    let badge = docking::badge(app, app.corner.fitted(footer_data, area.width));
     let text_rows = prompt::text_rows(&app.editor, rows, area.width, &badge);
     let room = usize::from(rows.saturating_sub(around)).saturating_sub(text_rows + 3);
     // The same number the menu is cut to: a surface is drawn in the menu's slot.
@@ -125,8 +128,10 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
 
     // Above the box: the transcript and its edge rules, and nothing else. Below it: one row, which
     // the footer draws.
-    let [live_area, prompt_area, footer_area] = Layout::vertical([
+    let docked = docking::lines(app, area.width);
+    let [live_area, dock_area, prompt_area, footer_area] = Layout::vertical([
         Constraint::Min(0),
+        Constraint::Length(docking::rows(&docked)),
         Constraint::Length(prompt_rows),
         Constraint::Length(metric::footer_rows()),
     ])
@@ -134,40 +139,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
 
     // The whole transcript is ours and the reader's scroll position decides what shows. An empty
     // session draws nothing.
-    let mut laid = transcript::laid_out(app.entries(), area.width, app.detail, &app.flipped);
-    // After the layout and before the lines are handed over: the highlight is a fact about the
-    // pointer, and re-rendering is what clears it.
-    if let Some((line, column)) = app.hovering
-        && let Some(under) = laid.lines.get_mut(line)
-    {
-        transcript::hovered(under, column);
-    }
-    // A tool that is waiting on the person says so on its own row, where a press answers it:
-    // without this it reads the same as one that is merely slow.
-    let waiting = app.waiting_calls();
-    if !waiting.is_empty() {
-        let mut said: Vec<&magi_proto::ToolCallId> = Vec::new();
-        for (line, owner) in laid.owners.iter().enumerate() {
-            let Some(call) = owner.as_ref().filter(|call| waiting.contains(call)) else {
-                continue;
-            };
-            // Once a block, on the first of its rows that says anything.
-            let blank = laid
-                .lines
-                .get(line)
-                .is_none_or(|row| row.spans.iter().all(|span| span.content.trim().is_empty()));
-            if blank || said.contains(&call) {
-                continue;
-            }
-            said.push(call);
-            if let Some(row) = laid.lines.get_mut(line) {
-                crate::app::marked(row);
-            }
-        }
-    }
-    app.owners = laid.owners;
-    app.blocks = laid.blocks;
-    app.scrollback.set_lines(laid.lines);
+    app.lay_out(area.width);
     // Each edge with something past it takes a row for its rule, so both sit against the text.
     let above = app.scrollback.hidden_above() > 0;
     let live_area = Rect {
@@ -178,7 +150,39 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
         ..live_area
     }
     .intersection(area);
-    let view = app.scrollback.view(live_area.height).to_vec();
+    let shown = app.scrollback.view(live_area.height);
+    let mut view = app.stack.rows(shown.clone());
+    // Over the rows on screen and never the stack's own: the highlight is a fact about the pointer.
+    if let Some((line, column)) = app.hovering
+        && let Some(under) = line
+            .checked_sub(shown.start)
+            .and_then(|at| view.get_mut(at))
+    {
+        if app.stack.toggles(line) {
+            transcript::lit(under);
+        } else {
+            transcript::hovered(under, column);
+        }
+    }
+    // A tool waiting on the person says so on the first of its rows under the header that says
+    // anything, where a press answers it.
+    for call in app.waiting_calls() {
+        let Some((start, rows)) = app.stack.find(&call).and_then(|nth| app.stack.block(nth)) else {
+            continue;
+        };
+        let Some(within) = rows.iter().position(|row| {
+            !transcript::is_header(row)
+                && row.spans.iter().any(|span| !span.content.trim().is_empty())
+        }) else {
+            continue;
+        };
+        if let Some(row) = (start + within)
+            .checked_sub(shown.start)
+            .and_then(|at| view.get_mut(at))
+        {
+            crate::app::marked(row);
+        }
+    }
     // Bottom-aligned: a transcript grows towards the prompt.
     let used = u16::try_from(view.len()).unwrap_or(live_area.height);
     let anchored = Rect {
@@ -189,7 +193,12 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
     .intersection(area);
     // The rows the transcript landed on, which is what a click is measured against.
     app.live_rows = anchored.y..anchored.y + anchored.height;
+    let lit = app.flashing();
+    if let Some(lit) = lit.as_ref() {
+        docking::flash_in_view(app, lit, &mut view, &shown);
+    }
     frame.render_widget(Paragraph::new(view), anchored);
+    docking::draw(frame, app, dock_area, docked, lit.as_ref());
     if above && live_area.y > area.y {
         frame.render_widget(
             Paragraph::new(status::more(area.width)),
@@ -225,22 +234,25 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
     }
     // Where the tenant's rows and the usage badge actually landed, which is what a click on either
     // is measured against: the layout is the only thing that knows, and it knows it once.
-    app.corner_rect = prompt_lines.badge.as_ref().map(|(row, columns)| Rect {
+    let landed = |(row, columns): &(usize, std::ops::Range<u16>)| Rect {
         x: prompt_area.x + columns.start,
         y: prompt_area.y + u16::try_from(*row).unwrap_or(u16::MAX),
         width: columns.end - columns.start,
         height: 1,
-    });
-    app.surface_rect = app.holding().map(|held| match held.place {
-        magi_proto::tooling::Place::Float => {
-            magi_tui::pane::Pane::surface_inside(magi_tui::pane::Pane::area(area))
-        }
-        magi_proto::tooling::Place::Prompt => Rect {
+    };
+    app.corner_rect = prompt_lines.badge.as_ref().map(landed);
+    app.live_rect = prompt_lines.live.as_ref().map(landed);
+    app.surface_rect = app.holding().and_then(|held| match held.place {
+        magi_proto::tooling::Place::Float => Some(magi_tui::pane::Pane::surface_inside(
+            magi_tui::pane::Pane::area(area),
+        )),
+        magi_proto::tooling::Place::Prompt => Some(Rect {
             x: prompt_area.x + prompt::INSET,
             y: prompt_area.y + u16::try_from(prompt_lines.menu.start).unwrap_or(u16::MAX),
             width: area.width.saturating_sub(prompt::INSET + 1),
             height: u16::try_from(prompt_lines.menu.len()).unwrap_or(u16::MAX),
-        },
+        }),
+        magi_proto::tooling::Place::Block => docking::held_rect(app, held, area),
     });
     frame.render_widget(Paragraph::new(prompt_lines.lines), prompt_area);
     frame.render_widget(
@@ -309,7 +321,7 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
     // whatever it drew. Over any view, because while it is up it has the keyboard.
     if let Some(held) = app
         .holding()
-        .filter(|held| held.place == magi_proto::tooling::Place::Float)
+        .filter(|held| held.place == magi_proto::tooling::Place::Float || held.viewing)
     {
         let panel = magi_tui::pane::Pane::area(area);
         frame.render_widget(ratatui::widgets::Clear, panel);
@@ -536,7 +548,8 @@ mod continues_past_the_edge {
 
     #[test]
     fn the_lower_rule_sits_against_the_text_it_is_about() {
-        // A rule with a blank row above it marks nothing.
+        // Between the last words and the rule: at most the block's closing row of fill and the gap
+        // after it.
         let rows = drawn(30, 10);
         let lower = *rules(&rows).last().expect("a rule below");
         let last = rows[..lower]
@@ -544,7 +557,7 @@ mod continues_past_the_edge {
             .rposition(|row| !row.trim().is_empty())
             .expect("something above it");
         assert!(
-            lower - last <= 2,
+            lower - last <= 3,
             "the rule drifted off the transcript: {rows:#?}"
         );
         let box_top = rows
@@ -671,6 +684,8 @@ mod where_the_rows_landed {
             rows: 2,
             about: "a game".to_owned(),
             place,
+            call: None,
+            detach: false,
         });
         app.apply(HarnessEvent::Drew {
             id: ToolCallId::new("s0"),
@@ -772,3 +787,6 @@ mod where_the_rows_landed {
 
 #[cfg(test)]
 mod hostile_and_tiny;
+
+#[cfg(test)]
+mod stacking;

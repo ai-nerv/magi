@@ -364,9 +364,15 @@ pub enum HarnessEvent {
         rows: u16,
         /// What it is for, for a UI that cannot draw it.
         about: String,
-        /// Rows in the prompt box, or the whole float.
+        /// Rows in the prompt box, the whole float, or its own call's block.
         #[serde(default)]
         place: crate::tooling::Place,
+        /// The tool call that asked for the rows, whose block they are drawn in.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        call: Option<ToolCallId>,
+        /// Whether the call answered at once and the rows stay open until the person closes them.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        detach: bool,
     },
     Drew {
         id: ToolCallId,

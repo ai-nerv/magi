@@ -43,6 +43,22 @@ pub struct Holding {
     /// given whole. Zero until one says.
     float_rows: std::sync::atomic::AtomicU16,
     float_cols: std::sync::atomic::AtomicU16,
+    /// A block's inside, as the client last reported it: the most a surface drawn in its own
+    /// call's block is given. Zero until one says.
+    block_rows: std::sync::atomic::AtomicU16,
+    block_cols: std::sync::atomic::AtomicU16,
+    /// What each open surface opened as and last drew, oldest first, for a screen that arrives
+    /// while it is open.
+    showing: Mutex<Vec<Showing>>,
+}
+
+/// One open surface as a screen arriving now has to be told it.
+struct Showing {
+    id: ToolCallId,
+    opened: magi_proto::HarnessEvent,
+    drawn: Option<magi_proto::HarnessEvent>,
+    /// Answered its call and runs on, so an interrupted turn does not end it.
+    detach: bool,
 }
 
 /// One attached client's ability to draw, for as long as it is attached. A guard, because the
@@ -119,13 +135,68 @@ impl Holding {
         if let Ok(mut typing) = self.typing.lock() {
             typing.remove(id);
         }
+        if let Ok(mut showing) = self.showing.lock() {
+            showing.retain(|shown| shown.id != *id);
+        }
     }
 
-    /// Forget every one: the person interrupted, and a surface is part of the turn they stopped.
+    /// Forget every one that holds its call: the person interrupted, and such a surface is part of
+    /// the turn they stopped. One left running is not.
     pub fn close_all(&self) {
+        let running: Vec<ToolCallId> = self.showing.lock().map_or_else(
+            |_| Vec::new(),
+            |showing| {
+                showing
+                    .iter()
+                    .filter(|shown| shown.detach)
+                    .map(|shown| shown.id.clone())
+                    .collect()
+            },
+        );
         if let Ok(mut typing) = self.typing.lock() {
-            typing.clear();
+            typing.retain(|id, _| running.contains(id));
         }
+        if let Ok(mut showing) = self.showing.lock() {
+            showing.retain(|shown| shown.detach);
+        }
+    }
+
+    /// Remember what surface `id` opened as.
+    pub(super) fn opened(&self, id: &ToolCallId, opened: &magi_proto::HarnessEvent, detach: bool) {
+        if let Ok(mut showing) = self.showing.lock() {
+            showing.push(Showing {
+                id: id.clone(),
+                opened: opened.clone(),
+                drawn: None,
+                detach,
+            });
+        }
+    }
+
+    /// Remember what surface `id` drew last.
+    pub(super) fn drew(&self, id: &ToolCallId, drawn: &magi_proto::HarnessEvent) {
+        if let Ok(mut showing) = self.showing.lock()
+            && let Some(shown) = showing.iter_mut().find(|shown| shown.id == *id)
+        {
+            shown.drawn = Some(drawn.clone());
+        }
+    }
+
+    /// What a screen arriving now is told so it can draw every open surface: each one's opening
+    /// and last frame, oldest first.
+    #[must_use]
+    pub fn on_show(&self) -> Vec<magi_proto::HarnessEvent> {
+        self.showing.lock().map_or_else(
+            |_| Vec::new(),
+            |showing| {
+                showing
+                    .iter()
+                    .flat_map(|shown| {
+                        std::iter::once(shown.opened.clone()).chain(shown.drawn.clone())
+                    })
+                    .collect()
+            },
+        )
     }
 
     /// Whether the surface `id` is still open.
@@ -205,14 +276,23 @@ impl Holding {
 
     /// Note the float's inside, and tell anything drawing on the screen.
     pub fn floated(&self, rows: u16, cols: u16) {
-        let taller = self
-            .float_rows
-            .swap(rows, std::sync::atomic::Ordering::Relaxed)
-            != rows;
-        let wider = self
-            .float_cols
-            .swap(cols, std::sync::atomic::Ordering::Relaxed)
-            != cols;
+        self.noted((&self.float_rows, &self.float_cols), rows, cols);
+    }
+
+    /// Note a block's inside, and tell anything drawing on the screen.
+    pub fn blocked(&self, rows: u16, cols: u16) {
+        self.noted((&self.block_rows, &self.block_cols), rows, cols);
+    }
+
+    /// Keep `rows` and `cols` in `at`, and wake every surface when either changed.
+    fn noted(
+        &self,
+        at: (&std::sync::atomic::AtomicU16, &std::sync::atomic::AtomicU16),
+        rows: u16,
+        cols: u16,
+    ) {
+        let taller = at.0.swap(rows, std::sync::atomic::Ordering::Relaxed) != rows;
+        let wider = at.1.swap(cols, std::sync::atomic::Ordering::Relaxed) != cols;
         if !taller && !wider {
             return;
         }
@@ -223,13 +303,15 @@ impl Holding {
         }
     }
 
-    /// The rows a surface gets where it asked to be drawn: the float whole, once the client has
-    /// said how big it is, or what it asked for of the prompt's room.
+    /// The rows a surface gets where it asked to be drawn: the float whole, what it asked for of a
+    /// block's room, or of the prompt's, once the client has said how big each is.
     #[must_use]
     pub fn grant(&self, wanted: u16, place: magi_proto::tooling::Place) -> Option<u16> {
         let float = self.float_rows.load(std::sync::atomic::Ordering::Relaxed);
+        let block = self.block_rows.load(std::sync::atomic::Ordering::Relaxed);
         match place {
             magi_proto::tooling::Place::Float if float > 0 => Some(float),
+            magi_proto::tooling::Place::Block if block > 0 => Some(wanted.min(block)),
             _ => self.granting(wanted),
         }
     }
@@ -238,8 +320,10 @@ impl Holding {
     #[must_use]
     pub fn width(&self, place: magi_proto::tooling::Place) -> u16 {
         let float = self.float_cols.load(std::sync::atomic::Ordering::Relaxed);
+        let block = self.block_cols.load(std::sync::atomic::Ordering::Relaxed);
         match place {
             magi_proto::tooling::Place::Float if float > 0 => float,
+            magi_proto::tooling::Place::Block if block > 0 => block,
             _ => self.across(),
         }
     }
@@ -409,6 +493,7 @@ mod screens {
             tick: Some(60),
             place: magi_proto::tooling::Place::Prompt,
             tenant: None,
+            detach: false,
         };
         assert_eq!(
             holder.hold(
@@ -419,5 +504,96 @@ mod screens {
             ),
             None
         );
+    }
+}
+
+/// A surface drawn in its own call's block is given the block's inside.
+#[cfg(test)]
+mod blocks {
+    use super::*;
+    use magi_proto::tooling::Place;
+    use std::time::Duration;
+
+    #[test]
+    fn a_block_surface_gets_what_it_asked_for_of_the_blocks_room() {
+        let held = Holding::new();
+        held.sized(Some(5), 120, false);
+        held.blocked(30, 114);
+        assert_eq!(held.grant(8, Place::Block), Some(8));
+        assert_eq!(held.grant(80, Place::Block), Some(30));
+        assert_eq!(held.width(Place::Block), 114);
+        assert_eq!(held.width(Place::Prompt), 120, "the prompt keeps its own");
+    }
+
+    #[test]
+    fn before_a_block_is_measured_it_is_granted_like_the_prompt() {
+        let held = Holding::new();
+        held.sized(Some(5), 120, false);
+        assert_eq!(held.grant(8, Place::Block), held.grant(8, Place::Prompt));
+        assert_eq!(held.width(Place::Block), 120);
+    }
+
+    #[test]
+    fn a_block_that_changed_size_reaches_everything_drawing() {
+        let held = Holding::new();
+        let nudges = held.opening(ToolCallId::new("s0")).expect("registered");
+        held.blocked(30, 114);
+        assert!(matches!(
+            nudges.recv_timeout(Duration::from_secs(1)),
+            Ok(Nudge::Room(..))
+        ));
+        held.blocked(30, 114);
+        assert!(
+            nudges.recv_timeout(Duration::from_millis(50)).is_err(),
+            "nothing changed"
+        );
+    }
+
+    fn opened(id: &str, detach: bool) -> magi_proto::HarnessEvent {
+        magi_proto::HarnessEvent::Surfaced {
+            cursor: magi_proto::Cursor::ZERO,
+            id: ToolCallId::new(id),
+            tool: "screen".into(),
+            rows: 4,
+            about: "htop".into(),
+            place: Place::Block,
+            call: Some(ToolCallId::new("c1")),
+            detach,
+        }
+    }
+
+    fn drew(id: &str, text: &str) -> magi_proto::HarnessEvent {
+        magi_proto::HarnessEvent::Drew {
+            id: ToolCallId::new(id),
+            lines: vec![vec![magi_proto::tooling::Span::new(
+                magi_proto::tooling::Role::Text,
+                text,
+            )]],
+            cursor: None,
+        }
+    }
+
+    #[test]
+    fn a_screen_arriving_later_is_told_what_is_open_and_what_it_last_drew() {
+        let held = Holding::new();
+        held.opened(&ToolCallId::new("s0"), &opened("s0", true), true);
+        held.drew(&ToolCallId::new("s0"), &drew("s0", "one"));
+        held.drew(&ToolCallId::new("s0"), &drew("s0", "two"));
+        assert_eq!(held.on_show(), vec![opened("s0", true), drew("s0", "two")]);
+        held.close(&ToolCallId::new("s0"));
+        assert!(held.on_show().is_empty(), "closed, it is told to nobody");
+    }
+
+    #[test]
+    fn an_interrupt_ends_what_holds_its_call_and_not_what_runs_on() {
+        let held = Holding::new();
+        let _running = held.opening(ToolCallId::new("s0")).expect("registered");
+        let _holding = held.opening(ToolCallId::new("s1")).expect("registered");
+        held.opened(&ToolCallId::new("s0"), &opened("s0", true), true);
+        held.opened(&ToolCallId::new("s1"), &opened("s1", false), false);
+        held.close_all();
+        assert!(held.is_open(&ToolCallId::new("s0")), "left running");
+        assert!(!held.is_open(&ToolCallId::new("s1")), "part of the turn");
+        assert_eq!(held.on_show(), vec![opened("s0", true)]);
     }
 }

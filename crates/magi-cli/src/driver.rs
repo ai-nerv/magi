@@ -175,6 +175,7 @@ pub async fn run(
     // Compared rather than sent every frame, so a redraw per keystroke is not a command per keystroke.
     let mut told_room = None;
     let mut told_float: Option<(u16, u16)> = None;
+    let mut told_block: Option<(u16, u16)> = None;
     loop {
         // Read each pass rather than tracked here: the connection lives in another task.
         let attached_now = attached.load(Ordering::Relaxed);
@@ -216,6 +217,12 @@ pub async fn run(
             if told_float != Some((rows, cols)) {
                 told_float = Some((rows, cols));
                 direct(&mut app, &command_tx, UiCommand::FloatSized { rows, cols }).await;
+            }
+            // And a block's inside, the most a surface drawn in its own call's block is given.
+            let (rows, cols) = block_room();
+            if told_block != Some((rows, cols)) {
+                told_block = Some((rows, cols));
+                direct(&mut app, &command_tx, UiCommand::BlockSized { rows, cols }).await;
             }
             // Read out of the frame that was just drawn, which is what `draw` hands back. Not
             // `current_buffer_mut`: ratatui ends every draw with `swap_buffers`, which resets the
@@ -268,7 +275,7 @@ pub async fn run(
                         // never interpreted. Escape twice takes the screen back: a single one is
                         // forwarded, because a tenant can hold a pty where `esc` is the program's.
                         if let Some(held) = app.holding() {
-                            let id = held.id.clone();
+                            let (id, detach) = (held.id.clone(), held.detach);
                             // magi's own, never the tenant's: ctrl+c ends it, ctrl+d goes nowhere.
                             let ctrl = key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL);
                             if ctrl && matches!(key.code, crossterm::event::KeyCode::Char('c' | 'd'))
@@ -276,7 +283,7 @@ pub async fn run(
                                 if key.code == crossterm::event::KeyCode::Char('c')
                                     && key.kind == crossterm::event::KeyEventKind::Press
                                 {
-                                    app.surface = None;
+                                    app.unsurfaced(&id);
                                     escaped = false;
                                     direct(&mut app, &command_tx, UiCommand::Unsurface { id })
                                         .await;
@@ -287,7 +294,13 @@ pub async fn run(
                                 if key.code == crossterm::event::KeyCode::Esc {
                                     // Ended at the session too, or its program runs on unseen.
                                     if escaped {
-                                        app.surface = None;
+                                        // One that runs on keeps running; the prompt gets the keys.
+                                        if detach {
+                                            app.let_go();
+                                            escaped = false;
+                                            continue;
+                                        }
+                                        app.unsurfaced(&id);
                                         escaped = false;
                                         direct(&mut app, &command_tx, UiCommand::Unsurface { id })
                                             .await;
@@ -412,6 +425,10 @@ pub async fn run(
                             }
                             Action::Attach(id) if app.pane_titled("balthasar") => {
                                 floating::weigh(&mut app, &command_tx, &id).await;
+                                dirty = true;
+                            }
+                            Action::Attach(id) if app.pane_titled("running") => {
+                                app.pick_running(&id);
                                 dirty = true;
                             }
                             // On the model's card, Enter takes a setting and ←/→ step it.
@@ -718,6 +735,18 @@ pub(super) fn float_room() -> (u16, u16) {
         ratatui::layout::Rect::new(0, 0, width, height),
     ));
     (inside.height, inside.width)
+}
+
+/// A block's inside at this terminal size, as `(rows, cols)`: the most a surface drawn in its own
+/// call's block is given, a body that fits on screen under its header and above the prompt.
+pub(super) fn block_room() -> (u16, u16) {
+    let (width, height) = terminal_size();
+    // The block's header and closing row, the gap above it, and the row kept for the scroll rule.
+    let chrome = magi_tui::metric::footer_rows() + magi_tui::metric::prompt_min_rows() + 4;
+    (
+        height.saturating_sub(chrome),
+        magi_tui::transcript::body_width(width),
+    )
 }
 
 /// The socket to the session, and redialling one that dropped.

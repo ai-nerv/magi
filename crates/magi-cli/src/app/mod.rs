@@ -50,8 +50,16 @@ pub struct App {
     pub picking: Option<Picking>,
     /// Every question the session has open, oldest first; `picking` is the one on screen.
     pub asks: Vec<HarnessEvent>,
-    /// One at a time: a turn runs its tool calls in order.
-    pub surface: Option<surfacing::Surfacing>,
+    /// Every surface open, and which of them has the keyboard: `None` is the prompt.
+    pub surfaces: Vec<surfacing::Surfacing>,
+    pub focus: Option<ToolCallId>,
+    /// A running block flashing to be found, since when.
+    pub flash: Option<(ToolCallId, std::time::Instant)>,
+    /// Where the running-blocks chip landed, and each pinned block above the prompt.
+    pub live_rect: Option<ratatui::layout::Rect>,
+    pub docked: Vec<(ToolCallId, ratatui::layout::Rect)>,
+    /// The chip in a pinned block's header the pointer is over, by column.
+    pub dock_hover: Option<(ToolCallId, u16)>,
     pub detail: magi_tui::transcript::Detail,
     /// `project/role/id` when melchior is running, which does the naming; the project alone otherwise.
     pub named: String,
@@ -80,9 +88,10 @@ pub struct App {
     pub selection: Option<magi_tui::select::Selection>,
     /// Blocks showing the opposite of `detail`, by membership, so the fold key still moves the rest.
     pub flipped: std::collections::BTreeSet<ToolCallId>,
-    pub owners: Vec<Option<ToolCallId>>,
-    /// Parallel to the scrollback, for every block: an assistant message has no id to key on.
-    pub blocks: Vec<Option<usize>>,
+    /// Blocks folded to their header, by their place in `entries`.
+    pub folds: std::collections::BTreeSet<usize>,
+    /// The transcript as blocks, each holding the rows it last drew.
+    pub stack: magi_tui::transcript::Stack,
     /// Recorded by the drawing pass, which is the only thing that knows where the prompt begins.
     pub live_rows: std::ops::Range<u16>,
     /// `None` when nothing holds rows, so a pointer over a picker is not translated for a closed surface.
@@ -191,9 +200,14 @@ impl App {
             hovering: None,
             selection: None,
             flipped: std::collections::BTreeSet::new(),
-            owners: Vec::new(),
-            blocks: Vec::new(),
-            surface: None,
+            folds: std::collections::BTreeSet::new(),
+            stack: magi_tui::transcript::Stack::new(),
+            surfaces: Vec::new(),
+            focus: None,
+            flash: None,
+            live_rect: None,
+            docked: Vec::new(),
+            dock_hover: None,
             live_rows: 0..0,
             surface_rect: None,
             corner_rect: None,
@@ -341,9 +355,25 @@ impl App {
         f32::from(u16::try_from(mixed % 1000).unwrap_or(0)) / 1000.0
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn entries(&self) -> &[Entry] {
         &self.entries
+    }
+
+    /// Bring the transcript's blocks up to the entries at `width`, and the scrollback to its length.
+    pub fn lay_out(&mut self, width: u16) {
+        // A surface drawing in its own block shows there even while a question has the keyboard.
+        let lives = running::lives(&self.surfaces, self.focus.as_ref());
+        self.stack.update(
+            &self.entries,
+            width,
+            self.detail,
+            &self.flipped,
+            &lives,
+            &self.folds,
+        );
+        self.scrollback.set_len(self.stack.len());
     }
 
     /// Every token this session has spent, folded from the transcript: a running total would double on reattach.
@@ -438,6 +468,7 @@ impl App {
     /// Drop the transcript without touching the daemon: the journal is append-only and `/clear` only hides it.
     pub fn clear_view(&mut self) {
         self.entries.clear();
+        self.folds.clear();
     }
 
     /// Append a local notice. Notices are UI-side only and never reach the journal.
@@ -573,6 +604,7 @@ mod folding;
 mod resetting;
 #[cfg(test)]
 mod retracting;
+mod running;
 mod sessions;
 mod siblings;
 pub mod surfacing;

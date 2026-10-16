@@ -47,7 +47,11 @@ fn environment_and_policy_reach_the_tool_and_surface() {
             knows: Arc::new(crate::holding::Incurious),
             configured: "coordinator-settings".into(),
         };
-        let ops = crate::ops::Real::new(dir.to_path_buf()).isolating(isolation);
+        let real = crate::ops::Real::new(dir.to_path_buf()).isolating(isolation);
+        let ops = crate::ops::Calling {
+            ops: &real,
+            id: magi_proto::ToolCallId::new("call-7"),
+        };
         let _ = supplied.run(
             &serde_json::json!({ "CASPER_JAIL": "", "cwd": "/", "reach": true }),
             &ops,
@@ -64,6 +68,7 @@ fn environment_and_policy_reach_the_tool_and_surface() {
         assert_eq!(context.jail.is_some(), isolation);
         assert_eq!(context.configure, "coordinator-settings");
         assert_eq!(context.cwd.as_deref(), Some(&*dir));
+        assert_eq!(context.call, Some(magi_proto::ToolCallId::new("call-7")));
         assert_eq!(
             std::fs::read_to_string(dir.join("report")).expect("spawn report"),
             format!(

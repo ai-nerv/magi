@@ -55,6 +55,7 @@ impl App {
                 self.choices = choices;
                 let empty = entries.is_empty();
                 self.entries = entries;
+                self.folds.clear();
                 // Turns from before this screen are counted under the model it found running.
                 if let Some(model) = self.model.as_ref().map(|m| m.name.clone()) {
                     for entry in &self.entries {
@@ -190,13 +191,18 @@ impl App {
                 rows,
                 about,
                 place,
+                call,
+                detach,
                 ..
-            } => {
-                self.surfaced(id, tool, rows, about);
-                if let Some(held) = self.surface.as_mut() {
-                    held.place = place;
-                }
-            }
+            } => self.surfaced(super::surfacing::Opening {
+                id,
+                tool,
+                rows,
+                about,
+                place,
+                call,
+                detach,
+            }),
             HarnessEvent::Drew { id, lines, cursor } => self.drew(&id, lines, cursor),
             HarnessEvent::Unsurfaced { id, .. } => self.unsurfaced(&id),
             // A permission answered on a surface. Remembered here because a session lends what it

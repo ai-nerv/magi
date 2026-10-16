@@ -177,7 +177,12 @@ impl App {
             return false;
         }
         let line = self.scrollback.hidden_above() + usize::from(row - self.live_rows.start);
-        let Some(Some(call)) = self.owners.get(line).cloned() else {
+        let Some(call) = self
+            .stack
+            .at(line)
+            .and_then(|(nth, _)| self.stack.call(nth))
+            .cloned()
+        else {
             return false;
         };
         self.ask_of(&call).is_some_and(|ask| self.present(&ask))
@@ -194,10 +199,22 @@ const MARKS: &[&str] = &[
 /// Say on a tool's row that it is waiting on the person. A row is padded to the full width, so
 /// the words take the place of padding rather than following it off the edge of the screen.
 pub fn marked(row: &mut ratatui::text::Line<'static>) {
+    // A row set inside a block keeps the screen's column at its end, and the words sit on the fill.
+    let filled = row.spans.iter().any(|span| span.style.bg.is_some());
+    let margin = row
+        .spans
+        .last()
+        .filter(|span| filled && span.style.bg.is_none() && span.content.trim().is_empty())
+        .cloned();
+    let mut spans = row.spans.clone();
+    if margin.is_some() {
+        spans.pop();
+    }
+    let ground = spans.last().and_then(|span| span.style.bg);
     // The padding may be several spans: whole ones that are nothing but space, and the tail of
     // the one before them.
     let mut padding = 0;
-    for span in row.spans.iter().rev() {
+    for span in spans.iter().rev() {
         let spaces = span.content.chars().rev().take_while(|c| *c == ' ').count();
         padding += spaces;
         if spaces < span.content.chars().count() {
@@ -209,13 +226,13 @@ pub fn marked(row: &mut ratatui::text::Line<'static>) {
     };
     let mut take = mark.chars().count();
     while take > 0 {
-        let Some(last) = row.spans.last_mut() else {
+        let Some(last) = spans.last_mut() else {
             return;
         };
         let held = last.content.chars().count();
         if held <= take {
             take -= held;
-            row.spans.pop();
+            spans.pop();
         } else {
             last.content = last
                 .content
@@ -226,12 +243,15 @@ pub fn marked(row: &mut ratatui::text::Line<'static>) {
             take = 0;
         }
     }
-    row.spans.push(ratatui::text::Span::styled(
-        *mark,
-        ratatui::style::Style::default()
-            .fg(magi_tui::colour::warning())
-            .add_modifier(ratatui::style::Modifier::BOLD),
-    ));
+    let mut style = ratatui::style::Style::default()
+        .fg(magi_tui::colour::warning())
+        .add_modifier(ratatui::style::Modifier::BOLD);
+    if let Some(ground) = ground {
+        style = style.bg(ground);
+    }
+    spans.push(ratatui::text::Span::styled(*mark, style));
+    spans.extend(margin);
+    row.spans = spans;
 }
 
 /// What a mode means, in the words a person is told it in when it changes.
@@ -601,13 +621,27 @@ mod marking {
             90,
             magi_tui::transcript::Detail::Preview,
         );
-        let row = rows.iter_mut().find(|row| width(row) > 0).expect("a row");
+        let row = rows
+            .iter_mut()
+            .find(|row| row.spans.iter().any(|s| s.content.contains("PLAN.md")))
+            .expect("the row saying what was asked");
         let before = width(row);
         super::marked(row);
         let text: String = row.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("waiting on you"), "{text}");
         assert!(text.contains("PLAN.md"), "the call is still there: {text}");
         assert_eq!(width(row), before, "{text}");
+        assert!(text.ends_with(' '), "the screen's column is kept: {text:?}");
+        let mark = row
+            .spans
+            .iter()
+            .find(|s| s.content.contains("waiting"))
+            .expect("the mark");
+        assert_eq!(
+            mark.style.bg,
+            Some(magi_tui::colour::tool_bg()),
+            "on the fill"
+        );
     }
 
     #[test]

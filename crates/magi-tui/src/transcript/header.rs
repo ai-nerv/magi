@@ -6,6 +6,7 @@ use super::*;
 
 mod tests {
     use super::*;
+    use ratatui::style::Modifier;
 
     fn rows(detail: Detail) -> Vec<String> {
         block(
@@ -33,25 +34,16 @@ mod tests {
     }
 
     #[test]
-    fn a_folded_block_offers_to_open() {
-        let shown = rows(Detail::Preview);
-        assert!(
-            shown
-                .iter()
-                .any(|l| l.contains(&format!("[ {} ]", crate::glyph::expand()))),
-            "nothing says this can be opened: {shown:#?}"
-        );
-    }
-
-    #[test]
-    fn an_open_block_offers_to_fold() {
-        let shown = rows(Detail::Full);
-        assert!(
-            shown
-                .iter()
-                .any(|l| l.contains(&format!("[ {} ]", crate::glyph::collapse()))),
-            "and nothing says it can be closed again: {shown:#?}"
-        );
+    fn an_open_block_offers_to_fold_however_much_it_shows() {
+        for detail in [Detail::Preview, Detail::Full] {
+            let shown = rows(detail);
+            assert!(
+                shown
+                    .iter()
+                    .any(|l| l.contains(&format!("[ {} ]", crate::glyph::collapse()))),
+                "nothing says it can be folded: {shown:#?}"
+            );
+        }
     }
 
     #[test]
@@ -67,7 +59,7 @@ mod tests {
         assert!(
             shown
                 .iter()
-                .any(|l| l.contains(&format!("[ {} ]", crate::glyph::expand())))
+                .any(|l| l.contains(&format!("[ {} ]", crate::glyph::collapse())))
         );
     }
 
@@ -80,17 +72,15 @@ mod tests {
             .iter()
             .position(|l| l.contains("write"))
             .expect("a header");
-        assert_eq!(header, 0, "the block's first row is its top edge");
+        assert_eq!(header, 0, "the block's first row is its header");
         assert!(
-            shown[header].contains(&format!("[ {} ]", crate::glyph::expand())),
+            shown[header].contains(&format!("[ {} ]", crate::glyph::collapse())),
             "the handle is set into the top edge: {shown:#?}"
         );
     }
 
     #[test]
-    fn the_name_is_a_label_rather_than_a_word() {
-        // In the outcome's own colour with nothing behind it, and bracketed so the run reads as
-        // a tag on the block rather than as the first word of a sentence.
+    fn the_name_is_a_label_in_the_outcomes_colour() {
         let lines = block("write", "{}", None, 50, Detail::Preview);
         let name = lines[0]
             .spans
@@ -100,14 +90,16 @@ mod tests {
         assert_eq!(
             name.content.as_ref(),
             "write",
-            "the brackets belong to the frame, not the name"
+            "the brackets belong to the rule, not the name"
         );
-        assert_eq!(name.style.fg, Some(colour::tool_title()), "the outcome");
-        assert_eq!(name.style.bg, None, "and nothing behind it");
+        assert_eq!(name.style.fg, Some(colour::tool_title()));
+        assert_eq!(name.style.bg, Some(colour::tool_bg()));
+        assert!(!name.style.add_modifier.contains(Modifier::REVERSED));
+        assert!(name.style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
-    fn the_label_carries_the_outcome() {
+    fn the_mark_carries_the_outcome() {
         let failed = &magi_proto::ToolResult {
             images: Vec::new(),
             output: "no".to_owned(),
@@ -115,20 +107,17 @@ mod tests {
             shown: None,
         };
         let lines = block("shell", "{}", Some(failed), 50, Detail::Preview);
-        let name = lines[0]
+        let mark = lines[0]
             .spans
             .iter()
-            .find(|s| s.content.contains("shell"))
-            .expect("the name");
-        assert_eq!(name.style.fg, Some(colour::tool_failed()));
+            .find(|s| s.content == crate::glyph::outcome_failed())
+            .expect("the mark");
+        assert_eq!(mark.style.fg, Some(colour::tool_failed()));
     }
 
     #[test]
     fn a_narrow_screen_still_keeps_the_handle() {
-        // The summary is clipped to make room rather than pushing the handle off the edge.
-        //
-        // With a result, because a call that has produced nothing is drawn as a plain line
-        // rather than a box — there is no edge for a handle to sit in until there is a body.
+        // The label is cut to make room rather than pushing the handle off the edge.
         let done = magi_proto::ToolResult {
             images: Vec::new(),
             output: "done".to_owned(),
@@ -154,7 +143,7 @@ mod tests {
                 "row must fill the width at {width}"
             );
             assert!(
-                header.contains(&format!("[ {} ]", crate::glyph::expand())),
+                header.contains(&format!("[ {} ]", crate::glyph::collapse())),
                 "at {width}: {header:?}"
             );
         }
@@ -174,14 +163,13 @@ mod tests {
         // Between the two halves and nowhere else: a block draws what it was given, the seam,
         // then the result.
         let shown = rows(Detail::Full);
-        // Interior rows only: the block opens and closes on a rule of its own, and neither of
-        // those is a seam.
+        // Interior rows only: the header is a rule of its own, and not a seam.
         let at: Vec<usize> = shown
             .iter()
             .enumerate()
             .skip(1)
             .take(shown.len().saturating_sub(2))
-            .filter(|(_, l)| l.starts_with('─'))
+            .filter(|(_, l)| l.starts_with(crate::glyph::seam().trim()))
             .map(|(nth, _)| nth)
             .collect();
         assert_eq!(at.len(), 1, "{shown:#?}");
