@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.0] - 2026-10-29
+
+### <!-- 0 -->⛰️  Features
+
+- Render the memory catalog as context
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Take the later develop work
+- Carry later develop work
+- Carry uncommitted develop work
+
 ## [0.7.5] - 2026-10-16
 
 ### <!-- 0 -->⛰️  Features
