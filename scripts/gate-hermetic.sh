@@ -99,8 +99,12 @@ case "${GATE_PROFILE:-release}" in
 esac
 
 status=0
+if ! cargo build $profile -p magi-host --example file-reply-proxy >"$out" 2>&1; then
+  cat "$out" >&2
+  exit 1
+fi
 # shellcheck disable=SC2086
-TMPDIR="$root" cargo test --all-targets $profile --no-fail-fast --quiet >"$out" 2>&1 || status=$?
+TMPDIR="$root" scripts/test-cargo.sh --all-targets $profile --no-fail-fast --quiet >"$out" 2>&1 || status=$?
 
 runtime_listing >"$after"
 

@@ -49,6 +49,16 @@ pub struct Backend {
     pub helpers: Helpers,
 }
 
+impl Backend {
+    pub(crate) fn frame(&self) -> crate::frames::Request<'_> {
+        crate::frames::Request {
+            mind: &self.mind,
+            model: &self.model,
+            wants: &self.wants,
+        }
+    }
+}
+
 /// Which models help, and within what: a model per role, how long a job may take (zero is the
 /// default), and the most one prompt may spend on them in millionths. Running one is `helping`'s.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -72,6 +82,8 @@ pub struct Catalog {
     /// The family's client libraries, as `(name, source)`.
     pub clients: Vec<(String, String)>,
     pub cwd: std::path::PathBuf,
+    /// Project workflow discovery root, relative to `cwd` or absolute.
+    pub workflow_workspace: Option<std::path::PathBuf>,
     pub cards: Vec<Card>,
     pub wants: magi_proto::ask::Wants,
     pub system: Option<String>,
@@ -122,6 +134,7 @@ impl Catalog {
             memory: crate::scribe::BALTHASAR.to_owned(),
             environ: std::collections::BTreeMap::new(),
             cwd: std::env::temp_dir(),
+            workflow_workspace: None,
             cards: Vec::new(),
             wants: magi_proto::ask::Wants::default(),
             system: None,
@@ -144,6 +157,7 @@ impl Catalog {
         // What is reserved is what is asked for. Left unnamed, a provider generates to its own
         // default and the room held back for the reply describes nothing.
         let mut wants = self.wants.clone();
+        wants.max_tokens_automatic |= wants.max_tokens.is_none();
         wants.max_tokens = Some(reserved(wants.max_tokens, card.max_output));
         card.ready.then(|| Backend {
             tools: self.tools.clone(),
@@ -426,6 +440,7 @@ mod mem_output_reserve_matches_request {
         let backend = catalog().backend("local/a").expect("a backend");
         assert_eq!(backend.max_output, Some(100));
         assert_eq!(backend.wants.max_tokens, Some(100));
+        assert!(backend.wants.max_tokens_automatic);
     }
 
     #[test]
@@ -440,6 +455,13 @@ mod mem_output_reserve_matches_request {
         assert_eq!(
             held.backend("local/a").expect("a backend").wants.max_tokens,
             Some(64)
+        );
+        assert!(
+            !held
+                .backend("local/a")
+                .expect("a backend")
+                .wants
+                .max_tokens_automatic
         );
     }
 }

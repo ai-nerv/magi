@@ -66,6 +66,21 @@ impl Recording {
                 HarnessEvent::PermissionAsked { .. }
                 | HarnessEvent::Asked { .. }
                 | HarnessEvent::Noticed { .. } => {}
+                HarnessEvent::WorkflowMessage {
+                    id,
+                    text,
+                    images,
+                    workflow,
+                    ..
+                } => {
+                    entries.push(Entry::Workflow {
+                        id,
+                        text,
+                        images,
+                        workflow,
+                        aside: String::new(),
+                    });
+                }
                 HarnessEvent::UserMessage {
                     id, text, images, ..
                 } => {
@@ -131,6 +146,8 @@ impl Recording {
                 | HarnessEvent::ModeChanged { .. }
                 | HarnessEvent::ContextLaid { .. }
                 | HarnessEvent::RequestAdmitted { .. }
+                | HarnessEvent::CacheFrame { .. }
+                | HarnessEvent::ProviderFrame { .. }
                 | HarnessEvent::HelperSpent { .. }
                 | HarnessEvent::MemoryAnswered { .. } => {}
                 HarnessEvent::MessageArrived {
@@ -171,7 +188,12 @@ impl Recording {
                 | HarnessEvent::Unsurfaced { .. }
                 | HarnessEvent::Granted { .. } => {}
                 HarnessEvent::SessionSnapshot { .. }
+                | HarnessEvent::TurnStarted { .. }
+                | HarnessEvent::TurnFinished { .. }
+                | HarnessEvent::PromptRefused { .. }
+                | HarnessEvent::ModelSelected { .. }
                 | HarnessEvent::ModelsRefreshed { .. }
+                | HarnessEvent::WorkflowsListed { .. }
                 | HarnessEvent::Error { .. } => {}
             }
         }

@@ -10,6 +10,11 @@ use std::collections::BTreeMap;
 pub trait Tool {
     fn name(&self) -> &str;
 
+    /// Native file supplier identity, excluding model-controlled arguments.
+    fn file_scope(&self) -> Option<String> {
+        None
+    }
+
     fn description(&self) -> &str;
 
     /// JSON Schema for its arguments.
@@ -180,7 +185,9 @@ impl Registry {
                         ));
                     }
                 };
-                let output = crate::bound::attachments(tool.run(&arguments, ops, cancel));
+                let output = crate::files::presentation(crate::bound::attachments(
+                    tool.run(&arguments, ops, cancel),
+                ));
                 self.finished(name, &arguments, &output);
                 Output {
                     images: output.images,
@@ -196,6 +203,8 @@ impl Registry {
                     shown: crate::masking::painted(output.shown),
                     unlocks: Vec::new(),
                     hints: crate::masking::hints(output.hints),
+                    files: output.files,
+                    file_delivery: output.file_delivery,
                 }
             }
             None => {
@@ -266,10 +275,25 @@ impl Registry {
     /// different peers costs the slowest rather than the sum. Called in the order the model asked.
     #[must_use]
     pub fn finish(&self, prepared: Prepared, ops: &dyn Ops, cancel: &dyn Cancel) -> Output {
+        self.finish_observed(prepared, ops, cancel, |_| {})
+    }
+
+    /// Collect a call and observe its validated result before text masking and size limits.
+    #[must_use]
+    pub fn finish_observed(
+        &self,
+        prepared: Prepared,
+        ops: &dyn Ops,
+        cancel: &dyn Cancel,
+        observe: impl FnOnce(&Output),
+    ) -> Output {
         let Prepared { name, state } = prepared;
         let mut ran = serde_json::Value::Null;
         let output = match state {
-            State::Answered(output) => return output,
+            State::Answered(output) => {
+                observe(&output);
+                return output;
+            }
             State::Sent(arguments) => match self.get(&name) {
                 Some(tool) => {
                     let output = tool.wait(cancel);
@@ -287,7 +311,8 @@ impl Registry {
                 None => Output::error(format!("{name} is gone")),
             },
         };
-        let output = crate::bound::attachments(output);
+        let output = crate::files::presentation(crate::bound::attachments(output));
+        observe(&output);
         self.finished(&name, &ran, &output);
         Output {
             images: output.images,
@@ -296,6 +321,8 @@ impl Registry {
             shown: crate::masking::painted(output.shown),
             unlocks: Vec::new(),
             hints: crate::masking::hints(output.hints),
+            files: output.files,
+            file_delivery: output.file_delivery,
         }
     }
 }

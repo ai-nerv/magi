@@ -5,6 +5,33 @@ use magi_proto::HarnessEvent;
 use magi_proto::monitoring::{AgentDetails, RequestContext};
 
 impl Session {
+    pub(crate) fn report_provider_frame(&mut self, frame: magi_model::RequestFrame) {
+        let reasons = self.frames.provider(frame);
+        let _ = self.events.send(HarnessEvent::ProviderFrame { reasons });
+    }
+
+    pub(crate) fn finish_provider_frame(&mut self) {
+        if let Some(reasons) = self.frames.finish_provider() {
+            let _ = self.events.send(HarnessEvent::ProviderFrame { reasons });
+        }
+    }
+
+    pub(crate) fn retry_provider_frame(&mut self) {
+        self.finish_provider_frame();
+        self.frames.next_attempt();
+    }
+
+    pub(crate) fn report_frame(
+        &mut self,
+        context: &magi_model::Context,
+        backend: crate::frames::Request<'_>,
+    ) {
+        let reasons =
+            self.frames
+                .observe(context, backend, self.laid.as_ref(), self.journal.entries());
+        let _ = self.events.send(HarnessEvent::CacheFrame { reasons });
+    }
+
     pub fn details(&self, (approvals, questions): (usize, usize)) -> AgentDetails {
         AgentDetails {
             model: self.model.clone(),
@@ -16,7 +43,7 @@ impl Session {
             cost_micros: self
                 .tallied
                 .values()
-                .fold(0_u64, |sum, used| sum.saturating_add(used.cost_micros)),
+                .fold(0_u64, |sum, used| sum.saturating_add(used.charged_micros())),
         }
     }
 

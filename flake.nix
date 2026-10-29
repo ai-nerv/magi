@@ -227,6 +227,7 @@
             pkgs.clang
             pkgs.mold
             pkgs.pkg-config
+            pkgs.bubblewrap
 
           # Graphics wrappers and the libraries a windowed program needs, on x86_64 only.
           #

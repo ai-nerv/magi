@@ -18,6 +18,8 @@ use magi_proto::{Entry, SessionId, StopReason};
 use magi_testkit::Mind;
 use magi_testkit::mind::{failed_line, retrying_line, stop_line, text_line};
 
+#[path = "turn/files.rs"]
+mod files;
 #[path = "turn/overflowing.rs"]
 mod overflowing;
 #[path = "turn/ownership.rs"]
@@ -26,6 +28,15 @@ mod ownership;
 mod truncated;
 #[path = "turn/unlocking.rs"]
 mod unlocking;
+
+#[path = "turn/cache_frames.rs"]
+mod cache_frames;
+
+#[path = "turn/provider_frames.rs"]
+mod provider_frames;
+
+#[path = "turn/progress.rs"]
+mod progress;
 
 /// A backend that asks `mind` and nothing else.
 fn backend(mind: &Mind) -> Backend {

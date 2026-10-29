@@ -12,16 +12,32 @@ pub struct Opening {
     pub started: Option<(crate::melchior::Melchior, std::path::PathBuf)>,
     pub run: Option<String>,
     pub agent: Option<String>,
+    pub load: Option<String>,
+    pub events: Option<magi_host::events::collection::runtime::Scope>,
 }
 
 impl Opening {
     /// Read the configuration and start the layer, or refuse before anything starts.
     pub fn begin(
         socket: Option<std::path::PathBuf>,
+        acp_parent: Option<u32>,
         role: crate::melchior::Role<'_>,
-    ) -> Result<Self, magi_lua::LuaError> {
+    ) -> anyhow::Result<Self> {
+        let bootstrap = acp_parent.map(crate::acp::bootstrap::receive).transpose()?;
+        let load = bootstrap
+            .as_ref()
+            .and_then(|b| b.loading())
+            .map(str::to_owned);
         // Loaded once: a second `load` re-runs every configuration file and repeats every refusal.
-        let loaded = crate::config::for_session()?;
+        let mut loaded = crate::config::for_session()?;
+        if let Some(bootstrap) = bootstrap {
+            bootstrap.merge(&mut loaded)?;
+        }
+        let events = if crate::config::events::enabled(loaded.as_ref())? {
+            magi_host::events::collection::runtime::Scope::start().ok()
+        } else {
+            None
+        };
         let project =
             crate::session::project(loaded.as_ref().and_then(|l| l.config.string("project")));
 
@@ -64,6 +80,8 @@ impl Opening {
             started,
             run,
             agent,
+            load,
+            events,
         })
     }
 }

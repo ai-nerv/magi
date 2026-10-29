@@ -1,20 +1,11 @@
-//! The contract for asking a mind a question.
-//!
-//! magi does not talk to models; melchior does, and this is the vocabulary magi asks it in.
-//! Everything here is neutral about which model.
-//!
-//! Every type here is `Serialize + Deserialize` with no borrowed data and no untagged enums, so
-//! the same value round-trips through JSON and through CBOR. JSON is what a person reads and what
-//! a Lua sibling speaks — the family stub cannot decode CBOR. CBOR is what magi and melchior use
-//! between themselves: it keeps byte strings and the integer/float split that JSON flattens, and
-//! a signature is exactly the sort of opaque bytes JSON would mangle.
-//!
-//! An [`Ask`] answers with many [`Said`], not one. The family socket is request and reply, so the
-//! stream travels on melchior's pipe instead: one JSON object per line, in order, ending in
-//! [`Said::Stop`] or [`Said::Failed`]. A caller that sees neither has lost the mind.
+//! Model-neutral requests from Magi to Melchior, with owned JSON/CBOR-serializable types.
+//! An [`Ask`] produces ordered [`Said`] events on Melchior's newline-delimited JSON pipe.
+//! The stream must end with [`Said::Stop`] or [`Said::Failed`].
 
 use magi_model::{Context, StopReason, ThinkingLevel, Usage};
 use serde::{Deserialize, Serialize};
+
+pub use magi_model::overflow;
 
 /// Published USD per million tokens, with absent rates left unknown.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +57,8 @@ pub struct Wants {
     pub thinking: Option<ThinkingLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub max_tokens_automatic: bool,
     /// A JSON Schema the answer must satisfy, and what to call it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema: Option<Schema>,
@@ -105,7 +98,7 @@ pub enum Refusal {
     Throttle,
     Auth,
     Invalid,
-    /// The context window overflowed. Compact and ask again.
+    /// An input or output constraint failed; optional detail distinguishes its cause.
     Overflow,
     Unknown,
 }
@@ -122,6 +115,9 @@ impl Refusal {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "event")]
 pub enum Said {
+    RequestFrame {
+        frame: magi_model::RequestFrame,
+    },
     Text {
         text: String,
     },
@@ -142,7 +138,7 @@ pub enum Said {
     ToolCallArgs {
         args: String,
     },
-    /// What the turn cost. Arrives at its own pace, and more than once.
+    /// Cumulative usage of the whole ask, failed attempts included; replaces the last measurement.
     Spent {
         usage: Usage,
     },
@@ -168,6 +164,12 @@ pub enum Said {
     Failed {
         message: String,
         why: Refusal,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "overflow::optional"
+        )]
+        overflow: Option<overflow::Detail>,
     },
 }
 
@@ -177,6 +179,58 @@ impl Said {
     #[must_use]
     pub fn is_last(&self) -> bool {
         matches!(self, Said::Stop { .. } | Said::Failed { .. })
+    }
+}
+
+#[cfg(test)]
+mod accounting_compatibility {
+    use super::*;
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct Legacy {
+        input: u64,
+        output: u64,
+        cache_read: u64,
+        cache_write: u64,
+        cost_micros: u64,
+    }
+
+    #[test]
+    fn reported_and_estimated_costs_cross_json_and_cbor_without_changing_old_fields() {
+        let legacy = Legacy {
+            input: 10,
+            output: 7,
+            cache_read: 90,
+            cache_write: 0,
+            cost_micros: 4,
+        };
+        let raw = serde_json::to_value(&legacy).expect("legacy json");
+        let mut new: Usage = serde_json::from_value(raw.clone()).expect("new reader");
+        assert_eq!(new.estimated_micros, None);
+        assert_eq!(serde_json::to_value(new).expect("legacy shape"), raw);
+        new.estimated_micros = Some(3);
+        assert_eq!(new.charged_micros(), 7);
+        assert_eq!(
+            serde_json::from_value::<Legacy>(serde_json::to_value(new).expect("new json"))
+                .expect("old reader"),
+            legacy
+        );
+        let mut encoded = Vec::new();
+        ciborium::ser::into_writer(&legacy, &mut encoded).expect("old cbor");
+        let read: Usage = ciborium::de::from_reader(encoded.as_slice()).expect("new reader");
+        assert_eq!(read.estimated_micros, None);
+        encoded.clear();
+        ciborium::ser::into_writer(&new, &mut encoded).expect("new cbor");
+        assert_eq!(
+            ciborium::de::from_reader::<Legacy, _>(encoded.as_slice()).expect("old reader"),
+            legacy
+        );
+        let event = Said::Spent { usage: new };
+        encoded.clear();
+        ciborium::ser::into_writer(&event, &mut encoded).expect("event cbor");
+        assert_eq!(
+            ciborium::de::from_reader::<Said, _>(encoded.as_slice()).expect("event"),
+            event
+        );
     }
 }
 
@@ -205,6 +259,7 @@ mod tests {
             wants: Wants {
                 thinking: Some(ThinkingLevel::Medium),
                 max_tokens: Some(256),
+                max_tokens_automatic: false,
                 schema: None,
                 provider: None,
             },
@@ -222,8 +277,42 @@ mod tests {
     }
 
     #[test]
+    fn output_provenance_is_additive_and_legacy_limits_remain_explicit() {
+        let old: Wants =
+            serde_json::from_value(serde_json::json!({"max_tokens":77})).expect("old ask");
+        assert!(!old.max_tokens_automatic);
+        assert_eq!(
+            serde_json::to_value(&old).expect("legacy"),
+            serde_json::json!({"max_tokens":77})
+        );
+        let automatic = Wants {
+            max_tokens_automatic: true,
+            ..old
+        };
+        let value = serde_json::to_value(&automatic).expect("automatic");
+        assert_eq!(
+            serde_json::from_value::<Wants>(value).expect("JSON"),
+            automatic
+        );
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&automatic, &mut bytes).expect("encode CBOR");
+        assert_eq!(
+            ciborium::from_reader::<Wants, _>(bytes.as_slice()).expect("CBOR"),
+            automatic
+        );
+    }
+
+    #[test]
     fn every_said_survives_json_and_says_which_it_is() {
         let stream = [
+            Said::RequestFrame {
+                frame: magi_model::RequestFrame {
+                    version: 1,
+                    dialect: [1; 32],
+                    policy: [2; 32],
+                    omitted_images: 3,
+                },
+            },
             Said::Text { text: "hi".into() },
             Said::Thinking {
                 text: "mulling".into(),
@@ -250,6 +339,7 @@ mod tests {
             Said::Failed {
                 message: "no credential".into(),
                 why: Refusal::Auth,
+                overflow: None,
             },
         ];
         for said in stream {
@@ -270,7 +360,8 @@ mod tests {
         assert!(
             Said::Failed {
                 message: String::new(),
-                why: Refusal::Transport
+                why: Refusal::Transport,
+                overflow: None,
             }
             .is_last()
         );
@@ -348,6 +439,27 @@ mod cbor_tests {
             name: "shell".into(),
         };
         assert_eq!(through_cbor(&said), said);
+    }
+
+    #[test]
+    fn provider_frame_metadata_survives_cbor_with_bounded_fingerprints() {
+        let said = Said::RequestFrame {
+            frame: magi_model::RequestFrame {
+                version: 1,
+                dialect: [7; 32],
+                policy: [11; 32],
+                omitted_images: u64::MAX,
+            },
+        };
+        assert_eq!(through_cbor(&said), said);
+        let value = serde_json::to_value(&said).expect("json");
+        assert_eq!(value["event"], "request_frame");
+        assert_eq!(value["frame"]["omitted_images"], u64::MAX);
+        for length in [0, 31, 33] {
+            let mut invalid = value.clone();
+            invalid["frame"]["dialect"] = serde_json::json!(vec![0; length]);
+            assert!(serde_json::from_value::<Said>(invalid).is_err());
+        }
     }
 
     #[test]

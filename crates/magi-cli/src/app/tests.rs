@@ -276,6 +276,7 @@ mod usage_tests {
             cache_read: 0,
             cache_write: 0,
             cost_micros: 0,
+            estimated_micros: None,
         }
     }
 

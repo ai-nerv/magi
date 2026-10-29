@@ -16,6 +16,11 @@ pub struct Mind {
 }
 
 impl Mind {
+    #[must_use]
+    pub fn scripted(name: &str, body: &str) -> Self {
+        written(name, body)
+    }
+
     /// A melchior that prints these lines, in order, and exits. Each is written as-is, so a test
     /// may say something malformed on purpose. Panics when the script cannot be written.
     #[must_use]
@@ -262,37 +267,8 @@ fn written(name: &str, body: &str) -> Mind {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
             .expect("make it runnable");
     }
-    runnable(&path);
+    magi_model::scratch::executable_ready(&path);
     Mind { dir, path }
-}
-
-/// Wait until this script can actually be executed, and return once it has been.
-///
-/// `ETXTBSY`: between a `fork` in one thread and its `exec`, the child holds every descriptor the
-/// parent had, including the one another thread is still writing this file through. Settled here
-/// rather than by retrying at each spawn, which would teach the code under test to retry. The verb
-/// is one the script does not know, so the probe leaves no mark.
-fn runnable(path: &Path) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        match std::process::Command::new(path)
-            .arg("--probe")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-        {
-            Ok(_) => return,
-            Err(why) if why.raw_os_error() == Some(26) => {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "{} stayed busy: something is holding it open for writing",
-                    path.display()
-                );
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
-            Err(why) => panic!("the fake melchior will not run: {why}"),
-        }
-    }
 }
 
 #[cfg(test)]

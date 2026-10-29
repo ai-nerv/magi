@@ -9,6 +9,29 @@ fn used(input: u64, output: u64, micros: u64) -> magi_proto::Usage {
     }
 }
 
+#[test]
+fn roster_totals_keep_estimates_and_saturate_all_counters() {
+    let a = magi_proto::Usage {
+        input: u64::MAX,
+        cache_read: u64::MAX,
+        cost_micros: u64::MAX,
+        estimated_micros: Some(u64::MAX),
+        ..Default::default()
+    };
+    let b = magi_proto::Usage {
+        input: 1,
+        cache_read: 1,
+        cost_micros: 1,
+        estimated_micros: Some(1),
+        ..Default::default()
+    };
+    let total = added(a, b);
+    assert_eq!(total.input, u64::MAX);
+    assert_eq!(total.cache_read, u64::MAX);
+    assert_eq!(total.estimated_micros, Some(u64::MAX));
+    assert_eq!(total.charged_micros(), u64::MAX);
+}
+
 fn text_of(drawn: &Rendered) -> String {
     drawn
         .rows

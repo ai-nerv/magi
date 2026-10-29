@@ -538,6 +538,9 @@ pub async fn run(
                                 .is_some_and(magi_tui::overlay::Overlay::is_picker)
                         {
                             app.refresh_completion(&list_paths);
+                            if let Some(command) = app.workflow_request() {
+                                direct(&mut app, &command_tx, command).await;
+                            }
                         }
                     }
                     // magi asks for the pointer — see `terminal::MOUSE_ON` — so it selects text
@@ -566,6 +569,9 @@ pub async fn run(
                     Event::Paste(text) => {
                         app.editor.insert_str(&text);
                         app.refresh_completion(&list_paths);
+                        if let Some(command) = app.workflow_request() {
+                            direct(&mut app, &command_tx, command).await;
+                        }
                         dirty = true;
                     }
                     Event::Resize(..) => {

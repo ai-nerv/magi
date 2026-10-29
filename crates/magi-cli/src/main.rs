@@ -1,5 +1,6 @@
 //! The magi UI process: one multi-call binary, so out-of-process pieces ship as a single artifact.
 
+mod acp;
 mod app;
 mod attachments;
 mod balthasar;
@@ -74,6 +75,9 @@ struct Cli {
     #[arg(long, hide = true, value_name = "PID")]
     tied: Option<u32>,
 
+    #[arg(long, hide = true, requires_all = ["headless", "tied"])]
+    acp_config: bool,
+
     /// What this session is for, in one word. `main` when nothing says. Written in at birth.
     #[arg(long, value_name = "NAME")]
     role: Option<String>,
@@ -108,6 +112,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Serve the experimental ACP transport over stdio pipes.
+    #[command(hide = true)]
+    Acp,
     /// Print the Lua client library for magi's own surface, as one plain-Lua file to `require`.
     #[command(alias = "client")]
     LuaApi,
@@ -153,8 +160,58 @@ enum Command {
 
 /// Not `#[tokio::main]`: melchior names this session in the prologue, and the run and agent are
 /// taken from that name, so it is settled before balthasar is spawned.
-fn main() -> Result<()> {
+fn main() -> std::process::ExitCode {
+    match execute() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(why) => {
+            if !why.is::<ReportedFailure>() {
+                eprintln!("Error: {why:?}");
+            }
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ReportedFailure;
+impl std::fmt::Display for ReportedFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("reported failure")
+    }
+}
+impl std::error::Error for ReportedFailure {}
+
+struct Execution {
+    opening: Option<opening::Opening>,
+    _events: Option<magi_host::events::collection::runtime::Scope>,
+}
+impl Drop for Execution {
+    fn drop(&mut self) {
+        magi_tools::supplier::shutdown();
+        balthasar::stop();
+    }
+}
+
+fn execute() -> Result<()> {
     let cli = Cli::parse();
+    if matches!(cli.command, Some(Command::Acp))
+        && (cli.socket.is_some()
+            || cli.resume
+            || cli.resume_run.is_some()
+            || cli.json
+            || cli.cbor
+            || cli.print
+            || cli.headless
+            || cli.tied.is_some()
+            || cli.acp_config
+            || cli.role.is_some()
+            || cli.role_description.is_some()
+            || cli.attach.is_some()
+            || cli.view_only
+            || cli.prompt.is_some())
+    {
+        anyhow::bail!("ACP does not accept native session or output-format flags");
+    }
     logging::begin(cli.logs.as_deref(), cli.verbose)?;
     // A verb this program does not have is a refusal like any other: on stdout, in the reply
     // shape, at exit 0, naming what was asked for. See FAMILY.md.
@@ -168,27 +225,34 @@ fn main() -> Result<()> {
         return Ok(());
     }
     // Only a session has a prologue, so an argument error arrives without a layer being started.
-    let opening = match (cli.command.is_none() && !(cli.print && cli.prompt.is_none())).then(|| {
-        opening::Opening::begin(
-            cli.socket.clone(),
-            melchior::Role {
-                name: cli.role.as_deref(),
-                description: cli.role_description.as_deref(),
-            },
-        )
-    }) {
-        Some(Err(why)) => {
-            eprintln!("magi: {why}");
-            std::process::exit(1);
-        }
-        Some(Ok(opening)) => Some(opening),
-        None => None,
+    let mut opening =
+        match (cli.command.is_none() && !(cli.print && cli.prompt.is_none())).then(|| {
+            opening::Opening::begin(
+                cli.socket.clone(),
+                cli.tied.filter(|_| cli.acp_config),
+                melchior::Role {
+                    name: cli.role.as_deref(),
+                    description: cli.role_description.as_deref(),
+                },
+            )
+        }) {
+            Some(Err(why)) => {
+                eprintln!("magi: {why}");
+                return Err(ReportedFailure.into());
+            }
+            Some(Ok(opening)) => Some(opening),
+            None => None,
+        };
+    let mut execution = Execution {
+        _events: opening.as_mut().and_then(|opening| opening.events.take()),
+        opening,
     };
-    // `fork` is not a session: a prologue here would name a second one and throw it away.
-    tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .build()?
-        .block_on(run(cli, opening))
+        .build()?;
+    let outcome = runtime.block_on(run(cli, execution.opening.take()));
+    drop(runtime);
+    outcome
 }
 
 async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
@@ -201,6 +265,7 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
         .unwrap_or_else(|| magi_ipc::socket_for(&cwd));
 
     match cli.command {
+        Some(Command::Acp) => acp::stdio().await,
         // Bare, the library as source, because that is what a person redirecting it into a file
         // wants; framed when an encoding is named, with the source as the single value.
         Some(Command::LuaApi) => {
@@ -281,6 +346,7 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
                     key: &key,
                     run: opening.run.as_deref(),
                     agent: opening.agent.as_deref(),
+                    load: opening.load.as_deref(),
                 },
             )
             .await
@@ -305,7 +371,7 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
             let outcome = outcome?;
             print::report(&outcome);
             if outcome.failed() {
-                std::process::exit(1);
+                return Err(ReportedFailure.into());
             }
             Ok(())
         }
@@ -334,6 +400,7 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
                     key: &key,
                     run: opening.run.as_deref(),
                     agent: opening.agent.as_deref(),
+                    load: opening.load.as_deref(),
                 },
             )
             .await
@@ -353,6 +420,7 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
                     cli.tied,
                     phase_watch,
                     spent_watch,
+                    cli.acp_config,
                 )
                 .await
             } else {

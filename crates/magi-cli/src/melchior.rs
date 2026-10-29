@@ -2,8 +2,12 @@
 //! program owning naming, sockets and the walls between sessions, one JSON object per line. Absent
 //! is the ordinary case — no siblings, no `agent` tool, and otherwise a working session.
 
+use magi_host::events::collection::{
+    Owner,
+    runtime::{self, Child, Input},
+};
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Command, Stdio};
 
 /// What the layer reads `magi.agent_talk` out of, spelled here because magi is what sets it.
 pub const TALK: &str = "MAGI_MELCHIOR_TALK";
@@ -179,6 +183,7 @@ pub struct Spent {
     pub cache_read: u64,
     pub cache_write: u64,
     pub cost_micros: u64,
+    pub estimated_micros: Option<u64>,
 }
 
 impl Spent {
@@ -190,6 +195,7 @@ impl Spent {
             cache_read: self.cache_read,
             cache_write: self.cache_write,
             cost_micros: self.cost_micros,
+            estimated_micros: self.estimated_micros,
         }
     }
 }
@@ -226,7 +232,7 @@ pub struct Role<'a> {
 /// A running melchior, and the pipe back to it.
 pub struct Melchior {
     child: Child,
-    told: Option<ChildStdin>,
+    told: Option<Input>,
     /// One session melchior says is listening, and where it draws: a host socket is named after a key
     /// its own process keeps private.
     hears: Option<BufReader<std::process::ChildStdout>>,
@@ -281,14 +287,13 @@ impl Melchior {
         ui: &std::path::Path,
         role: Role<'_>,
     ) -> Option<(Self, std::path::PathBuf)> {
-        let mut child = serving(program, project, talk, ui, role)
-            .stdin(Stdio::piped())
+        let mut command = serving(program, project, talk, ui, role);
+        command
             .stdout(Stdio::piped())
             // Swallowed, a refusal to bind would present as "no siblings" with nothing to read.
-            .stderr(Stdio::inherit())
-            .spawn()
-            .ok()?;
-        if let (Some(token), Some(told)) = (stop_token(), child.stdin.as_mut()) {
+            .stderr(Stdio::inherit());
+        let mut child = runtime::spawn(command, Owner::Melchior).ok()?;
+        if let (Some(token), Some(told)) = (stop_token(), child.input.as_mut()) {
             let _ = writeln!(told, "{}", token_line(token)).and_then(|()| told.flush());
         }
 
@@ -304,7 +309,7 @@ impl Melchior {
             let _ = child.kill();
             return None;
         };
-        let told = child.stdin.take();
+        let told = child.input.take();
         Some((
             Self {
                 child,
@@ -353,6 +358,7 @@ impl Melchior {
                     "cache_read": used.cache_read,
                     "cache_write": used.cache_write,
                     "cost_micros": used.cost_micros,
+                    "estimated_micros": used.estimated_micros,
                 })
             })
             .collect();

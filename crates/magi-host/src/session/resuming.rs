@@ -14,6 +14,21 @@ pub(crate) const PENDING_BYTES: usize = 64 * 1024 * 1024;
 /// Roughly how much text an entry holds.
 pub(super) fn weight(entry: &Entry) -> usize {
     match entry {
+        Entry::Workflow {
+            text,
+            aside,
+            images,
+            workflow,
+            ..
+        } => {
+            text.len()
+                + aside.len()
+                + crate::skills::snapshot::weight(workflow)
+                + images
+                    .iter()
+                    .map(|image| image.data.len() + image.media_type.len())
+                    .sum::<usize>()
+        }
         Entry::User { text, aside, .. } => text.len() + aside.len(),
         Entry::Assistant { text, thinking, .. } => text.len() + thinking.len(),
         Entry::Tool { args, result, .. } => {
@@ -37,9 +52,15 @@ impl Session {
     }
 
     pub fn restored(id: SessionId, rows: Vec<(Cursor, Entry)>) -> Result<Self, JournalError> {
+        for (cursor, entry) in &rows {
+            crate::skills::snapshot::check(entry, *cursor).map_err(JournalError::Refused)?;
+        }
         let journal = Journal::restore(id.clone(), rows)?;
         let mut session = Self::recorded(id, Vec::new());
         session.journal = journal;
+        if !session.entries().is_empty() {
+            session.frames = crate::frames::Frames::resumed();
+        }
         Ok(session)
     }
 
@@ -86,7 +107,10 @@ impl Session {
     }
 
     pub(crate) fn resume_prepared(&mut self, journal: Journal) {
+        self.files.retire();
+        self.files = crate::files::Files::default();
         self.journal = journal;
+        self.frames = crate::frames::Frames::resumed();
         self.admission.reports = Default::default();
         self.cancel = Default::default();
         self.helpers = self.helpers.fresh();

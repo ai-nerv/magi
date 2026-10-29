@@ -367,7 +367,7 @@ pub fn listed(session: &Session, layout: &Layout) -> Vec<magi_proto::laying::Lai
 /// Who said an entry, and the start of what.
 fn described(entry: &Entry) -> String {
     match entry {
-        Entry::User { text, .. } => format!("you: {text}"),
+        Entry::User { text, .. } | Entry::Workflow { text, .. } => format!("you: {text}"),
         Entry::From { who, text, .. } => format!("{who}: {text}"),
         Entry::Assistant { text, thinking, .. } if text.trim().is_empty() => {
             format!("model thinking: {thinking}")

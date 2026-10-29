@@ -12,12 +12,16 @@ pub mod context;
 pub mod declaring;
 pub mod driving;
 mod environment;
+pub mod events;
+mod files;
+mod frames;
 pub mod helping;
 pub mod holder;
 pub mod judging;
 pub mod knowing;
 pub mod laying;
 pub mod paths;
+mod preparing;
 pub mod remember;
 mod reporting;
 mod resuming;
@@ -26,6 +30,7 @@ pub mod scribe;
 mod sending;
 pub mod session;
 mod settling;
+pub mod skills;
 pub mod system;
 pub mod turn;
 pub mod worker;
@@ -47,8 +52,8 @@ const GREETING: std::time::Duration = std::time::Duration::from_millis(500);
 /// What [`drain`] needs to reach, set once the session is serving. A process-global because the
 /// process is one session; a turn's flush runs on a spawned task the process can exit before.
 type Draining = (
-    Arc<Mutex<Session>>,
-    Arc<Mutex<Option<crate::scribe::Scribe>>>,
+    std::sync::Weak<Mutex<Session>>,
+    std::sync::Weak<Mutex<Option<crate::scribe::Scribe>>>,
 );
 static DRAINING: std::sync::OnceLock<Draining> = std::sync::OnceLock::new();
 
@@ -56,14 +61,16 @@ static DRAINING: std::sync::OnceLock<Draining> = std::sync::OnceLock::new();
 /// after the last turn and before the socket goes. A failure is logged rather than returned: the
 /// last exchange is then missing from the store, and the next run's `--resume` comes back short.
 pub async fn drain() {
-    if let Some((session, scribe)) = DRAINING.get() {
+    if let Some((session, scribe)) = DRAINING.get()
+        && let (Some(session), Some(scribe)) = (session.upgrade(), scribe.upgrade())
+    {
         let helpers = session.lock().await.helpers();
         if let Ok(paused) = helpers.pause()
             && let Err(why) = paused.drain(std::time::Duration::from_secs(30)).await
         {
             magi_model::noted!("drain: {why}");
         }
-        if let Err(why) = crate::scribe::flush(session, &mut *scribe.lock().await).await {
+        if let Err(why) = crate::scribe::flush(&session, &mut *scribe.lock().await).await {
             magi_model::noted!("drain: the last turn did not reach balthasar: {why}");
         }
     }
@@ -154,12 +161,49 @@ pub async fn serve_on(
 /// The same, letting a screen go when it has not taken an event within `writing`.
 async fn serve_writing(
     listener: UnixListener,
-    mut session: Session,
+    session: Session,
     backend: Option<turn::Backend>,
     catalog: crate::catalog::Catalog,
     balthasar: Option<std::path::PathBuf>,
     writing: std::time::Duration,
 ) -> Result<(), HostError> {
+    serve_prepared(
+        listener, session, backend, catalog, balthasar, None, writing,
+    )
+    .await
+}
+
+/// Serve with the exact memory connection that reserved and replayed this session.
+pub async fn serve_recording(
+    listener: UnixListener,
+    session: Session,
+    backend: Option<turn::Backend>,
+    catalog: crate::catalog::Catalog,
+    scribe: crate::scribe::Scribe,
+) -> Result<(), HostError> {
+    let path = scribe.socket().to_owned();
+    serve_prepared(
+        listener,
+        session,
+        backend,
+        catalog,
+        Some(path),
+        Some(scribe),
+        serving::WRITING,
+    )
+    .await
+}
+
+async fn serve_prepared(
+    listener: UnixListener,
+    mut session: Session,
+    backend: Option<turn::Backend>,
+    catalog: crate::catalog::Catalog,
+    balthasar: Option<std::path::PathBuf>,
+    prepared: Option<crate::scribe::Scribe>,
+    writing: std::time::Duration,
+) -> Result<(), HostError> {
+    let explicit_memory = balthasar.is_some() || prepared.is_some();
     // Told once, here, because this is the only place that knows both.
     session.set_choices(catalog.choices());
     session.run_helpers_on(tokio::runtime::Handle::current());
@@ -180,22 +224,43 @@ async fn serve_writing(
     }
     let scribe = Arc::new(Mutex::new({
         let id = session.lock().await.id().clone();
-        let found = match balthasar.or_else(magi_ipc::family::named) {
-            Some(path) => Some(match magi_ipc::family::Family::dial(&path).await {
-                Ok(family) => crate::scribe::Scribe::over(family, Some(path), &id),
-                Err(why) => {
-                    magi_model::noted!("scribe: {why}; dialling again as it is needed");
-                    crate::scribe::Scribe::unconnected(path, &id)
+        let found = match prepared {
+            Some(scribe) => {
+                if !scribe
+                    .matches_recording(&id, catalog.transcript.as_deref().unwrap_or(id.as_str()))
+                {
+                    return Err(HostError::Refused(
+                        "prepared writer does not match this session".into(),
+                    ));
                 }
-            }),
-            None => None,
+                Some(scribe)
+            }
+            None => match balthasar.or_else(magi_ipc::family::named) {
+                Some(path) => Some(match magi_ipc::family::Family::dial(&path).await {
+                    Ok(family) => crate::scribe::Scribe::over(family, Some(path), &id),
+                    Err(why) => {
+                        magi_model::noted!("scribe: {why}; dialling again as it is needed");
+                        crate::scribe::Scribe::unconnected(path, &id)
+                    }
+                }),
+                None => None,
+            },
         };
-        found.map(|scribe| match &catalog.transcript {
+        let mut found = found.map(|scribe| match &catalog.transcript {
             Some(key) => scribe.recording_as(key.clone()),
             None => scribe,
-        })
+        });
+        if let Some(scribe) = found.as_mut()
+            && let Err(why) = scribe.reserve_writer(false).await
+        {
+            if explicit_memory {
+                return Err(HostError::Refused(why.to_string()));
+            }
+            magi_model::noted!("scribe: writer not ready: {why}; calls remain guarded");
+        }
+        found
     }));
-    let _ = DRAINING.set((Arc::clone(&session), Arc::clone(&scribe)));
+    let _ = DRAINING.set((Arc::downgrade(&session), Arc::downgrade(&scribe)));
     magi_model::noted!(
         "scribe: recording as {}",
         catalog
@@ -357,7 +422,14 @@ async fn serve_writing(
             })
             .map(Arc::new),
     ));
+    let preparing = Arc::new(preparing::Preparing::new(
+        Arc::clone(&session),
+        Arc::clone(&worker),
+        Arc::clone(&models),
+        Arc::clone(&scribe),
+    ));
     let served = Served {
+        preparing,
         session,
         worker,
         models,
@@ -386,15 +458,21 @@ async fn serve_writing(
         // A session serves one user; any other uid is refused rather than authenticated.
         match PeerCred::of(&stream) {
             Ok(cred) if cred.is_same_user() => {}
-            _ => continue,
+            _ => {
+                serving::observing::refused();
+                continue;
+            }
         }
         let Ok(seat) = Arc::clone(&seats).try_acquire_owned() else {
+            serving::observing::refused();
             tokio::spawn(serving::busy(stream));
             continue;
         };
         let served = served.clone();
+        let client = serving::observing::Client::connected();
         tokio::spawn(async move {
             let _seat = seat;
+            let _client = client;
             let _ = connection(stream, served).await;
         });
     }

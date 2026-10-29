@@ -17,7 +17,19 @@ impl App {
         self.timeline.note(&event);
         self.stir_for(&event);
         match event {
+            HarnessEvent::TurnStarted { .. }
+            | HarnessEvent::TurnFinished { .. }
+            | HarnessEvent::PromptRefused { .. }
+            | HarnessEvent::ModelSelected { .. } => {}
+            HarnessEvent::WorkflowsListed {
+                entries,
+                warnings,
+                error,
+            } => {
+                self.listed_workflows(entries, warnings, error);
+            }
             HarnessEvent::ModelsRefreshed { choices, warning } => {
+                self.clear_workflows();
                 self.choices = choices;
                 self.model_reasons = self.model.as_ref().is_some_and(|chosen| {
                     self.choices
@@ -43,6 +55,7 @@ impl App {
                 ..
             } => {
                 self.session_id = Some(session.to_string());
+                self.clear_workflows();
                 self.judging = judging;
                 let unconfigured = model.is_none();
                 self.model = model;
@@ -81,6 +94,21 @@ impl App {
                     });
                     self.show_notice(said);
                 }
+            }
+            HarnessEvent::WorkflowMessage {
+                id,
+                text,
+                images,
+                workflow,
+                ..
+            } => {
+                self.entries.push(Entry::Workflow {
+                    id,
+                    text,
+                    images,
+                    workflow,
+                    aside: String::new(),
+                });
             }
             HarnessEvent::UserMessage {
                 id, text, images, ..
@@ -272,6 +300,7 @@ impl App {
                     self.show_notice(why);
                 }
             }
+            HarnessEvent::CacheFrame { .. } | HarnessEvent::ProviderFrame { .. } => {}
             HarnessEvent::MemoryAnswered { verb, answer } => self.remembered(&verb, &answer),
             HarnessEvent::HelperSpent { role, model, usage } => {
                 self.helped

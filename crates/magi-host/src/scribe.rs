@@ -9,6 +9,7 @@ use magi_proto::{Cursor, Entry, SessionId};
 /// of its users, which would put `worker` and `turn` in a cycle.
 pub type Held = std::sync::Arc<tokio::sync::Mutex<Option<Scribe>>>;
 mod flushing;
+mod ownership;
 mod resuming;
 mod shape;
 pub use flushing::flush;
@@ -71,6 +72,8 @@ pub struct Beside {
 }
 
 pub struct Scribe {
+    writer: ownership::Writer,
+    managed_writer: bool,
     /// `None` while the memory layer is not answering; dialled again no sooner than `retry`.
     family: Option<Family>,
     /// Where to dial to get this connection back. balthasar can restart, and it drops a caller that
@@ -108,6 +111,8 @@ impl Scribe {
     #[must_use]
     pub fn unconnected(at: std::path::PathBuf, session: &SessionId) -> Self {
         Self {
+            writer: ownership::Writer::Unchecked,
+            managed_writer: false,
             family: None,
             at,
             retry: (std::time::Instant::now(), BACKOFF.0),
@@ -127,6 +132,29 @@ impl Scribe {
 
     /// The connection, dialled again when it is down and the backoff has passed.
     async fn link(&mut self) -> Result<&mut Family, Fault> {
+        self.connect().await?;
+        if self.managed_writer {
+            self.reserve_writer(false).await.map_err(|why| {
+                if why.is_fatal() {
+                    why
+                } else {
+                    Fault::Failed(format!("writer negotiation failed: {why}"))
+                }
+            })?;
+        }
+        self.connect().await
+    }
+
+    async fn connect(&mut self) -> Result<&mut Family, Fault> {
+        self.check_writer()?;
+        if self.managed_writer
+            && self
+                .family
+                .as_ref()
+                .is_some_and(|family| !family.has_connection())
+        {
+            self.family = None;
+        }
         if self.family.is_none() {
             let now = std::time::Instant::now();
             if now < self.retry.0 {
@@ -139,6 +167,7 @@ impl Scribe {
             match Family::dial(&self.at).await {
                 Ok(open) => {
                     self.family = Some(open);
+                    self.writer = ownership::Writer::Unchecked;
                     self.retry.1 = BACKOFF.0;
                 }
                 Err(why) => {
@@ -176,6 +205,19 @@ impl Scribe {
             }
             other => other,
         }
+    }
+
+    /// Check a complete workflow against this transcript's write and replay envelopes.
+    pub fn validate_workflow(&self, entry: &Entry) -> Result<(), Fault> {
+        if matches!(entry, Entry::Workflow { .. }) {
+            crate::skills::snapshot::check(entry, Cursor(u64::MAX)).map_err(Fault::Refused)?;
+            let mut bounded = entry.clone();
+            if let Entry::Workflow { id, .. } = &mut bounded {
+                *id = magi_proto::MessageId::new("u".repeat(64));
+            }
+            self.fitted("observe", Cursor(u64::MAX), &bounded, &Beside::default())?;
+        }
+        Ok(())
     }
 
     /// Record a settled entry. Durable when this returns.
@@ -353,6 +395,16 @@ impl Scribe {
             ])
         };
         let whole = args(entry)?;
+        if matches!(entry, Entry::Workflow { .. }) {
+            crate::skills::snapshot::check(entry, cursor).map_err(Fault::Refused)?;
+            return if magi_ipc::family::fits(verb, &whole) {
+                Ok(whole)
+            } else {
+                Err(Fault::Refused(
+                    "complete workflow record cannot fit unchanged in a write frame".into(),
+                ))
+            };
+        }
         if magi_ipc::family::fits(verb, &whole) {
             return Ok(whole);
         }

@@ -18,6 +18,7 @@ type Tighter = fn(&[u64]) -> Vec<Value>;
 /// A memory layer that lays out everything live, and answers a refusal with `tighter`.
 struct Memory {
     dir: Scratch,
+    calls: Arc<Mutex<Vec<Value>>>,
 }
 
 impl Memory {
@@ -25,9 +26,12 @@ impl Memory {
         let dir = Scratch::new("magi-overflowing", name);
         let listener = tokio::net::UnixListener::bind(dir.join("m.sock")).expect("bind");
         let live: Arc<Mutex<Vec<u64>>> = Arc::default();
+        let calls: Arc<Mutex<Vec<Value>>> = Arc::default();
+        let recorded = Arc::clone(&calls);
         tokio::spawn(async move {
             while let Ok((mut stream, _)) = listener.accept().await {
                 let live = Arc::clone(&live);
+                let recorded = Arc::clone(&recorded);
                 tokio::spawn(async move {
                     while let Ok(length) = stream.read_u32().await {
                         let mut body = vec![0; length as usize];
@@ -35,6 +39,7 @@ impl Memory {
                             break;
                         }
                         let call: Value = magi_ipc::Wire::read(&body).expect("a family call");
+                        recorded.lock().expect("calls").push(call.clone());
                         let reply = match call["call"].as_str().unwrap_or_default() {
                             "layout" => {
                                 let cursors: Vec<u64> = call["args"][1]["live"]
@@ -60,7 +65,16 @@ impl Memory {
                 });
             }
         });
-        Self { dir }
+        Self { dir, calls }
+    }
+
+    fn overflow_calls(&self) -> usize {
+        self.calls
+            .lock()
+            .expect("calls")
+            .iter()
+            .filter(|call| call["call"] == "overflowed")
+            .count()
     }
 
     async fn scribe(&self) -> magi_host::scribe::Held {
@@ -102,6 +116,9 @@ fn refusing(name: &str) -> Mind {
     )
 }
 
+#[path = "overflowing/typed.rs"]
+mod typed;
+
 async fn run(
     session: &tokio::sync::Mutex<magi_host::session::Session>,
     mind: &Mind,
@@ -131,6 +148,7 @@ async fn a_tighter_layout_that_is_no_smaller_is_not_sent() {
     let mind = refusing("overflow-no-smaller");
     let said = run(&session, &mind, &memory).await;
     assert_eq!(mind.asked(), 1, "the larger request was not sent");
+    assert_eq!(memory.overflow_calls(), 1);
     let why = format!("{said:?}");
     assert!(why.contains("nothing left to leave out"), "{why}");
 }
@@ -182,6 +200,7 @@ async fn a_tighter_layout_that_is_smaller_is_sent() {
         .expect("the smaller request is answered");
     let asks = mind.asks();
     assert_eq!(asks.len(), 2, "refused once, then answered");
+    assert_eq!(memory.overflow_calls(), 1);
     assert!(
         asks[1].len() < asks[0].len(),
         "{} then {}",
@@ -191,5 +210,21 @@ async fn a_tighter_layout_that_is_smaller_is_sent() {
     assert!(
         !asks[1].contains("RESULT RESULT"),
         "the result went as its stub"
+    );
+    let held = session.lock().await;
+    assert!(held.entries().iter().any(|entry| matches!(entry,
+        Entry::Tool { id, result:Some(result), .. } if id.as_str()=="c1" && result.output=="RESULT ".repeat(3_000))));
+    assert_eq!(
+        held.entries()
+            .iter()
+            .filter(|entry| matches!(
+                entry,
+                Entry::Assistant {
+                    stop_reason: Some(StopReason::Error),
+                    ..
+                }
+            ))
+            .count(),
+        1
     );
 }

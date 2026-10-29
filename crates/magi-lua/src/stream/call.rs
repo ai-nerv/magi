@@ -28,12 +28,24 @@ pub(super) fn framed<'gc>(
     ctx: Context<'gc>,
     request: Value<'gc>,
     keyed: Option<&std::path::Path>,
+    socket: Option<&UnixStream>,
 ) -> Result<Vec<u8>, String> {
     if !matches!(request, Value::Table(_)) {
         return Err("call needs a request table".to_owned());
     }
     let mut json = crate::convert::json_from_lua(ctx, request)
         .map_err(|why| format!("this request cannot be written as JSON: {why}; it was not sent"))?;
+    if let Some(fields) = json.as_object_mut() {
+        fields.remove("event_context");
+        if let (Some(socket), Some(path)) = (socket, keyed)
+            && let Some(context) = magi_tools::family::observing::capture(socket, path)
+        {
+            fields.insert(
+                "event_context".into(),
+                serde_json::to_value(context).map_err(|_| "cannot encode host request context")?,
+            );
+        }
+    }
     if let Some(socket) = keyed {
         magi_tools::family::seal(socket, &mut json);
     }

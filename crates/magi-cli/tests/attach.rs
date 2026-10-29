@@ -149,12 +149,18 @@ async fn the_two_paths_agree_on_the_final_transcript() {
 fn fold(mut entries: Vec<Entry>, events: &[HarnessEvent]) -> Vec<Entry> {
     for event in events {
         match event.clone() {
+            HarnessEvent::TurnStarted { .. }
+            | HarnessEvent::TurnFinished { .. }
+            | HarnessEvent::PromptRefused { .. }
+            | HarnessEvent::ModelSelected { .. } => {}
             // Not part of a transcript: a question nobody is there to answer has no place in one,
             // and rows a tool held for a while are on the screen rather than in the record.
             HarnessEvent::Asked { .. } => {}
             HarnessEvent::PermissionAsked { .. } => {}
             HarnessEvent::ContextLaid { .. }
             | HarnessEvent::RequestAdmitted { .. }
+            | HarnessEvent::CacheFrame { .. }
+            | HarnessEvent::ProviderFrame { .. }
             | HarnessEvent::HelperSpent { .. }
             | HarnessEvent::MemoryAnswered { .. }
             | HarnessEvent::Noticed { .. } => {}
@@ -162,6 +168,19 @@ fn fold(mut entries: Vec<Entry>, events: &[HarnessEvent]) -> Vec<Entry> {
             | HarnessEvent::Drew { .. }
             | HarnessEvent::Unsurfaced { .. }
             | HarnessEvent::Granted { .. } => {}
+            HarnessEvent::WorkflowMessage {
+                id,
+                text,
+                images,
+                workflow,
+                ..
+            } => entries.push(Entry::Workflow {
+                id,
+                text,
+                images,
+                workflow,
+                aside: String::new(),
+            }),
             HarnessEvent::UserMessage {
                 id, text, images, ..
             } => entries.push(Entry::User {
@@ -246,6 +265,7 @@ fn fold(mut entries: Vec<Entry>, events: &[HarnessEvent]) -> Vec<Entry> {
             HarnessEvent::StatusChanged { .. }
             | HarnessEvent::SessionSnapshot { .. }
             | HarnessEvent::ModelsRefreshed { .. }
+            | HarnessEvent::WorkflowsListed { .. }
             | HarnessEvent::Error { .. } => {}
         }
     }

@@ -375,7 +375,7 @@ mod tests {
         let script = a_harness(
             &dir,
             &format!(
-                "tr '\\0' '\\n' < /proc/self/environ > {}\nsleep 2\n",
+                "tr '\\0' '\\n' < /proc/$$/environ > {}\nsleep 2\n",
                 seen.display()
             ),
         );

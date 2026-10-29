@@ -11,7 +11,9 @@ const KEYS: &str = "\
 - `d c y` take a motion: `dw` `d$` `ct,` `yb` — doubled for the line: `dd cc yy`
 - `x X D p P J ~ r` edit — `:` command line, which holds your prompt until it closes
 
-**Triggers** — `@file` completes a path, `$instance` another magi, `/skill` a skill (not built yet)
+**Triggers** — `@file` completes a path, `$instance` another magi, `/skill <name>` a workflow
+**Workflows** — `:skills` refreshes completion; arguments are literal data. Source and digest appear in the transcript. Selected content is frozen in history; scripts are not executed.
+Project workflows use the launch directory unless `magi.workflow_workspace` selects an absolute or launch-relative root. This does not change tool working directories or permissions. No ancestor search is performed; the XDG user workflow root stays unchanged.
 - `j k` scroll the transcript while the prompt is one line — `gg G` its ends
 - `tab` complete — `enter` runs the command — `↑/↓` move through the list
 - `pgup`/`pgdn` scroll — `shift+↑/↓` by a line — `shift+home/end` to the ends

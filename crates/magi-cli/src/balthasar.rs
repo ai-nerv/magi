@@ -5,8 +5,12 @@
 //! OOM ends it too. Sweeping a leftover socket is not a substitute: that clears a name, and the
 //! orphan holding it is a live process that still answers `verbs`.
 
+use magi_host::events::collection::{
+    Owner,
+    runtime::{self, Child},
+};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
 /// The balthasar this process started, so it can be ended and its path cleared.
@@ -186,7 +190,7 @@ fn spawned(
     }
     // What this session told it at `configure`, and nothing another session said.
     spawning.env(magi_host::driving::GIVEN, magi_host::driving::given_dir());
-    let mut child = spawning
+    spawning
         .arg("serve")
         .arg("--instance")
         .arg(instance)
@@ -201,9 +205,9 @@ fn spawned(
         // that refuses to start needs its last words, which are all a person has to go on.
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    if let Some(mut stdin) = child.stdin.take() {
+        .stderr(Stdio::piped());
+    let mut child = runtime::spawn(spawning, Owner::Balthasar)?;
+    if let Some(mut stdin) = child.input.take() {
         let _ = std::io::Write::write_all(&mut stdin, format!("{key}\n").as_bytes());
     }
     Ok(child)
@@ -460,7 +464,7 @@ mod tests {
         let id = child.id();
 
         ended(Ours {
-            child,
+            child: child.into(),
             sockets: vec![socket.clone(), older.clone()],
         });
         drop(listener);
@@ -492,7 +496,7 @@ mod tests {
             .expect("a child to end");
         let id = child.id();
         ended(Ours {
-            child,
+            child: child.into(),
             sockets: vec![std::env::temp_dir().join("magi-never-bound-anything.sock")],
         });
         assert!(

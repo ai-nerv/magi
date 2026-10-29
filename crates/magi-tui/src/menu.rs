@@ -62,7 +62,7 @@ pub fn row(r: &Row<'_>, typed: &str, width: u16) -> Line<'static> {
     spans.extend(matched(r.value, typed, value_style, bg));
 
     if !r.detail.is_empty() {
-        let gap = r.value_width.saturating_sub(r.value.chars().count()) + 2;
+        let gap = r.value_width.saturating_sub(crate::wrap::columns(r.value)) + 2;
         let detail_style = if !r.ready {
             Style::default().fg(colour::warning())
         } else if r.selected {
@@ -171,15 +171,26 @@ fn clip(spans: Vec<Span<'static>>, width: usize) -> Vec<Span<'static>> {
     let mut out = Vec::with_capacity(spans.len());
     let mut used = 0usize;
     for span in spans {
-        let len = span.content.chars().count();
+        let len = span.width();
         if used + len <= width {
             used += len;
             out.push(span);
             continue;
         }
-        let room = width - used;
+        let mut room = width - used;
         if room > 0 {
-            let cut: String = span.content.chars().take(room).collect();
+            let cut: String = span
+                .content
+                .chars()
+                .take_while(|c| {
+                    let columns = crate::wrap::columns(c.encode_utf8(&mut [0; 4]));
+                    if columns > room {
+                        return false;
+                    }
+                    room -= columns;
+                    true
+                })
+                .collect();
             out.push(Span::styled(cut, span.style));
         }
         break;
@@ -193,7 +204,7 @@ fn fill(
     width: u16,
     bg: ratatui::style::Color,
 ) -> Vec<Span<'static>> {
-    let used: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    let used: usize = spans.iter().map(Span::width).sum();
     let room = usize::from(width).saturating_sub(used);
     if room > 0 {
         spans.push(Span::styled(" ".repeat(room), Style::default().bg(bg)));

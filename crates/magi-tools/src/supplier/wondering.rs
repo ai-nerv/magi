@@ -29,13 +29,14 @@ impl Answers for Told {
 /// directory, which another test in the same binary is free to change under this one.
 fn fixture(dir: &std::path::Path, wonder: &serde_json::Value) -> std::path::PathBuf {
     let script = dir.join("supplier");
+    let reader = fixture_reader();
     let log = dir.join("calls").display().to_string();
     let asked = serde_json::json!({ "ok": true, "result": [{ "shown": wonder }] });
     let done = serde_json::json!({ "ok": true, "result": [{ "said": "finished" }] });
     std::fs::write(
         &script,
         format!(
-            "#!/bin/sh\ncall=$(/bin/cat)\nprintf '%s\\n' \"$call\" >> '{log}'\n\
+            "#!/bin/sh\ncall=$({reader})\nprintf '%s\\n' \"$call\" >> '{log}'\n\
              case \"$call\" in\n  *answered*) printf '%s\\n' '{done}' ;;\n  \
              *) printf '%s\\n' '{asked}' ;;\nesac\n"
         ),

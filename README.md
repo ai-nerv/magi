@@ -53,6 +53,12 @@ make verify       # fmt, check, test, clippy, gates, docs
 **Both are needed.** `make configs` installs configuration; it does nothing for a binary you
 have not installed. `make configs` says so when the two are out of step.
 
+Configuration synchronization is file-by-file: the newer differing side wins. A newer installed
+file is copied back into the checkout and named in the output. Equal timestamps favor the
+checkout; identical files use its timestamp. `make configs --keep` leaves differing installed
+files alone. `--dest=PATH` selects another destination, and extra installed files are retained.
+`make test-config-install` exercises the actual recipe in disposable source/destination trees.
+
 With no API keys set, `make run` says as much and `/model` lists every model magi knows with
 what each would need — so the first thing you do is choose one rather than read a config file.
 
@@ -73,6 +79,15 @@ make demo         # the UI against a canned recording — no model, no tools
 make host         # a replay host alone
 make ui           # the UI alone, attaching to it
 ```
+
+## Workflow skills
+
+Use `/skill <name> [literal arguments]` to select a Markdown workflow. Project
+files live in `.magi/skills/<name>/SKILL.md` or `.agents/skills/<name>/SKILL.md`;
+user workflows live under the XDG Magi configuration directory. `:skills` refreshes
+completion. Selected content is frozen in history and grants no tool permissions.
+See [Workflow skills](WORKFLOWS.md) for precedence, format, bounds, print-mode use,
+and current verification limits.
 
 ## Tools
 
@@ -467,3 +482,53 @@ be read again through the tool's recovery hint. The 50% input-context admission 
 Text-only models receive an explicit image-omission note. Switching to a vision model restores
 the stored images when those entries are in the selected context. This implementation covers
 image inputs, not audio/video inputs or image generation.
+
+## Offline cache contract
+
+From a NERV checkout, `oslo make test-cache-contract` runs the selected production
+family against an offline Anthropic fixture. Magi reads a real file through
+Casper, preserves signed reasoning and tool units through Melchior, and persists
+the transcript through Balthasar. Captures check marker positions, stable frames,
+normalized prefixes and supplied usage settlement; they do not measure real
+provider cache hits or savings. The resulting receipt is explicitly scoped to
+that scenario, not the full acceptance lane.
+
+The Magi recipe takes an explicit absolute `--runner` path to the family
+acceptance script. `oslo make test-session-client` checks the headless client's
+argument parsing; `build-session-client` builds that protocol fixture. No sibling
+Rust source dependency or installed configuration is added.
+
+`oslo make test-cache-frames` checks transient `cache_frame` events and captured
+Magi asks across ordinary growth, deferred-tool activation, changed rules/models,
+selected stubs and summaries. `test-cache-routing` checks upstream preference and
+release after transport failures. The observer keeps one fixed-size in-memory
+snapshot per session, never prompt copies or durable fingerprints; events contain
+only bounded reason codes. Restore/resume discards the snapshot and reports
+`resume_incompatible` once because compatibility with prior requests is unknown.
+These are provider-neutral observations before an ask, not evidence of delivery,
+provider cache hits, or provider-owned dialect/image adaptation. Balthasar still
+selects the layout, and fresh instructions and explicit routing choices still win.
+
+Provider observations arrive separately from response deltas. Magi compares their
+fixed-size policy identity only in session memory and publishes `provider_frame`
+reason codes for dialect/policy changes and image adaptation. Missing or unknown
+metadata clears compatibility, including across retries. These pre-send events
+never release helpers awaiting a response, enter the transcript, or charge usage.
+The headless test client accepts a validated inline `--image` with optional
+`--image-type` for offline image-preservation fixtures.
+Its `--resume <id>` waits for the initial attach snapshot, sends the production
+resume command, and waits for the selected session snapshot before submitting a
+prompt. A refused or timed-out resume fails without submitting that prompt.
+The root cache contract exercises actual Balthasar replay and native Casper tool
+history through resume, checking exact signed/image prefixes, unchanged durable
+entries, and one explicit resume invalidation followed by ordinary stable growth.
+An input-overflow fixture also checks actual Balthasar-selected read-result stubs,
+the complete durable output, warning insertion/removal, and subsequent stable
+masked prefixes. The client's `--successful-answers` waits past intermediate
+error endings during recovery and fails on read errors or timeout.
+It also captures shipped deferred-tool discovery, verified Balthasar user-rule
+projection, and default-policy context pressure with whole-group drops and a
+summary. Each main request is checked against the actual selected slots and full
+durable history; invalidation reasons do not excuse arbitrary content changes.
+Summary text stays on the assistant channel and retains the store's failed-call
+guard. These are offline encoding and ownership checks, not measured cache hits.

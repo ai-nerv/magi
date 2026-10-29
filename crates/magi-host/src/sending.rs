@@ -19,8 +19,9 @@ pub async fn send<W: AsyncWrite + Unpin>(
     writer: &mut FrameWriter<W>,
     event: &HarnessEvent,
 ) -> Result<(), IpcError> {
-    let Err(IpcError::FrameTooLarge { len }) = writer.write(event).await else {
-        return Ok(());
+    let len = match writer.write(event).await {
+        Err(IpcError::FrameTooLarge { len }) => len,
+        result => return result,
     };
     magi_model::noted!("ui: a {len} byte event is cut down to fit a frame");
     let whole = serde_json::to_value(event).unwrap_or_default();
@@ -137,5 +138,29 @@ mod tests {
             "{given_up:?}"
         );
         assert!(started.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn a_closed_screen_is_a_write_failure_not_a_successful_delivery() {
+        use tokio::io::AsyncReadExt;
+        for partial in [false, true] {
+            let (client, mut server) = tokio::io::duplex(16);
+            let closing = tokio::spawn(async move {
+                if partial {
+                    let mut prefix = [0; 4];
+                    server.read_exact(&mut prefix).await.expect("frame prefix");
+                }
+                drop(server);
+            });
+            let event = HarnessEvent::UserMessage {
+                cursor: Cursor(1),
+                id: MessageId::new("u1"),
+                text: "x".repeat(1024),
+                images: vec![],
+            };
+            let result = send(&mut FrameWriter::new(client), &event).await;
+            assert!(matches!(result, Err(IpcError::Io(_))), "{result:?}");
+            closing.await.expect("closed");
+        }
     }
 }

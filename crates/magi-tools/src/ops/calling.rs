@@ -7,9 +7,19 @@ use std::path::{Path, PathBuf};
 pub struct Calling<'a> {
     pub ops: &'a dyn Ops,
     pub id: magi_proto::ToolCallId,
+    pub revisions: Option<&'a dyn crate::files::Revisions>,
 }
 
 impl Ops for Calling<'_> {
+    fn file_revision(
+        &self,
+        subject: crate::files::Subject<'_>,
+        capability: &magi_proto::tooling::FileCapability,
+    ) -> Result<crate::files::Grant, String> {
+        self.revisions
+            .ok_or("native file tools require this agent's delivery context")?
+            .admit(subject, capability)
+    }
     fn cwd(&self) -> PathBuf {
         self.ops.cwd()
     }
@@ -81,6 +91,7 @@ mod tests {
         let calling = Calling {
             ops: &Strict,
             id: magi_proto::ToolCallId::new("c1"),
+            revisions: None,
         };
         let action = magi_proto::permit::Action::Read { path: "/".into() };
         assert_eq!(calling.allow("read", &action), Err("not allowed".into()));
@@ -94,6 +105,7 @@ mod tests {
         let calling = Calling {
             ops: &Strict,
             id: magi_proto::ToolCallId::new("c1"),
+            revisions: None,
         };
         assert_eq!(calling.call(), Some(magi_proto::ToolCallId::new("c1")));
         assert_eq!(Strict.call(), None);

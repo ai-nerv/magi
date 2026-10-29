@@ -7,7 +7,9 @@
 //! of, cannot be asked, or keeps refusing, comes back to the person. The kernel jail is
 //! underneath all of it and takes no instruction from any of it.
 
+use crate::events::{DelegationReason, LocalPolicy, PolicyDecision};
 pub use magi_proto::judging::Rules;
+mod observing;
 use magi_proto::judging::{Advice, Mode};
 use magi_proto::permit::{Action, Decision, Lifetime, Scope};
 use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
@@ -182,19 +184,30 @@ impl Judged {
     /// it has refused so often that it is evidently missing what they know.
     fn automatically(&self, tool: &str, action: &Action) -> Decision {
         if matches!(action, Action::Read { .. }) || self.an_edit_here(action) {
-            return Self::once();
+            return observing::decided(
+                PolicyDecision::LocalAllowed {
+                    mode: LocalPolicy::Auto,
+                },
+                Self::once(),
+            );
         }
         let Some(advice) = self.judge.judge(tool, action) else {
-            return self.person.ask(tool, action);
+            return observing::delegated(
+                DelegationReason::JudgeUnavailable,
+                self.person.ask(tool, action),
+            );
         };
         // Too near the middle to be a verdict: the person is asked, and shown what it did say.
         self.standing.judged.fetch_add(1, Ordering::Relaxed);
         if advice.unsure(self.standing.band()) {
-            return self.person.ask_advised(tool, action, Some(&advice));
+            return observing::delegated(
+                DelegationReason::JudgeUncertain,
+                self.person.ask_advised(tool, action, Some(&advice)),
+            );
         }
         if advice.safe {
             self.standing.in_a_row.store(0, Ordering::Relaxed);
-            return Self::once();
+            return observing::model(Self::once());
         }
         self.standing.in_a_row.fetch_add(1, Ordering::Relaxed);
         self.standing.in_all.fetch_add(1, Ordering::Relaxed);
@@ -208,7 +221,7 @@ impl Judged {
                 self.standing.in_a_row.store(0, Ordering::Relaxed);
                 self.standing.in_all.store(0, Ordering::Relaxed);
             }
-            return decision;
+            return observing::delegated(DelegationReason::RefusalLimit, decision);
         }
         (self.notice)(format!(
             "auto mode refused {} {} [{}]: {}",
@@ -217,14 +230,14 @@ impl Judged {
             advice.rule,
             advice.reason
         ));
-        self.refuse(
+        observing::model(self.refuse(
             action,
             format!(
                 "Refused by the safety check [{}]: {} Do it another way, or leave it for the \
                  person to do; asking again as it is will be refused again.",
                 advice.rule, advice.reason
             ),
-        )
+        ))
     }
 }
 
@@ -245,7 +258,7 @@ fn key(action: &Action) -> String {
 impl magi_tools::approve::Approver for Judged {
     fn ask(&self, tool: &str, action: &Action) -> Decision {
         if let Some(rule) = self.rules.deny.iter().find(|rule| rule.names(action)) {
-            return self.refuse(
+            return observing::decided(PolicyDecision::RuleDenied {}, self.refuse(
                 action,
                 format!(
                     "`magi.deny` forbids it ({} {}), in every mode. It is not to be done another \
@@ -253,26 +266,34 @@ impl magi_tools::approve::Approver for Judged {
                     rule.verb,
                     of(&rule.scope)
                 ),
+            ));
+        }
+        let ruled = self.rules.ask.iter().any(|rule| rule.names(action));
+        if ruled || self.unsure(action) {
+            let advice = self.judge.judge(tool, action);
+            return observing::delegated(
+                if ruled {
+                    DelegationReason::Rule
+                } else {
+                    DelegationReason::AmbiguousRule
+                },
+                self.person.ask_advised(tool, action, advice.as_ref()),
             );
         }
-        if self.rules.ask.iter().any(|rule| rule.names(action)) || self.unsure(action) {
-            let advice = self.judge.judge(tool, action);
-            return self.person.ask_advised(tool, action, advice.as_ref());
-        }
         match self.standing.mode() {
-            Mode::Locked => self.refuse(
+            Mode::Locked => observing::decided(PolicyDecision::LockedDenied {}, self.refuse(
                 action,
                 "This session is locked: what no rule allows is refused rather than asked about. \
                  Carry on with what is allowed."
                     .to_owned(),
-            ),
+            )),
             Mode::Auto => self.automatically(tool, action),
-            Mode::Edits if self.an_edit_here(action) => Self::once(),
+            Mode::Edits if self.an_edit_here(action) => observing::decided(PolicyDecision::LocalAllowed { mode: LocalPolicy::Edits }, Self::once()),
             // The person decides, with the second model's view beside the question when there is
             // one: a long command is read for them, not decided for them.
-            Mode::Ask | Mode::Edits => {
+            mode @ (Mode::Ask | Mode::Edits) => {
                 let advice = self.judge.judge(tool, action);
-                self.person.ask_advised(tool, action, advice.as_ref())
+                observing::delegated(if mode == Mode::Ask { DelegationReason::AskMode } else { DelegationReason::EditsMode }, self.person.ask_advised(tool, action, advice.as_ref()))
             }
         }
     }
@@ -341,9 +362,9 @@ impl Judge for Helper {
             action.subject()
         );
         self.asking
-            .send(crate::knowing::Wondering {
-                wonder: magi_proto::wondering::Wonder::Helper,
-                args: serde_json::json!({
+            .send(crate::knowing::Wondering::new(
+                magi_proto::wondering::Wonder::Helper,
+                serde_json::json!({
                     "role": "safety", "instruction": INSTRUCTION, "input": input, "said": true,
                     // A model that answers typed questions needs the shape as a shape; one that
                     // writes is told it in words, as every other helper job is.
@@ -352,7 +373,7 @@ impl Judge for Helper {
                     "schema": verdict_shape(),
                 }),
                 back,
-            })
+            ))
             .ok()?;
         match answer.recv_timeout(PATIENCE).ok()? {
             magi_proto::wondering::Answered::Told { said } => read(said.get("text")?.as_str()?),

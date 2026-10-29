@@ -13,6 +13,8 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
+mod ending;
+
 /// How often the parent is looked for — a corpse check rather than a heartbeat.
 const LOOK: Duration = Duration::from_secs(1);
 
@@ -31,10 +33,12 @@ pub async fn run(
     parent: Option<u32>,
     phase: watch::Receiver<AgentStatus>,
     spent: watch::Receiver<Vec<(String, magi_proto::Usage)>>,
+    owned: bool,
 ) -> Result<()> {
     let mut layer = started.map(|(layer, _at)| layer);
     // Said once, because a session with no terminal has no other way to say what it is called.
-    if let Some(named) = layer.as_ref().map(|layer| layer.named.as_str())
+    if !owned
+        && let Some(named) = layer.as_ref().map(|layer| layer.named.as_str())
         && !named.is_empty()
     {
         println!("{named}");
@@ -49,7 +53,7 @@ pub async fn run(
             eprintln!("magi: this session could not be given its prompt: {why}");
         }
     }
-    park(socket, &mut layer, parent, phase, spent).await;
+    park(socket, &mut layer, parent, phase, spent, owned).await?;
     Ok(())
 }
 
@@ -102,7 +106,8 @@ async fn park(
     parent: Option<u32>,
     mut phase: watch::Receiver<AgentStatus>,
     spent: watch::Receiver<Vec<(String, magi_proto::Usage)>>,
-) {
+    owned: bool,
+) -> Result<()> {
     let mut heard = layer
         .as_mut()
         .and_then(crate::melchior::Melchior::hearing)
@@ -116,7 +121,18 @@ async fn park(
     let mut arrivals: Vec<UiCommand> = Vec::new();
     let watching = parent.map(|pid| (pid, started_at(pid)));
     let mut looking = watching.as_ref().map(|_| tokio::time::interval(LOOK));
-    let mut ended = signal();
+    let mut ended = match ending::signal() {
+        Ok(ended) => ended,
+        Err(why) if owned => return Err(why.into()),
+        Err(_) => Box::pin(std::future::pending()),
+    };
+    let parent_alive = if owned {
+        crate::acp::bootstrap::ready(
+            parent.ok_or_else(|| anyhow::anyhow!("missing ACP lifetime parent"))?,
+        )?
+    } else {
+        true
+    };
 
     // Its own phase, reported mechanically so a coordinator knows what it is doing without the
     // model choosing to say. `working_since` makes the timer live; `has_worked` is what turns the
@@ -143,6 +159,9 @@ async fn park(
     );
 
     loop {
+        if !parent_alive {
+            break;
+        }
         tokio::select! {
             said = next(&mut heard) => match said {
                 Some(crate::melchior::Heard::Stopped) => break,
@@ -203,8 +222,10 @@ async fn park(
             () = &mut ended => break,
         }
     }
+    let _ = tokio::time::timeout(SETTLE, ending::settle_owned(socket)).await;
     let last = spent.borrow().clone();
     report(layer, Phase::Gone, None, 0, &last);
+    Ok(())
 }
 
 /// The occasion to wake this session on, or `None` for a signal it should only observe. A child or
@@ -487,20 +508,6 @@ async fn next(
     }
 }
 
-/// Both signals, so a transcript is not lost depending on whether it was `kill` or ctrl-c.
-fn signal() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
-    use tokio::signal::unix::{SignalKind, signal};
-    let Ok(mut term) = signal(SignalKind::terminate()) else {
-        return Box::pin(std::future::pending());
-    };
-    Box::pin(async move {
-        tokio::select! {
-            _ = term.recv() => {}
-            _ = tokio::signal::ctrl_c() => {}
-        }
-    })
-}
-
 /// Whether the session that forked this one is still the process it was: a missing directory or a
 /// changed start time are both "gone", the second being a pid that came round again.
 fn started_at(pid: u32) -> Option<String> {
@@ -645,6 +652,7 @@ mod tests {
                 None,
                 watch::channel(AgentStatus::Idle).1,
                 watch::channel(Vec::new()).1,
+                false,
             ),
         )
         .await;
@@ -670,6 +678,7 @@ mod tests {
                 Some(pid),
                 watch::channel(AgentStatus::Idle).1,
                 watch::channel(Vec::new()).1,
+                false,
             ),
         )
         .await;

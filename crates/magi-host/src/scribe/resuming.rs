@@ -3,14 +3,24 @@ use magi_ipc::family::{Family, Fault};
 use magi_journal::Journal;
 
 impl Scribe {
+    pub(crate) fn transcript(&self) -> &str {
+        &self.transcript
+    }
+
     pub(crate) fn socket(&self) -> &std::path::Path {
         &self.at
     }
 
-    pub(crate) async fn prepare_resume(&self, id: &str) -> Result<(Self, Journal), Fault> {
+    /// Prepare another transcript on its own connection, reserving before any history read.
+    pub async fn load_for(
+        &self,
+        id: &str,
+        required: bool,
+    ) -> Result<(Self, Vec<(magi_proto::Cursor, magi_proto::Entry)>), Fault> {
         let path = self.at.clone();
         let family = Family::dial(&path).await?;
         let mut next = Self::over(family, Some(path), &magi_proto::SessionId::new(id));
+        next.reserve_writer(required).await?;
         let owner = next.run_of(id).await?;
         let rows = next.replay_at(id).await?;
         if rows.is_empty() {
@@ -21,8 +31,37 @@ impl Scribe {
         next.session = owner.as_str().to_owned();
         next.transcript = id.to_owned();
         next.sent = rows.iter().map(|(c, _)| c.0).collect();
-        let journal =
-            Journal::restore(owner, rows).map_err(|why| Fault::Malformed(why.to_string()))?;
-        Ok((next, journal))
+        Ok((next, rows))
+    }
+
+    pub(crate) async fn prepare_resume(
+        &mut self,
+        id: &str,
+    ) -> Result<(Option<Self>, Journal), Fault> {
+        if self.transcript == id {
+            self.reserve_writer(false).await?;
+            let owner = self.run_of(id).await?;
+            let rows = self.replay_at(id).await?;
+            if rows.is_empty() {
+                return Err(Fault::Refused(format!(
+                    "there is no nonempty transcript called {id:?}"
+                )));
+            }
+            let journal =
+                Journal::restore(owner, rows).map_err(|why| Fault::Malformed(why.to_string()))?;
+            return Ok((None, journal));
+        }
+        let (next, rows) = self.load_for(id, false).await?;
+        let journal = Journal::restore(magi_proto::SessionId::new(&next.session), rows)
+            .map_err(|why| Fault::Malformed(why.to_string()))?;
+        Ok((Some(next), journal))
+    }
+
+    pub(crate) fn accept_resume(&mut self, journal: &Journal) {
+        self.session = journal.session().as_str().to_owned();
+        self.sent = (0..journal.entries().len())
+            .filter_map(|n| journal.cursor_at(n))
+            .map(|cursor| cursor.0)
+            .collect();
     }
 }

@@ -70,6 +70,24 @@ impl Built {
             | Entry::Compaction { .. }
             | Entry::Notice { .. }
             | Entry::Masked { .. } => {}
+            Entry::Workflow {
+                text,
+                aside,
+                images,
+                workflow,
+                ..
+            } => {
+                let selected = crate::skills::snapshot::context(workflow);
+                self.user(format!("{text}\n\n---\n{aside}\n\n{selected}"));
+                if let Some(message) = self.messages.last_mut() {
+                    message
+                        .content
+                        .extend(images.iter().map(|image| Content::Image {
+                            data: image.data.clone(),
+                            media_type: image.media_type.clone(),
+                        }));
+                }
+            }
             Entry::User {
                 text,
                 aside,
@@ -315,11 +333,12 @@ pub(crate) fn live_entries(entries: &[Entry]) -> Live {
 /// one, or rewinding twice would do nothing the second time. `None` when there is nothing to undo.
 #[must_use]
 pub fn rewind_point(entries: &[Entry]) -> Option<usize> {
-    live_entries(entries)
-        .live
-        .into_iter()
-        .rev()
-        .find(|&i| matches!(entries.get(i), Some(Entry::User { .. })))
+    live_entries(entries).live.into_iter().rev().find(|&i| {
+        matches!(
+            entries.get(i),
+            Some(Entry::User { .. } | Entry::Workflow { .. })
+        )
+    })
 }
 
 /// The last thing the person actually asked, among what is still live — what a recall is keyed on.
@@ -329,7 +348,9 @@ pub fn last_asked(session: &Session) -> Option<String> {
     let entries = session.entries();
     let at = rewind_point(entries)?;
     match entries.get(at)? {
-        Entry::User { text, .. } if !text.trim().is_empty() => Some(text.clone()),
+        Entry::User { text, .. } | Entry::Workflow { text, .. } if !text.trim().is_empty() => {
+            Some(text.clone())
+        }
         _ => None,
     }
 }

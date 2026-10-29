@@ -58,6 +58,7 @@ impl Tasks {
             }
         });
         state.failure = failure;
+        let future = crate::events::context::helper(future);
         state.tasks.push(match &self.1 {
             Some(runtime) => runtime.spawn(future),
             None => tokio::spawn(future),
@@ -150,6 +151,8 @@ impl Drop for Borrowed {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod lineage;
 
     #[tokio::test]
     async fn new_helpers_reap_finished_handles_without_losing_a_failure() {

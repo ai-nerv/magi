@@ -45,10 +45,11 @@ async fn one_turn(
     // discarded the first would be thrown away with it.
     let (arrivals, mut arriving) = tokio::sync::mpsc::unbounded_channel();
     let retries = arrivals.clone();
+    let frames = arrivals.clone();
     let outcome = {
         // Raced against the interrupt rather than polled after it: a model mid-answer holds this
         // future for as long as it keeps talking, and a flag checked on return stops nothing.
-        let streaming = crate::broker::ask_using(
+        let streaming = crate::broker::ask_observing(
             (&backend.mind, &backend.environ),
             &backend.model,
             &context,
@@ -64,6 +65,9 @@ async fn one_turn(
                     delay_ms: retry.delay_ms,
                 });
             },
+            |frame| {
+                let _ = frames.send(Arrival::RequestFrame(frame));
+            },
         );
         let mut streaming = std::pin::pin!(streaming);
         let mut released = false;
@@ -73,6 +77,7 @@ async fn one_turn(
                 () = cancel.requested() => break Ok(()),
                 Some(arrival) = arriving.recv() => {
                     match arrival {
+                        Arrival::RequestFrame(frame) => session.lock().await.report_provider_frame(frame),
                         // Revised rather than amended: an amendment writes to disk and flushes.
                         Arrival::Delta(delta) => {
                             // The first token says this request holds the server; helpers kept
@@ -99,6 +104,7 @@ async fn one_turn(
                             // What the attempt published has to be taken back, to nothing.
                             turn = retried(&turn);
                             let mut held = session.lock().await;
+                            held.retry_provider_frame();
                             held.revise_at(cursor, assistant(&id, &turn))?;
                             // Nothing ever set this, so an overload showed "Thinking" for a minute.
                             held.set_status(AgentStatus::Retrying {
@@ -117,6 +123,7 @@ async fn one_turn(
     // A delta and the end of the stream can arrive in the same poll, and the loop breaks on the outcome.
     while let Ok(arrival) = arriving.try_recv() {
         match arrival {
+            Arrival::RequestFrame(frame) => session.lock().await.report_provider_frame(frame),
             Arrival::Delta(delta) => turn.apply(delta),
             // A retry that landed in the same poll the stream ended in. Handled exactly as the loop
             // handles it: everything after a retry in a FIFO channel belongs to the attempt after it.
@@ -128,6 +135,7 @@ async fn one_turn(
                 retries_seen.push((attempt, max_attempts, delay_ms));
                 turn = retried(&turn);
                 let mut held = session.lock().await;
+                held.retry_provider_frame();
                 held.revise_at(cursor, assistant(&id, &turn))?;
                 held.set_status(AgentStatus::Retrying {
                     attempt,
@@ -137,6 +145,7 @@ async fn one_turn(
             }
         }
     }
+    session.lock().await.finish_provider_frame();
     session
         .lock()
         .await
@@ -166,6 +175,7 @@ async fn one_turn(
         return Ok(Round {
             turn,
             failed: None,
+            overflow: None,
             said: String::new(),
             retries: retries_seen,
         });
@@ -198,6 +208,7 @@ async fn one_turn(
         return Ok(Round {
             turn,
             failed: Some(refused),
+            overflow: error.overflow,
             said,
             retries: retries_seen,
         });
@@ -218,8 +229,8 @@ async fn one_turn(
         used.prompt_tokens(),
         used.cache_read,
         used.output,
-        used.cost_micros / 1_000_000,
-        used.cost_micros % 1_000_000
+        used.charged_micros() / 1_000_000,
+        used.charged_micros() % 1_000_000
     );
     crate::laying::applied(scribe, prompt, used).await;
     let mut held = session.lock().await;
@@ -232,6 +243,7 @@ async fn one_turn(
     Ok(Round {
         turn,
         failed: None,
+        overflow: None,
         said: String::new(),
         retries: retries_seen,
     })
@@ -243,6 +255,7 @@ struct Round {
     turn: Turn,
     /// Set when the provider refused, and the class it refused with.
     failed: Option<magi_proto::ask::Refusal>,
+    overflow: Option<magi_model::overflow::Detail>,
     /// What the provider said when it refused, which can carry how far over the request was.
     said: String,
     /// Every retry this round took, as `(attempt, of, delay_ms)`; the loop that owns the watchers
@@ -253,6 +266,7 @@ struct Round {
 /// Something the provider call said, in the order it said it. One type down one channel, because
 /// the order is what makes a retraction safe.
 enum Arrival {
+    RequestFrame(magi_model::RequestFrame),
     Delta(magi_model::Delta),
     /// The attempt failed and another is starting. Everything published so far is retracted.
     Retrying {
@@ -367,8 +381,22 @@ pub async fn run(
     ops: &dyn Ops,
     scribe: &crate::scribe::Held,
 ) -> Result<(), crate::HostError> {
+    let turn = session.lock().await.event_turn();
+    crate::events::context::turn(turn, run_scoped(session, backend, registry, ops, scribe)).await
+}
+
+async fn run_scoped(
+    session: &tokio::sync::Mutex<Session>,
+    backend: &Backend,
+    registry: &Registry,
+    ops: &dyn Ops,
+    scribe: &crate::scribe::Held,
+) -> Result<(), crate::HostError> {
     // Taken once: the handle is a clone of shared state, so a mid-round stop is visible through it.
-    let cancel = session.lock().await.cancel();
+    let (cancel, file_revisions) = {
+        let held = session.lock().await;
+        (held.cancel(), held.file_revisions())
+    };
 
     // What goes into each request is balthasar's to say, asked afresh every round.
     // One budget for every helper job this prompt starts, and the session holds it for the ones after.
@@ -384,6 +412,7 @@ pub async fn run(
     // A request already laid out, because the provider refused the last one as too long.
     let mut tighter: Option<magi_model::Context> = None;
     let mut replans: u32 = 0;
+    let mut progress = progress::Progress::default();
 
     for _ in 0..MAX_ROUNDS {
         // A turn is one exchange with the model, and this is where a watcher learns of it.
@@ -456,6 +485,7 @@ pub async fn run(
         }
         // What it came to, so what follows a refusal can be held to less.
         let sent = admission.counted();
+        session.lock().await.report_frame(&context, backend.frame());
         let round = one_turn(session, backend, context, &cancel, (scribe, &prompt)).await?;
 
         for (attempt, of, delay_ms) in &round.retries {
@@ -474,6 +504,16 @@ pub async fn run(
 
         // The estimate was balthasar's; this is the provider's own answer. The failed round stays.
         if round.failed == Some(magi_proto::ask::Refusal::Overflow) {
+            if round
+                .overflow
+                .is_some_and(|detail| detail.kind == magi_model::overflow::Kind::OutputBudget)
+            {
+                session.lock().await.set_status(AgentStatus::Idle);
+                return Err(crate::HostError::Refused(format!(
+                    "{}; the provider rejected the output budget. Review the output allowance and thinking requirements, or choose a compatible model; input was not compacted and output settings were not changed.",
+                    round.said
+                )));
+            }
             if let Some(context) =
                 crate::laying::overflowed(session, scribe, &mut prompt, &round.said).await
             {
@@ -542,6 +582,12 @@ pub async fn run(
         let mut at = Vec::with_capacity(calls.len());
         {
             let mut held = session.lock().await;
+            if !held.file_revisions().same(&file_revisions) {
+                return Err(magi_journal::JournalError::Refused(
+                    "tool turn belongs to a retired session".into(),
+                )
+                .into());
+            }
             held.set_status(AgentStatus::Working {
                 label: "Running tools".into(),
             });
@@ -558,36 +604,21 @@ pub async fn run(
             }
         }
 
-        // Sequential preparation, parallel execution, results in source order. `Tool` is
-        // deliberately not `Send`, so this cannot be threads; a peer is another process, so writing
-        // its request and coming back is all the concurrency there is. Preparation stays one at a
-        // time: two permission prompts racing onto one screen is an unanswerable round.
-        let mut prepared = Vec::with_capacity(calls.len());
-        for call in &calls {
-            if cancel.is_requested() {
-                prepared.push(None);
-                continue;
-            }
-            prepared.push(Some(registry.prepare(&call.name, &call.arguments, ops)));
-        }
+        // Distinct peers execute concurrently; duplicate and native calls await earlier results.
+        let prepared = progress.prepare(&calls, registry, ops, &cancel);
         // Preparation is where permission is asked; told here because the watchers live on this thread.
         permissions(registry, ops, scribe, session.lock().await.cursor()).await;
 
         for ((call, prepared), at) in calls.iter().zip(prepared).zip(at) {
             let began = std::time::Instant::now();
-            // Checked per call: the entry is committed, so a stop leaves a result, not a bare call.
-            let output = match prepared {
-                // A call in flight is collected even after an interrupt: the peer runs it either way.
-                Some(prepared) if !cancel.is_requested() || prepared.in_flight() => {
-                    // Run as this call, so a surface it opens knows which block it belongs to.
-                    let calling = magi_tools::ops::Calling {
-                        ops,
-                        id: ToolCallId::new(call.id.clone()),
-                    };
-                    registry.finish(prepared, &calling, &cancel)
-                }
-                _ => magi_tools::Output::error("cancelled before this tool ran"),
+            let revisions = file_revisions.call(at.0);
+            let calling = magi_tools::ops::Calling {
+                ops,
+                id: ToolCallId::new(call.id.clone()),
+                revisions: Some(&revisions),
             };
+            let mut output =
+                progress.finish(prepared, call, registry, &calling, &cancel, &file_revisions);
             // The arguments and the stub stay out of the log: a command line can carry a secret.
             magi_model::noted!(
                 "tool: {} {} in {}ms, {} bytes of arguments, {} bytes back",
@@ -603,6 +634,14 @@ pub async fn run(
                 acted_on(scribe, injection, call, output.is_error).await;
             }
             let mut held = session.lock().await;
+            if !held.file_revisions().same(&file_revisions) {
+                return Err(magi_journal::JournalError::Refused(
+                    "tool result belongs to a retired session".into(),
+                )
+                .into());
+            }
+            let file_delivery = output.file_delivery.take();
+            let file_failed = output.is_error;
             held.hint(&call.id, output.hints);
             held.amend_at(
                 at,
@@ -621,12 +660,32 @@ pub async fn run(
                     }),
                 },
             )?;
+            if !cancel.is_requested()
+                && let Some(delivery) = file_delivery
+            {
+                file_revisions.delivered(delivery, at.0, file_failed);
+            }
         }
         // Again after the tools have run: a Lua tool that shells out asks its own questions.
         permissions(registry, ops, scribe, session.lock().await.cursor()).await;
 
         if cancel.is_requested() {
             session.lock().await.set_status(AgentStatus::Idle);
+            return Ok(());
+        }
+        if let Some(why) = progress.stopped() {
+            let mut held = session.lock().await;
+            let id = MessageId::new(format!("no-progress-{}", held.cursor().next().0));
+            held.commit(Entry::Assistant {
+                id,
+                text: String::new(),
+                thinking: String::new(),
+                stop_reason: Some(StopReason::Error),
+                error: Some(why.to_owned()),
+                signatures: magi_proto::Signatures::default(),
+                usage: magi_proto::Usage::default(),
+            })?;
+            held.set_status(AgentStatus::Idle);
             return Ok(());
         }
     }
@@ -659,3 +718,6 @@ fn turn_calls(turn: &Turn) -> Vec<magi_core::PendingCall> {
 #[path = "turn/memory.rs"]
 mod memory;
 use memory::acted_on;
+
+#[path = "turn/progress.rs"]
+mod progress;

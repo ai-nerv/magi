@@ -75,7 +75,9 @@ impl App {
             .iter()
             .filter_map(|entry| match entry {
                 magi_proto::Entry::Assistant { id, usage, .. }
-                    if usage.prompt_tokens() > 0 || usage.output > 0 || usage.cost_micros > 0 =>
+                    if usage.prompt_tokens() > 0
+                        || usage.output > 0
+                        || usage.charged_micros() > 0 =>
                 {
                     Some((id, *usage))
                 }

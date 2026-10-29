@@ -16,6 +16,7 @@ struct Fixture {
     dir: Scratch,
     revision: String,
     serving: tokio::task::JoinHandle<Result<(), magi_host::HostError>>,
+    _memory: magi_testkit::memory::Failing,
 }
 
 impl Drop for Fixture {
@@ -93,17 +94,21 @@ async fn fixture(name: &str, mind: &Mind, child: bool, broken: bool) -> Fixture 
     let listener = magi_ipc::bind(&dir.join("s.sock"))
         .await
         .expect("fixture operation succeeds");
+    let memory = magi_testkit::memory::Failing::start(&dir.join("memory.sock"))
+        .await
+        .expect("failing memory");
     let serving = tokio::spawn(magi_host::serve_on(
         listener,
         Session::recorded(SessionId::new(name), Vec::new()),
         Some(backend),
         Catalog::empty(),
-        Some(dir.join("no-memory.sock")),
+        Some(memory.socket().to_owned()),
     ));
     Fixture {
         dir,
         revision,
         serving,
+        _memory: memory,
     }
 }
 

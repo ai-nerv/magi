@@ -97,6 +97,29 @@ key is the scratch run.
 | `outcome` | `(action, opts) -> { outcome, kind }` | The outcome loop records nothing. |
 | `model` | `(session, opts) -> { model, context }` | The store does not know which model produced a run. |
 | `resume` | `(session) -> { next, turns }` | magi cannot cross-check that the store holds what this session thinks it does. |
+| `writer_status` | `(transcript, { revision: 1 }) -> { revision, supported, owned, lifetime, scope }` | Persistent loading cannot establish exclusive writer support. |
+| `writer` | `(transcript, { revision: 1, operation: "reserve" or "release" }) -> { revision, owned }` | Persistent loading is refused; ordinary sessions retain core-only compatibility. |
+
+The writer extension is harness-only, never a model-facing tool. Both verbs must
+be advertised together. Revision 1 reports `lifetime: "connection"` and
+`scope: "store-transcript"`; `owned` refers only to the calling connection.
+Nonpersistent or one-shot implementations report `supported: false`.
+Reservation and release require the memory writer key.
+
+A reservation excludes every other writer to the same store/transcript, including
+legacy socket and one-shot mutations. Read-only inspection remains available.
+One connection holds at most one reservation. Same-key reserve validates the held
+owner without releasing it; wrong-key reserve/release preserves the old owner.
+Disconnect releases ownership after the current call settles; reconnecting never
+restores it. An excluded mutation returns a fatal `failed` fault, so the harness
+retains pending entries rather than treating them as unsupported.
+
+A supporting harness reserves before replay, retains the exact connection across
+startup handoff, and prepares a different transcript before releasing its previous
+owner. Same-key resume reuses the existing reservation. A lost owned connection
+fails closed without automatic redial or write replay. Ordinary hosts negotiate
+this extension when available; persistent loading requires it and refuses legacy,
+malformed or incomplete support. Retention and purge respect the same ownership.
 
 **The four model-facing verbs — `recall`, `remember`, `forget`, `why` — are declared
 independently.** magi declares a tool for each verb the role answers and omits the rest, so a

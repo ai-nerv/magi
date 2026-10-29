@@ -6,6 +6,12 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod files;
+pub use files::{
+    FileAbsence, FileCapability, FileMetadata, FileMutation, FileObservation, FileOperation,
+    FileRevision,
+};
+
 /// One tool, as casper describes it. casper describes and magi decides: a sibling that could grant
 /// itself a permission would make the ledger a suggestion.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -20,6 +26,8 @@ pub struct Card {
     /// Kept out of the model's list until a `tools` lookup unlocks it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub deferred: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_revision: Option<FileCapability>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -32,6 +40,8 @@ pub struct Call {
     /// The id of the option chosen in answer to the last [`Ask`], when this call resumes one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answered: Option<String>,
+    #[serde(flatten)]
+    pub revision: FileRevision,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -52,6 +62,8 @@ pub struct Ran {
     pub unlocks: Vec<String>,
     #[serde(flatten)]
     pub hints: Hints,
+    #[serde(flatten)]
+    pub files: FileMetadata,
 }
 
 /// What a tool says about its own result for whoever lays out the context: the words to show when
@@ -338,6 +350,7 @@ mod tests {
             parameters: serde_json::json!({"type": "object"}),
             needs: Some("run".to_owned()),
             deferred: false,
+            file_revision: None,
         };
         let wire = serde_json::to_string(&card).expect("encodes");
         assert!(!wire.contains("allow") && !wire.contains("grant"), "{wire}");

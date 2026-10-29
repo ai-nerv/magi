@@ -82,6 +82,7 @@ pub(super) fn run_command(input: &str, app: &mut App) -> Control {
             app.show_help();
             Control::Continue
         }
+        ":skills" => Control::Send(app.refresh_workflows()),
         ":env" | ":source" => Control::Send(UiCommand::Environment(magi_proto::Environment {
             source: input.split_whitespace().next() == Some(":source"),
             input: input

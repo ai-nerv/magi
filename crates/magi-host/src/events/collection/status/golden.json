@@ -1,0 +1,1 @@
+{"schema":1,"program":"magi","producer":"00000000000000000000000000000002","status":{"revision":1,"events_sent":0,"queue_loss":{"abandoned":0,"full":0,"closed":0,"encoding":0,"exhausted":0},"transport_loss":{"full":0,"unavailable":0,"invalid":0},"finished":true}}

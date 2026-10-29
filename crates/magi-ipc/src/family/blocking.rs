@@ -1,6 +1,6 @@
 //! The same protocol, without a runtime, for the synchronous paths such as the session picker.
 
-use super::{Fault, candidates, frame, named, served_by_us, unwrap};
+use super::{Fault, candidates, frame, frame_context, named, observing, served_by_us, unwrap};
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -87,15 +87,23 @@ impl Family {
         verb: &str,
         args: &[serde_json::Value],
     ) -> Result<Vec<serde_json::Value>, Fault> {
-        let frame = frame(crate::Wire::Json, verb, args, self.key.as_ref())?;
-        let mut stream = match self.stream.take() {
-            Some(stream) => stream,
-            None => opened(&self.path)?,
-        };
+        if self.stream.is_none() {
+            frame(crate::Wire::Json, verb, args, self.key.as_ref())?;
+            self.stream = Some(opened(&self.path)?);
+        }
+        let context = self
+            .stream
+            .as_ref()
+            .and_then(|socket| observing::capture(socket, &self.path));
+        let frame = frame_context(crate::Wire::Json, verb, args, self.key.as_ref(), context)?;
+        let mut stream = self
+            .stream
+            .take()
+            .ok_or_else(|| Fault::Unavailable("no memory connection".into()))?;
         stream
             .write_all(&frame)
             .map_err(|e| Fault::Unavailable(format!("sending {verb}: {e}")))?;
-        let reply = read_reply(&mut stream, verb);
+        let reply = read_reply(&mut stream, verb, &self.path);
         // A refusal is a whole reply, and leaves nothing owed on the stream.
         if matches!(&reply, Ok(_) | Err(Fault::Refused(_) | Fault::Failed(_))) {
             self.stream = Some(stream);
@@ -106,7 +114,11 @@ impl Family {
 
 /// Read one framed reply and unwrap the family's envelope. A declared length of nothing, or past
 /// the cap, is refused before anything is allocated for it.
-fn read_reply(stream: &mut UnixStream, verb: &str) -> Result<Vec<serde_json::Value>, Fault> {
+fn read_reply(
+    stream: &mut UnixStream,
+    verb: &str,
+    path: &Path,
+) -> Result<Vec<serde_json::Value>, Fault> {
     let mut head = [0_u8; 4];
     stream
         .read_exact(&mut head)
@@ -124,7 +136,9 @@ fn read_reply(stream: &mut UnixStream, verb: &str) -> Result<Vec<serde_json::Val
         .map_err(|e| Fault::Unavailable(format!("reading {verb}: {e}")))?;
     let reply: serde_json::Value =
         crate::Wire::read(&rest).map_err(|e| Fault::Malformed(format!("{verb}: {e}")))?;
-    unwrap(&reply, verb)
+    let values = unwrap(&reply, verb)?;
+    observing::received(stream, path, verb, &reply);
+    Ok(values)
 }
 
 #[cfg(test)]

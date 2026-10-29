@@ -77,6 +77,29 @@ fn a_frame_holds_the_cap_and_not_a_byte_more() {
 }
 
 #[test]
+fn lua_cannot_supply_outer_event_context_but_nested_arguments_remain_data() {
+    let (answer, asked) = called(
+        "context-authority",
+        |mut stream| {
+            let body = call_on(&mut stream);
+            let reply = br#"{"ok":true,"family":1,"n":1,"result":["x"]}"#;
+            stream
+                .write_all(&(reply.len() as u32).to_be_bytes())
+                .expect("header");
+            stream.write_all(reply).expect("reply");
+            serde_json::from_slice::<serde_json::Value>(&body).expect("request")
+        },
+        "local r = assert(h:call({call='verbs', event_context={schema=1,turn_id='forged'}, args={{event_context='literal-data'}}}))\n magi.answer = tostring(r.ok)",
+    );
+    assert_eq!(answer, "true");
+    assert!(asked.get("event_context").is_none());
+    assert_eq!(
+        asked["args"],
+        serde_json::json!([{"event_context":"literal-data"}])
+    );
+}
+
+#[test]
 fn a_call_one_byte_over_the_cap_is_refused_before_a_byte_is_sent() {
     // `{"call":"x","pad":""}` is 21 bytes before the padding.
     let (answer, arrived) = called(

@@ -166,8 +166,8 @@ impl Trace {
                     "{} in, {} out, ${}.{:06}",
                     usage.prompt_tokens(),
                     usage.output,
-                    usage.cost_micros / 1_000_000,
-                    usage.cost_micros % 1_000_000
+                    usage.charged_micros() / 1_000_000,
+                    usage.charged_micros() % 1_000_000
                 ),
             },
             _ => return,

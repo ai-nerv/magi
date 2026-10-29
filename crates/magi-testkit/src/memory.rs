@@ -2,6 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
+mod failing;
+pub use failing::Failing;
+
 /// A `balthasar serve` a test started, killed when dropped.
 pub struct Serving {
     child: std::process::Child,
@@ -16,6 +19,14 @@ impl Serving {
     /// When it started and never answered, which is a failure and not a skip.
     #[allow(clippy::expect_used)]
     pub async fn start(dir: &Path, instance: &str) -> Option<Self> {
+        let program = std::env::var_os("BALTHASAR_TEST_BINARY")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("balthasar"));
+        Self::start_program(dir, instance, &program).await
+    }
+
+    #[allow(clippy::expect_used)]
+    pub async fn start_program(dir: &Path, instance: &str, program: &Path) -> Option<Self> {
         let runtime = dir.join("r");
         // Private, or the family does not take it for a runtime directory and falls back.
         std::os::unix::fs::DirBuilderExt::mode(std::fs::DirBuilder::new().recursive(true), 0o700)
@@ -28,7 +39,7 @@ impl Serving {
         for socket in &sockets {
             magi_ipc::family::hold_key(socket, &key);
         }
-        let mut child = std::process::Command::new("balthasar")
+        let mut child = std::process::Command::new(program)
             .arg("serve")
             .arg("--instance")
             .arg(instance)
@@ -55,6 +66,14 @@ impl Serving {
             child,
             socket: sockets[0].clone(),
         };
+        if program.is_absolute() {
+            assert_eq!(
+                std::fs::read_link(format!("/proc/{}/exe", serving.child.id()))
+                    .expect("memory executable"),
+                std::fs::canonicalize(program).expect("selected memory executable"),
+                "memory fixture must execute the selected artifact"
+            );
+        }
 
         // Answering, not merely bound, on the durable clock: the first call opens the store.
         let patience = magi_ipc::family::DURABLE;

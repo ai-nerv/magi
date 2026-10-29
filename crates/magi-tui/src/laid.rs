@@ -160,7 +160,7 @@ pub fn view(laid: &Laid, jobs: &[crate::cost::Helper], width: u16) -> Rendered {
                     job.model,
                     format_tokens(used.prompt_tokens()),
                     format_tokens(used.output),
-                    crate::cost::dollars(used.cost_micros)
+                    crate::cost::dollars(used.charged_micros())
                 ),
                 &ink,
             );

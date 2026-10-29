@@ -64,6 +64,7 @@ impl App {
         self.focus = None;
         self.model = None;
         self.choices.clear();
+        self.clear_workflows();
         self.set_status(magi_proto::AgentStatus::Idle);
         self.selection = None;
         self.hovering = None;
