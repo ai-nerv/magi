@@ -85,7 +85,14 @@ fn children(pid: u32) -> Vec<u32> {
     children
 }
 
-fn scenario(binary: &Path, siblings: &[PathBuf], enabled: bool, legacy: bool) {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Launch {
+    Root,
+    UnobservedChild,
+    InvalidChild,
+}
+
+fn scenario(binary: &Path, siblings: &[PathBuf], enabled: bool, legacy: bool, launch: Launch) {
     let root = Scratch::new("evn", if enabled { "on" } else { "off" }).settling();
     for dir in ["c/magi", "r", "d", "s", "h", "t", "p/.git"] {
         fs::create_dir_all(root.join(dir)).expect("directory");
@@ -105,7 +112,14 @@ fn scenario(binary: &Path, siblings: &[PathBuf], enabled: bool, legacy: bool) {
         program.to_str().expect("model path"), siblings[1].to_str().expect("memory path"), siblings[2].to_str().expect("tools path")
     )).expect("machine configuration");
     let socket = root.join("r/host.sock");
-    let child = Command::new(binary)
+    let mut command = Command::new(binary);
+    if launch != Launch::Root {
+        command.arg("--event-child");
+    }
+    if launch == Launch::InvalidChild {
+        command.arg("--agent-event-bootstrap");
+    }
+    let child = command
         .args(["--headless", "--socket"])
         .arg(&socket)
         .process_group(0)
@@ -161,7 +175,18 @@ fn scenario(binary: &Path, siblings: &[PathBuf], enabled: bool, legacy: bool) {
         let _: magi_proto::monitoring::AgentDetails =
             serde_json::from_value(details.clone()).expect("existing reader compatibility");
         let events = &details["events"];
-        if !enabled {
+        if launch == Launch::InvalidChild {
+            assert_eq!(events["state"], "unavailable");
+            assert!(
+                events["unobserved_launches"]
+                    .as_u64()
+                    .is_some_and(|count| count > 0)
+            );
+            assert!(events["summary"].is_null());
+            assert!(events["parent"].is_null());
+            return true;
+        }
+        if !enabled || launch == Launch::UnobservedChild {
             assert_eq!(events, &serde_json::json!({"state":"disabled"}));
             return true;
         }
@@ -183,16 +208,35 @@ fn scenario(binary: &Path, siblings: &[PathBuf], enabled: bool, legacy: bool) {
             .split(|byte| *byte == 0)
             .any(|arg| arg == b"--event-bootstrap");
         let actual = fs::read_link(format!("/proc/{child}/exe")).expect("native executable");
-        assert_eq!(bootstrap, enabled && !(legacy && actual == siblings[0]));
+        assert_eq!(
+            bootstrap,
+            launch == Launch::Root && enabled && !(legacy && actual == siblings[0])
+        );
     }
     if legacy {
         assert_eq!(
             fs::read(root.join("queries")).unwrap_or_default(),
-            if enabled {
+            if enabled && launch == Launch::Root {
                 b"x".as_slice()
             } else {
                 b"".as_slice()
             }
+        );
+    }
+    if !enabled || launch != Launch::Root {
+        for task in fs::read_dir(format!("/proc/{pid}/task")).expect("tasks") {
+            let name =
+                fs::read_to_string(task.expect("task").path().join("comm")).expect("thread name");
+            assert!(
+                !name.starts_with("magi-event"),
+                "unobserved child started collection thread: {name}"
+            );
+        }
+    }
+    if launch == Launch::InvalidChild {
+        assert!(
+            output(&root, "err")
+                .contains("child event bootstrap unavailable; continuing without collection")
         );
     }
     let pid =
@@ -236,7 +280,9 @@ fn normal_launches_opt_in_preserve_old_siblings_and_reap_before_shutdown() {
     }
     let binary = fs::canonicalize(magi_testkit::live::binary(env!("CARGO_BIN_EXE_magi")))
         .expect("selected Magi");
-    scenario(&binary, &siblings, false, true);
-    scenario(&binary, &siblings, true, false);
-    scenario(&binary, &siblings, true, true);
+    scenario(&binary, &siblings, false, true, Launch::Root);
+    scenario(&binary, &siblings, true, false, Launch::Root);
+    scenario(&binary, &siblings, true, true, Launch::Root);
+    scenario(&binary, &siblings, true, false, Launch::UnobservedChild);
+    scenario(&binary, &siblings, true, false, Launch::InvalidChild);
 }

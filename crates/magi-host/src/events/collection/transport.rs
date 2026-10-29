@@ -94,6 +94,14 @@ pub(super) enum Received {
 }
 
 impl Channel {
+    pub(super) fn adopt(socket: OwnedFd) -> std::io::Result<Self> {
+        private_socket(&socket, net::SocketType::DGRAM)?;
+        let sender = Sender::adopt(socket)?;
+        Ok(Self {
+            socket: sender.into_socket(),
+        })
+    }
+
     pub(super) fn is_empty(&self) -> bool {
         matches!(
             net::recv(
@@ -106,21 +114,8 @@ impl Channel {
     }
 
     pub(super) fn pair() -> std::io::Result<(Self, Sender)> {
-        let (read, write) = net::socketpair(
-            net::AddressFamily::UNIX,
-            net::SocketType::DGRAM,
-            net::SocketFlags::CLOEXEC | net::SocketFlags::NONBLOCK,
-            None,
-        )?;
-        configure(&read)?;
-        configure(&write)?;
-        Ok((
-            Self { socket: read },
-            Sender {
-                socket: write,
-                loss: Loss::default(),
-            },
-        ))
+        let (socket, sender) = pair()?;
+        Ok((Self { socket }, sender))
     }
 
     pub(super) fn receive(&self, frame: &mut [u8; MAX_EVENT_BYTES]) -> Received {
@@ -143,6 +138,41 @@ impl Channel {
             Err(_) => Received::Unavailable,
         }
     }
+}
+
+pub(super) fn pair() -> std::io::Result<(OwnedFd, Sender)> {
+    let (read, write) = net::socketpair(
+        net::AddressFamily::UNIX,
+        net::SocketType::DGRAM,
+        net::SocketFlags::CLOEXEC | net::SocketFlags::NONBLOCK,
+        None,
+    )?;
+    configure(&read)?;
+    configure(&write)?;
+    Ok((
+        read,
+        Sender {
+            socket: write,
+            loss: Loss::default(),
+        },
+    ))
+}
+
+pub(super) fn private_socket(
+    socket: impl rustix::fd::AsFd,
+    kind: net::SocketType,
+) -> std::io::Result<()> {
+    if sockopt::get_socket_type(&socket)? != kind
+        || sockopt::get_socket_domain(&socket)? != net::AddressFamily::UNIX
+        || sockopt::get_socket_peercred(&socket)?.uid != rustix::process::geteuid()
+    {
+        return Err(std::io::ErrorKind::InvalidInput.into());
+    }
+    let socket = std::os::unix::net::UnixDatagram::from(socket.as_fd().try_clone_to_owned()?);
+    if !socket.local_addr()?.is_unnamed() || !socket.peer_addr()?.is_unnamed() {
+        return Err(std::io::ErrorKind::InvalidInput.into());
+    }
+    Ok(())
 }
 
 pub(super) fn configure(socket: impl rustix::fd::AsFd) -> std::io::Result<()> {

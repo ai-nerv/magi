@@ -31,6 +31,74 @@ fn wait(mut condition: impl FnMut() -> bool) {
 }
 
 #[test]
+fn forwarder_panic_is_published_before_join_and_retires_with_unknown_loss() {
+    let (mut collector, _, receiver, Opened { sender, lifetime }) = setup();
+    let watch = Watch::default();
+    let worker = Forwarder::spawn_watched(receiver, sender, watch.clone(), |_, _, _| {
+        panic!("controlled forwarding failure");
+    })
+    .expect("worker");
+    wait(|| watch.failed());
+    assert!(matches!(worker.shutdown(), Err(ShutdownError::Panicked)));
+    drop(lifetime);
+    collector.poll();
+    let summary = collector.close();
+    assert_eq!(summary.retired.final_confirmed, 0);
+    assert_eq!(summary.retired.unknown_loss_producers, 1);
+    assert!(summary.incomplete());
+}
+
+#[test]
+fn shared_control_failure_suppresses_final_confirmation_without_queue_loss() {
+    let (mut collector, _, receiver, Opened { sender, lifetime }) = setup();
+    let watch = Watch::default();
+    let forwarder = Forwarder::spawn_watched(receiver, sender, watch.clone(), run).expect("worker");
+    watch.fail();
+    let outcome = forwarder.shutdown().expect("shutdown");
+    assert!(outcome.worker_failed && outcome.incomplete());
+    assert_eq!(outcome.queue_loss, Loss::default());
+    drop(lifetime);
+    collector.poll();
+    assert_eq!(collector.close().retired.final_confirmed, 0);
+}
+
+#[test]
+fn rejected_credit_startup_cannot_confirm_provisional_forwarder_delivery() {
+    let (mut collector, _, receiver, Opened { sender, lifetime }) = setup();
+    let watch = Watch::default();
+    let forwarder = Forwarder::spawn_watched(receiver, sender, watch.clone(), run)
+        .expect("provisional forwarder");
+    let guard = watch.pending(Arc::new(AtomicBool::new(false)));
+    let credit = move || {
+        let _guard = guard.enter();
+    };
+    drop(credit);
+    let outcome = forwarder.shutdown().expect("provisional cleanup");
+    assert!(outcome.worker_failed && outcome.incomplete());
+    drop(lifetime);
+    collector.poll();
+    assert_eq!(collector.close().retired.final_confirmed, 0);
+}
+
+#[test]
+fn inherited_shutdown_deadline_cannot_be_reset_into_a_final_confirmation() {
+    let (mut collector, _, receiver, Opened { sender, lifetime }) = setup();
+    let forwarder = Forwarder::spawn(receiver, sender, run).expect("worker");
+    let started = Instant::now()
+        .checked_sub(SHUTDOWN_BUDGET + Duration::from_millis(1))
+        .expect("past start");
+    assert!(matches!(
+        forwarder.shutdown_started(started),
+        Err(ShutdownError::BudgetExceeded)
+    ));
+    drop(lifetime);
+    collector.poll();
+    let summary = collector.close();
+    assert_eq!(summary.retired.final_confirmed, 0);
+    assert_eq!(summary.retired.unknown_loss_producers, 1);
+}
+
+#[test]
 fn forwarded_events_preserve_binding_and_end_with_reconciled_delivery() {
     let (mut collector, emitter, receiver, Opened { sender, lifetime }) = setup();
     let forwarder = Forwarder::spawn(receiver, sender, run).expect("forwarder");

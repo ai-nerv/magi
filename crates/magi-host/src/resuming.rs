@@ -48,7 +48,8 @@ pub(super) async fn resume(
     if let Some(next) = next {
         *open = Some(next);
     } else if let Some(open) = open.as_mut() {
-        open.accept_resume(&journal);
+        open.accept_resume(&journal)
+            .map_err(|why| format!("cannot accept resumed history: {why}"))?;
     }
     helpers.retire();
     drop(transition);

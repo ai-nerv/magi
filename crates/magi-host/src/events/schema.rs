@@ -192,6 +192,9 @@ pub enum PolicyDecision {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Fact {
+    AgentStarted {
+        parent: super::Lineage,
+    },
     LogicalTurn {
         outcome: TurnOutcome,
         duration_ms: Option<u64>,

@@ -1,9 +1,12 @@
 pub mod bootstrap;
+pub mod branch;
+pub mod enrollment;
 mod forwarding;
 mod retirement;
 pub mod runtime;
 mod status;
 mod transport;
+mod watch;
 mod wire;
 mod worker;
 
@@ -12,7 +15,7 @@ pub use retirement::{Lifetime, Opened, RETIREMENT_BUDGET, Retired};
 pub use status::{Delivery, ProducerStatus, REPORT_INTERVAL, Report, Sender};
 pub use transport::{Loss as TransportLoss, Sent};
 pub use wire::{Invalid, Ledger, Owner, Usage};
-pub use worker::{Readout, SHUTDOWN_BUDGET, ShutdownError, Worker};
+pub use worker::{Readout, Registrar, SHUTDOWN_BUDGET, ShutdownError, Worker};
 
 use super::{Id, Lineage, MAX_EVENT_BYTES, Receiver};
 use std::{

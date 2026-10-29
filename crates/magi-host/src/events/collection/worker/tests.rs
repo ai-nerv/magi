@@ -5,6 +5,9 @@ use super::super::{Counts, Report, Sent};
 use super::*;
 use serde_json::json;
 
+mod native_child;
+mod observer;
+
 fn id(n: u64) -> Id {
     Id::try_from(format!("{n:032x}")).expect("identity")
 }
@@ -86,7 +89,7 @@ fn duplicate_registration_drops_only_the_rejected_channel_and_returns_its_lease(
         .expect("queued duplicate");
     wait(&readout, |summary| summary.counts.refused_producers == 1);
     assert_eq!(duplicate.send(&event(2)), Sent::Unavailable);
-    assert_eq!(worker.readout.slots.load(Ordering::Acquire), 2);
+    assert_eq!(readout.slots.load(Ordering::Acquire), 2);
     assert_eq!(first.send(&event(2)), Sent::Queued);
     assert_eq!(
         first.report(Loss::default(), true),
@@ -136,23 +139,24 @@ fn paused_worker_bounds_all_pending_and_active_channels_without_blocking_registr
 fn concurrent_registration_cannot_exceed_the_process_channel_bound() {
     let (_, collector) = setup();
     let worker = Worker::start(collector).expect("worker");
-    let results = thread::scope(|scope| {
-        let tasks: Vec<_> = (2..66)
-            .map(|n| {
-                let worker = &worker;
-                scope.spawn(move || worker.register(Owner::Magi, id(n)))
-            })
-            .collect();
-        tasks
-            .into_iter()
-            .map(|task| task.join().expect("registrar"))
-            .collect::<Vec<_>>()
-    });
+    let tasks: Vec<_> = (2..66)
+        .map(|n| {
+            let registrar = worker.registrar();
+            thread::spawn(move || registrar.register(Owner::Magi, id(n)))
+        })
+        .collect();
+    let results: Vec<_> = tasks
+        .into_iter()
+        .map(|task| task.join().expect("registrar"))
+        .collect();
     assert_eq!(
         results.iter().filter(|result| result.is_ok()).count(),
         MAX_PRODUCERS - 1
     );
-    assert_eq!(worker.readout.slots.load(Ordering::Acquire), MAX_PRODUCERS);
+    assert_eq!(
+        worker.readout().slots.load(Ordering::Acquire),
+        MAX_PRODUCERS
+    );
     let summary = worker.shutdown().expect("shutdown");
     assert_eq!(summary.remote_producers, MAX_PRODUCERS - 1);
     assert_eq!(
@@ -179,12 +183,12 @@ fn owner_exit_before_admission_reclaims_pending_slots_without_losing_unknown_sta
     let before = readout.snapshot();
     assert_eq!(before.remote_producers, MAX_PRODUCERS - 1);
     assert_eq!(before.unknown_loss_producers, MAX_PRODUCERS - 1);
-    assert_eq!(worker.readout.slots.load(Ordering::Acquire), MAX_PRODUCERS);
+    assert_eq!(readout.slots.load(Ordering::Acquire), MAX_PRODUCERS);
     release.send(()).expect("release worker");
     wait(&readout, |summary| {
         summary.retired.producers == (MAX_PRODUCERS - 1) as u64
     });
-    assert_eq!(worker.readout.slots.load(Ordering::Acquire), 1);
+    assert_eq!(readout.slots.load(Ordering::Acquire), 1);
     let replacement = worker.open(Owner::Magi).expect("reusable capacity");
     drop(replacement);
     wait(&readout, |summary| {
@@ -221,6 +225,7 @@ fn dropping_worker_wakes_and_joins_its_actual_native_thread() {
             .expect("identity deadline"),
     );
     let readout = worker.readout();
+    let registrar = worker.registrar();
     let identity = instance(&path).expect("live thread instance");
     let started = Instant::now();
     drop(worker);
@@ -233,6 +238,86 @@ fn dropping_worker_wakes_and_joins_its_actual_native_thread() {
     }
     assert!(started.elapsed() < SHUTDOWN_BUDGET);
     assert!(readout.snapshot().closed);
+    assert!(matches!(
+        registrar.open(Owner::Magi),
+        Err(RegisterError::Closed)
+    ));
+    assert_eq!(readout.snapshot().counts.refused_producers, 1);
+}
+
+#[test]
+fn busy_admission_never_waits_and_returns_every_reserved_slot() {
+    let (_, collector) = setup();
+    let worker = Worker::start(collector).expect("worker");
+    let registrar = worker.registrar();
+    let readout = registrar.readout();
+    let admission = registrar.registrations.write().expect("admission fence");
+    let start = Instant::now();
+    for _ in 0..MAX_PRODUCERS {
+        let clone = registrar.clone();
+        assert!(matches!(clone.open(Owner::Magi), Err(RegisterError::Busy)));
+        assert_eq!(readout.slots.load(Ordering::Acquire), 1);
+    }
+    assert!(start.elapsed() < SHUTDOWN_BUDGET);
+    assert_eq!(
+        readout.snapshot().counts.refused_producers,
+        MAX_PRODUCERS as u64
+    );
+    drop(admission);
+    let lineage = Lineage::root(id(20), id(21));
+    let mut opened = registrar
+        .open_bound(Owner::Magi, lineage)
+        .expect("available");
+    assert_eq!(opened.sender.lineage(), lineage);
+    assert_ne!(opened.sender.identity(), id(1));
+    drop(registrar);
+    assert_eq!(
+        opened.sender.report(Loss::default(), true),
+        Report::Sent(Sent::Queued)
+    );
+    drop(opened);
+    wait(&readout, |summary| summary.retired.final_confirmed == 1);
+    assert_eq!(readout.slots.load(Ordering::Acquire), 1);
+    assert_eq!(worker.shutdown().expect("shutdown").retired.producers, 1);
+}
+
+#[test]
+fn shutdown_accounts_for_every_successful_racing_registration() {
+    let (_, collector) = setup();
+    let worker = Worker::start(collector).expect("worker");
+    let readout = worker.readout();
+    let first = worker.open(Owner::Magi).expect("first producer");
+    let barrier = Arc::new(std::sync::Barrier::new(65));
+    let tasks: Vec<_> = (0..64)
+        .map(|_| {
+            let registrar = worker.registrar();
+            let barrier = barrier.clone();
+            thread::spawn(move || {
+                barrier.wait();
+                registrar.open(Owner::Magi)
+            })
+        })
+        .collect();
+    barrier.wait();
+    let closed = worker.shutdown().expect("shutdown");
+    let opened: Vec<_> = tasks
+        .into_iter()
+        .filter_map(|task| match task.join().expect("registrar") {
+            Ok(opened) => Some(opened),
+            Err(RegisterError::Closed | RegisterError::Capacity | RegisterError::Busy) => None,
+            Err(error) => panic!("unexpected refusal: {error:?}"),
+        })
+        .collect();
+    let summary = readout.snapshot();
+    assert!(summary.closed && closed.closed);
+    assert_eq!(summary.remote_producers, 1 + opened.len());
+    assert_eq!(summary.remote_producers, closed.remote_producers);
+    assert_eq!(summary.unknown_loss_producers, summary.remote_producers);
+    assert!(summary.remote_producers < MAX_PRODUCERS);
+    assert_eq!(summary.counts.refused_producers, 64 - opened.len() as u64);
+    assert_eq!(readout.slots.load(Ordering::Acquire), 1);
+    drop(first);
+    drop(opened);
 }
 
 #[test]
@@ -377,6 +462,7 @@ fn live_readout_keeps_mixed_publication_counts_within_registered_capacity() {
         published: Arc::new(Published::default()),
         refused: Arc::new(AtomicU64::new(0)),
         slots: Arc::new(AtomicUsize::new(MAX_PRODUCERS)),
+        producers: Arc::new(AtomicUsize::new(MAX_PRODUCERS - 1)),
     };
     readout.published.store(Summary {
         remote_producers: 0,

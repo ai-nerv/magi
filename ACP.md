@@ -2,8 +2,9 @@
 
 `magi acp` uses the official schema1.12.0 with default features disabled and
 bounded native transport. It starts ordinary Magi hosts; it does not implement a
-second provider or tool loop. The command remains hidden while Phase10 is
-incomplete. Do not treat this checkpoint as production/editor acceptance.
+second provider or tool loop. The experimental command is hidden from general
+help. Its supported capability subset and verified local-editor scope are listed
+below; unsupported optional methods are not advertised.
 
 ## Current protocol surface
 
@@ -21,7 +22,7 @@ incomplete. Do not treat this checkpoint as production/editor acceptance.
 | Automatic background turns/reports | Native arrivals/wakes, text/thinking and tool updates stream without an invented prompt response; cancellation/failure produces an update | Real child completion/follow-up and active background cancellation fixtures; foreground/background ownership tests |
 | `session/set_config_option` | Native model selector; correlated host acceptance, complete configuration response and updates; session-local, no saved-default mutation | Settings unit tests and native model/refusal/busy/isolation fixtures |
 | Compaction/rewind display | Negotiated completed compaction updates with replacement summaries; ordinary-message fallback without client support; rewinds retain earlier history | Display projection/negotiation tests and real native rewind fixture |
-| General questions/surfaces | Interrupt and return an explicit unsupported-operation error; never implicitly approve | Native turn translation; full editor interaction remains outstanding |
+| General questions/surfaces | Interrupt and return an explicit unsupported-operation error; never implicitly approve | Native turn translation and unsupported-operation fixtures |
 | Mode/client filesystem/terminal operations | Not implemented; no optional capability claims | Unknown methods return protocol errors |
 | Image/audio/embedded-resource prompts | Rejected before native submission | Prompt admission tests |
 
@@ -95,7 +96,14 @@ narrow the finished baseline to text-only or empty-MCP sessions.
 - Persistent loading requires the generic store-scoped writer capability. The
   ordinary host reserves before lookup/replay and keeps that exact connection
   through startup and serving. Missing, busy or incompatible stores refuse loading;
-  another owner is never displaced. Lost owned transports do not silently reconnect.
+  another owner is never displaced. Lost owned transports never replay writes.
+  At a flush boundary, recovery acquires a fresh reservation and checks the run
+  binding and durable history against acknowledged and uncertain records before
+  sending queued entries. Busy ownership or incompatible history preserves the
+  queue and keeps recording stopped.
+  Oversized native raw records are reconstructed under that reservation with a
+  16MiB record cap,256fragment cap and30second total record deadline. Invalid or
+  incomplete fragments never advance history or acknowledge queued entries.
   The supplied cwd selects the native store; an ID alone does not select another
   workspace. Loading uses the private bootstrap and shares the30second startup
   deadline. Fresh session-local MCP settings replace the old session's settings;
@@ -155,7 +163,7 @@ narrow the finished baseline to text-only or empty-MCP sessions.
   Separate startup-crash and active-generation SIGKILL fixtures require cleanup.
   Ordinary headless/fork lifetime regressions also pass.
 
-## Evidence and remaining work
+## Verification
 
 Use `oslo make test-acp-host`, `oslo make test-acp`,
 `oslo make test-acp-sessions`, `oslo make test-acp-loading`, `oslo make test-headless-lifecycle`,
@@ -164,6 +172,35 @@ selected Casper/Melchior/Balthasar binaries and tools; `MAGI_REQUIRE_LIVE=1` mak
 missing prerequisites fail rather than skip. Tests use disposable configuration
 and a synthetic-only model boundary while retaining real native host, coordinator,
 store and tool execution. No installed catalog or paid provider is used.
+
+The final-image family verification on2026-10-29 passes8,132records with no failures
+or leaked processes; thirteen opt-in visual/editor/measurement records are skipped
+in that invocation. The explicit editor gate separately passes all seven actual
+Neovim0.12.4/Agentic scenarios with zero ignored cases: streaming and recovery,
+permission controls, native running-tool cancellation, model selection/refusal,
+and persistent loading in a fresh editor. Each adapter's actual executable is
+checked through `/proc/<pid>/exe`. Native headless and80x24/160x28 workflow checks
+and all fifteen deterministic family acceptance scenarios also pass.
+
+Retained receipts under the family candidate
+`target/roadmap/11/family-candidate.abuXbcuD`:
+
+- `target/family/run-VE6tVqb8/summary.json`: full native family verification.
+- `target/acceptance/run-VvDpo1T4/summary.json`: deterministic acceptance.
+- `target/roadmap/11/selected-editor-workflows.FGs0csXN`: seven actual-editor
+  cases and selected native child-event checks.
+- `target/roadmap/11/selected-magi-test-skills-live.lcvdI3mE`: retained headless
+  and terminal workflow evidence.
+
+These establish the tested native/editor behavior, not universal editor
+compatibility, manual font/color approval, real-provider consent or deployment.
+The full-family invocation does not silently promote its skipped editor cases;
+the separate explicit editor receipt supplies that evidence.
+
+## Historical implementation checkpoints
+
+The checkpoints below retain their original evidence scope. Their pending-work
+statements describe those earlier revisions, not the current verification above.
 
 The persistent-loading checkpoint passes39native ACP sessions,442host-library,
 3host-resume,18journal,2Lua identity and6CLI-resume tests, Clippy,11Magi gates and
@@ -273,8 +310,8 @@ notification, not sleeps or prompt retries, to prove the adapter consumed the
 background completion before submitting another foreground prompt. These changes
 do not implement session/load or establish actual-editor acceptance.
 
-Still required: persistent load/replay integration, complete native regressions and family
-gates, and an actual-editor acceptance recording. ACP allows session updates
+At that checkpoint, persistent load/replay integration, complete native regressions
+and family gates, and actual-editor acceptance were still required. ACP allows session updates
 outside foreground turns; see the
 [v1 session-update contract](https://agentclientprotocol.com/protocol/v1/prompt-turn#session-updates).
 No full Phase10 completion claim follows from these focused tests.
@@ -290,7 +327,7 @@ support) and `MAGI_TEST_EDITOR_CLIENT` paths and a fresh
 `CASPER_TEST_BINARY`, `BALTHASAR_TEST_BINARY`, `MELCHIOR_TEST_BINARY` and
 `CASPER_TEST_TOOLS`. The client checkout must match the pinned commit with no
 working-tree changes. No package manager, Node runtime or network fetch is invoked
-by the recipe. Missing inputs fail this explicit gate. Its five integration tests
+by the recipe. Missing inputs fail this explicit gate. Its seven integration tests
 are ignored in ordinary Cargo test invocation because those external inputs must be
 selected separately.
 
@@ -405,7 +442,7 @@ baselines match; the four selected runtime digests match run-bWQF2mvz. Its five
 opt-in editor skips do not establish full editor acceptance. Failed receipts
 remain unchanged; no runtime behavior or sandbox policy changed in these repairs.
 
-The current explicit `test-acp-editor-smoke` passes six actual-editor cases:
+The earlier selected-image `test-acp-editor-smoke` passed six actual-editor cases:
 buffer/TUI streaming and recovery, buffer/TUI allow/deny, model selection/refusal,
 and running-tool cancellation. It honors `MAGI_TEST_BINARY`, verifies the actual
 adapter's `/proc/<pid>/exe`, and retains that identity in each receipt. All six
@@ -414,7 +451,8 @@ the running-tool case also proves process-instance reaping and no final effect.
 Evidence: root `target/roadmap/11/editor-selected-evidence.sha256` and the isolated
 candidate's `target/roadmap/11/editor-selected-final/`.
 
-Persistent writer ownership/loading and broader interaction/visual coverage
-remain required for `test-acp-editor` and Phase10 acceptance. That complete
-acceptance recipe is not implemented yet. Receipts explicitly mark full visual
-and load acceptance false; rendered text grids and recovery are separate proof.
+That earlier six-case receipt did not prove persistent writer ownership/loading.
+The current `test-acp-editor` recipe runs all seven scenarios, including fresh
+editor loading, with retained replay/continuation and process-identity evidence.
+General font/color visual approval remains separate from rendered text-grid and
+native lifecycle acceptance.

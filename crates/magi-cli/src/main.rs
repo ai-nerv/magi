@@ -1,6 +1,7 @@
 //! The magi UI process: one multi-call binary, so out-of-process pieces ship as a single artifact.
 
 mod acp;
+mod agent_events;
 mod app;
 mod attachments;
 mod balthasar;
@@ -77,6 +78,12 @@ struct Cli {
 
     #[arg(long, hide = true, requires_all = ["headless", "tied"])]
     acp_config: bool,
+
+    #[arg(long, hide = true)]
+    agent_event_bootstrap: bool,
+
+    #[arg(long, hide = true)]
+    event_child: bool,
 
     /// What this session is for, in one word. `main` when nothing says. Written in at birth.
     #[arg(long, value_name = "NAME")]
@@ -194,6 +201,14 @@ impl Drop for Execution {
 
 fn execute() -> Result<()> {
     let cli = Cli::parse();
+    if cli.agent_event_bootstrap {
+        if !(matches!(cli.command, Some(Command::Fork { .. }))
+            || cli.command.is_none() && cli.headless && cli.event_child)
+        {
+            anyhow::bail!("child event bootstrap requires a native child launch");
+        }
+        agent_events::receive()?;
+    }
     if matches!(cli.command, Some(Command::Acp))
         && (cli.socket.is_some()
             || cli.resume
@@ -204,6 +219,8 @@ fn execute() -> Result<()> {
             || cli.headless
             || cli.tied.is_some()
             || cli.acp_config
+            || cli.agent_event_bootstrap
+            || cli.event_child
             || cli.role.is_some()
             || cli.role_description.is_some()
             || cli.attach.is_some()
@@ -230,6 +247,7 @@ fn execute() -> Result<()> {
             opening::Opening::begin(
                 cli.socket.clone(),
                 cli.tied.filter(|_| cli.acp_config),
+                cli.event_child,
                 melchior::Role {
                     name: cli.role.as_deref(),
                     description: cli.role_description.as_deref(),

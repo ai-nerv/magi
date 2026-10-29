@@ -30,7 +30,12 @@ impl Scribe {
         }
         next.session = owner.as_str().to_owned();
         next.transcript = id.to_owned();
-        next.sent = rows.iter().map(|(c, _)| c.0).collect();
+        next.sent = rows
+            .iter()
+            .map(|(cursor, entry)| {
+                super::recovery::fingerprint(*cursor, entry).map(|digest| (cursor.0, digest))
+            })
+            .collect::<Result<_, _>>()?;
         Ok((next, rows))
     }
 
@@ -57,11 +62,19 @@ impl Scribe {
         Ok((Some(next), journal))
     }
 
-    pub(crate) fn accept_resume(&mut self, journal: &Journal) {
+    pub(crate) fn accept_resume(&mut self, journal: &Journal) -> Result<(), Fault> {
+        let sent = journal
+            .entries()
+            .iter()
+            .enumerate()
+            .filter_map(|(n, entry)| journal.cursor_at(n).map(|cursor| (cursor, entry)))
+            .map(|(cursor, entry)| {
+                super::recovery::fingerprint(cursor, entry).map(|digest| (cursor.0, digest))
+            })
+            .collect::<Result<_, _>>()?;
         self.session = journal.session().as_str().to_owned();
-        self.sent = (0..journal.entries().len())
-            .filter_map(|n| journal.cursor_at(n))
-            .map(|cursor| cursor.0)
-            .collect();
+        self.sent = sent;
+        self.uncertain = None;
+        Ok(())
     }
 }
