@@ -74,6 +74,22 @@ fn the_heading_is_the_whole_of_what_was_spent() {
 }
 
 #[test]
+fn resolved_estimates_are_displayed_without_being_called_provider_reports() {
+    let usage = Usage {
+        input: 100,
+        cost_micros: 1_000_000,
+        estimated_micros: Some(3_000_000),
+        ..Usage::default()
+    };
+    let turns = [turn(1, "priced/model", usage)];
+    let drawn = text(&view(&report(&turns, &[])));
+    assert_eq!(drawn[0], "$4.0000 spent");
+    let body = drawn.join("\n");
+    assert!(body.contains("$1.0000 reported"), "{body}");
+    assert!(body.contains("$3.0000 estimated"), "{body}");
+}
+
+#[test]
 fn each_model_is_a_bar_of_its_own() {
     let turns = [
         turn(1, "openrouter/x/alpha", used(1_000, 100, 1_000)),

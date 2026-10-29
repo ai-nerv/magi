@@ -42,6 +42,8 @@ pub struct App {
     pub turn_models: std::collections::HashMap<MessageId, String>,
     model_reasons: bool,
     pub choices: Vec<magi_proto::ModelChoice>,
+    workflows: Vec<magi_proto::workflow::Summary>,
+    workflows_requested: bool,
     /// A list or a completion popup. One slot: running a command closes the popup that offered it.
     pub overlay: Option<Overlay>,
     pub pane: Option<magi_tui::pane::Pane>,
@@ -182,6 +184,8 @@ impl App {
             turn_models: std::collections::HashMap::new(),
             model_reasons: false,
             choices: Vec::new(),
+            workflows: Vec::new(),
+            workflows_requested: false,
             overlay: None,
             picking: None,
             asks: Vec::new(),
@@ -296,6 +300,7 @@ impl App {
             }
             HarnessEvent::MessageArrived { .. } => (true, true, false),
             HarnessEvent::UserMessage { .. }
+            | HarnessEvent::WorkflowMessage { .. }
             | HarnessEvent::AssistantEnded { .. }
             | HarnessEvent::ContextLaid { .. }
             | HarnessEvent::Compacted { .. } => (false, true, false),
@@ -565,9 +570,13 @@ impl App {
             return;
         };
         // `$` offers whoever is listening, read on the keystroke: a dead instance did not deregister.
-        let resolved = magi_tui::complete::resolve_with(&line, col, list_paths, &|_| {
-            self.reachable.iter().map(|them| them.id.clone()).collect()
-        });
+        let resolved = magi_tui::complete::resolve_workflows(
+            &line,
+            col,
+            list_paths,
+            &|_| self.reachable.iter().map(|them| them.id.clone()).collect(),
+            if row == 0 { &self.workflows } else { &[] },
+        );
         self.overlay = resolved
             .filter(|found| {
                 found.kind != magi_tui::complete::Kind::Command || self.modal.commanding()
@@ -612,6 +621,7 @@ pub mod surfacing;
 mod tests;
 #[path = "views.rs"]
 mod views;
+mod workflows;
 
 /// A line for the box to open with, drawn fresh each time the prompt empties.
 pub(crate) fn opener() -> &'static str {

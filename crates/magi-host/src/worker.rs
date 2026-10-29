@@ -7,6 +7,8 @@ use crate::turn::{self, Backend};
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc, oneshot};
 
+mod observing;
+
 /// One piece of work for the thread that owns the VM, and where to say it finished.
 struct Job {
     session: Arc<Mutex<Session>>,
@@ -111,13 +113,18 @@ impl Worker {
                         std::sync::Arc::clone(approver),
                     )
                     .confining(confine)
-                    .isolating(backend.isolate),
+                    .isolating(backend.isolate)
+                    .observing(observing::authorization),
                 ),
                 (None, true) => std::rc::Rc::new(
-                    magi_tools::ops::Real::confined(backend.cwd.clone()).isolating(backend.isolate),
+                    magi_tools::ops::Real::confined(backend.cwd.clone())
+                        .isolating(backend.isolate)
+                        .observing(observing::authorization),
                 ),
                 (None, false) => std::rc::Rc::new(
-                    magi_tools::ops::Real::new(backend.cwd.clone()).isolating(backend.isolate),
+                    magi_tools::ops::Real::new(backend.cwd.clone())
+                        .isolating(backend.isolate)
+                        .observing(observing::authorization),
                 ),
             };
             // Lent to the VM so `magi.shell` goes through the same `Ops` every other tool acts through.

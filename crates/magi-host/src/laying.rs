@@ -121,9 +121,12 @@ pub fn render(session: &Session, layout: &Layout) -> Context {
             (Slot::Rules { text, .. }, _) if !text.is_empty() => {
                 built.user(text.clone());
             }
-            (Slot::Observations { text, .. } | Slot::Pinned { text, .. }, _)
-                if !text.is_empty() =>
-            {
+            (
+                Slot::Observations { text, .. }
+                | Slot::Catalog { text, .. }
+                | Slot::Pinned { text, .. },
+                _,
+            ) if !text.is_empty() => {
                 built.observation(text.clone());
             }
             (Slot::Summary { text, .. }, _) if !text.is_empty() => {
@@ -219,7 +222,9 @@ pub fn counts(layout: &Layout, live: &[u64]) -> Laid {
             Slot::Summary { .. } => laid.summary += 1,
             Slot::Memory { .. } => laid.memory += 1,
             Slot::Rules { .. } => laid.pinned += 1,
-            Slot::Observations { .. } | Slot::Pinned { .. } => laid.notes += 1,
+            Slot::Observations { .. } | Slot::Catalog { .. } | Slot::Pinned { .. } => {
+                laid.notes += 1;
+            }
             Slot::Note { .. } => laid.notes += 1,
             Slot::Other => {}
         }
@@ -349,6 +354,9 @@ pub fn listed(session: &Session, layout: &Layout) -> Vec<magi_proto::laying::Lai
                     ("summary", None, costs(*tokens, text), line(text))
                 }
                 Slot::Note { text, tokens } => ("note", None, costs(*tokens, text), line(text)),
+                Slot::Catalog { text, tokens } => {
+                    ("catalog", None, costs(*tokens, text), line(text))
+                }
                 Slot::Memory { text, tokens, .. } => {
                     ("memory", None, costs(*tokens, text), line(text))
                 }
@@ -367,7 +375,7 @@ pub fn listed(session: &Session, layout: &Layout) -> Vec<magi_proto::laying::Lai
 /// Who said an entry, and the start of what.
 fn described(entry: &Entry) -> String {
     match entry {
-        Entry::User { text, .. } => format!("you: {text}"),
+        Entry::User { text, .. } | Entry::Workflow { text, .. } => format!("you: {text}"),
         Entry::From { who, text, .. } => format!("{who}: {text}"),
         Entry::Assistant { text, thinking, .. } if text.trim().is_empty() => {
             format!("model thinking: {thinking}")

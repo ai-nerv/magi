@@ -9,6 +9,9 @@ use magi_proto::{Cursor, Entry, SessionId};
 /// of its users, which would put `worker` and `turn` in a cycle.
 pub type Held = std::sync::Arc<tokio::sync::Mutex<Option<Scribe>>>;
 mod flushing;
+mod ownership;
+mod records;
+mod recovery;
 mod resuming;
 mod shape;
 pub use flushing::flush;
@@ -71,6 +74,8 @@ pub struct Beside {
 }
 
 pub struct Scribe {
+    writer: ownership::Writer,
+    managed_writer: bool,
     /// `None` while the memory layer is not answering; dialled again no sooner than `retry`.
     family: Option<Family>,
     /// Where to dial to get this connection back. balthasar can restart, and it drops a caller that
@@ -81,8 +86,9 @@ pub struct Scribe {
     session: String,
     /// Whose transcript this is: the session's own, or one agent's within a run it shares.
     transcript: String,
-    /// Cursors already sent, so a second write says `amend` rather than `observe`.
-    sent: std::collections::BTreeSet<u64>,
+    /// Acknowledged cursors and fingerprints of their durable records.
+    sent: std::collections::BTreeMap<u64, recovery::Digest>,
+    uncertain: Option<(u64, recovery::Digest)>,
 }
 
 impl Scribe {
@@ -108,12 +114,15 @@ impl Scribe {
     #[must_use]
     pub fn unconnected(at: std::path::PathBuf, session: &SessionId) -> Self {
         Self {
+            writer: ownership::Writer::Unchecked,
+            managed_writer: false,
             family: None,
             at,
             retry: (std::time::Instant::now(), BACKOFF.0),
             session: session.as_str().to_owned(),
             transcript: session.as_str().to_owned(),
-            sent: std::collections::BTreeSet::new(),
+            sent: std::collections::BTreeMap::new(),
+            uncertain: None,
         }
     }
 
@@ -127,6 +136,29 @@ impl Scribe {
 
     /// The connection, dialled again when it is down and the backoff has passed.
     async fn link(&mut self) -> Result<&mut Family, Fault> {
+        self.connect().await?;
+        if self.managed_writer {
+            self.reserve_writer(false).await.map_err(|why| {
+                if why.is_fatal() {
+                    why
+                } else {
+                    Fault::Failed(format!("writer negotiation failed: {why}"))
+                }
+            })?;
+        }
+        self.connect().await
+    }
+
+    async fn connect(&mut self) -> Result<&mut Family, Fault> {
+        self.check_writer()?;
+        if self.managed_writer
+            && self
+                .family
+                .as_ref()
+                .is_some_and(|family| !family.has_connection())
+        {
+            self.family = None;
+        }
         if self.family.is_none() {
             let now = std::time::Instant::now();
             if now < self.retry.0 {
@@ -139,6 +171,7 @@ impl Scribe {
             match Family::dial(&self.at).await {
                 Ok(open) => {
                     self.family = Some(open);
+                    self.writer = ownership::Writer::Unchecked;
                     self.retry.1 = BACKOFF.0;
                 }
                 Err(why) => {
@@ -176,6 +209,19 @@ impl Scribe {
             }
             other => other,
         }
+    }
+
+    /// Check a complete workflow against this transcript's write and replay envelopes.
+    pub fn validate_workflow(&self, entry: &Entry) -> Result<(), Fault> {
+        if matches!(entry, Entry::Workflow { .. }) {
+            crate::skills::snapshot::check(entry, Cursor(u64::MAX)).map_err(Fault::Refused)?;
+            let mut bounded = entry.clone();
+            if let Entry::Workflow { id, .. } = &mut bounded {
+                *id = magi_proto::MessageId::new("u".repeat(64));
+            }
+            self.fitted("observe", Cursor(u64::MAX), &bounded, &Beside::default())?;
+        }
+        Ok(())
     }
 
     /// Record a settled entry. Durable when this returns.
@@ -301,7 +347,7 @@ impl Scribe {
         entry: &Entry,
         beside: &Beside,
     ) -> Result<(), Fault> {
-        if self.sent.contains(&cursor.0) {
+        if self.sent.contains_key(&cursor.0) {
             self.amend(cursor, entry, beside).await
         } else {
             self.observe(cursor, entry, beside).await
@@ -316,18 +362,31 @@ impl Scribe {
         beside: &Beside,
     ) -> Result<(), Fault> {
         let args = self.fitted(verb, cursor, entry, beside)?;
+        let raw = args
+            .get(1)
+            .and_then(|turn| turn.get("raw"))
+            .ok_or_else(|| Fault::Failed("the fitted write has no raw record".into()))?;
+        let digest = recovery::digest(raw);
+        self.link().await?;
+        self.uncertain = Some((cursor.0, digest));
         // On the durable clock, not a feature's: the store a session writes to is opened by this
         // very call the first time, and what is not handed over is not anywhere else either.
-        match self.durable(verb, args.clone()).await {
-            Ok(_) => {}
+        let recorded = match self.durable(verb, args.clone()).await {
             // An `observe` whose reply was lost landed after all, and the entry has changed since:
             // the row is there, so this is an `amend`.
             Err(Fault::Refused(why)) if verb == "observe" && why.contains("already holds") => {
-                self.durable("amend", args).await?;
+                self.durable("amend", args).await
             }
-            Err(other) => return Err(other),
+            other => other,
+        };
+        if let Err(why) = recorded {
+            if matches!(why, Fault::Refused(_)) {
+                self.uncertain = None;
+            }
+            return Err(why);
         }
-        self.sent.insert(cursor.0);
+        self.sent.insert(cursor.0, digest);
+        self.uncertain = None;
         Ok(())
     }
 
@@ -353,6 +412,16 @@ impl Scribe {
             ])
         };
         let whole = args(entry)?;
+        if matches!(entry, Entry::Workflow { .. }) {
+            crate::skills::snapshot::check(entry, cursor).map_err(Fault::Refused)?;
+            return if magi_ipc::family::fits(verb, &whole) {
+                Ok(whole)
+            } else {
+                Err(Fault::Refused(
+                    "complete workflow record cannot fit unchanged in a write frame".into(),
+                ))
+            };
+        }
         if magi_ipc::family::fits(verb, &whole) {
             return Ok(whole);
         }
@@ -430,10 +499,11 @@ impl Scribe {
             if page.is_empty() {
                 break;
             }
-            let page = page
-                .into_iter()
-                .map(rebuild)
-                .collect::<Result<Vec<_>, _>>()?;
+            let mut decoded = Vec::with_capacity(page.len());
+            for row in page {
+                decoded.push(self.replay_record(id, row, false).await?);
+            }
+            let page = decoded;
             // Non-paging peers repeat the complete, unchanged transcript.
             if from > 0 && page == out {
                 break;

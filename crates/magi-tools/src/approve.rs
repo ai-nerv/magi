@@ -3,6 +3,15 @@
 
 use magi_proto::permit::{Action, Decision};
 
+/// The completed native authorization result and its authority source.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Authorization {
+    Ungated,
+    StandingGrant,
+    ApproverAllowed,
+    ApproverDenied,
+}
+
 /// Something that can put a question to a person and wait for the answer.
 pub trait Approver: Send + Sync {
     /// Ask about `action`, and block until it is answered. A refusal is as valid an answer as a grant.

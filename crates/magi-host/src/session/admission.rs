@@ -1,17 +1,35 @@
 use super::Session;
+use super::observing::Trace;
 use magi_proto::{AgentStatus, Entry};
 use std::collections::VecDeque;
 
 #[derive(Debug)]
 pub(crate) enum Request {
     Opening(Entry),
+    Tracked { request: u64, entry: Entry },
     Declare,
     Grants(Vec<magi_proto::permit::Grant>),
     Reports,
 }
 
+impl Request {
+    pub(crate) fn tracked(self, tracking: Option<u64>) -> Self {
+        match (self, tracking) {
+            (Self::Opening(entry), Some(request)) => Self::Tracked { request, entry },
+            (request, _) => request,
+        }
+    }
+
+    pub(crate) fn entry(&self) -> Option<&Entry> {
+        match self {
+            Self::Opening(entry) | Self::Tracked { entry, .. } => Some(entry),
+            _ => None,
+        }
+    }
+}
+
 /// The largest message a session takes: a quarter of a frame, so its record still fits in one.
-pub(crate) const ENTRY_MOST: usize = 4 * 1024 * 1024;
+pub(crate) const ENTRY_MOST: usize = crate::skills::snapshot::PROMPT_MOST;
 
 #[derive(Default)]
 pub(super) struct Admission {
@@ -19,11 +37,22 @@ pub(super) struct Admission {
     next: u64,
     active: Option<u64>,
     retrying_reports: bool,
-    waiting: VecDeque<Request>,
+    waiting: VecDeque<(Request, Trace)>,
+    trace: Trace,
     changing: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 pub(crate) struct Transition(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Admission {
+    pub(super) fn observing(&self, owner: u64) -> bool {
+        self.active == Some(owner) && self.trace.enabled()
+    }
+
+    pub(super) fn observed(&mut self, outcome: crate::events::TurnOutcome) {
+        self.trace.finish(outcome);
+    }
+}
 
 impl Drop for Transition {
     fn drop(&mut self) {
@@ -32,6 +61,10 @@ impl Drop for Transition {
 }
 
 impl Session {
+    pub(crate) fn event_turn(&self) -> Option<crate::events::Id> {
+        self.admission.active.and(self.admission.trace.identity())
+    }
+
     pub(super) fn admitted_status(&self, status: AgentStatus) -> AgentStatus {
         if self.busy() && matches!(status, AgentStatus::Idle) {
             AgentStatus::Working {
@@ -60,8 +93,22 @@ impl Session {
         Ok(Transition(std::sync::Arc::clone(&self.admission.changing)))
     }
 
+    #[cfg(test)]
     pub(crate) fn admit(&mut self, request: Request) -> Result<Option<(u64, Request)>, String> {
-        if let Request::Opening(entry) = &request
+        let trace = Trace::request(&request);
+        self.admit_observed(request, trace)
+    }
+
+    pub(crate) fn admit_observed(
+        &mut self,
+        request: Request,
+        mut trace: Trace,
+    ) -> Result<Option<(u64, Request)>, String> {
+        trace.admission();
+        if let Some(entry) = request.entry() {
+            crate::skills::snapshot::check(entry, magi_proto::Cursor(u64::MAX))?;
+        }
+        if let Some(entry) = request.entry()
             && super::resuming::weight(entry) > ENTRY_MOST
         {
             return Err(format!(
@@ -70,21 +117,26 @@ impl Session {
                 super::resuming::weight(entry)
             ));
         }
-        if let Request::Opening(Entry::User { images, .. }) = &request {
+        if let Some(Entry::User { images, .. }) = request.entry() {
             magi_model::validate_images(images)?;
         }
         if self.busy() {
+            if matches!(request, Request::Tracked { .. }) {
+                return Err("session is busy; tracked prompt was not accepted".into());
+            }
             if self.admission.waiting.len() >= 256 {
                 return Err("session queue is full; this request was not accepted".into());
             }
-            self.admission.waiting.push_back(request);
+            trace.admitted(true);
+            self.admission.waiting.push_back((request, trace));
             return Ok(None);
         }
-        Ok(Some(self.reserve(request)))
+        trace.admitted(false);
+        Ok(Some(self.reserve(request, trace)))
     }
 
     #[allow(clippy::expect_used)]
-    fn reserve(&mut self, request: Request) -> (u64, Request) {
+    fn reserve(&mut self, request: Request, mut trace: Trace) -> (u64, Request) {
         self.admission.retrying_reports = matches!(request, Request::Reports);
         self.admission.next = self
             .admission
@@ -97,6 +149,15 @@ impl Session {
             label: "Queued".into(),
         };
         self.phase.send_replace(self.status.clone());
+        trace.start();
+        self.admission.trace = trace;
+        let _ = self.events.send(magi_proto::HarnessEvent::TurnStarted {
+            owner: self.admission.next,
+            request: match &request {
+                Request::Tracked { request, .. } => Some(*request),
+                _ => None,
+            },
+        });
         (self.admission.next, request)
     }
 
@@ -111,13 +172,19 @@ impl Session {
                 .admission
                 .waiting
                 .iter()
-                .any(|request| matches!(request, Request::Reports))
+                .any(|(request, _)| matches!(request, Request::Reports))
         {
-            self.admission.waiting.push_back(Request::Reports);
+            self.admission
+                .waiting
+                .push_back((Request::Reports, Trace::default()));
         }
         self.admission.active = None;
+        self.admission.trace = Trace::default();
+        let _ = self
+            .events
+            .send(magi_proto::HarnessEvent::TurnFinished { owner });
         match self.admission.waiting.pop_front() {
-            Some(request) => Some(self.reserve(request)),
+            Some((request, trace)) => Some(self.reserve(request, trace)),
             None => {
                 self.set_status(AgentStatus::Idle);
                 None
@@ -129,9 +196,9 @@ impl Session {
         let mut entries = Vec::new();
         while matches!(
             self.admission.waiting.front(),
-            Some(Request::Opening(Entry::From { .. }))
+            Some((Request::Opening(Entry::From { .. }), _))
         ) {
-            if let Some(Request::Opening(entry)) = self.admission.waiting.pop_front() {
+            if let Some((Request::Opening(entry), _)) = self.admission.waiting.pop_front() {
                 entries.push(entry);
             }
         }
@@ -151,6 +218,43 @@ mod tests {
             text: text.into(),
             aside: String::new(),
         })
+    }
+
+    #[test]
+    fn tracked_prompt_busy_refusal_does_not_queue_or_steal_turn_boundaries() {
+        let mut session = Session::recorded(SessionId::new("tracked"), Vec::new());
+        let mut events = session.subscribe();
+        let (first, _) = session
+            .admit(prompt("background"))
+            .expect("admit")
+            .expect("start");
+        assert!(
+            matches!(events.try_recv().expect("boundary"), magi_proto::HarnessEvent::TurnStarted { owner, request: None } if owner == first)
+        );
+        assert!(
+            session
+                .admit(prompt("racing").tracked(Some(7)))
+                .expect_err("busy")
+                .contains("busy")
+        );
+        assert!(session.admit(prompt("queued")).expect("queue").is_none());
+        let (second, _) = session.finish(first).expect("queued start");
+        assert!(
+            matches!(events.try_recv().expect("end"), magi_proto::HarnessEvent::TurnFinished { owner } if owner == first)
+        );
+        assert!(
+            matches!(events.try_recv().expect("start"), magi_proto::HarnessEvent::TurnStarted { owner, request: None } if owner == second)
+        );
+        assert!(session.finish(second).is_none());
+        while events.try_recv().is_ok() {}
+        let (third, _) = session
+            .admit(prompt("accepted").tracked(Some(8)))
+            .expect("admit")
+            .expect("start");
+        assert!(
+            matches!(events.try_recv().expect("tracked"), magi_proto::HarnessEvent::TurnStarted { owner, request: Some(8) } if owner == third)
+        );
+        assert!(session.finish(third).is_none());
     }
 
     #[test]

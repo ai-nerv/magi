@@ -1,4 +1,4 @@
-//! Attempt-local helper output and request-wide reported usage.
+//! Attempt-local helper output and request-wide cumulative usage.
 
 use magi_core::{Turn, TurnState};
 use magi_model::{Delta, StopReason, Usage};
@@ -6,7 +6,6 @@ use magi_model::{Delta, StopReason, Usage};
 #[derive(Default)]
 pub(super) struct Attempt {
     turn: Turn,
-    spent: Usage,
 }
 
 impl Attempt {
@@ -15,19 +14,13 @@ impl Attempt {
     }
 
     pub(super) fn retry(&mut self) {
-        self.spent = self.usage();
+        let paid = self.usage();
         self.turn = Turn::new();
+        self.turn.apply(Delta::Usage(paid));
     }
 
     pub(super) fn usage(&self) -> Usage {
-        let latest = self.turn.usage();
-        Usage {
-            input: self.spent.input.saturating_add(latest.input),
-            output: self.spent.output.saturating_add(latest.output),
-            cache_read: self.spent.cache_read.saturating_add(latest.cache_read),
-            cache_write: self.spent.cache_write.saturating_add(latest.cache_write),
-            cost_micros: self.spent.cost_micros.saturating_add(latest.cost_micros),
-        }
+        self.turn.usage()
     }
 
     pub(super) fn text(&self, structured: bool) -> Result<String, String> {

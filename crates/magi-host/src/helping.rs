@@ -195,6 +195,7 @@ fn thinking(job: &Job) -> magi_model::ThinkingLevel {
 /// What a job asks its model for.
 fn wants(job: &Job, backend: &Backend, model: &str, decides: bool) -> magi_proto::ask::Wants {
     magi_proto::ask::Wants {
+        max_tokens_automatic: false,
         thinking: Some(thinking(job)),
         max_tokens: Some(job.max_tokens.unwrap_or(MAX_TOKENS)),
         // In words, unless the job allows a schema and the model answers a schema and nothing
@@ -271,7 +272,7 @@ pub async fn work(
                     answer.usage.prompt_tokens(),
                     answer.usage.output
                 );
-                charge(spent, answer.usage.cost_micros);
+                charge(spent, answer.usage.charged_micros());
                 let _ = events.send(HarnessEvent::HelperSpent {
                     role: job.role.clone(),
                     model: answer.model.clone(),
@@ -280,17 +281,12 @@ pub async fn work(
                 serde_json::json!({
                     "id": job.id, "attempt": job.attempt,
                     "text": answer.text, "model": answer.model,
-                    "usage": {
-                        "input": answer.usage.input, "output": answer.usage.output,
-                        "cache_read": answer.usage.cache_read,
-                        "cache_write": answer.usage.cache_write,
-                        "cost_micros": answer.usage.cost_micros,
-                    },
+                    "usage": answer.usage,
                 })
             }
             Err(why) => {
                 if why.usage != magi_proto::Usage::default() {
-                    charge(spent, why.usage.cost_micros);
+                    charge(spent, why.usage.charged_micros());
                     let _ = events.send(HarnessEvent::HelperSpent {
                         role: job.role.clone(),
                         model: why.model.clone(),
@@ -412,8 +408,11 @@ pub async fn between(
     scribe: crate::scribe::Held,
 ) -> tokio::sync::oneshot::Sender<()> {
     let (over, ended) = tokio::sync::oneshot::channel::<()>();
-    let tasks = session.lock().await.helpers();
-    if let Err(why) = tasks.spawn(async move {
+    let (tasks, turn) = {
+        let held = session.lock().await;
+        (held.helpers(), held.event_turn())
+    };
+    if let Err(why) = tasks.spawn(crate::events::context::turn(turn, async move {
         let _ = ended.await;
         let (mut jobs, events, spent) = {
             let mut held = session.lock().await;
@@ -445,7 +444,7 @@ pub async fn between(
             return Ok(());
         }
         work(&jobs, &backend, &scribe, &events, &spent).await
-    }) {
+    })) {
         magi_model::noted!("helpers: {why}");
     }
     over
@@ -464,6 +463,8 @@ mod tests {
 
     #[path = "sharing.rs"]
     mod sharing_the_turns_model;
+
+    mod lineage;
 
     #[test]
     fn a_role_with_a_helper_runs_on_it() {

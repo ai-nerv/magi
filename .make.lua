@@ -16,6 +16,11 @@
 
 local make = oslo.make
 
+local function test_cargo(...)
+  local argv = { "scripts/test-cargo.sh", ... }
+  assert(oslo.run(argv).ok, "cargo test failed")
+end
+
 -- Version from the workspace package table of Cargo.toml, the file a release bumps.
 local function project()
   local manifest = oslo.fs.read("Cargo.toml") or ""
@@ -350,6 +355,10 @@ make.recipe{
 
 ---------------------------------------------------------------- configuration
 
+make.recipe{ name = "test-config-install", desc = "disposable configuration synchronization fixtures",
+             run = function() assert(oslo.run{ "bash", "scripts/test-config-install.sh" }.ok,
+               "configuration synchronization fixtures failed") end }
+
 -- magi's own configuration lives in `config/`, and this installs it: `config/*` becomes
 -- `~/.config/magi/*`. The binary carries a copy of the same files, so a fresh install already
 -- speaks and already has a catalog; this is how you get the real ones to edit.
@@ -478,8 +487,19 @@ make.recipe{
 }
 
 make.recipe{ name = "test", desc = "the suite",
-             run = function() sh.cargo("test", "--all-targets", "--release") end }
+             deps = { "test-config-install", "test-launcher-fixture", "build-file-reply-proxy" },
+             run = function() test_cargo("--all-targets", "--release") end }
 make.alias("t", "test")
+
+make.recipe{ name = "test-forking", desc = "child session identity and lifecycle fixtures",
+             run = function() sh.cargo("test", "--release", "-p", "magi-cli", "--bin", "magi", "forking::tests::") end }
+
+make.recipe{ name = "test-fixture-utilities", desc = "provider and tool fixtures resolve native utility paths",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "refreshing::tests::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "environment")
+               sh.cargo("test", "--release", "-p", "magi-tools", "--lib", "supplier::")
+             end }
 
 make.recipe{ name = "test-environment", desc = "session environment imports and subprocess propagation",
              run = function()
@@ -506,6 +526,13 @@ make.recipe{ name = "test-model-refresh", desc = "live model picker and discover
                sh.cargo("test", "--release", "-p", "magi-cli", "refresh")
              end }
 
+make.recipe{ name = "test-writer-ownership", desc = "connection-owned memory transport and writer lifecycle",
+             run = function()
+               sh.cargo("test", "--locked", "--offline", "--release", "-p", "magi-ipc", "family::")
+               sh.cargo("test", "--locked", "--offline", "--release", "-p", "magi-host", "--lib")
+               sh.cargo("test", "--locked", "--offline", "--release", "-p", "magi-host", "--test", "writer_ownership")
+             end }
+
 make.recipe{ name = "test-resume", desc = "in-process persistence rebinding",
              run = function()
                sh.cargo("test", "--release", "-p", "magi-host", "--lib")
@@ -514,6 +541,305 @@ make.recipe{ name = "test-resume", desc = "in-process persistence rebinding",
                sh.cargo("test", "--release", "-p", "magi-lua", "engine::naming")
                sh.cargo("test", "--release", "-p", "magi-cli", "--test", "resume_live")
              end }
+
+make.recipe{ name = "resolve-acp", desc = "resolve the ACP workspace graph without compiling",
+  run = function()
+    assert(oslo.run{ "sh", "-c", "mkdir -p target/acp && cargo metadata --offline --format-version 1 > target/acp/metadata.json" }.ok,
+      "ACP workspace dependency resolution failed")
+  end }
+
+make.recipe{ name = "test-acp", desc = "bounded ACP transport, admission and native turn contracts",
+  run = function()
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-cli", "--bin", "magi", "acp::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-cli", "--test", "acp")
+  end }
+
+make.recipe{ name = "test-acp-sessions", desc = "ACP native startup, prompts, cancellation and owned cleanup",
+  run = function()
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-cli", "--test", "acp_sessions")
+  end }
+
+make.recipe{ name = "test-acp-loading", desc = "persistent ACP native replay and writer ownership",
+  run = function()
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-cli", "--test", "acp_sessions", "loading::")
+  end }
+
+make.recipe{ name = "test-acp-editor-harness", desc = "bounded editor evidence capture and supervision",
+  run = function()
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-cli", "--test", "acp_editor", "supervision::")
+  end }
+
+make.recipe{ name = "test-event-collection", desc = "bounded private event transport and collector admission",
+  run = function()
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--lib", "events::")
+  end }
+
+make.recipe{ name = "test-events-memory", desc = "native memory request attribution and connection ownership",
+  run = function()
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-ipc", "family::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-lua", "--lib", "stream::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--lib", "events::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--test", "writer_ownership")
+  end }
+
+make.recipe{ name = "test-events-helpers", desc = "helper turn attribution and session settlement",
+  run = function()
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--lib", "events::context::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--lib", "settling::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--lib", "helping::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--lib", "knowing::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--lib", "judging::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--test", "event_policy")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--test", "laying_live")
+  end }
+
+make.recipe{ name = "test-surfacing", desc = "native detached screen lifecycle",
+  run = function()
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--test", "surfacing_live")
+  end }
+
+make.recipe{ name = "test-events", desc = "content-free local event schema and bounded queue contracts",
+  run = function()
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-tools", "--lib", "ops::observing::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--lib", "events::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--lib", "session::observing::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--lib", "asking::observing::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--lib", "asking::waiting::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--lib", "serving::observing::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--lib", "preparing::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--test", "event_turns")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--test", "event_permissions")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--test", "event_clients")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--test", "event_authorization")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--test", "event_policy")
+  end }
+
+make.recipe{ name = "test-mcp-containment", desc = "selected external MCP lifecycle and confinement",
+  run = function()
+    assert(os.getenv("MAGI_REQUIRE_LIVE") == "1", "MAGI_REQUIRE_LIVE=1 is required")
+    assert(os.getenv("CASPER_TEST_BINARY") and os.getenv("CASPER_TEST_BINARY") ~= "", "CASPER_TEST_BINARY is required")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--test", "event_casper_bootstrap")
+  end }
+
+make.recipe{ name = "test-events-native", desc = "selected native event bootstrap interoperability",
+  run = function()
+    assert(os.getenv("MAGI_REQUIRE_LIVE") == "1", "MAGI_REQUIRE_LIVE=1 is required")
+    for _, name in ipairs({ "MAGI_TEST_BINARY", "CASPER_TEST_BINARY", "MELCHIOR_TEST_BINARY", "BALTHASAR_TEST_BINARY" }) do
+      assert(os.getenv(name) and os.getenv(name) ~= "", name .. " is required")
+    end
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-cli", "--bin", "magi", "config::events::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-cli", "--bin", "magi", "config::project::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-cli", "--bin", "magi", "balthasar::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-cli", "--bin", "magi", "melchior::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--lib", "events::collection::runtime::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--test", "event_casper_bootstrap")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--test", "event_sibling_bootstrap")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--test", "event_broker")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--test", "event_supplier")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-cli", "--test", "event_collection")
+  end }
+
+make.recipe{ name = "build-event-observer", desc = "capture the test-only event observer executable",
+  run = function()
+    assert(oslo.run{ "bash", "scripts/build-event-observer.sh" }.ok, "observer build failed")
+  end }
+
+make.recipe{ name = "test-event-observer", desc = "test-only observer launch, identity and cancellation",
+  run = function()
+    assert(os.getenv("MAGI_REQUIRE_LIVE") == "1", "MAGI_REQUIRE_LIVE=1 is required")
+    for _, name in ipairs({ "MAGI_TEST_BINARY", "CASPER_TEST_BINARY", "MELCHIOR_TEST_BINARY", "BALTHASAR_TEST_BINARY" }) do
+      assert(os.getenv(name) and os.getenv(name) ~= "", name .. " is required")
+    end
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--lib", "events::collection::worker::tests::observer::")
+  end }
+
+make.recipe{ name = "test-captured-event-observer", desc = "verify the frozen observer executable",
+  params = { { "--artifact", desc = "captured observer summary.json" } },
+  run = function(a)
+    assert(a.artifact, "artifact receipt required")
+    assert(oslo.run{ "bash", "scripts/test-captured-event-observer.sh", a.artifact }.ok,
+           "captured observer verification failed")
+  end }
+
+make.recipe{ name = "test-events-children", desc = "native spawned-agent event ancestry and lifetime",
+  run = function()
+    assert(os.getenv("MAGI_REQUIRE_LIVE") == "1", "MAGI_REQUIRE_LIVE=1 is required")
+    for _, name in ipairs({ "MAGI_TEST_BINARY", "CASPER_TEST_BINARY", "MELCHIOR_TEST_BINARY", "BALTHASAR_TEST_BINARY" }) do
+      assert(os.getenv(name) and os.getenv(name) ~= "", name .. " is required")
+    end
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--lib", "events::collection::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-cli", "--bin", "magi", "forking::tests::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-cli", "--test", "forking_live", "events::")
+  end }
+
+make.recipe{ name = "test-events-broker", desc = "native provider event launch and cancellation",
+  run = function()
+    assert(os.getenv("MAGI_REQUIRE_LIVE") == "1", "MAGI_REQUIRE_LIVE=1 is required")
+    assert(os.getenv("MELCHIOR_TEST_BINARY") and os.getenv("MELCHIOR_TEST_BINARY") ~= "", "MELCHIOR_TEST_BINARY is required")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--lib", "broker::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--test", "event_broker")
+  end }
+
+make.recipe{ name = "test-events-shutdown", desc = "native session tool shutdown and event lifetime",
+  run = function()
+    assert(os.getenv("MAGI_REQUIRE_LIVE") == "1", "MAGI_REQUIRE_LIVE=1 is required")
+    for _, name in ipairs({ "MAGI_TEST_BINARY", "CASPER_TEST_BINARY", "MELCHIOR_TEST_BINARY", "BALTHASAR_TEST_BINARY" }) do
+      assert(os.getenv(name) and os.getenv(name) ~= "", name .. " is required")
+    end
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-cli", "--test", "event_collection")
+  end }
+
+make.recipe{ name = "test-events-supplier", desc = "native tools collection and daemon cleanup",
+  run = function()
+    assert(os.getenv("MAGI_REQUIRE_LIVE") == "1", "MAGI_REQUIRE_LIVE=1 is required")
+    assert(os.getenv("CASPER_TEST_BINARY") and os.getenv("CASPER_TEST_BINARY") ~= "", "CASPER_TEST_BINARY is required")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-tools", "--lib")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--test", "event_supplier")
+  end }
+
+make.recipe{ name = "test-events-host", desc = "host turn observations and native lifecycle regressions",
+  run = function()
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--lib",
+      "--test", "turn", "--test", "lifecycle", "--test", "arrivals", "--test", "roundtrip",
+      "--test", "report_delivery", "--test", "event_turns", "--test", "event_permissions", "--test", "event_clients",
+      "--test", "event_authorization", "--test", "event_policy")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-tools", "--lib")
+  end }
+
+make.recipe{ name = "test-acp-editor", desc = "actual editor streaming, permissions, restart, cancellation and models",
+  deps = { "test-acp-editor-smoke" } }
+
+make.recipe{ name = "test-acp-editor-smoke", desc = "isolated editor streaming, permissions, loading and model controls",
+  run = function()
+    for _, name in ipairs({ "MAGI_TEST_EDITOR", "MAGI_TEST_PTY", "MAGI_TEST_EDITOR_CLIENT", "MAGI_EDITOR_EVIDENCE",
+      "CASPER_TEST_BINARY", "MELCHIOR_TEST_BINARY", "BALTHASAR_TEST_BINARY", "CASPER_TEST_TOOLS" }) do
+      assert(os.getenv(name) and os.getenv(name) ~= "", name .. " is required for editor verification")
+    end
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-cli", "--test", "acp_editor", "--", "--ignored")
+  end }
+
+make.recipe{ name = "test-acp-host", desc = "native ACP admission, preparation, settlement and wire contracts",
+  run = function()
+    for _, filter in ipairs({ "session::admission::", "session::history::", "preparing::", "turning::", "serving::", "sending::" }) do
+      test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--lib", filter)
+    end
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-proto", "-p", "magi-ipc", "--lib")
+  end }
+
+make.recipe{ name = "test-headless-lifecycle", desc = "ordinary headless and fork lifetime regression checks",
+  run = function()
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-cli", "--bin", "magi", "child::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-cli", "--test", "headless_live")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-cli", "--test", "forking_live")
+  end }
+
+make.recipe{ name = "test-skills", desc = "bounded workflow parsing, catalog and helper contracts",
+             run = function()
+               test_cargo("--release", "-p", "magi-host", "--lib", "skills::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "skills")
+             end }
+
+make.recipe{ name = "test-skills-supervision", desc = "bounded workflow deadlines, cancellation and retained cleanup capacity",
+             run = function()
+               test_cargo("--release", "-p", "magi-host", "--lib", "skills::client::")
+               test_cargo("--release", "-p", "magi-tools", "--lib", "supplier::tests::")
+             end }
+
+make.recipe{ name = "test-skills-reference", desc = "local workflow examples, bounds, roots and command help",
+             run = function()
+               test_cargo("--release", "-p", "magi-host", "--test", "workflow_reference")
+               test_cargo("--release", "-p", "magi-cli", "--bin", "magi", "help::")
+             end }
+
+make.recipe{ name = "test-skills-workspace", desc = "explicit workflow roots and project trust boundary",
+             run = function()
+               test_cargo("--release", "-p", "magi-cli", "--bin", "magi", "config::workspace::")
+               test_cargo("--release", "-p", "magi-cli", "--bin", "magi", "config::project::")
+             end }
+
+make.recipe{ name = "test-skills-print", desc = "headless workflow refusal and print reporting contracts",
+             run = function()
+               test_cargo("--release", "-p", "magi-cli", "--bin", "magi", "print::")
+             end }
+
+make.recipe{ name = "test-skills-terminal", desc = "offline workflow headless and real terminal acceptance",
+             run = function()
+               for _, name in ipairs({ "CASPER_TEST_BINARY", "BALTHASAR_TEST_BINARY", "MELCHIOR_TEST_BINARY" }) do
+                 assert(os.getenv(name), "set " .. name .. " to the selected native binary")
+               end
+               sh.cargo("build", "--release", "-p", "magi-cli", "--bin", "magi")
+               sh.cargo("build", "--release", "-p", "magi-testkit", "--example", "workflow-ready")
+               assert(oslo.run{ "bash", "scripts/acceptance-workflows.sh", os.getenv("MAGI_TEST_BINARY") or target_path(true),
+                                "terminal", "target/release/examples/workflow-ready" }.ok,
+                      "workflow terminal acceptance failed")
+             end }
+make.alias("test-skills-live", "test-skills-terminal")
+
+make.recipe{ name = "test-skills-legacy", desc = "retained Magi refuses unsupported workflow history",
+             run = function()
+               for _, name in ipairs({ "CASPER_TEST_BINARY", "BALTHASAR_TEST_BINARY", "MELCHIOR_TEST_BINARY", "LEGACY_MAGI_TEST_BINARY" }) do
+                 assert(os.getenv(name), "set " .. name .. " to the selected native binary")
+               end
+               sh.cargo("build", "--release", "-p", "magi-cli", "--bin", "magi")
+               assert(oslo.run{ "bash", "scripts/acceptance-workflows.sh", target_path(true), "legacy" }.ok,
+                      "workflow legacy acceptance failed")
+             end }
+
+make.recipe{ name = "test-skills-reader", desc = "workflow catalog and snapshots through selected Casper on both backends",
+             run = function()
+               assert(os.getenv("CASPER_TEST_BINARY"), "set CASPER_TEST_BINARY to the selected built Casper")
+               assert(os.getenv("MAGI_REQUIRE_LIVE") == "1", "set MAGI_REQUIRE_LIVE=1; missing prerequisites must fail")
+               test_cargo("--release", "-p", "magi-host", "--test", "skills_reader")
+             end }
+
+make.recipe{ name = "test-skills-history", desc = "lossless workflow records, context and replay bounds",
+             run = function()
+               test_cargo("--release", "-p", "magi-host", "--lib", "workflow_snapshot")
+               sh.cargo("test", "--release", "-p", "magi-journal")
+               sh.cargo("test", "--release", "-p", "magi-proto")
+             end }
+
+make.recipe{ name = "test-skills-preparation", desc = "bounded workflow preparation ownership and admission",
+             run = function()
+               test_cargo("--release", "-p", "magi-host", "--lib", "preparing::")
+             end }
+
+make.recipe{ name = "test-skills-ui", desc = "workflow completion, provenance and UI catalog state",
+             run = function()
+               test_cargo("--release", "-p", "magi-tui", "--test", "workflows")
+               test_cargo("--release", "-p", "magi-cli", "--bin", "magi", "app::workflows::")
+             end }
+
+make.recipe{ name = "test-skills-ui-regressions", desc = "terminal and application state regression suite",
+             run = function()
+               test_cargo("--release", "-p", "magi-cli", "--test", "overlay")
+               test_cargo("--release", "-p", "magi-tui", "--lib")
+               test_cargo("--release", "-p", "magi-cli", "--bin", "magi", "app::")
+               test_cargo("--release", "-p", "magi-cli", "--bin", "magi", "help::")
+             end }
+
+make.recipe{ name = "test-skills-history-live", desc = "workflow snapshots through selected native Balthasar",
+             run = function()
+               assert(os.getenv("BALTHASAR_TEST_BINARY"), "set BALTHASAR_TEST_BINARY to the selected Balthasar")
+               assert(os.getenv("MAGI_REQUIRE_LIVE") == "1", "set MAGI_REQUIRE_LIVE=1; missing prerequisites must fail")
+               test_cargo("--release", "-p", "magi-host", "--test", "workflow_history")
+             end }
+
+make.recipe{ name = "test-skills-submission", desc = "workflow socket admission, cancellation and native replay",
+             run = function()
+               assert(os.getenv("CASPER_TEST_BINARY"), "set CASPER_TEST_BINARY to the selected Casper")
+               assert(os.getenv("CASPER_TEST_TOOLS"), "set CASPER_TEST_TOOLS to the selected shipped tools.lua")
+               assert(os.getenv("BALTHASAR_TEST_BINARY"), "set BALTHASAR_TEST_BINARY to the selected Balthasar")
+               assert(os.getenv("MAGI_REQUIRE_LIVE") == "1", "set MAGI_REQUIRE_LIVE=1; missing prerequisites must fail")
+               test_cargo("--release", "-p", "magi-host", "--test", "workflow_submission", "--", "--test-threads=1")
+             end }
+
+make.recipe{ name = "test-recording-failures", desc = "runtime recording failures after successful host startup",
+  run = function()
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-testkit", "--lib", "memory::failing::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--test", "arrivals", "--test", "lifecycle",
+      "--test", "report_delivery", "--test", "environment", "--test", "event_turns")
+  end }
 
 make.recipe{ name = "test-lifecycle", desc = "session-wide command admission",
              run = function()
@@ -585,13 +911,100 @@ make.recipe{ name = "test-helper-retries", desc = "helper attempt boundaries and
                sh.cargo("test", "--release", "-p", "magi-host", "--test", "laying_live", "helper_retries")
              end }
 
+make.recipe{ name = "test-usage", desc = "usage accounting, displayed estimates and cumulative helper retries",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-model", "usage::")
+               sh.cargo("test", "--release", "-p", "magi-proto", "accounting_compatibility")
+               sh.cargo("test", "--release", "-p", "magi-tui", "cost::")
+               sh.cargo("test", "--release", "-p", "magi-tui", "crew::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "roundtrip", "what_a_turn_cost_reaches_the_ui")
+               make.run("test-helper-retries")
+             end }
+
+make.recipe{ name = "build-session-client", desc = "build the headless session protocol fixture",
+             run = function() sh.cargo("build", "-p", "magi-testkit", "--example", "session-client") end }
+
+make.recipe{ name = "test-session-client", desc = "headless client argument parsing",
+             run = function() sh.cargo("test", "-p", "magi-testkit", "--example", "session-client") end }
+
+make.recipe{ name = "test-cache-contract", desc = "selected-family cache request capture through a supplied runner",
+             params = { { "--runner", desc = "absolute family acceptance runner path" } },
+             run = function(a)
+               assert(type(a.runner) == "string" and a.runner:sub(1, 1) == "/", "--runner requires an absolute path")
+               local bash = os.getenv("NERV_BASH") or os.getenv("BASH") or "/bin/bash"
+               local context = a.runner:match("^(.*)/[^/]+$") .. "/test-context.sh"
+               assert(oslo.run{ "env", "NERV_ONLY=cache-contract", bash, context, bash, a.runner }.ok,
+                      "selected-family cache contract failed")
+             end }
+
+make.recipe{ name = "test-cache-frames", desc = "session-local frame diagnostics and deferred-tool transitions",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-proto", "ask::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "frames::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "turn", "unlocking::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "turn", "cache_frames::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "turn", "provider_frames::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "resuming::tests::malformed_replay_cursors")
+             end }
+
+make.recipe{ name = "test-cache-routing", desc = "captured upstream preference and failure release",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "broker::cache_routing::")
+             end }
+
+make.recipe{ name = "test-no-progress", desc = "bounded repeated-failure admission and tool result pairing",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "turn::progress::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "turn", "progress::")
+             end }
+
 make.recipe{ name = "test-turn-boundaries", desc = "host history for truncated tool calls",
              run = function()
                sh.cargo("test", "--release", "-p", "magi-host", "--test", "turn", "truncated")
              end }
 
+make.recipe{ name = "test-overflow", desc = "bounded input recovery and failure compatibility",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-cli", "an_explicit_sibling_output_limit")
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "mem_output_reserve_matches_request::")
+               sh.cargo("test", "--release", "-p", "magi-proto", "ask::")
+               sh.cargo("test", "--release", "-p", "magi-ipc", "--test", "overflow")
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "broker::overflow::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "turn", "overflowing::")
+             end }
+
+make.recipe{ name = "test-file-revisions", desc = "native file admission and per-agent delivered revision ownership",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-proto", "--lib", "tooling::files::")
+               sh.cargo("test", "--release", "-p", "magi-tools", "--lib", "supplier::")
+               sh.cargo("test", "--release", "-p", "magi-tools", "--lib", "files::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "files::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "turn", "files::")
+             end }
+
 make.recipe{ name = "test-containment", desc = "coordinator tool and surface spawn policy",
-             run = function() sh.cargo("test", "--release", "-p", "magi-tools", "-p", "magi-host") end }
+             deps = { "build-file-reply-proxy" },
+             run = function() test_cargo("--release", "-p", "magi-tools", "-p", "magi-host") end }
+
+make.recipe{ name = "test-launcher-fixture", desc = "read-only backend capture, signals and test process cleanup",
+             run = function()
+               assert(oslo.run{"scripts/test-launcher-fixture.sh"}.ok, "test launcher fixture failed")
+             end }
+
+make.recipe{ name = "test-native-file-revisions", desc = "actual selected Casper, both doors/backends and agent-owned receipts",
+             deps = { "test-launcher-fixture", "build-file-reply-proxy" },
+             run = function()
+               assert(os.getenv("CASPER_TEST_BINARY"), "set CASPER_TEST_BINARY to the selected built Casper")
+               assert(os.getenv("CASPER_TEST_TOOLS"), "set CASPER_TEST_TOOLS to the selected shipped tools.lua")
+               assert(os.getenv("MAGI_REQUIRE_LIVE") == "1", "set MAGI_REQUIRE_LIVE=1; missing native prerequisites must fail")
+               test_cargo("--release", "-p", "magi-host", "--test", "native_files")
+             end }
+
+make.recipe{ name = "build-file-reply-proxy", desc = "actual-Casper reply-loss fixture",
+             run = function()
+               sh.cargo("build", "--release", "-p", "magi-host", "--example", "file-reply-proxy")
+               sh.cargo("test", "--release", "-p", "magi-host", "--example", "file-reply-proxy")
+             end }
 
 make.recipe{ name = "test-live-guard", desc = "the required integration prerequisite policy",
              run = function() sh.cargo("test", "--release", "-p", "magi-testkit", "live::tests") end }
@@ -745,7 +1158,7 @@ make.recipe{ name = "audit", desc = "known advisories against the lockfile, offl
              run = cargo_tool("audit", { "--no-fetch" }, "cargo audit failed") }
 
 make.recipe{ name = "deny", desc = "the dependency policy in deny.toml",
-             run = cargo_tool("deny", { "check" }, "cargo deny failed") }
+             run = cargo_tool("deny", { "--offline", "check", "--disable-fetch" }, "cargo deny failed") }
 
 make.recipe{
   name = "verify",

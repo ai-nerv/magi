@@ -86,6 +86,7 @@ async fn a_tool_looked_up_is_there_to_call_in_the_next_round() {
     let mut registry = magi_tools::Registry::new();
     registry.register(Box::new(Manual));
     registry.register(Box::new(Dino));
+    let mut events = session.lock().await.subscribe();
     magi_host::turn::run(
         &session,
         &backend(&mind),
@@ -103,6 +104,33 @@ async fn a_tool_looked_up_is_there_to_call_in_the_next_round() {
         declared(&asks[1], "dino"),
         "and there in the round right after"
     );
+    let mut frames = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let magi_proto::HarnessEvent::CacheFrame { reasons } = event {
+            frames.push(reasons);
+        }
+    }
+    assert_eq!(
+        frames,
+        [
+            vec![],
+            vec![magi_proto::caching::Invalidation::ToolsChanged],
+            vec![]
+        ]
+    );
+    let requests = asks
+        .iter()
+        .map(|ask| serde_json::from_str::<magi_proto::ask::Ask>(ask).expect("ask"))
+        .collect::<Vec<_>>();
+    for pair in requests.windows(2) {
+        assert!(
+            pair[1]
+                .context
+                .messages
+                .starts_with(&pair[0].context.messages)
+        );
+        assert_eq!(pair[1].context.system, pair[0].context.system);
+    }
     let held = session.lock().await;
     assert!(
         held.entries().iter().any(|entry| matches!(entry,

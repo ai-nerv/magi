@@ -42,7 +42,17 @@ mod tests {
             if let Some(selected) = selected {
                 child.env("MAGI_TEST_BINARY", selected);
             }
-            assert!(child.status().expect("binary selection fixture").success());
+            let output = child.output().expect("binary selection fixture");
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8_lossy(&output.stdout)
+                    .contains("test result: ok. 1 passed; 0 failed; 0 ignored;")
+            );
         }
     }
 

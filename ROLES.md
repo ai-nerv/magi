@@ -86,7 +86,7 @@ key is the scratch run.
 | `forget` | `(id, opts) -> ok` | The model's `forget` tool is not declared. |
 | `why` | `(id) -> { confidence, witnesses }` | The model's `why` tool is not declared. |
 | `scroll` | `(session, opts) -> { turns, next }` | The model's `history` tool is not declared, and an elided tool result cannot be read back. |
-| `layout` | `(session, { round, window, reply, fixed, live, query, idle_s, helpers }) -> { id, budget, slots, jobs, fits, why }`; `rules` contains verified user directives, `observations` contains lower-trust metadata. Both consume the `pinned` quota. `summary`, `memory` and legacy mixed `pinned` text are assistant or helper context, not verified authority. | magi sends every live entry whole, every round. An over-budget context goes to the provider and is refused there. This is the most expensive extension to lack. |
+| `layout` | `(session, { round, window, reply, fixed, live, query, idle_s, helpers }) -> { id, budget, slots, jobs, fits, why }`; `rules` contains verified user directives, `observations` contains lower-trust metadata. Both consume the `pinned` quota. `catalog` lists what the project has on record, one line per asserted memory by handle, under its own `catalog` share. `summary`, `memory`, `catalog` and legacy mixed `pinned` text are assistant or helper context, not verified authority. | magi sends every live entry whole, every round. An over-budget context goes to the provider and is refused there. This is the most expensive extension to lack. |
 | `plan` | `(session, { window }) -> { keep, mask, drop, summarise, why }` | Asked only when `layout` is refused: what it masks goes as a stub and what it drops is left out. Without either, everything live is sent. |
 | `applied` | `(session, { id, usage }) -> ok` | The store never learns how far its estimate was from what the provider counted. |
 | `overflowed` | `(session, { id, said }) -> layout` | A request refused as too long is not retried tighter. |
@@ -97,6 +97,39 @@ key is the scratch run.
 | `outcome` | `(action, opts) -> { outcome, kind }` | The outcome loop records nothing. |
 | `model` | `(session, opts) -> { model, context }` | The store does not know which model produced a run. |
 | `resume` | `(session) -> { next, turns }` | magi cannot cross-check that the store holds what this session thinks it does. |
+| `writer_status` | `(transcript, { revision: 1 }) -> { revision, supported, owned, lifetime, scope }` | Persistent loading cannot establish exclusive writer support. |
+| `writer` | `(transcript, { revision: 1, operation: "reserve" or "release" }) -> { revision, owned }` | Persistent loading is refused; ordinary sessions retain core-only compatibility. |
+
+The writer extension is harness-only, never a model-facing tool. Both verbs must
+be advertised together. Revision 1 reports `lifetime: "connection"` and
+`scope: "store-transcript"`; `owned` refers only to the calling connection.
+Nonpersistent or one-shot implementations report `supported: false`.
+Reservation and release require the memory writer key.
+
+A reservation excludes every other writer to the same store/transcript, including
+legacy socket and one-shot mutations. Read-only inspection remains available.
+One connection holds at most one reservation. Same-key reserve validates the held
+owner without releasing it; wrong-key reserve/release preserves the old owner.
+Disconnect releases ownership after the current call settles; reconnecting never
+restores it. An excluded mutation returns a fatal `failed` fault, so the harness
+retains pending entries rather than treating them as unsupported.
+
+A supporting harness reserves before replay, retains the exact connection across
+startup handoff, and prepares a different transcript before releasing its previous
+owner. Same-key resume reuses the existing reservation. A lost owned transport
+fails closed without automatic redial or write replay. At a flush boundary, a
+harness may acquire a fresh required reservation and validate the run binding and
+durable history against acknowledged records and an uncertain write. Only after
+that validation may queued entries be handed over; busy ownership, changed or
+unverifiable history and cancellation preserve the queue. Ordinary hosts negotiate
+this extension when available; persistent loading requires it and refuses legacy,
+malformed or incomplete support. Retention and purge respect the same ownership.
+
+Magi reconstructs oversized raw records only under the matching reservation.
+Each record is limited to16MiB,256fragments and one30second total read deadline;
+recovery also remains within its60second flush deadline. Fragment cursor, byte
+offset, total length and continuation must agree exactly. Unowned inspection and
+legacy records without a bounded complete representation retain marked previews.
 
 **The four model-facing verbs — `recall`, `remember`, `forget`, `why` — are declared
 independently.** magi declares a tool for each verb the role answers and omits the rest, so a

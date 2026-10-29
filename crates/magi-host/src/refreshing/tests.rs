@@ -13,6 +13,12 @@ fn card(name: &str) -> Card {
 fn fixture() -> (Scratch, Models) {
     let dir = Scratch::new("magi", "refresh");
     let program = dir.join("mind");
+    let reader = std::env::split_paths(&std::env::var_os("PATH").expect("fixture PATH"))
+        .map(|dir| dir.join("cat"))
+        .find(|path| path.is_file())
+        .expect("fixture cat executable");
+    let reader = std::path::absolute(reader).expect("absolute fixture reader");
+    let reader = magi_proto::permit::quoted(reader.to_str().expect("UTF-8 fixture reader"));
     let saved = std::process::Command::new("/bin/sh")
         .args([
             "-c",
@@ -21,7 +27,7 @@ fn fixture() -> (Scratch, Models) {
         ])
         .arg(&program)
         .arg(format!(
-            "#!/bin/sh\n[ \"$*\" = \"models --json --refresh\" ] || exit 1\nexec /bin/cat '{}'\n",
+            "#!/bin/sh\n[ \"$*\" = \"models --json --refresh\" ] || exit 1\nexec {reader} '{}'\n",
             dir.join("reply").display()
         ))
         .status()

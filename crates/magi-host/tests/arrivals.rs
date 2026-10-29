@@ -35,25 +35,31 @@ fn backend(mind: &Mind) -> Backend {
 }
 
 /// A session serving on its own socket, and the path to reach it at.
-async fn serving(name: &str, mind: &Mind) -> (Scratch, std::path::PathBuf) {
+async fn serving(
+    name: &str,
+    mind: &Mind,
+) -> (Scratch, std::path::PathBuf, magi_testkit::memory::Failing) {
     let dir = Scratch::new("magi-arr", name);
     // Inside the scratch, so the guard takes the socket with the journal. Still under `SUN_LEN`.
     let path = dir.join("s.sock");
     let session = Session::recorded(SessionId::new("s"), Vec::new());
     let listener = magi_ipc::bind(&path).await.expect("bind");
     let backend = backend(mind);
-    let memory = dir.join("absent-memory.sock");
+    let memory = magi_testkit::memory::Failing::start(&dir.join("memory.sock"))
+        .await
+        .expect("failing memory");
+    let memory_path = memory.socket().to_owned();
     tokio::spawn(async move {
         let _ = magi_host::serve_on(
             listener,
             session,
             Some(backend),
             magi_host::catalog::Catalog::empty(),
-            Some(memory),
+            Some(memory_path),
         )
         .await;
     });
-    (dir, path)
+    (dir, path, memory)
 }
 
 /// Attach, hand over one arrival, and report every event that follows within `patience`. "No turn
@@ -72,7 +78,7 @@ async fn arrival_until(
     done: impl Fn(&HarnessEvent) -> bool,
 ) -> (Vec<HarnessEvent>, bool) {
     let mind = Mind::answering(&format!("arr-{name}"), "thanks");
-    let (_dir, path) = serving(name, &mind).await;
+    let (_dir, path, memory) = serving(name, &mind).await;
     let stream = magi_ipc::connect(&path).await.expect("connect");
     let (read_half, write_half) = stream.into_split();
     let mut reader = FrameReader::new(read_half);
@@ -112,6 +118,9 @@ async fn arrival_until(
     }
     // Read before the mind drops, which takes the program with it.
     let asked = mind.asked() > 0;
+    if asked {
+        assert!(memory.failed_writes() > 0, "storage call actually failed");
+    }
     (seen, asked)
 }
 
@@ -151,7 +160,7 @@ async fn work_handed_over_wakes_whoever_it_was_handed_to() {
 
 #[tokio::test]
 async fn an_answer_the_memory_layer_did_not_take_ends_saying_so() {
-    // The memory layer these sessions name is never there.
+    // Storage calls fail after successful startup negotiation.
     let unrecorded = |event: &HarnessEvent| {
         matches!(event, HarnessEvent::AssistantEnded { error: Some(why), .. }
             if why.contains("not recorded"))

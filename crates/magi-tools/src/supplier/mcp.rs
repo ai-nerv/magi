@@ -135,6 +135,7 @@ mod tests {
             args: serde_json::json!({}),
             cwd: String::new(),
             answered: None,
+            revision: Default::default(),
         };
         let context = crate::holding::Context::default();
 
@@ -190,6 +191,7 @@ mod tests {
             parameters: serde_json::json!({}),
             needs: Some("run".into()),
             deferred: false,
+            file_revision: None,
         };
         let args = serde_json::json!({"command":"git status","host":"allowed.example","path":"x"});
         let wanted = |card: &Card| super::super::wants(card, &args);

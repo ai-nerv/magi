@@ -10,6 +10,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+pub(crate) mod observing;
+mod waiting;
+pub(crate) use waiting::WaitError;
+
 /// How long a question waits before it answers itself with a refusal.
 const PATIENCE: Duration = Duration::from_secs(300);
 
@@ -239,16 +243,65 @@ impl Asker {
         (self.stopped)() || withdrawn()
     }
 
-    fn wait<T>(&self, receiver: &std::sync::mpsc::Receiver<T>) -> Option<T> {
-        let until = std::time::Instant::now() + PATIENCE;
-        while !self.halted() && std::time::Instant::now() < until {
+    fn wait<T>(
+        &self,
+        receiver: &std::sync::mpsc::Receiver<T>,
+        patience: Duration,
+    ) -> Result<T, WaitError> {
+        let until = std::time::Instant::now() + patience;
+        loop {
+            if self.halted() {
+                return Err(WaitError::Cancelled);
+            }
+            if std::time::Instant::now() >= until {
+                return Err(WaitError::Expired);
+            }
             match receiver.recv_timeout(Duration::from_millis(50)) {
-                Ok(answer) => return Some(answer),
+                Ok(answer) => return Ok(answer),
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(WaitError::Unavailable);
+                }
             }
         }
-        None
+    }
+
+    fn local(
+        &self,
+        tool: &str,
+        action: &Action,
+        advice: Option<&magi_proto::judging::Advice>,
+        patience: Duration,
+    ) -> Decision {
+        use crate::events::PermissionOutcome;
+        let mut trace = observing::Trace::new();
+        if !(self.attached)() {
+            trace.finish(PermissionOutcome::Unavailable);
+            return Decision::Deny;
+        }
+        let n = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let Some(id) = unguessable('p', n) else {
+            trace.finish(PermissionOutcome::Unavailable);
+            return Decision::Deny;
+        };
+        let asked = HarnessEvent::PermissionAsked {
+            cursor: (self.cursor)(),
+            id: id.clone(),
+            tool: tool.to_owned(),
+            action: action.clone(),
+            offers: magi_tools::permit::Ledger::offers(action),
+            advice: advice.cloned(),
+        };
+        let Some(receiver) = self.pending.register(id.clone(), asked.clone()) else {
+            trace.finish(PermissionOutcome::Unavailable);
+            return Decision::Deny;
+        };
+        (self.publish)(asked);
+        trace.transition(PermissionOutcome::Offered);
+        let answer = self.wait(&receiver, patience);
+        self.pending.forget(&id);
+        trace.result(&answer);
+        answer.unwrap_or(Decision::Deny)
     }
 }
 
@@ -264,35 +317,14 @@ impl magi_tools::approve::Approver for Asker {
         advice: Option<&magi_proto::judging::Advice>,
     ) -> Decision {
         if self.halted() {
+            observing::Trace::new().finish(crate::events::PermissionOutcome::Cancelled);
             return Decision::Deny;
         }
         if let Some(socket) = self.parent.as_deref() {
             let _waiting = Forwarding::new(&self.pending);
             return super::reviewing::forward(socket, tool, action, &|| self.halted());
         }
-        if !(self.attached)() {
-            return Decision::Deny;
-        }
-        let n = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let Some(id) = unguessable('p', n) else {
-            return Decision::Deny;
-        };
-        let asked = HarnessEvent::PermissionAsked {
-            cursor: (self.cursor)(),
-            id: id.clone(),
-            tool: tool.to_owned(),
-            action: action.clone(),
-            offers: magi_tools::permit::Ledger::offers(action),
-            advice: advice.cloned(),
-        };
-        let Some(receiver) = self.pending.register(id.clone(), asked.clone()) else {
-            return Decision::Deny;
-        };
-        (self.publish)(asked);
-
-        let answer = self.wait(&receiver).unwrap_or(Decision::Deny);
-        self.pending.forget(&id);
-        answer
+        self.local(tool, action, advice, PATIENCE)
     }
 }
 
@@ -335,7 +367,7 @@ impl magi_tools::question::Asks for Asker {
         (self.publish)(asked);
 
         // The same patience a permission gets. An unanswered question is not a refusal — the tool decides.
-        let answer = self.wait(&receiver);
+        let answer = self.wait(&receiver, PATIENCE).ok();
         self.pending.drop_choice(&id);
         answer
     }

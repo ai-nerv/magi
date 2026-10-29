@@ -118,6 +118,74 @@ mod tests {
     use magi_proto::UiCommand;
 
     #[tokio::test]
+    async fn tracked_prompt_and_turn_boundaries_survive_the_native_wire() {
+        let (client, server) = tokio::io::duplex(4096);
+        let mut writer = FrameWriter::new(client);
+        let mut reader = FrameReader::new(server);
+        let sent = UiCommand::SubmitTracked {
+            request: u64::MAX,
+            text: "literal".into(),
+            aside: "context".into(),
+            images: vec![],
+        };
+        writer.write(&sent).await.expect("write");
+        assert_eq!(reader.read::<UiCommand>().await.expect("read"), sent);
+        for event in [
+            magi_proto::HarnessEvent::TurnStarted {
+                owner: 9,
+                request: Some(u64::MAX),
+            },
+            magi_proto::HarnessEvent::TurnFinished { owner: 9 },
+            magi_proto::HarnessEvent::ModelSelected {
+                request: u64::MAX,
+                error: None,
+            },
+            magi_proto::HarnessEvent::ModelSelected {
+                request: 3,
+                error: Some("busy".into()),
+            },
+            magi_proto::HarnessEvent::PromptRefused {
+                request: 10,
+                message: "busy".into(),
+            },
+        ] {
+            writer.write(&event).await.expect("write");
+            assert_eq!(
+                reader
+                    .read::<magi_proto::HarnessEvent>()
+                    .await
+                    .expect("read"),
+                event
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn previous_native_wire_is_rejected_without_accepting_its_command() {
+        for version in 0..PROTOCOL_VERSION {
+            let (mut client, server) = tokio::io::duplex(4096);
+            let mut body = Vec::new();
+            ciborium::into_writer(
+                &Envelope {
+                    version,
+                    body: UiCommand::Interrupt,
+                },
+                &mut body,
+            )
+            .expect("old wire");
+            client
+                .write_all(&(body.len() as u32).to_be_bytes())
+                .await
+                .expect("length");
+            client.write_all(&body).await.expect("body");
+            assert!(matches!(
+                FrameReader::new(server).read::<UiCommand>().await,
+                Err(IpcError::VersionMismatch { peer, ours: PROTOCOL_VERSION }) if peer == version
+            ));
+        }
+    }
+
+    #[tokio::test]
     async fn a_message_survives_a_round_trip() {
         let (client, server) = tokio::io::duplex(4096);
         let mut writer = FrameWriter::new(client);
@@ -131,6 +199,42 @@ mod tests {
         writer.write(&sent).await.expect("write");
         let received: UiCommand = reader.read().await.expect("read");
         assert_eq!(sent, received);
+    }
+
+    #[tokio::test]
+    async fn native_history_request_and_terminal_page_preserve_the_wire_contract() {
+        use magi_proto::{Cursor, HistoryPage, SessionId};
+        let (client, server) = tokio::io::duplex(4096);
+        let mut writer = FrameWriter::new(client);
+        let mut reader = FrameReader::new(server);
+        let request = UiCommand::ReadHistory {
+            session: SessionId::new("run"),
+            through: Cursor(12),
+            after: Cursor(9),
+            key: Some("private".into()),
+        };
+        assert!(!request.watches());
+        assert_eq!(request.verb(), "read_history");
+        writer.write(&request).await.expect("write");
+        assert_eq!(reader.read::<UiCommand>().await.expect("read"), request);
+        let page = HistoryPage {
+            session: SessionId::new("run"),
+            transcript: Some("run@child".into()),
+            through: Cursor(12),
+            after: Cursor(9),
+            next: None,
+            entries: vec![],
+        };
+        for reply in [Ok(page), Err("boundary changed".to_owned())] {
+            writer.write(&reply).await.expect("write");
+            assert_eq!(
+                reader
+                    .read::<Result<HistoryPage, String>>()
+                    .await
+                    .expect("read"),
+                reply
+            );
+        }
     }
 
     #[tokio::test]

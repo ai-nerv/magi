@@ -1,5 +1,4 @@
-//! Prompt autocompletion. Two triggers, as in Pi: `/` at the start of the prompt opens the command
-//! palette, `@` anywhere completes a path. Driven from the editor's line, holding no state it owns.
+//! Prompt completion from supplied path, instance and workflow catalogs.
 
 use crate::fuzzy;
 use ratatui::text::Line;
@@ -66,6 +65,7 @@ impl Completion {
 pub fn commands() -> Vec<Candidate> {
     [
         (":help", "show keybindings and commands"),
+        (":skills", "refresh workflow completion for /skill <name>"),
         (":clear", "start a fresh conversation"),
         (":model", "the model, or :model <name> to switch"),
         (":env", "set session variables: KEY=value:$KEY"),
@@ -139,7 +139,43 @@ pub fn resolve_with(
     list_paths: &dyn Fn(&str) -> Vec<String>,
     list_instances: &dyn Fn(&str) -> Vec<String>,
 ) -> Option<Completion> {
+    resolve_workflows(line, col, list_paths, list_instances, &[])
+}
+
+pub fn resolve_workflows(
+    line: &str,
+    col: usize,
+    list_paths: &dyn Fn(&str) -> Vec<String>,
+    list_instances: &dyn Fn(&str) -> Vec<String>,
+    workflows: &[magi_proto::workflow::Summary],
+) -> Option<Completion> {
     let before: String = line.chars().take(col).collect();
+    if let Some(query) = before.strip_prefix("/skill ") {
+        if query.chars().any(char::is_whitespace) {
+            return None;
+        }
+        let values: Vec<_> = workflows
+            .iter()
+            .filter(|entry| entry.error.is_none())
+            .map(|entry| entry.name.clone())
+            .collect();
+        let candidates = fuzzy::filter(query, &values)
+            .into_iter()
+            .take(max_visible() * 4)
+            .filter_map(|value| workflows.iter().find(|entry| &entry.name == value))
+            .map(|entry| Candidate {
+                value: format!("/skill {}", entry.name),
+                detail: format!("{:?}: {}", entry.source, entry.description),
+            })
+            .collect::<Vec<_>>();
+        return (!candidates.is_empty()).then_some(Completion {
+            kind: Kind::Skill,
+            typed: before,
+            candidates,
+            selected: 0,
+            token_start: 0,
+        });
+    }
     let token = crate::trigger::under(&before, &crate::trigger::EVERY)?;
 
     // Which of the four it is decides where the candidates come from, and nothing else. Some
@@ -169,8 +205,7 @@ pub fn resolve_with(
                 .collect(),
             true,
         ),
-        // Skills are not built yet; an empty list means no popup.
-        crate::trigger::Trigger::Skill => (Kind::Skill, Vec::new(), true),
+        crate::trigger::Trigger::Skill => return None,
     };
 
     let values: Vec<String> = offered.iter().map(|c| c.value.clone()).collect();
@@ -205,7 +240,7 @@ pub fn render(completion: &Completion, width: u16) -> Vec<Line<'static>> {
     // Details line up in a column: a ragged left edge reads as noise rather than as choices.
     let value_width = shown
         .iter()
-        .map(|c| c.value.chars().count())
+        .map(|c| crate::wrap::columns(&c.value))
         .max()
         .unwrap_or(0);
     // So the part of each candidate already typed can be told apart from the part it adds.

@@ -2,9 +2,12 @@
 
 use super::*;
 
+pub(crate) mod observing;
+
 /// What every connection to one session shares.
 #[derive(Clone)]
 pub(super) struct Served {
+    pub(super) preparing: Arc<crate::preparing::Preparing>,
     pub(super) session: Arc<Mutex<Session>>,
     pub(super) worker: Arc<tokio::sync::RwLock<Option<Arc<worker::Worker>>>>,
     pub(super) models: Arc<refreshing::Models>,
@@ -56,6 +59,7 @@ pub(super) async fn busy(stream: UnixStream) {
 /// watches: every command but leaving is refused.
 pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(), HostError> {
     let Served {
+        preparing,
         session,
         worker,
         models,
@@ -76,6 +80,35 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
         .map_err(|_| std::io::Error::from(std::io::ErrorKind::TimedOut))??;
     let controlling = |key: Option<String>| key.is_some_and(|key| magi_ipc::same_key(&key, &held));
     let (from, draws, controls) = match first {
+        UiCommand::ReadHistory {
+            session: expected,
+            through,
+            after,
+            key,
+        } => {
+            let page = async {
+                if !controlling(key) {
+                    return Err("history reads need the session's controller key".to_owned());
+                }
+                let _boundary = worker.try_write().map_err(|_| "session is changing")?;
+                if session.lock().await.busy() {
+                    return Err("session is busy".into());
+                }
+                let open = scribe.lock().await;
+                let transcript = open.as_ref().map(|open| open.transcript().to_owned());
+                session
+                    .lock()
+                    .await
+                    .history_page(&expected, through, after, transcript)
+            };
+            let answer = tokio::time::timeout(ATTACHING, page)
+                .await
+                .unwrap_or_else(|_| Err("history read deadline elapsed".into()));
+            tokio::time::timeout(writing, writer.write(&answer))
+                .await
+                .map_err(|_| std::io::Error::from(std::io::ErrorKind::TimedOut))??;
+            return Ok(());
+        }
         UiCommand::Attach {
             from_cursor,
             draws,
@@ -92,6 +125,16 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
         // Read-only, and less than a watcher's attach would show.
         UiCommand::Inspect => {
             let details = session.lock().await.details(pending.counts());
+            #[derive(serde::Serialize)]
+            struct Inspected<T> {
+                #[serde(flatten)]
+                details: T,
+                events: crate::events::collection::runtime::Status,
+            }
+            let details = Inspected {
+                details,
+                events: crate::events::collection::runtime::status(),
+            };
             tokio::time::timeout(writing, writer.write(&details))
                 .await
                 .map_err(|_| std::io::Error::from(std::io::ErrorKind::TimedOut))??;
@@ -157,8 +200,20 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
     }));
 
     let mut refreshing = tokio::task::JoinSet::new();
+    let mut prepared = tokio::task::JoinSet::<crate::preparing::Completed>::new();
     loop {
         tokio::select! {
+            answer = prepared.join_next(), if !prepared.is_empty() => {
+                if let Some(Ok((ticket, answer))) = answer {
+                    let cursor = session.lock().await.cursor();
+                    match answer {
+                        Ok(response) => for event in response.events(cursor) {
+                            writer.write(&event).await?;
+                        },
+                        Err(message) => writer.write(&tracked_failure(ticket.tracking, ticket.listing, cursor, message)).await?,
+                    }
+                }
+            }
             _ = refreshing.join_next(), if !refreshing.is_empty() => {}
             command = incoming.recv() => {
                 if let Some(asked) = &command {
@@ -169,12 +224,18 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
                             "`{}` needs the session's controller key; this connection only watches",
                             asked.verb()
                         );
-                        writer.write(&HarnessEvent::Refused { cursor, message }).await?;
+                        let tracking = match asked { UiCommand::SubmitTracked { request, .. } => Some(*request), _ => None };
+                        let refusal = match asked {
+                            UiCommand::SelectModel { request, .. } => HarnessEvent::ModelSelected { request: *request, error: Some(message) },
+                            _ => tracked_failure(tracking, false, cursor, message),
+                        };
+                        writer.write(&refusal).await?;
                         continue;
                     }
                 }
                 match command {
                     Some(UiCommand::Environment(request)) => {
+                        let _change = preparing.changing().await;
                         let (text, changed) = environment::change(request, &session, worker, models, person, scribe).await;
                         let cursor = session.lock().await.cursor();
                         writer.write(&HarnessEvent::Noticed { cursor, text }).await?;
@@ -191,33 +252,39 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
                             refreshing.spawn(async move { models.refresh(&session).await });
                         }
                     }
-                    Some(command @ (UiCommand::SubmitPrompt { .. } | UiCommand::Arrived { .. }
-                        | UiCommand::TakeGrants { .. } | UiCommand::DeclareNeeds)) => {
-                        use session::admission::Request;
-                        let request = match command {
-                            UiCommand::SubmitPrompt { text, aside, images } => Request::Opening(Entry::User {
-                                id: MessageId::new("queued"), text, aside, images,
-                            }),
-                            UiCommand::Arrived { who, kin, sort, text } =>
-                                Request::Opening(Entry::From { who, kin, sort, text }),
-                            UiCommand::TakeGrants { grants } => Request::Grants(grants),
-                            UiCommand::DeclareNeeds => Request::Declare,
-                            _ => unreachable!(),
+                    Some(command @ (UiCommand::SubmitPrompt { .. } | UiCommand::SubmitTracked { .. } | UiCommand::Arrived { .. }
+                        | UiCommand::TakeGrants { .. } | UiCommand::DeclareNeeds | UiCommand::RefreshWorkflows)) => {
+                        let listing = matches!(command, UiCommand::RefreshWorkflows);
+                        let tracking = match &command { UiCommand::SubmitTracked { request, .. } => Some(*request), _ => None };
+                        let answer = match preparing.queue(command) {
+                            Ok(crate::preparing::Queued::Immediate(command, tracking, mut trace)) => {
+                                let catalog = models.catalog.read().await.clone();
+                                submit(&session, crate::preparing::request(command).map_err(std::io::Error::other)?.tracked(tracking), worker, &catalog, scribe, &[], &mut trace).await
+                            },
+                            Ok(crate::preparing::Queued::Waiting(mut ticket)) => {
+                                prepared.spawn(async move { let answer = ticket.receive().await; (ticket, answer) });
+                                Ok(())
+                            },
+                            Err(message) => Err(message),
                         };
-                        let catalog = models.catalog.read().await.clone();
-                        if let Err(message) = submit(&session, request, worker, &catalog, scribe).await {
+                        if let Err(message) = answer {
                             let cursor = session.lock().await.cursor();
-                            writer.write(&HarnessEvent::Refused {
-                                cursor, message,
-                            }).await?;
+                            writer.write(&tracked_failure(tracking, listing, cursor, message)).await?;
                         }
+                    }
+                    Some(UiCommand::SelectModel { request, name }) => {
+                        let _change = preparing.changing().await;
+                        let catalog = models.catalog.read().await.clone();
+                        let error = switch_model(&session, worker, &catalog, person, scribe, &name, false).await;
+                        session.lock().await.model_selected(request, error);
                     }
                     Some(command @ (UiCommand::SetModel { .. } | UiCommand::SetProvider { .. }
                         | UiCommand::SetThinking { .. })) => {
+                        let _change = preparing.changing().await;
                         let catalog = models.catalog.read().await.clone();
                         let refusal = match command {
                             UiCommand::SetModel { name } =>
-                                switch_model(&session, worker, &catalog, person, scribe, &name).await,
+                                switch_model(&session, worker, &catalog, person, scribe, &name, true).await,
                             UiCommand::SetProvider { provider } =>
                                 switch_provider(&session, worker, &catalog, person, scribe, provider).await,
                             UiCommand::SetThinking { level } =>
@@ -230,9 +297,11 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
                         }
                     }
                     Some(UiCommand::SetUnsure { band }) => {
+                        let _change = preparing.changing().await;
                         judging::widen(&session, &person.standing, band).await;
                     }
                     Some(UiCommand::SetMode { mode }) => {
+                        let _change = preparing.changing().await;
                         if let Err(message) = judging::switch(&session, &person.standing, &mode).await {
                             let cursor = session.lock().await.cursor();
                             writer.write(&HarnessEvent::Refused { cursor, message }).await?;
@@ -253,6 +322,7 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
                         }
                     }
                     Some(UiCommand::Resume { id }) => {
+                        let _change = preparing.changing().await;
                         if let Err(message) = resuming::resume(&session, worker, scribe, &id).await {
                             let cursor = session.lock().await.cursor();
                             writer
@@ -264,6 +334,7 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
                         }
                     }
                     Some(UiCommand::Branch { keeps }) => {
+                        let _change = preparing.changing().await;
                         let mut held = session.lock().await;
                         if held.busy() {
                             let cursor = held.cursor();
@@ -312,13 +383,14 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
                     }
                     Some(UiCommand::Unsurface { id }) => person.surfaces.close(&id),
                     Some(UiCommand::Interrupt) => {
+                        preparing.invalidate();
                         let held = session.lock().await;
                         held.cancel().request();
                         person.surfaces.close_all();
                         pending.cancel();
                     }
                     Some(UiCommand::Attach { .. } | UiCommand::AttachLatest { .. }
-                        | UiCommand::Review { .. } | UiCommand::Inspect) => {}
+                        | UiCommand::Review { .. } | UiCommand::Inspect | UiCommand::ReadHistory { .. }) => {}
                     Some(UiCommand::Detach) | None => break,
                 }
             }
@@ -349,6 +421,30 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
 mod tests;
 
 struct ReaderTask(tokio::task::JoinHandle<()>);
+
+fn tracked_failure(
+    tracking: Option<u64>,
+    listing: bool,
+    cursor: Cursor,
+    message: String,
+) -> HarnessEvent {
+    match tracking {
+        Some(request) => HarnessEvent::PromptRefused { request, message },
+        None => preparation_failure(listing, cursor, message),
+    }
+}
+
+fn preparation_failure(listing: bool, cursor: Cursor, message: String) -> HarnessEvent {
+    if listing {
+        HarnessEvent::WorkflowsListed {
+            entries: Vec::new(),
+            warnings: Vec::new(),
+            error: Some(message),
+        }
+    } else {
+        HarnessEvent::Refused { cursor, message }
+    }
+}
 
 impl Drop for ReaderTask {
     fn drop(&mut self) {

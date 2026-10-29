@@ -32,3 +32,5 @@ config/clients/agent.lua
 # churn, personal to whoever ran it, and 56MB of it reached a public tag once already.
 /balthasar/
 /.balthasar/
+!/crates/magi-host/src/skills/
+!/crates/magi-host/src/skills/**

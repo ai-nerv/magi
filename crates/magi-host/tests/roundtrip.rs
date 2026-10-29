@@ -13,6 +13,9 @@ use magi_proto::{Cursor, Entry, HarnessEvent, UiCommand};
 use magi_testkit::Mind;
 use std::path::{Path, PathBuf};
 
+#[path = "roundtrip/boundaries.rs"]
+mod boundaries;
+
 fn temp(name: &str) -> (Scratch, PathBuf) {
     let dir = Scratch::new("magi-host", name);
     // Inside the scratch, so the guard takes it with the rest. Still well under SUN_LEN: the
@@ -111,6 +114,7 @@ async fn a_submitted_prompt_comes_back_as_events() {
     assert!(entries.is_empty(), "a fresh session has no history");
 
     client.submit("hello").await;
+    client.began().await;
 
     let first = client.next().await;
     match first {
@@ -129,10 +133,7 @@ async fn a_prompt_survives_the_ui_and_is_replayed_on_reattach() {
     {
         let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
         client.submit("remember me").await;
-        // Drain until the turn settles, then drop the connection as a dying UI would.
-        for _ in 0..4 {
-            client.next().await;
-        }
+        client.settled().await;
     }
 
     let (_client, entries) = Client::attach(&socket, Cursor(2)).await;
@@ -149,9 +150,7 @@ async fn a_cold_reattach_replays_the_whole_session() {
     {
         let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
         client.submit("one").await;
-        for _ in 0..4 {
-            client.next().await;
-        }
+        client.settled().await;
     }
 
     let (mut client, entries) = Client::attach(&socket, Cursor::ZERO).await;
@@ -171,6 +170,7 @@ async fn two_uis_both_see_a_prompt_either_one_submits() {
     a.submit("shared").await;
 
     for client in [&mut a, &mut b] {
+        client.began().await;
         match client.next().await {
             HarnessEvent::UserMessage { text, .. } => assert_eq!(text, "shared"),
             other => panic!("both attached UIs see it, got {other:?}"),
@@ -184,9 +184,7 @@ async fn a_session_keeps_no_transcript_of_its_own() {
     {
         let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
         client.submit("persisted").await;
-        for _ in 0..4 {
-            client.next().await;
-        }
+        client.settled().await;
     }
 
     // **Inverted, and that is the point.** This used to find the session's JSONL journal here and
@@ -246,6 +244,7 @@ async fn events_reach_the_ui_while_the_turn_is_still_running() {
     let (_dir, socket) = start_with_mind("streaming", &mind).await;
     let (mut client, _) = Client::attach(&socket, Cursor::ZERO).await;
     client.submit("this will not be answered").await;
+    client.began().await;
 
     let event = tokio::time::timeout(std::time::Duration::from_secs(5), client.next())
         .await
@@ -424,6 +423,7 @@ async fn what_a_turn_cost_reaches_the_ui() {
         cache_read: 768,
         cache_write: 0,
         cost_micros: 0,
+        estimated_micros: Some(7),
     };
     {
         let mut held = session.lock().await;

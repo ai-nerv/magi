@@ -9,9 +9,25 @@ pub(super) async fn submit(
     workers: &tokio::sync::RwLock<Option<Arc<worker::Worker>>>,
     catalog: &crate::catalog::Catalog,
     scribe: &crate::scribe::Held,
+    cancellation: &[crate::cancel::Cancel],
+    trace: &mut crate::session::observing::Trace,
 ) -> Result<(), String> {
     let worker = workers.read().await;
-    let admitted = session.lock().await.admit(request)?;
+    if let Some(entry @ Entry::Workflow { .. }) = request.entry() {
+        let open = scribe.lock().await;
+        open.as_ref()
+            .ok_or("workflow prompts require a configured history store")?
+            .validate_workflow(entry)
+            .map_err(|why| why.to_string())?;
+    }
+    let admitted = {
+        let mut held = session.lock().await;
+        if cancellation.iter().any(crate::cancel::Cancel::is_requested) {
+            trace.finish(crate::events::TurnOutcome::Cancelled);
+            return Err("prompt preparation was cancelled before admission".into());
+        }
+        held.admit_observed(request, std::mem::take(trace))?
+    };
     if let Some(admitted) = admitted {
         let session = Arc::clone(session);
         let worker = worker.clone();
@@ -39,7 +55,7 @@ async fn opening(session: &Arc<Mutex<Session>>, mut entry: Entry) -> Result<bool
     let mut held = session.lock().await;
     let mut unread = Vec::new();
     let mut answer = answers(&mut held, &entry, &mut unread);
-    if let Entry::User { id, .. } = &mut entry {
+    if let Entry::User { id, .. } | Entry::Workflow { id, .. } = &mut entry {
         *id = MessageId::new(format!("u{}", held.cursor().next().0));
     }
     let arrivals = if matches!(entry, Entry::From { .. }) {
@@ -68,7 +84,8 @@ async fn opening(session: &Arc<Mutex<Session>>, mut entry: Entry) -> Result<bool
 /// Whether `entry` should start a turn. A report notification that cannot be read is said aloud
 /// and is otherwise an ordinary message.
 fn answers(held: &mut Session, entry: &Entry, unread: &mut Vec<String>) -> bool {
-    let plain = matches!(entry, Entry::User { .. }) || wants_answering(entry);
+    let plain =
+        matches!(entry, Entry::User { .. } | Entry::Workflow { .. }) || wants_answering(entry);
     match held.track_report(entry) {
         Ok(Some(report)) => report,
         Ok(None) => plain,
@@ -94,6 +111,7 @@ async fn after(
         let outcome = crate::catching::caught(handle(&session, request, worker.as_ref(), &missing))
             .await
             .unwrap_or_else(|why| Err(format!("this request stopped on an internal error: {why}")));
+        let failed = outcome.is_err();
         if let Err(why) = outcome {
             error(&mut *session.lock().await, why);
         }
@@ -111,6 +129,7 @@ async fn after(
         {
             error(&mut held, format!("this turn was not recorded: {why}"));
         }
+        held.observe_finished(owner, began, failed || flushed.is_err());
         let Some(next) = held.finish(owner) else {
             return;
         };
@@ -137,13 +156,15 @@ async fn handle(
 ) -> Result<(), String> {
     let missing = || Err(missing.to_owned());
     match request {
-        Request::Opening(entry) => match opening(session, entry).await? {
-            true => match worker {
-                Some(worker) => worker.run(Arc::clone(session)).await,
-                None => missing(),
-            },
-            false => Ok(()),
-        },
+        Request::Opening(entry) | Request::Tracked { entry, .. } => {
+            match opening(session, entry).await? {
+                true => match worker {
+                    Some(worker) => worker.run(Arc::clone(session)).await,
+                    None => missing(),
+                },
+                false => Ok(()),
+            }
+        }
         Request::Declare => match worker {
             Some(worker) => worker.declare(Arc::clone(session)).await,
             None => missing(),

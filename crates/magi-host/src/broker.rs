@@ -5,7 +5,7 @@
 use magi_model::Context;
 use magi_model::Delta;
 use magi_proto::ask::{Ask, Refusal, Said, Wants};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 
 /// How long melchior may say nothing during a turn before the turn is given up: past its longest
 /// backoff and the slowest first token.
@@ -19,6 +19,7 @@ const LINE_MOST: u64 = 16 * 1024 * 1024;
 pub struct Trouble {
     pub message: String,
     pub why: Refusal,
+    pub overflow: Option<magi_proto::ask::overflow::Detail>,
 }
 
 impl std::fmt::Display for Trouble {
@@ -31,6 +32,14 @@ impl std::fmt::Display for Trouble {
 /// time, since a prompt's cache lives with the upstream that read it; the router still falls back.
 static SERVED: std::sync::Mutex<std::collections::BTreeMap<String, String>> =
     std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+#[cfg(test)]
+#[path = "broker/cache_routing.rs"]
+mod cache_routing;
+
+#[cfg(test)]
+#[path = "broker/overflow.rs"]
+mod overflow;
 
 /// What to ask for: the person's own choice of upstream, else the one that answered this run last.
 fn sticky(stream: &str, wants: &Wants) -> Wants {
@@ -149,6 +158,31 @@ pub async fn ask_using(
     on_delta: impl FnMut(Delta),
     on_retry: impl FnMut(Retry),
 ) -> Result<(), Trouble> {
+    ask_observing(
+        (program, environ),
+        model,
+        context,
+        wants,
+        on_delta,
+        on_retry,
+        |_| {},
+    )
+    .await
+}
+
+/// Stream an ask with provider-frame observations on a separate callback.
+///
+/// # Errors
+/// As [`ask`].
+pub async fn ask_observing(
+    (program, environ): (&str, &std::collections::BTreeMap<String, String>),
+    model: &str,
+    context: &Context,
+    wants: &Wants,
+    on_delta: impl FnMut(Delta),
+    on_retry: impl FnMut(Retry),
+    on_frame: impl FnMut(magi_model::RequestFrame),
+) -> Result<(), Trouble> {
     let asked = Asked {
         program,
         environ,
@@ -156,7 +190,7 @@ pub async fn ask_using(
         context,
         wants,
     };
-    asking(asked, on_delta, on_retry, QUIET).await
+    asking_observed(asked, on_delta, on_retry, on_frame, QUIET).await
 }
 
 /// Who is asked what, for one turn.
@@ -169,10 +203,37 @@ struct Asked<'a> {
 }
 
 /// One turn, given up when melchior says nothing for `quiet`.
+#[cfg(test)]
 async fn asking(
+    asked: Asked<'_>,
+    on_delta: impl FnMut(Delta),
+    on_retry: impl FnMut(Retry),
+    quiet: std::time::Duration,
+) -> Result<(), Trouble> {
+    asking_observed(asked, on_delta, on_retry, |_| {}, quiet).await
+}
+
+async fn asking_observed(
+    asked: Asked<'_>,
+    on_delta: impl FnMut(Delta),
+    on_retry: impl FnMut(Retry),
+    on_frame: impl FnMut(magi_model::RequestFrame),
+    quiet: std::time::Duration,
+) -> Result<(), Trouble> {
+    let stream = stream_of(asked.model, asked.context);
+    let outcome =
+        crate::events::context::ask(exchange(asked, on_delta, on_retry, on_frame, quiet)).await;
+    if outcome.is_err() {
+        let_go(&stream);
+    }
+    outcome
+}
+
+async fn exchange(
     asked: Asked<'_>,
     mut on_delta: impl FnMut(Delta),
     mut on_retry: impl FnMut(Retry),
+    mut on_frame: impl FnMut(magi_model::RequestFrame),
     quiet: std::time::Duration,
 ) -> Result<(), Trouble> {
     let Asked {
@@ -192,37 +253,37 @@ async fn asking(
     let body = serde_json::to_vec(&asking).map_err(|why| Trouble {
         message: format!("this turn will not encode: {why}"),
         why: Refusal::Invalid,
+        overflow: None,
     })?;
 
     // JSON rather than CBOR, though melchior reads both: what crosses here is read constantly.
-    let mut child = tokio::process::Command::new(program)
+    let mut command = std::process::Command::new(program);
+    command
         .envs(environ)
         .arg("ask")
         .env(crate::driving::GIVEN, crate::driving::given_dir())
         .arg("--json")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        // A dropped `tokio::process::Child` is detached rather than ended, so an interrupted ask
-        // would keep running, still streaming and still billed.
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|why| {
-            magi_model::noted!("broker: {program} ask could not be started: {why}");
-            Trouble {
-                message: format!("{program} could not be started: {why}"),
-                why: Refusal::Transport,
-            }
-        })?;
+        .stderr(std::process::Stdio::null());
+    let mut child = crate::events::collection::runtime::streaming::spawn(
+        command,
+        crate::events::collection::Owner::Melchior,
+    )
+    .await
+    .map_err(|why| {
+        magi_model::noted!("broker: {program} ask could not be started: {why}");
+        Trouble {
+            message: format!("{program} could not be started: {why}"),
+            why: Refusal::Transport,
+            overflow: None,
+        }
+    })?;
 
-    if let Some(mut stdin) = child.stdin.take() {
+    if let Some(mut stdin) = child.input.take() {
         // Written and closed: melchior reads to end of file, so a handle left open is a turn that
         // never starts. On the idle clock, because a melchior that never reads it is a hang.
-        let written = tokio::time::timeout(quiet, async {
-            stdin.write_all(&body).await?;
-            stdin.shutdown().await
-        })
-        .await;
+        let written = tokio::time::timeout(quiet, stdin.send(&body)).await;
         if !matches!(written, Ok(Ok(()))) {
             magi_model::noted!("broker: the ask to {program} was not fully written");
         }
@@ -232,6 +293,7 @@ async fn asking(
         return Err(Trouble {
             message: format!("{program} gave nothing to read"),
             why: Refusal::Transport,
+            overflow: None,
         });
     };
 
@@ -255,6 +317,7 @@ async fn asking(
                 return Err(Trouble {
                     message: format!("{program} said nothing for {quiet:?}; the turn was stopped"),
                     why: Refusal::Transport,
+                    overflow: None,
                 });
             }
         }
@@ -268,9 +331,18 @@ async fn asking(
             continue;
         };
         match said {
-            Said::Failed { message, why } => {
+            Said::RequestFrame { frame } => on_frame(frame),
+            Said::Failed {
+                message,
+                why,
+                overflow,
+            } => {
                 let_go(&stream);
-                ended = Some(Err(Trouble { message, why }));
+                ended = Some(Err(Trouble {
+                    message,
+                    why,
+                    overflow: overflow.filter(|_| why == Refusal::Overflow),
+                }));
             }
             Said::Stop { reason } => {
                 on_delta(Delta::Stop(reason));
@@ -306,6 +378,7 @@ async fn asking(
         Err(Trouble {
             message: format!("{program} stopped without finishing the turn"),
             why: Refusal::Transport,
+            overflow: None,
         })
     })
 }
@@ -322,9 +395,10 @@ fn carried(said: Said) -> Delta {
         Said::Spent { usage } => Delta::Usage(usage),
         // Unreachable by construction: the caller takes both before this is called.
         Said::Stop { reason } => Delta::Stop(reason),
-        Said::Failed { .. } | Said::Retrying { .. } | Said::Served { .. } => {
-            Delta::Stop(magi_model::StopReason::Error)
-        }
+        Said::Failed { .. }
+        | Said::Retrying { .. }
+        | Said::Served { .. }
+        | Said::RequestFrame { .. } => Delta::Stop(magi_model::StopReason::Error),
     }
 }
 
@@ -376,6 +450,7 @@ pub async fn value_using(
     serde_json::from_str(raw.trim()).map_err(|why| Trouble {
         message: format!("the answer was not the shape that was asked for: {why}"),
         why: Refusal::Invalid,
+        overflow: None,
     })
 }
 
@@ -506,7 +581,8 @@ mod tests {
         assert_eq!(
             carried(Said::Failed {
                 message: "x".into(),
-                why: Refusal::Invalid
+                why: Refusal::Invalid,
+                overflow: None,
             }),
             Delta::Stop(StopReason::Error)
         );

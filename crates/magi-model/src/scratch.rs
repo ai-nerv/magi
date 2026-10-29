@@ -8,6 +8,31 @@ use std::path::{Path, PathBuf};
 /// Distinguishes two scratches made in one process; the pid does not tell two threads apart.
 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Wait for a scratch program to execute its side-effect-free `--probe`.
+pub fn executable_ready(path: &Path) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match std::process::Command::new(path)
+            .arg("--probe")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+        {
+            Ok(_) => return,
+            Err(error) if error.raw_os_error() == Some(26) => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{} remains open for writing",
+                    path.display()
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(error) => panic!("fixture {} cannot execute: {error}", path.display()),
+        }
+    }
+}
+
 /// A directory under the temporary directory, removed when this is dropped. Derefs to [`Path`];
 /// a caller that wants to own the path wants [`Scratch::leak`].
 #[derive(Debug)]

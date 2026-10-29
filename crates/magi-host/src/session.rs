@@ -2,7 +2,9 @@
 
 pub(crate) mod admission;
 mod fitting;
+mod history;
 mod monitoring;
+pub(crate) mod observing;
 pub(crate) mod reporting;
 mod resuming;
 use fitting::{SNAPSHOT_BUDGET, newest_within};
@@ -17,6 +19,8 @@ use tokio::sync::{broadcast, watch};
 const BROADCAST_CAPACITY: usize = 1024;
 
 pub struct Session {
+    frames: crate::frames::Frames,
+    files: crate::files::Files,
     helpers: crate::settling::Tasks,
     admission: admission::Admission,
     cancel: crate::cancel::Cancel,
@@ -61,6 +65,10 @@ pub struct Session {
 }
 
 impl Session {
+    pub(crate) fn file_revisions(&self) -> crate::files::Files {
+        self.files.clone()
+    }
+
     /// Open a session on what balthasar holds — the only constructor. The file journal is gone:
     /// two stores is one store and a copy that goes stale. The transcript still lives here because
     /// every read comes from it, but it is a window; the record is balthasar's.
@@ -70,6 +78,12 @@ impl Session {
         let (phase, _) = watch::channel(AgentStatus::Idle);
         let (spent, _) = watch::channel(Vec::new());
         Self {
+            frames: if entries.is_empty() {
+                crate::frames::Frames::default()
+            } else {
+                crate::frames::Frames::resumed()
+            },
+            files: crate::files::Files::default(),
             helpers: crate::settling::Tasks::default(),
             admission: admission::Admission::default(),
             spent,
@@ -226,7 +240,7 @@ impl Session {
         let Some(model) = self.model_name() else {
             return;
         };
-        if usage.prompt_tokens() == 0 && usage.output == 0 && usage.cost_micros == 0 {
+        if usage.prompt_tokens() == 0 && usage.output == 0 && usage.charged_micros() == 0 {
             return;
         }
         if !self.counted.insert(id.clone()) {
@@ -357,6 +371,8 @@ impl Session {
 
     /// Append an entry, publish it, and return where it landed.
     pub fn commit(&mut self, entry: Entry) -> Result<Cursor, JournalError> {
+        crate::skills::snapshot::check(&entry, self.cursor().next())
+            .map_err(JournalError::Refused)?;
         let cursor = self.journal.append(entry.clone())?;
         for event in events_for(cursor, &entry) {
             // A send with no subscribers is not a failure: the daemon outlives its UIs.
@@ -501,8 +517,13 @@ impl Session {
         self.pending.insert(cursor.0, entry);
     }
 
-    /// Tell everyone which model is answering now. Its own event: a UI learns the model from the
-    /// snapshot it attached with, and a status event carries a status and nothing else.
+    pub(crate) fn model_selected(&self, request: u64, error: Option<String>) {
+        let _ = self
+            .events
+            .send(HarnessEvent::ModelSelected { request, error });
+    }
+
+    /// Broadcast the session's current model.
     pub fn announce_model(&mut self) {
         let _ = self.events.send(HarnessEvent::ModelChanged {
             cursor: self.cursor(),
@@ -591,9 +612,23 @@ fn grown(before: &str, now: &str) -> String {
     now.strip_prefix(before).unwrap_or(now).to_owned()
 }
 
-/// The events that reconstruct one entry from nothing.
-fn events_for(cursor: Cursor, entry: &Entry) -> Vec<HarnessEvent> {
+/// Project one journal entry into display events without publishing or mutating it.
+#[must_use]
+pub fn events_for(cursor: Cursor, entry: &Entry) -> Vec<HarnessEvent> {
     match entry {
+        Entry::Workflow {
+            id,
+            text,
+            images,
+            workflow,
+            ..
+        } => vec![HarnessEvent::WorkflowMessage {
+            cursor,
+            id: id.clone(),
+            text: text.clone(),
+            images: images.clone(),
+            workflow: workflow.clone(),
+        }],
         // The aside is deliberately not replayed: it is context for the model and no UI renders it.
         Entry::User {
             id, text, images, ..

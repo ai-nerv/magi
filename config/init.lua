@@ -210,6 +210,12 @@ you found none.]],
 --
 -- magi.project = "magi"
 
+-- Project workflow root, absolute or relative to the launch directory; unset uses launch.
+-- magi.workflow_workspace = "/path/to/workspace"
+
+-- Bounded local operational counters, disabled by default; no spool or network export.
+-- magi.events = true
+
 -- How far one session may reach another. Sessions in different projects never can, at any
 -- setting; this only widens things inside one project. Handed to melchior, which enforces it in
 -- both the socket and the tool.

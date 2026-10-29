@@ -5,6 +5,8 @@
 use magi_lua::{Config, Engine, LuaError};
 use std::collections::BTreeSet;
 
+pub mod events;
+
 /// Everything the config files said, in one value.
 pub struct Loaded {
     pub config: Config,
@@ -118,13 +120,13 @@ pub fn load() -> Result<Loaded, LuaError> {
             project::apply(&mut engine, &local)?;
         }
     }
-    engine.harvest();
+    let config = events::harvest(&mut engine, &cwd)?;
 
     // Everything a config said that magi did not keep, whoever said it; both cases were silent before.
-    for said in &engine.config().unkept {
+    for said in &config.unkept {
         eprintln!("magi: {said}");
     }
-    collect(engine.config(), tools, clients)
+    collect(config, tools, clients)
 }
 
 /// The configuration for a session: `None` when nothing is installed, else what [`load`] says.
@@ -287,6 +289,7 @@ pub fn catalog(loaded: &Loaded, cards: Vec<magi_proto::ask::Card>) -> magi_host:
         tools: loaded.tools.clone(),
         clients: loaded.clients.clone(),
         cwd: std::env::current_dir().unwrap_or_default(),
+        workflow_workspace: loaded.config.string("workflow_workspace").map(Into::into),
         cards,
         wants: options(loaded),
         system: system(loaded),
@@ -316,6 +319,7 @@ pub mod project;
 pub mod roles;
 use chosen::asked;
 mod settings;
+mod workspace;
 
 use settings::{grants, options, system};
 

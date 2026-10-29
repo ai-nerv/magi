@@ -77,6 +77,31 @@ fn blank_row(line: Option<&Line<'static>>) -> bool {
 pub fn block_of(entry: &Entry, width: u16, detail: Detail) -> Option<Block> {
     match entry {
         Entry::User { text, .. } => Some(said("USER", colour::said_by_you(), text, width)),
+        Entry::Workflow { text, workflow, .. } => {
+            let mut block = said("WORKFLOW", colour::said_by_you(), text, width);
+            let provenance = format!(
+                "WORKFLOW {} · {:?}\n{}\nSHA-256 {}",
+                workflow.name,
+                workflow.source,
+                workflow
+                    .root
+                    .chars()
+                    .flat_map(char::escape_debug)
+                    .collect::<String>(),
+                workflow.digest
+            );
+            let style = block.style().fg(colour::thinking());
+            let inner = frame::held(width).saturating_sub(u16::try_from(STEP * 2).unwrap_or(4));
+            for text in provenance.lines() {
+                let line = Line::from(Span::styled(text.to_owned(), style));
+                block.rows.extend(
+                    crate::wrap::line(line, inner)
+                        .into_iter()
+                        .map(|line| inside(line, width, style, MARGIN + STEP)),
+                );
+            }
+            Some(block)
+        }
         Entry::Assistant {
             text,
             thinking,
@@ -120,9 +145,11 @@ pub fn entry_lines(entry: &Entry, width: u16, detail: Detail) -> Vec<Line<'stati
             },
             width,
         ),
-        Entry::User { .. } | Entry::Assistant { .. } | Entry::Tool { .. } | Entry::From { .. } => {
-            Vec::new()
-        }
+        Entry::User { .. }
+        | Entry::Workflow { .. }
+        | Entry::Assistant { .. }
+        | Entry::Tool { .. }
+        | Entry::From { .. } => Vec::new(),
     }
 }
 

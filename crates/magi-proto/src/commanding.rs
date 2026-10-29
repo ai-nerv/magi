@@ -7,6 +7,12 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case", tag = "command")]
 pub enum UiCommand {
     Inspect,
+    ReadHistory {
+        session: SessionId,
+        through: Cursor,
+        after: Cursor,
+        key: Option<String>,
+    },
     AttachLatest {
         #[serde(default)]
         draws: bool,
@@ -59,6 +65,12 @@ pub enum UiCommand {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         aside: String,
     },
+    SubmitTracked {
+        request: u64,
+        images: Vec<magi_model::Image>,
+        text: String,
+        aside: String,
+    },
     /// A message arrived from another instance, on the socket the UI binds rather than the daemon's.
     Arrived {
         who: String,
@@ -69,8 +81,13 @@ pub enum UiCommand {
     },
     Interrupt,
     RefreshModels,
+    RefreshWorkflows,
     Environment(Environment),
     SetModel {
+        name: String,
+    },
+    SelectModel {
+        request: u64,
         name: String,
     },
     SetThinking {
@@ -159,6 +176,7 @@ impl UiCommand {
     pub const fn verb(&self) -> &'static str {
         match self {
             Self::Inspect => "inspect",
+            Self::ReadHistory { .. } => "read_history",
             Self::AttachLatest { .. } => "attach_latest",
             Self::Review { .. } => "review",
             Self::Environment(_) => "environment",
@@ -167,10 +185,13 @@ impl UiCommand {
             Self::FloatSized { .. } => "float_sized",
             Self::BlockSized { .. } => "block_sized",
             Self::SubmitPrompt { .. } => "submit_prompt",
+            Self::SubmitTracked { .. } => "submit_tracked",
             Self::Arrived { .. } => "arrived",
             Self::Interrupt => "interrupt",
             Self::RefreshModels => "refresh_models",
+            Self::RefreshWorkflows => "refresh_workflows",
             Self::SetModel { .. } => "set_model",
+            Self::SelectModel { .. } => "select_model",
             Self::SetThinking { .. } => "set_thinking",
             Self::SetMode { .. } => "set_mode",
             Self::SetUnsure { .. } => "set_unsure",
@@ -210,6 +231,10 @@ mod verbs {
             UiCommand::DeclareNeeds,
             UiCommand::BlockSized { rows: 8, cols: 40 },
             UiCommand::SetMode { mode: "x".into() },
+            UiCommand::SelectModel {
+                request: 7,
+                name: "fake/one".into(),
+            },
             UiCommand::TakeGrants { grants: Vec::new() },
             UiCommand::Inspect,
             UiCommand::AttachLatest {
@@ -230,6 +255,13 @@ mod verbs {
     fn a_watcher_may_attach_and_leave_and_nothing_else() {
         assert!(UiCommand::Detach.watches());
         assert!(!UiCommand::Interrupt.watches());
+        assert!(
+            !UiCommand::SelectModel {
+                request: 7,
+                name: "fake/one".into()
+            }
+            .watches()
+        );
         assert!(
             !UiCommand::SetMode {
                 mode: "auto".into()

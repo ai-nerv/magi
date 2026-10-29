@@ -77,10 +77,10 @@ pub fn view(report: &Report<'_>) -> Rendered {
         mine
     };
     let helped = sum(report.helpers.iter().map(|job| job.usage));
-    if tokens(&whole) == 0 && whole.cost_micros == 0 && tokens(&helped) == 0 {
+    if tokens(&whole) == 0 && whole.charged_micros() == 0 && tokens(&helped) == 0 {
         return out;
     }
-    let priced = whole.cost_micros > 0 || helped.cost_micros > 0;
+    let priced = whole.charged_micros() > 0 || helped.charged_micros() > 0;
     // Each model in the order it first appears, so it keeps one colour from section to section.
     let mut models: Vec<String> = Vec::new();
     let named = report.turns.iter().map(|turn| turn.model.clone()).chain(
@@ -164,7 +164,7 @@ fn heading(
 ) {
     let (big, ink_big) = if priced {
         (
-            format!("{} spent", dollars(whole.cost_micros)),
+            format!("{} spent", dollars(whole.charged_micros())),
             crate::colour::success(),
         )
     } else {
@@ -181,7 +181,7 @@ fn heading(
     if report.agents.len() > 1 {
         about.push(format!("the whole run, {} agents", report.agents.len()));
         let here = if priced {
-            dollars(mine.cost_micros)
+            dollars(mine.charged_micros())
         } else {
             format_tokens(tokens(mine))
         };
@@ -205,6 +205,17 @@ fn heading(
 fn this_agent(out: &mut Rendered, mine: &Usage, turns: usize, ink: &Ink, width: u16) {
     out.section("This agent", "", width);
     out.fact("Turns", turns.to_string(), ink);
+    if let Some(estimated) = mine.estimated_micros {
+        out.fact(
+            "Pricing",
+            format!(
+                "{} reported · {} estimated",
+                dollars(mine.cost_micros),
+                dollars(estimated)
+            ),
+            ink,
+        );
+    }
     out.fact(
         "Tokens",
         format!(
@@ -225,12 +236,12 @@ fn this_agent(out: &mut Rendered, mine: &Usage, turns: usize, ink: &Ink, width: 
             ink,
         );
     }
-    if mine.cost_micros > 0 {
+    if mine.charged_micros() > 0 {
         out.push(
             Line::from(vec![
                 Span::styled(format!("{:<14}", "Spent"), ink.label),
                 Span::styled(
-                    dollars(mine.cost_micros),
+                    dollars(mine.charged_micros()),
                     Style::default().fg(crate::colour::success()),
                 ),
             ]),
@@ -356,11 +367,11 @@ fn over_time(out: &mut Rendered, report: &Report<'_>, priced: bool, width: u16) 
         .iter()
         .enumerate()
         .map(|(n, turn)| {
-            running += if priced {
-                turn.usage.cost_micros
+            running = running.saturating_add(if priced {
+                turn.usage.charged_micros()
             } else {
                 tokens(&turn.usage)
-            };
+            });
             (figure(n as u64 + 1), figure(running))
         })
         .collect();
@@ -445,7 +456,7 @@ fn recent(
         ];
         if priced {
             spans.push(Span::styled(
-                format!("{:>11}", dollars(turn.usage.cost_micros)),
+                format!("{:>11}", dollars(turn.usage.charged_micros())),
                 Style::default().fg(crate::colour::success()),
             ));
         }
@@ -457,10 +468,10 @@ fn recent(
 fn amount(used: &Usage, priced: bool) -> (f64, String) {
     if priced {
         (
-            figure(used.cost_micros),
+            figure(used.charged_micros()),
             format!(
                 "{} · {}",
-                dollars(used.cost_micros),
+                dollars(used.charged_micros()),
                 format_tokens(tokens(used))
             ),
         )

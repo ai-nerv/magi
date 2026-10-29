@@ -1,0 +1,1 @@
+{"schema":1,"program":"magi","program_version":[0,7,5],"producer":"00112233445566778899aabbccddeeff","sequence":1,"correlation":{"run_id":null,"agent_id":null,"turn_id":null,"request_id":null,"ask_id":null,"attempt_id":null,"job_id":null,"tool_call_id":null},"fact":{"kind":"logical_turn","outcome":"cancelled","duration_ms":null}}

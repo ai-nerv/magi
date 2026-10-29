@@ -13,6 +13,7 @@ pub(super) async fn switch_model(
     person: &crate::asking::Person,
     scribe: &crate::scribe::Held,
     name: &str,
+    persist: bool,
 ) -> Option<String> {
     let mut boundary = worker.write().await;
     if session.lock().await.busy() {
@@ -56,7 +57,9 @@ pub(super) async fn switch_model(
         // Another model has other providers: a choice made for the last one means nothing here.
         held.set_provider(None);
         held.announce_model();
-        remember(catalog, held.model_name(), Some(held.thinking().to_owned()));
+        if persist {
+            remember(catalog, held.model_name(), Some(held.thinking().to_owned()));
+        }
     }
 
     // balthasar is told, because the window it plans against just changed. Told after the switch

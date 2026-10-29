@@ -86,7 +86,7 @@ fn models(held: &Held<'_>) -> Rendered {
             Line::from(vec![
                 Span::raw(format!("{:<34}", fit(model, 33))),
                 Span::styled(format!("{:>10}", tokens(used)), dim()),
-                Span::styled(format!("{:>10}", money(used.cost_micros)), dim()),
+                Span::styled(format!("{:>10}", money(used.charged_micros())), dim()),
                 Span::styled(
                     format!("  {agents} agent{}", if *agents == 1 { "" } else { "s" }),
                     dim(),
@@ -118,7 +118,7 @@ fn spend(held: &Held<'_>) -> Rendered {
                     Style::default().add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(format!("{:>10}", tokens(&total)), dim()),
-                Span::styled(format!("{:>10}", money(total.cost_micros)), dim()),
+                Span::styled(format!("{:>10}", money(total.charged_micros())), dim()),
             ]),
             Some(agent.name),
         );
@@ -127,7 +127,7 @@ fn spend(held: &Held<'_>) -> Rendered {
                 Line::from(vec![
                     Span::styled(format!("  {:<22}", fit(model, 21)), dim()),
                     Span::styled(format!("{:>10}", tokens(used)), dim()),
-                    Span::styled(format!("{:>10}", money(used.cost_micros)), dim()),
+                    Span::styled(format!("{:>10}", money(used.charged_micros())), dim()),
                 ]),
                 Some(agent.name),
             );
@@ -137,13 +137,7 @@ fn spend(held: &Held<'_>) -> Rendered {
 }
 
 fn added(a: magi_proto::Usage, b: magi_proto::Usage) -> magi_proto::Usage {
-    magi_proto::Usage {
-        input: a.input + b.input,
-        output: a.output + b.output,
-        cache_read: a.cache_read + b.cache_read,
-        cache_write: a.cache_write + b.cache_write,
-        cost_micros: a.cost_micros + b.cost_micros,
-    }
+    a.plus(b)
 }
 
 /// Everything that went over the wire, in and out.

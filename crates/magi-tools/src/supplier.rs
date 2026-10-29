@@ -17,7 +17,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+mod admission;
+mod dispatch;
+mod failure;
+pub mod launch;
 mod mcp;
+mod transport;
 
 #[cfg(test)]
 mod containment;
@@ -25,6 +30,16 @@ mod door;
 mod waiting;
 #[cfg(test)]
 mod wondering;
+
+#[cfg(test)]
+fn fixture_reader() -> String {
+    let path = std::env::split_paths(&std::env::var_os("PATH").expect("fixture PATH"))
+        .map(|dir| dir.join("cat"))
+        .find(|path| path.is_file())
+        .expect("fixture cat executable");
+    let path = std::path::absolute(path).expect("absolute fixture utility");
+    magi_proto::permit::quoted(path.to_str().expect("UTF-8 fixture utility"))
+}
 
 /// The newest revision of the family's reply shape this build reads.
 const FAMILY: u64 = 1;
@@ -39,6 +54,11 @@ pub const CASPER: &str = "casper";
 /// call; `library` connects to one `serve` it keeps running for the session. Mirrors the agent and
 /// memory door switches.
 pub const DOOR: &str = "MAGI_TOOLS_DOOR";
+
+/// Close this process's daemon registry and reap every retained native daemon.
+pub fn shutdown() {
+    door::shutdown();
+}
 
 /// The program filling the `tools` role, and what this session tells it.
 ///
@@ -128,14 +148,19 @@ fn listed(rows: Vec<serde_json::Value>) -> Vec<Card> {
 /// The rows of a family reply, or why there are none: not the family's shape, written in a newer
 /// `family`, a refusal in the program's own words, or an `n` that disagrees with what came.
 fn rows(body: &[u8]) -> Result<Vec<serde_json::Value>, String> {
+    rows_known(body).map_err(failure::Failure::into_string)
+}
+
+fn rows_known(body: &[u8]) -> Result<Vec<serde_json::Value>, failure::Failure> {
+    use failure::Failure;
     let reply: serde_json::Value = serde_json::from_slice(body)
-        .map_err(|_| "answered something that is not the family's reply".to_owned())?;
+        .map_err(|_| Failure::unknown("answered something that is not the family's reply"))?;
     if let Some(family) = reply.get("family")
         && family.as_u64().is_none_or(|revision| revision > FAMILY)
     {
-        return Err(format!(
+        return Err(Failure::unknown(format!(
             "answered in family {family}, newer than this magi reads"
-        ));
+        )));
     }
     if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
         let error = reply
@@ -146,22 +171,44 @@ fn rows(body: &[u8]) -> Result<Vec<serde_json::Value>, String> {
             .get("fault")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("refused");
-        return Err(format!("{fault}: {error}"));
+        let reason = format!("{fault}: {error}");
+        return Err(
+            if reply.get("ok").and_then(serde_json::Value::as_bool) == Some(false)
+                && reply.get("family").and_then(serde_json::Value::as_u64) == Some(FAMILY)
+                && reply.get("n").and_then(serde_json::Value::as_u64) == Some(0)
+                && reply
+                    .get("result")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(Vec::is_empty)
+                && reply.get("fault").and_then(serde_json::Value::as_str) == Some("refused")
+                && reply
+                    .get("error")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|error| !error.is_empty() && error.len() <= 4096)
+            {
+                Failure::refused(reason)
+            } else {
+                Failure::unknown(reason)
+            },
+        );
     }
     let result = reply
         .get("result")
         .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| "answered with no result".to_owned())?;
+        .ok_or_else(|| Failure::unknown("answered with no result"))?;
     match reply.get("n").map(serde_json::Value::as_u64) {
         None => Ok(result.clone()),
         Some(Some(n)) if usize::try_from(n).is_ok_and(|n| n == result.len()) => Ok(result.clone()),
-        Some(_) => Err(format!(
+        Some(_) => Err(Failure::unknown(format!(
             "said it answered {} rows and sent {}",
             reply.get("n").unwrap_or(&serde_json::Value::Null),
             result.len()
-        )),
+        ))),
     }
 }
+
+#[cfg(test)]
+mod failures;
 
 /// Hand one call to `program` and read back what it produced.
 ///
@@ -212,38 +259,7 @@ pub fn run_context(
     context: &crate::holding::Context,
     cancel: &dyn Cancel,
 ) -> Result<Ran, String> {
-    let remote = call.tool.starts_with("mcp_");
-    // The library door when asked for, and for MCP unless told otherwise. Only a call that never
-    // left falls back to a spawn.
-    if mcp::uses_library(remote, std::env::var(DOOR).ok().as_deref())
-        && let Some((path, key)) = door::serving(program, context)
-    {
-        match door::over_socket(&path, &key, call, cancel) {
-            Ok(ran) => return Ok(ran),
-            Err(door::Failed::Sent(why)) if remote => {
-                return Err(format!(
-                    "MCP response lost: {why}; the remote operation may have taken effect; not retried"
-                ));
-            }
-            Err(door::Failed::Sent(why)) => return Err(format!("{program}: {why}")),
-            Err(door::Failed::Unsent(why)) => {
-                magi_model::noted!("tools: {program} socket call fell back to a spawn: {why}");
-            }
-        }
-    }
-    let body =
-        serde_json::to_vec(call).map_err(|why| format!("this call will not encode: {why}"))?;
-    let mut spawning = std::process::Command::new(program);
-    spawning.arg("run");
-    context.apply(&mut spawning);
-    let out = waiting::output(spawning, Some(body), cancel, door::PATIENCE)
-        .map_err(|why| format!("{program} {why}"))?;
-    let first = rows(&out)
-        .map_err(|why| format!("{program} {why}"))?
-        .into_iter()
-        .next()
-        .ok_or_else(|| format!("{program} answered nothing"))?;
-    serde_json::from_value(first).map_err(|why| format!("{program}: {why}"))
+    transport::run(program, call, context, cancel).map_err(failure::Failure::into_string)
 }
 
 /// One tool the role's program supplied, as magi's registry sees it.
@@ -315,6 +331,16 @@ impl SuppliedTool {
 }
 
 impl Tool for SuppliedTool {
+    fn file_scope(&self) -> Option<String> {
+        use sha2::{Digest, Sha256};
+        self.card
+            .file_revision
+            .as_ref()
+            .filter(|capability| capability.version == 1)?;
+        let bytes = serde_json::to_vec(&(&self.program, &self.configured, &self.environ)).ok()?;
+        Some(format!("{:x}", Sha256::digest(bytes)))
+    }
+
     fn composition(&self) -> Vec<(&'static str, String)> {
         // The program's own name, not the role's default.
         let mut out = vec![
@@ -349,84 +375,7 @@ impl Tool for SuppliedTool {
     }
 
     fn run(&self, arguments: &serde_json::Value, ops: &dyn Ops, cancel: &dyn Cancel) -> Output {
-        let mut call = Call {
-            tool: self.card.name.clone(),
-            args: arguments.clone(),
-            cwd: ops.cwd().display().to_string(),
-            answered: None,
-        };
-        // magi decides, the program describes: the card says which verb this tool acts under and
-        // the ledger answers, so a tool moved out of magi's config cannot leave the gate behind it.
-        let action = wants(&self.card, arguments);
-        if matches!(&action, Some(magi_proto::permit::Action::Network { host }) if host.is_empty())
-        {
-            return Output::error(format!(
-                "{} names no host to reach, so nobody can be asked about it",
-                self.card.name
-            ));
-        }
-        if let Some(action) = action
-            && let Err(why) = ops.allow(&self.card.name, &action)
-        {
-            return Output::error(why);
-        }
-        let jail = ops.jail();
-        let context = crate::holding::Context {
-            environ: self.environ.clone(),
-            configure: self.configured.clone(),
-            jail: jail.clone(),
-            cwd: Some(PathBuf::from(&call.cwd)),
-            call: ops.call(),
-        };
-        // A call may stop and ask, and then go on. Bounded, because a tool that asked forever would
-        // hold the turn open forever. Wider than the two a person is ever asked, because a question
-        // put to magi costs patience rather than attention: a search scores a batch at a time.
-        for _ in 0..8 {
-            let ran = match run_context(&self.program, &call, &context, cancel) {
-                // A refusal is still something the model reads, and it can try another way round.
-                Err(why) => return Output::error(why),
-                Ok(ran) => ran,
-            };
-            // Rows a tool fills itself, the general form of a question: magi reserves the space and
-            // drives the surface, and the answer comes back as an id and resumes the call.
-            if let Some(Shown::Surface(surface)) = &ran.shown {
-                let Some(chosen) = self
-                    .holds
-                    .hold(&self.card.name, surface, arguments, &context)
-                else {
-                    return Output::error(format!(
-                        "{} wanted the screen for {} and there was none",
-                        self.card.name, surface.about
-                    ));
-                };
-                call.answered = Some(chosen);
-                continue;
-            }
-            // A question for magi rather than for the person: answered out of the session and
-            // handed straight back, so nothing is drawn and nobody is interrupted. A refusal
-            // resumes the call too — a tool that asked for a model there is none of should say so
-            // itself rather than have the call fail underneath it.
-            if let Some(Shown::Wonder(wondering)) = &ran.shown {
-                call.answered = Some(answered(&self.knows, wondering));
-                continue;
-            }
-            let Some(Shown::Ask(ask)) = &ran.shown else {
-                return finished(ran);
-            };
-            let Some(choice) = self.asks.ask(&self.card.name, ask) else {
-                // Nobody answered. Told to the model, because a blank result reads as a tool that
-                // silently does nothing.
-                return Output::error(format!(
-                    "{} stopped to ask \"{}\" and nobody answered",
-                    self.card.name, ask.question
-                ));
-            };
-            call.answered = Some(choice);
-        }
-        Output::error(format!(
-            "{} kept asking rather than answering",
-            self.card.name
-        ))
+        dispatch::run(self, arguments, ops, cancel)
     }
 }
 
@@ -451,6 +400,41 @@ fn answered(knows: &Arc<dyn crate::holding::Answers>, wondering: &Wondering) -> 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn program_fingerprints_stream_bounded_chunks_and_preserve_exact_bytes() {
+        use sha2::Digest;
+        struct Chunks {
+            left: usize,
+            interrupted: bool,
+        }
+        impl std::io::Read for Chunks {
+            fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+                assert!(output.len() <= 64 * 1024);
+                if !self.interrupted {
+                    self.interrupted = true;
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                let count = self.left.min(output.len()).min(997);
+                output[..count].fill(0xa5);
+                self.left -= count;
+                Ok(count)
+            }
+        }
+        let size = 3 * 1024 * 1024 + 17;
+        let expected = format!("{:x}", sha2::Sha256::digest(vec![0xa5; size]));
+        assert_eq!(
+            super::fingerprint_reader(Chunks {
+                left: size,
+                interrupted: false
+            }),
+            Some(expected)
+        );
+        assert_eq!(
+            super::fingerprint_reader(&b""[..]),
+            Some(format!("{:x}", sha2::Sha256::digest([])))
+        );
+    }
+
     /// A pinned casper that is not the pinned program supplies nothing.
     #[test]
     fn a_pinned_casper_that_is_not_the_pinned_program_supplies_no_tools() {
@@ -551,6 +535,7 @@ mod tests {
                 args: serde_json::Value::Null,
                 cwd: String::new(),
                 answered: None,
+                revision: Default::default(),
             },
         )
         .expect_err("nothing to call");
@@ -603,6 +588,7 @@ mod tests {
 /// One finished call, as the registry wants it: `said` for the model, `shown` for the screen. A
 /// tool that reported a problem is still a result, so a failure carries its view too.
 fn finished(ran: Ran) -> Output {
+    let files = (ran.files != Default::default()).then(|| Box::new(ran.files));
     Output {
         images: ran.images,
         content: ran.said,
@@ -610,6 +596,8 @@ fn finished(ran: Ran) -> Output {
         shown: ran.shown,
         unlocks: ran.unlocks,
         hints: ran.hints,
+        files,
+        file_delivery: None,
     }
 }
 
@@ -699,10 +687,22 @@ fn first_word(command: &str) -> String {
 /// The SHA-256 of the tools program on disk, for pinning: a coordinator records it and a mismatch
 /// on the next run is a different binary answering. `None` when the program cannot be found or read.
 fn fingerprint(command: &str) -> Option<String> {
-    use sha2::Digest;
     let path = resolve(command)?;
-    let bytes = std::fs::read(path).ok()?;
-    Some(format!("{:x}", sha2::Sha256::digest(&bytes)))
+    fingerprint_reader(std::fs::File::open(path).ok()?)
+}
+
+fn fingerprint_reader(mut reader: impl std::io::Read) -> Option<String> {
+    use sha2::Digest;
+    let mut hash = sha2::Sha256::new();
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => return Some(format!("{:x}", hash.finalize())),
+            Ok(count) => hash.update(buffer.get(..count)?),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return None,
+        }
+    }
 }
 
 /// Where a command name resolves, the way `execvp` would: an executable regular file, found on

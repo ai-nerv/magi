@@ -48,6 +48,9 @@ pub(super) fn rows(value: &serde_json::Value) -> Vec<&serde_json::Value> {
 /// `truncated` has no `raw` and is rebuilt by [`cut_short`] instead.
 pub(super) fn rebuild(row: &serde_json::Value) -> Result<(Cursor, Entry), Fault> {
     if row.get("truncated").and_then(serde_json::Value::as_bool) == Some(true) {
+        if row.get("kind").and_then(serde_json::Value::as_str) == Some("workflow") {
+            return Err(Fault::Malformed("workflow history was truncated".into()));
+        }
         return cut_short(row);
     }
     let raw = row
@@ -63,6 +66,7 @@ pub(super) fn rebuild(row: &serde_json::Value) -> Result<(Cursor, Entry), Fault>
 
     match record {
         Record::Entry { cursor, entry } => {
+            crate::skills::snapshot::check(&entry, cursor).map_err(Fault::Malformed)?;
             if let Some(advertised) = row.get("cursor")
                 && advertised.as_u64() != Some(cursor.0)
             {
@@ -241,7 +245,7 @@ pub(super) fn stubbed(entry: &Entry, keep: usize) -> Entry {
         Entry::Notice { text } | Entry::From { text, .. } => cut(text, keep),
         Entry::Compaction { summary, .. } => cut(summary, keep),
         Entry::Masked { shown, .. } => cut(shown, keep),
-        Entry::Branch { .. } => {}
+        Entry::Branch { .. } | Entry::Workflow { .. } => {}
     }
     out
 }
@@ -269,6 +273,18 @@ fn cut_note(gone: usize) -> String {
 pub(crate) fn tokens(entry: &Entry) -> u64 {
     use magi_model::estimate::tokens as of;
     match entry {
+        Entry::Workflow {
+            text,
+            aside,
+            images,
+            workflow,
+            ..
+        } => {
+            of(text)
+                + of(aside)
+                + of(&crate::skills::snapshot::context(workflow))
+                + images.len() as u64 * magi_model::estimate::IMAGE_TOKENS
+        }
         Entry::User {
             text,
             aside,
@@ -291,7 +307,7 @@ pub(crate) fn tokens(entry: &Entry) -> u64 {
 
 fn role(entry: &Entry) -> &'static str {
     match entry {
-        Entry::User { .. } | Entry::From { .. } => "user",
+        Entry::User { .. } | Entry::Workflow { .. } | Entry::From { .. } => "user",
         Entry::Assistant { .. } | Entry::Notice { .. } => "assistant",
         Entry::Tool { .. } => "tool",
         Entry::Branch { .. } | Entry::Compaction { .. } | Entry::Masked { .. } => "system",
@@ -303,6 +319,7 @@ fn role(entry: &Entry) -> &'static str {
 pub(super) fn kind(entry: &Entry) -> &'static str {
     match entry {
         Entry::User { .. } => "user",
+        Entry::Workflow { .. } => "workflow",
         Entry::From { .. } => "from",
         Entry::Branch { .. } => "branch",
         Entry::Compaction { .. } => "summary",
@@ -321,6 +338,7 @@ pub(super) fn kind(entry: &Entry) -> &'static str {
 fn text(entry: &Entry) -> String {
     match entry {
         Entry::User { text, .. }
+        | Entry::Workflow { text, .. }
         | Entry::From { text, .. }
         | Entry::Notice { text }
         | Entry::Compaction { summary: text, .. }

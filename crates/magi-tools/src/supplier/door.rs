@@ -4,13 +4,13 @@
 
 use crate::Cancel;
 use crate::family::{FRAME_CAP, peer_is_us};
+use crate::native::Child;
 use magi_proto::tooling::{Call, Ran};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::process::Child;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -20,7 +20,7 @@ pub(super) enum Failed {
     /// Nothing reached the daemon, so the call may be made another way.
     Unsent(String),
     /// Some of the call went out: it may have run, and must not run again.
-    Sent(String),
+    Sent(super::failure::Failure),
 }
 
 /// How long writing a call, or the rest of a reply once it has begun, may take.
@@ -40,12 +40,18 @@ struct Daemon {
     path: PathBuf,
     key: String,
     child: Child,
+    file_admission: bool,
+    request_context: bool,
+    socket: Option<(u64, u64)>,
 }
 
 impl Drop for Daemon {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if self.socket.is_some() && socket_identity(&self.path) == self.socket {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -57,6 +63,25 @@ fn daemons() -> &'static Mutex<HashMap<String, Daemon>> {
 
 /// Socket names are never reused within a process.
 static NEXT: AtomicU64 = AtomicU64::new(0);
+static ENDING: AtomicBool = AtomicBool::new(false);
+
+fn socket_identity(path: &std::path::Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::{FileTypeExt, MetadataExt};
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    (metadata.file_type().is_socket() && metadata.uid() == rustix::process::geteuid().as_raw())
+        .then_some((metadata.dev(), metadata.ino()))
+}
+
+pub(super) fn shutdown() {
+    let retired = {
+        let mut running = daemons()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        ENDING.store(true, Ordering::Release);
+        std::mem::take(&mut *running)
+    };
+    drop(retired);
+}
 
 /// The daemon a `context` is served by: one per program, settings, jail, cwd and environment,
 /// hashed so no environment value is held in the key.
@@ -79,13 +104,16 @@ pub(super) fn adopt(
     program: &str,
     context: &crate::holding::Context,
     path: PathBuf,
-    child: Child,
+    child: std::process::Child,
 ) -> Option<String> {
     let key = magi_ipc::random_hex(32).ok()?;
     let daemon = Daemon {
         path,
         key: key.clone(),
-        child,
+        child: child.into(),
+        file_admission: false,
+        request_context: false,
+        socket: None,
     };
     let superseded = daemons()
         .lock()
@@ -95,12 +123,24 @@ pub(super) fn adopt(
     Some(key)
 }
 
+#[cfg(test)]
+pub(super) fn discard(program: &str, context: &crate::holding::Context) {
+    if let Some(key) = wanted(program, context)
+        && let Ok(mut daemons) = daemons().lock()
+    {
+        daemons.remove(&key);
+    }
+}
+
 /// The socket and key of a running `program serve` for `context`, started the first time and
 /// reused after. A daemon that has exited, or that a newer one replaced, is killed and reaped.
 pub(super) fn serving(
     program: &str,
     context: &crate::holding::Context,
-) -> Option<(PathBuf, String)> {
+) -> Option<(PathBuf, String, bool, bool)> {
+    if ENDING.load(Ordering::Acquire) {
+        return None;
+    }
     let dir = magi_ipc::runtime_base("casper");
     let wanted = wanted(program, context)?;
     let gone = {
@@ -108,7 +148,12 @@ pub(super) fn serving(
         if let Some(daemon) = running.get_mut(&wanted)
             && matches!(daemon.child.try_wait(), Ok(None))
         {
-            return Some((daemon.path.clone(), daemon.key.clone()));
+            return Some((
+                daemon.path.clone(),
+                daemon.key.clone(),
+                daemon.file_admission,
+                daemon.request_context,
+            ));
         }
         running.remove(&wanted)
     };
@@ -133,38 +178,49 @@ pub(super) fn serving(
         path: path.clone(),
         key: key.clone(),
         child: spawn_kept(command).ok()?,
+        file_admission: false,
+        request_context: false,
+        socket: None,
     };
-    if !handed_key(&mut daemon.child, &key) || !announced(&mut daemon.child) {
+    if !handed_key(&mut daemon.child, &key) {
         return None;
     }
-    let superseded = daemons().lock().ok()?.insert(wanted, daemon);
+    (daemon.file_admission, daemon.request_context) = announced(&mut daemon.child, &path)?;
+    daemon.socket = socket_identity(&path);
+    let file_admission = daemon.file_admission;
+    let request_context = daemon.request_context;
+    let superseded = {
+        let mut running = daemons().lock().ok()?;
+        if ENDING.load(Ordering::Acquire) {
+            return None;
+        }
+        running.insert(wanted, daemon)
+    };
     drop(superseded);
-    Some((path, key))
+    Some((path, key, file_admission, request_context))
 }
 
 /// Write the key line on `serve`'s standard input and close it.
 fn handed_key(child: &mut Child, key: &str) -> bool {
     child
-        .stdin
+        .input
         .take()
         .is_some_and(|mut stdin| stdin.write_all(format!("{key}\n").as_bytes()).is_ok())
 }
 
 /// Whether `serve` said it is listening within [`ANNOUNCE`]. Read on a thread of its own, which
 /// drains the rest of what it prints so it never blocks on a full pipe.
-fn announced(child: &mut Child) -> bool {
-    let Some(out) = child.stdout.take() else {
-        return false;
-    };
+fn announced(child: &mut Child, path: &std::path::Path) -> Option<(bool, bool)> {
+    let out = child.stdout.take()?;
+    let path = path.to_owned();
     let (said, heard) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut reader = std::io::BufReader::new(out);
-        let mut line = String::new();
-        let read = std::io::BufRead::read_line(&mut reader, &mut line).is_ok();
-        let _ = said.send(read && line.contains("listening"));
+        let announcement = super::admission::listening_context(&mut reader, &path);
+        let _ = said.send(announcement);
         let _ = std::io::copy(&mut reader, &mut std::io::sink());
     });
-    heard.recv_timeout(ANNOUNCE).unwrap_or(false)
+    heard.recv_timeout(ANNOUNCE).ok()?.ok()
 }
 
 /// Spawn on one long-lived thread, the one a daemon's parent-death signal is then tied to.
@@ -179,8 +235,8 @@ fn spawn_kept(command: std::process::Command) -> std::io::Result<Child> {
         std::thread::Builder::new()
             .name("magi-daemons".to_owned())
             .spawn(move || {
-                for (mut command, back) in asked {
-                    let _ = back.send(command.spawn());
+                for (command, back) in asked {
+                    let _ = back.send(super::launch::spawn(command));
                 }
             })
             .ok();
@@ -198,20 +254,49 @@ fn spawn_kept(command: std::process::Command) -> std::io::Result<Child> {
 }
 
 /// Hand one call to a running daemon as the `run` verb, with its key, and read the reply.
+#[cfg(test)]
 pub(super) fn over_socket(
     path: &std::path::Path,
     key: &str,
     call: &Call,
     cancel: &dyn Cancel,
 ) -> Result<Ran, Failed> {
-    let body =
-        serde_json::to_vec(&serde_json::json!({ "call": "run", "args": [call], "key": key }))
-            .map_err(|why| Failed::Unsent(format!("this call will not encode: {why}")))?;
+    over_socket_context(path, key, call, cancel, false)
+}
+
+pub(super) fn over_socket_context(
+    path: &std::path::Path,
+    key: &str,
+    call: &Call,
+    cancel: &dyn Cancel,
+    observed: bool,
+) -> Result<Ran, Failed> {
+    #[derive(serde::Serialize)]
+    struct Request<'a> {
+        call: &'static str,
+        args: [&'a Call; 1],
+        key: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        event_context: Option<super::launch::Context>,
+    }
+    let request = Request {
+        call: "run",
+        args: [call],
+        key,
+        event_context: observed.then(super::launch::context).flatten(),
+    };
+    let body = serde_json::to_vec(&request)
+        .map_err(|why| Failed::Unsent(format!("this call will not encode: {why}")))?;
     let first = exchange(path, &body, cancel)?
         .into_iter()
         .next()
-        .ok_or_else(|| Failed::Sent("the socket answered nothing".to_owned()))?;
-    serde_json::from_value(first).map_err(|why| Failed::Sent(why.to_string()))
+        .ok_or_else(|| {
+            Failed::Sent(super::failure::Failure::unknown(
+                "the socket answered nothing",
+            ))
+        })?;
+    super::admission::result(first, call)
+        .map_err(|why| Failed::Sent(super::failure::Failure::unknown(why)))
 }
 
 /// Send one framed call on a connection of its own and read the rows of its reply. The connection
@@ -230,8 +315,9 @@ fn exchange(
         )));
     }
     write_frame(&mut stream, body)?;
-    let reply = read_frame(&mut stream, cancel).map_err(Failed::Sent)?;
-    super::rows(&reply).map_err(Failed::Sent)
+    let reply = read_frame(&mut stream, cancel)
+        .map_err(|why| Failed::Sent(super::failure::Failure::unknown(why)))?;
+    super::rows_known(&reply).map_err(Failed::Sent)
 }
 
 /// Write one length-prefixed frame within [`MID_FRAME`]. Refused before a byte goes out when it
@@ -254,12 +340,18 @@ pub(super) fn write_frame(to: &mut UnixStream, body: &[u8]) -> Result<(), Failed
             Ok(n) => written += n,
             Err(why) if why.kind() == std::io::ErrorKind::Interrupted => {}
             Err(why) if written == 0 => return Err(Failed::Unsent(why.to_string())),
-            Err(why) => return Err(Failed::Sent(why.to_string())),
+            Err(why) => {
+                return Err(Failed::Sent(super::failure::Failure::unknown(
+                    why.to_string(),
+                )));
+            }
         }
     }
     match written {
         0 => Err(Failed::Unsent("the socket took nothing".to_owned())),
-        n if n < frame.len() => Err(Failed::Sent("the call was cut off".to_owned())),
+        n if n < frame.len() => Err(Failed::Sent(super::failure::Failure::unknown(
+            "the call was cut off",
+        ))),
         _ => Ok(()),
     }
 }
@@ -321,16 +413,20 @@ pub(super) fn read_frame(from: &mut UnixStream, cancel: &dyn Cancel) -> Result<V
 mod corpus;
 
 #[cfg(test)]
+mod context;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::Uncancelled;
 
-    fn call() -> Call {
+    pub(super) fn call() -> Call {
         Call {
             tool: "shell".to_owned(),
             args: serde_json::json!({ "command": "true" }),
             cwd: String::new(),
             answered: None,
+            revision: Default::default(),
         }
     }
 
@@ -363,7 +459,7 @@ mod tests {
         (dir, path, calls)
     }
 
-    fn framed(body: &[u8]) -> Vec<u8> {
+    pub(super) fn framed(body: &[u8]) -> Vec<u8> {
         let mut out = (body.len() as u32).to_be_bytes().to_vec();
         out.extend_from_slice(body);
         out
@@ -405,7 +501,10 @@ mod tests {
         let mut child = spawn_kept(command).expect("spawned");
         let key = magi_ipc::random_hex(32).expect("random");
         assert!(handed_key(&mut child, &key));
-        assert!(announced(&mut child));
+        assert_eq!(
+            announced(&mut child, &dir.join("socket")),
+            Some((false, false))
+        );
         let _ = child.kill();
         let _ = child.wait();
         assert_eq!(std::fs::read_to_string(&heard).expect("heard"), key);

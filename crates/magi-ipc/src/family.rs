@@ -5,8 +5,10 @@
 //! only the transport failing closes anything.
 
 use std::path::{Path, PathBuf};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use tokio::net::UnixStream;
+
+pub mod observing;
 
 /// The family's one frame cap, on a call this client writes and on a reply it reads.
 pub const MAX_FRAME_BYTES: usize = crate::MAX_FRAME_BYTES;
@@ -19,6 +21,8 @@ struct Call<'a> {
     args: &'a [serde_json::Value],
     #[serde(skip_serializing_if = "Option::is_none")]
     key: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    event_context: Option<observing::Context>,
 }
 
 /// A call framed for sending, with the key held for its socket when there is one, or refused here
@@ -29,12 +33,23 @@ fn frame(
     args: &[serde_json::Value],
     key: Option<&keys::Key>,
 ) -> Result<Vec<u8>, Fault> {
+    frame_context(wire, verb, args, key, None)
+}
+
+fn frame_context(
+    wire: crate::Wire,
+    verb: &str,
+    args: &[serde_json::Value],
+    key: Option<&keys::Key>,
+    event_context: Option<observing::Context>,
+) -> Result<Vec<u8>, Fault> {
     let key = key.map(keys::Key::as_str);
     let body = wire
         .write(&Call {
             call: verb,
             args,
             key,
+            event_context,
         })
         .map_err(|why| Fault::Malformed(format!("encoding {verb}: {why}")))?;
     let len = u32::try_from(body.len())
@@ -57,8 +72,9 @@ pub fn fits(verb: &str, args: &[serde_json::Value]) -> bool {
             call: verb,
             args,
             key: Some(ROOM_FOR_A_KEY),
+            event_context: None,
         })
-        .is_ok_and(|body| body.len() <= MAX_FRAME_BYTES)
+        .is_ok_and(|body| body.len().saturating_add(observing::allowance()) <= MAX_FRAME_BYTES)
 }
 
 /// The refusal for a call that would not fit in one frame. Nothing was sent.
@@ -123,6 +139,7 @@ impl Fault {
 /// again. One reply per call, in order, so an abandoned reply is never read as the next answer.
 pub struct Family {
     stream: Option<UnixStream>,
+    pinned: bool,
     scratch: Vec<u8>,
     /// Which encoding calls go out in; replies are read in whichever came back. JSON by default.
     wire: crate::Wire,
@@ -138,6 +155,7 @@ impl Family {
         let stream = connected(&path).await?;
         Ok(Self {
             stream: Some(stream),
+            pinned: false,
             scratch: Vec::new(),
             wire: crate::Wire::default(),
             key: keys::held_for(&path),
@@ -183,58 +201,6 @@ impl Family {
     ) -> Result<Vec<serde_json::Value>, Fault> {
         self.call_within(verb, args, PATIENCE).await
     }
-
-    /// The same, waiting `patience` rather than the clock a feature keeps. For the calls whose
-    /// failure costs the conversation rather than a feature — see [`DURABLE`].
-    ///
-    /// A call refused for its key is made once more with the key the memory layer now publishes
-    /// beside its socket, when that is a different one: the layer was started again by another.
-    pub async fn call_within(
-        &mut self,
-        verb: &str,
-        args: Vec<serde_json::Value>,
-        patience: std::time::Duration,
-    ) -> Result<Vec<serde_json::Value>, Fault> {
-        let reply = self.once(verb, &args, patience).await;
-        if matches!(&reply, Err(Fault::Refused(why)) if why == keys::REFUSED)
-            && let Some(fresh) = keys::published(&self.path)
-            && self.key.as_ref().map(keys::Key::as_str) != Some(fresh.as_str())
-        {
-            self.key = Some(fresh);
-            return self.once(verb, &args, patience).await;
-        }
-        reply
-    }
-
-    /// One call and its reply, the connection kept only when the reply came back whole.
-    async fn once(
-        &mut self,
-        verb: &str,
-        args: &[serde_json::Value],
-        patience: std::time::Duration,
-    ) -> Result<Vec<serde_json::Value>, Fault> {
-        let frame = frame(self.wire, verb, args, self.key.as_ref())?;
-        let mut stream = match self.stream.take() {
-            Some(stream) => stream,
-            None => connected(&self.path).await?,
-        };
-        tokio::time::timeout(patience, stream.write_all(&frame))
-            .await
-            .map_err(|_| Fault::Unavailable(format!("sending {verb}: not taken in {patience:?}")))?
-            .map_err(|e| Fault::Unavailable(format!("sending {verb}: {e}")))?;
-
-        // A socket that accepts the connection and then never replies is the ordinary shape of a
-        // wedged process, so every asynchronous call is on a clock here rather than at the caller.
-        let reply =
-            tokio::time::timeout(patience, read_reply(&mut stream, &mut self.scratch, verb))
-                .await
-                .map_err(|_| Fault::Unavailable(format!("{verb}: no answer in {patience:?}")))?;
-        // A refusal is a whole reply, and leaves nothing owed on the stream.
-        if matches!(&reply, Ok(_) | Err(Fault::Refused(_) | Fault::Failed(_))) {
-            self.stream = Some(stream);
-        }
-        reply
-    }
 }
 
 /// Read one framed reply and unwrap the family's envelope. A declared length of nothing, or past
@@ -243,6 +209,7 @@ async fn read_reply(
     stream: &mut UnixStream,
     scratch: &mut Vec<u8>,
     verb: &str,
+    path: &Path,
 ) -> Result<Vec<serde_json::Value>, Fault> {
     let mut head = [0_u8; 4];
     stream
@@ -266,7 +233,9 @@ async fn read_reply(
     // Read in whichever encoding came back rather than in the one we asked in.
     let reply: serde_json::Value =
         crate::Wire::read(scratch).map_err(|e| Fault::Malformed(format!("{verb}: {e}")))?;
-    unwrap(&reply, verb)
+    let values = unwrap(&reply, verb)?;
+    observing::received(stream, path, verb, &reply);
+    Ok(values)
 }
 
 /// The newest revision of the family wire this understands, duplicated in each sibling.
@@ -426,6 +395,7 @@ fn unwrap(reply: &serde_json::Value, verb: &str) -> Result<Vec<serde_json::Value
 pub mod blocking;
 mod keys;
 mod looking;
+mod transport;
 pub use keys::{hold_key, holds_key, seal, sealed};
 pub use looking::{candidates, legacy_socket_dir, named, own, socket_dir, socket_dirs, sockets_in};
 

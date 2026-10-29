@@ -25,20 +25,32 @@ pub(super) async fn resume(
         .await
         .map_err(|why| format!("cannot leave this session: {why}"))?;
     let (mut next, journal) = open
-        .as_ref()
+        .as_mut()
         .ok_or("no memory layer is connected")?
         .prepare_resume(id)
         .await
         .map_err(|why| format!("cannot resume {id:?}: {why}"))?;
     let model = session.lock().await.model();
     if let Some(model) = model {
-        match next.note_model(&model.name, model.context_window).await {
+        let recording = next
+            .as_mut()
+            .or_else(|| open.as_mut())
+            .ok_or("no memory layer is connected")?;
+        match recording
+            .note_model(&model.name, model.context_window)
+            .await
+        {
             Ok(()) | Err(magi_ipc::family::Fault::Refused(_)) => {}
             Err(why) => return Err(format!("cannot prepare resumed model: {why}")),
         }
     }
     let mut held = session.lock().await;
-    *open = Some(next);
+    if let Some(next) = next {
+        *open = Some(next);
+    } else if let Some(open) = open.as_mut() {
+        open.accept_resume(&journal)
+            .map_err(|why| format!("cannot accept resumed history: {why}"))?;
+    }
     helpers.retire();
     drop(transition);
     held.resume_prepared(journal);

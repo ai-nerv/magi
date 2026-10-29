@@ -9,8 +9,10 @@ pub mod cancel;
 pub mod command;
 pub mod environ;
 pub mod family;
+pub mod files;
 pub mod holding;
 pub mod masking;
+pub mod native;
 pub mod ops;
 pub mod permit;
 pub mod question;
@@ -47,6 +49,10 @@ pub struct Output {
     /// What the tool said about its own result for the memory layer: a stub, a way back, a keep.
     #[serde(default, skip_serializing_if = "magi_proto::tooling::Hints::is_empty")]
     pub hints: magi_proto::tooling::Hints,
+    #[serde(skip)]
+    pub files: Option<Box<magi_proto::tooling::FileMetadata>>,
+    #[serde(skip)]
+    pub file_delivery: Option<files::Delivery>,
 }
 
 impl Output {

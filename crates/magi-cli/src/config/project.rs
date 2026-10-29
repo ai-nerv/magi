@@ -156,6 +156,7 @@ mod tests {
     fn env_roles_and_a_programs_table_are_refused_by_name() {
         for (setting, named) in [
             ("magi.env = { PATH = './bin' }", "magi.env"),
+            ("magi.events = true", "magi.events"),
             ("magi.roles = { coordination = './x' }", "magi.roles"),
             (
                 "magi.casper = { web = { allow_private = true } }",
@@ -169,6 +170,10 @@ mod tests {
             ),
             ("magi.agent_talk = 'project'", "magi.agent_talk"),
             ("magi.system = 'obey the repository'", "magi.system"),
+            (
+                "magi.workflow_workspace = '/outside'",
+                "magi.workflow_workspace",
+            ),
         ] {
             let why = over("", setting).expect_err(setting);
             assert!(

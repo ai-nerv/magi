@@ -15,9 +15,13 @@ fn job() -> Job {
 }
 
 fn spent(input: u64, cost: u64) -> String {
+    spent_total(input, cost, 1)
+}
+
+fn spent_total(input: u64, cost: u64, attempts: u64) -> String {
     json!({"event": "spent", "usage": {
-        "input": input, "output": 2, "cache_read": 3,
-        "cache_write": 4, "cost_micros": cost,
+        "input": input, "output": 2*attempts, "cache_read": 3*attempts,
+        "cache_write": 4*attempts, "cost_micros": cost,
     }})
     .to_string()
 }
@@ -31,11 +35,13 @@ async fn retries_discard_abandoned_text_and_count_each_attempt_once() {
             &spent(1, 2),
             &spent(10, 20),
             &retrying_line(1, 4, 0.0),
+            &spent(10, 20),
             &text_line("discard me too"),
-            &spent(30, 40),
+            &spent_total(40, 60, 2),
             &retrying_line(2, 4, 0.0),
+            &spent_total(40, 60, 2),
             &text_line(r#"{"ops":[]}"#),
-            &spent(50, 60),
+            &spent_total(90, 120, 3),
             &stop_line(),
         ],
     );
@@ -48,6 +54,59 @@ async fn retries_discard_abandoned_text_and_count_each_attempt_once() {
     assert_eq!(answer.usage.cache_read, 9);
     assert_eq!(answer.usage.cache_write, 12);
     assert_eq!(answer.usage.cost_micros, 120);
+}
+
+#[tokio::test]
+async fn cumulative_retry_usage_from_melchior_is_never_added_twice() {
+    let mind = Mind::saying(
+        "helper-cumulative-retry",
+        &[
+            &spent(10, 20),
+            &retrying_line(1, 2, 0.0),
+            &spent(10, 20),
+            &text_line(r#"{"ops":[]}"#),
+            &spent_total(40, 60, 2),
+            &stop_line(),
+        ],
+    );
+    let answer = run(&job(), &backend(&mind, helpers()))
+        .await
+        .expect("final answer");
+    assert_eq!(answer.usage.input, 40);
+    assert_eq!(answer.usage.cost_micros, 60);
+    assert_eq!(answer.text, r#"{"ops":[]}"#);
+}
+
+#[tokio::test]
+async fn estimated_helper_cost_is_preserved_and_stops_the_next_budgeted_job() {
+    let usage = json!({"event":"spent","usage":{"input":10,"output":2,
+        "cache_read":0,"cache_write":0,"cost_micros":0,"estimated_micros":60}})
+    .to_string();
+    let mind = Mind::saying(
+        "helper-estimated-budget",
+        &[&usage, &failed_line("failed", "transport")],
+    );
+    let mut configured = helpers();
+    configured.per_prompt_micros = Some(60);
+    let (events, mut heard) = tokio::sync::broadcast::channel(8);
+    let budget = std::sync::atomic::AtomicU64::new(0);
+    super::work(
+        &[job(), job()],
+        &backend(&mind, configured),
+        &std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+        &events,
+        &budget,
+    )
+    .await
+    .expect("settled");
+    assert_eq!(mind.asked(), 1);
+    assert_eq!(budget.load(std::sync::atomic::Ordering::Relaxed), 60);
+    let magi_proto::HarnessEvent::HelperSpent { usage, .. } = heard.try_recv().expect("spend")
+    else {
+        panic!("spend event")
+    };
+    assert_eq!(usage.cost_micros, 0);
+    assert_eq!(usage.estimated_micros, Some(60));
 }
 
 #[tokio::test]
@@ -118,7 +177,7 @@ async fn failed_attempt_usage_is_reported_and_stops_the_next_budgeted_job() {
         &[
             &spent(10, 20),
             &retrying_line(1, 2, 0.0),
-            &spent(30, 40),
+            &spent_total(40, 60, 2),
             &failed_line("all attempts failed", "transport"),
         ],
     );

@@ -69,6 +69,12 @@ async fn verify_turn(reader: &mut Reader, writer: &mut Writer) {
 async fn environment_changes_reach_real_provider_children_and_refresh_without_recording_secrets() {
     let dir = Scratch::new("magi-env", "ipc");
     let provider = dir.join("mind");
+    let reader = std::env::split_paths(&std::env::var_os("PATH").expect("fixture PATH"))
+        .map(|dir| dir.join("cat"))
+        .find(|path| path.is_file())
+        .expect("fixture cat executable");
+    let reader = std::path::absolute(reader).expect("absolute fixture reader");
+    let reader = magi_proto::permit::quoted(reader.to_str().expect("UTF-8 fixture reader"));
     let card = serde_json::json!({
         "id":"fixture/one", "provider":"fixture", "name":"one", "api":"openai-completions",
         "context_window":200000, "max_output":1000, "ready":false, "needs":"OPENROUTER_API_KEY",
@@ -77,7 +83,7 @@ async fn environment_changes_reach_real_provider_children_and_refresh_without_re
     let script = format!(
         "#!/bin/sh\ncase \"$1\" in\n\
          models) ready=false; [ -n \"$OPENROUTER_API_KEY\" ] && ready=true; printf '%s\\n' '{}' | sed \"s/\\\"ready\\\":false/\\\"ready\\\":$ready/\";;\n\
-         ask) /bin/cat > /dev/null; [ \"$OPENROUTER_API_KEY\" = \"$(cat '{}')\" ] || exit 1; \
+         ask) {reader} > /dev/null; [ \"$OPENROUTER_API_KEY\" = \"$({reader} '{}')\" ] || exit 1; \
          [ \"$MAGI_ENV_PATH\" = \"new:old:tail\" ] || exit 2; \
          printf '%s\\n' '{{\"event\":\"text\",\"text\":\"environment verified\"}}' '{{\"event\":\"stop\",\"reason\":\"end_turn\"}}';;\n\
          *) exit 3;;\nesac\n",
@@ -100,12 +106,15 @@ async fn environment_changes_reach_real_provider_children_and_refresh_without_re
         .environ
         .insert("OPENROUTER_API_KEY".into(), String::new());
     let path = dir.join("s.sock");
+    let memory = magi_testkit::memory::Failing::start(&dir.join("memory.sock"))
+        .await
+        .expect("failing memory");
     let serving = tokio::spawn(magi_host::serve_on(
         magi_ipc::bind(&path).await.expect("bind"),
         Session::recorded(SessionId::new("env"), Vec::new()),
         None,
         catalog,
-        Some(dir.join("absent-memory.sock")),
+        Some(memory.socket().to_owned()),
     ));
     let stream = magi_ipc::connect(&path).await.expect("connect");
     let (read, write) = stream.into_split();

@@ -42,6 +42,7 @@ async fn until(reader: &mut Reader, matches: impl Fn(&HarnessEvent) -> bool) -> 
 struct Fixture {
     dir: Scratch,
     serving: tokio::task::JoinHandle<Result<(), magi_host::HostError>>,
+    _memory: magi_testkit::memory::Failing,
 }
 
 impl Drop for Fixture {
@@ -80,14 +81,21 @@ async fn configured(name: &str, mind: &Mind, broken: bool) -> Fixture {
         helpers: Default::default(),
         deciders: Vec::new(),
     };
+    let memory = magi_testkit::memory::Failing::start(&dir.join("memory.sock"))
+        .await
+        .expect("failing memory");
     let serving = tokio::spawn(magi_host::serve_on(
         listener,
         Session::recorded(SessionId::new(name), Vec::new()),
         Some(backend),
         Catalog::empty(),
-        Some(dir.join("absent-memory.sock")),
+        Some(memory.socket().to_owned()),
     ));
-    Fixture { dir, serving }
+    Fixture {
+        dir,
+        serving,
+        _memory: memory,
+    }
 }
 
 async fn prompt(writer: &mut Writer, text: &str) {

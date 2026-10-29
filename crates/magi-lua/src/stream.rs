@@ -107,7 +107,7 @@ fn handle_table<'gc>(
     let call = Callback::from_fn(&ctx, move |ctx, _exec, mut stack| {
         let (_self, request, opts): (Value, Value, Value) = stack.consume(ctx)?;
         let deadline = std::time::Instant::now() + call::patience(ctx, opts, timeout);
-        let frame = match call::framed(ctx, request, sealing.as_deref()) {
+        let frame = match call::framed(ctx, request, sealing.as_deref(), held.borrow().as_ref()) {
             Ok(frame) => frame,
             Err(why) => {
                 let why = luna::String::from_slice(&ctx, why.as_bytes());

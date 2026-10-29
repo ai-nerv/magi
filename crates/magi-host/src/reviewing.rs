@@ -1,3 +1,4 @@
+use crate::asking::{WaitError, observing::Trace};
 use magi_ipc::{FrameReader, FrameWriter, blocking};
 use magi_proto::{
     UiCommand,
@@ -14,11 +15,12 @@ pub(crate) fn forward(
     action: &Action,
     stopped: &(dyn Fn() -> bool + Send + Sync),
 ) -> Decision {
-    let review = || -> Result<Decision, Box<dyn std::error::Error>> {
+    let mut trace = Trace::new();
+    let review = || -> Result<Decision, WaitError> {
         let stream = std::os::unix::net::UnixStream::connect(socket)?;
         // The parent's key goes to the parent's user and to nobody else.
         if !magi_ipc::peer_is_us(&stream) {
-            return Ok(Decision::Deny);
+            return Err(WaitError::Unavailable);
         }
         stream.set_read_timeout(Some(std::time::Duration::from_secs(305)))?;
         stream.set_write_timeout(Some(std::time::Duration::from_secs(5)))?;
@@ -27,29 +29,34 @@ pub(crate) fn forward(
             action: action.clone(),
             key: magi_ipc::read_key(socket),
         })?;
-        Ok(std::thread::scope(|scope| {
+        trace.transition(crate::events::PermissionOutcome::Forwarded);
+        std::thread::scope(|scope| {
             let (back, answer) = std::sync::mpsc::channel();
             let reading = &stream;
             scope.spawn(move || {
                 let decision = blocking::FrameReader::new(reading)
                     .read_blocking()
-                    .unwrap_or(Decision::Deny);
+                    .map_err(WaitError::from);
                 let _ = back.send(decision);
             });
             loop {
                 if stopped() {
                     let _ = stream.shutdown(std::net::Shutdown::Both);
-                    return Decision::Deny;
+                    return Err(WaitError::Cancelled);
                 }
                 match answer.recv_timeout(std::time::Duration::from_millis(50)) {
                     Ok(decision) => return decision,
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return Decision::Deny,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        return Err(WaitError::Unavailable);
+                    }
                 }
             }
-        }))
+        })
     };
-    review().unwrap_or(Decision::Deny)
+    let answer = review();
+    trace.result(&answer);
+    answer.unwrap_or(Decision::Deny)
 }
 
 /// Ask this session's person on a child's behalf and answer the child. A child that hangs up
@@ -105,7 +112,7 @@ mod tests {
                 Session::recorded(SessionId::new("parent"), Vec::new()),
                 None,
                 catalog,
-                Some("/no-memory".into()),
+                None,
             )
             .await;
         });

@@ -121,12 +121,32 @@ async fn malformed_replay_cursors_refuse_resume_without_switching() {
         .await;
         let session = session();
         let scribe = peer.scribe().await;
+        let mut catalog = crate::catalog::Catalog::empty();
+        catalog.cards.push(serde_json::from_value(json!({
+            "id":"fake/resume", "provider":"fake", "name":"resume", "api":"anthropic-messages", "ready":true
+        })).expect("card"));
+        let backend = catalog.backend("fake/resume").expect("backend");
+        let context = crate::context::of(&*session.lock().await);
+        session.lock().await.report_frame(&context, backend.frame());
+        let mut events = session.lock().await.subscribe();
         let why = resume(&session, &RwLock::new(None), &scribe, "B")
             .await
             .expect_err("invalid replay");
         assert!(why.contains("cursor"), "{why}");
         assert_eq!(session.lock().await.id().as_str(), "A");
         assert!(!session.lock().await.busy());
+        session.lock().await.report_frame(&context, backend.frame());
+        let mut frames = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let magi_proto::HarnessEvent::CacheFrame { reasons } = event {
+                frames.push(reasons);
+            }
+        }
+        assert_eq!(
+            frames,
+            [vec![]],
+            "failed resume must preserve the frame baseline"
+        );
     }
 }
 

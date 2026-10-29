@@ -14,9 +14,21 @@ pub struct Usage {
     /// not say. Whole numbers, so a total adds up exactly.
     #[serde(default)]
     pub cost_micros: u64,
+    /// Configured estimates for attempts with no positive provider cost; absent on legacy totals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_micros: Option<u64>,
 }
 
 impl Usage {
+    #[must_use]
+    pub const fn charged_micros(self) -> u64 {
+        self.cost_micros
+            .saturating_add(match self.estimated_micros {
+                Some(n) => n,
+                None => 0,
+            })
+    }
+
     #[must_use]
     pub const fn prompt_tokens(self) -> u64 {
         self.input
@@ -39,6 +51,19 @@ impl Usage {
         self.cache_read = self.cache_read.saturating_add(other.cache_read);
         self.cache_write = self.cache_write.saturating_add(other.cache_write);
         self.cost_micros = self.cost_micros.saturating_add(other.cost_micros);
+        self.estimated_micros = match (self.estimated_micros, other.estimated_micros) {
+            (None, None) => None,
+            (a, b) => Some(
+                match a {
+                    Some(n) => n,
+                    None => 0,
+                }
+                .saturating_add(match b {
+                    Some(n) => n,
+                    None => 0,
+                }),
+            ),
+        };
     }
 
     /// `self` with `other` added — see [`Usage::add`].
@@ -85,8 +110,30 @@ mod tests {
             cache_read: 900,
             cache_write: 10,
             cost_micros: 0,
+            estimated_micros: None,
         };
         assert_eq!(usage.prompt_tokens(), 1010);
+    }
+
+    #[test]
+    fn resolved_estimates_are_added_once_and_keep_reported_cost_separate() {
+        let mut usage = Usage {
+            cost_micros: 4,
+            ..Default::default()
+        };
+        usage.add(Usage {
+            cost_micros: 7,
+            estimated_micros: Some(3),
+            ..Default::default()
+        });
+        assert_eq!(usage.cost_micros, 11);
+        assert_eq!(usage.estimated_micros, Some(3));
+        assert_eq!(usage.charged_micros(), 14);
+        usage.add(Usage {
+            estimated_micros: Some(u64::MAX),
+            ..Default::default()
+        });
+        assert_eq!(usage.charged_micros(), u64::MAX);
     }
 
     #[test]

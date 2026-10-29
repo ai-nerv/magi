@@ -205,7 +205,7 @@ pub async fn run(
                     })
                     .await?;
             }
-            HarnessEvent::Error { message, .. } => {
+            HarnessEvent::Error { message, .. } | HarnessEvent::Refused { message, .. } => {
                 error = Some(message);
                 break;
             }
@@ -266,5 +266,40 @@ mod tests {
     #[test]
     fn a_turn_that_never_reported_a_reason_is_not_treated_as_failure() {
         assert!(!outcome(None, None).failed());
+    }
+
+    #[tokio::test]
+    async fn workflow_refusal_finishes_print_without_waiting_for_a_model_turn() {
+        for prompt in ["/skill", "/skill missing"] {
+            let dir = magi_testkit::Scratch::new("print-workflow", "refusal");
+            let socket = dir.join("host.sock");
+            let host = tokio::spawn(magi_host::serve_on(
+                magi_ipc::bind(&socket).await.expect("bind"),
+                magi_host::session::Session::recorded(
+                    magi_proto::SessionId::new("print"),
+                    Vec::new(),
+                ),
+                None,
+                magi_host::catalog::Catalog::empty(),
+                None,
+            ));
+            let images =
+                crate::attachments::Reader::of(magi_tools::supplier::Tooling::of("absent-helper"));
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                super::run(&socket, prompt.into(), &images),
+            )
+            .await;
+            host.abort();
+            let outcome = result.expect("refusal must finish print").expect("outcome");
+            assert!(outcome.failed());
+            assert!(
+                outcome
+                    .error
+                    .as_ref()
+                    .is_some_and(|error| !error.is_empty())
+            );
+            assert!(outcome.text.is_empty());
+        }
     }
 }

@@ -168,7 +168,12 @@ pub fn options(loaded: &Loaded) -> magi_proto::ask::Wants {
         // Set per request, not per session: a schema belongs to one question.
         schema: None,
         thinking,
-        max_tokens: None,
+        max_tokens: loaded
+            .config
+            .get("melchior")
+            .and_then(|settings| settings.get("max_tokens"))
+            .and_then(serde_json::Value::as_u64),
+        max_tokens_automatic: false,
         // Chosen on the model's card, never in the config: providers come and go by the hour.
         provider: None,
     }
@@ -307,6 +312,18 @@ pub fn adopt_ui(loaded: &Loaded) {
 #[cfg(test)]
 mod ui_tests {
     use super::*;
+
+    #[test]
+    fn an_explicit_sibling_output_limit_is_reserved_and_sent_unchanged() {
+        let wants = options(&from_lua("magi.melchior = { max_tokens = 77 }"));
+        assert_eq!(wants.max_tokens, Some(77));
+        assert!(!wants.max_tokens_automatic);
+        assert_eq!(options(&from_lua("")).max_tokens, None);
+        assert_eq!(
+            options(&from_lua("magi.melchior = 'alternate'")).max_tokens,
+            None
+        );
+    }
 
     pub(super) fn from_lua(source: &str) -> Loaded {
         let mut engine = magi_lua::Engine::new();

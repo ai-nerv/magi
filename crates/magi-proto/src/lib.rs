@@ -1,23 +1,10 @@
-//! The magi wire contract.
-//!
-//! Every process boundary in magi carries these types and nothing else. This crate performs no
-//! I/O and depends on no runtime; `magi-ipc` owns transport, `magi-host` owns meaning. Hard cap:
-//! 4,000 lines.
-//!
-//! Three transports carry it: **argv**, one JSON object on stdout; **pipe**, newline-delimited
-//! JSON between a parent and its child; **socket**, four bytes of big-endian length then JSON.
-//!
-//! ```text
-//! -> {"call":"status","args":[]}          a call is answered
-//! <- {"ok":true,"family":1,"n":1,"result":[{"busy":false}]}
-//!    {"event":"listening","at":"…"}       an event is not
-//! ```
-//!
-//! `result` is always a list and `n` says how long it is; `family` says which revision the reply
-//! is written in, and a reader refuses a number it does not know. The tag key is `event`,
-//! everywhere, in both directions, and `scripts/gate-wire.sh` refuses any other.
+//! Magi's process-boundary types, without I/O or runtime dependencies.
+//! `magi-ipc` transports them; `magi-host` implements their operations.
+//! Family JSON replies carry a revision, result list and count; events carry an `event` tag.
+//! Local UI commands and host events use versioned, length-prefixed CBOR envelopes.
 
 pub mod ask;
+pub mod caching;
 mod ids;
 pub mod judging;
 pub mod laying;
@@ -27,14 +14,15 @@ pub mod setup;
 pub mod surfacing;
 pub mod tooling;
 pub mod wondering;
+pub mod workflow;
 
 pub use ids::{MessageId, SessionId, ToolCallId};
 pub use tooling::ToolResult;
 
 use serde::{Deserialize, Serialize};
 
-/// Protocol version. Stays `0` for as long as magi is the only implementation of each peer.
-pub const PROTOCOL_VERSION: u16 = 0;
+/// Magi-local framed IPC revision, independent of family and persisted-history formats.
+pub const PROTOCOL_VERSION: u16 = 3;
 
 /// A monotonic position in a session's event log; a UI attaches with the last one it saw.
 #[derive(
@@ -70,8 +58,7 @@ pub struct ModelChoice {
     pub popularity_rank: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<magi_model::Capabilities>,
-    /// Environment variables that would make it ready. Checked by the UI against its own
-    /// environment: a daemon outlives the shell that started it and never sees a later export.
+    /// Environment variables required to make this model ready.
     #[serde(default)]
     pub wants_vars: Vec<String>,
     #[serde(default)]
@@ -98,10 +85,7 @@ pub enum AgentStatus {
     },
 }
 
-/// What an agent is doing, as a *level* other agents read off the roster. The coarse, mechanical,
-/// cross-agent report the harness keeps current — distinct from [`AgentStatus`]'s finer turn state.
-/// `finished` is deliberately not `idle`: idle is "ready for more", finished is "the work it was
-/// given is done" — the distinction a coordinator needs and cannot get from `busy`.
+/// Agent roster state: idle means ready for work; finished means assigned work is complete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
@@ -131,8 +115,7 @@ impl Phase {
         }
     }
 
-    /// Parse the wire word back, `None` for one this build does not know — a newer peer's phase is
-    /// not a reason to misread it as something else.
+    /// Parse a wire word, returning `None` for an unknown phase.
     #[must_use]
     pub fn read(word: &str) -> Option<Self> {
         Some(match word {
@@ -170,6 +153,13 @@ impl ErrorClass {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum Entry {
+    Workflow {
+        id: MessageId,
+        text: String,
+        aside: String,
+        images: Vec<magi_model::Image>,
+        workflow: Box<workflow::Workflow>,
+    },
     User {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<magi_model::Image>,
@@ -210,8 +200,7 @@ pub enum Entry {
         sort: String,
         text: String,
     },
-    /// The conversation as it was at an earlier point, taken up again. The skipped entries stay in
-    /// the journal and on screen; only the model's view changes.
+    /// Rewind the model's context while retaining skipped entries in history and display.
     Branch {
         id: MessageId,
         /// How many entries from the start remain live; everything up to this record is skipped.
@@ -222,21 +211,27 @@ pub enum Entry {
         summary: String,
         replaces: usize,
     },
-    /// One tool result sent as a stub. balthasar marks a turn masked as it hands the plan over, so
-    /// a mask applied without being recorded here leaves it planning against a fiction.
+    /// A tool result replaced by a stub in the provider's context.
     Masked {
         id: MessageId,
         /// Which entry is stubbed, in the space [`Entry::Compaction::replaces`] also counts in.
         at: usize,
-        /// What the provider is sent instead, from the tool's own mask handler; a tool with no
-        /// handler is never masked.
+        /// Replacement content returned by the tool's mask handler.
         shown: String,
     },
 }
 
-/// Opaque provider state, handed back verbatim or the provider rejects the request: Anthropic's
-/// extended thinking with tools answers a tool-using turn's second round trip with a 400 without
-/// it. Never parsed, never generated, never shown.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HistoryPage {
+    pub session: SessionId,
+    pub transcript: Option<String>,
+    pub through: Cursor,
+    pub after: Cursor,
+    pub next: Option<Cursor>,
+    pub entries: Vec<(Cursor, Entry)>,
+}
+
+/// Opaque provider state returned verbatim, never parsed, generated or displayed.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Signatures {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -259,6 +254,28 @@ fn is_free(usage: &Usage) -> bool {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "event")]
 pub enum HarnessEvent {
+    TurnStarted {
+        owner: u64,
+        request: Option<u64>,
+    },
+    TurnFinished {
+        owner: u64,
+    },
+    PromptRefused {
+        request: u64,
+        message: String,
+    },
+    ModelSelected {
+        request: u64,
+        error: Option<String>,
+    },
+    WorkflowMessage {
+        cursor: Cursor,
+        id: MessageId,
+        text: String,
+        images: Vec<magi_model::Image>,
+        workflow: Box<workflow::Workflow>,
+    },
     SessionSnapshot {
         cursor: Cursor,
         session: SessionId,
@@ -330,8 +347,7 @@ pub enum HarnessEvent {
         cursor: Cursor,
         model: Option<ModelInfo>,
     },
-    /// A tool is about to do something nothing has allowed yet. The turn stops until
-    /// [`UiCommand::Permit`].
+    /// A tool action awaiting authorization through [`UiCommand::Permit`].
     PermissionAsked {
         cursor: Cursor,
         id: ToolCallId,
@@ -343,8 +359,7 @@ pub enum HarnessEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         advice: Option<crate::judging::Advice>,
     },
-    /// A tool is asking the person something: the general form of [`Self::PermissionAsked`], with
-    /// the tool's own options. The turn stops until [`UiCommand::Answered`].
+    /// A tool's question awaiting a choice through [`UiCommand::Answered`].
     Asked {
         cursor: Cursor,
         id: ToolCallId,
@@ -355,8 +370,7 @@ pub enum HarnessEvent {
         #[serde(default)]
         detail: Vec<Vec<crate::tooling::Span>>,
     },
-    /// A tool has been given rows and will fill them itself; the UI reserves the space and
-    /// forwards input without knowing what goes in there.
+    /// A tool-controlled surface whose reserved rows receive forwarded UI input.
     Surfaced {
         cursor: Cursor,
         id: ToolCallId,
@@ -377,8 +391,7 @@ pub enum HarnessEvent {
     Drew {
         id: ToolCallId,
         lines: Vec<Vec<crate::tooling::Span>>,
-        /// Where the terminal's cursor belongs, in the surface's coordinates; `None` leaves it in
-        /// the prompt. Resolved by the client, the only end that knows where the rows landed.
+        /// Cursor position in surface coordinates, or `None` to leave it in the prompt.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cursor: Option<crate::surfacing::At>,
     },
@@ -386,8 +399,7 @@ pub enum HarnessEvent {
         cursor: Cursor,
         id: ToolCallId,
     },
-    /// A standing permission was given on a prompt the UI did not draw. The UI otherwise learns
-    /// what this session holds only from the answers it sends.
+    /// A standing session permission granted outside this UI.
     Granted {
         cursor: Cursor,
         grant: crate::permit::Grant,
@@ -413,8 +425,7 @@ pub enum HarnessEvent {
         class: ErrorClass,
         message: String,
     },
-    /// What the memory layer laid out for a request that went out, for the model card's gauge and
-    /// the `:context` view. Not part of the log.
+    /// Transient memory-layout diagnostics for the model card and context view.
     ContextLaid {
         id: String,
         #[serde(default)]
@@ -427,8 +438,7 @@ pub enum HarnessEvent {
         #[serde(default)]
         slots: Vec<laying::LaidSlot>,
     },
-    /// What the boundary counted for a request and did about it — what went, as against the
-    /// [`HarnessEvent::ContextLaid`] that was proposed. Not part of the log.
+    /// Transient request accounting and admission outcome.
     RequestAdmitted {
         /// The whole window, what one request may occupy of it, and what is held back.
         capacity: u64,
@@ -444,15 +454,21 @@ pub enum HarnessEvent {
         #[serde(default)]
         why: String,
     },
+    /// Provider-neutral frame changes before an ask; neither cache hits nor durable history.
+    CacheFrame {
+        reasons: Vec<caching::Invalidation>,
+    },
+    /// Provider serialization observations; no policy fingerprints or request contents.
+    ProviderFrame {
+        reasons: Vec<caching::Invalidation>,
+    },
     /// What one helper-model job cost, for the cost view. Not part of the log.
     HelperSpent {
         role: String,
         model: String,
         usage: Usage,
     },
-    /// Something the person has to be told that is not part of the conversation and that no
-    /// model sees: the memory layer has stopped answering, so nothing said from here on is being
-    /// recorded. Said once when it happens and once when it is over, not on every turn.
+    /// A user-facing notice outside conversation history and model context.
     Noticed {
         cursor: Cursor,
         text: String,
@@ -462,6 +478,11 @@ pub enum HarnessEvent {
         choices: Vec<ModelChoice>,
         #[serde(default)]
         warning: Option<String>,
+    },
+    WorkflowsListed {
+        entries: Vec<workflow::Summary>,
+        warnings: Vec<String>,
+        error: Option<String>,
     },
     /// What the memory layer answered a [`UiCommand::Memory`] with. Not part of the log.
     MemoryAnswered {
@@ -489,6 +510,7 @@ impl HarnessEvent {
         match self {
             Self::SessionSnapshot { cursor, .. }
             | Self::UserMessage { cursor, .. }
+            | Self::WorkflowMessage { cursor, .. }
             | Self::MessageArrived { cursor, .. }
             | Self::AssistantStarted { cursor, .. }
             | Self::AssistantDelta { cursor, .. }
@@ -510,10 +532,17 @@ impl HarnessEvent {
             | Self::Error { cursor, .. } => *cursor,
             // A frame occupies no place in the log; nothing replays it.
             Self::Drew { .. }
+            | Self::TurnStarted { .. }
+            | Self::TurnFinished { .. }
+            | Self::PromptRefused { .. }
+            | Self::ModelSelected { .. }
             | Self::ContextLaid { .. }
             | Self::RequestAdmitted { .. }
+            | Self::CacheFrame { .. }
+            | Self::ProviderFrame { .. }
             | Self::HelperSpent { .. }
             | Self::ModelsRefreshed { .. }
+            | Self::WorkflowsListed { .. }
             | Self::MemoryAnswered { .. } => Cursor::ZERO,
         }
     }

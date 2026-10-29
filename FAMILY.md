@@ -432,6 +432,197 @@ receives none of them.
 
 ---
 
+## Cumulative model usage
+
+An ask's `spent.usage` is cumulative, including failed attempts. Each measurement
+replaces the last; it is not added again after `retrying`. Retrying retracts the
+attempt's output, not its measured usage. A measurement repeated after retry has
+the same accounting meaning as before it.
+
+`cost_micros` remains positive provider-reported cost. Optional `estimated_micros`
+contains configured-price estimates for attempts without a positive report. When
+present, their saturating sum is the resolved measured charge. A present zero is
+resolved with no estimated component; absence retains the legacy shape. Estimates
+are resolved per attempt before aggregation, not inferred from aggregate token
+counts beside another attempt's reported cost.
+
+Readers default absent estimate metadata and older readers ignore the additive
+field. Family revision1 framing is unchanged. Older displays remain provider-only;
+updated displays preserve the reported/estimated breakdown. Melchior enforces its
+run cap independently of whether a consumer displays estimates. Settled historical
+entries are not repriced. In-flight estimate settlement replaces only that ask's
+ledger contribution; saturated ledger totals stay saturated.
+
+## Provider frame observations
+
+An ask may emit `{"event":"request_frame","frame":{...}}` before each HTTP
+attempt. Version1 carries `version:1`, `dialect:[u8;32]`, `policy:[u8;32]`
+and `omitted_images:u64`. The fingerprints identify only the registered adapter
+and resolved noncredential serialization policy, never prompt/message/tool
+content, endpoints, credentials or headers. They are transient observations, not
+prefix-cache keys, cache hits, successful delivery or usage.
+
+Consumers that understand this optional event compare it only in volatile
+session/request-stream state. Unknown versions and missing observations clear
+compatibility; resume discards the baseline. Older consumers may ignore the
+event. It does not retract output, end a stream, charge a ledger, or release
+helpers waiting for the first response. Retries have their own observations.
+Magi publishes only bounded reason codes, not fingerprints, and neither
+observations nor reason events are transcript entries. Family revision1 and
+existing request content remain unchanged.
+
+## Optional overflow failure detail
+
+The existing ask terminal `failed` may carry an optional `overflow` object when
+`why` is `overflow`. Its `kind` is `input`, `output_budget`, or `unknown`.
+Optional `prompt_tokens`, `limit_tokens`, and `requested_output_tokens` are
+unsigned64-bit reported counts, not an instruction or permission to adjust limits.
+Absent counts are unknown, not zero. Counts require semantic validation before
+they can be used in budget arithmetic.
+
+Older readers ignore this additive object and retain the terminal message/class.
+New readers accept its absence; unknown kind names become `unknown`. A malformed
+optional object or count is discarded without dropping an otherwise valid
+terminal failure, in JSON and CBOR. Unknown extension fields are skipped.
+Duplicate known detail fields are malformed. On non-overflow refusals the broker
+ignores overflow detail. This does not change family revision1, retry limits,
+input-layout ownership, explicit output allowance, thinking policy or history.
+No output retry is authorized merely by decoding this metadata.
+
+Magi preserves recognized output-budget failures as terminal refusals with
+actionable output/thinking guidance, without asking Balthasar to shrink input.
+Input, unknown, missing or malformed detail retain bounded input recovery.
+The failed assistant entry and measured usage remain in the transcript.
+
+Melchior's bounded HTTP refusal classifier reports `input` only for the known
+Anthropic Messages HTTP400 `error` envelope with `invalid_request_error` and
+the `prompt is too long` template. Other HTTP length refusals report `unknown`;
+unverified prose numbers never populate token counts. Other refusal classes
+carry no overflow detail. Streamed failures retain their existing classification.
+
+For OpenAI Completions HTTP400 `BadRequestError`/code400 with no parameter,
+Melchior recognizes the exact vLLM v0.10.2 combined-reservation error template.
+Repeated output/window/input counts must agree, input must be below the window,
+and requested output must exceed the checked remaining room. Only then are
+`output_budget` and those reported counts emitted. Malformed, inconsistent or
+other-version templates remain unknown; decoding them does not permit adjustment.
+
+## File revision compatibility
+
+A native file tool card carries `file_revision:{"version":1,"operation":"read|edit|write"}`.
+This capability selects implemented native dispatch, never an arbitrary Lua
+callback. In Casper, only the fixed native file registrar can set it; an ordinary
+declaration override revokes it. Names, permission verbs and truthy flags are not
+proof of native support.
+
+Coordinators require a positive supported capability before guarded dispatch and
+echo `file_revision` at the top level of the tool call, outside model arguments.
+Native read admission needs that echo alone. Mutation calls additionally carry
+`revision_contract:1`, `expected_revision` (supported opaque `cfr1:` receipt or
+literal `absent` for creation), and a bounded logical `mutation_id`. Providers
+validate version, operation and field presence, including explicit null, before
+effectful declarations or tool callbacks. Unsupported, remapped or incomplete
+admission refuses; old peers ignoring unknown fields cannot receive guarded
+operations or be retried through a legacy write path.
+
+Tool cards alone do not admit the receiving process. For the command door,
+coordinators start `run --file-admission` and withhold all request bytes until that
+same process writes and flushes one JSON line:
+`{"event":"file-admission","revision_contract":1}`. The prelude is always JSON,
+including when the following family reply uses CBOR, and is at most1024 bytes
+including newline. It precedes stdin/configuration reads. Missing, partial,
+oversized, cancelled, timed-out or unsupported admission receives no payload.
+For the library door, the actual daemon's bounded typed listening event carries
+`file_admission:1`; this support stays attached to that cached process, not a
+fresh CLI listing or executable path. Old/missing/unknown support refuses guarded
+calls before sending, without downgrade. An unsent connection failure may use a
+new command only after that command's own admission. A sent/uncertain call is
+never replayed through either door. Ordinary legacy calls retain their doors.
+
+Native transport preserves typed no-effect versus uncertain failure internally.
+Failure before payload handoff and unsupported actual-process admission are known
+no-effect. After handoff, missing, malformed, partial or timed-out responses remain
+uncertain. A remote refusal is known no-effect only with a complete bounded typed
+family1 refused/n0/empty-result envelope. Error-message text is not evidence.
+Known sent refusals are not replayed either; legacy public string APIs stay intact.
+
+Native result metadata is separate from bounded presentation: `revision_contract`,
+`observations:[{"path_key":"opaque","revision":"opaque","coverage":"snapshot"}]`,
+and optional `mutation:{"id":"logical-id","outcome":"committed|refused|unknown"}`.
+Committed mutations include `durability:"synced|unconfirmed"`; uncertainty and
+postcommit failures do not mean rollback. Missing/unknown completion requires
+rereading, not automatic replay. IDs correlate; no durable idempotency is implied.
+A snapshot receipt covers complete bounded acquisition, not all bytes being
+visible in a ranged/truncated display. Raster results do not invent text receipts.
+Native text reads preserve line ranges beyond the editable-source bound using a
+fixed contained streaming scan under the cooperative lease. The selected display
+is bounded and reports omitted bytes; line spans count actual source lines.
+Only stable complete single-linked nonsymlink UTF-8/no-NUL source below1MiB can
+produce an editable snapshot receipt. Large, linked or noneditable regular files
+may produce explicit read-only previews without observations. A successful
+preview never clears a mandatory reread or authorizes edit/existing overwrite.
+
+Machine observations are not accepted from arbitrary Lua results or presentation
+callbacks. Nested `execute` reads do not refresh an outer agent's receipt state.
+The coordinator owns a bounded per-agent map and records only successful
+observations actually delivered through that agent's journal/context path;
+children, siblings, abandoned results, eviction and resume cannot silently refresh
+or waive its preconditions. Casper's native mechanics alone do not implement this
+coordinator delivery policy.
+
+Magi's native dispatch uses a bounded512-entry, ephemeral per-agent observation
+map. Supplier/settings/environment identity and exact cwd/path spellings scope
+entries; cwd and path are each bounded4096 bytes. No source-reading/existence
+shortcut runs in Magi. Unknown aliases require rereading. Each attempt consumes
+prior eligibility; failed, abandoned or evicted reads cannot authorize overwrite.
+Without a delivered revision, write can only request no-replace absent creation;
+edit requires a delivered observation. Nonce/generation logical mutation IDs are
+independent of provider call IDs and never wrap.
+
+Pending/unknown mutations cannot become fresh creation attempts merely because
+their previous receipt is unavailable. A reread-required entry remains pinned
+until a supported delivered observation, requested successful absence, or validated
+no-effect refusal resolves it; failed reads cannot clear it. Unresolved entries
+are not evicted. If all512
+slots require recovery, new-key admission refuses while existing-key rereads
+remain available. This is ephemeral safety state, not durable idempotency.
+
+For an unresolved mutation, the coordinator may add `file_recovery:1` outside model
+arguments to a native read. It is readonly, versioned and requires positive native
+read admission; null/unknown/incompatible requests refuse before configuration.
+Normal missing reads remain errors. A recovery read may instead deliver successful
+`absence:{"version":1,"path_key":"opaque"}`, with no observations or mutation.
+The fixed contained worker confirms leaf absence by no-follow stat while holding
+the cooperative lease and validating parent binding. Missing parents, denied
+access, existing objects and arbitrary error text are not absence proofs.
+
+Only requested supported nonfailed absence delivered through the same owner/
+cursor/generation path resolves the reread-required state. It never grants an
+existing-file edit or overwrite receipt: write remains expected-absent, with an
+atomic kernel no-replace commit. Absence is not a promise the path stays absent.
+Cancelled, failed, late, nested, unsolicited or Lua-forged absence cannot resolve
+state. Old native readers may retain their normal error/read behavior; without a
+supported typed success the coordinator leaves recovery unresolved. No new model
+argument or durable outcome ledger is introduced. Ordinary Lua/legacy results
+strip absence metadata before decoding just as they strip text observations.
+
+Native completion provenance is memory-only, not a Lua or wire field. Delivery is
+single-use and bound to the current session owner, exact journal cursor and
+pending generation. Host recording follows successful exact amendment and checks
+cancellation; raw completion is insufficient. Resume retires old state and starts
+fresh, including when IDs/cursors repeat. Final failed reads do not refresh state.
+Confirmed committed mutations retain identity despite presentation errors; a
+supported post-observation may refresh that agent, while missing post-observation
+requires rereading. Native results never resume Ask/Surface/Wonder execution.
+
+Legacy ordinary declarations without native admission retain their prior shape
+and behavior, explicitly outside cooperative revision/atomicity guarantees.
+Native mutations never run unguarded, even for an old coordinator. Magi native
+delivery integration is implemented; shipped read/edit/write declarations now use
+native operations with pure rendering callbacks. Default-fixture migration and
+full integrated verification remain in progress. Metadata alone does not establish
+end-to-end stale-view protection. Family revision1 framing is unchanged.
+
 ## Two rules that are tested, not reviewed
 
 **Advertised equals dispatched.** Every verb `verbs` lists is one the program answers, and every

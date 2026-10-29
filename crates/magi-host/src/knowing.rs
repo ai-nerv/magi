@@ -15,6 +15,22 @@ pub struct Wondering {
     pub args: serde_json::Value,
     /// Where the answer goes. A std channel, because the waiting end is a blocking thread.
     pub back: std::sync::mpsc::Sender<Answered>,
+    turn: Option<crate::events::Id>,
+}
+
+impl Wondering {
+    pub(crate) fn new(
+        wonder: Wonder,
+        args: serde_json::Value,
+        back: std::sync::mpsc::Sender<Answered>,
+    ) -> Self {
+        Self {
+            wonder,
+            args,
+            back,
+            turn: crate::events::context::lineage().turn_id,
+        }
+    }
 }
 
 /// What magi can say about itself, for a surface that asks. What a session is answers without
@@ -55,11 +71,7 @@ impl Knows {
             return refused(wonder, "this session has nothing to ask");
         };
         let (back, answer) = std::sync::mpsc::channel();
-        let sent = asking.send(Wondering {
-            wonder,
-            args: args.clone(),
-            back,
-        });
+        let sent = asking.send(Wondering::new(wonder, args.clone(), back));
         if sent.is_err() {
             return refused(wonder, "the session is no longer listening");
         }
@@ -108,36 +120,46 @@ pub(crate) async fn serve(
     models: std::sync::Arc<crate::refreshing::Models>,
 ) {
     while let Some(asking) = asked.recv().await {
-        let answered = match asking.wonder {
-            Wonder::Session => {
-                let held = session.lock().await;
-                Answered::Told {
-                    said: serde_json::json!({ "id": held.id() }),
-                }
-            }
-            Wonder::Memories => memories(&scribe, &asking.args).await,
-            Wonder::Model => model(&session).await,
-            // Answered on a task of its own: a model takes seconds, and the next question should not
-            // queue behind it.
-            Wonder::Helper => {
-                let tasks = session.lock().await.helpers();
-                let session = std::sync::Arc::clone(&session);
-                let catalog = models.catalog.read().await;
-                let backend = session
-                    .lock()
-                    .await
-                    .model_name()
-                    .and_then(|name| catalog.backend(&name));
-                let _ = tasks.spawn(async move {
-                    let answered = helper(&session, backend, &asking.args).await;
-                    let _ = asking.back.send(answered);
-                    Ok(())
-                });
-                continue;
-            }
-        };
-        let _ = asking.back.send(answered);
+        crate::events::context::turn(asking.turn, respond(asking, &scribe, &session, &models))
+            .await;
     }
+}
+
+async fn respond(
+    asking: Wondering,
+    scribe: &crate::scribe::Held,
+    session: &std::sync::Arc<tokio::sync::Mutex<crate::session::Session>>,
+    models: &crate::refreshing::Models,
+) {
+    let answered = match asking.wonder {
+        Wonder::Session => {
+            let held = session.lock().await;
+            Answered::Told {
+                said: serde_json::json!({ "id": held.id() }),
+            }
+        }
+        Wonder::Memories => memories(scribe, &asking.args).await,
+        Wonder::Model => model(session).await,
+        // Answered on a task of its own: a model takes seconds, and the next question should not
+        // queue behind it.
+        Wonder::Helper => {
+            let tasks = session.lock().await.helpers();
+            let session = std::sync::Arc::clone(session);
+            let catalog = models.catalog.read().await;
+            let backend = session
+                .lock()
+                .await
+                .model_name()
+                .and_then(|name| catalog.backend(&name));
+            let _ = tasks.spawn(async move {
+                let answered = helper(&session, backend, &asking.args).await;
+                let _ = asking.back.send(answered);
+                Ok(())
+            });
+            return;
+        }
+    };
+    let _ = asking.back.send(answered);
 }
 
 /// Put a surface's question to the helper model for the role it named. The session's own model
@@ -221,7 +243,9 @@ fn said_by_the_person(entries: &[magi_proto::Entry]) -> String {
     let said: Vec<String> = entries
         .iter()
         .filter_map(|entry| match entry {
-            magi_proto::Entry::User { text, .. } => Some(text.chars().take(OF_EACH).collect()),
+            magi_proto::Entry::User { text, .. } | magi_proto::Entry::Workflow { text, .. } => {
+                Some(text.chars().take(OF_EACH).collect())
+            }
             _ => None,
         })
         .collect();
@@ -360,6 +384,7 @@ pub async fn held(
 
 #[cfg(test)]
 mod tests {
+    mod lineage;
     use super::*;
     use magi_tools::holding::Answers;
 

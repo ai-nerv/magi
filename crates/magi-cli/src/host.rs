@@ -15,6 +15,7 @@ pub struct Named<'a> {
     pub key: &'a str,
     pub run: Option<&'a str>,
     pub agent: Option<&'a str>,
+    pub load: Option<&'a str>,
 }
 
 /// What a headless child reports from: the session's status, and what each model has cost it.
@@ -32,7 +33,14 @@ pub async fn start(
     environ: &std::collections::BTreeMap<String, String>,
     named: Named<'_>,
 ) -> Result<Watches> {
-    let Named { key, run, agent } = named;
+    let Named {
+        key,
+        run,
+        agent,
+        load,
+    } = named;
+    let required = load.is_some();
+    let resume = load.map(|id| Some(id.to_owned())).or(resume);
     let cwd = cwd.display().to_string();
     let id = magi_proto::SessionId::new(recorded_as(run, key));
     // Told before started: a sibling reads what a coordinator said as it comes up.
@@ -73,7 +81,7 @@ pub async fn start(
     let child = std::env::var_os("MAGI_MELCHIOR_PARENT").is_some();
     let transcript = agent.filter(|_| child).map(|agent| format!("{id}@{agent}"));
     let (resumed, carried) = match resume {
-        Some(run) => resumable(&mut scribe, run.as_deref()).await?,
+        Some(run) => resumable(&mut scribe, run.as_deref(), required).await?,
         None => (None, Vec::new()),
     };
     let id = match &resumed {
@@ -82,6 +90,8 @@ pub async fn start(
     };
     // A resumed run goes on in its own transcript, so the memory layer counts what it carries.
     let transcript = transcript.or(resumed);
+    scribe = scribe.recording_as(transcript.clone().unwrap_or_else(|| id.as_str().to_owned()));
+    scribe.reserve_writer(required).await?;
     let session = magi_host::session::Session::restored(id, carried)?;
     // Nothing outlives its process, so a stale socket here was left by a crash and is cleared.
     if let Some(parent) = socket.parent() {
@@ -119,7 +129,7 @@ pub async fn start(
     let phase_watch = session.phase_watch();
     let spent_watch = session.spent_watch();
     tokio::spawn(async move {
-        let _ = magi_host::serve_on(listener, session, backend, catalog, ours).await;
+        let _ = magi_host::serve_recording(listener, session, backend, catalog, scribe).await;
     });
     Ok((phase_watch, spent_watch))
 }
@@ -390,7 +400,14 @@ fn unreachable(memory: &str, what: &str, why: &str) -> String {
 async fn resumable(
     scribe: &mut magi_host::scribe::Scribe,
     wanted: Option<&str>,
+    required: bool,
 ) -> Result<(Option<String>, Vec<(magi_proto::Cursor, magi_proto::Entry)>)> {
+    if required {
+        let id = wanted.context("persistent loading requires an exact transcript")?;
+        let (next, entries) = scribe.load_for(id, true).await?;
+        *scribe = next;
+        return Ok((Some(id.to_owned()), entries));
+    }
     // Both failures below used to return an empty conversation and say nothing, so `--resume`
     // against a memory layer that could not answer looked exactly like a session with nothing to
     // resume — a fresh start, at exit 0, having quietly dropped everything. A run named outright
@@ -432,8 +449,11 @@ async fn resumable(
         None => ids.find(|id| !id.contains('@')),
     };
     match newest {
-        Some(id) => match scribe.replay_of(&id).await {
-            Ok(entries) => Ok((Some(id), entries)),
+        Some(id) => match scribe.load_for(&id, required).await {
+            Ok((next, entries)) => {
+                *scribe = next;
+                Ok((Some(id), entries))
+            }
             Err(why) if wanted.is_some() => {
                 anyhow::bail!("--resume-run found `{id}` but could not read it back: {why}")
             }

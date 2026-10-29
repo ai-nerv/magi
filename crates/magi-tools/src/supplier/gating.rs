@@ -10,6 +10,7 @@ fn card(needs: Option<&str>) -> Card {
         parameters: serde_json::json!({}),
         needs: needs.map(ToOwned::to_owned),
         deferred: false,
+        file_revision: None,
     }
 }
 

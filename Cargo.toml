@@ -18,7 +18,7 @@ resolver = "3"
 edition = "2024"
 license = "MIT"
 publish = false
-version = "0.7.5"
+version = "0.8.0"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
@@ -41,6 +41,7 @@ expect_used = "deny"
 indexing_slicing = "deny"
 
 [workspace.dependencies]
+agent-client-protocol-schema = { version = "=1.12.0", default-features = false }
 magi-host = { path = "crates/magi-host" }
 magi-core = { path = "crates/magi-core" }
 magi-ipc = { path = "crates/magi-ipc" }
