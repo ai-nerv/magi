@@ -42,6 +42,13 @@ pub enum Slot {
         #[serde(default)]
         tokens: u64,
     },
+    /// What the memory has on record, by handle; context, never authority.
+    Catalog {
+        #[serde(default)]
+        text: String,
+        #[serde(default)]
+        tokens: u64,
+    },
     /// Legacy mixed rule/observation text, without a verified authority boundary.
     Pinned {
         #[serde(default)]
