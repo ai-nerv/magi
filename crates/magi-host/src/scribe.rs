@@ -10,6 +10,8 @@ use magi_proto::{Cursor, Entry, SessionId};
 pub type Held = std::sync::Arc<tokio::sync::Mutex<Option<Scribe>>>;
 mod flushing;
 mod ownership;
+mod records;
+mod recovery;
 mod resuming;
 mod shape;
 pub use flushing::flush;
@@ -84,8 +86,9 @@ pub struct Scribe {
     session: String,
     /// Whose transcript this is: the session's own, or one agent's within a run it shares.
     transcript: String,
-    /// Cursors already sent, so a second write says `amend` rather than `observe`.
-    sent: std::collections::BTreeSet<u64>,
+    /// Acknowledged cursors and fingerprints of their durable records.
+    sent: std::collections::BTreeMap<u64, recovery::Digest>,
+    uncertain: Option<(u64, recovery::Digest)>,
 }
 
 impl Scribe {
@@ -118,7 +121,8 @@ impl Scribe {
             retry: (std::time::Instant::now(), BACKOFF.0),
             session: session.as_str().to_owned(),
             transcript: session.as_str().to_owned(),
-            sent: std::collections::BTreeSet::new(),
+            sent: std::collections::BTreeMap::new(),
+            uncertain: None,
         }
     }
 
@@ -343,7 +347,7 @@ impl Scribe {
         entry: &Entry,
         beside: &Beside,
     ) -> Result<(), Fault> {
-        if self.sent.contains(&cursor.0) {
+        if self.sent.contains_key(&cursor.0) {
             self.amend(cursor, entry, beside).await
         } else {
             self.observe(cursor, entry, beside).await
@@ -358,18 +362,31 @@ impl Scribe {
         beside: &Beside,
     ) -> Result<(), Fault> {
         let args = self.fitted(verb, cursor, entry, beside)?;
+        let raw = args
+            .get(1)
+            .and_then(|turn| turn.get("raw"))
+            .ok_or_else(|| Fault::Failed("the fitted write has no raw record".into()))?;
+        let digest = recovery::digest(raw);
+        self.link().await?;
+        self.uncertain = Some((cursor.0, digest));
         // On the durable clock, not a feature's: the store a session writes to is opened by this
         // very call the first time, and what is not handed over is not anywhere else either.
-        match self.durable(verb, args.clone()).await {
-            Ok(_) => {}
+        let recorded = match self.durable(verb, args.clone()).await {
             // An `observe` whose reply was lost landed after all, and the entry has changed since:
             // the row is there, so this is an `amend`.
             Err(Fault::Refused(why)) if verb == "observe" && why.contains("already holds") => {
-                self.durable("amend", args).await?;
+                self.durable("amend", args).await
             }
-            Err(other) => return Err(other),
+            other => other,
+        };
+        if let Err(why) = recorded {
+            if matches!(why, Fault::Refused(_)) {
+                self.uncertain = None;
+            }
+            return Err(why);
         }
-        self.sent.insert(cursor.0);
+        self.sent.insert(cursor.0, digest);
+        self.uncertain = None;
         Ok(())
     }
 
@@ -482,10 +499,11 @@ impl Scribe {
             if page.is_empty() {
                 break;
             }
-            let page = page
-                .into_iter()
-                .map(rebuild)
-                .collect::<Result<Vec<_>, _>>()?;
+            let mut decoded = Vec::with_capacity(page.len());
+            for row in page {
+                decoded.push(self.replay_record(id, row, false).await?);
+            }
+            let page = decoded;
             // Non-paging peers repeat the complete, unchanged transcript.
             if from > 0 && page == out {
                 break;

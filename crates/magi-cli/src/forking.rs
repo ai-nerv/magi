@@ -147,8 +147,13 @@ fn spawning(
     parent: u32,
     prompt: Option<&str>,
     token: Option<&std::path::Path>,
+    events: Option<std::os::fd::OwnedFd>,
 ) -> Command {
     let mut starting = Command::new(harness);
+    starting.arg("--event-child");
+    if events.is_some() {
+        starting.arg("--agent-event-bootstrap");
+    }
     // Both, though `--tied` implies the first: argv is what a person reads off `/proc`, and "no
     // terminal" and "dies with 4242" are two facts.
     starting
@@ -169,7 +174,7 @@ fn spawning(
     starting
         .env_remove(crate::melchior::TOKEN_VAR)
         .env_remove("MAGI_API_SOCKET")
-        .stdin(Stdio::null())
+        .stdin(events.map_or_else(Stdio::null, Stdio::from))
         .stdout(Stdio::null());
     starting
 }
@@ -196,7 +201,9 @@ fn start(
         .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
         .open(&log)
         .with_context(|| format!("the child's log {} could not be opened", log.display()))?;
-    let mut child = spawning(harness, minted, parent, prompt, token)
+    let events = crate::agent_events::take()
+        .and_then(|branch| branch.prepare(std::fs::File::open("/dev/null").ok()?).ok());
+    let mut child = spawning(harness, minted, parent, prompt, token, events)
         .stderr(written)
         .spawn()
         .context("the child session could not be started")?;
@@ -247,7 +254,7 @@ mod tests {
     /// Everything the spawn would set, read back off the very `Command` [`start`] would run, so a
     /// copy written out here cannot go on passing after somebody changes the spawn.
     fn spawn_environment(minted: &Minted) -> std::collections::BTreeMap<String, Option<String>> {
-        spawning(std::path::Path::new("magi"), minted, 4242, None, None)
+        spawning(std::path::Path::new("magi"), minted, 4242, None, None, None)
             .get_envs()
             .map(|(name, value)| {
                 (
@@ -423,7 +430,14 @@ mod tests {
         let said = std::fs::read_to_string(&seen).expect("the child wrote its arguments");
         assert_eq!(
             said.lines().collect::<Vec<_>>(),
-            ["--headless", "--tied", "4242", "--", "read the diff"]
+            [
+                "--event-child",
+                "--headless",
+                "--tied",
+                "4242",
+                "--",
+                "read the diff"
+            ]
         );
     }
 
@@ -436,6 +450,7 @@ mod tests {
             4242,
             None,
             Some(handed),
+            None,
         )
         .get_envs()
         .map(|(name, value)| (name.to_owned(), value.map(ToOwned::to_owned)))
@@ -458,6 +473,7 @@ mod tests {
             &minted(),
             4242,
             Some("-p rm everything"),
+            None,
             None,
         )
         .get_args()

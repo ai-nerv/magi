@@ -6,6 +6,8 @@ use serde_json::Value;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+mod recovery;
+
 struct Fake {
     root: Scratch,
     calls: Arc<Mutex<Vec<(usize, Value)>>>,
@@ -16,6 +18,14 @@ impl Fake {
     async fn new(
         name: &str,
         answer: impl Fn(&Value) -> Option<Reply> + Send + Sync + 'static,
+    ) -> Self {
+        Self::paused(name, answer, None).await
+    }
+
+    async fn paused(
+        name: &str,
+        answer: impl Fn(&Value) -> Option<Reply> + Send + Sync + 'static,
+        pause: Option<Arc<recovery::Pause>>,
     ) -> Self {
         let root = Scratch::new("mwo", name);
         let listener = tokio::net::UnixListener::bind(root.join("m.sock")).expect("bind");
@@ -30,6 +40,7 @@ impl Fake {
                     accepted = listener.accept() => {
                         let (mut stream, _) = accepted.expect("accept");
                         let (seen, answer) = (Arc::clone(&seen), Arc::clone(&answer));
+                        let pause = pause.clone();
                         connection += 1;
                         let connection = connection;
                         clients.spawn(async move {
@@ -39,6 +50,9 @@ impl Fake {
                                 if stream.read_exact(&mut body).await.is_err() { break; }
                                 let request: Value = magi_ipc::Wire::read(&body).expect("request");
                                 seen.lock().expect("calls").push((connection, request.clone()));
+                                if let Some(pause) = &pause {
+                                    pause.wait(&request).await;
+                                }
                                 let Some(reply) = answer(&request) else { break; };
                                 let body = reply.encode(magi_ipc::Wire::Json);
                                 if stream.write_u32(body.len() as u32).await.is_err() || stream.write_all(&body).await.is_err() { break; }
@@ -187,7 +201,7 @@ async fn same_key_resume_keeps_the_same_connection_and_reservation() {
     assert!(scribe.reserve_writer(true).await.expect("reserve"));
     let (next, journal) = scribe.prepare_resume("A").await.expect("same key resume");
     assert!(next.is_none());
-    scribe.accept_resume(&journal);
+    scribe.accept_resume(&journal).expect("accept history");
     scribe
         .settle(Cursor(1), &entry(), &Default::default())
         .await
@@ -297,7 +311,7 @@ async fn refused_negotiation_preserves_entries_instead_of_acknowledging_unsent_w
 }
 
 #[tokio::test]
-async fn a_lost_owned_flush_keeps_pending_entries_without_redial() {
+async fn a_lost_owned_flush_keeps_pending_entries_before_guarded_recovery() {
     let fake = Fake::new("flush", |request| {
         if request["call"] == "observe" {
             None
@@ -315,15 +329,13 @@ async fn a_lost_owned_flush_keeps_pending_entries_without_redial() {
     session.lock().await.commit(entry()).expect("commit");
     let pending = session.lock().await.pending_batch();
     let mut scribe = Some(scribe);
-    for _ in 0..2 {
-        assert!(
-            super::super::flush(&session, &mut scribe)
-                .await
-                .expect_err("failed flush")
-                .is_fatal()
-        );
-        assert_eq!(session.lock().await.pending_batch(), pending);
-    }
+    assert!(
+        super::super::flush(&session, &mut scribe)
+            .await
+            .expect_err("failed flush")
+            .is_fatal()
+    );
+    assert_eq!(session.lock().await.pending_batch(), pending);
     let calls = fake.calls();
     assert_eq!(
         calls

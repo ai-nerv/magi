@@ -18,6 +18,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
+#[path = "forking_live/events.rs"]
+mod events;
+
 /// How long to wait for something a spawned session does on its own clock.
 const PATIENCE: Duration = Duration::from_secs(40);
 
@@ -151,6 +154,7 @@ fn model(melchior: &Path) -> String {
         "#!/bin/sh\n\
          here=$(dirname \"$0\")\n\
          case \"$1\" in\n\
+         event-capabilities) printf '%s\\n' '{{\"ok\":false}}'; exit 0 ;;\n\
          models) printf '%s\\n' '{models}'; exit 0 ;;\n\
          ask) ;;\n\
          *) exec '{real}' \"$@\" ;;\n\

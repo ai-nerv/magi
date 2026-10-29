@@ -116,10 +116,20 @@ retains pending entries rather than treating them as unsupported.
 
 A supporting harness reserves before replay, retains the exact connection across
 startup handoff, and prepares a different transcript before releasing its previous
-owner. Same-key resume reuses the existing reservation. A lost owned connection
-fails closed without automatic redial or write replay. Ordinary hosts negotiate
+owner. Same-key resume reuses the existing reservation. A lost owned transport
+fails closed without automatic redial or write replay. At a flush boundary, a
+harness may acquire a fresh required reservation and validate the run binding and
+durable history against acknowledged records and an uncertain write. Only after
+that validation may queued entries be handed over; busy ownership, changed or
+unverifiable history and cancellation preserve the queue. Ordinary hosts negotiate
 this extension when available; persistent loading requires it and refuses legacy,
 malformed or incomplete support. Retention and purge respect the same ownership.
+
+Magi reconstructs oversized raw records only under the matching reservation.
+Each record is limited to16MiB,256fragments and one30second total read deadline;
+recovery also remains within its60second flush deadline. Fragment cursor, byte
+offset, total length and continuation must agree exactly. Unowned inspection and
+legacy records without a bounded complete representation retain marked previews.
 
 **The four model-facing verbs — `recall`, `remember`, `forget`, `why` — are declared
 independently.** magi declares a tool for each verb the role answers and omits the rest, so a

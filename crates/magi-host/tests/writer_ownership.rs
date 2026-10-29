@@ -7,6 +7,9 @@ use magi_proto::{Cursor, Entry, HarnessEvent, MessageId, SessionId, UiCommand};
 use magi_testkit::memory::Serving;
 use tokio::net::unix::OwnedReadHalf;
 
+#[path = "writer_ownership/recovery.rs"]
+mod recovery;
+
 fn entry(id: &str) -> Entry {
     Entry::User {
         id: MessageId::new(id),

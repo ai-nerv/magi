@@ -90,7 +90,7 @@ struct Incoming {
     input: OwnedFd,
 }
 
-fn pair() -> Result<(OwnedFd, OwnedFd), Error> {
+pub(super) fn pair() -> Result<(OwnedFd, OwnedFd), Error> {
     let (parent, child) = net::socketpair(
         net::AddressFamily::UNIX,
         SocketType::SEQPACKET,
@@ -208,7 +208,7 @@ fn private_socket(fd: impl AsFd, kind: SocketType) -> Result<(), Error> {
     Ok(())
 }
 
-fn check_input(input: impl AsFd) -> Result<(), Error> {
+pub(super) fn check_input(input: impl AsFd) -> Result<(), Error> {
     let flags = rustix::fs::fcntl_getfl(&input).map_err(|_| Error::Descriptor)?;
     if flags.contains(rustix::fs::OFlags::WRONLY) {
         return Err(Error::Descriptor);

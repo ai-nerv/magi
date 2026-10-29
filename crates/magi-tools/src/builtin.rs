@@ -6,6 +6,7 @@
 //! agent tree, so it lives here rather than in casper.
 
 use crate::{Cancel, Ops, Output, Tool};
+pub mod observing;
 use serde_json::{Value, json};
 
 /// Register the one builtin that reaches the harness: `spawn`, which starts a child session.
@@ -198,7 +199,7 @@ impl Tool for Spawn {
             exe.display(),
             self.argv(role, None, None).join(" ")
         );
-        let shown = self.argv(role, kind, prompt);
+        let mut shown = self.argv(role, kind, prompt);
         if let Err(why) = ops.allow(
             "spawn",
             &magi_proto::permit::Action::Run {
@@ -208,9 +209,17 @@ impl Tool for Spawn {
         ) {
             return Output::error(why);
         }
+        let bootstrap = if cancel.is_cancelled() {
+            None
+        } else {
+            observing::prepare()
+        };
+        if bootstrap.is_some() {
+            shown.insert(0, "--agent-event-bootstrap".into());
+        }
         let mut command = self.starting(&exe, &shown, ops, delegate);
         command
-            .stdin(std::process::Stdio::null())
+            .stdin(bootstrap.map_or_else(std::process::Stdio::null, std::process::Stdio::from))
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
         match crate::command::capture(

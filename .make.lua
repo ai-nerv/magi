@@ -614,6 +614,13 @@ make.recipe{ name = "test-events", desc = "content-free local event schema and b
     test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--test", "event_policy")
   end }
 
+make.recipe{ name = "test-mcp-containment", desc = "selected external MCP lifecycle and confinement",
+  run = function()
+    assert(os.getenv("MAGI_REQUIRE_LIVE") == "1", "MAGI_REQUIRE_LIVE=1 is required")
+    assert(os.getenv("CASPER_TEST_BINARY") and os.getenv("CASPER_TEST_BINARY") ~= "", "CASPER_TEST_BINARY is required")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--test", "event_casper_bootstrap")
+  end }
+
 make.recipe{ name = "test-events-native", desc = "selected native event bootstrap interoperability",
   run = function()
     assert(os.getenv("MAGI_REQUIRE_LIVE") == "1", "MAGI_REQUIRE_LIVE=1 is required")
@@ -630,6 +637,39 @@ make.recipe{ name = "test-events-native", desc = "selected native event bootstra
     test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--test", "event_broker")
     test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--test", "event_supplier")
     test_cargo("--locked", "--offline", "--release", "-p", "magi-cli", "--test", "event_collection")
+  end }
+
+make.recipe{ name = "build-event-observer", desc = "capture the test-only event observer executable",
+  run = function()
+    assert(oslo.run{ "bash", "scripts/build-event-observer.sh" }.ok, "observer build failed")
+  end }
+
+make.recipe{ name = "test-event-observer", desc = "test-only observer launch, identity and cancellation",
+  run = function()
+    assert(os.getenv("MAGI_REQUIRE_LIVE") == "1", "MAGI_REQUIRE_LIVE=1 is required")
+    for _, name in ipairs({ "MAGI_TEST_BINARY", "CASPER_TEST_BINARY", "MELCHIOR_TEST_BINARY", "BALTHASAR_TEST_BINARY" }) do
+      assert(os.getenv(name) and os.getenv(name) ~= "", name .. " is required")
+    end
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--lib", "events::collection::worker::tests::observer::")
+  end }
+
+make.recipe{ name = "test-captured-event-observer", desc = "verify the frozen observer executable",
+  params = { { "--artifact", desc = "captured observer summary.json" } },
+  run = function(a)
+    assert(a.artifact, "artifact receipt required")
+    assert(oslo.run{ "bash", "scripts/test-captured-event-observer.sh", a.artifact }.ok,
+           "captured observer verification failed")
+  end }
+
+make.recipe{ name = "test-events-children", desc = "native spawned-agent event ancestry and lifetime",
+  run = function()
+    assert(os.getenv("MAGI_REQUIRE_LIVE") == "1", "MAGI_REQUIRE_LIVE=1 is required")
+    for _, name in ipairs({ "MAGI_TEST_BINARY", "CASPER_TEST_BINARY", "MELCHIOR_TEST_BINARY", "BALTHASAR_TEST_BINARY" }) do
+      assert(os.getenv(name) and os.getenv(name) ~= "", name .. " is required")
+    end
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-host", "--lib", "events::collection::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-cli", "--bin", "magi", "forking::tests::")
+    test_cargo("--locked", "--offline", "--release", "-p", "magi-cli", "--test", "forking_live", "events::")
   end }
 
 make.recipe{ name = "test-events-broker", desc = "native provider event launch and cancellation",
@@ -729,7 +769,7 @@ make.recipe{ name = "test-skills-terminal", desc = "offline workflow headless an
                end
                sh.cargo("build", "--release", "-p", "magi-cli", "--bin", "magi")
                sh.cargo("build", "--release", "-p", "magi-testkit", "--example", "workflow-ready")
-               assert(oslo.run{ "bash", "scripts/acceptance-workflows.sh", target_path(true),
+               assert(oslo.run{ "bash", "scripts/acceptance-workflows.sh", os.getenv("MAGI_TEST_BINARY") or target_path(true),
                                 "terminal", "target/release/examples/workflow-ready" }.ok,
                       "workflow terminal acceptance failed")
              end }

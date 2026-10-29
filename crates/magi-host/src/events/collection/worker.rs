@@ -8,34 +8,56 @@ use crate::events::Lineage;
 use publication::Published;
 use std::{
     sync::{
-        Arc,
+        Arc, RwLock,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         mpsc::{self, SyncSender},
     },
-    thread::{self, JoinHandle},
+    thread::{self, JoinHandle, Thread},
     time::{Duration, Instant},
 };
 
 pub const SHUTDOWN_BUDGET: Duration = Duration::from_secs(1);
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
 
-pub(super) struct Lease(Arc<AtomicUsize>);
+pub(super) struct Lease {
+    slots: Arc<AtomicUsize>,
+    producers: Arc<AtomicUsize>,
+    active: bool,
+}
 
 impl Lease {
-    fn reserve(slots: &Arc<AtomicUsize>) -> Result<Self, RegisterError> {
+    fn reserve(readout: &Readout) -> Result<Self, RegisterError> {
+        let slots = &readout.slots;
         slots
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
                 if n < MAX_PRODUCERS { Some(n + 1) } else { None }
             })
             .map_err(|_| RegisterError::Capacity)?;
-        Ok(Self(slots.clone()))
+        Ok(Self {
+            slots: slots.clone(),
+            producers: readout.producers.clone(),
+            active: false,
+        })
+    }
+
+    fn activate(&mut self) {
+        self.producers.fetch_add(1, Ordering::AcqRel);
+        self.active = true;
     }
 }
 
 impl Drop for Lease {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::AcqRel);
+        if self.active {
+            self.producers.fetch_sub(1, Ordering::AcqRel);
+        }
+        self.slots.fetch_sub(1, Ordering::AcqRel);
     }
+}
+
+pub(super) struct Credit {
+    pub identity: Id,
+    lease: Lease,
 }
 
 pub(super) struct Registration {
@@ -52,6 +74,7 @@ pub struct Readout {
     published: Arc<Published>,
     refused: Arc<AtomicU64>,
     slots: Arc<AtomicUsize>,
+    producers: Arc<AtomicUsize>,
 }
 
 impl Readout {
@@ -63,9 +86,9 @@ impl Readout {
             .saturating_add(self.refused.load(Ordering::Relaxed));
         if !summary.closed {
             let pending = self
-                .slots
+                .producers
                 .load(Ordering::Acquire)
-                .saturating_sub(1 + summary.remote_producers);
+                .saturating_sub(summary.remote_producers);
             summary.remote_producers = summary.remote_producers.saturating_add(pending);
             summary.final_confirmed = summary.final_confirmed.min(summary.remote_producers);
             summary.unknown_loss_producers = summary.remote_producers - summary.final_confirmed;
@@ -78,10 +101,16 @@ impl Readout {
 }
 
 pub struct Worker {
-    registrations: SyncSender<Registration>,
+    registrar: Registrar,
+    task: Option<JoinHandle<Collector>>,
+}
+
+#[derive(Clone)]
+pub struct Registrar {
+    registrations: Arc<RwLock<SyncSender<Registration>>>,
     stop: Arc<AtomicBool>,
     readout: Readout,
-    task: Option<JoinHandle<Collector>>,
+    wake: Thread,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -114,9 +143,14 @@ impl Worker {
             published: published.clone(),
             refused: Arc::new(AtomicU64::new(0)),
             slots: Arc::new(AtomicUsize::new(1 + collector.channels.len())),
+            producers: Arc::new(AtomicUsize::new(collector.channels.len())),
         };
         for producer in &mut collector.channels {
-            producer._lease = Some(Lease(readout.slots.clone()));
+            producer._lease = Some(Lease {
+                slots: readout.slots.clone(),
+                producers: readout.producers.clone(),
+                active: true,
+            });
         }
         let stopping = stop.clone();
         let task = thread::Builder::new()
@@ -126,15 +160,119 @@ impl Worker {
                 run(collector, receiver, stopping, published)
             })?;
         Ok(Self {
-            registrations,
-            stop,
-            readout,
+            registrar: Registrar {
+                registrations: Arc::new(RwLock::new(registrations)),
+                stop,
+                readout,
+                wake: task.thread().clone(),
+            },
             task: Some(task),
         })
     }
 
     pub fn readout(&self) -> Readout {
+        self.registrar.readout()
+    }
+
+    pub fn registrar(&self) -> Registrar {
+        self.registrar.clone()
+    }
+
+    /// Queue a fresh producer; keep its lifetime with the native owner.
+    pub fn open(&self, owner: Owner) -> Result<Opened, RegisterError> {
+        self.registrar.open(owner)
+    }
+
+    pub fn open_bound(&self, owner: Owner, lineage: Lineage) -> Result<Opened, RegisterError> {
+        self.registrar.open_bound(owner, lineage)
+    }
+
+    #[cfg(test)]
+    fn register(&self, owner: Owner, identity: Id) -> Result<Sender, RegisterError> {
+        self.registrar.register(owner, identity)
+    }
+
+    pub fn shutdown(mut self) -> Result<Summary, ShutdownError> {
+        self.finish()
+    }
+
+    pub(super) fn shutdown_started(mut self, started: Instant) -> Result<Summary, ShutdownError> {
+        self.finish_started(started)
+    }
+
+    fn finish(&mut self) -> Result<Summary, ShutdownError> {
+        self.finish_started(Instant::now())
+    }
+
+    fn finish_started(&mut self, started: Instant) -> Result<Summary, ShutdownError> {
+        {
+            let _admission = self.registrar.registrations.write();
+            self.registrar.stop.store(true, Ordering::Release);
+        }
+        let readout = &self.registrar.readout;
+        let Some(task) = self.task.take() else {
+            return Ok(readout.snapshot());
+        };
+        task.thread().unpark();
+        match task.join() {
+            Ok(collector) => {
+                let mut summary = collector.close();
+                summary.shutdown_overrun = started.elapsed() > SHUTDOWN_BUDGET;
+                readout.published.store(summary);
+                if summary.shutdown_overrun {
+                    Err(ShutdownError::BudgetExceeded)
+                } else {
+                    Ok(readout.snapshot())
+                }
+            }
+            Err(_) => {
+                let mut summary = readout.published.load();
+                summary.closed = true;
+                summary.local_unconfirmed = true;
+                summary.worker_failed = true;
+                summary.shutdown_overrun = started.elapsed() > SHUTDOWN_BUDGET;
+                readout.published.store(summary);
+                Err(ShutdownError::Panicked)
+            }
+        }
+    }
+}
+
+impl Registrar {
+    pub fn readout(&self) -> Readout {
         self.readout.clone()
+    }
+
+    pub(super) fn available(&self) -> bool {
+        !self.stop.load(Ordering::Acquire)
+            && self.readout.slots.load(Ordering::Acquire) < MAX_PRODUCERS
+    }
+
+    pub(super) fn reserve(&self) -> Result<Credit, RegisterError> {
+        self.account_refusal((|| {
+            if self.stop.load(Ordering::Acquire) {
+                return Err(RegisterError::Closed);
+            }
+            let lease = Lease::reserve(&self.readout)?;
+            let identity = Id::generate().map_err(RegisterError::Entropy)?;
+            Ok(Credit { identity, lease })
+        })())
+    }
+
+    pub(super) fn bind(
+        &self,
+        credit: Credit,
+        owner: Owner,
+        lineage: Lineage,
+        channel: Channel,
+    ) -> Result<super::Lifetime, RegisterError> {
+        let (lifecycle, lifetime) = Lifecycle::pair();
+        self.submit(credit, owner, lineage, channel, lifecycle)?;
+        Ok(lifetime)
+    }
+
+    pub(super) fn refuse(&self) {
+        let _ = self.account_refusal::<()>(Err(RegisterError::Lineage));
     }
 
     /// Queue a fresh producer; keep its lifetime with the native owner.
@@ -183,8 +321,34 @@ impl Worker {
         if self.stop.load(Ordering::Acquire) {
             return Err(RegisterError::Closed);
         }
-        let lease = Lease::reserve(&self.readout.slots)?;
+        let lease = Lease::reserve(&self.readout)?;
         let (channel, sender) = Channel::pair().map_err(RegisterError::Transport)?;
+        self.submit(
+            Credit { identity, lease },
+            owner,
+            lineage,
+            channel,
+            lifecycle,
+        )?;
+        Ok(Sender::new(sender, owner, identity).with_lineage(lineage))
+    }
+
+    fn submit(
+        &self,
+        credit: Credit,
+        owner: Owner,
+        lineage: Lineage,
+        channel: Channel,
+        lifecycle: Lifecycle,
+    ) -> Result<(), RegisterError> {
+        let Credit {
+            identity,
+            mut lease,
+        } = credit;
+        if !lineage.valid() || !Arc::ptr_eq(&lease.slots, &self.readout.slots) {
+            return Err(RegisterError::Lineage);
+        }
+        lease.activate();
         let registration = Registration {
             owner,
             lineage,
@@ -193,53 +357,24 @@ impl Worker {
             lease,
             lifecycle,
         };
-        self.registrations
+        let registrations = self.registrations.try_read().map_err(|_| {
+            if self.stop.load(Ordering::Acquire) {
+                RegisterError::Closed
+            } else {
+                RegisterError::Busy
+            }
+        })?;
+        if self.stop.load(Ordering::Acquire) {
+            return Err(RegisterError::Closed);
+        }
+        registrations
             .try_send(registration)
             .map_err(|error| match error {
                 mpsc::TrySendError::Full(_) => RegisterError::Busy,
                 mpsc::TrySendError::Disconnected(_) => RegisterError::Closed,
             })?;
-        if let Some(task) = &self.task {
-            task.thread().unpark();
-        }
-        Ok(Sender::new(sender, owner, identity).with_lineage(lineage))
-    }
-
-    pub fn shutdown(mut self) -> Result<Summary, ShutdownError> {
-        self.finish()
-    }
-
-    fn finish(&mut self) -> Result<Summary, ShutdownError> {
-        self.finish_started(Instant::now())
-    }
-
-    fn finish_started(&mut self, started: Instant) -> Result<Summary, ShutdownError> {
-        self.stop.store(true, Ordering::Release);
-        let Some(task) = self.task.take() else {
-            return Ok(self.readout.snapshot());
-        };
-        task.thread().unpark();
-        match task.join() {
-            Ok(collector) => {
-                let mut summary = collector.close();
-                summary.shutdown_overrun = started.elapsed() > SHUTDOWN_BUDGET;
-                self.readout.published.store(summary);
-                if summary.shutdown_overrun {
-                    Err(ShutdownError::BudgetExceeded)
-                } else {
-                    Ok(self.readout.snapshot())
-                }
-            }
-            Err(_) => {
-                let mut summary = self.readout.published.load();
-                summary.closed = true;
-                summary.local_unconfirmed = true;
-                summary.worker_failed = true;
-                summary.shutdown_overrun = started.elapsed() > SHUTDOWN_BUDGET;
-                self.readout.published.store(summary);
-                Err(ShutdownError::Panicked)
-            }
-        }
+        self.wake.unpark();
+        Ok(())
     }
 }
 

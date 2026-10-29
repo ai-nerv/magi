@@ -46,6 +46,7 @@ async fn handing(
     session: &tokio::sync::Mutex<crate::session::Session>,
     scribe: &mut Scribe,
 ) -> Result<(), Fault> {
+    scribe.recover_writer().await?;
     let settled: Vec<_> = {
         let held = session.lock().await;
         if !held.has_pending() {

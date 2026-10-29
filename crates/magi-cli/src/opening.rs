@@ -21,6 +21,7 @@ impl Opening {
     pub fn begin(
         socket: Option<std::path::PathBuf>,
         acp_parent: Option<u32>,
+        event_child: bool,
         role: crate::melchior::Role<'_>,
     ) -> anyhow::Result<Self> {
         let bootstrap = acp_parent.map(crate::acp::bootstrap::receive).transpose()?;
@@ -33,7 +34,9 @@ impl Opening {
         if let Some(bootstrap) = bootstrap {
             bootstrap.merge(&mut loaded)?;
         }
-        let events = if crate::config::events::enabled(loaded.as_ref())? {
+        let events = if let Some(branch) = crate::agent_events::take() {
+            magi_host::events::collection::runtime::Scope::from_child(branch).ok()
+        } else if !event_child && crate::config::events::enabled(loaded.as_ref())? {
             magi_host::events::collection::runtime::Scope::start().ok()
         } else {
             None

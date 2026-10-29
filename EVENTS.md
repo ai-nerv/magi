@@ -1,5 +1,39 @@
 # Local operational events
 
+## Verification status
+
+Final-image native family verification on2026-10-29 passes8,132records with no
+failures or leaked processes; explicit editor/visual/measurement cases are not
+counted as passing when skipped. Separate selected-editor verification passes
+all seven editor cases plus120collector,13fork and2native child-event cases.
+The final Casper supervisor passes the previously failing abrupt Landlock
+owner-death cases without weakening nested reads or their cleanup assertions.
+Receipts under the family candidate `target/roadmap/11/family-candidate.abuXbcuD`:
+`target/family/run-VE6tVqb8`, `target/acceptance/run-VvDpo1T4` and
+`target/roadmap/11/selected-editor-workflows.FGs0csXN`.
+
+Final-image measurements pass120/120scheduled samples across two separate
+topologies: disabled/enabled root collection (`suite-ddyYXGqi`,
+`aggregate-12LMalXM`) and observer drain/stall (`suite-HRJJK5Bw`,
+`aggregate-Nknos1h4`). Each uses ten unchanged tasks and three alternating samples
+per mode with fresh synthetic-only worlds. Independent audits verify720evidence
+digests and recompute all18metrics for each sample; cleanup reports zero leaks.
+The observer's96receipts all explicitly report incomplete delivery. Drain accepts
+851events before release with99unknown-loss producers; stall accepts none before
+release with204unknown-loss producers. Maximum observed reaping is2225ms/2213ms,
+not a universal deadline guarantee. Detailed values and frozen identities are in
+root `target/roadmap/11/final-measurements.md`.
+
+Elapsed values include supervised work, extraction, packaging and cleanup; the
+observer topology also includes its parent. Post-cleanup sealing is outside the
+interval. Three samples are descriptive, not statistical significance, isolated
+production overhead or a speedup claim. CPU/RSS remain NOT_MEASURED.
+Named intermediate receipts below describe their original revisions. Their
+remaining-work statements are historical. Earlier timing experiments retain
+their captured-binary scope, not current CPU/RSS or loss-free delivery claims.
+Network export, durable spooling, installed deployment and real-provider consent
+are not part of the approved initial local-event policy.
+
 ## Native lineage binding
 
 Native bootstrap revision2 carries an immutable run/agent/turn/ask binding in a
