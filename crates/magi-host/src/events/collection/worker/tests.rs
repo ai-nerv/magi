@@ -36,7 +36,15 @@ fn prepare() -> (Correlation, Fact) {
 }
 
 fn wait(readout: &Readout, condition: impl Fn(Summary) -> bool) -> Summary {
-    let deadline = Instant::now() + Duration::from_secs(3);
+    wait_within(Duration::from_secs(3), readout, condition)
+}
+
+fn wait_within(
+    budget: Duration,
+    readout: &Readout,
+    condition: impl Fn(Summary) -> bool,
+) -> Summary {
+    let deadline = Instant::now() + budget;
     loop {
         let summary = readout.snapshot();
         if condition(summary) {
