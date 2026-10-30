@@ -139,6 +139,7 @@ fn probed(sender: super::super::super::Sender) -> (super::super::super::Sender, 
     )
 }
 
+#[allow(deprecated)]
 fn full(probe: &OwnedFd) -> bool {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

@@ -9,6 +9,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, unix::AsyncFd};
 pub(super) struct Pollable(AsyncFd<OwnedFd>);
 
 impl Pollable {
+    #[allow(deprecated)]
     pub(super) fn duplicate(fd: impl AsFd) -> io::Result<Self> {
         let owned = rustix::io::fcntl_dupfd_cloexec(fd, 3)?;
         let flags = rustix::fs::fcntl_getfl(&owned)?;
