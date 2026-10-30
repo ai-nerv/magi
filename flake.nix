@@ -2,9 +2,9 @@
   description = "magi, and its Rust development shell";
 
   nixConfig = {
-    extra-substituters = [ "https://ai-nerv.cachix.org" ];
+    extra-substituters = [ "https://cache.bresilla.com/bresilla" ];
     extra-trusted-public-keys = [
-      "ai-nerv.cachix.org-1:1Wycl/383z79Nvh7ELU2jlycVzOqJyy1PGajS9caDBY="
+      "bresilla:zsecaZYIrjCJQS4AuGPmEVU5PRkiMmB/Mds3KaCzTvE="
     ];
   };
 
