@@ -130,6 +130,8 @@ fn probed(sender: super::super::super::Sender) -> (super::super::super::Sender, 
     let lineage = sender.lineage();
     let (inner, owner, producer) = sender.into_fresh().expect("fresh sender");
     let fd = inner.into_socket();
+    // The kernel's smallest buffer, which a stalled socket overflows within a few frames.
+    rustix::net::sockopt::set_socket_send_buffer_size(&fd, 1).expect("smallest send buffer");
     let probe = fd.try_clone().expect("close-on-exec socket probe");
     (
         super::super::super::Sender::new(
