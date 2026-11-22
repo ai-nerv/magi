@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.8.1] - 2026-11-22
+
+### <!-- 0 -->⛰️  Features
+
+- Add adapters and login UI
+
+### <!-- 1 -->🐛 Bug Fixes
+
+- Allow tokio 1.54's AsyncFd deprecation
+- Tell a rebound socket by more than inode
+
+### <!-- 6 -->🧪 Testing
+
+- Read exe once exec has finished
+- Make the stalled socket overflow
+- Allow a full backlog time to drain
+
+### <!-- 7 -->⚙️ Miscellaneous Tasks
+
+- Publish to cache.bresilla.com
+
+### Build
+
+- Take tokio 1.54.1
+
 ## [0.8.0] - 2026-10-29
 
 ### <!-- 0 -->⛰️  Features
