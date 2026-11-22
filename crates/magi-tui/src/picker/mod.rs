@@ -11,7 +11,7 @@ pub struct Choice {
 /// An open list.
 #[derive(Debug, Clone)]
 pub struct Picker {
-    columns: Option<Box<table::Columns>>,
+    presentation: Option<Box<table::Presentation>>,
     detail_below: bool,
     pub title: String,
     all: Vec<Choice>,
@@ -42,7 +42,7 @@ impl Picker {
             .or_else(|| choices.iter().position(|c| c.ready))
             .unwrap_or(0);
         Self {
-            columns: None,
+            presentation: None,
             detail_below: false,
             title: title.into(),
             all: choices.clone(),
@@ -214,6 +214,32 @@ impl Picker {
         self.choices.get(self.selected)
     }
 
+    /// Show the highlighted value's display text above the rows without changing its identity.
+    pub fn captions(&mut self, captions: impl IntoIterator<Item = (String, String)>) {
+        self.presentation.get_or_insert_default().captions = captions
+            .into_iter()
+            .map(|(value, caption)| {
+                (
+                    value,
+                    caption
+                        .chars()
+                        .filter(|c| !c.is_control())
+                        .take(512)
+                        .collect(),
+                )
+            })
+            .collect();
+    }
+
+    fn caption(&self) -> Option<&str> {
+        self.presentation
+            .as_deref()?
+            .captions
+            .get(&self.current()?.value)
+            .map(String::as_str)
+            .filter(|s| !s.is_empty())
+    }
+
     /// Rows this needs on screen, heading included.
     #[must_use]
     pub fn height(&self) -> u16 {
@@ -225,21 +251,22 @@ impl Picker {
             .map(|choice| self.choice_height(choice))
             .sum();
         u16::try_from(
-            rows + 1 + usize::from(!self.columns().is_empty() && !self.choices.is_empty()),
+            rows + 1
+                + usize::from(!self.columns().is_empty() && !self.choices.is_empty())
+                + usize::from(self.caption().is_some()),
         )
         .unwrap_or(u16::MAX)
     }
 
     /// Align tab-separated detail cells under column headings.
     pub fn table(&mut self, columns: &[&str]) {
-        self.columns = Some(Box::new(table::Columns {
-            headers: columns.iter().map(|column| (*column).to_owned()).collect(),
-        }));
+        self.presentation.get_or_insert_default().headers =
+            columns.iter().map(|column| (*column).to_owned()).collect();
         self.detail_below = false;
     }
 
     fn columns(&self) -> &[String] {
-        self.columns
+        self.presentation
             .as_deref()
             .map(|columns| columns.headers.as_slice())
             .unwrap_or_default()

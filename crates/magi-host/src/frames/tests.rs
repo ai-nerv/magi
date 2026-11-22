@@ -24,6 +24,7 @@ mod contract {
             system: Some("private rules".into()),
             messages: vec![Message::user("private question")],
             tools: vec![magi_model::Tool {
+                strict: None,
                 name: "read".into(),
                 description: "private description".into(),
                 parameters: json!({"type":"object","required":[],"properties":{}}),
@@ -78,6 +79,7 @@ mod contract {
                 1 => next.tools.insert(
                     0,
                     magi_model::Tool {
+                        strict: None,
                         name: "activated".into(),
                         ..next.tools[0].clone()
                     },

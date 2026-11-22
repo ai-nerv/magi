@@ -3,10 +3,12 @@
 pub(crate) mod admission;
 mod fitting;
 mod history;
+mod images;
 mod monitoring;
 pub(crate) mod observing;
 pub(crate) mod reporting;
 mod resuming;
+mod strict;
 use fitting::{SNAPSHOT_BUDGET, newest_within};
 use magi_journal::{Journal, JournalError};
 use magi_proto::{AgentStatus, Cursor, Entry, HarnessEvent, SessionId};
@@ -20,6 +22,7 @@ const BROADCAST_CAPACITY: usize = 1024;
 
 pub struct Session {
     frames: crate::frames::Frames,
+    strict: strict::Fallbacks,
     files: crate::files::Files,
     helpers: crate::settling::Tasks,
     admission: admission::Admission,
@@ -84,6 +87,7 @@ impl Session {
                 crate::frames::Frames::resumed()
             },
             files: crate::files::Files::default(),
+            strict: strict::Fallbacks::default(),
             helpers: crate::settling::Tasks::default(),
             admission: admission::Admission::default(),
             spent,
@@ -528,6 +532,7 @@ impl Session {
         let _ = self.events.send(HarnessEvent::ModelChanged {
             cursor: self.cursor(),
             model: self.model.clone(),
+            thinking: Some(self.thinking.clone()),
         });
     }
 

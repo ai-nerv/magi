@@ -133,9 +133,13 @@ mod tests {
     #[test]
     fn capabilities_show_native_levels_and_do_not_guess_missing_levels() {
         let caps = magi_model::Capabilities {
+            session_identity: None,
             input: vec!["text".into(), "image".into(), "audio".into()],
             output: vec!["text".into()],
             thinking: Some(vec!["low".into(), "xhigh".into()]),
+            thinking_levels: None,
+            strict_tools: None,
+            input_limits: None,
         };
         assert_eq!(
             capabilities(Some(&caps), true, true),

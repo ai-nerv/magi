@@ -4,6 +4,7 @@
 
 pub mod admitting;
 pub mod asking;
+mod authentication;
 pub mod broker;
 pub mod cancel;
 pub mod catalog;
@@ -17,6 +18,7 @@ mod files;
 mod frames;
 pub mod helping;
 pub mod holder;
+pub mod images;
 pub mod judging;
 pub mod knowing;
 pub mod laying;
@@ -559,6 +561,7 @@ mod no_model_tests {
         Catalog {
             chosen: Some(name.to_owned()),
             cards: vec![magi_proto::ask::Card {
+                display_name: None,
                 vision: false,
                 id: "paid/x".to_owned(),
                 provider: "Paid Co".to_owned(),
@@ -571,6 +574,7 @@ mod no_model_tests {
                 capabilities: None,
                 reasons: false,
                 ready: false,
+                setup: None,
                 needs: Some("MAGI_TEST_NOT_SET".to_owned()),
             }],
             ..Catalog::empty()

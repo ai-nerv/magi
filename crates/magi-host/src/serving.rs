@@ -200,9 +200,23 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
     }));
 
     let mut refreshing = tokio::task::JoinSet::new();
+    let mut authenticating = tokio::task::JoinSet::new();
+    let (auth_tx, mut auth_rx) = tokio::sync::mpsc::channel::<HarnessEvent>(4);
+    let mut auth_request = None;
     let mut prepared = tokio::task::JoinSet::<crate::preparing::Completed>::new();
     loop {
         tokio::select! {
+            Some(event) = auth_rx.recv() => {
+                if matches!(&event, HarnessEvent::Authentication { reply: magi_proto::authentication::Reply::Finished { error: None, .. }, .. }) {
+                    let models = Arc::clone(models);
+                    let session = Arc::clone(&session);
+                    refreshing.spawn(async move { models.reload(&session).await });
+                }
+                if matches!(&event, HarnessEvent::Authentication { request, .. } if Some(*request) == auth_request) {
+                    writer.write(&event).await?;
+                }
+            }
+            _ = authenticating.join_next(), if !authenticating.is_empty() => {}
             answer = prepared.join_next(), if !prepared.is_empty() => {
                 if let Some(Ok((ticket, answer))) = answer {
                     let cursor = session.lock().await.cursor();
@@ -226,6 +240,7 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
                         );
                         let tracking = match asked { UiCommand::SubmitTracked { request, .. } => Some(*request), _ => None };
                         let refusal = match asked {
+                            UiCommand::Authenticate { request, .. } => HarnessEvent::Authentication { request: *request, reply: magi_proto::authentication::Reply::failed(message) },
                             UiCommand::SelectModel { request, .. } => HarnessEvent::ModelSelected { request: *request, error: Some(message) },
                             _ => tracked_failure(tracking, false, cursor, message),
                         };
@@ -234,16 +249,27 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
                     }
                 }
                 match command {
+                    Some(UiCommand::Authenticate { request, action }) => {
+                        authenticating.abort_all();
+                        while authenticating.join_next().await.is_some() {}
+                        auth_request = Some(request);
+                        let catalog = models.catalog.read().await.clone();
+                        let to = auth_tx.clone();
+                        authenticating.spawn(async move {
+                            crate::authentication::run(&catalog.mind, &catalog.environ, action, request, to).await;
+                        });
+                    }
+                    Some(UiCommand::CancelAuthentication { request }) => {
+                        if auth_request == Some(request) {
+                            auth_request = None;
+                            authenticating.abort_all();
+                        }
+                    }
                     Some(UiCommand::Environment(request)) => {
                         let _change = preparing.changing().await;
-                        let (text, changed) = environment::change(request, &session, worker, models, person, scribe).await;
+                        let text = environment::change(request, &session, worker, models, person, scribe).await;
                         let cursor = session.lock().await.cursor();
                         writer.write(&HarnessEvent::Noticed { cursor, text }).await?;
-                        if changed {
-                            let models = Arc::clone(models);
-                            let session = Arc::clone(&session);
-                            refreshing.spawn(async move { models.refresh(&session).await });
-                        }
                     }
                     Some(UiCommand::RefreshModels) => {
                         if refreshing.is_empty() {
@@ -259,7 +285,7 @@ pub(super) async fn connection(stream: UnixStream, served: Served) -> Result<(),
                         let answer = match preparing.queue(command) {
                             Ok(crate::preparing::Queued::Immediate(command, tracking, mut trace)) => {
                                 let catalog = models.catalog.read().await.clone();
-                                submit(&session, crate::preparing::request(command).map_err(std::io::Error::other)?.tracked(tracking), worker, &catalog, scribe, &[], &mut trace).await
+                                submit(&session, crate::preparing::request(command).map_err(std::io::Error::other)?.tracked(tracking), worker, &catalog, scribe, (&[], None), &mut trace).await
                             },
                             Ok(crate::preparing::Queued::Waiting(mut ticket)) => {
                                 prepared.spawn(async move { let answer = ticket.receive().await; (ticket, answer) });

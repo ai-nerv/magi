@@ -14,6 +14,9 @@ const QUIET: std::time::Duration = std::time::Duration::from_secs(300);
 /// The longest one line from melchior may be; a longer one is skipped.
 const LINE_MOST: u64 = 16 * 1024 * 1024;
 
+mod listing;
+mod strict;
+
 /// What went wrong asking, when the asking itself failed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Trouble {
@@ -243,6 +246,7 @@ async fn exchange(
         context,
         wants,
     } = asked;
+    strict::check(program, environ, model, context).await?;
     let stream = stream_of(model, context);
     let asking = Ask {
         model: model.to_owned(),
@@ -457,38 +461,18 @@ pub async fn value_using(
 /// What melchior says this machine can talk to, asked once when a session starts. Empty when
 /// melchior is not installed or would not answer, which is not an error.
 pub async fn cards(program: &str) -> Vec<magi_proto::ask::Card> {
-    let mut asking = tokio::process::Command::new(program);
-    asking
-        .arg("models")
-        .arg("--json")
-        .env(crate::driving::GIVEN, crate::driving::given_dir());
-    let out = match crate::driving::ran(asking, None, crate::driving::ASKED).await {
-        Ok(out) => out,
-        Err(why) => {
-            magi_model::noted!("broker: {program} models: {why}");
-            return Vec::new();
-        }
-    };
-    let Ok(reply) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else {
-        magi_model::noted!(
-            "broker: {program} models answered {} bytes that are not json",
-            out.stdout.len()
-        );
-        return Vec::new();
-    };
-    if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
-        magi_model::noted!("broker: {program} models refused: {reply}");
-        return Vec::new();
-    }
-    reply
-        .get("result")
-        .and_then(serde_json::Value::as_array)
-        .map(|rows| {
-            rows.iter()
-                .filter_map(|row| serde_json::from_value(row.clone()).ok())
-                .collect()
-        })
+    cards_using(program, &std::collections::BTreeMap::new())
+        .await
         .unwrap_or_default()
+}
+
+pub(crate) async fn cards_using(
+    program: &str,
+    environ: &std::collections::BTreeMap<String, String>,
+) -> Result<Vec<magi_proto::ask::Card>, String> {
+    listing::read(program, environ, false)
+        .await
+        .map(|(cards, _)| cards)
 }
 
 /// Fetch fresh model cards with a bounded child lifetime.
@@ -496,36 +480,7 @@ pub(crate) async fn refresh_cards(
     program: &str,
     environ: &std::collections::BTreeMap<String, String>,
 ) -> Result<(Vec<magi_proto::ask::Card>, Vec<String>), String> {
-    let mut command = tokio::process::Command::new(program);
-    command
-        .envs(environ)
-        .args(["models", "--json", "--refresh"])
-        .env(crate::driving::GIVEN, crate::driving::given_dir())
-        .stderr(std::process::Stdio::null())
-        .kill_on_drop(true);
-    let out = tokio::time::timeout(std::time::Duration::from_secs(30), command.output())
-        .await
-        .map_err(|_| "Model refresh timed out; keeping the previous list.".to_owned())?
-        .map_err(|why| {
-            format!("Could not start the model provider: {why}; keeping the previous list.")
-        })?;
-    if !out.status.success() {
-        return Err("Model provider failed; keeping the previous list.".into());
-    }
-    let reply: serde_json::Value = serde_json::from_slice(&out.stdout)
-        .map_err(|_| "Invalid model listing; keeping the previous list.".to_owned())?;
-    let yes = |field: &str| reply.get(field).and_then(serde_json::Value::as_bool) == Some(true);
-    if !yes("ok") || !yes("refreshed") {
-        return Err(
-            "Model provider did not confirm refresh; update Melchior. Keeping the previous list."
-                .into(),
-        );
-    }
-    let cards = serde_json::from_value(reply.get("result").cloned().unwrap_or_default())
-        .map_err(|_| "Invalid model cards; keeping the previous list.".to_owned())?;
-    let failed = serde_json::from_value(reply.get("failed").cloned().unwrap_or_default())
-        .map_err(|_| "Invalid refresh status; keeping the previous list.".to_owned())?;
-    Ok((cards, failed))
+    listing::read(program, environ, true).await
 }
 
 #[cfg(test)]

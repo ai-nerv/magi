@@ -8,10 +8,10 @@ mod tests;
 /// The most entries kept waiting for a memory layer that is not answering.
 pub(crate) const PENDING_MOST: usize = 2048;
 
-/// The most text those entries may hold between them.
+/// The most content bytes those entries may hold between them.
 pub(crate) const PENDING_BYTES: usize = 64 * 1024 * 1024;
 
-/// Roughly how much text an entry holds.
+/// Text and inline image payload bytes held by an entry.
 pub(super) fn weight(entry: &Entry) -> usize {
     match entry {
         Entry::Workflow {
@@ -24,21 +24,49 @@ pub(super) fn weight(entry: &Entry) -> usize {
             text.len()
                 + aside.len()
                 + crate::skills::snapshot::weight(workflow)
-                + images
-                    .iter()
-                    .map(|image| image.data.len() + image.media_type.len())
-                    .sum::<usize>()
+                + image_bytes(images)
         }
-        Entry::User { text, aside, .. } => text.len() + aside.len(),
-        Entry::Assistant { text, thinking, .. } => text.len() + thinking.len(),
-        Entry::Tool { args, result, .. } => {
-            args.len() + result.as_ref().map_or(0, |r| r.output.len())
+        Entry::User {
+            text,
+            aside,
+            images,
+            ..
+        } => text.len() + aside.len() + image_bytes(images),
+        Entry::Assistant {
+            text,
+            thinking,
+            signatures,
+            ..
+        } => {
+            text.len()
+                + thinking.len()
+                + signatures.text.as_ref().map_or(0, String::len)
+                + signatures.thinking.as_ref().map_or(0, String::len)
+        }
+        Entry::Tool {
+            args,
+            result,
+            thought_signature,
+            ..
+        } => {
+            args.len()
+                + thought_signature.as_ref().map_or(0, String::len)
+                + result
+                    .as_ref()
+                    .map_or(0, |r| r.output.len() + image_bytes(&r.images))
         }
         Entry::Notice { text } | Entry::From { text, .. } => text.len(),
         Entry::Compaction { summary, .. } => summary.len(),
         Entry::Masked { shown, .. } => shown.len(),
         Entry::Branch { .. } => 0,
     }
+}
+
+fn image_bytes(images: &[magi_model::Image]) -> usize {
+    images
+        .iter()
+        .map(|image| image.data.len() + image.media_type.len())
+        .sum()
 }
 
 impl Session {
@@ -111,6 +139,7 @@ impl Session {
         self.files = crate::files::Files::default();
         self.journal = journal;
         self.frames = crate::frames::Frames::resumed();
+        self.strict = Default::default();
         self.admission.reports = Default::default();
         self.cancel = Default::default();
         self.helpers = self.helpers.fresh();

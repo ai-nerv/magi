@@ -195,7 +195,9 @@ fn thinking(job: &Job) -> magi_model::ThinkingLevel {
 /// What a job asks its model for.
 fn wants(job: &Job, backend: &Backend, model: &str, decides: bool) -> magi_proto::ask::Wants {
     magi_proto::ask::Wants {
+        session_id: None,
         max_tokens_automatic: false,
+        disable_preferred_strict: false,
         thinking: Some(thinking(job)),
         max_tokens: Some(job.max_tokens.unwrap_or(MAX_TOKENS)),
         // In words, unless the job allows a schema and the model answers a schema and nothing
@@ -616,6 +618,9 @@ mod tests {
             wants: magi_proto::ask::Wants::default(),
             context_window: None,
             max_output: None,
+            image_resize: None,
+            session_identity: false,
+            transcript: None,
             system: None,
             helpers,
             deciders: Vec::new(),

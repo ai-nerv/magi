@@ -3,6 +3,8 @@
 
 use magi_proto::ask::Card;
 
+pub mod setup;
+
 /// The answer a request leaves room for when nothing configured says how long one may be.
 pub(crate) const REPLY: u64 = 32_000;
 
@@ -43,6 +45,10 @@ pub struct Backend {
     pub context_window: Option<u64>,
     /// The longest answer it can give, from the same card.
     pub max_output: Option<u64>,
+    /// Resize limits for image inputs accepted by this model.
+    pub image_resize: Option<magi_model::ImageResize>,
+    pub session_identity: bool,
+    pub transcript: Option<String>,
     /// What the model is told it is. Assembled once, when the daemon starts.
     pub system: Option<String>,
     /// The small models that run jobs on balthasar's behalf — `magi.helpers`.
@@ -123,6 +129,14 @@ impl Backend {
 }
 
 impl Catalog {
+    pub(crate) fn thinking_levels(&self, name: &str) -> Option<Vec<magi_model::ThinkingLevel>> {
+        let card = self.find(name)?;
+        Some(magi_model::ThinkingLevel::available(
+            card.reasons,
+            card.capabilities.as_ref(),
+        ))
+    }
+
     /// A catalog with nothing in it, for a session that has no model.
     #[must_use]
     pub fn empty() -> Self {
@@ -170,6 +184,22 @@ impl Catalog {
             wants,
             context_window: card.context_window,
             max_output: card.max_output,
+            session_identity: card
+                .capabilities
+                .as_ref()
+                .and_then(|caps| caps.session_identity)
+                == Some(true),
+            transcript: self.transcript.clone(),
+            image_resize: card
+                .vision
+                .then(|| {
+                    card.capabilities
+                        .as_ref()
+                        .and_then(|cap| cap.input_limits.as_ref())
+                        .and_then(|limits| limits.images.as_ref())
+                        .and_then(|images| images.resize.clone())
+                })
+                .flatten(),
             system: self.system.clone(),
             confine: self.confine,
             isolate: self.isolate,
@@ -189,15 +219,12 @@ impl Catalog {
     #[must_use]
     pub fn unusable(&self, name: &str) -> Option<String> {
         let card = self.find(name)?;
-        (!card.ready).then(|| match &card.needs {
-            Some(variable) => format!(
-                "{name} is offered by {}, which is not configured: set {variable}",
-                card.provider
-            ),
-            None => format!(
-                "{name} is offered by {}, which melchior cannot reach",
-                card.provider
-            ),
+        (!card.ready).then(|| {
+            format!(
+                "{name} is offered by {}: {}",
+                card.provider,
+                setup::requirement(card)
+            )
         })
     }
 
@@ -211,16 +238,13 @@ impl Catalog {
             .map(|card| magi_proto::ModelChoice {
                 vision: card.vision,
                 name: card.id.clone(),
+                display_name: card.display_name.clone(),
                 context_window: card.context_window.unwrap_or(0),
                 pricing: card.pricing.clone(),
                 popularity_rank: card.popularity_rank,
                 capabilities: card.capabilities.clone(),
-                requirement: match (&card.needs, card.ready) {
-                    (_, true) => String::new(),
-                    (Some(variable), _) => format!("set {variable}"),
-                    (None, _) => format!("{} is not reachable", card.provider),
-                },
-                wants_vars: card.needs.clone().into_iter().collect(),
+                requirement: setup::requirement(card),
+                wants_vars: setup::wanted_variables(card),
                 reasoning: card.reasons,
             })
             .collect();
@@ -272,11 +296,52 @@ impl Catalog {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn display_names_do_not_change_routing_or_create_aliases() {
+        let mut held = Catalog::empty();
+        let legacy =
+            serde_json::json!({"id":"p/m","provider":"p","name":"m","api":"x","ready":true});
+        let mut model: Card = serde_json::from_value(legacy).expect("legacy card");
+        assert!(model.display_name.is_none());
+        assert!(
+            serde_json::to_value(&model)
+                .expect("card")
+                .get("display_name")
+                .is_none()
+        );
+        model.display_name = Some("training-enabled: Model M".into());
+        held.cards.push(model.clone());
+        for route in ["m", "p/m"] {
+            assert_eq!(held.backend(route).expect("route").model, "p/m");
+        }
+        assert!(held.backend("training-enabled: Model M").is_none());
+        let choices = held.choices();
+        assert_eq!(choices[0].name, "p/m");
+        assert_eq!(choices[0].display_name, model.display_name);
+        let bytes = serde_json::to_vec(&choices).expect("JSON");
+        let restored: Vec<magi_proto::ModelChoice> = serde_json::from_slice(&bytes).expect("JSON");
+        assert_eq!(restored, choices);
+        let (write, read) = tokio::io::duplex(4096);
+        let mut writer = magi_ipc::FrameWriter::new(write);
+        let mut reader = magi_ipc::FrameReader::new(read);
+        writer.write(&model).await.expect("CBOR card");
+        assert_eq!(reader.read::<Card>().await.expect("CBOR card"), model);
+        writer.write(&choices).await.expect("CBOR choices");
+        assert_eq!(
+            reader
+                .read::<Vec<magi_proto::ModelChoice>>()
+                .await
+                .expect("CBOR choices"),
+            choices
+        );
+    }
+
     pub(super) fn card(id: &str, name: &str, provider: &str, ready: bool) -> Card {
         Card {
             id: id.to_owned(),
             provider: provider.to_owned(),
             name: name.to_owned(),
+            display_name: None,
             api: "openai-completions".to_owned(),
             context_window: Some(1000),
             max_output: Some(100),
@@ -286,6 +351,7 @@ mod tests {
             vision: false,
             reasons: false,
             ready,
+            setup: None,
             needs: if ready {
                 None
             } else {
@@ -309,9 +375,13 @@ mod tests {
     fn choices_preserve_capability_metadata() {
         let mut catalog = catalog();
         catalog.cards[0].capabilities = Some(magi_model::Capabilities {
+            session_identity: None,
             input: vec!["text".into(), "image".into()],
             output: vec!["text".into()],
             thinking: Some(vec!["low".into(), "high".into()]),
+            thinking_levels: None,
+            strict_tools: None,
+            input_limits: None,
         });
         let choice = catalog
             .choices()

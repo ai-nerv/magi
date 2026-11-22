@@ -68,6 +68,7 @@ pub fn commands() -> Vec<Candidate> {
         (":skills", "refresh workflow completion for /skill <name>"),
         (":clear", "start a fresh conversation"),
         (":model", "the model, or :model <name> to switch"),
+        (":login", "manage provider API keys and browser sign-ins"),
         (":env", "set session variables: KEY=value:$KEY"),
         (
             ":source",

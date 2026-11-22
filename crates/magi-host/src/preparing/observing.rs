@@ -181,7 +181,7 @@ async fn native_preparation_preserves_trace_and_admission_ownership() {
                 &RwLock::new(None),
                 &Catalog::empty(),
                 &Arc::new(Mutex::new(None)),
-                &[],
+                (&[], None),
                 &mut trace,
             )
             .await

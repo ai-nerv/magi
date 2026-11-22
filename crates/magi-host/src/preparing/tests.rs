@@ -8,6 +8,107 @@ pub(super) fn prompt(text: &str) -> UiCommand {
     }
 }
 
+#[tokio::test]
+async fn image_prompts_use_preparation_budget_and_cancellation_preserves_history() {
+    let (preparing, session) = fixture();
+    let held = preparing.epoch.boundary.lock().await;
+    let prompt = UiCommand::SubmitTracked {
+        request: 71,
+        text: "image".into(),
+        aside: String::new(),
+        images: vec![magi_model::Image {
+            data: "AAAA".into(),
+            media_type: "image/png".into(),
+        }],
+    };
+    let Queued::Waiting(mut ticket) = preparing.queue(prompt).expect("image queue") else {
+        panic!("must prepare")
+    };
+    assert_eq!(ticket.tracking, Some(71));
+    assert!(preparing.bytes.available_permits() <= BYTES - crate::images::WIRE_BYTES);
+    preparing.invalidate();
+    drop(held);
+    assert!(ticket.receive().await.is_err());
+    drop(ticket);
+    released(&preparing).await;
+    assert!(session.lock().await.entries().is_empty());
+}
+
+#[tokio::test]
+async fn image_count_and_encoded_limits_refuse_before_preparation_is_queued() {
+    let (preparing, session) = fixture();
+    let image = magi_model::Image {
+        data: "AAAA".into(),
+        media_type: "image/png".into(),
+    };
+    for images in [
+        vec![image.clone(); 5],
+        vec![magi_model::Image {
+            data: "A".repeat(crate::images::WIRE_BYTES),
+            ..image
+        }],
+    ] {
+        assert!(
+            preparing
+                .queue(UiCommand::SubmitPrompt {
+                    text: "image".into(),
+                    aside: String::new(),
+                    images
+                })
+                .is_err()
+        );
+    }
+    assert_eq!(preparing.count.available_permits(), COUNT);
+    assert_eq!(preparing.bytes.available_permits(), BYTES);
+    assert!(session.lock().await.entries().is_empty());
+}
+
+#[tokio::test]
+async fn stale_image_profile_is_refused_at_the_admission_boundary() {
+    let (_, session) = fixture();
+    let mut catalog = Catalog::empty();
+    catalog.cards = vec![serde_json::from_value(serde_json::json!({
+        "id":"fake/image","provider":"fake","name":"image","api":"anthropic-messages",
+        "ready":true,"vision":true,"capabilities":{"input":[],"input_limits":{"images":{"resize":{"max_width":20}}}}
+    })).expect("card")];
+    let backend = catalog.backend("fake/image").expect("backend");
+    let expected = session
+        .lock()
+        .await
+        .image_profile(Some((&backend.model, backend.image_resize.as_ref())));
+    let worker = RwLock::new(Some(Arc::new(crate::worker::Worker::start(backend))));
+    catalog.cards[0]
+        .capabilities
+        .as_mut()
+        .expect("capabilities")
+        .input_limits
+        .as_mut()
+        .expect("limits")
+        .images
+        .as_mut()
+        .expect("images")
+        .resize
+        .as_mut()
+        .expect("resize")
+        .max_width = std::num::NonZeroU64::new(10);
+    session.lock().await.set_choices(catalog.choices());
+    let error = crate::turning::submit(
+        &session,
+        request(prompt("private prompt")).expect("request"),
+        &worker,
+        &catalog,
+        &Arc::new(Mutex::new(None)),
+        (&[], Some(&expected)),
+        &mut Trace::default(),
+    )
+    .await
+    .expect_err("changed profile");
+    assert!(error.contains("image limits changed") && !error.contains("private prompt"));
+    let held = session.lock().await;
+    assert!(held.entries().is_empty() && !held.has_pending());
+    assert_eq!(held.cursor(), magi_proto::Cursor::ZERO);
+}
+
 pub(super) fn fixture() -> (Preparing, Arc<Mutex<Session>>) {
     let session = Arc::new(Mutex::new(Session::recorded(
         magi_proto::SessionId::new("preparation"),

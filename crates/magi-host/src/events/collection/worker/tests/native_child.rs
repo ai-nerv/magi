@@ -14,6 +14,9 @@ use std::{
     process::{Child, Command, Stdio},
 };
 
+/// How long the collector may take to read a full socket and a full local queue.
+const DRAIN: Duration = Duration::from_secs(10);
+
 struct Native(Child, bool);
 
 impl Drop for Native {
@@ -127,6 +130,8 @@ fn probed(sender: super::super::super::Sender) -> (super::super::super::Sender, 
     let lineage = sender.lineage();
     let (inner, owner, producer) = sender.into_fresh().expect("fresh sender");
     let fd = inner.into_socket();
+    // The kernel's smallest buffer, which a stalled socket overflows within a few frames.
+    rustix::net::sockopt::set_socket_send_buffer_size(&fd, 1).expect("smallest send buffer");
     let probe = fd.try_clone().expect("close-on-exec socket probe");
     (
         super::super::super::Sender::new(
@@ -139,6 +144,7 @@ fn probed(sender: super::super::super::Sender) -> (super::super::super::Sender, 
     )
 }
 
+#[allow(deprecated)]
 fn full(probe: &OwnedFd) -> bool {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -327,7 +333,7 @@ fn scenario(stalled: bool) {
             "collector remained stalled throughout useful work"
         );
         paused.resume();
-        wait(&paused.worker().readout(), |summary| {
+        wait_within(DRAIN, &paused.worker().readout(), |summary| {
             summary.reported_loss_producers > 0
         });
     }
@@ -350,7 +356,7 @@ fn scenario(stalled: bool) {
     drop(host);
     drop(probe);
     drop(held);
-    wait(&paused.worker().readout(), |summary| {
+    wait_within(DRAIN, &paused.worker().readout(), |summary| {
         summary.remote_producers == 0
     });
     let summary = paused.finish();

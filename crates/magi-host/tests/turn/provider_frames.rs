@@ -13,6 +13,7 @@ fn frame(dialect: u8, policy: u8, images: u64) -> String {
             dialect: [dialect; 32],
             policy: [policy; 32],
             omitted_images: images,
+            disable_preferred_strict: false,
         },
     })
     .expect("frame")

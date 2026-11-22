@@ -35,6 +35,7 @@ pub(super) fn run_command(input: &str, app: &mut App) -> Control {
             app.show_cost();
             Control::Continue
         }
+        ":login" => app.open_logins().map_or(Control::Continue, Control::Send),
         // As the session last reported it: balthasar lays each request out, and says so.
         ":context" => {
             app.show_context();

@@ -20,6 +20,10 @@ pub trait Tool {
     /// JSON Schema for its arguments.
     fn parameters(&self) -> serde_json::Value;
 
+    fn strict(&self) -> Option<magi_model::ToolStrictness> {
+        None
+    }
+
     /// Run it. Infallible on purpose: every failure a tool can have is something the model should
     /// read, so it comes back as [`Output::error`].
     fn run(&self, arguments: &serde_json::Value, ops: &dyn Ops, cancel: &dyn Cancel) -> Output;
@@ -153,6 +157,7 @@ impl Registry {
             .values()
             .filter(|tool| !tool.deferred() || unlocked.contains(tool.name()))
             .map(|tool| magi_model::Tool {
+                strict: tool.strict(),
                 name: tool.name().to_owned(),
                 description: tool.description().to_owned(),
                 parameters: tool.parameters(),
@@ -177,14 +182,15 @@ impl Registry {
                 // Checked here rather than by each tool, because this is where the schema is: a
                 // call that does not fit used to reach the tool and fail in words about the tool's
                 // own internals. The tool is not entered when it does not fit.
-                let arguments = match crate::schema::check(arguments, &tool.parameters()) {
-                    Ok(checked) => checked,
-                    Err(wrong) => {
-                        return Output::error(format!(
-                            "{name}: the arguments do not fit:\n{wrong}"
-                        ));
-                    }
-                };
+                let arguments =
+                    match crate::schema::sampled(arguments, &tool.parameters(), tool.strict()) {
+                        Ok(checked) => checked,
+                        Err(wrong) => {
+                            return Output::error(format!(
+                                "{name}: the arguments do not fit:\n{wrong}"
+                            ));
+                        }
+                    };
                 let output = crate::files::presentation(crate::bound::attachments(
                     tool.run(&arguments, ops, cancel),
                 ));
@@ -251,7 +257,7 @@ impl Registry {
             Ok(parsed) => parsed,
             Err(why) => return Prepared::answered(name, Output::error(format!("{name}: {why}"))),
         };
-        let checked = match crate::schema::check(&parsed, &tool.parameters()) {
+        let checked = match crate::schema::sampled(&parsed, &tool.parameters(), tool.strict()) {
             Ok(checked) => checked,
             Err(wrong) => {
                 return Prepared::answered(

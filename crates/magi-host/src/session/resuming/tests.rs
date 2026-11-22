@@ -1,6 +1,120 @@
 use super::*;
 use magi_proto::{HarnessEvent, MessageId, ModelInfo, StopReason, Usage};
 
+#[test]
+fn pending_weight_counts_user_and_tool_image_payloads_and_media_types() {
+    let images = vec![magi_model::Image {
+        data: "AAAA".repeat(100),
+        media_type: "image/png".into(),
+    }];
+    let bytes = images[0].data.len() + images[0].media_type.len();
+    let user = Entry::User {
+        id: MessageId::new("u"),
+        text: "prompt".into(),
+        aside: "aside".into(),
+        images: images.clone(),
+    };
+    assert_eq!(weight(&user), 11 + bytes);
+    let tool = Entry::Tool {
+        id: magi_proto::ToolCallId::new("t"),
+        name: "image".into(),
+        args: "{}".into(),
+        thought_signature: None,
+        result: Some(magi_proto::ToolResult {
+            output: "pixels".into(),
+            images,
+            is_error: false,
+            shown: None,
+        }),
+    };
+    assert_eq!(weight(&tool), 8 + bytes);
+}
+
+#[test]
+fn pending_opaque_payloads_count_all_carriers_and_trigger_byte_eviction() {
+    for carrier in 0..3 {
+        let opaque = "x".repeat(1024 * 1024);
+        let entry = if carrier < 2 {
+            Entry::Assistant {
+                id: MessageId::new("signed"),
+                text: String::new(),
+                thinking: String::new(),
+                stop_reason: Some(StopReason::EndTurn),
+                error: None,
+                usage: Usage::default(),
+                signatures: magi_proto::Signatures {
+                    text: (carrier == 0).then(|| opaque.clone()),
+                    thinking: (carrier == 1).then(|| opaque.clone()),
+                },
+            }
+        } else {
+            Entry::Tool {
+                id: magi_proto::ToolCallId::new("signed"),
+                name: "echo".into(),
+                args: String::new(),
+                result: None,
+                thought_signature: Some(opaque.clone()),
+            }
+        };
+        assert_eq!(weight(&entry), opaque.len(), "carrier {carrier}");
+        let count = PENDING_BYTES / weight(&entry) + 1;
+        assert!(count < PENDING_MOST);
+        let mut session = Session::recorded(SessionId::new("opaque"), vec![]);
+        for cursor in 1..=count {
+            session.pending.insert(cursor as u64, entry.clone());
+        }
+        let warning = session.bound_pending().expect("byte-bound eviction");
+        assert!(warning.contains("1 of the oldest") && warning.contains("cursors 1 to 1"));
+        assert_eq!(session.pending.len(), count - 1);
+        assert!(session.pending.values().map(weight).sum::<usize>() <= PENDING_BYTES);
+    }
+}
+
+#[test]
+fn pending_image_payloads_trigger_byte_eviction_before_the_entry_count_limit() {
+    for tool in [false, true] {
+        let images = vec![
+            magi_model::Image {
+                data: "AAAA".repeat(16 * 1024),
+                media_type: "image/png".into()
+            };
+            4
+        ];
+        let entry = if tool {
+            Entry::Tool {
+                id: magi_proto::ToolCallId::new("t"),
+                name: "paint".into(),
+                args: "{}".into(),
+                thought_signature: None,
+                result: Some(magi_proto::ToolResult {
+                    output: "pixels".into(),
+                    images,
+                    is_error: false,
+                    shown: None,
+                }),
+            }
+        } else {
+            Entry::User {
+                id: MessageId::new("u"),
+                text: "prompt".into(),
+                aside: String::new(),
+                images,
+            }
+        };
+        let count = PENDING_BYTES / weight(&entry) + 1;
+        assert!(count < PENDING_MOST);
+        let mut session = Session::recorded(SessionId::new("images"), vec![]);
+        for cursor in 1..=count {
+            session.pending.insert(cursor as u64, entry.clone());
+        }
+        let warning = session.bound_pending().expect("byte-bound eviction");
+        assert!(warning.contains("1 of the oldest") && warning.contains("cursors 1 to 1"));
+        assert_eq!(session.pending.len(), count - 1);
+        assert!(!session.pending.contains_key(&1));
+        assert!(session.pending.values().map(weight).sum::<usize>() <= PENDING_BYTES);
+    }
+}
+
 fn answer(id: &str, output: u64) -> Entry {
     Entry::Assistant {
         id: MessageId::new(id),

@@ -13,10 +13,9 @@ pub(super) async fn change(
     models: &Arc<Models>,
     person: &Person,
     scribe: &crate::scribe::Held,
-) -> (String, bool) {
+) -> String {
     match apply(request, session, worker, models, person, scribe).await {
-        Ok(message) => (message, true),
-        Err(message) => (message, false),
+        Ok(message) | Err(message) => message,
     }
 }
 
@@ -72,12 +71,26 @@ async fn apply(
     }
     let names = updates.keys().cloned().collect::<Vec<_>>().join(", ");
     catalog.environ.extend(updates);
-    current.extend(catalog.environ.clone());
-    for card in &mut catalog.cards {
-        if let Some(key) = &card.needs {
-            card.ready = current.get(key).is_some_and(|v| !v.is_empty());
+    let warning = match crate::broker::cards_using(&catalog.mind, &catalog.environ).await {
+        Ok(cards) => {
+            catalog.cards = cards;
+            None
         }
-    }
+        Err(message) => {
+            for card in &mut catalog.cards {
+                card.ready = false;
+                let setup = card.setup.get_or_insert_with(|| magi_proto::ask::Setup {
+                    state: magi_proto::ask::SetupState::Unknown,
+                    methods: Vec::new(),
+                    variables: Vec::new(),
+                    fields: Vec::new(),
+                    login: false,
+                });
+                setup.state = magi_proto::ask::SetupState::Unknown;
+            }
+            Some(message)
+        }
+    };
     let existing = boundary.as_ref().and_then(|held| held.backend());
     let starting = existing.is_none();
     let backend = existing.or_else(|| catalog.chosen().and_then(|name| catalog.backend(&name)));
@@ -109,10 +122,7 @@ async fn apply(
     held.set_choices(choices.clone());
     let _ = held
         .publisher()
-        .send(magi_proto::HarnessEvent::ModelsRefreshed {
-            choices,
-            warning: None,
-        });
+        .send(magi_proto::HarnessEvent::ModelsRefreshed { choices, warning });
     drop(held);
     if let Some((model, window)) = planning_for {
         let _ = tokio::time::timeout(crate::GREETING, async {

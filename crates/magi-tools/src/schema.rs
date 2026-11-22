@@ -21,6 +21,9 @@
 
 use serde_json::Value;
 
+mod sampled;
+pub use sampled::sampled;
+
 /// Check `arguments` against `schema`, coercing what can be coerced.
 ///
 /// Returns the arguments as the tool should receive them.

@@ -206,6 +206,103 @@ fills it.
 
 Plus the family floor.
 
+`ask.context.messages` can carry a `system` message with one `tool_changes` content
+block: `{ "type": "tool_changes", "added": [tool], "removed": ["name"] }`. Each added
+tool uses the ordinary neutral declaration, including its optional strictness policy.
+When changes are present, `context.tools` is the initial tool state, not the final state.
+Replay removes names before adding or replacing declarations. This is an opt-in wire
+extension; a role that cannot decode the block must refuse it, not ignore it. It does
+not grant permission to execute a tool. Magi's ordinary session/journal does not yet
+produce or durably replay these entries; direct broker callers can supply them.
+
+`models --json` returns cards with a qualified `provider/model` ID, a protocol `api`,
+model limits/capabilities, and the authoritative `ready` flag. `needs` remains the optional
+legacy credential-variable name. Setup fields contain names, never credential values.
+
+Optional `capabilities.session_identity: true` advertises acceptance of
+`ask.wants.session_id`: an opaque, stable conversation identity, not the per-request
+`about` label. Its bound is 1–256 UTF-8 bytes with no control characters; absent means
+no identity. Magi only sends it to roles explicitly advertising support, replacing any
+configured value with a host-owned SHA-256 identifier scoped to project, memory socket
+and current transcript. Separate agent transcripts do not share an identity even when
+they share a run ID. The current scribe transcript takes precedence after resume;
+unrecorded sessions use the configured transcript or journal ID. Helpers omit it.
+Changing the project or memory namespace changes the identity. The model role owns any
+further account/model/endpoint scoping and protocol-specific cache or routing fields.
+Acceptance does not promise cache hits, retention, or affinity on every protocol.
+
+`name` remains the bare routable model ID. Optional `display_name` is presentation text,
+not an alias: selection and inference still use `id`. Magi forwards it into model choices
+without replacing their qualified `name`. Legacy roles may omit it. CLI listings and
+picker captions show it; ACP uses it as the option label, retaining the route as its value.
+
+Optional `capabilities.input_limits` carries positive `max_request_bytes` and nested `images`
+limits: `max_per_message`, `max_per_request`, and a `resize` profile with `max_width`,
+`max_height`, base64 `max_bytes` and `jpeg_quality` (1–100). Absent values add no provider
+restriction; family resource bounds still apply. Magi preserves these fields in model choices,
+refresh events and session snapshots. The selected `ModelInfo` stays a minimal name/window
+reference; its name identifies the corresponding choice. Invalid limit metadata rejects the
+whole listing, preserving the previous catalog. For vision models with a resize profile,
+Magi normalizes new user/workflow images before admission and tool images before journalling,
+using an isolated, resource-bounded raster worker. Current model metadata is rechecked at
+each storage boundary. Failure refuses a new prompt or records an image-free tool error.
+Historical images are validated before inference and never recompressed; incompatible
+history refuses the request. Text-only models and absent profiles retain the existing
+history bytes. Melchior remains responsible for provider request/count/byte enforcement.
+
+Optional `capabilities.strict_tools` confirms provider-side constrained tool arguments.
+Each `context.tools` declaration may request `strict: "prefer"` or `strict: "require"`;
+omitting it preserves legacy sampling. Magi requires an explicit true capability from the
+selected qualified model's bounded `models` reply before forwarding a required policy.
+Older replacement roles remain usable for ordinary and preferred tools, not required guarantees.
+Melchior validates required strict schemas before credential resolution or inference HTTP.
+This policy is independent of the structured-answer `wants.schema` option.
+
+An optional `request_frame.disable_preferred_strict` boolean reports preferred-tool
+fallback. Magi retains version-1 feedback for the actual model-role program and qualified
+model within the owning session, bounded to 4,096 identities with oldest-first eviction.
+Later asks carry `wants.disable_preferred_strict = true`; required tools remain required.
+False is omitted on both wire types and missing fields mean false. Unknown frame versions
+do not change fallback state. The effective option also participates in cache observations.
+This state is not journaled or shared between sessions and resets on resume/restart.
+
+Optional `capabilities.thinking_levels` lists selectable neutral controls: `off`, `minimal`,
+`low`, `medium`, `high`, `xhigh`, and `max`. An empty list offers no controls; an absent list
+preserves legacy controls without inferring `xhigh`. Unknown names are not selectable.
+`capabilities.thinking` remains provider-native metadata, not the control list. An `off`
+control can map to the minimum effort for models that require reasoning.
+
+The local session's `ModelChanged` event may carry `thinking`, the configured neutral
+control after the change. Attached clients update it when present and preserve their value
+for older events without the field. Fresh session snapshots also carry the current control.
+Manual selections not offered by the current card are refused without replacing the worker
+or changing the saved choice. A model switch resets the control to the configured default
+used by the new backend; it does not retain a previous model's manual override.
+
+Cards may additionally carry `setup`:
+
+- `state`: `ready`, `credential_missing`, `credential_expired`, `credential_unreadable`,
+  `configuration_incomplete`, `protocol_unavailable`, or `auth_unavailable`.
+- `methods`: configured credential strategy names, not credentials.
+- `variables`: required groups of alternative environment-variable names. For example,
+  `[["PRIMARY_KEY", "KEY_ALIAS"], ["PROJECT_ID"]]` requires either key variable and the project.
+- `fields`: missing or invalid provider-configuration field names.
+- `login`: whether a configured sign-in flow is available from the model program.
+
+Magi accepts cards without `setup` and treats unknown setup states conservatively. It re-queries
+the basic `models --json` verb after session environment changes; it does not infer readiness
+from a key variable. If that query fails, it retains the model metadata but marks readiness
+unconfirmed. Model listing has a 30-second deadline, a 16 MiB response limit and a 4,096-card
+limit; exceeding a limit refuses the listing rather than silently truncating it. The ACP
+settings envelope keeps its separate byte budget.
+
+Readiness is local setup availability, not evidence of account entitlement or successful live
+inference. Stored fresh or refreshable OAuth credentials can make a model ready without login
+or token exchange during listing. Unsupported cloud authentication remains unavailable.
+Authentication commands are optional model-role extensions; a replacement that only implements
+the core role is still valid. `models --refresh` is required only for explicit discovery refresh,
+not for environment-driven readiness updates.
+
 `ask` refuses before sending once its run has spent `spend_cap_usd` (10 unless set; `0` or `false`
 for no cap). The refusal is `failed` with `why: "invalid"`, and a coordinator ends the turn with it
 rather than retrying.

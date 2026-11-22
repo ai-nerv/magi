@@ -251,6 +251,11 @@ pub async fn run(
                 match event {
                     // Every kind of key event: with the Kitty protocol a held key arrives as `Repeat`.
                     Event::Key(key) => {
+                        if let Some(command) = app.login_key(key) {
+                            if let Some(command) = command { direct(&mut app, &command_tx, command).await; }
+                            dirty = true;
+                            continue;
+                        }
                         // Whatever the box was writing to itself, it stops and starts its wait over.
                         app.tease.interrupt();
                         // How magi learns the protocol is live; the startup probe was only a guess.
@@ -274,7 +279,7 @@ pub async fn run(
                         // A surface has the keyboard while it has the rows, forwarded by name and
                         // never interpreted. Escape twice takes the screen back: a single one is
                         // forwarded, because a tenant can hold a pty where `esc` is the program's.
-                        if let Some(held) = app.holding() {
+                        if let Some(held) = app.holding().filter(|_| !app.pane_titled("login")) {
                             let (id, detach) = (held.id.clone(), held.detach);
                             // magi's own, never the tenant's: ctrl+c ends it, ctrl+d goes nowhere.
                             let ctrl = key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL);
@@ -337,7 +342,7 @@ pub async fn run(
                         }
                         // `:trace` and `:cost` are modal for the keyboard, which is wrong when a turn
                         // has stopped: the picker would be underneath and Enter would never arrive.
-                        if app.questioned() {
+                        if app.questioned() && !app.pane_titled("login") {
                             app.pane = None;
                         }
                         let busy = app.is_busy();
@@ -567,6 +572,7 @@ pub async fn run(
                         dirty = true;
                     }
                     Event::Paste(text) => {
+                        if app.login_paste(&text) { dirty = true; continue; }
                         app.editor.insert_str(&text);
                         app.refresh_completion(&list_paths);
                         if let Some(command) = app.workflow_request() {
@@ -588,6 +594,9 @@ pub async fn run(
                 }
             }
             _ = ticker.tick() => {
+                if !app.pane_titled("login") && let Some(command) = app.login_cleanup() {
+                    direct(&mut app, &command_tx, command).await;
+                }
                 // The prompt's border scan runs whenever the box is on screen, and one that stopped
                 // when a turn ended would read as the UI having frozen.
                 app.advance();

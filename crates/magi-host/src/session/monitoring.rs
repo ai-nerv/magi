@@ -5,7 +5,13 @@ use magi_proto::HarnessEvent;
 use magi_proto::monitoring::{AgentDetails, RequestContext};
 
 impl Session {
-    pub(crate) fn report_provider_frame(&mut self, frame: magi_model::RequestFrame) {
+    pub(crate) fn report_provider_frame(
+        &mut self,
+        mind: &str,
+        model: &str,
+        frame: magi_model::RequestFrame,
+    ) {
+        self.strict.observe(mind, model, frame);
         let reasons = self.frames.provider(frame);
         let _ = self.events.send(HarnessEvent::ProviderFrame { reasons });
     }

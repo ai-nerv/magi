@@ -108,6 +108,10 @@ impl Settings {
         let mut options = Vec::with_capacity(choices.len());
         for choice in choices {
             if !name_valid(&choice.name)
+                || choice
+                    .display_name
+                    .as_deref()
+                    .is_some_and(|name| !name_valid(name))
                 || choice.requirement.len() > 4096
                 || !names.insert(choice.name.clone())
             {
@@ -115,8 +119,11 @@ impl Settings {
             }
             let description = (!choice.requirement.is_empty()).then_some(choice.requirement);
             options.push(
-                SessionConfigSelectOption::new(choice.name.clone(), choice.name)
-                    .description(description),
+                SessionConfigSelectOption::new(
+                    choice.name.clone(),
+                    choice.display_name.unwrap_or(choice.name),
+                )
+                .description(description),
             );
         }
         if serde_json::to_vec(&options)?.len() > BYTES - 4096 {

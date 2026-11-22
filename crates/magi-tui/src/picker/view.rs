@@ -50,6 +50,9 @@ pub fn render(picker: &Picker, width: u16) -> Vec<Line<'static>> {
     };
 
     let mut out = vec![crate::menu::heading(&picker.title, &note, width)];
+    if let Some(caption) = picker.caption() {
+        out.push(Line::from(format!("  {caption}")));
+    }
     // What is being decided about, above the answers a person may give, indented off the heading.
     out.extend(picker.drawn_about().into_iter().map(|row| {
         let mut spans = vec![ratatui::text::Span::raw("  ")];

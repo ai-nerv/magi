@@ -12,8 +12,8 @@ use magi_proto::Usage;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-/// Every reasoning level, lowest first: what ←/→ step along.
-pub const LEVELS: [&str; 6] = ["off", "minimal", "low", "medium", "high", "max"];
+/// All neutral reasoning levels, lowest first.
+pub const LEVELS: [&str; 7] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 /// What is published about a model, where anything is.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -68,6 +68,7 @@ pub struct Card<'a> {
     pub context_window: u64,
     pub reasons: bool,
     pub thinking: &'a str,
+    pub thinking_controls: bool,
     /// Which provider serves it, by tag; `None` leaves it to the router.
     pub provider: Option<&'a str>,
     /// This session's turns, oldest first.
@@ -211,19 +212,27 @@ fn heading(out: &mut Rendered, card: &Card<'_>, ink: &Ink, width: u16) {
 /// The rows that can be taken: the reasoning level, stepped in place, and a way to another model.
 fn settings(out: &mut Rendered, card: &Card<'_>, ink: &Ink) {
     let mut thinking = vec![Span::styled(format!("{:<14}", "Thinking"), ink.label)];
-    if card.reasons {
+    if card.reasons && card.thinking_controls {
         thinking.extend([
             Span::styled("◂ ".to_owned(), ink.dim),
             Span::styled(card.thinking.to_owned(), ink.value),
             Span::styled(" ▸".to_owned(), ink.dim),
         ]);
+    } else if card.reasons {
+        thinking.push(Span::styled(
+            format!("{} — no selectable levels", card.thinking),
+            ink.dim,
+        ));
     } else {
         thinking.push(Span::styled(
             "off — this model does not reason".to_owned(),
             ink.dim,
         ));
     }
-    out.push(Line::from(thinking), Some("thinking"));
+    out.push(
+        Line::from(thinking),
+        (card.reasons && card.thinking_controls).then_some("thinking"),
+    );
     out.push(
         Line::from(vec![
             Span::styled(format!("{:<14}", "Model"), ink.label),

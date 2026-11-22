@@ -142,6 +142,18 @@ refused at load with "missing field `transport`", because the registry has no wa
 the function is the point. The other kinds are declarations rather than code — `command` spawns
 one program per call with the arguments in argv, `casper` hands the call to casper.
 
+Lua and command tool declarations may set `strict = "prefer"` or `strict = "require"`
+to request provider-side constrained arguments. Omit it for legacy sampling. A required
+policy needs an explicit `capabilities.strict_tools = true` from the selected model role;
+Magi refuses before forwarding an ask if the role does not confirm it. Melchior separately
+checks the schema and protocol before credentials or inference networking. A preferred
+policy can fall back without changing the original tool schema.
+
+Strict conversion represents optional properties as nullable required fields. For opted-in
+tools, both execution paths restore optional nulls to omissions/defaults during validation.
+Required fields, explicitly nullable values, original transcript arguments and permission
+checks retain their meaning. The structured-answer schema is a separate setting.
+
 ### magi — a watcher
 
 ```lua

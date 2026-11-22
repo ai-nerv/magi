@@ -544,6 +544,7 @@ mod mem_accounting_capability_negotiation {
     fn backend() -> crate::catalog::Backend {
         let mut held = crate::catalog::Catalog::empty();
         held.cards = vec![magi_proto::ask::Card {
+            display_name: None,
             vision: false,
             id: "local/a".to_owned(),
             provider: "local".to_owned(),
@@ -556,6 +557,7 @@ mod mem_accounting_capability_negotiation {
             capabilities: None,
             reasons: false,
             ready: true,
+            setup: None,
             needs: None,
         }];
         held.backend("local/a").expect("a backend")

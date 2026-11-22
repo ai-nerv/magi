@@ -10,6 +10,95 @@ use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 type Reader = FrameReader<OwnedReadHalf>;
 type Writer = FrameWriter<OwnedWriteHalf>;
 
+#[tokio::test]
+async fn environment_readiness_comes_from_basic_model_role_not_one_variable() {
+    let dir = Scratch::new("magi-env", "readiness");
+    let provider = dir.join("mind");
+    let card = serde_json::json!({"id":"fixture/m","provider":"fixture","name":"m",
+        "api":"openai-completions","ready":false,"needs":"PRIMARY_KEY"});
+    let reply = serde_json::json!({"ok":true,"result":[card.clone()]}).to_string();
+    let script = format!(
+        "#!/bin/sh\n[ \"$*\" = 'models --json' ] || exit 3\n\
+         [ \"$FAIL_LIST\" != yes ] || exit 4\n\
+         ready=false\n[ -n \"${{PRIMARY_KEY:-$ALTERNATE_KEY}}\" ] && [ -n \"$PROJECT_ID\" ] && ready=true\n\
+         printf '%s\\n' '{reply}' | sed \"s/\\\"ready\\\":false/\\\"ready\\\":$ready/\"\n"
+    );
+    std::fs::write(&provider, script).expect("basic model role");
+    std::fs::set_permissions(&provider, std::fs::Permissions::from_mode(0o700))
+        .expect("executable");
+    magi_model::scratch::executable_ready(&provider);
+    let mut catalog = Catalog::empty();
+    catalog.mind = provider.to_string_lossy().into_owned();
+    catalog.cwd = dir.to_path_buf();
+    catalog.cards = vec![serde_json::from_value(card).expect("legacy card")];
+    for name in ["PRIMARY_KEY", "ALTERNATE_KEY", "PROJECT_ID", "FAIL_LIST"] {
+        catalog.environ.insert(name.into(), String::new());
+    }
+    let memory = magi_testkit::memory::Failing::start(&dir.join("memory.sock"))
+        .await
+        .expect("memory");
+    let path = dir.join("s.sock");
+    let serving = tokio::spawn(magi_host::serve_on(
+        magi_ipc::bind(&path).await.expect("bind"),
+        Session::recorded(SessionId::new("env-readiness"), Vec::new()),
+        None,
+        catalog,
+        Some(memory.socket().to_owned()),
+    ));
+    let stream = magi_ipc::connect(&path).await.expect("connect");
+    let (read, write) = stream.into_split();
+    let mut reader = FrameReader::new(read);
+    let mut writer = FrameWriter::new(write);
+    writer
+        .write(&UiCommand::Attach {
+            session: None,
+            from_cursor: Cursor::ZERO,
+            draws: false,
+            key: magi_ipc::read_key(&path),
+        })
+        .await
+        .expect("attach");
+    event(&mut reader, |event| {
+        matches!(event, HarnessEvent::SessionSnapshot { .. })
+    })
+    .await;
+    for (input, ready, warning) in [
+        ("PRIMARY_KEY=private-sentinel", false, false),
+        ("PROJECT_ID=fixture", true, false),
+        (
+            "PRIMARY_KEY='' ALTERNATE_KEY=private-sentinel-alias",
+            true,
+            false,
+        ),
+        ("PROJECT_ID=''", false, false),
+        ("PROJECT_ID=fixture", true, false),
+        ("FAIL_LIST=yes", false, true),
+    ] {
+        writer
+            .write(&UiCommand::Environment(Environment {
+                source: false,
+                input: input.into(),
+            }))
+            .await
+            .expect("environment update");
+        let HarnessEvent::ModelsRefreshed {
+            choices,
+            warning: actual_warning,
+        } = event(&mut reader, |event| {
+            matches!(event, HarnessEvent::ModelsRefreshed { .. })
+        })
+        .await
+        else {
+            panic!("model event");
+        };
+        assert_eq!(choices.len(), 1);
+        assert_eq!(choices[0].requirement.is_empty(), ready, "{input}");
+        assert_eq!(actual_warning.is_some(), warning);
+    }
+    serving.abort();
+    let _ = serving.await;
+}
+
 async fn event(reader: &mut Reader, wanted: impl Fn(&HarnessEvent) -> bool) -> HarnessEvent {
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
         loop {

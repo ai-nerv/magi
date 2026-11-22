@@ -9,6 +9,17 @@ use tokio::sync::{mpsc, watch};
 /// Send a command to whichever session is on screen: attaching is driving, and `--view-only` is
 /// not. Only this terminal's geometry stays home, since that session draws nothing here.
 pub(super) async fn direct(app: &mut App, to: &mpsc::Sender<UiCommand>, command: UiCommand) {
+    if let UiCommand::Authenticate { request, .. } = &command
+        && !app.connected
+    {
+        app.login_answer(
+            *request,
+            magi_proto::authentication::Reply::failed(
+                "Disconnected; reopen :login after reconnecting.",
+            ),
+        );
+        return;
+    }
     if app.view_only && crate::app::changes(&command) {
         app.refuse_view_only();
         return;

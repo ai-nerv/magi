@@ -47,6 +47,7 @@ pub struct App {
     /// A list or a completion popup. One slot: running a command closes the popup that offered it.
     pub overlay: Option<Overlay>,
     pub pane: Option<magi_tui::pane::Pane>,
+    pub login: login::Login,
     /// Recorded from the start whether or not anybody looks, in one bounded ring.
     pub timeline: magi_tui::trace::Trace,
     pub picking: Option<Picking>,
@@ -170,6 +171,7 @@ impl App {
     pub fn new() -> Self {
         Self {
             pane: None,
+            login: login::Login::default(),
             timeline: magi_tui::trace::Trace::new(),
             entries: Vec::new(),
             cursor: Cursor::ZERO,
@@ -511,6 +513,12 @@ impl App {
             .or_else(|| self.model.as_ref().map(|m| m.name.clone()));
         let mut picker = magi_tui::picker::Picker::new("Model", choices, current.as_deref());
         picker.table(crate::models::COLUMNS);
+        picker.captions(self.choices.iter().filter_map(|choice| {
+            choice
+                .display_name
+                .as_ref()
+                .map(|name| (choice.name.clone(), name.clone()))
+        }));
         for ch in query.chars() {
             picker.push(ch);
         }
@@ -523,35 +531,6 @@ impl App {
         }
         self.overlay = Some(picker.into());
         self.picking = Some(Picking::Model);
-    }
-
-    /// Open the reasoning-level list. Every level is shown; one the catalog says this model refuses is not takeable.
-    pub fn open_thinking_picker(&mut self) {
-        const LEVELS: [(&str, &str); 6] = [
-            ("off", "no reasoning — the default"),
-            ("minimal", "the smallest budget the model offers"),
-            ("low", "a small budget"),
-            ("medium", "the usual budget"),
-            ("high", "a large budget"),
-            ("max", "the largest budget the model offers"),
-        ];
-        let reasons = self.model_reasons;
-        let choices = LEVELS
-            .iter()
-            .map(|(value, detail)| magi_tui::picker::Choice {
-                value: (*value).to_owned(),
-                detail: if reasons || *value == "off" {
-                    (*detail).to_owned()
-                } else {
-                    "this model does not reason".to_owned()
-                },
-                ready: reasons || *value == "off",
-            })
-            .collect();
-        self.overlay = Some(
-            magi_tui::picker::Picker::new("Thinking", choices, Some(self.thinking.as_str())).into(),
-        );
-        self.picking = Some(Picking::Thinking);
     }
 
     /// Show every line of each tool result, or go back to the preview. A whole transcript at a time.
@@ -610,6 +589,7 @@ mod applying;
 mod asked;
 mod asks;
 mod folding;
+mod login;
 mod resetting;
 #[cfg(test)]
 mod retracting;
@@ -619,6 +599,7 @@ mod siblings;
 pub mod surfacing;
 #[cfg(test)]
 mod tests;
+mod thinking;
 #[path = "views.rs"]
 mod views;
 mod workflows;

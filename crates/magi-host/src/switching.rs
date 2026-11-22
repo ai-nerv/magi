@@ -37,6 +37,11 @@ pub(super) async fn switch_model(
         name: backend.model.clone(),
         context_window: backend.context_window.unwrap_or(0),
     };
+    let thinking = backend
+        .wants
+        .thinking
+        .map_or("off", magi_model::ThinkingLevel::as_str)
+        .to_owned();
     // Taken before the backend is handed to the worker, which consumes it.
     let planning_for = backend
         .context_window
@@ -54,6 +59,7 @@ pub(super) async fn switch_model(
     {
         let mut held = session.lock().await;
         held.set_model(Some(info));
+        held.set_thinking(thinking);
         // Another model has other providers: a choice made for the last one means nothing here.
         held.set_provider(None);
         held.announce_model();
@@ -104,7 +110,7 @@ pub(super) async fn switch_thinking(
     ) else {
         return Some(format!(
             "there is no thinking level called {level:?}. \
-             Try off, minimal, low, medium, high or max."
+             Try off, minimal, low, medium, high, xhigh or max."
         ));
     };
 
@@ -114,6 +120,14 @@ pub(super) async fn switch_thinking(
         let held = session.lock().await;
         (held.model_name()?, held.provider().map(ToOwned::to_owned))
     };
+    if !catalog
+        .thinking_levels(&name)
+        .is_some_and(|levels| levels.contains(&parsed))
+    {
+        return Some(format!(
+            "thinking level {level:?} is not selectable for {name}"
+        ));
+    }
     let mut backend = catalog.backend(&name)?;
     backend.wants.thinking = Some(parsed);
     backend.wants.provider = provider;

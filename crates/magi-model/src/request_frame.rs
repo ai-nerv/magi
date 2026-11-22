@@ -8,4 +8,6 @@ pub struct RequestFrame {
     pub dialect: [u8; 32],
     pub policy: [u8; 32],
     pub omitted_images: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disable_preferred_strict: bool,
 }

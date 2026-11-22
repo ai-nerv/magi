@@ -54,16 +54,24 @@ fn query_bounds_output_time_environment_and_reaps_its_leader() {
         ("printf 'not-json'".into(), false),
         ("exec sleep 30".into(), false),
     ] {
-        std::fs::write(&program, format!("#!/bin/sh\nprintf '%s' $$ > '{}'\n[ \"$#\" = 1 ] && [ \"$1\" = event-capabilities ] || exit 9\n[ -z \"${{PRIVATE_EVENT_CANARY+x}}\" ] || exit 10\n{body}\n", pid.display())).expect("script");
+        std::fs::write(&program, format!("#!/bin/sh\n[ \"$1\" = --probe ] && exit 0\nprintf '%s' $$ > '{}'\n[ \"$#\" = 1 ] && [ \"$1\" = event-capabilities ] || exit 9\n[ -z \"${{PRIVATE_EVENT_CANARY+x}}\" ] || exit 10\n{body}\n", pid.display())).expect("script");
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700))
             .expect("executable");
+        magi_model::scratch::executable_ready(&program);
         let mut command = Command::new(&program);
         command
             .arg("serve")
             .arg("private-argument-canary")
             .env("PRIVATE_EVENT_CANARY", "secret");
         let began = Instant::now();
-        assert_eq!(supported(&command, Owner::Melchior), accepted, "{body}");
+        let result = probe(&command);
+        assert_eq!(
+            result
+                .as_ref()
+                .is_ok_and(|bytes| accepts(bytes, Owner::Melchior)),
+            accepted,
+            "{body}: {result:?}"
+        );
         assert!(began.elapsed() < Duration::from_secs(5));
         let child = std::fs::read_to_string(&pid).expect("child PID");
         assert!(

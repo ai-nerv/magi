@@ -39,6 +39,12 @@ impl Worker {
         Some(backend)
     }
 
+    pub(crate) fn image_profile(&self) -> Option<(&str, Option<&magi_model::ImageResize>)> {
+        self.reporting
+            .as_ref()
+            .map(|backend| (backend.model.as_str(), backend.image_resize.as_ref()))
+    }
+
     /// Start a worker owning `backend`. The thread lives as long as the daemon, and is not pooled:
     /// there is one VM because there is one description of each protocol.
     #[must_use]

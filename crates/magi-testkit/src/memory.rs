@@ -66,14 +66,6 @@ impl Serving {
             child,
             socket: sockets[0].clone(),
         };
-        if program.is_absolute() {
-            assert_eq!(
-                std::fs::read_link(format!("/proc/{}/exe", serving.child.id()))
-                    .expect("memory executable"),
-                std::fs::canonicalize(program).expect("selected memory executable"),
-                "memory fixture must execute the selected artifact"
-            );
-        }
 
         // Answering, not merely bound, on the durable clock: the first call opens the store.
         let patience = magi_ipc::family::DURABLE;
@@ -86,6 +78,14 @@ impl Serving {
                 let asked = vec![serde_json::Value::String(instance.to_owned())];
                 if family.call_within("replay", asked, patience).await.is_ok() {
                     serving.socket.clone_from(socket);
+                    if program.is_absolute() {
+                        assert_eq!(
+                            std::fs::read_link(format!("/proc/{}/exe", serving.child.id()))
+                                .expect("memory executable"),
+                            std::fs::canonicalize(program).expect("selected memory executable"),
+                            "memory fixture must execute the selected artifact"
+                        );
+                    }
                     return Some(serving);
                 }
             }

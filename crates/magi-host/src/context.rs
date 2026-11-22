@@ -135,7 +135,7 @@ impl Built {
                     return;
                 }
                 let mut content = Vec::new();
-                if !thinking.is_empty() {
+                if !thinking.is_empty() || signatures.thinking.is_some() {
                     content.push(Content::Thinking {
                         thinking: thinking.clone(),
                         signature: signatures.thinking.clone(),
@@ -495,6 +495,32 @@ mod context_tests {
             _ => None,
         });
         assert_eq!(carried.flatten().as_deref(), Some("sig-call"));
+    }
+
+    #[test]
+    fn signature_only_assistant_is_preserved_in_context() {
+        let (mut session, _dir) = session("empty-thinking");
+        session
+            .commit(Entry::Assistant {
+                id: MessageId::new("opaque"),
+                text: String::new(),
+                thinking: String::new(),
+                stop_reason: Some(StopReason::EndTurn),
+                error: None,
+                signatures: Signatures {
+                    text: None,
+                    thinking: Some("opaque\0α+/=".into()),
+                },
+                usage: magi_proto::Usage::default(),
+            })
+            .expect("entry");
+        assert_eq!(
+            of(&session).messages[0].content,
+            vec![Content::Thinking {
+                thinking: String::new(),
+                signature: Some("opaque\0α+/=".into()),
+            }]
+        );
     }
 
     #[test]

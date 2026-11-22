@@ -9,6 +9,26 @@ pub(crate) struct Models {
 }
 
 impl Models {
+    pub async fn reload(&self, session: &Arc<Mutex<crate::Session>>) {
+        let _fetching = self.fetching.lock().await;
+        let configured = self.catalog.read().await.clone();
+        let result = crate::broker::cards_using(&configured.mind, &configured.environ).await;
+        let mut catalog = self.catalog.write().await;
+        let warning = match result {
+            Ok(cards) => {
+                catalog.cards = cards;
+                None
+            }
+            Err(message) => Some(message),
+        };
+        let choices = catalog.choices();
+        let mut held = session.lock().await;
+        held.set_choices(choices.clone());
+        let _ = held
+            .publisher()
+            .send(magi_proto::HarnessEvent::ModelsRefreshed { choices, warning });
+    }
+
     pub fn new(catalog: crate::catalog::Catalog) -> Self {
         Self {
             catalog: RwLock::new(catalog),

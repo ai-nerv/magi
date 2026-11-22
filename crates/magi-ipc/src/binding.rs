@@ -8,8 +8,15 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-/// The lock and the inode of every socket this process has bound and not yet given back.
-static HELD: Mutex<Option<HashMap<PathBuf, (std::fs::File, u64)>>> = Mutex::new(None);
+/// The lock and the identity of every socket this process has bound and not yet given back.
+static HELD: Mutex<Option<HashMap<PathBuf, (std::fs::File, Identity)>>> = Mutex::new(None);
+
+/// Which file a path names: its device, inode and change time.
+type Identity = (u64, u64, i64, i64);
+
+fn identity(meta: &std::fs::Metadata) -> Identity {
+    (meta.dev(), meta.ino(), meta.ctime(), meta.ctime_nsec())
+}
 
 /// Where the lock for the socket at `path` lives.
 #[must_use]
@@ -104,25 +111,25 @@ pub(crate) fn take(path: &Path) -> io::Result<std::fs::File> {
 
 /// Remember that `path` is bound, holding `lock`.
 pub(crate) fn hold(path: &Path, lock: std::fs::File) -> io::Result<()> {
-    let inode = std::fs::symlink_metadata(path)?.ino();
+    let held_as = identity(&std::fs::symlink_metadata(path)?);
     if let Ok(mut held) = HELD.lock() {
         held.get_or_insert_with(HashMap::new)
-            .insert(path.to_path_buf(), (lock, inode));
+            .insert(path.to_path_buf(), (lock, held_as));
     }
     Ok(())
 }
 
-/// Give back a socket this process bound: unlinked only while it is still the inode that was
+/// Give back a socket this process bound: unlinked only while it is still the file that was
 /// bound, with its key and its lock.
 pub fn unbind(path: &Path) {
     let taken = HELD
         .lock()
         .ok()
         .and_then(|mut held| held.as_mut()?.remove(path));
-    let Some((lock, inode)) = taken else {
+    let Some((lock, held_as)) = taken else {
         return;
     };
-    if std::fs::symlink_metadata(path).is_ok_and(|now| now.ino() == inode) {
+    if std::fs::symlink_metadata(path).is_ok_and(|now| identity(&now) == held_as) {
         let _ = std::fs::remove_file(path);
         crate::secret::drop_key(path);
     }
@@ -240,6 +247,8 @@ mod tests {
         let path = dir.join("s.sock");
         let ours = crate::bind(&path).await.expect("bind");
         drop(ours);
+        // Somebody else's bind, a tick of the file clock later.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         std::fs::remove_file(&path).expect("unlink");
         let _theirs = std::os::unix::net::UnixListener::bind(&path).expect("theirs");
         unbind(&path);

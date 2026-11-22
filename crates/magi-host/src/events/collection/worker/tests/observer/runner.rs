@@ -121,6 +121,13 @@ fn identity(child: &Child, selected: &Path, hash: String) -> io::Result<Identity
         .ok_or(io::ErrorKind::InvalidData)?
         .to_owned();
     let path = format!("/proc/{pid}/exe");
+    // Spawn can return while the child is still replacing its image.
+    let began = Instant::now();
+    while fs::read_link(&path).ok().as_deref() != Some(selected)
+        && began.elapsed() < Duration::from_secs(5)
+    {
+        thread::sleep(POLL_INTERVAL);
+    }
     if fs::read_link(&path)? != selected || digest(Path::new(&path))? != hash {
         return Err(io::ErrorKind::InvalidData.into());
     }

@@ -3,9 +3,10 @@
 use super::{Choice, Picker};
 use ratatui::text::Line;
 
-#[derive(Debug, Clone)]
-pub(super) struct Columns {
+#[derive(Debug, Clone, Default)]
+pub(super) struct Presentation {
     pub(super) headers: Vec<String>,
+    pub(super) captions: std::collections::BTreeMap<String, String>,
 }
 
 pub(super) struct Table<'a> {

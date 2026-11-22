@@ -173,7 +173,7 @@ impl Turn {
     #[must_use]
     pub fn message(&self) -> Message {
         let mut content = Vec::new();
-        if !self.thinking.is_empty() {
+        if !self.thinking.is_empty() || self.signature.is_some() {
             content.push(Content::Thinking {
                 thinking: self.thinking.clone(),
                 signature: self.signature.clone(),
@@ -369,6 +369,21 @@ mod tests {
         };
         assert_eq!(thinking, "why");
         assert_eq!(signature.as_deref(), Some("sig"));
+    }
+
+    #[test]
+    fn encrypted_thinking_without_visible_text_keeps_its_signature() {
+        let turn = turn(vec![
+            Delta::Signature("opaque continuation".into()),
+            Delta::Stop(StopReason::EndTurn),
+        ]);
+        assert_eq!(
+            turn.message().content,
+            vec![Content::Thinking {
+                thinking: String::new(),
+                signature: Some("opaque continuation".into()),
+            }]
+        );
     }
 
     #[test]
