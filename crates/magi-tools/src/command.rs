@@ -31,6 +31,7 @@ pub struct CommandTool {
     name: String,
     description: String,
     parameters: serde_json::Value,
+    strict: Option<magi_model::ToolStrictness>,
     program: String,
     args: Vec<String>,
     env: BTreeMap<String, String>,
@@ -51,11 +52,19 @@ impl CommandTool {
             name: name.to_owned(),
             description: description.to_owned(),
             parameters,
+            strict: None,
             program: program.to_owned(),
             args,
             env: BTreeMap::new(),
             timeout: Duration::from_secs(DEFAULT_TIMEOUT),
         }
+    }
+
+    /// The requested provider-side tool argument policy.
+    #[must_use]
+    pub fn with_strict(mut self, strict: Option<magi_model::ToolStrictness>) -> Self {
+        self.strict = strict;
+        self
     }
 
     /// Environment beside what every process magi starts already gets.
@@ -136,6 +145,10 @@ impl Tool for CommandTool {
 
     fn parameters(&self) -> serde_json::Value {
         self.parameters.clone()
+    }
+
+    fn strict(&self) -> Option<magi_model::ToolStrictness> {
+        self.strict
     }
 
     fn run(&self, arguments: &serde_json::Value, ops: &dyn Ops, cancel: &dyn Cancel) -> Output {

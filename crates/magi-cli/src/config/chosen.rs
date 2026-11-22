@@ -54,6 +54,7 @@ pub(crate) mod tests {
     /// Two cards: one that can be used and one whose key is not set.
     pub(super) fn catalog() -> magi_host::catalog::Catalog {
         let card = |id: &str, ready: bool| Card {
+            display_name: None,
             vision: false,
             id: id.to_owned(),
             provider: id.split('/').next().unwrap_or_default().to_owned(),
@@ -66,6 +67,7 @@ pub(crate) mod tests {
             capabilities: None,
             reasons: false,
             ready,
+            setup: None,
             needs: (!ready).then(|| "MAGI_TEST_NOT_SET".to_owned()),
         };
         magi_host::catalog::Catalog {

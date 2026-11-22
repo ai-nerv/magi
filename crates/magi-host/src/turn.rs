@@ -8,12 +8,15 @@ use magi_proto::{AgentStatus, Entry, MessageId, ToolCallId};
 use magi_tools::{Ops, Registry};
 
 pub use crate::catalog::Backend;
+mod identity;
+mod images;
 
 /// Run one turn and journal what it produced. The entry is written before the turn ends, so a UI
 /// attaching mid-turn extends a partial message and a crash leaves one rather than nothing.
 async fn one_turn(
     session: &tokio::sync::Mutex<Session>,
     backend: &Backend,
+    wants: &magi_proto::ask::Wants,
     context: magi_model::Context,
     cancel: &crate::cancel::Cancel,
     (scribe, prompt): (&crate::scribe::Held, &crate::laying::Prompt),
@@ -53,7 +56,7 @@ async fn one_turn(
             (&backend.mind, &backend.environ),
             &backend.model,
             &context,
-            &backend.wants,
+            wants,
             |delta| {
                 // A closed receiver means the turn is over; there is nobody to tell.
                 let _ = arrivals.send(Arrival::Delta(delta));
@@ -77,7 +80,7 @@ async fn one_turn(
                 () = cancel.requested() => break Ok(()),
                 Some(arrival) = arriving.recv() => {
                     match arrival {
-                        Arrival::RequestFrame(frame) => session.lock().await.report_provider_frame(frame),
+                        Arrival::RequestFrame(frame) => session.lock().await.report_provider_frame(&backend.mind, &backend.model, frame),
                         // Revised rather than amended: an amendment writes to disk and flushes.
                         Arrival::Delta(delta) => {
                             // The first token says this request holds the server; helpers kept
@@ -123,7 +126,12 @@ async fn one_turn(
     // A delta and the end of the stream can arrive in the same poll, and the loop breaks on the outcome.
     while let Ok(arrival) = arriving.try_recv() {
         match arrival {
-            Arrival::RequestFrame(frame) => session.lock().await.report_provider_frame(frame),
+            Arrival::RequestFrame(frame) => {
+                session
+                    .lock()
+                    .await
+                    .report_provider_frame(&backend.mind, &backend.model, frame)
+            }
             Arrival::Delta(delta) => turn.apply(delta),
             // A retry that landed in the same poll the stream ended in. Handled exactly as the loop
             // handles it: everything after a retry in a FIFO channel belongs to the attempt after it.
@@ -413,6 +421,7 @@ async fn run_scoped(
     let mut tighter: Option<magi_model::Context> = None;
     let mut replans: u32 = 0;
     let mut progress = progress::Progress::default();
+    let mut checked_images = crate::images::History::default();
 
     for _ in 0..MAX_ROUNDS {
         // A turn is one exchange with the model, and this is where a watcher learns of it.
@@ -485,8 +494,36 @@ async fn run_scoped(
         }
         // What it came to, so what follows a refusal can be held to less.
         let sent = admission.counted();
-        session.lock().await.report_frame(&context, backend.frame());
-        let round = one_turn(session, backend, context, &cancel, (scribe, &prompt)).await?;
+        let image_profile =
+            images::history(session, backend, &context, &mut checked_images, &cancel).await?;
+        let session_id = identity::for_turn(session, backend, scribe).await;
+        let wants = {
+            let mut held = session.lock().await;
+            if !cancel.is_requested() && images::profile(&held, backend) != image_profile {
+                return Err(crate::HostError::Refused("Model image limits changed during historical validation; history was not changed.".into()));
+            }
+            let mut wants = held.strict_wants(&backend.mind, &backend.model, &backend.wants);
+            if wants.session_id != session_id {
+                wants.to_mut().session_id = session_id;
+            }
+            held.report_frame(
+                &context,
+                crate::frames::Request {
+                    wants: &wants,
+                    ..backend.frame()
+                },
+            );
+            wants
+        };
+        let round = one_turn(
+            session,
+            backend,
+            &wants,
+            context,
+            &cancel,
+            (scribe, &prompt),
+        )
+        .await?;
 
         for (attempt, of, delay_ms) in &round.retries {
             registry.saw(&magi_tools::Event::Retried {
@@ -617,8 +654,9 @@ async fn run_scoped(
                 id: ToolCallId::new(call.id.clone()),
                 revisions: Some(&revisions),
             };
-            let mut output =
+            let (mut output, completion) =
                 progress.finish(prepared, call, registry, &calling, &cancel, &file_revisions);
+            let image_profile = images::output(session, backend, &mut output, &cancel).await;
             // The arguments and the stub stay out of the log: a command line can carry a secret.
             magi_model::noted!(
                 "tool: {} {} in {}ms, {} bytes of arguments, {} bytes back",
@@ -628,11 +666,6 @@ async fn run_scoped(
                 call.arguments.len(),
                 output.content.len(),
             );
-            // The other half of the loop: what the turn did with what it was given, the only signal
-            // balthasar has. After the tool, before the entry is amended, and off with no ledger.
-            if let Some(injection) = &prompt.injection {
-                acted_on(scribe, injection, call, output.is_error).await;
-            }
             let mut held = session.lock().await;
             if !held.file_revisions().same(&file_revisions) {
                 return Err(magi_journal::JournalError::Refused(
@@ -641,6 +674,8 @@ async fn run_scoped(
                 .into());
             }
             let file_delivery = output.file_delivery.take();
+            images::fence(&mut output, image_profile, &images::profile(&held, backend));
+            progress.completed(completion, &output);
             let file_failed = output.is_error;
             held.hint(&call.id, output.hints);
             held.amend_at(
@@ -664,6 +699,10 @@ async fn run_scoped(
                 && let Some(delivery) = file_delivery
             {
                 file_revisions.delivered(delivery, at.0, file_failed);
+            }
+            drop(held);
+            if let Some(injection) = &prompt.injection {
+                acted_on(scribe, injection, call, file_failed).await;
             }
         }
         // Again after the tools have run: a Lua tool that shells out asks its own questions.

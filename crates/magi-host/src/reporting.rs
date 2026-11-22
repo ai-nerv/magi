@@ -275,6 +275,7 @@ mod tests {
     async fn a_start_past_the_transcript_reads_as_nothing_rather_than_a_panic() {
         let mut catalog = crate::catalog::Catalog::empty();
         catalog.cards = vec![magi_proto::ask::Card {
+            display_name: None,
             id: "fake/m".into(),
             provider: "fake".into(),
             name: "m".into(),
@@ -287,6 +288,7 @@ mod tests {
             capabilities: None,
             reasons: false,
             ready: true,
+            setup: None,
             needs: None,
         }];
         let backend = catalog.backend("fake/m").expect("a backend");
@@ -318,6 +320,7 @@ mod tests {
         }
         let mut catalog = crate::catalog::Catalog::empty();
         catalog.cards = vec![magi_proto::ask::Card {
+            display_name: None,
             id: "fake/m".into(),
             provider: "fake".into(),
             name: "m".into(),
@@ -330,6 +333,7 @@ mod tests {
             capabilities: None,
             reasons: false,
             ready: true,
+            setup: None,
             needs: None,
         }];
         let mut backend = catalog.backend("fake/m").expect("a backend");
@@ -370,6 +374,7 @@ mod tests {
 
         let mut catalog = crate::catalog::Catalog::empty();
         catalog.cards = vec![magi_proto::ask::Card {
+            display_name: None,
             id: "fake/m".into(),
             provider: "fake".into(),
             name: "m".into(),
@@ -382,6 +387,7 @@ mod tests {
             capabilities: None,
             reasons: false,
             ready: true,
+            setup: None,
             needs: None,
         }];
         let mut backend = catalog.backend("fake/m").expect("a backend");

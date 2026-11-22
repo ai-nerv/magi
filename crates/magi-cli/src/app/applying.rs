@@ -9,6 +9,10 @@ use super::*;
 impl App {
     /// Fold one harness event into the state.
     pub fn apply(&mut self, event: HarnessEvent) {
+        if let HarnessEvent::Authentication { request, reply } = event {
+            self.login_answer(request, reply);
+            return;
+        }
         self.cursor = self.cursor.max(event.cursor());
         // **Every event, before anything decides what to do with it.** The trace is a view of
         // what happened, so it has to be written where everything arrives rather than in the
@@ -17,6 +21,7 @@ impl App {
         self.timeline.note(&event);
         self.stir_for(&event);
         match event {
+            HarnessEvent::Authentication { .. } => {}
             HarnessEvent::TurnStarted { .. }
             | HarnessEvent::TurnFinished { .. }
             | HarnessEvent::PromptRefused { .. }
@@ -36,6 +41,7 @@ impl App {
                         .iter()
                         .any(|c| c.name == chosen.name && c.reasoning)
                 });
+                self.refresh_thinking_controls();
                 if self.picking == Some(Picking::Model) && self.overlay.is_some() {
                     self.open_model_picker();
                 }
@@ -80,6 +86,7 @@ impl App {
                     }
                 }
                 self.set_status(status);
+                self.refresh_thinking_controls();
                 // Now that the daemon's entries have replaced ours, anything the UI knew at
                 // startup can be added without the snapshot eating it.
                 if let Some(text) = self.pending_notice.take() {
@@ -250,7 +257,12 @@ impl App {
                 self.judging = judging;
                 self.refresh_views();
             }
-            HarnessEvent::ModelChanged { model, .. } => {
+            HarnessEvent::ModelChanged {
+                model, thinking, ..
+            } => {
+                if let Some(thinking) = thinking {
+                    self.thinking = thinking;
+                }
                 let before = self.model.as_ref().map(|m| m.name.clone());
                 let after = model.as_ref().map(|m| m.name.clone());
                 // Another model has other providers, and the session let go of the choice too.
@@ -264,6 +276,7 @@ impl App {
                     self.show_notice(format!("Model is now `{name}`."));
                 }
                 self.model = model;
+                self.refresh_thinking_controls();
             }
             // Not a transcript entry: the request was understood and declined, which is a
             // fact about what the UI asked rather than about the conversation.

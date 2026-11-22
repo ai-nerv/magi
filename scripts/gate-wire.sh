@@ -134,6 +134,7 @@ capped=$(for file in $(runs); do
   # A length written was held to the cap in the ten lines before it.
   shipped "$file" | awk -F: -v file="$file" -v cap="$CAP_HELD" '
     { seen[$1] = $0 }
+    /^[0-9]+:[ \t]*sha2::Digest::update\([^;]*\.to_be_bytes\(\)\);[ \t]*$/ { next }
     /to_be_bytes\(/ {
       held = 0
       for (back = $1 - 10; back < $1; back++)

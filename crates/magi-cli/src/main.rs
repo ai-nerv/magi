@@ -200,6 +200,17 @@ impl Drop for Execution {
 }
 
 fn execute() -> Result<()> {
+    let mut args = std::env::args_os().skip(1);
+    if args
+        .next()
+        .is_some_and(|arg| arg == magi_host::images::WORKER_ARG)
+    {
+        anyhow::ensure!(
+            args.next().is_none(),
+            "image worker takes only a bounded stdin request"
+        );
+        return magi_host::images::worker().map_err(anyhow::Error::msg);
+    }
     let cli = Cli::parse();
     if cli.agent_event_bootstrap {
         if !(matches!(cli.command, Some(Command::Fork { .. }))
@@ -323,7 +334,7 @@ async fn run(cli: Cli, opening: Option<opening::Opening>) -> Result<()> {
             Ok(())
         }
         Some(Command::Models { all }) => {
-            models::print(all, how);
+            models::print(all, how).await;
             Ok(())
         }
         Some(Command::FakeHost { replay, pace_ms }) => {

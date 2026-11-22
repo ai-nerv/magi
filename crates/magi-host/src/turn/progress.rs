@@ -26,6 +26,11 @@ struct Failure {
     streak: u8,
 }
 
+pub(super) struct Completion {
+    key: Key,
+    evidence: Option<Key>,
+}
+
 pub(super) struct Scheduled {
     key: Option<Key>,
     native: Option<String>,
@@ -64,12 +69,14 @@ impl Progress {
         Ok(())
     }
 
-    fn completed(&mut self, key: Key, output: &Output) {
+    pub(super) fn completed(&mut self, completion: Option<Completion>, output: &Output) {
+        let Some(Completion { key, evidence }) = completion else {
+            return;
+        };
         if !output.is_error {
             self.failures.remove(&key);
             return;
         }
-        let evidence = outcome(output);
         if let Some(failure) = self.failures.get_mut(&key) {
             if evidence.is_some() && failure.evidence != evidence {
                 failure.evidence = evidence;
@@ -138,7 +145,7 @@ impl Progress {
         ops: &dyn Ops,
         cancel: &dyn Cancel,
         files: &crate::files::Files,
-    ) -> Output {
+    ) -> (Output, Option<Completion>) {
         let key = match (&scheduled.native, scheduled.key) {
             (Some(scope), Some(key)) => {
                 let arguments = magi_tools::repair::arguments(&call.arguments).ok();
@@ -169,14 +176,17 @@ impl Progress {
             Pending::Ready(prepared)
                 if prepared.in_flight() || (!cancel.is_cancelled() && self.stopped.is_none()) =>
             {
-                registry.finish_observed(prepared, ops, cancel, |output| {
-                    if let Some(key) = key {
-                        self.completed(key, output);
-                    }
-                })
+                let mut completion = None;
+                let output = registry.finish_observed(prepared, ops, cancel, |output| {
+                    completion = key.map(|key| Completion {
+                        key,
+                        evidence: outcome(output),
+                    });
+                });
+                (output, completion)
             }
-            Pending::Refused(output) => output,
-            _ => Output::error(self.stopped.unwrap_or(CANCELLED)),
+            Pending::Refused(output) => (output, None),
+            _ => (Output::error(self.stopped.unwrap_or(CANCELLED)), None),
         }
     }
 }

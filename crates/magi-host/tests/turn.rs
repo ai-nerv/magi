@@ -35,6 +35,12 @@ mod cache_frames;
 #[path = "turn/provider_frames.rs"]
 mod provider_frames;
 
+#[path = "turn/strict_fallback.rs"]
+mod strict_fallback;
+
+#[path = "turn/session_identity.rs"]
+mod session_identity;
+
 #[path = "turn/progress.rs"]
 mod progress;
 
@@ -50,6 +56,9 @@ fn backend(mind: &Mind) -> Backend {
         wants: magi_proto::ask::Wants::default(),
         context_window: Some(200_000),
         max_output: None,
+        image_resize: None,
+        session_identity: false,
+        transcript: None,
         system: None,
         confine: false,
         isolate: false,

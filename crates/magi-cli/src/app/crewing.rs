@@ -50,6 +50,7 @@ impl App {
     /// must go too: [`App::apply`](super::App::apply) folds it forward with `max` and never back,
     /// so a stale cursor makes the peer skip that many entries and arrive with no history.
     pub fn attach_to(&mut self, them: Option<Peer>) {
+        self.close_login();
         self.attached = them;
         self.cursor = Cursor::ZERO;
         self.entries.clear();

@@ -1,5 +1,15 @@
 use super::*;
 
+fn complete(guard: &mut Progress, key: Key, output: &Output) {
+    guard.completed(
+        Some(Completion {
+            key,
+            evidence: outcome(output),
+        }),
+        output,
+    );
+}
+
 #[test]
 fn canonical_objects_preserve_arrays_strings_tool_identity_and_repairs() {
     let key = fingerprint("read", r#"{"b":{"z":2,"a":1},"a":[" x ",3]}"#);
@@ -28,7 +38,7 @@ fn completed_failures_suppress_third_and_stop_fourth_without_synthetic_progress(
     let key = fingerprint("x", "{}").expect("key");
     for _ in 0..2 {
         assert_eq!(guard.admit(Some(key)), Ok(()));
-        guard.completed(key, &Output::error("failed"));
+        complete(&mut guard, key, &Output::error("failed"));
     }
     assert_eq!(guard.admit(Some(key)), Err(REPAIR));
     assert_eq!(guard.admit(Some(key)), Err(REPEATED));
@@ -40,13 +50,13 @@ fn changed_results_and_success_reset_only_their_key_empty_output_does_not() {
     let mut guard = Progress::default();
     let a = fingerprint("x", "{}").expect("key");
     let b = fingerprint("y", "{}").expect("key");
-    guard.completed(a, &Output::error("first"));
-    guard.completed(b, &Output::error("other"));
-    guard.completed(a, &Output::error("second"));
+    complete(&mut guard, a, &Output::error("first"));
+    complete(&mut guard, b, &Output::error("other"));
+    complete(&mut guard, a, &Output::error("second"));
     assert_eq!(guard.failures[&a].streak, 1);
-    guard.completed(a, &Output::error(""));
+    complete(&mut guard, a, &Output::error(""));
     assert_eq!(guard.failures[&a].streak, 2);
-    guard.completed(a, &Output::ok(""));
+    complete(&mut guard, a, &Output::ok(""));
     assert!(!guard.failures.contains_key(&a));
     assert_eq!(guard.failures[&b].streak, 1);
     assert!(Progress::default().failures.is_empty());
@@ -89,7 +99,7 @@ fn record_and_argument_limits_fail_closed_without_evicting_failed_keys() {
     let mut guard = Progress::default();
     for n in 0..=MAX_RECORDS {
         let key = fingerprint("x", &format!("{{\"n\":{n}}}")).expect("key");
-        guard.completed(key, &Output::error("failed"));
+        complete(&mut guard, key, &Output::error("failed"));
     }
     assert_eq!(guard.failures.len(), MAX_RECORDS);
     assert_eq!(guard.stopped(), Some(CAPACITY));
@@ -102,4 +112,81 @@ fn record_and_argument_limits_fail_closed_without_evicting_failed_keys() {
         Err(ARGUMENTS)
     );
     assert_eq!(guard.failures.len(), 0);
+}
+
+#[test]
+fn final_image_failure_is_counted_once_and_refusals_do_not_reset_the_guard() {
+    use std::{cell::Cell, rc::Rc};
+    struct Pixels(Rc<Cell<usize>>);
+    impl magi_tools::Tool for Pixels {
+        fn name(&self) -> &str {
+            "pixels"
+        }
+        fn description(&self) -> &str {
+            "image result"
+        }
+        fn parameters(&self) -> serde_json::Value {
+            serde_json::json!({"type":"object"})
+        }
+        fn run(&self, _: &serde_json::Value, _: &dyn Ops, _: &dyn Cancel) -> Output {
+            self.0.set(self.0.get() + 1);
+            Output::ok("source pixels")
+        }
+    }
+    let ran = Rc::new(Cell::new(0));
+    let mut registry = Registry::new();
+    registry.register(Box::new(Pixels(ran.clone())));
+    let calls: Vec<_> = (0..4)
+        .map(|index| PendingCall {
+            id: index.to_string(),
+            name: "pixels".into(),
+            arguments: "{}".into(),
+        })
+        .collect();
+    let ops = magi_tools::ops::Real::new(std::env::temp_dir());
+    let files = crate::files::Files::default();
+    let mut guard = Progress::default();
+    let scheduled = guard.prepare(&calls, &registry, &ops, &magi_tools::Uncancelled);
+    for (index, (call, scheduled)) in calls.iter().zip(scheduled).enumerate() {
+        let (mut output, completion) = guard.finish(
+            scheduled,
+            call,
+            &registry,
+            &ops,
+            &magi_tools::Uncancelled,
+            &files,
+        );
+        if index < 2 {
+            assert!(!output.is_error);
+            output.is_error = true;
+            output.content = format!("spill-{index}: Image attachments omitted");
+            assert!(completion.is_some());
+        } else {
+            assert!(output.is_error && output.content.starts_with("Repeated-call guard:"));
+            assert!(completion.is_none());
+        }
+        guard.completed(completion, &output);
+    }
+    assert_eq!(ran.get(), 2);
+    assert_eq!(
+        guard.failures[&fingerprint("pixels", "{}").expect("key")].streak,
+        3
+    );
+    assert_eq!(guard.stopped(), Some(REPEATED));
+}
+
+#[test]
+fn changed_source_evidence_survives_identical_presented_failures() {
+    let mut guard = Progress::default();
+    let key = fingerprint("pixels", "{}").expect("key");
+    for source in ["first image", "second image"] {
+        let evidence = outcome(&Output::ok(source));
+        guard.completed(
+            Some(Completion { key, evidence }),
+            &Output::error("Image attachments omitted"),
+        );
+        assert_eq!(guard.failures[&key].streak, 1);
+    }
+    complete(&mut guard, key, &Output::ok("success"));
+    assert!(!guard.failures.contains_key(&key));
 }

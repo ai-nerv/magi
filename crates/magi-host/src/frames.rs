@@ -46,7 +46,7 @@ impl std::io::Write for Sink {
     }
 }
 
-fn fingerprint(value: &impl Serialize) -> Option<Fingerprint> {
+pub(crate) fn fingerprint(value: &impl Serialize) -> Option<Fingerprint> {
     let mut sink = Sink(Sha256::new());
     serde_json::to_writer(&mut sink, value).ok()?;
     Some(sink.0.finalize().into())

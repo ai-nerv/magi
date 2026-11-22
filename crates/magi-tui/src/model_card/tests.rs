@@ -23,6 +23,7 @@ fn card<'a>(reasons: bool, turns: &'a [Usage], details: Known<'a>) -> Card<'a> {
         context_window: 128_000,
         reasons,
         thinking: "medium",
+        thinking_controls: reasons,
         provider: None,
         turns,
         details,
@@ -146,6 +147,27 @@ fn the_thinking_level_is_shown_as_a_value_to_step() {
         refused.iter().any(|row| row.contains("does not reason")),
         "{refused:?}"
     );
+}
+
+#[test]
+fn explicit_empty_controls_keep_the_current_value_but_remove_the_action() {
+    let mut card = card(true, &[], Known::Asking);
+    card.thinking_controls = false;
+    card.thinking = "xhigh";
+    let shown = view(&card);
+    assert!(
+        text(&shown)
+            .iter()
+            .any(|row| row.contains("xhigh — no selectable levels"))
+    );
+    assert!(
+        !shown
+            .picks
+            .iter()
+            .flatten()
+            .any(|value| value == "thinking")
+    );
+    assert!(shown.picks.iter().flatten().any(|value| value == "switch"));
 }
 
 #[test]

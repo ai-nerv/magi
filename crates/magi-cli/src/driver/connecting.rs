@@ -41,6 +41,21 @@ pub(super) async fn connection_loop(
         };
 
         let (read_half, write_half) = stream.into_split();
+        let mut queued = std::collections::VecDeque::new();
+        while let Ok(command) = commands.try_recv() {
+            if let UiCommand::Authenticate { request, .. } = command {
+                let _ = events
+                    .send(HarnessEvent::Authentication {
+                        request,
+                        reply: magi_proto::authentication::Reply::failed(
+                            "Connection changed; authentication was not retried. Reopen :login.",
+                        ),
+                    })
+                    .await;
+            } else if !matches!(command, UiCommand::CancelAuthentication { .. }) {
+                queued.push_back(command);
+            }
+        }
         let mut reader = FrameReader::new(read_half);
         let mut writer = FrameWriter::new(write_half);
 
@@ -97,10 +112,12 @@ pub(super) async fn connection_loop(
         });
 
         let mut moved = false;
+        let mut authentication = None;
         loop {
             tokio::select! {
-                command = commands.recv() => {
+                command = async { if let Some(command) = queued.pop_front() { Some(command) } else { commands.recv().await } } => {
                     let Some(command) = command else { return };
+                    if let UiCommand::Authenticate { request, .. } = &command { authentication = Some(*request); }
                     // A peer draws nothing in this terminal, so its geometry never goes to one;
                     // everything else does, since attaching is driving.
                     if !draws && crate::app::for_screen(&command) {
@@ -126,6 +143,10 @@ pub(super) async fn connection_loop(
         }
 
         reading.abort();
+        if let Some(request) = authentication {
+            let _ = events.send(HarnessEvent::Authentication { request,
+                reply: magi_proto::authentication::Reply::failed("Connection closed; authentication was not retried. Reopen :login to check saved status.") }).await;
+        }
         // Carried across a swap the cursor is a peer's whole history silently withheld; across a
         // reconnect it is what rejoins an in-flight turn rather than replaying it.
         from_cursor = if moved {

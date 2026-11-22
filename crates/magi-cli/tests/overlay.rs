@@ -52,10 +52,10 @@ fn the_command_palette_marks_the_selection_and_shows_details() {
             "  :skills       refresh workflow completion for /s",
             "  :clear        start a fresh conversation",
             "  :model        the model, or :model <name> to swi",
+            "  :login        manage provider API keys and brows",
             "  :env          set session variables: KEY=value:$",
             "  :source       import standalone exports from a f",
             "  :permissions  ask the model what it needs, and d",
-            "  :resume       continue a session from this direc",
         ]
     );
 }
@@ -65,6 +65,14 @@ fn typing_narrows_the_palette_to_one_row() {
     let rendered = screen(":cl", 3, 50, &no_paths);
     assert_eq!(rendered.len(), 1);
     assert!(rendered[0].starts_with("❯ :clear"), "{rendered:?}");
+}
+
+#[test]
+fn login_command_is_discoverable_in_the_palette() {
+    let rendered = screen(":login", 6, 68, &no_paths);
+    assert_eq!(rendered.len(), 1);
+    assert!(rendered[0].starts_with("❯ :login"), "{rendered:?}");
+    assert!(rendered[0].contains("API keys and browser sign-ins"));
 }
 
 #[test]

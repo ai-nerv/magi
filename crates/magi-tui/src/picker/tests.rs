@@ -2,6 +2,37 @@ use super::*;
 use ratatui::text::Line;
 
 #[test]
+fn display_names_follow_highlights_and_filters_without_replacing_values() {
+    let mut picker = Picker::new(
+        "Model",
+        vec![
+            Choice {
+                value: "p/a".into(),
+                detail: "".into(),
+                ready: true,
+            },
+            Choice {
+                value: "p/b".into(),
+                detail: "".into(),
+                ready: true,
+            },
+        ],
+        None,
+    );
+    picker.captions([("p/a".into(), "training-enabled: label\n\t\u{1b}".into())]);
+    let shown = text(&render(&picker, 80));
+    assert_eq!(shown[1], "  training-enabled: label");
+    assert_eq!(usize::from(picker.height()), shown.len());
+    assert_eq!(picker.current().expect("choice").value, "p/a");
+    picker.next();
+    assert_eq!(usize::from(picker.height()), render(&picker, 80).len());
+    assert!(picker.caption().is_none());
+    picker.push('a');
+    assert_eq!(picker.current().expect("filtered choice").value, "p/a");
+    assert!(picker.caption().is_some());
+}
+
+#[test]
 fn model_names_longer_than_the_old_cap_remain_complete_in_narrow_tables() {
     let name = "openrouter/provider/this-is-a-long-model-name-with-a-variant";
     assert!(name.len() > 48);

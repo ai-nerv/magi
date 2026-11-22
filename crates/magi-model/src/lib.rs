@@ -6,12 +6,14 @@
 //! reasoning back; without them, changing model mid-session corrupts reasoning continuity.
 
 pub mod estimate;
+mod input_limits;
 pub mod noted;
 pub mod overflow;
 mod request_frame;
 pub mod scratch;
 mod usage;
 
+pub use input_limits::{ImageInputLimits, ImageResize, InputLimits, JpegQuality};
 pub use request_frame::RequestFrame;
 pub use usage::{Cost, Usage};
 
@@ -20,12 +22,20 @@ use serde::{Deserialize, Serialize};
 /// Provider-advertised modalities and native thinking levels.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Capabilities {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_identity: Option<bool>,
     #[serde(default)]
     pub input: Vec<String>,
     #[serde(default)]
     pub output: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_levels: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict_tools: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_limits: Option<InputLimits>,
 }
 
 /// One inline raster image, base64 encoded.
@@ -88,12 +98,23 @@ pub enum ThinkingLevel {
     Low,
     Medium,
     High,
+    #[serde(rename = "xhigh")]
+    XHigh,
     Max,
 }
+
+mod thinking;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum Content {
+    /// Tool declarations added or removed at a System message's position.
+    ToolChanges {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        added: Vec<Tool>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        removed: Vec<String>,
+    },
     Text {
         text: String,
         /// Opaque provider state for this block, replayed verbatim. Never parsed, never generated.
@@ -134,6 +155,7 @@ pub enum Content {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
+    System,
     User,
     Assistant,
     /// Tool output, which some dialects carry as its own role.
@@ -154,6 +176,23 @@ pub struct Message {
 }
 
 impl Message {
+    #[must_use]
+    pub fn tool_changes(added: Vec<Tool>, removed: Vec<String>) -> Self {
+        Self {
+            content: vec![Content::ToolChanges { added, removed }],
+            ..Self::system("")
+        }
+    }
+
+    /// An instruction message carrying one block of text.
+    #[must_use]
+    pub fn system(text: impl Into<String>) -> Self {
+        Self {
+            role: Role::System,
+            ..Self::user(text)
+        }
+    }
+
     #[must_use]
     pub fn user(text: impl Into<String>) -> Self {
         Self {
@@ -207,11 +246,20 @@ impl Message {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolStrictness {
+    Prefer,
+    Require,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Tool {
     pub name: String,
     pub description: String,
     pub parameters: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strict: Option<ToolStrictness>,
 }
 
 /// Everything a provider needs for one request.
@@ -221,6 +269,7 @@ pub struct Context {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system: Option<String>,
     pub messages: Vec<Message>,
+    /// Initial declarations; System tool-change blocks update this set in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<Tool>,
 }

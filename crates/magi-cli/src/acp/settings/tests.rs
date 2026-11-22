@@ -58,6 +58,37 @@ fn acp_model_options_do_not_invent_an_unconfigured_model() {
     assert_eq!(options[0]["options"][0]["value"], "fake/old");
 }
 
+#[tokio::test]
+async fn display_names_remain_labels_and_never_become_selection_ids() {
+    let mut labeled = choice("fake/two");
+    labeled.display_name = Some("training-enabled: Model Two".into());
+    let mut settings = Settings::new(model("fake/one"), vec![labeled.clone()]).expect("settings");
+    let options = serde_json::to_value(settings.options()).expect("options");
+    assert_eq!(options[0]["options"][0]["value"], "fake/two");
+    assert_eq!(
+        options[0]["options"][0]["name"],
+        "training-enabled: Model Two"
+    );
+    let mut held = lease().await;
+    assert!(
+        settings
+            .select(
+                RequestId::from(7),
+                "training-enabled: Model Two".into(),
+                &mut held
+            )
+            .is_err()
+    );
+    assert!(
+        matches!(settings.select(RequestId::from(7), "fake/two".into(), &mut held),
+        Ok(UiCommand::SelectModel { name, .. }) if name == "fake/two")
+    );
+    for invalid in ["".to_owned(), "x".repeat(NAME + 1), "bad\nlabel".to_owned()] {
+        labeled.display_name = Some(invalid);
+        assert!(Settings::new(model("fake/one"), vec![labeled.clone()]).is_err());
+    }
+}
+
 #[test]
 fn acp_model_request_is_strict_and_bounded() {
     let valid = json!({"sessionId":"owned","configId":"model","value":"fake/two"});

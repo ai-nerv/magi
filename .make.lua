@@ -510,11 +510,173 @@ make.recipe{ name = "test-environment", desc = "session environment imports and 
                sh.cargo("test", "--release", "-p", "magi-tools", "--lib", "environment")
              end }
 
+make.recipe{ name = "test-provider-foundations", desc = "structured setup, bounded model roles and authoritative readiness",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-proto", "--lib", "ask::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "broker::listing::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "catalog::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "refreshing::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "environment")
+               sh.cargo("test", "--release", "-p", "magi-cli", "--bin", "magi", "models::")
+               sh.cargo("test", "--release", "-p", "magi-cli", "--test", "noting")
+             end }
+
+make.recipe{ name = "test-provider-labels", desc = "optional model labels, stable routes and native picker/ACP presentation",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-proto", "--lib", "ask::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "display_names")
+               sh.cargo("test", "--release", "-p", "magi-cli", "--bin", "magi", "display_names")
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "model_refresh")
+               sh.cargo("test", "--release", "-p", "magi-tui", "--lib", "picker::")
+             end }
+
+make.recipe{ name = "test-provider-thinking", desc = "reasoning controls, metadata updates and model-role selection",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "model_refresh")
+               sh.cargo("test", "--release", "-p", "magi-model", "--lib", "thinking::")
+               sh.cargo("test", "--release", "-p", "magi-cli", "--bin", "magi", "app::thinking::")
+               sh.cargo("test", "--release", "-p", "magi-cli", "--bin", "magi", "app::tests::picking")
+               sh.cargo("test", "--release", "-p", "magi-tui", "--lib", "model_card::")
+             end }
+
+make.recipe{ name = "test-provider-strict", desc = "strict tool negotiation, declaration and argument validation",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "broker::strict::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "session::strict::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "turn", "strict_fallback")
+               sh.cargo("test", "--release", "-p", "magi-tools", "--lib", "schema::sampled::")
+               sh.cargo("test", "--release", "-p", "magi-lua", "--lib", "strict_sampling_")
+             end }
+
+make.recipe{ name = "test-provider-input-limits", desc = "optional model limits, atomic listing and JSON/CBOR metadata",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-model", "--lib", "input_limits::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "broker::listing::input_limits::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "model_refresh", "input_limits::")
+             end }
+
+make.recipe{ name = "test-provider-image-worker", desc = "bounded raster worker, pixel correctness and process lifecycle",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "images::")
+               sh.cargo("test", "--release", "-p", "magi-cli", "--test", "image_worker")
+             end }
+
+make.recipe{ name = "test-provider-image-history", desc = "image preparation, immutable history and native journal integration",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "images::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "preparing::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "session::resuming::tests::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "turn::progress::tests::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "turn")
+               sh.cargo("test", "--release", "-p", "magi-cli", "--test", "image_history")
+             end }
+
+make.recipe{ name = "test-family-scratch", desc = "private socket fixture creation and concurrent cleanup",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-tools", "--lib", "family::tests::")
+             end }
+
 make.recipe{ name = "test-environment-live", desc = "offline terminal environment acceptance",
              run = function()
                build_binary(false)
                assert(oslo.run{ "sh", "scripts/acceptance-environment.sh", binary_path() }.ok,
                       "environment terminal acceptance failed")
+             end }
+
+make.recipe{ name = "test-provider-continuations", desc = "opaque reasoning without visible text survives turn and context",
+             run = function()
+               sh.cargo("test", "--release", "-p", "magi-core", "--lib", "turn::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "context::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "session::resuming::tests::pending_")
+             end }
+
+make.recipe{ name = "test-provider-google-replay", desc = "Google signed parts through the host and restored journals",
+             run = function()
+               assert(os.getenv("MELCHIOR_TEST_BINARY"), "set MELCHIOR_TEST_BINARY to the selected native binary")
+               sh.cargo("run", "--release", "-p", "magi-host", "--example", "provider-completions", "--", "--google-replay")
+             end }
+
+make.recipe{ name = "test-provider-google-thinking", desc = "Google model controls through neutral cards and the actual host",
+             run = function()
+               assert(os.getenv("MELCHIOR_TEST_BINARY"), "set MELCHIOR_TEST_BINARY to the selected native binary")
+               sh.cargo("run", "--release", "-p", "magi-host", "--example", "provider-completions", "--", "--google-thinking")
+             end }
+
+make.recipe{ name = "test-provider-completions", desc = "native Melchior indexed tools through Magi's host",
+             run = function()
+               assert(os.getenv("MELCHIOR_TEST_BINARY"), "set MELCHIOR_TEST_BINARY to the selected native binary")
+               sh.cargo("run", "--release", "-p", "magi-host", "--example", "provider-completions")
+               sh.cargo("test", "--release", "-p", "magi-host", "--lib", "broker::strict::")
+               sh.cargo("test", "--release", "-p", "magi-core", "--lib", "turn::")
+               sh.cargo("test", "--release", "-p", "magi-host", "--test", "turn", "truncated")
+             end }
+
+make.recipe{ name = "test-provider-moonshot", desc = "shipped Moonshot and Kimi models through the actual Magi host",
+             run = function()
+               assert(os.getenv("MELCHIOR_TEST_BINARY"), "set MELCHIOR_TEST_BINARY to the selected native binary")
+               assert(os.getenv("MELCHIOR_PROVIDER_SOURCE"), "set MELCHIOR_PROVIDER_SOURCE to its config/providers.lua")
+               sh.cargo("run", "--release", "-p", "magi-host", "--example", "provider-completions", "--", "--moonshot")
+             end }
+
+make.recipe{ name = "test-provider-baseten", desc = "all shipped Baseten models through the actual Magi host",
+             run = function()
+               assert(os.getenv("MELCHIOR_TEST_BINARY"), "set MELCHIOR_TEST_BINARY to the selected native binary")
+               assert(os.getenv("MELCHIOR_PROVIDER_SOURCE"), "set MELCHIOR_PROVIDER_SOURCE to its config/providers.lua")
+               sh.cargo("run", "--release", "-p", "magi-host", "--example", "provider-completions", "--", "--baseten")
+             end }
+
+make.recipe{ name = "test-provider-fireworks", desc = "all shipped Fireworks models through the actual Magi host",
+             run = function()
+               assert(os.getenv("MELCHIOR_TEST_BINARY"), "set MELCHIOR_TEST_BINARY to the selected native binary")
+               assert(os.getenv("MELCHIOR_PROVIDER_SOURCE"), "set MELCHIOR_PROVIDER_SOURCE to its config/providers.lua")
+               sh.cargo("run", "--release", "-p", "magi-host", "--example", "provider-completions", "--", "--fireworks")
+             end }
+
+make.recipe{ name = "test-provider-qwen", desc = "all four Qwen token plans through the actual Magi host",
+             run = function()
+               assert(os.getenv("MELCHIOR_TEST_BINARY"), "set MELCHIOR_TEST_BINARY to the selected native binary")
+               assert(os.getenv("MELCHIOR_PROVIDER_SOURCE"), "set MELCHIOR_PROVIDER_SOURCE to its config/providers.lua")
+               sh.cargo("run", "--release", "-p", "magi-host", "--example", "provider-completions", "--", "--qwen")
+             end }
+
+make.recipe{ name = "test-provider-together", desc = "all Together models and reasoning fields through the actual Magi host",
+             run = function()
+               assert(os.getenv("MELCHIOR_TEST_BINARY"), "set MELCHIOR_TEST_BINARY to the selected native binary")
+               assert(os.getenv("MELCHIOR_PROVIDER_SOURCE"), "set MELCHIOR_PROVIDER_SOURCE to its config/providers.lua")
+               sh.cargo("run", "--release", "-p", "magi-host", "--example", "provider-completions", "--", "--together")
+             end }
+
+make.recipe{ name = "test-provider-ant-ling", desc = "all Ant Ling models and mapped efforts through the actual Magi host",
+             run = function()
+               assert(os.getenv("MELCHIOR_TEST_BINARY"), "set MELCHIOR_TEST_BINARY to the selected native binary")
+               assert(os.getenv("MELCHIOR_PROVIDER_SOURCE"), "set MELCHIOR_PROVIDER_SOURCE to its config/providers.lua")
+               sh.cargo("run", "--release", "-p", "magi-host", "--example", "provider-completions", "--", "--ant-ling")
+             end }
+
+make.recipe{ name = "test-provider-huggingface", desc = "all Hugging Face models and reasoning fields through the actual Magi host",
+             run = function()
+               assert(os.getenv("MELCHIOR_TEST_BINARY"), "set MELCHIOR_TEST_BINARY to the selected native binary")
+               assert(os.getenv("MELCHIOR_PROVIDER_SOURCE"), "set MELCHIOR_PROVIDER_SOURCE to its config/providers.lua")
+               assert(os.getenv("MELCHIOR_CATALOG_REFERENCE"), "set MELCHIOR_CATALOG_REFERENCE to pinned huggingface.json")
+               sh.cargo("run", "--release", "-p", "magi-host", "--example", "provider-completions", "--", "--huggingface")
+             end }
+
+make.recipe{ name = "test-provider-session", desc = "role-negotiated session identity and restarted host history",
+             run = function()
+               for _, suite in ipairs({
+                 { count = 4, args = { "test", "--release", "-p", "magi-host", "--lib", "turn::identity::" } },
+                 { count = 4, args = { "test", "--release", "-p", "magi-host", "--test", "turn", "session_identity::" } },
+               }) do
+                 local inventory = { "cargo", capture = true }
+                 for _, arg in ipairs(suite.args) do inventory[#inventory + 1] = arg end
+                 table.insert(inventory, "--")
+                 table.insert(inventory, "--list")
+                 local listed = oslo.run(inventory)
+                 local _, count = (listed.out or ""):gsub(": test\r?\n", "")
+                 assert(listed.ok and count == suite.count,
+                   "session test inventory: expected " .. suite.count .. ", got " .. count .. "\n" .. (listed.out or "") .. (listed.err or ""))
+                 sh.cargo(table.unpack(suite.args))
+               end
              end }
 
 make.recipe{ name = "test-model-refresh", desc = "live model picker and discovery refresh fixtures",
@@ -1034,6 +1196,17 @@ make.recipe{
 
 make.recipe{ name = "check", desc = "type-check every target",
              run = function() sh.cargo("check", "--all-targets", "--release") end }
+
+make.recipe{ name = "test-login", desc = "provider login UI, private IPC and cancellation",
+             run = function()
+               test_cargo("--release", "-p", "magi-cli", "--bin", "magi", "app::login::")
+               test_cargo("--release", "-p", "magi-cli", "--bin", "magi", "ui::login::")
+               test_cargo("--release", "-p", "magi-cli", "--test", "overlay")
+               test_cargo("--release", "-p", "magi-host", "--test", "authentication")
+               test_cargo("--release", "-p", "magi-host", "--lib", "authentication::")
+               test_cargo("--release", "-p", "magi-tui", "login::")
+               test_cargo("--release", "-p", "magi-host", "--test", "protocol_commands")
+             end }
 
 make.recipe{ name = "clippy", desc = "clippy, with warnings denied",
              run = function()

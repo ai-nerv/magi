@@ -1,9 +1,8 @@
-//! Magi's process-boundary types, without I/O or runtime dependencies.
-//! `magi-ipc` transports them; `magi-host` implements their operations.
-//! Family JSON replies carry a revision, result list and count; events carry an `event` tag.
-//! Local UI commands and host events use versioned, length-prefixed CBOR envelopes.
+//! Process-boundary data for revisioned family JSON and framed local CBOR.
+//! `magi-ipc` transports these types; `magi-host` implements their operations.
 
 pub mod ask;
+pub mod authentication;
 pub mod caching;
 mod ids;
 pub mod judging;
@@ -50,6 +49,8 @@ pub struct ModelChoice {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub vision: bool,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     pub context_window: u64,
     pub requirement: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -254,6 +255,10 @@ fn is_free(usage: &Usage) -> bool {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "event")]
 pub enum HarnessEvent {
+    Authentication {
+        request: u64,
+        reply: authentication::Reply,
+    },
     TurnStarted {
         owner: u64,
         request: Option<u64>,
@@ -346,6 +351,8 @@ pub enum HarnessEvent {
     ModelChanged {
         cursor: Cursor,
         model: Option<ModelInfo>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        thinking: Option<String>,
     },
     /// A tool action awaiting authorization through [`UiCommand::Permit`].
     PermissionAsked {
@@ -542,6 +549,7 @@ impl HarnessEvent {
             | Self::ProviderFrame { .. }
             | Self::HelperSpent { .. }
             | Self::ModelsRefreshed { .. }
+            | Self::Authentication { .. }
             | Self::WorkflowsListed { .. }
             | Self::MemoryAnswered { .. } => Cursor::ZERO,
         }

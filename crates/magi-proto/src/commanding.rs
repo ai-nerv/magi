@@ -81,6 +81,13 @@ pub enum UiCommand {
     },
     Interrupt,
     RefreshModels,
+    Authenticate {
+        request: u64,
+        action: crate::authentication::Request,
+    },
+    CancelAuthentication {
+        request: u64,
+    },
     RefreshWorkflows,
     Environment(Environment),
     SetModel {
@@ -189,6 +196,8 @@ impl UiCommand {
             Self::Arrived { .. } => "arrived",
             Self::Interrupt => "interrupt",
             Self::RefreshModels => "refresh_models",
+            Self::Authenticate { .. } => "authenticate",
+            Self::CancelAuthentication { .. } => "cancel_authentication",
             Self::RefreshWorkflows => "refresh_workflows",
             Self::SetModel { .. } => "set_model",
             Self::SelectModel { .. } => "select_model",
@@ -217,83 +226,5 @@ impl UiCommand {
             self,
             Self::Attach { .. } | Self::AttachLatest { .. } | Self::Inspect | Self::Detach
         )
-    }
-}
-
-#[cfg(test)]
-mod verbs {
-    use super::*;
-
-    #[test]
-    fn a_verb_is_the_tag_the_command_travels_under() {
-        for command in [
-            UiCommand::Interrupt,
-            UiCommand::DeclareNeeds,
-            UiCommand::BlockSized { rows: 8, cols: 40 },
-            UiCommand::SetMode { mode: "x".into() },
-            UiCommand::SelectModel {
-                request: 7,
-                name: "fake/one".into(),
-            },
-            UiCommand::TakeGrants { grants: Vec::new() },
-            UiCommand::Inspect,
-            UiCommand::AttachLatest {
-                draws: false,
-                key: None,
-            },
-            UiCommand::Environment(Environment {
-                source: false,
-                input: "A=1".into(),
-            }),
-        ] {
-            let wire = serde_json::to_value(&command).expect("encode");
-            assert_eq!(wire["command"], command.verb(), "{command:?}");
-        }
-    }
-
-    #[test]
-    fn a_watcher_may_attach_and_leave_and_nothing_else() {
-        assert!(UiCommand::Detach.watches());
-        assert!(!UiCommand::Interrupt.watches());
-        assert!(
-            !UiCommand::SelectModel {
-                request: 7,
-                name: "fake/one".into()
-            }
-            .watches()
-        );
-        assert!(
-            !UiCommand::SetMode {
-                mode: "auto".into()
-            }
-            .watches()
-        );
-    }
-
-    #[test]
-    fn a_watcher_may_look_but_not_review_or_change_the_environment() {
-        assert!(UiCommand::Inspect.watches());
-        assert!(
-            UiCommand::AttachLatest {
-                draws: true,
-                key: None
-            }
-            .watches()
-        );
-        assert!(
-            !UiCommand::Review {
-                tool: "read".into(),
-                action: permit::Action::Read { path: "/".into() },
-                key: None,
-            }
-            .watches()
-        );
-        assert!(
-            !UiCommand::Environment(Environment {
-                source: true,
-                input: "PATH=/x".into(),
-            })
-            .watches()
-        );
     }
 }

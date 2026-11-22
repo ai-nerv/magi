@@ -9,7 +9,7 @@ pub(super) async fn submit(
     workers: &tokio::sync::RwLock<Option<Arc<worker::Worker>>>,
     catalog: &crate::catalog::Catalog,
     scribe: &crate::scribe::Held,
-    cancellation: &[crate::cancel::Cancel],
+    checks: (&[crate::cancel::Cancel], Option<&crate::images::Profile>),
     trace: &mut crate::session::observing::Trace,
 ) -> Result<(), String> {
     let worker = workers.read().await;
@@ -22,9 +22,17 @@ pub(super) async fn submit(
     }
     let admitted = {
         let mut held = session.lock().await;
-        if cancellation.iter().any(crate::cancel::Cancel::is_requested) {
+        if checks.0.iter().any(crate::cancel::Cancel::is_requested) {
             trace.finish(crate::events::TurnOutcome::Cancelled);
             return Err("prompt preparation was cancelled before admission".into());
+        }
+        if let Some(expected) = checks.1
+            && held.image_profile(worker.as_ref().and_then(|worker| worker.image_profile()))
+                != *expected
+        {
+            return Err(
+                "Model image limits changed during prompt preparation; resend the prompt.".into(),
+            );
         }
         held.admit_observed(request, std::mem::take(trace))?
     };

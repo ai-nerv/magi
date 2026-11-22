@@ -35,7 +35,7 @@ fi
 
 # The types both sides declare. Named rather than discovered: a type only one of them has is not a
 # twin, and discovering the overlap would make the gate quietly shrink as they drift apart.
-TWINS="Card Wants Ask Said Refusal"
+TWINS="Card Setup SetupState Wants Ask Said Refusal Capabilities ThinkingLevel Tool ToolStrictness RequestFrame Role Content Context Message"
 
 # One type's shape, as the wire sees it: its fields and variants, and every serde rename, sorted so
 # that a reordering is not a difference.
@@ -52,8 +52,17 @@ trap 'rm -f "$ours" "$yours"' EXIT HUP INT TERM
 
 fail=0
 for twin in $TWINS; do
-  shape "$mine" "$twin" >"$ours"
-  shape "$theirs" "$twin" >"$yours"
+  case "$twin" in
+    RequestFrame)
+      shape "$root/crates/magi-model/src/request_frame.rs" "$twin" >"$ours"
+      shape "$melchior/src/mind/model/request_frame.rs" "$twin" >"$yours"
+      ;;
+    Capabilities|ThinkingLevel|Tool|ToolStrictness|Role|Content|Context|Message)
+      shape "$root/crates/magi-model/src/lib.rs" "$twin" >"$ours"
+      shape "$melchior/src/mind/model/mod.rs" "$twin" >"$yours"
+      ;;
+    *) shape "$mine" "$twin" >"$ours"; shape "$theirs" "$twin" >"$yours" ;;
+  esac
   if [ ! -s "$ours" ] || [ ! -s "$yours" ]; then
     printf '  %-10s NOT FOUND in one of the two — a twin that lost its pair\n' "$twin" >&2
     fail=$((fail + 1))
@@ -67,6 +76,21 @@ for twin in $TWINS; do
     fail=$((fail + 1))
   fi
 done
+
+# Input-limit declarations include the bounded scalar's serialization and validation.
+for side in ours theirs; do
+  case "$side" in
+    ours) source="$root/crates/magi-model/src/input_limits.rs"; target="$ours" ;;
+    theirs) source="$melchior/src/mind/model/input_limits.rs"; target="$yours" ;;
+  esac
+  sed '/^#\[cfg(test)\]/,$d' "$source" | sed '/^[[:space:]]*\/\//d; /^[[:space:]]*$/d' > "$target"
+done
+if [ -s "$ours" ] && [ -s "$yours" ] && cmp -s "$ours" "$yours"; then
+  echo '  InputLimits agrees (including bounded scalar validation)'
+else
+  echo '  InputLimits DIFFERS in declarations or validation' >&2
+  fail=$((fail + 1))
+fi
 
 echo
 if [ "$fail" -gt 0 ]; then

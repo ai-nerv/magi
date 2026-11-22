@@ -119,7 +119,16 @@ impl Preparing {
                         }
                         return listing::response(&catalog);
                     }
-                    let (request, warnings) = resolve(job.command, &catalog, &job.cancel).await?;
+                    let profile = if image_bearing(&job.command) {
+                        let workers = worker.read().await;
+                        Some(session.lock().await.image_profile(
+                            workers.as_ref().and_then(|worker| worker.image_profile()),
+                        ))
+                    } else {
+                        None
+                    };
+                    let command = normalize(job.command, profile.as_ref()).await?;
+                    let (request, warnings) = resolve(command, &catalog, &job.cancel).await?;
                     let _boundary = state.boundary.lock().await;
                     crate::turning::submit(
                         &session,
@@ -127,7 +136,7 @@ impl Preparing {
                         &worker,
                         &catalog,
                         &scribe,
-                        &[job.cancel.clone(), job.epoch.clone()],
+                        (&[job.cancel.clone(), job.epoch.clone()], profile.as_ref()),
                         &mut trace,
                     )
                     .await?;
@@ -177,11 +186,12 @@ impl Preparing {
             command => (command, None),
         };
         let selected = workflow(&command)?;
+        let image_bearing = image_bearing(&command);
         let listing = matches!(command, UiCommand::RefreshWorkflows);
-        if !selected && !listing && self.count.available_permits() == COUNT {
+        if !selected && !image_bearing && !listing && self.count.available_permits() == COUNT {
             return Ok(Queued::Immediate(command, tracking, trace));
         }
-        if selected
+        if (selected || image_bearing)
             && let UiCommand::SubmitPrompt {
                 text,
                 aside,
@@ -197,13 +207,19 @@ impl Preparing {
                     .sum::<usize>()
                 > crate::session::admission::ENTRY_MOST
             {
-                return Err("workflow prompt exceeds the admission byte limit".into());
+                return Err("prompt exceeds the admission byte limit".into());
             }
         }
         let size = serde_json::to_vec(&command)
             .map_err(|why| why.to_string())?
             .len();
-        let size = size.max(512) + if listing { listing::MOST } else { 0 };
+        let size = size.max(512)
+            + if listing { listing::MOST } else { 0 }
+            + if image_bearing {
+                crate::images::WIRE_BYTES
+            } else {
+                0
+            };
         let size = u32::try_from(size).map_err(|_| "prompt preparation is too large")?;
         let budget = Arc::new(Budget {
             _count: Arc::clone(&self.count)
@@ -265,6 +281,22 @@ fn workflow(command: &UiCommand) -> Result<bool, String> {
             .map_err(|why| why.to_string()),
         _ => Ok(false),
     }
+}
+
+fn image_bearing(command: &UiCommand) -> bool {
+    matches!(command, UiCommand::SubmitPrompt { images, .. } if !images.is_empty())
+}
+
+async fn normalize(
+    mut command: UiCommand,
+    profile: Option<&crate::images::Profile>,
+) -> Result<UiCommand, String> {
+    if let Some(resize) = profile.and_then(|profile| profile.resize.as_ref())
+        && let UiCommand::SubmitPrompt { images, .. } = &mut command
+    {
+        *images = crate::images::normalize(std::mem::take(images), resize).await?;
+    }
+    Ok(command)
 }
 
 pub(super) fn request(command: UiCommand) -> Result<crate::session::admission::Request, String> {

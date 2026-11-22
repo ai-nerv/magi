@@ -15,7 +15,7 @@ pub(crate) use metadata::{COLUMNS, table_cells};
 /// Models that are not ready are listed too, with the variable that would enable them: somebody
 /// choosing a model wants to see what exists, not a list narrowed to whatever happens to be
 /// exported in this shell.
-pub fn print(all: bool, how: crate::verbs::As) {
+pub async fn print(all: bool, how: crate::verbs::As) {
     let loaded = match crate::config::for_session() {
         Ok(loaded) => loaded,
         Err(why) => {
@@ -37,7 +37,7 @@ pub fn print(all: bool, how: crate::verbs::As) {
         crate::config::mind,
     );
 
-    let cards = melchior(&program);
+    let cards = melchior(&program).await;
     // Framed, the cards go back as they came: every one of them, since narrowing a listing is a
     // courtesy to a reader and a caller that asked for bytes is not one.
     if how.framed() {
@@ -109,51 +109,23 @@ fn print_card(card: &Card, default: Option<&str>) {
         card.popularity_rank,
         "",
     );
-    let note = match (&card.needs, card.ready) {
-        (_, true) => String::new(),
-        (Some(variable), _) => format!("  needs {variable}"),
-        (None, _) => "  not reachable".to_owned(),
+    let note = if card.ready {
+        String::new()
+    } else {
+        format!("  {}", magi_host::catalog::setup::requirement(card))
     };
     let capabilities =
         capabilities(card.capabilities.as_ref(), card.vision, card.reasons).replace('\n', " · ");
     println!("{marker} {:<48} {metadata} · {capabilities}{note}", card.id);
+    if let Some(name) = &card.display_name {
+        let name: String = name.chars().filter(|c| !c.is_control()).take(512).collect();
+        println!("    {name}");
+    }
 }
 
 /// Every card `program` offers, or nothing when it will not answer.
-///
-/// Blocking, because this is a command rather than a session: there is no runtime to borrow and
-/// nothing else to get on with while it answers.
-fn melchior(program: &str) -> Vec<Card> {
-    let Ok(out) = std::process::Command::new(program)
-        .arg("models")
-        .arg("--json")
-        .env(magi_host::driving::GIVEN, magi_host::driving::given_dir())
-        .stderr(std::process::Stdio::null())
-        .output()
-    else {
-        magi_model::noted!("models: {program} could not be started");
-        return Vec::new();
-    };
-    let Ok(reply) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else {
-        magi_model::noted!(
-            "models: {program} answered {} bytes that are not json",
-            out.stdout.len()
-        );
-        return Vec::new();
-    };
-    if reply.get("ok").and_then(serde_json::Value::as_bool) != Some(true) {
-        magi_model::noted!("models: {program} refused: {reply}");
-        return Vec::new();
-    }
-    reply
-        .get("result")
-        .and_then(serde_json::Value::as_array)
-        .map(|rows| {
-            rows.iter()
-                .filter_map(|row| serde_json::from_value(row.clone()).ok())
-                .collect()
-        })
-        .unwrap_or_default()
+async fn melchior(program: &str) -> Vec<Card> {
+    magi_host::broker::cards(program).await
 }
 
 #[cfg(test)]
@@ -166,6 +138,7 @@ mod tests {
             id: "p/m".into(),
             provider: "p".into(),
             name: "m".into(),
+            display_name: None,
             api: "openai-completions".into(),
             context_window: Some(128_000),
             max_output: None,
@@ -174,6 +147,7 @@ mod tests {
             capabilities: None,
             reasons: false,
             ready,
+            setup: None,
             needs: if ready { None } else { Some("P_KEY".into()) },
         }
     }
@@ -187,8 +161,8 @@ mod tests {
         print_card(&card, None);
     }
 
-    #[test]
-    fn melchior_is_told_which_sessions_settings_to_read() {
+    #[tokio::test]
+    async fn melchior_is_told_which_sessions_settings_to_read() {
         use std::os::unix::fs::PermissionsExt;
         let dir = magi_model::scratch::Scratch::new("magi-models", "given");
         let fake = dir.join("melchior");
@@ -208,17 +182,17 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        let cards = melchior(&fake.display().to_string());
+        let cards = melchior(&fake.display().to_string()).await;
         assert_eq!(
             cards.first().map(|card| card.id.clone()),
             Some(magi_host::driving::given_dir().display().to_string())
         );
     }
 
-    #[test]
-    fn an_absent_melchior_is_no_models_rather_than_a_panic() {
+    #[tokio::test]
+    async fn an_absent_melchior_is_no_models_rather_than_a_panic() {
         // A program that is not there is an empty catalog, and the command still prints.
-        assert!(melchior("magi-no-such-melchior-anywhere").is_empty());
+        assert!(melchior("magi-no-such-melchior-anywhere").await.is_empty());
     }
 
     #[test]

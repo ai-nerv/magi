@@ -25,6 +25,9 @@ pub(crate) async fn to_surface(
     mouse: MouseEvent,
     commands: &tokio::sync::mpsc::Sender<UiCommand>,
 ) -> bool {
+    if app.pane_titled("login") {
+        return false;
+    }
     let Some(held) = app.holding() else {
         return false;
     };
@@ -56,6 +59,23 @@ pub(crate) fn on_the_screen(
     copied: &mut Option<magi_tui::select::Selection>,
 ) -> Pointing {
     use crossterm::event::MouseButton;
+
+    if app.pane_titled("login") && mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+        let command = if let Some(at) = app
+            .pane_rect
+            .filter(|at| within(*at, mouse.row, mouse.column))
+        {
+            let id = app
+                .pane
+                .as_ref()
+                .and_then(|p| p.selected(mouse.row.saturating_sub(at.y)))
+                .map(str::to_owned);
+            id.and_then(|id| app.choose_login(&id))
+        } else {
+            app.close_login()
+        };
+        return command.map_or(Pointing::Redraw, Pointing::Ask);
+    }
 
     // Read before the match because the rect and the pane are two fields of the same struct, and the
     // arms below borrow the pane.

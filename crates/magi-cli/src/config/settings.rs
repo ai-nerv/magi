@@ -165,6 +165,7 @@ pub fn options(loaded: &Loaded) -> magi_proto::ask::Wants {
         .and_then(|level| serde_json::from_value(serde_json::Value::String(level.to_owned())).ok())
         .or(Some(magi_model::ThinkingLevel::Off));
     magi_proto::ask::Wants {
+        session_id: None,
         // Set per request, not per session: a schema belongs to one question.
         schema: None,
         thinking,
@@ -174,6 +175,7 @@ pub fn options(loaded: &Loaded) -> magi_proto::ask::Wants {
             .and_then(|settings| settings.get("max_tokens"))
             .and_then(serde_json::Value::as_u64),
         max_tokens_automatic: false,
+        disable_preferred_strict: false,
         // Chosen on the model's card, never in the config: providers come and go by the hour.
         provider: None,
     }

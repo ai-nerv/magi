@@ -56,6 +56,8 @@ pub enum Transport {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Declaration {
     #[serde(default)]
+    pub strict: Option<magi_model::ToolStrictness>,
+    #[serde(default)]
     pub description: String,
     #[serde(default = "empty_object")]
     pub parameters: serde_json::Value,
@@ -72,6 +74,7 @@ pub struct LuaTool {
     name: String,
     description: String,
     parameters: serde_json::Value,
+    strict: Option<magi_model::ToolStrictness>,
 }
 
 impl LuaTool {
@@ -82,6 +85,7 @@ impl LuaTool {
             name: name.to_owned(),
             description: declaration.description.clone(),
             parameters: declaration.parameters.clone(),
+            strict: declaration.strict,
         }
     }
 }
@@ -97,6 +101,10 @@ impl Tool for LuaTool {
 
     fn parameters(&self) -> serde_json::Value {
         self.parameters.clone()
+    }
+
+    fn strict(&self) -> Option<magi_model::ToolStrictness> {
+        self.strict
     }
 
     // A Lua body runs to completion inside the VM, so there is no point between entering it and
@@ -218,6 +226,7 @@ pub fn install(
                     command,
                     args.clone(),
                 )
+                .with_strict(declaration.strict)
                 .with_env(
                     environ
                         .iter()
@@ -424,6 +433,52 @@ mod tests {
         for name in ["a-lua", "a-command"] {
             assert!(registry.get(name).is_some(), "{name} is missing");
         }
+    }
+
+    #[test]
+    fn strict_sampling_is_explicit_and_both_execution_paths_restore_optional_defaults() {
+        let (registry, _) = built(
+            r#"
+            magi.tool("sampled", {
+              strict = "require", transport = { kind = "lua" },
+              parameters = { type = "object", properties = { count = { type = "integer", default = 7 } } },
+              run = function(args) return { content = tostring(args.count) } end,
+            })
+            magi.tool("command", { strict = "prefer", transport = { kind = "command", command = "true" } })
+            magi.tool("invalid", { strict = "unknown", transport = { kind = "lua" } })
+        "#,
+        );
+        let declarations = registry.declarations();
+        assert_eq!(
+            declarations
+                .iter()
+                .find(|tool| tool.name == "sampled")
+                .expect("Lua")
+                .strict,
+            Some(magi_model::ToolStrictness::Require)
+        );
+        assert_eq!(
+            declarations
+                .iter()
+                .find(|tool| tool.name == "command")
+                .expect("command")
+                .strict,
+            Some(magi_model::ToolStrictness::Prefer)
+        );
+        assert!(registry.get("invalid").is_none());
+        let arguments = serde_json::json!({"count":null});
+        let output = registry.call("sampled", &arguments, &ops(), &magi_tools::Uncancelled);
+        assert!(!output.is_error, "{}", output.content);
+        assert_eq!(output.content, "7");
+        assert_eq!(arguments, serde_json::json!({"count":null}));
+        let output = registry.answer(
+            "sampled",
+            r#"{"count":null}"#,
+            &ops(),
+            &magi_tools::Uncancelled,
+        );
+        assert!(!output.is_error, "{}", output.content);
+        assert_eq!(output.content, "7");
     }
 
     #[test]

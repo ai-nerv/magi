@@ -233,6 +233,7 @@ mod tests {
     fn catalog() -> magi_host::catalog::Catalog {
         let mut catalog = magi_host::catalog::Catalog::empty();
         catalog.cards = vec![magi_proto::ask::Card {
+            display_name: None,
             vision: false,
             id: "fake/m".into(),
             provider: "fake".into(),
@@ -245,6 +246,7 @@ mod tests {
             capabilities: None,
             reasons: false,
             ready: true,
+            setup: None,
             needs: None,
         }];
         catalog

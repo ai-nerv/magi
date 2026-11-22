@@ -52,7 +52,16 @@ impl crate::app::App {
     pub fn chose(&mut self, value: String) -> Option<UiCommand> {
         let app = self;
         Some(match app.picking.take() {
-            Some(Picking::Thinking) => UiCommand::SetThinking { level: value },
+            Some(Picking::Thinking) => {
+                if !app
+                    .thinking_levels()
+                    .iter()
+                    .any(|level| level.as_str() == value)
+                {
+                    return None;
+                }
+                UiCommand::SetThinking { level: value }
+            }
             // No recorded purpose, so nothing here opened it and nothing goes.
             Some(Picking::Model) => UiCommand::SetModel { name: value },
             // Matched back by position: a row is labelled to be read, not by id.

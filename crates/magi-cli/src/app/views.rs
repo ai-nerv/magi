@@ -270,6 +270,7 @@ impl App {
             model: &name,
             context_window: self.model.as_ref().map_or(0, |model| model.context_window),
             reasons: self.model_reasons,
+            thinking_controls: !self.thinking_levels().is_empty(),
             thinking: &self.thinking,
             provider: self.provider.as_deref(),
             turns: &turns,
@@ -547,11 +548,14 @@ impl App {
     /// Whether the float open takes a row with Enter.
     #[must_use]
     pub fn chooses(&self) -> bool {
-        self.pane_titled("model") || self.pane_titled("notes")
+        self.pane_titled("model") || self.pane_titled("notes") || self.pane_titled("login")
     }
 
     /// Take the row under the cursor of whichever float is open.
     pub fn choose_on_pane(&mut self, id: &str) -> Option<magi_proto::UiCommand> {
+        if self.pane_titled("login") {
+            return self.choose_login(id);
+        }
         if !self.pane_titled("notes") {
             return self.choose_on_model(id);
         }
@@ -605,15 +609,8 @@ impl App {
         if !on_thinking || !self.model_reasons {
             return None;
         }
-        let levels = magi_tui::model_card::LEVELS;
-        let now = levels.iter().position(|l| *l == self.thinking).unwrap_or(0);
-        let next = if forward {
-            (now + 1).min(levels.len() - 1)
-        } else {
-            now.saturating_sub(1)
-        };
-        let level = *levels.get(next)?;
-        (next != now).then(|| self.set_thinking_here(level))
+        let level = self.thinking_step(forward, false)?;
+        Some(self.set_thinking_here(level))
     }
 
     /// Take the row the card's cursor is on: the thinking level steps up and wraps, and the model
@@ -626,9 +623,7 @@ impl App {
                 None
             }
             "thinking" if self.model_reasons => {
-                let levels = magi_tui::model_card::LEVELS;
-                let now = levels.iter().position(|l| *l == self.thinking).unwrap_or(0);
-                let level = *levels.get((now + 1) % levels.len())?;
+                let level = self.thinking_step(true, true)?;
                 Some(self.set_thinking_here(level))
             }
             // A provider row, or the router's own: marked at once, then asked of the session.

@@ -66,15 +66,29 @@ pub struct FamilyScratch {
 }
 
 static NEXT_SCRATCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SCRATCH_LIFECYCLE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl FamilyScratch {
     /// # Errors
     /// When either directory cannot be made, or is not private to this user.
     pub fn new(name: &str) -> std::io::Result<Self> {
+        let _guard = SCRATCH_LIFECYCLE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let n = NEXT_SCRATCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let family = private_dir(&std::env::temp_dir().join(format!("magi-{}", uid())))?;
-        let path = private_dir(&family.join(format!("t{}-{n}-{name}", std::process::id())))?;
-        Ok(Self { path })
+        let root = std::env::temp_dir().join(format!("magi-{}", uid()));
+        let leaf = format!("t{}-{n}-{name}", std::process::id());
+        for _ in 0..32 {
+            match private_dir(&root).and_then(|family| private_dir(&family.join(&leaf))) {
+                Ok(path) => return Ok(Self { path }),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "family scratch root changed during creation",
+        ))
     }
 }
 
@@ -87,6 +101,9 @@ impl std::ops::Deref for FamilyScratch {
 
 impl Drop for FamilyScratch {
     fn drop(&mut self) {
+        let _guard = SCRATCH_LIFECYCLE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _ = std::fs::remove_dir_all(&self.path);
         if let Some(parent) = self.path.parent() {
             let _ = std::fs::remove_dir(parent);
@@ -136,6 +153,37 @@ mod tests {
         let socket = scratch.join("s.sock");
         let _held = UnixListener::bind(&socket).expect("bind");
         assert!(family_socket(&socket).is_some(), "{}", socket.display());
+    }
+
+    #[test]
+    fn parallel_scratch_creation_and_cleanup_keep_the_family_root_available() {
+        let start = std::sync::Barrier::new(16);
+        std::thread::scope(|scope| {
+            let start = &start;
+            let jobs: Vec<_> = (0..16)
+                .map(|_| {
+                    scope.spawn(move || {
+                        start.wait();
+                        for _ in 0..100 {
+                            let scratch =
+                                FamilyScratch::new("parallel").expect("concurrent scratch");
+                            let socket = scratch.join("s.sock");
+                            let _listener = UnixListener::bind(&socket).expect("socket");
+                            assert!(family_socket(&socket).is_some());
+                            assert_eq!(
+                                std::fs::metadata(&*scratch).expect("private").mode() & 0o777,
+                                0o700
+                            );
+                        }
+                    })
+                })
+                .collect();
+            let outcomes: Vec<_> = jobs
+                .into_iter()
+                .map(std::thread::ScopedJoinHandle::join)
+                .collect();
+            assert!(outcomes.iter().all(Result::is_ok));
+        });
     }
 
     #[test]

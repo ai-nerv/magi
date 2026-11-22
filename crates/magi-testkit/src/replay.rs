@@ -193,6 +193,7 @@ impl Recording {
                 | HarnessEvent::PromptRefused { .. }
                 | HarnessEvent::ModelSelected { .. }
                 | HarnessEvent::ModelsRefreshed { .. }
+                | HarnessEvent::Authentication { .. }
                 | HarnessEvent::WorkflowsListed { .. }
                 | HarnessEvent::Error { .. } => {}
             }

@@ -64,6 +64,7 @@ mod mem_dispatch_never_exceeds_policy {
         let dressed = Context {
             system: Some("a long system instruction ".repeat(50)),
             tools: vec![magi_model::Tool {
+                strict: None,
                 name: "read".to_owned(),
                 description: "read a file ".repeat(20),
                 parameters: serde_json::json!({ "type": "object" }),
@@ -314,6 +315,7 @@ mod mem_diagnostics_do_not_leak_sources {
             system: Some(format!("the deploy key is {SENTINEL}")),
             messages: vec![magi_model::Message::user(format!("and again: {SENTINEL}"))],
             tools: vec![magi_model::Tool {
+                strict: None,
                 name: SENTINEL.to_owned(),
                 description: SENTINEL.to_owned(),
                 parameters: serde_json::json!({ "secret": SENTINEL }),

@@ -300,7 +300,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App, footer_data: &FooterData) -> u
     // A float, over the finished screen and under nothing: it covers what it lands on rather than
     // reflowing the conversation. Its rect is recorded here, the only place that knows, so a press
     // outside it can close it.
-    app.pane_rect = app.pane.as_ref().map(|_| magi_tui::pane::Pane::area(area));
+    let pane_rect = app.pane.as_ref().map(|_| magi_tui::pane::Pane::area(area));
+    app.resize_login(pane_rect);
+    app.pane_rect = pane_rect;
     if let Some(open) = app.pane.as_mut() {
         let panel = magi_tui::pane::Pane::area(area);
         let page = magi_tui::pane::Pane::page(area);
@@ -790,3 +792,6 @@ mod hostile_and_tiny;
 
 #[cfg(test)]
 mod stacking;
+
+#[cfg(test)]
+mod login;
