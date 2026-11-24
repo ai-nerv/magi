@@ -259,9 +259,48 @@ impl App {
         if !known_here && self.details_rx.is_none() && self.model.is_some() {
             self.ask_for_details(&name);
         }
+        let active_choice = self.choices.iter().find(|choice| choice.name == name);
+        let unpriced_model = active_choice.is_some_and(|choice| {
+            choice.subscription
+                || (choice.pricing.is_none()
+                    && crate::models::provider_name(choice) != "openrouter")
+        });
+        let billing = active_choice.and_then(|choice| {
+            let provider = crate::models::provider_name(choice);
+            if choice.subscription || provider == "github-copilot" {
+                Some("subscription")
+            } else if provider.contains("token-plan") {
+                Some("token plan")
+            } else {
+                None
+            }
+        });
+        let modalities = active_choice.map(|choice| {
+            let caps = crate::models::capabilities(
+                choice.capabilities.as_ref(),
+                choice.vision,
+                choice.reasoning,
+            );
+            caps.split_once('\n')
+                .map_or(caps.as_str(), |(first, _)| first)
+                .trim_start_matches("input: ")
+                .replace(" → output: ", " → ")
+        });
+        let redacted;
         let details = match self.details.as_ref().filter(|(model, _)| *model == name) {
+            Some((_, Ok(found))) if unpriced_model => {
+                redacted = magi_tui::model_card::Details {
+                    price: [0.0; 4],
+                    endpoints: Vec::new(),
+                    ..found.clone()
+                };
+                magi_tui::model_card::Known::Found(&redacted)
+            }
             Some((_, Ok(found))) => magi_tui::model_card::Known::Found(found),
             Some((_, Err(why))) => magi_tui::model_card::Known::Missing(why),
+            None if self.model.is_none() => {
+                magi_tui::model_card::Known::Missing("no model selected — switch or open :login")
+            }
             None => magi_tui::model_card::Known::Asking,
         };
         let sent = self.laid.as_ref().map(magi_tui::laid::Laid::composition);
@@ -273,6 +312,8 @@ impl App {
             thinking_controls: !self.thinking_levels().is_empty(),
             thinking: &self.thinking,
             provider: self.provider.as_deref(),
+            billing,
+            modalities: modalities.as_deref(),
             turns: &turns,
             details,
             sent: sent.as_deref(),
@@ -621,6 +662,10 @@ impl App {
                 self.pane = None;
                 self.open_model_picker();
                 None
+            }
+            "login" => {
+                self.pane = None;
+                self.open_logins()
             }
             "thinking" if self.model_reasons => {
                 let level = self.thinking_step(true, true)?;

@@ -42,6 +42,7 @@ pub struct App {
     pub turn_models: std::collections::HashMap<MessageId, String>,
     model_reasons: bool,
     pub choices: Vec<magi_proto::ModelChoice>,
+    model_picker: model_picker::State,
     workflows: Vec<magi_proto::workflow::Summary>,
     workflows_requested: bool,
     /// A list or a completion popup. One slot: running a command closes the popup that offered it.
@@ -186,6 +187,7 @@ impl App {
             turn_models: std::collections::HashMap::new(),
             model_reasons: false,
             choices: Vec::new(),
+            model_picker: model_picker::State::default(),
             workflows: Vec::new(),
             workflows_requested: false,
             overlay: None,
@@ -491,48 +493,6 @@ impl App {
         self.show_notice(crate::help::text());
     }
 
-    /// Open the model list: every model, not only the reachable ones, or it is empty before anything works.
-    pub fn open_model_picker(&mut self) {
-        let choices: Vec<magi_tui::picker::Choice> = self
-            .choices
-            .iter()
-            .map(|choice| magi_tui::picker::Choice {
-                value: choice.name.clone(),
-                detail: crate::models::table_cells(choice),
-                ready: choice.requirement.is_empty(),
-            })
-            .collect();
-        let previous = (self.picking == Some(Picking::Model))
-            .then(|| self.overlay.as_ref().and_then(|overlay| overlay.list()))
-            .flatten();
-        let query = previous
-            .map(|picker| picker.query().to_owned())
-            .unwrap_or_default();
-        let current = previous
-            .and_then(|picker| picker.current().map(|choice| choice.value.clone()))
-            .or_else(|| self.model.as_ref().map(|m| m.name.clone()));
-        let mut picker = magi_tui::picker::Picker::new("Model", choices, current.as_deref());
-        picker.table(crate::models::COLUMNS);
-        picker.captions(self.choices.iter().filter_map(|choice| {
-            choice
-                .display_name
-                .as_ref()
-                .map(|name| (choice.name.clone(), name.clone()))
-        }));
-        for ch in query.chars() {
-            picker.push(ch);
-        }
-        if let Some(index) = picker
-            .choices
-            .iter()
-            .position(|choice| Some(choice.value.as_str()) == current.as_deref())
-        {
-            picker.selected = index;
-        }
-        self.overlay = Some(picker.into());
-        self.picking = Some(Picking::Model);
-    }
-
     /// Show every line of each tool result, or go back to the preview. A whole transcript at a time.
     pub fn toggle_detail(&mut self) -> magi_tui::transcript::Detail {
         self.detail = match self.detail {
@@ -590,6 +550,7 @@ mod asked;
 mod asks;
 mod folding;
 mod login;
+mod model_picker;
 mod resetting;
 #[cfg(test)]
 mod retracting;

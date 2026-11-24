@@ -25,6 +25,8 @@ fn card<'a>(reasons: bool, turns: &'a [Usage], details: Known<'a>) -> Card<'a> {
         thinking: "medium",
         thinking_controls: reasons,
         provider: None,
+        billing: None,
+        modalities: None,
         turns,
         details,
         sent: None,
@@ -109,6 +111,7 @@ fn only_the_settings_and_the_providers_can_be_taken() {
         [
             "thinking",
             "switch",
+            "login",
             "provider:",
             "provider:deepinfra/fp4",
             "provider:slow"

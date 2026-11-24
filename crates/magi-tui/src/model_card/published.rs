@@ -31,6 +31,16 @@ pub(super) fn sections(out: &mut Rendered, card: &Card<'_>, ink: &Ink, width: u1
             return;
         }
         Known::Missing(why) => {
+            if card.billing.is_some() || card.modalities.is_some() {
+                out.section("Model", "", width);
+                if let Some(billing) = card.billing {
+                    out.fact("Billing", billing, ink);
+                }
+                if let Some(modalities) = card.modalities {
+                    out.fact("Takes", modalities, ink);
+                }
+                return;
+            }
             out.section("Published", "", width);
             out.say(*why, ink.dim);
             return;

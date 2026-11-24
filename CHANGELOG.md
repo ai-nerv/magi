@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.8.2] - 2026-11-24
+
+### <!-- 0 -->⛰️  Features
+
+- Scope model picker and account floats for subscriptions
+
 ## [0.8.1] - 2026-11-22
 
 ### <!-- 0 -->⛰️  Features

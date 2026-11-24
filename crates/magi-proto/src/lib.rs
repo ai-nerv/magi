@@ -39,9 +39,7 @@ impl Cursor {
     }
 }
 
-pub use magi_model::StopReason;
-
-pub use magi_model::Usage;
+pub use magi_model::{StopReason, Usage};
 
 /// One model a session could switch to, carrying why it cannot be used when it cannot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +47,8 @@ pub struct ModelChoice {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub vision: bool,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     pub context_window: u64,
@@ -64,6 +64,8 @@ pub struct ModelChoice {
     pub wants_vars: Vec<String>,
     #[serde(default)]
     pub reasoning: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub subscription: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -600,17 +602,8 @@ mod phase_tests {
             Phase::Finished,
             Phase::Gone,
         ] {
-            assert_eq!(
-                Phase::read(phase.as_str()),
-                Some(phase),
-                "{}",
-                phase.as_str()
-            );
+            assert_eq!(Phase::read(phase.as_str()), Some(phase));
         }
-        assert_eq!(
-            Phase::read("something-newer"),
-            None,
-            "an unknown phase is not guessed"
-        );
+        assert_eq!(Phase::read("something-newer"), None);
     }
 }

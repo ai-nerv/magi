@@ -143,7 +143,11 @@ impl Picker {
         if choice.ready {
             return Some(choice.value);
         }
-        self.notice = Some(format!("{} — {}", choice.value, choice.detail));
+        let reason = self
+            .reason(&choice.value)
+            .unwrap_or(choice.detail.as_str())
+            .to_owned();
+        self.notice = Some(format!("{} — {reason}", choice.value));
         None
     }
 
@@ -240,9 +244,69 @@ impl Picker {
             .filter(|s| !s.is_empty())
     }
 
+    /// Record refusal reasons for unready choices when details hold table cells.
+    pub fn reasons(&mut self, reasons: impl IntoIterator<Item = (String, String)>) {
+        self.presentation.get_or_insert_default().reasons = reasons
+            .into_iter()
+            .filter(|(_, reason)| !reason.is_empty())
+            .collect();
+    }
+
+    fn reason(&self, value: &str) -> Option<&str> {
+        self.presentation
+            .as_deref()?
+            .reasons
+            .get(value)
+            .map(String::as_str)
+            .filter(|reason| !reason.is_empty())
+    }
+
+    /// Show selectable scope tabs above the rows.
+    pub fn tabs(&mut self, tabs: Vec<String>, active: usize) {
+        let presentation = self.presentation.get_or_insert_default();
+        presentation.tab = active.min(tabs.len().saturating_sub(1));
+        presentation.tabs = tabs;
+    }
+
+    #[must_use]
+    pub fn has_tabs(&self) -> bool {
+        self.tab_labels().len() > 1
+    }
+
+    pub(super) fn tab_labels(&self) -> &[String] {
+        self.presentation
+            .as_deref()
+            .map(|presentation| presentation.tabs.as_slice())
+            .unwrap_or_default()
+    }
+
+    pub(super) fn active_tab(&self) -> usize {
+        self.presentation
+            .as_deref()
+            .map_or(0, |presentation| presentation.tab)
+    }
+
+    /// Show a concise control hint in the heading.
+    pub fn hint(&mut self, hint: impl Into<String>) {
+        let hint = hint.into();
+        self.presentation.get_or_insert_default().hint = (!hint.is_empty()).then_some(hint);
+    }
+
+    pub(super) fn hint_text(&self) -> Option<&str> {
+        self.presentation
+            .as_deref()?
+            .hint
+            .as_deref()
+            .filter(|hint| !hint.is_empty())
+    }
+
     /// Rows this needs on screen, heading included.
     #[must_use]
     pub fn height(&self) -> u16 {
+        let tabs = usize::from(self.has_tabs());
+        if self.choices.is_empty() {
+            return u16::try_from(1 + tabs).unwrap_or(u16::MAX);
+        }
         let rows: usize = self
             .choices
             .get(self.window())
@@ -252,7 +316,8 @@ impl Picker {
             .sum();
         u16::try_from(
             rows + 1
-                + usize::from(!self.columns().is_empty() && !self.choices.is_empty())
+                + tabs
+                + usize::from(!self.columns().is_empty())
                 + usize::from(self.caption().is_some()),
         )
         .unwrap_or(u16::MAX)

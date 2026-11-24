@@ -235,17 +235,22 @@ impl Catalog {
         let mut out: Vec<magi_proto::ModelChoice> = self
             .cards
             .iter()
-            .map(|card| magi_proto::ModelChoice {
-                vision: card.vision,
-                name: card.id.clone(),
-                display_name: card.display_name.clone(),
-                context_window: card.context_window.unwrap_or(0),
-                pricing: card.pricing.clone(),
-                popularity_rank: card.popularity_rank,
-                capabilities: card.capabilities.clone(),
-                requirement: setup::requirement(card),
-                wants_vars: setup::wanted_variables(card),
-                reasoning: card.reasons,
+            .map(|card| {
+                let subscription = setup::is_subscription(card);
+                magi_proto::ModelChoice {
+                    vision: card.vision,
+                    name: card.id.clone(),
+                    provider: (!card.provider.is_empty()).then(|| card.provider.clone()),
+                    display_name: card.display_name.clone(),
+                    context_window: card.context_window.unwrap_or(0),
+                    pricing: (!subscription).then(|| card.pricing.clone()).flatten(),
+                    popularity_rank: (!subscription).then_some(card.popularity_rank).flatten(),
+                    capabilities: card.capabilities.clone(),
+                    requirement: setup::requirement(card),
+                    wants_vars: setup::wanted_variables(card),
+                    reasoning: card.reasons,
+                    subscription,
+                }
             })
             .collect();
         // Ready ones first, then by name.
@@ -461,6 +466,32 @@ mod tests {
             "declaration order is not a choice anybody made"
         );
         assert!(held.backend("one/same").is_some());
+    }
+
+    #[test]
+    fn oauth_subscription_cards_drop_per_token_pricing_and_keep_provider() {
+        let mut model = card("sub/pro", "pro", "sub", true);
+        model.pricing = Some(magi_proto::ask::Pricing {
+            input: Some("3".into()),
+            output: Some("15".into()),
+        });
+        model.popularity_rank = Some(2);
+        model.setup = Some(magi_proto::ask::Setup {
+            state: magi_proto::ask::SetupState::Ready,
+            methods: vec!["oauth".into()],
+            variables: Vec::new(),
+            fields: Vec::new(),
+            login: true,
+        });
+        let held = Catalog {
+            cards: vec![model],
+            ..Catalog::empty()
+        };
+        let choices = held.choices();
+        assert_eq!(choices[0].provider.as_deref(), Some("sub"));
+        assert!(choices[0].subscription);
+        assert!(choices[0].pricing.is_none());
+        assert!(choices[0].popularity_rank.is_none());
     }
 
     #[test]

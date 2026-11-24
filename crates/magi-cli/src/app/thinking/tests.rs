@@ -10,6 +10,7 @@ fn app(levels: Option<Vec<&str>>) -> App {
     app.model_reasons = true;
     app.choices = vec![ModelChoice {
         display_name: None,
+        provider: None,
         name: "p/m".into(),
         context_window: 1000,
         requirement: String::new(),
@@ -18,6 +19,7 @@ fn app(levels: Option<Vec<&str>>) -> App {
         vision: false,
         wants_vars: Vec::new(),
         reasoning: true,
+        subscription: false,
         capabilities: Some(magi_model::Capabilities {
             thinking: Some(vec!["published".into()]),
             thinking_levels: levels.map(|levels| levels.into_iter().map(str::to_owned).collect()),
