@@ -2,30 +2,69 @@
 
 use magi_proto::ask::Pricing;
 
-pub(crate) const COLUMNS: &[&str] = &[
-    "Model", "Ctx", "In$/M", "Out$/M", "ORwk", "Modality", "Thinking",
-];
+#[must_use]
+pub(crate) fn provider_name(choice: &magi_proto::ModelChoice) -> &str {
+    choice
+        .provider
+        .as_deref()
+        .filter(|provider| !provider.is_empty())
+        .unwrap_or_else(|| {
+            choice
+                .name
+                .split_once('/')
+                .map_or("", |(provider, _)| provider)
+        })
+}
 
-pub(crate) fn table_cells(choice: &magi_proto::ModelChoice) -> String {
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Columns {
+    pub priced: bool,
+    pub ranked: bool,
+}
+
+impl Columns {
+    #[must_use]
+    pub(crate) fn for_choices(choices: &[&magi_proto::ModelChoice]) -> Self {
+        Self {
+            priced: choices
+                .iter()
+                .any(|choice| !choice.subscription && has_price(choice.pricing.as_ref())),
+            ranked: choices.iter().any(|choice| {
+                !choice.subscription && choice.popularity_rank.is_some_and(|r| r > 0)
+            }),
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn headers(self) -> Vec<&'static str> {
+        let mut columns = vec!["Model", "Ctx"];
+        if self.priced {
+            columns.push("In$/M");
+            columns.push("Out$/M");
+        }
+        if self.ranked {
+            columns.push("ORwk");
+        }
+        columns.push("Modality");
+        columns.push("Thinking");
+        columns
+    }
+}
+
+pub(crate) fn table_cells_for(choice: &magi_proto::ModelChoice, columns: Columns) -> String {
     let context = if choice.context_window == 0 {
         "—".into()
     } else {
         magi_tui::footer::format_tokens(choice.context_window)
     };
-    let input = price(
-        choice
-            .pricing
-            .as_ref()
-            .and_then(|pricing| pricing.input.as_deref()),
-    );
-    let output = price(
-        choice
-            .pricing
-            .as_ref()
-            .and_then(|pricing| pricing.output.as_deref()),
-    );
-    let rank = choice
-        .popularity_rank
+    let pricing = (!choice.subscription)
+        .then_some(choice.pricing.as_ref())
+        .flatten();
+    let input = price(pricing.and_then(|pricing| pricing.input.as_deref()));
+    let output = price(pricing.and_then(|pricing| pricing.output.as_deref()));
+    let rank = (!choice.subscription)
+        .then_some(choice.popularity_rank)
+        .flatten()
         .filter(|rank| *rank > 0)
         .map_or_else(|| "—".into(), |rank| format!("#{rank}"));
     let caps = capabilities(
@@ -40,15 +79,17 @@ pub(crate) fn table_cells(choice: &magi_proto::ModelChoice) -> String {
     let thinking = thinking
         .trim_start_matches("thinking: ")
         .replace("available (levels unknown)", "on(?)");
-    [
-        context.as_str(),
-        &input,
-        &output,
-        &rank,
-        &modality,
-        &thinking,
-    ]
-    .join("\t")
+    let mut cells = vec![context.as_str()];
+    if columns.priced {
+        cells.push(&input);
+        cells.push(&output);
+    }
+    if columns.ranked {
+        cells.push(&rank);
+    }
+    cells.push(&modality);
+    cells.push(&thinking);
+    cells.join("\t")
 }
 
 pub(crate) fn capabilities(
@@ -96,9 +137,12 @@ pub(crate) fn details(
     } else {
         magi_tui::footer::format_tokens(window)
     };
-    let input = price(pricing.and_then(|pricing| pricing.input.as_deref()));
-    let output = price(pricing.and_then(|pricing| pricing.output.as_deref()));
-    let mut detail = format!("{context} · in {input} out {output} USD/M");
+    let mut detail = context;
+    if has_price(pricing) {
+        let input = price(pricing.and_then(|pricing| pricing.input.as_deref()));
+        let output = price(pricing.and_then(|pricing| pricing.output.as_deref()));
+        detail.push_str(&format!(" · in {input} out {output} USD/M"));
+    }
     if let Some(rank) = rank.filter(|rank| *rank > 0) {
         detail.push_str(&format!(" · OR wk #{rank}"));
     }
@@ -108,11 +152,21 @@ pub(crate) fn details(
     detail
 }
 
-fn price(value: Option<&str>) -> String {
-    let Some(rate) = value
+pub(crate) fn has_price(pricing: Option<&Pricing>) -> bool {
+    pricing.is_some_and(|pricing| {
+        valid_price(pricing.input.as_deref()).is_some()
+            || valid_price(pricing.output.as_deref()).is_some()
+    })
+}
+
+fn valid_price(value: Option<&str>) -> Option<f64> {
+    value
         .and_then(|value| value.parse::<f64>().ok())
         .filter(|rate| rate.is_finite() && *rate >= 0.0)
-    else {
+}
+
+fn price(value: Option<&str>) -> String {
+    let Some(rate) = valid_price(value) else {
         return "—".into();
     };
     let number = if rate > 0.0 && rate < 0.0001 {
@@ -164,10 +218,7 @@ mod tests {
 
     #[test]
     fn unknown_is_not_free_and_auth_does_not_hide_metadata() {
-        assert_eq!(
-            details(0, None, None, "set KEY"),
-            "context — · in — out — USD/M · set KEY"
-        );
+        assert_eq!(details(0, None, None, "set KEY"), "context — · set KEY");
         let pricing = Pricing {
             input: Some("0".into()),
             output: None,

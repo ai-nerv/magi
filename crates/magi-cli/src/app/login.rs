@@ -90,12 +90,37 @@ impl App {
         let width = self
             .pane_rect
             .map_or(56, |r| usize::from(r.width.saturating_sub(7)));
-        self.pane = Some(magi_tui::login::pane(view, &self.login.notice, width));
+        let active = self.model.as_ref().map(|model| model.name.as_str());
+        let models: Vec<magi_tui::login::Model> = self
+            .choices
+            .iter()
+            .map(|choice| magi_tui::login::Model {
+                id: choice.name.clone(),
+                provider: crate::models::provider_name(choice).to_owned(),
+                context_window: choice.context_window,
+                ready: choice.requirement.is_empty(),
+                subscription: choice.subscription,
+                unpriced: choice.pricing.is_none(),
+                active: active == Some(choice.name.as_str()),
+            })
+            .collect();
+        self.pane = Some(magi_tui::login::pane_with_models(
+            view,
+            &self.login.notice,
+            width,
+            &models,
+        ));
     }
 
     pub fn choose_login(&mut self, choice: &str) -> Option<UiCommand> {
         if self.view_only {
             return None;
+        }
+        if let Some(model) = choice.strip_prefix("model:") {
+            let _ = self.close_login();
+            return Some(UiCommand::SetModel {
+                name: model.to_owned(),
+            });
         }
         if let Some(id) = choice.strip_prefix("provider:") {
             if self.login.accounts.iter().any(|a| a.id == id) {
@@ -114,6 +139,12 @@ impl App {
                     return Some(self.login_request(Request::Remove {
                         provider: self.login.selected.clone(),
                     }));
+                }
+                "models" => {
+                    let provider = self.login.selected.clone();
+                    let _ = self.close_login();
+                    self.open_model_picker_for((!provider.is_empty()).then_some(provider));
+                    return Some(UiCommand::RefreshModels);
                 }
                 "add" => {
                     let account = self

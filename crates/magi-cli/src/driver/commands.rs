@@ -99,10 +99,7 @@ pub(super) fn run_command(input: &str, app: &mut App) -> Control {
                 name: name.to_owned(),
             }),
             None => {
-                app.open_model_picker();
-                if let Some(picker) = app.overlay.as_mut().and_then(|overlay| overlay.picker()) {
-                    picker.title = "Model — refreshing".into();
-                }
+                app.open_model_picker_refreshing();
                 Control::Send(UiCommand::RefreshModels)
             }
         },

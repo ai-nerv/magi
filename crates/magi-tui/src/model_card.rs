@@ -71,6 +71,10 @@ pub struct Card<'a> {
     pub thinking_controls: bool,
     /// Which provider serves it, by tag; `None` leaves it to the router.
     pub provider: Option<&'a str>,
+    /// Plan/billing label for subscription or token-plan models.
+    pub billing: Option<&'a str>,
+    /// Catalog-advertised modalities used when published details are absent.
+    pub modalities: Option<&'a str>,
     /// This session's turns, oldest first.
     pub turns: &'a [Usage],
     pub details: Known<'a>,
@@ -182,6 +186,9 @@ fn heading(out: &mut Rendered, card: &Card<'_>, ink: &Ink, width: u16) {
     if !provider.is_empty() {
         about.push(provider.to_owned());
     }
+    if let Some(billing) = card.billing.filter(|label| !label.is_empty()) {
+        about.push(billing.to_owned());
+    }
     if card.context_window > 0 {
         about.push(format!("{} context", format_tokens(card.context_window)));
     }
@@ -239,6 +246,13 @@ fn settings(out: &mut Rendered, card: &Card<'_>, ink: &Ink) {
             Span::styled("switch to another  ⏎".to_owned(), ink.value),
         ]),
         Some("switch"),
+    );
+    out.push(
+        Line::from(vec![
+            Span::styled(format!("{:<14}", "Accounts"), ink.label),
+            Span::styled("manage logins & plans  ⏎".to_owned(), ink.value),
+        ]),
+        Some("login"),
     );
 }
 

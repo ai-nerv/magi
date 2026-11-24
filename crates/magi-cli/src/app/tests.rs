@@ -400,6 +400,7 @@ mod onboarding_tests {
             model,
             choices: vec![ModelChoice {
                 display_name: None,
+                provider: None,
                 name: "p/m".into(),
                 context_window: 1000,
                 requirement: "set P_KEY".into(),
@@ -409,6 +410,7 @@ mod onboarding_tests {
                 vision: false,
                 wants_vars: Vec::new(),
                 reasoning: false,
+                subscription: false,
             }],
             thinking: String::new(),
             judging: magi_proto::judging::Judging::default(),
@@ -483,6 +485,7 @@ mod picking {
             }),
             choices: vec![ModelChoice {
                 display_name: None,
+                provider: None,
                 name: "p/m".into(),
                 context_window: 1000,
                 requirement: String::new(),
@@ -492,6 +495,7 @@ mod picking {
                 vision: false,
                 wants_vars: Vec::new(),
                 reasoning: true,
+                subscription: false,
             }],
             thinking: "off".into(),
             judging: magi_proto::judging::Judging::default(),
@@ -643,6 +647,7 @@ mod picking {
             }),
             choices: vec![ModelChoice {
                 display_name: None,
+                provider: None,
                 name: "p/plain".into(),
                 context_window: 1000,
                 requirement: String::new(),
@@ -652,6 +657,7 @@ mod picking {
                 vision: false,
                 wants_vars: Vec::new(),
                 reasoning: false,
+                subscription: false,
             }],
             thinking: "off".into(),
             judging: magi_proto::judging::Judging::default(),
@@ -684,6 +690,8 @@ mod picking {
         assert_eq!(picker.current().expect("a row").value, "high");
     }
 }
+
+mod model_picker;
 
 mod model_switch;
 

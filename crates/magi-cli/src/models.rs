@@ -8,7 +8,7 @@ use magi_proto::ask::Card;
 mod metadata;
 pub(crate) use metadata::capabilities;
 pub(crate) use metadata::details;
-pub(crate) use metadata::{COLUMNS, table_cells};
+pub(crate) use metadata::{Columns, provider_name, table_cells_for};
 
 /// Print the catalog.
 ///
@@ -103,10 +103,11 @@ fn print_card(card: &Card, default: Option<&str>) {
     } else {
         " "
     };
+    let subscription = magi_host::catalog::setup::is_subscription(card);
     let metadata = details(
         card.context_window.unwrap_or(0),
-        card.pricing.as_ref(),
-        card.popularity_rank,
+        (!subscription).then_some(card.pricing.as_ref()).flatten(),
+        (!subscription).then_some(card.popularity_rank).flatten(),
         "",
     );
     let note = if card.ready {

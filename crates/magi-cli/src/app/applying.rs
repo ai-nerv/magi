@@ -42,8 +42,9 @@ impl App {
                         .any(|c| c.name == chosen.name && c.reasoning)
                 });
                 self.refresh_thinking_controls();
-                if self.picking == Some(Picking::Model) && self.overlay.is_some() {
-                    self.open_model_picker();
+                self.refresh_model_picker();
+                if self.pane_titled("login") {
+                    self.show_login();
                 }
                 if let Some(warning) = warning {
                     self.show_notice(warning);

@@ -425,7 +425,15 @@ pub async fn run(
                                 }
                             }
                             Action::Tab { forward } => {
-                                floating::step(&mut app, &command_tx, forward).await;
+                                if app.picking == Some(crate::app::Picking::Model) {
+                                    app.step_model_provider(forward);
+                                } else {
+                                    floating::step(&mut app, &command_tx, forward).await;
+                                }
+                                dirty = true;
+                            }
+                            Action::ToggleAll => {
+                                app.toggle_model_locked();
                                 dirty = true;
                             }
                             Action::Attach(id) if app.pane_titled("balthasar") => {

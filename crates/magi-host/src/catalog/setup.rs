@@ -37,6 +37,18 @@ pub fn requirement(card: &Card) -> String {
 }
 
 #[must_use]
+pub fn is_subscription(card: &Card) -> bool {
+    card.setup.as_ref().is_some_and(|setup| {
+        (!setup.methods.is_empty()
+            && setup
+                .methods
+                .iter()
+                .all(|method| method.starts_with("oauth")))
+            || (setup.login && setup.variables.is_empty())
+    })
+}
+
+#[must_use]
 pub fn wanted_variables(card: &Card) -> Vec<String> {
     if card.ready {
         return Vec::new();

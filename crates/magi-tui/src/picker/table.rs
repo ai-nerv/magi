@@ -7,6 +7,10 @@ use ratatui::text::Line;
 pub(super) struct Presentation {
     pub(super) headers: Vec<String>,
     pub(super) captions: std::collections::BTreeMap<String, String>,
+    pub(super) reasons: std::collections::BTreeMap<String, String>,
+    pub(super) tabs: Vec<String>,
+    pub(super) tab: usize,
+    pub(super) hint: Option<String>,
 }
 
 pub(super) struct Table<'a> {

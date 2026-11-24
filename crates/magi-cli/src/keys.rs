@@ -64,6 +64,8 @@ pub enum Action {
     Tab {
         forward: bool,
     },
+    /// Toggle showing locked entries in an open picker.
+    ToggleAll,
     /// Shut the branch under a list's cursor, or open it.
     Fold {
         open: bool,
@@ -92,6 +94,8 @@ pub fn recomputes(action: &Action) -> bool {
             | Action::Moved
             | Action::Attach(_)
             | Action::Fold { .. }
+            | Action::Tab { .. }
+            | Action::ToggleAll
     )
 }
 /// Apply a keypress to the editor and whatever is open under it. `busy` gates submission. A
@@ -218,6 +222,15 @@ pub fn handle(
                 } else {
                     Action::Redraw
                 };
+            }
+            KeyCode::Left | KeyCode::BackTab if open.has_tabs() => {
+                return Action::Tab { forward: false };
+            }
+            KeyCode::Right if open.has_tabs() => {
+                return Action::Tab { forward: true };
+            }
+            KeyCode::Char('a') if ctrl => {
+                return Action::ToggleAll;
             }
             // Typing narrows the list rather than reaching the prompt.
             KeyCode::Char(c) if !ctrl && !alt => {

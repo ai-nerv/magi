@@ -429,3 +429,55 @@ fn ctrl_c_dismisses_a_popup_before_it_clears_the_buffer() {
     assert!(popup.is_none());
     assert_eq!(editor.text(), ":qu", "the buffer is untouched");
 }
+
+#[test]
+fn picker_arrows_switch_tabs_and_ctrl_a_toggles_locked_models() {
+    let mut editor = Editor::new();
+    let mut picker = magi_tui::picker::Picker::new(
+        "Model",
+        vec![magi_tui::picker::Choice {
+            value: "sub/m".into(),
+            detail: String::new(),
+            ready: true,
+        }],
+        None,
+    );
+    picker.tabs(vec!["all".into(), "sub".into()], 1);
+    let mut overlay = Some(picker.into());
+    assert_eq!(
+        handle(
+            press(KeyCode::Left, KeyModifiers::NONE),
+            &mut editor,
+            &mut overlay,
+            &mut None,
+            20,
+            false,
+            &mut typing(),
+        ),
+        Action::Tab { forward: false }
+    );
+    assert_eq!(
+        handle(
+            press(KeyCode::Right, KeyModifiers::NONE),
+            &mut editor,
+            &mut overlay,
+            &mut None,
+            20,
+            false,
+            &mut typing(),
+        ),
+        Action::Tab { forward: true }
+    );
+    assert_eq!(
+        handle(
+            press(KeyCode::Char('a'), KeyModifiers::CONTROL),
+            &mut editor,
+            &mut overlay,
+            &mut None,
+            20,
+            false,
+            &mut typing(),
+        ),
+        Action::ToggleAll
+    );
+}

@@ -624,4 +624,50 @@ mod fluidity_tests {
             "and the bar on the row above it"
         );
     }
+
+    #[test]
+    fn tabs_and_reasons_keep_height_and_width_bounded_across_queries() {
+        let mut picker = Picker::new(
+            "Model",
+            vec![Choice {
+                value: "openrouter/x".into(),
+                detail: "128k\t$0.3\t$1.2".into(),
+                ready: false,
+            }],
+            None,
+        );
+        picker.table(&["Model", "Ctx", "In$/M", "Out$/M"]);
+        picker.tabs(
+            vec![
+                "all".into(),
+                "mistral".into(),
+                "openrouter".into(),
+                "qwen-token-plan".into(),
+            ],
+            3,
+        );
+        picker.reasons([("openrouter/x".into(), "set OPENROUTER_API_KEY".into())]);
+        picker.hint("←→ provider");
+        assert!(picker.has_tabs());
+        for width in [24, 60, 120] {
+            let rendered = render(&picker, width);
+            assert_eq!(rendered.len(), usize::from(picker.height()));
+            assert!(
+                rendered
+                    .iter()
+                    .all(|line| line.width() <= usize::from(width))
+            );
+        }
+        assert_eq!(picker.take(), None);
+        let notice = render(&picker, 80)[0].to_string();
+        assert!(notice.contains("set OPENROUTER_API_KEY"), "{notice}");
+        picker.push('z');
+        let empty = render(&picker, 60);
+        assert_eq!(empty.len(), usize::from(picker.height()));
+        assert_eq!(
+            empty.len(),
+            2,
+            "heading plus tabs stay visible on empty match"
+        );
+    }
 }
