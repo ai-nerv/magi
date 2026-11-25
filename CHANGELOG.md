@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.8.3] - 2026-11-25
+
+### <!-- 0 -->⛰️  Features
+
+- Redesign permission prompt and login float, fix float clicks and NixOS devShell jail
+
 ## [0.8.2] - 2026-11-24
 
 ### <!-- 0 -->⛰️  Features
