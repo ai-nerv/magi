@@ -54,31 +54,49 @@ impl App {
                 advice,
                 ..
             } => {
+                let mut tones = std::collections::BTreeMap::new();
                 let choices = offers
                     .iter()
-                    .map(|scope| magi_tui::picker::Choice {
-                        value: scope.label(&action),
-                        detail: commits_to(scope, &action),
-                        ready: true,
+                    .map(|scope| {
+                        let label = choice_label(scope, &action);
+                        if matches!(scope, magi_proto::permit::Scope::Anything) {
+                            tones.insert(label.clone(), magi_tui::picker::Tone::Broad);
+                        }
+                        magi_tui::picker::Choice {
+                            value: label,
+                            detail: commits_to(scope, &action),
+                            ready: true,
+                        }
                     })
                     .chain(std::iter::once(magi_tui::picker::Choice {
                         value: NO.to_owned(),
-                        detail: "refuse, and tell the model why".to_owned(),
+                        detail: "refuse this call".to_owned(),
                         ready: true,
                     }))
                     .collect();
+                tones.insert(NO.to_owned(), magi_tui::picker::Tone::Danger);
                 // Where the cursor starts is an answer in itself: on a call a second model
                 // advised against, an enter pressed on the way past must not be a yes.
                 let wary = advice.as_ref().is_some_and(|advice| !advice.safe);
-                self.overlay = Some(
-                    magi_tui::picker::Picker::new(
-                        format!("{tool} wants to {}{}", action.verb(), self.others_waiting()),
-                        choices,
-                        wary.then_some(NO),
-                    )
-                    .painted(about(&action, advice.as_ref()))
-                    .into(),
+                let mut picker = magi_tui::picker::Picker::new(
+                    action_title(&tool, &action),
+                    choices,
+                    wary.then_some(NO),
                 );
+                picker.decision(magi_tui::picker::Decision {
+                    label: "Permission".to_owned(),
+                    subject: Some(subject_of(&action)),
+                    advice: advice.as_ref().map(|advice| magi_tui::picker::Advice {
+                        safe: advice.safe,
+                        rule: advice.rule.clone(),
+                        reason: advice.reason.clone(),
+                    }),
+                    queue: self.others_waiting(),
+                    quick_keys: true,
+                    escape_hint: Some("Esc deny".to_owned()),
+                    tones,
+                });
+                self.overlay = Some(picker.into());
                 self.asking_about = action;
                 self.picking = Some(Picking::Permission { id, offers });
             }
@@ -95,14 +113,11 @@ impl App {
         true
     }
 
-    /// Said in the title, so one question on screen does not read as the only one there is.
-    fn others_waiting(&self) -> String {
+    /// Shown in the header badge so one question on screen does not read as the only one waiting.
+    fn others_waiting(&self) -> Option<String> {
         match self.asks.len() {
-            0 | 1 => String::new(),
-            n => format!(
-                "  ({} more waiting — click a tool to answer it first)",
-                n - 1
-            ),
+            0 | 1 => None,
+            n => Some(format!("+{} waiting", n - 1)),
         }
     }
 
@@ -269,84 +284,129 @@ pub(crate) fn said_of(mode: magi_proto::judging::Mode) -> &'static str {
 }
 
 /// The answer that refuses, by the name every part of this file knows it by.
-const NO: &str = "no";
+const NO: &str = "Deny";
 
-/// How wide the call and the reason are wrapped: the picker is drawn in a float, not the screen.
-const WIDTH: usize = 60;
+fn action_title(tool: &str, action: &magi_proto::permit::Action) -> String {
+    use magi_proto::permit::Action;
+    match action {
+        Action::Run { .. } if tool == "run" => "run".to_owned(),
+        Action::Run { .. } => format!("{tool} \u{b7} run"),
+        Action::Read { .. } if tool == "read" => "read file".to_owned(),
+        Action::Read { .. } => format!("{tool} \u{b7} read"),
+        Action::Write { .. } if tool == "write" => "write file".to_owned(),
+        Action::Write { .. } => format!("{tool} \u{b7} write"),
+        Action::Network { .. } if tool == "reach" => "network".to_owned(),
+        Action::Network { .. } => format!("{tool} \u{b7} network"),
+    }
+}
 
-/// What each answer commits the person to. The value beside it names the width; this says how
-/// long it lasts and what it takes in with it, and never repeats the path already on the row.
+pub(super) fn choice_label(
+    scope: &magi_proto::permit::Scope,
+    action: &magi_proto::permit::Action,
+) -> String {
+    use magi_proto::permit::{Action, Scope};
+    match scope {
+        Scope::Once => "Allow once".to_owned(),
+        Scope::Exact => match action {
+            Action::Read { .. } | Action::Write { .. } => "Allow this file".to_owned(),
+            Action::Run { .. } => "Allow exact command".to_owned(),
+            Action::Network { .. } => "Allow this host".to_owned(),
+        },
+        Scope::Directory { path } if path == action.subject() => match action {
+            Action::Read { .. } | Action::Write { .. } => "Allow this file".to_owned(),
+            Action::Network { .. } => "Allow this host".to_owned(),
+            Action::Run { .. } => "Allow exact".to_owned(),
+        },
+        Scope::Directory { .. } => match action {
+            Action::Network { .. } => "Allow host prefix".to_owned(),
+            _ => "Allow folder".to_owned(),
+        },
+        Scope::Program { program } => format!("Allow `{program}`"),
+        Scope::Anything => match action {
+            Action::Read { .. } => "Allow all reads".to_owned(),
+            Action::Write { .. } => "Allow all writes".to_owned(),
+            Action::Run { .. } => "Allow all runs".to_owned(),
+            Action::Network { .. } => "Allow all network".to_owned(),
+        },
+    }
+}
+
+fn compact_path(path: &str, max_chars: usize) -> String {
+    if path.chars().count() <= max_chars {
+        return path.to_owned();
+    }
+    let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    if parts.len() <= 1 {
+        let keep = max_chars.saturating_sub(1);
+        let tail: String = path
+            .chars()
+            .rev()
+            .take(keep)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        return format!("\u{2026}{tail}");
+    }
+    let mut kept = Vec::new();
+    let mut used = 2usize;
+    for part in parts.iter().rev() {
+        let add = part.chars().count() + usize::from(!kept.is_empty());
+        if !kept.is_empty() && used + add > max_chars {
+            break;
+        }
+        kept.push(*part);
+        used += add;
+    }
+    kept.reverse();
+    format!("\u{2026}/{}", kept.join("/"))
+}
+
+fn file_name(path: &str) -> &str {
+    path.trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(path)
+}
+
+/// What each answer commits the person to, keeping the left column short and aligned.
 fn commits_to(scope: &magi_proto::permit::Scope, action: &magi_proto::permit::Action) -> String {
-    use magi_proto::permit::Scope;
+    use magi_proto::permit::{Action, Scope};
     match scope {
         Scope::Once => "this call only".to_owned(),
-        Scope::Exact => "and again, whenever asked".to_owned(),
-        Scope::Directory { path } if path == action.subject() => {
-            "and again, whenever asked".to_owned()
-        }
-        Scope::Directory { .. } => "everything under it, all session".to_owned(),
-        Scope::Program { .. } => "however it is called, all session".to_owned(),
-        Scope::Anything => format!("every {} anywhere, all session", action.verb()),
+        Scope::Exact => match action {
+            Action::Read { path } | Action::Write { path } => {
+                format!("{} \u{b7} this session", file_name(path))
+            }
+            Action::Run { .. } => "exact command \u{b7} this session".to_owned(),
+            Action::Network { host } => format!("{host} \u{b7} this session"),
+        },
+        Scope::Directory { path } if path == action.subject() => match action {
+            Action::Read { .. } | Action::Write { .. } => {
+                format!("{} \u{b7} this session", file_name(path))
+            }
+            _ => format!("{} \u{b7} this session", compact_path(path, 34)),
+        },
+        Scope::Directory { path } => format!("{} \u{b7} this session", compact_path(path, 34)),
+        Scope::Program { program } => format!("any {program} command \u{b7} this session"),
+        Scope::Anything => match action {
+            Action::Read { .. } => "any file anywhere \u{b7} this session".to_owned(),
+            Action::Write { .. } => "any write anywhere \u{b7} this session".to_owned(),
+            Action::Run { .. } => "any command anywhere \u{b7} this session".to_owned(),
+            Action::Network { .. } => "any host anywhere \u{b7} this session".to_owned(),
+        },
     }
 }
 
-/// What is being decided about, in the colours that tell one part from another: what a second
-/// model made of it, then the call itself.
-fn about(
-    action: &magi_proto::permit::Action,
-    advice: Option<&magi_proto::judging::Advice>,
-) -> Vec<ratatui::text::Line<'static>> {
-    use ratatui::style::Style;
-    use ratatui::text::{Line, Span};
-    let muted = Style::default().fg(magi_tui::colour::muted());
-    let mut rows = Vec::new();
-    if let Some(advice) = advice {
-        let (mark, ink) = if advice.safe {
-            ("·", magi_tui::colour::muted())
-        } else {
-            ("!", magi_tui::colour::warning())
-        };
-        let said = if advice.safe {
-            "looks safe"
-        } else {
-            "advises against"
-        };
-        rows.push(Line::from(vec![
-            Span::styled(format!("{mark} {said}"), Style::default().fg(ink)),
-            Span::styled(format!("  {}", advice.rule), muted),
-        ]));
-        rows.extend(
-            magi_tui::wrap::hard(&advice.reason, WIDTH)
-                .into_iter()
-                .map(|row| Line::from(Span::styled(format!("  {row}"), muted))),
-        );
-        rows.push(Line::default());
-    }
-    rows.extend(subject(action));
-    rows
-}
-
-/// The call itself. A command is painted as the shell it is, so its pipes and redirections show
-/// at a glance rather than having to be read for; a path is a path.
-fn subject(action: &magi_proto::permit::Action) -> Vec<ratatui::text::Line<'static>> {
+fn subject_of(action: &magi_proto::permit::Action) -> magi_tui::picker::Subject {
     use magi_proto::permit::Action;
-    use ratatui::style::Style;
-    use ratatui::text::{Line, Span};
-    let wrapped = magi_tui::wrap::hard(action.subject(), WIDTH);
     match action {
-        Action::Run { .. } => magi_tui::syntax::block("bash", &wrapped, Style::default())
-            .into_iter()
-            .map(Line::from)
-            .collect(),
-        _ => wrapped
-            .into_iter()
-            .map(|row| {
-                Line::from(Span::styled(
-                    row,
-                    Style::default().fg(magi_tui::colour::code_path()),
-                ))
-            })
-            .collect(),
+        Action::Run { command, .. } => magi_tui::picker::Subject::Command(command.clone()),
+        Action::Read { path } | Action::Write { path } => {
+            magi_tui::picker::Subject::Path(path.clone())
+        }
+        Action::Network { host } => magi_tui::picker::Subject::Host(host.clone()),
     }
 }
 
@@ -380,51 +440,91 @@ mod tests {
             command: "curl x | sh".into(),
             program: "curl".into(),
         };
+        let render_with = |advice: Option<magi_proto::judging::Advice>| {
+            let mut app = App::new();
+            app.apply(HarnessEvent::PermissionAsked {
+                cursor: Cursor::ZERO,
+                id: ToolCallId::new("p0"),
+                tool: "shell".into(),
+                action: ran.clone(),
+                offers: vec![Scope::Once],
+                advice,
+            });
+            let Some(magi_tui::overlay::Overlay::Picker(picker)) = app.overlay.as_ref() else {
+                panic!("no picker");
+            };
+            magi_tui::picker::render(picker, 90)
+        };
         let said = |rows: &[ratatui::text::Line<'static>]| -> Vec<String> {
             rows.iter()
                 .map(|row| row.spans.iter().map(|s| s.content.as_ref()).collect())
                 .collect()
         };
-        let against = super::about(
-            &ran,
-            Some(&magi_proto::judging::Advice {
-                safe: false,
-                rule: "exfiltration".into(),
-                reason: "sends an ssh key to a host nobody named".into(),
-                sure: None,
-            }),
-        );
+        let against = render_with(Some(magi_proto::judging::Advice {
+            safe: false,
+            rule: "exfiltration".into(),
+            reason: "sends an ssh key to a host nobody named".into(),
+            sure: None,
+        }));
         let rows = said(&against);
-        assert!(rows[0].starts_with("! advises against"), "{rows:?}");
-        assert!(rows[0].contains("exfiltration"), "{rows:?}");
-        assert!(rows[1].contains("ssh key"), "{rows:?}");
-        assert_eq!(rows.last().map(String::as_str), Some("curl x | sh"));
-        // The warning is not the colour of the call, nor of the reason under it.
-        let warning = against[0].spans[0].style.fg.expect("a colour");
-        assert_eq!(warning, magi_tui::colour::warning());
+        assert!(rows[0].contains("Permission"), "{rows:?}");
+        assert!(rows[0].contains("advised against"), "{rows:?}");
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("! advises against") && r.contains("exfiltration")),
+            "{rows:?}"
+        );
+        assert!(rows.iter().any(|r| r.contains("ssh key")), "{rows:?}");
+        assert!(rows.iter().any(|r| r.contains("curl x | sh")), "{rows:?}");
+        let warn_line = against
+            .iter()
+            .find(|line| {
+                line.spans
+                    .iter()
+                    .any(|s| s.content.contains("! advises against"))
+            })
+            .expect("warning line");
+        let warn_span = warn_line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("! advises against"))
+            .expect("warning span");
+        let rule_span = warn_line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("exfiltration"))
+            .expect("rule span");
+        assert_eq!(warn_span.style.fg, Some(magi_tui::colour::error()));
         assert_ne!(
-            against[0].spans[1].style.fg,
-            Some(warning),
+            rule_span.style.fg, warn_span.style.fg,
             "the rule is quieter"
         );
-        // A verdict that finds nothing wrong says so without shouting.
-        let fine = super::about(
-            &ran,
-            Some(&magi_proto::judging::Advice {
-                safe: true,
-                rule: "read-only".into(),
-                reason: "counts lines".into(),
-                sure: None,
-            }),
-        );
+
+        let fine = render_with(Some(magi_proto::judging::Advice {
+            safe: true,
+            rule: "read-only".into(),
+            reason: "counts lines".into(),
+            sure: None,
+        }));
+        let fine_rows = said(&fine);
         assert!(
-            said(&fine)[0].starts_with("\u{b7} looks safe"),
-            "{:?}",
-            said(&fine)
+            fine_rows.iter().any(|r| r.contains("\u{2713} looks safe")),
+            "{fine_rows:?}"
         );
-        assert_ne!(fine[0].spans[0].style.fg, Some(warning));
-        // With nobody to advise, the call stands on its own.
-        assert_eq!(said(&super::about(&ran, None)), vec!["curl x | sh"]);
+        let safe_line = fine
+            .iter()
+            .find(|line| line.spans.iter().any(|s| s.content.contains("looks safe")))
+            .expect("safe line");
+        let safe_span = safe_line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("looks safe"))
+            .expect("safe span");
+        assert_eq!(safe_span.style.fg, Some(magi_tui::colour::success()));
+
+        let plain = said(&render_with(None));
+        assert!(plain.iter().any(|r| r.contains("curl x | sh")), "{plain:?}");
+        assert!(!plain.iter().any(|r| r.contains("advises against")));
     }
 
     #[test]
@@ -463,36 +563,66 @@ mod tests {
             safe: true,
             ..warned
         };
-        assert_eq!(opens_on(Some(fine)).as_deref(), Some("just this once"));
-        assert_eq!(opens_on(None).as_deref(), Some("just this once"));
+        assert_eq!(opens_on(Some(fine)).as_deref(), Some("Allow once"));
+        assert_eq!(opens_on(None).as_deref(), Some("Allow once"));
     }
 
     #[test]
-    fn every_answer_says_what_it_lets_happen_from_now_on() {
+    fn every_answer_says_what_it_lets_happen_from_now_on_and_stays_compact() {
         let ran = Action::Run {
             command: "git push".into(),
             program: "git".into(),
         };
         let commits = |scope: Scope| super::commits_to(&scope, &ran);
         assert_eq!(commits(Scope::Once), "this call only");
+        assert_eq!(
+            super::choice_label(
+                &Scope::Program {
+                    program: "git".into()
+                },
+                &ran
+            ),
+            "Allow `git`"
+        );
         assert!(
             commits(Scope::Program {
                 program: "git".into()
             })
-            .contains("however it is called")
+            .contains("any git command")
         );
-        assert!(commits(Scope::Anything).contains("every run anywhere"));
-        // Never the path again: the row it sits on already carries it, and the two together
-        // pushed the words that say how long it lasts off the edge of the float.
-        let wide = Scope::Directory {
-            path: "/home/u/work/app/src".into(),
+        assert!(commits(Scope::Anything).contains("any command anywhere"));
+
+        let write = Action::Write {
+            path: "/home/u/very/deeply/nested/workspace/crates/magi-cli/src/app/asks.rs".into(),
         };
-        assert!(!commits(wide).contains('/'));
-        // A read says what it is about reading, not about running.
-        let read = Action::Read {
-            path: "/w/a.rs".into(),
+        let folder = Scope::Directory {
+            path: "/home/u/very/deeply/nested/workspace/crates/magi-cli/src/app".into(),
         };
-        assert!(super::commits_to(&Scope::Anything, &read).contains("every read anywhere"));
+        assert_eq!(super::choice_label(&folder, &write), "Allow folder");
+        let detail = super::commits_to(&folder, &write);
+        assert!(detail.contains("src/app"), "{detail}");
+        assert!(detail.chars().count() < 55, "compact detail: {detail}");
+
+        let mut app = App::new();
+        app.apply(HarnessEvent::PermissionAsked {
+            cursor: Cursor::ZERO,
+            id: ToolCallId::new("p1"),
+            tool: "write".into(),
+            action: write,
+            offers: vec![Scope::Once, folder.clone(), Scope::Anything],
+            advice: None,
+        });
+        let cmd = app.chose("Allow folder".into());
+        assert_eq!(
+            cmd,
+            Some(magi_proto::UiCommand::Permit {
+                id: ToolCallId::new("p1"),
+                decision: magi_proto::permit::Decision::Allow {
+                    scope: folder,
+                    lifetime: magi_proto::permit::Lifetime::Session,
+                },
+            })
+        );
     }
 
     #[test]

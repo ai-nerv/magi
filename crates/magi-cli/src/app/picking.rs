@@ -88,9 +88,10 @@ impl crate::app::App {
             }
             // Matched back by label, generated from these scopes, so the pairing is exact.
             Some(Picking::Permission { id, offers }) => {
-                let chosen = offers
-                    .iter()
-                    .find(|scope| scope.label(&app.asking_about) == value);
+                let chosen = offers.iter().find(|scope| {
+                    super::asks::choice_label(scope, &app.asking_about) == value
+                        || scope.label(&app.asking_about) == value
+                });
                 // The enforcing ledger is on the worker thread and never read back.
                 if let Some(scope) = chosen
                     && let Some(grant) = magi_tools::permit::standing(&app.asking_about, scope)

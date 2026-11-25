@@ -11,6 +11,7 @@ pub(super) struct Presentation {
     pub(super) tabs: Vec<String>,
     pub(super) tab: usize,
     pub(super) hint: Option<String>,
+    pub(super) decision: Option<super::decision::Decision>,
 }
 
 pub(super) struct Table<'a> {

@@ -60,23 +60,6 @@ pub(crate) fn on_the_screen(
 ) -> Pointing {
     use crossterm::event::MouseButton;
 
-    if app.pane_titled("login") && mouse.kind == MouseEventKind::Down(MouseButton::Left) {
-        let command = if let Some(at) = app
-            .pane_rect
-            .filter(|at| within(*at, mouse.row, mouse.column))
-        {
-            let id = app
-                .pane
-                .as_ref()
-                .and_then(|p| p.selected(mouse.row.saturating_sub(at.y)))
-                .map(str::to_owned);
-            id.and_then(|id| app.choose_login(&id))
-        } else {
-            app.close_login()
-        };
-        return command.map_or(Pointing::Redraw, Pointing::Ask);
-    }
-
     // Read before the match because the rect and the pane are two fields of the same struct, and the
     // arms below borrow the pane.
     let page = app.pane_rect.map_or(0, magi_tui::pane::Pane::page_of);
@@ -139,16 +122,24 @@ pub(crate) fn on_the_screen(
                 .corner_rect
                 .is_some_and(|at| within(at, mouse.row, mouse.column))
             {
+                let cancel = app
+                    .pane_titled("login")
+                    .then(|| app.close_login())
+                    .flatten();
                 app.press_corner();
-                return Pointing::Redraw;
+                return cancel.map_or(Pointing::Redraw, Pointing::Ask);
             }
             // The running-blocks chip beside it, and the blocks pinned above the prompt.
             if app
                 .live_rect
                 .is_some_and(|at| within(at, mouse.row, mouse.column))
             {
+                let cancel = app
+                    .pane_titled("login")
+                    .then(|| app.close_login())
+                    .flatten();
                 app.press_running();
-                return Pointing::Redraw;
+                return cancel.map_or(Pointing::Redraw, Pointing::Ask);
             }
             if app.press_dock(mouse.row, mouse.column, width) {
                 return Pointing::Redraw;
@@ -159,33 +150,42 @@ pub(crate) fn on_the_screen(
                 .iter()
                 .position(|at| at.is_some_and(|at| within(at, mouse.row, mouse.column)))
             {
+                let cancel = app
+                    .pane_titled("login")
+                    .then(|| app.close_login())
+                    .flatten();
                 app.press_sibling(nth);
                 if let Some(ask) = app.memory_opened() {
                     return Pointing::Ask(ask);
                 }
-                return Pointing::Redraw;
+                return cancel.map_or(Pointing::Redraw, Pointing::Ask);
             }
             // The model's name opens its card, the same float the name and the badge open.
             if app
                 .model_rect
                 .is_some_and(|at| within(at, mouse.row, mouse.column))
             {
+                let cancel = app
+                    .pane_titled("login")
+                    .then(|| app.close_login())
+                    .flatten();
                 app.press_model();
-                return Pointing::Redraw;
+                return cancel.map_or(Pointing::Redraw, Pointing::Ask);
             }
             // The footer name opens the agents view — the `< >` control that used to do it is gone.
             if app
                 .name_rect
                 .is_some_and(|at| within(at, mouse.row, mouse.column))
             {
+                let cancel = app
+                    .pane_titled("login")
+                    .then(|| app.close_login())
+                    .flatten();
                 app.press_agents();
-                return Pointing::Redraw;
+                return cancel.map_or(Pointing::Redraw, Pointing::Ask);
             }
-            // A float: a click on a selectable row attaches the screen to that agent; a click
-            // elsewhere inside keeps it open; a click off it dismisses it. After the corner, because
-            // that badge has its own toggle. It is drawn over the transcript, so a press inside that
-            // fell through would select in a conversation nobody can see. Rect and pane both, because
-            // a view closed by a key leaves its rect behind until the next frame.
+            // A float: a click on a selectable row acts on that float; a click elsewhere inside
+            // keeps it open; a click off it dismisses it.
             if let Some(at) = app.pane_rect.filter(|_| app.pane.is_some()) {
                 if within(at, mouse.row, mouse.column) {
                     // A tab in the heading, before the rows: the strip sits on a row that carries
@@ -196,10 +196,23 @@ pub(crate) fn on_the_screen(
                     if app.press_running_row(mouse.row) {
                         return Pointing::Redraw;
                     }
+                    if app.chooses()
+                        && let Some(id) = app
+                            .pane
+                            .as_ref()
+                            .and_then(|p| p.selected(mouse.row.saturating_sub(at.y)))
+                            .map(str::to_owned)
+                    {
+                        let command = app.choose_on_pane(&id);
+                        return command.map_or(Pointing::Redraw, Pointing::Ask);
+                    }
                     if let Some(seat) = app.press_pane_row(mouse.row, mouse.column) {
                         return Pointing::Steer(seat);
                     }
                     return Pointing::Redraw;
+                }
+                if app.pane_titled("login") {
+                    return app.close_login().map_or(Pointing::Redraw, Pointing::Ask);
                 }
                 app.pane = None;
                 return Pointing::Redraw;
@@ -487,5 +500,72 @@ mod wheeling {
         }
         let page = magi_tui::pane::Pane::page_of(app.pane_rect.expect("a drawn pane"));
         assert_eq!(app.pane.as_ref().expect("a pane").top, 500 - page);
+    }
+
+    #[test]
+    fn footer_siblings_model_and_usage_clicks_work_even_over_login_float() {
+        use crate::ui;
+        use crossterm::event::MouseButton;
+        use magi_tui::footer::FooterData;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut app = App::new();
+        let footer = FooterData {
+            identity: "magi/main/a1".into(),
+            model: "mistral/devstral".into(),
+            context_window: 128_000,
+            context_percent: Some(12.0),
+            input_tokens: 15_000,
+            output_tokens: 500,
+            own: true,
+            ..Default::default()
+        };
+        let mut terminal = Terminal::new(TestBackend::new(100, 28)).expect("terminal");
+        let redraw = |app: &mut App, terminal: &mut Terminal<TestBackend>| {
+            terminal
+                .draw(|frame| {
+                    ui::draw(frame, app, &footer);
+                })
+                .expect("draw");
+        };
+        let click = |app: &mut App, rect: Rect| {
+            on_the_screen(
+                app,
+                MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: rect.x + rect.width / 2,
+                    row: rect.y,
+                    modifiers: KeyModifiers::NONE,
+                },
+                24,
+                100,
+                &mut None,
+            )
+        };
+
+        redraw(&mut app, &mut terminal);
+        let mel = app.sibling_rects[0].expect("mel rect");
+        let bal = app.sibling_rects[1].expect("bal rect");
+        let cas = app.sibling_rects[2].expect("cas rect");
+        let model = app.model_rect.expect("model rect");
+        let usage = app.corner_rect.expect("usage rect");
+
+        let _ = click(&mut app, mel);
+        assert!(app.pane_titled("melchior"));
+        let _ = click(&mut app, bal);
+        assert!(app.pane_titled("balthasar"));
+        let _ = click(&mut app, cas);
+        assert!(app.pane_titled("casper"));
+        let _ = click(&mut app, usage);
+        assert!(app.pane_titled("cost"));
+        let _ = click(&mut app, model);
+        assert!(app.pane_titled("model"));
+
+        // Clicking *MEL while :login is open switches directly to melchior instead of only closing login.
+        let _ = app.open_logins();
+        redraw(&mut app, &mut terminal);
+        assert!(app.pane_titled("login"));
+        let _ = click(&mut app, mel);
+        assert!(app.pane_titled("melchior"));
     }
 }

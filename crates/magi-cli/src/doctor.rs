@@ -219,15 +219,18 @@ fn row(out: &mut String, name: &str, value: &str) {
     let _ = writeln!(out, "  {name:<18} {value}");
 }
 
-/// Whether a tool command runs in a kernel jail, and what actually enforces it here. `off` unless
-/// `magi.isolation` is set; `on` names the layers in force, so a machine that cannot build one says
-/// so rather than reporting a wall it does not have.
+/// Whether a tool command runs in a kernel jail, and what actually enforces it here. On by default
+/// unless `magi.isolation = false`; names the launcher in force so a machine that cannot build one
+/// says so rather than reporting a wall it does not have.
 fn isolation(loaded: &crate::config::Loaded) -> String {
-    if !loaded.config.boolean("isolation").unwrap_or(false) {
+    if !loaded.config.boolean("isolation").unwrap_or(true) {
         return "off".to_owned();
     }
     match which("bwrap") {
-        Some(_) => "on — bubblewrap (filesystem, network, processes)".to_owned(),
+        Some(path) => format!(
+            "on — bubblewrap ({}, filesystem, network, processes)",
+            path.display()
+        ),
         None => "on, but weaker: no bubblewrap here, so the mount and network walls are absent"
             .to_owned(),
     }

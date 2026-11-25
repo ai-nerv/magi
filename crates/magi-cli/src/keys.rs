@@ -209,6 +209,53 @@ pub fn handle(
                 }
             }
         }
+        if open.quick_keys() {
+            match key.code {
+                KeyCode::Esc => {
+                    *overlay = None;
+                    return Action::Dismissed;
+                }
+                KeyCode::Up => {
+                    open.previous();
+                    return Action::Accepted;
+                }
+                KeyCode::Down => {
+                    open.next();
+                    return Action::Accepted;
+                }
+                KeyCode::Char('k') if !ctrl && !alt => {
+                    open.previous();
+                    return Action::Accepted;
+                }
+                KeyCode::Char('j') if !ctrl && !alt => {
+                    open.next();
+                    return Action::Accepted;
+                }
+                KeyCode::Char(c @ '1'..='9') if !ctrl && !alt => {
+                    let index = usize::from(c as u8 - b'1');
+                    return match open.take_at(index) {
+                        Some(chosen) => {
+                            *overlay = None;
+                            Action::Chose(chosen)
+                        }
+                        None => Action::Accepted,
+                    };
+                }
+                KeyCode::Enter | KeyCode::Tab => {
+                    return match open.take() {
+                        Some(chosen) => {
+                            *overlay = None;
+                            Action::Chose(chosen)
+                        }
+                        None => Action::Accepted,
+                    };
+                }
+                KeyCode::Backspace | KeyCode::Char(_) if !ctrl && !alt => {
+                    return Action::Accepted;
+                }
+                _ => {}
+            }
+        }
         match key.code {
             KeyCode::Esc => {
                 // One escape closes the whole list, not one character of the query.

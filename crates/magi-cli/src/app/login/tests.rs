@@ -232,8 +232,8 @@ fn login_float_renders_at_normal_and_wide_terminal_sizes() {
         let mut app = listed();
         let buffer = shown(&mut app, width, height);
         let cells = text(&buffer);
-        assert!(cells.contains("PROVIDER ACCOUNTS"));
         assert!(cells.contains("Mistral"));
+        assert!(cells.contains("OAuth fixture"));
         app.choose_login("provider:mistral");
         app.choose_login("add");
         app.login_paste("private-preview-key");

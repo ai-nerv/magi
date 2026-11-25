@@ -72,10 +72,15 @@ fn actual_login_floats_render_without_credentials_at_normal_and_wide_sizes() {
                 .expect("draw");
             let buffer = terminal.backend().buffer();
             let cells: String = buffer.content.iter().map(|c| c.symbol()).collect();
-            assert!(cells.contains("PROVIDER ACCOUNTS"));
             assert!(!cells.contains("private-preview-key"));
+            if state == "providers" {
+                assert!(cells.contains("all") && cells.contains("Mistral"));
+            }
             if state == "key" {
-                assert!(cells.contains("●●●●"));
+                assert!(cells.contains("API key") && cells.contains("●●●●"));
+            }
+            if state == "remove" {
+                assert!(cells.contains("Remove saved login"));
             }
             if state == "device" {
                 assert!(cells.contains("ABCD-EFGH"));

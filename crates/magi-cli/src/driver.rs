@@ -575,7 +575,7 @@ pub async fn run(
                         if let pointing::Pointing::Steer(seat) = pointed {
                             dial(&app, seat, socket, &target_tx, &command_tx, &mut held).await;
                         } else if let pointing::Pointing::Ask(command) = pointed {
-                            let _ = command_tx.send(command).await;
+                            direct(&mut app, &command_tx, command).await;
                         }
                         dirty = true;
                     }

@@ -30,7 +30,7 @@ impl App {
         // What the tool put in its `detail` -- the command, the diff, whatever the question is
         // about. It was being dropped: casper sent it, the event carried it, and the picker drew
         // a question with nothing under it.
-        let about = detail
+        let about: Vec<String> = detail
             .iter()
             .map(|row| {
                 row.iter()
@@ -38,11 +38,18 @@ impl App {
                     .collect::<String>()
             })
             .collect();
-        self.overlay = Some(
-            magi_tui::picker::Picker::new(format!("{tool}: {question}"), choices, None)
-                .about(about)
-                .into(),
-        );
+        let mut picker =
+            magi_tui::picker::Picker::new(format!("{tool}: {question}"), choices, None);
+        picker.decision(magi_tui::picker::Decision {
+            label: "Question".to_owned(),
+            subject: (!about.is_empty()).then_some(magi_tui::picker::Subject::Lines(about)),
+            advice: None,
+            queue: None,
+            quick_keys: true,
+            escape_hint: Some("Esc cancel".to_owned()),
+            tones: std::collections::BTreeMap::new(),
+        });
+        self.overlay = Some(picker.into());
         // The rows are kept as `(label, id)` because the picker that held their order is taken
         // by the keypress that chooses one — so by the time the answer is sent there is nothing
         // left to index, and what a person read is not what the tool asked to get back.

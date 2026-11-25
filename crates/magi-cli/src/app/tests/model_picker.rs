@@ -294,3 +294,39 @@ fn login_account_float_allows_selecting_a_ready_model_directly() {
     );
     assert!(app.pane.is_none());
 }
+
+#[test]
+fn decisions_models_group_under_openrouter_without_creating_a_separate_tab() {
+    let mut app = App::new();
+    app.choices = vec![
+        choice(
+            "openrouter",
+            "deepseek/deepseek-v3.2",
+            true,
+            Some(magi_proto::ask::Pricing {
+                input: Some("0.3".into()),
+                output: Some("1.2".into()),
+            }),
+            Some(4),
+            false,
+        ),
+        choice(
+            "decisions",
+            "typesafe/jev-1.13",
+            true,
+            Some(magi_proto::ask::Pricing {
+                input: Some("0.042".into()),
+                output: Some("0".into()),
+            }),
+            None,
+            false,
+        ),
+    ];
+    app.open_model_picker();
+    let picker = app.overlay.as_ref().and_then(|o| o.list()).expect("picker");
+    assert!(
+        !picker.has_tabs(),
+        "decisions belongs to openrouter, so there is only one provider"
+    );
+    assert_eq!(picker.choices.len(), 2);
+}
