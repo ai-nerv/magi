@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.4] - 2026-11-25
+
+### <!-- 0 -->⛰️  Features
+
+- Compile AGENTS.md/CLAUDE.md rules into magi.deny and magi.ask
+
+## [0.8.3] - 2026-11-25
+
 ## [0.8.3] - 2026-11-25
 
 ### <!-- 0 -->⛰️  Features
